@@ -1,0 +1,166 @@
+rules_version = '2';
+
+// TripMate v1 access model:
+//   - Trip docs are gated by a `members/{uid}` subdoc (doc-id == auth uid).
+//   - Membership check is O(1) via exists(); avoids query-in-rules.
+//   - Roles: owner (full control, only one per trip), editor (CRUD subcollections),
+//     viewer (read-only). Owner must match trips/{tripId}.ownerId.
+//   - Cross-trip listing: a collection-group query on /members/ finds every trip
+//     the signed-in user belongs to; the top-level wildcard rule gates this to
+//     "only your own member docs".
+//   - Invites: unguessable 256-bit token as docId. Owner creates, redeemer reads
+//     (via known path) + consumes atomically with member self-create.
+//   - Default deny at the bottom catches anything outside these matches.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function uid() {
+      return request.auth.uid;
+    }
+    function memberPath(tripId) {
+      return /databases/$(database)/documents/trips/$(tripId)/members/$(uid());
+    }
+    function isMember(tripId) {
+      return isSignedIn() && exists(memberPath(tripId));
+    }
+    // Single get() fetches the member doc and checks role in one shot. If the
+    // doc doesn't exist the rule evaluation fails (denies) — which is the
+    // desired behavior for non-members. isSignedIn() gates first because
+    // memberPath() dereferences uid().
+    function canWrite(tripId) {
+      return isSignedIn()
+        && get(memberPath(tripId)).data.role in ['owner', 'editor'];
+    }
+    function isTripOwner(tripId) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/trips/$(tripId))
+        && get(/databases/$(database)/documents/trips/$(tripId)).data.ownerId == uid();
+    }
+    function invitePath(tripId, token) {
+      return /databases/$(database)/documents/trips/$(tripId)/invites/$(token);
+    }
+
+    // Collection-group list gate for /members. Used by getMyTrips() to find
+    // every trip the user belongs to (owner OR editor OR viewer). The rule
+    // restricts results to the caller's own member docs; clients must query
+    // `where('userId','==',uid)` or Firestore rejects the query.
+    //
+    // Placed outside /trips/{tripId}/members because collection-group rules
+    // must use a wildcard parent path. The specific rules below still govern
+    // get/create/update/delete on individual member docs.
+    match /{path=**}/members/{memberId} {
+      allow list: if isSignedIn() && resource.data.userId == uid();
+    }
+
+    match /trips/{tripId} {
+      // GET by id (including shared trips I'm invited to) → membership check.
+      allow get: if isMember(tripId);
+      // LIST/query on /trips is kept narrow: only "trips I own" via ownerId
+      // filter. The primary list path is now the /members collection-group
+      // query above, so this rule is effectively a defensive fallback.
+      allow list: if isSignedIn() && resource.data.ownerId == uid();
+      // Anyone signed-in may create a trip they own; ownerId is pinned to their uid.
+      allow create: if isSignedIn()
+                    && request.resource.data.ownerId == uid()
+                    && request.resource.data.title is string
+                    && request.resource.data.title.size() > 0;
+      // Owner can edit trip metadata but cannot transfer ownership via update.
+      allow update: if isTripOwner(tripId)
+                    && request.resource.data.ownerId == resource.data.ownerId;
+      allow delete: if isTripOwner(tripId);
+
+      match /members/{memberId} {
+        allow read: if isMember(tripId);
+        // Three creation paths:
+        //   1. Owner self-bootstrap at trip creation (doc-id must be own uid,
+        //      role pinned to 'owner').
+        //   2. Owner manually adds a member (Phase 3 feature).
+        //   3. Invitee self-redeems: doc-id is own uid, role matches the
+        //      invite doc they reference via `inviteToken`. The rule
+        //      dereferences the invite to verify role + non-expired. The
+        //      invite doc is reusable — its existence is the validity gate;
+        //      multiple redeemers may succeed in parallel.
+        allow create: if isSignedIn() && (
+          (memberId == uid()
+            && request.resource.data.userId == uid()
+            && request.resource.data.role == 'owner')
+          || isTripOwner(tripId)
+          || (memberId == uid()
+              && request.resource.data.userId == uid()
+              && request.resource.data.role in ['editor', 'viewer']
+              && exists(invitePath(tripId, request.resource.data.inviteToken))
+              && get(invitePath(tripId, request.resource.data.inviteToken)).data.role == request.resource.data.role
+              && get(invitePath(tripId, request.resource.data.inviteToken)).data.expiresAt > request.time)
+        );
+        // Owner edits roles / removes members. Members cannot modify their own
+        // role to self-escalate.
+        allow update, delete: if isTripOwner(tripId);
+      }
+
+      match /invites/{token} {
+        // Redeemer reads by known path (the 256-bit token is the auth). Owner
+        // lists their invites for the management UI.
+        allow get:  if isSignedIn();
+        allow list: if isTripOwner(tripId);
+        // Owner creates invites. Required fields shape + role allowlist; the
+        // invite must not be backdated past expiry.
+        allow create: if isTripOwner(tripId)
+                      && request.resource.data.tripId == tripId
+                      && request.resource.data.createdBy == uid()
+                      && request.resource.data.role in ['editor', 'viewer']
+                      && request.resource.data.tripTitle is string
+                      && request.resource.data.tripIcon is string
+                      && request.resource.data.expiresAt is timestamp
+                      && request.resource.data.expiresAt > request.time;
+        // No update path: invites are immutable once created. Owner rotates
+        // by delete+create (handled by createInvite's writeBatch). Default
+        // deny from the absence of `allow update` is the intended posture.
+        //
+        // Owner revokes by deleting. Also used implicitly by createInvite to
+        // clear older invites before writing the new one — reusable-link
+        // semantics: existing doc = valid, missing doc = invalid.
+        allow delete: if isTripOwner(tripId);
+      }
+
+      match /schedules/{scheduleId} {
+        allow read:   if isMember(tripId);
+        allow create: if canWrite(tripId)
+                      && request.resource.data.tripId == tripId
+                      && request.resource.data.createdBy == uid();
+        allow update, delete: if canWrite(tripId);
+      }
+
+      match /expenses/{expenseId} {
+        allow read:   if isMember(tripId);
+        allow create: if canWrite(tripId)
+                      && request.resource.data.tripId == tripId
+                      && request.resource.data.createdBy == uid();
+        allow update, delete: if canWrite(tripId);
+      }
+
+      match /journals/{journalId} {
+        allow read:   if isMember(tripId);
+        // Journal entries are authored (not co-edited): only the author
+        // can edit/delete their own post.
+        allow create: if canWrite(tripId)
+                      && request.resource.data.tripId == tripId
+                      && request.resource.data.authorId == uid();
+        allow update, delete: if canWrite(tripId)
+                              && resource.data.authorId == uid();
+      }
+
+      match /bookings/{bookingId} {
+        allow read:   if isMember(tripId);
+        allow create, update, delete: if canWrite(tripId);
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

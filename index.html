@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- 強制 light mode：禁止瀏覽器根據系統深色偏好反轉顏色 -->
+    <meta name="color-scheme" content="light" />
+    <meta name="supported-color-schemes" content="light" />
+    <meta name="theme-color" content="#F5F0E8" />
+
+    <!-- iOS PWA standalone：Safari 不讀 manifest 的 display 欄位，必須用 Apple 專屬
+         meta tag 才會在「加入主畫面」後以全螢幕（無 URL bar、無 back/share/refresh）模式開啟。 -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="TripMate" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <title>TripMate</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,105 @@
+/* src/index.css — Tailwind v4 + 和紙・大地配色 */
+@import "tailwindcss";
+
+/* ─── Theme tokens ────────────────────────────────────────────────
+   單一 source of truth；theme.ts 讀回同一組 hex 供 JS 端動態 style 使用
+*/
+@theme {
+  --color-app:         #F4EFE6;
+  --color-surface:     #FDFAF5;
+  --color-border:      #E2DDD4;
+  --color-ink:         #2E2B27;
+  --color-muted:       #9C9890;
+  --color-dot:         #C5BDB0;
+  --color-teal:        #3D8B7A;
+  --color-teal-pale:   #E4F0ED;
+  --color-accent:      #4A6670;
+  --color-accent-pale: #E8EFF1;
+  --color-pick:        #6B7A94;
+  --color-pick-pale:   #EAEDF3;
+  --color-danger:      #A05050;
+  --color-danger-pale: #FDF0F0;
+  --color-danger-soft: #EDD0D0;
+  --color-warn:        #B8874A;
+  --color-warn-bg:     #F7EEDC;
+  --color-tile:        #F0EDE8;
+
+  /* Semantic radii — 收斂最常用的 3 種（10 / 14 / 20） */
+  --radius-input:      10px;
+  --radius-chip:       14px;
+  --radius-card:       20px;
+
+  --font-serif-ja:     Georgia, serif;
+}
+
+/* ─── Shared keyframes ───────────────────────────────────────────
+   給 bottom-sheet / dropdown / date picker 共用的動畫 */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes calPop {
+  from { opacity: 0; transform: translateY(-6px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)    scale(1);    }
+}
+@keyframes dropIn {
+  from { opacity: 0; transform: translateY(-8px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)    scale(1);    }
+}
+@keyframes backdropIn {
+  from { opacity: 0; backdrop-filter: blur(0px)  saturate(100%); -webkit-backdrop-filter: blur(0px)  saturate(100%); }
+  to   { opacity: 1; backdrop-filter: blur(4px)  saturate(140%); -webkit-backdrop-filter: blur(4px)  saturate(140%); }
+}
+
+/* 強制 light mode：避免深色系統反轉配色 */
+:root {
+  color-scheme: light only;
+  forced-color-adjust: none;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background-color: var(--color-app);
+  color: var(--color-ink);
+  -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+#root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 隱藏水平卷軸（iOS Safari 保留 momentum scroll） */
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* 細卷軸（TripSwitcher dropdown 用） */
+.thin-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+.thin-scrollbar::-webkit-scrollbar { width: 5px; }
+.thin-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 10px;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: var(--color-dot);
+}
+
+/* <input type="date|time"> 的日曆 icon — 全域設定 */
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator {
+  opacity: 0.4;
+  cursor: pointer;
+}

@@ -1,0 +1,15 @@
+# Pre-commit gate for this solo side-project repo.
+#
+# Runs:
+#   1. `tsc -b --noEmit` — full type check on every commit. Fast (~1s
+#      incremental) and catches the class of bugs that ESLint can't.
+#   2. `lint-staged` — ESLint on staged .ts/.tsx files with --max-warnings 0,
+#      so you can't add a new lint warning to a staged file. Existing debt
+#      in unstaged parts of the repo stays out of scope, letting the hook
+#      stay green until you specifically touch a file with pre-existing
+#      warnings.
+#
+# Bypass with `git commit --no-verify` in an emergency; prefer fixing the
+# underlying issue.
+
+npm run typecheck && npx lint-staged
