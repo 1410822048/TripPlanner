@@ -1,21 +1,34 @@
 // src/layouts/AppLayout.tsx
 import { Suspense } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { CalendarDays, Ticket, Receipt, BookOpen, Map, UserCircle } from 'lucide-react'
+import { CalendarDays, Ticket, Receipt, Heart, ListChecks, UserCircle } from 'lucide-react'
 import LoadingText from '@/components/ui/LoadingText'
+import { useCurrentTripSync } from '@/features/trips/hooks/useCurrentTripSync'
+import { usePrefetchBookings } from '@/features/bookings/hooks/usePrefetchBookings'
 
 const TABS = [
   { path: '/schedule', label: '行程', Icon: CalendarDays },
   { path: '/bookings', label: '訂單', Icon: Ticket       },
   { path: '/expense',  label: '費用', Icon: Receipt      },
-  { path: '/journal',  label: '日記', Icon: BookOpen     },
-  { path: '/planning', label: '規劃', Icon: Map          },
+  { path: '/wish',     label: 'Wish', Icon: Heart        },
+  { path: '/planning', label: '規劃', Icon: ListChecks  },
   { path: '/account',  label: '我的', Icon: UserCircle   },
 ] as const
 
 export default function AppLayout() {
   const { pathname } = useLocation()
   const navigate = useNavigate()
+
+  // Trip rehydration runs at layout level so a hard reload landing on
+  // /bookings, /expense, etc. picks the user's last trip without forcing
+  // them through /schedule first. The hook is a no-op in demo mode.
+  useCurrentTripSync()
+
+  // Cache-warming: kicks off the bookings query as soon as a currentTrip is
+  // known, in parallel with whatever page the user is on. When they
+  // navigate to /bookings, the list resolves from cache — closes the
+  // visible "header showing but list still loading" gap on cold load.
+  usePrefetchBookings()
 
   // Preview-first: layout renders for everyone. Auth is prompted per action
   // (create trip / save schedule / save expense) inside each feature page;

@@ -36,6 +36,13 @@ pubsub-debug.log*
 # ─── Firestore data exports (backup target) ────────────────────
 /backups/
 
+# ─── Local-only source assets ─────────────────────────────────
+# Master artwork (source PNG/SVG) consumed by scripts/generate-icons.mjs
+# to produce the committed public/*.png variants. Kept out of git
+# because the master is multi-MB and only changes when artwork is
+# redesigned — contributors don't need it to build.
+/assets/
+
 # ─── Husky internals (keep .husky/pre-commit, ignore the shim) ─
 .husky/_/
 

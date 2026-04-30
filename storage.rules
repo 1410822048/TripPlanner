@@ -1,0 +1,85 @@
+rules_version = '2';
+
+// TripMate Storage access model:
+//   - All booking attachments live under /trips/{tripId}/bookings/{bookingId}/{filename}.
+//   - Membership is the gate: only members of the trip may read/write.
+//   - Membership lookup uses the cross-service firestore.exists() against
+//     the `(default)` Firestore database. Cloud Storage rules currently
+//     ONLY support `(default)`; named databases would silently always
+//     return false. Reference:
+//     https://firebase.google.com/docs/rules/cross-service
+//   - Each upload is capped at 5MB and restricted to image/* or PDF.
+//   - Default deny at the bottom catches anything outside /trips/.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Role-aware membership: read is open to any member; create/update/
+    // delete require editor or owner. Mirrors the canWrite() gate in
+    // firestore.rules so the two services agree on who can mutate trip
+    // data — previously Storage was looser (any member could write),
+    // letting a viewer theoretically POST attachments via the raw API
+    // even though the UI hides the button.
+    function memberDoc(tripId) {
+      return /databases/(default)/documents/trips/$(tripId)/members/$(request.auth.uid);
+    }
+    function isMember(tripId) {
+      return isSignedIn() && firestore.exists(memberDoc(tripId));
+    }
+    function canWriteFiles(tripId) {
+      return isSignedIn()
+        && firestore.get(memberDoc(tripId)).data.role in ['owner', 'editor'];
+    }
+
+    // Wildcard read for ANY object under a trip's namespace. Two reasons:
+    //   1. listAll(prefix) needs a matching `read` rule on the prefix — the
+    //      cascade-delete in tripService.purgeStorageFolder recursively
+    //      lists `trips/{tripId}/`, `trips/{tripId}/bookings/`, etc., and
+    //      none of those paths match the leaf-file rules below. Without
+    //      this wildcard the cascade hits 403 on the very first listAll.
+    //   2. Future entities that store files under `/trips/{tripId}/...`
+    //      get the membership read for free without another rule edit.
+    // Writes are NOT covered here — create/update/delete must still match
+    // the specific rules below (which gate by role + content-type + size).
+    match /trips/{tripId}/{allPaths=**} {
+      allow read: if isMember(tripId);
+    }
+
+    match /trips/{tripId}/bookings/{bookingId}/{fileName} {
+      allow read: if isMember(tripId);
+      // create + update enforce size + content-type. Defense-in-depth:
+      // the form already gates this client-side, but the rule blocks raw
+      // API misuse.
+      allow create, update: if canWriteFiles(tripId)
+                            && request.resource.size < 5 * 1024 * 1024
+                            && (request.resource.contentType.matches('image/.*')
+                                || request.resource.contentType == 'application/pdf');
+      // delete is its own clause — `request.resource` is null for delete
+      // operations, so a write rule referencing size / contentType would
+      // deny removals (the original bug behind "image removed but save
+      // fails"). Role gate still applies.
+      allow delete: if canWriteFiles(tripId);
+    }
+
+    // Wish cover images. Looser than bookings: ANY member can upload /
+    // replace / delete (matches the firestore.rules /wishes/ policy
+    // where viewers can also propose). Image-only with the 5MB cap.
+    // The actual "who owns this wish" gate lives in firestore.rules —
+    // here we only enforce membership + content shape.
+    match /trips/{tripId}/wishes/{wishId}/{fileName} {
+      allow read: if isMember(tripId);
+      allow create, update: if isMember(tripId)
+                            && request.resource.size < 5 * 1024 * 1024
+                            && request.resource.contentType.matches('image/.*');
+      allow delete: if isMember(tripId);
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

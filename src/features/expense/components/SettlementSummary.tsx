@@ -1,8 +1,8 @@
 // src/features/expense/components/SettlementSummary.tsx
-import { useMemo } from 'react'
+import { memo, useMemo } from 'react'
 import { ArrowRight, Check } from 'lucide-react'
 import type { Expense } from '@/types'
-import type { TripMember } from '@/features/schedule/types'
+import type { TripMember } from '@/features/trips/types'
 import { computeBalances, computeSettlements } from '../services/settlement'
 
 interface Props {
@@ -25,7 +25,7 @@ function MemberChip({ m, size = 28 }: { m: TripMember; size?: number }) {
   )
 }
 
-export default function SettlementSummary({ expenses, members }: Props) {
+function SettlementSummary({ expenses, members }: Props) {
   const { balances, settlements } = useMemo(() => {
     const bs = computeBalances(expenses, members)
     const ss = computeSettlements(bs)
@@ -134,3 +134,9 @@ export default function SettlementSummary({ expenses, members }: Props) {
     </div>
   )
 }
+
+// Memoised: ExpensePage state changes (modal toggle, swipe, etc.) cascade
+// here even when expenses[] / members[] are unchanged. Default Object.is
+// comparison is correct — both props come from stable upstream sources
+// (TanStack Query cache for expenses, useMemo'd members).
+export default memo(SettlementSummary)

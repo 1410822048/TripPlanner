@@ -5,14 +5,15 @@
 // sync-in-effect step, no cascade renders after mount.
 import { useRef, useState } from 'react'
 import type { Expense, ExpenseCategory, CreateExpenseInput } from '@/types'
-import type { TripMember } from '@/features/schedule/types'
-import BottomSheet from '@/components/ui/BottomSheet'
+import type { TripMember } from '@/features/trips/types'
+import FormModalShell from '@/components/ui/FormModalShell'
 import { DatePicker } from '@/components/ui/pickers'
 import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
-import SaveButton from '@/components/ui/SaveButton'
 import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
+import { useFormReducer } from '@/hooks/useFormReducer'
+import { useSplitsState, type SplitMode } from '../hooks/useSplitsState'
 import { splitEqually } from '../utils'
 
 const CATEGORIES: { value: ExpenseCategory; label: string }[] = [
@@ -24,7 +25,17 @@ const CATEGORIES: { value: ExpenseCategory; label: string }[] = [
   { value: 'other',         label: 'その他' },
 ]
 
-type SplitMode = 'equal' | 'custom'
+// `type` (not `interface`): TS won't widen interfaces to satisfy
+// `Record<string, unknown>` since interfaces are open for declaration
+// merging. Type aliases are closed and pass useFormReducer's constraint.
+type FormState = {
+  title:    string
+  amount:   string                // string for input control; rounded to int on save
+  date:     string
+  category: ExpenseCategory
+  paidBy:   string
+  note:     string
+}
 
 interface Props {
   editTarget:  Expense | null
@@ -36,121 +47,76 @@ interface Props {
   onSave:      (data: CreateExpenseInput) => void
 }
 
-/**
- * Derive the initial split-mode + membership + custom-splits state from the
- * expense being edited (or the member roster when creating new). Called
- * once per mount via useState initializer; that's sufficient because the
- * parent re-keys on edit-target change, remounting fresh.
- */
-function initialSplitState(
+function initFormState(
   editTarget: Expense | null,
+  defaultDate: string,
   members: TripMember[],
-): { mode: SplitMode; included: Set<string>; custom: Record<string, string> } {
-  if (!editTarget) {
-    return {
-      mode:     'equal',
-      included: new Set(members.map(m => m.id)),
-      custom:   {},
-    }
-  }
-  const nonZero = editTarget.splits.filter(s => s.amount > 0)
-  const first = nonZero[0]
-  const allEqual =
-    first !== undefined &&
-    nonZero.every(s => Math.abs(s.amount - first.amount) <= 1)
-
-  if (allEqual) {
-    return {
-      mode:     'equal',
-      included: new Set(nonZero.map(s => s.memberId)),
-      custom:   {},
-    }
-  }
-  const custom: Record<string, string> = {}
-  editTarget.splits.forEach(s => { custom[s.memberId] = String(s.amount) })
+): FormState {
   return {
-    mode:     'custom',
-    included: new Set(members.map(m => m.id)),
-    custom,
+    title:    editTarget?.title ?? '',
+    amount:   editTarget ? String(editTarget.amount) : '',
+    date:     editTarget?.date ?? defaultDate,
+    category: editTarget?.category ?? 'food',
+    paidBy:   editTarget?.paidBy ?? members[0]?.id ?? '',
+    note:     editTarget?.note ?? '',
   }
 }
 
 export default function ExpenseFormModal({
   editTarget, defaultDate, members, isOpen, isSaving, onClose, onSave,
 }: Props) {
-  const [title,    setTitle]    = useState(editTarget?.title ?? '')
-  const [amount,   setAmount]   = useState(editTarget ? String(editTarget.amount) : '')
-  const [date,     setDate]     = useState(editTarget?.date ?? defaultDate)
-  const [category, setCategory] = useState<ExpenseCategory>(editTarget?.category ?? 'food')
-  const [paidBy,   setPaidBy]   = useState<string>(editTarget?.paidBy ?? members[0]?.id ?? '')
-  const [note,     setNote]     = useState(editTarget?.note ?? '')
-
-  // Single compute per mount, split into three setters. Parent re-keys on
-  // editTarget change so this runs exactly once per edit session.
-  const [splitInit] = useState(() => initialSplitState(editTarget, members))
-  const [splitMode,    setSplitMode]    = useState<SplitMode>(splitInit.mode)
-  const [includedIds,  setIncludedIds]  = useState<Set<string>>(splitInit.included)
-  const [customSplits, setCustomSplits] = useState<Record<string, string>>(splitInit.custom)
-  const [errors,       setErrors]       = useState<Record<string, string>>({})
+  const { state, setField } = useFormReducer<FormState>(
+    () => initFormState(editTarget, defaultDate, members),
+  )
+  const splits = useSplitsState(editTarget, members)
+  const [errors, setErrors] = useState<Record<string, string>>({})
 
   const titleRef = useRef<HTMLInputElement>(null)
-
   useAutoFocus(titleRef, isOpen)
 
   // Amounts are integer minor units (JPY=yen). Round at the boundary so
   // downstream math (splits, settlement) stays integer-exact regardless of
   // any fractional input the user types.
-  const amountNum = Math.round(Number(amount) || 0)
-  const includedArr = members.map(m => m.id).filter(id => includedIds.has(id))
+  const amountNum = Math.round(Number(state.amount) || 0)
+  const includedArr = members.map(m => m.id).filter(id => splits.state.included.has(id))
   const equalSplits: Record<string, number> = Object.fromEntries(
     splitEqually(amountNum, includedArr).map(s => [s.memberId, s.amount]),
   )
 
   function customAmountOf(id: string): number {
-    const v = Number(customSplits[id])
+    const v = Number(splits.state.custom[id])
     return Number.isFinite(v) && v > 0 ? v : 0
   }
   const customSum  = members.reduce((s, m) => s + customAmountOf(m.id), 0)
   const customDiff = amountNum - customSum
 
-  function toggleIncluded(id: string) {
-    setIncludedIds(prev => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id); else next.add(id)
-      return next
-    })
-  }
-
   function switchMode(mode: SplitMode) {
-    if (mode === splitMode) return
-    if (mode === 'custom') {
-      // 從均等切到自訂 — 以目前均等結果作為起點
-      const seed: Record<string, string> = {}
-      members.forEach(m => {
-        const v = equalSplits[m.id] ?? 0
-        seed[m.id] = v > 0 ? String(v) : ''
-      })
-      setCustomSplits(seed)
-    }
-    setSplitMode(mode)
+    // When entering custom, seed from the current equal-split result so
+    // the user has a sensible starting distribution to tweak.
+    const seed: Record<string, string> = {}
+    members.forEach(m => {
+      const v = equalSplits[m.id] ?? 0
+      seed[m.id] = v > 0 ? String(v) : ''
+    })
+    splits.switchMode(mode, seed)
   }
 
   function validate(): CreateExpenseInput | null {
     const e: Record<string, string> = {}
-    if (!title.trim())   e.title = '請輸入標題'
-    if (!amountNum)      e.amount = '請輸入金額'
-    if (!date)           e.date = '請選擇日期'
-    if (!paidBy)         e.paidBy = '請選擇付款人'
+    if (!state.title.trim()) e.title = '請輸入標題'
+    if (!amountNum)          e.amount = '請輸入金額'
+    if (!state.date)         e.date = '請選擇日期'
+    if (!state.paidBy)       e.paidBy = '請選擇付款人'
 
-    let splits: { memberId: string; amount: number }[] = []
-    if (splitMode === 'equal') {
+    let resultSplits: { memberId: string; amount: number }[] = []
+    if (splits.state.mode === 'equal') {
       if (includedArr.length === 0) e.splits = '至少選擇一位分攤人'
-      splits = includedArr.map(id => ({ memberId: id, amount: equalSplits[id] ?? 0 }))
+      resultSplits = includedArr.map(id => ({ memberId: id, amount: equalSplits[id] ?? 0 }))
     } else {
-      splits = members
+      resultSplits = members
         .map(m => ({ memberId: m.id, amount: customAmountOf(m.id) }))
         .filter(s => s.amount > 0)
-      if (splits.length === 0) e.splits = '至少需有一人分攤'
+      if (resultSplits.length === 0) e.splits = '至少需有一人分攤'
       else if (Math.abs(customDiff) >= 0.01) e.splits = `分攤總和需等於 ¥${amountNum.toLocaleString()}`
     }
 
@@ -158,14 +124,14 @@ export default function ExpenseFormModal({
     if (Object.keys(e).length > 0) return null
 
     return {
-      title: title.trim(),
-      amount: amountNum,
+      title:    state.title.trim(),
+      amount:   amountNum,
       currency: 'JPY',
-      category,
-      paidBy,
-      splits,
-      date,
-      note: note.trim() || undefined,
+      category: state.category,
+      paidBy:   state.paidBy,
+      splits:   resultSplits,
+      date:     state.date,
+      note:     state.note.trim() || undefined,
     }
   }
 
@@ -175,23 +141,19 @@ export default function ExpenseFormModal({
   }
 
   return (
-    <BottomSheet
+    <FormModalShell
       isOpen={isOpen}
-      onClose={onClose}
+      isSaving={isSaving}
       title={editTarget ? '費用を編集' : '費用を追加'}
-      footer={
-        <SaveButton
-          onClick={handleSave}
-          isSaving={isSaving}
-          label={editTarget ? '変更を保存' : '費用を追加'}
-        />
-      }
+      saveLabel={editTarget ? '変更を保存' : '費用を追加'}
+      onClose={onClose}
+      onSave={handleSave}
     >
       <FormField label="タイトル" error={errors.title} required>
         <input
           ref={titleRef}
-          value={title}
-          onChange={e => setTitle(e.target.value)}
+          value={state.title}
+          onChange={e => setField('title', e.target.value)}
           placeholder="例：壽司大 築地"
           className={inputClass(!!errors.title)}
         />
@@ -200,12 +162,12 @@ export default function ExpenseFormModal({
       <FormField label="カテゴリ">
         <div className="flex gap-[7px] flex-wrap">
           {CATEGORIES.map(c => {
-            const active = category === c.value
+            const active = state.category === c.value
             return (
               <button
                 key={c.value}
                 type="button"
-                onClick={() => setCategory(c.value)}
+                onClick={() => setField('category', c.value)}
                 className={[
                   'flex items-center gap-[5px] px-3 py-1.5 rounded-card text-[12px] cursor-pointer transition-all border-[1.5px]',
                   active
@@ -227,8 +189,8 @@ export default function ExpenseFormModal({
             <input
               type="number"
               inputMode="numeric"
-              value={amount}
-              onChange={e => setAmount(e.target.value)}
+              value={state.amount}
+              onChange={e => setField('amount', e.target.value)}
               placeholder="0"
               min={0}
               className={`${inputClass(!!errors.amount)} pl-7`}
@@ -236,19 +198,19 @@ export default function ExpenseFormModal({
           </div>
         </FormField>
         <FormField label="日付" error={errors.date} required className="flex-1">
-          <DatePicker value={date} onChange={setDate} error={!!errors.date} />
+          <DatePicker value={state.date} onChange={v => setField('date', v)} error={!!errors.date} />
         </FormField>
       </div>
 
       <FormField label="立替えた人" error={errors.paidBy} required>
         <div className="flex gap-[7px] flex-wrap">
           {members.map(m => {
-            const active = paidBy === m.id
+            const active = state.paidBy === m.id
             return (
               <button
                 key={m.id}
                 type="button"
-                onClick={() => setPaidBy(m.id)}
+                onClick={() => setField('paidBy', m.id)}
                 className={[
                   'flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-card text-[12px] cursor-pointer transition-all border-[1.5px]',
                   active
@@ -277,7 +239,7 @@ export default function ExpenseFormModal({
               { value: 'equal',  label: '均等' },
               { value: 'custom', label: 'カスタム' },
             ] as const).map(m => {
-              const active = splitMode === m.value
+              const active = splits.state.mode === m.value
               return (
                 <button
                   key={m.value}
@@ -297,8 +259,10 @@ export default function ExpenseFormModal({
           {/* 每位成員 row */}
           <div className="flex flex-col gap-1.5">
             {members.map(m => {
-              const included = splitMode === 'equal' ? includedIds.has(m.id) : customAmountOf(m.id) > 0
-              const displayAmount = splitMode === 'equal'
+              const included = splits.state.mode === 'equal'
+                ? splits.state.included.has(m.id)
+                : customAmountOf(m.id) > 0
+              const displayAmount = splits.state.mode === 'equal'
                 ? (equalSplits[m.id] ?? 0)
                 : customAmountOf(m.id)
 
@@ -318,7 +282,7 @@ export default function ExpenseFormModal({
                   </span>
                   <span className="flex-1 text-[13px] text-ink font-medium">{m.label}</span>
 
-                  {splitMode === 'equal' ? (
+                  {splits.state.mode === 'equal' ? (
                     <>
                       <span className="text-[13px] font-semibold text-ink tabular-nums">
                         {included ? `¥${displayAmount.toLocaleString()}` : '—'}
@@ -326,7 +290,7 @@ export default function ExpenseFormModal({
                       <input
                         type="checkbox"
                         checked={included}
-                        onChange={() => toggleIncluded(m.id)}
+                        onChange={() => splits.toggleIncluded(m.id)}
                         className="w-4 h-4 accent-accent cursor-pointer"
                       />
                     </>
@@ -337,8 +301,8 @@ export default function ExpenseFormModal({
                         type="number"
                         inputMode="numeric"
                         min={0}
-                        value={customSplits[m.id] ?? ''}
-                        onChange={e => setCustomSplits(prev => ({ ...prev, [m.id]: e.target.value }))}
+                        value={splits.state.custom[m.id] ?? ''}
+                        onChange={e => splits.setCustom(m.id, e.target.value)}
                         placeholder="0"
                         className="w-full h-9 pl-6 pr-2 rounded-[8px] border-[1.5px] border-border bg-app text-[16px] text-ink text-right tabular-nums outline-none focus-visible:border-accent"
                       />
@@ -350,7 +314,7 @@ export default function ExpenseFormModal({
           </div>
 
           {/* 自訂模式：差額指示 */}
-          {splitMode === 'custom' && amountNum > 0 && (
+          {splits.state.mode === 'custom' && amountNum > 0 && (
             <div
               className={[
                 'flex justify-between items-center px-2.5 py-1.5 rounded-input text-[11.5px] font-semibold tabular-nums',
@@ -375,14 +339,14 @@ export default function ExpenseFormModal({
 
       <FormField label="メモ">
         <textarea
-          value={note}
-          onChange={e => setNote(e.target.value)}
+          value={state.note}
+          onChange={e => setField('note', e.target.value)}
           placeholder="備考など"
           rows={2}
           className={`${inputClass(false)} resize-none leading-[1.6] py-2.5 h-auto`}
         />
       </FormField>
 
-    </BottomSheet>
+    </FormModalShell>
   )
 }

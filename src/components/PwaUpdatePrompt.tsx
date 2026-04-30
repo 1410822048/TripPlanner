@@ -8,6 +8,7 @@
 // that mode the SW auto-updates silently and this prompt never fires.
 import { RefreshCw, X } from 'lucide-react'
 import { useRegisterSW } from 'virtual:pwa-register/react'
+import { captureError } from '@/services/sentry'
 
 export default function PwaUpdatePrompt() {
   const {
@@ -17,7 +18,10 @@ export default function PwaUpdatePrompt() {
     onRegisterError(error) {
       // Non-fatal: if SW registration fails (first visit without SW support,
       // dev mode quirks), the app still works — we just lose PWA features.
-      console.error('[PWA] SW registration failed:', error)
+      // Forward to Sentry so unexpected SW failures (e.g. CSP regressions
+      // breaking Workbox) surface in monitoring instead of silent loss
+      // of the offline experience.
+      captureError(error, { source: 'pwa-sw-register' })
     },
   })
 

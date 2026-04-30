@@ -3,38 +3,58 @@
 //   - StackedEmojiPreview: 3 overlapping emoji tiles (for the lodging card).
 //   - StackedAvatarPreview: overlapping member avatars (+N overflow chip).
 // Both are purely visual; no click handlers of their own.
-import type { TripMember } from '@/features/schedule/types'
+//
+// iOS Safari note: an earlier version used `absolute inset-0` inside an
+// `h-full` container. iOS resolves `h-full` to 0 inside `flex-1 min-h-0`
+// grandchildren, which collapsed the stack into the top-left corner. The
+// rewrite below avoids `absolute` entirely and uses pure flex flow:
+//   - Each tile is a normal flex item (width counts toward layout).
+//   - Subsequent tiles overlap the first via `marginLeft: -56px` (a full
+//     tile width), so they share the same flex position.
+//   - Per-tile `transform` adds the small rotation + offset that gives
+//     the photo-pile look without affecting layout.
+//   - Outer wrapper has `minHeight` so even if `height: 100%` resolves to 0
+//     (iOS quirk in deep flex chains) the centring still has room to work.
+import type { TripMember } from '@/features/trips/types'
 
-/**
- * Three-layer stacked emoji tiles — reminiscent of a photo pile. Uses
- * rotation + offset to build a depth effect without real imagery. Caller
- * provides up to 3 emoji; extras are ignored, shorter arrays render fewer
- * tiles. Order: index 0 sits on top.
- */
+interface EmojiSlot {
+  emoji:  string
+  rotate: number          // degrees
+  tx:     number          // px — offset from the stacked centre
+  ty:     number          // px
+  z:      number
+}
+
 export function StackedEmojiPreview({ emojis }: { emojis: readonly string[] }) {
-  const slots: Array<{ emoji: string; rotate: string; translate: string; z: number }> = []
-  if (emojis[2]) slots.push({ emoji: emojis[2], rotate: 'rotate-[7deg]',  translate: 'translate-x-3.5 translate-y-1.5', z: 1 })
-  if (emojis[1]) slots.push({ emoji: emojis[1], rotate: '-rotate-[4deg]', translate: 'translate-x-1.5 -translate-y-0.5', z: 2 })
-  if (emojis[0]) slots.push({ emoji: emojis[0], rotate: 'rotate-[2deg]',  translate: '-translate-x-1 translate-y-0.5',  z: 3 })
+  const tiles: EmojiSlot[] = []
+  // Order matters: first item in array sits leftmost in flex flow; later
+  // items pile on top via -56px margin. zIndex decides visual layer.
+  if (emojis[2]) tiles.push({ emoji: emojis[2], rotate:  7, tx:  14, ty:  6, z: 1 })
+  if (emojis[1]) tiles.push({ emoji: emojis[1], rotate: -4, tx:   6, ty: -2, z: 2 })
+  if (emojis[0]) tiles.push({ emoji: emojis[0], rotate:  2, tx:  -4, ty:  2, z: 3 })
 
   return (
-    <div className="relative h-full">
-      {slots.map((s, i) => (
-        <div
-          key={i}
-          className={[
-            'absolute inset-0 flex items-center justify-center',
-            'transform transition-transform',
-            s.rotate,
-            s.translate,
-          ].join(' ')}
-          style={{ zIndex: s.z }}
-        >
-          <div className="w-14 h-14 rounded-2xl bg-tile flex items-center justify-center text-[26px] shadow-[0_2px_8px_rgba(0,0,0,0.1)] border border-black/5">
-            {s.emoji}
+    <div
+      className="flex items-center justify-center"
+      style={{ height: '100%', minHeight: '72px' }}
+    >
+      <div className="flex">
+        {tiles.map((t, i) => (
+          <div
+            key={i}
+            className="w-14 h-14 rounded-2xl bg-tile flex items-center justify-center text-[24px] leading-none shadow-[0_2px_8px_rgba(0,0,0,0.1)] border border-black/5"
+            style={{
+              // -56px = a full tile width; subsequent tiles pile completely
+              // on top of the first, so all three share the same flex slot.
+              marginLeft: i === 0 ? 0 : '-56px',
+              zIndex:     t.z,
+              transform:  `translate(${t.tx}px, ${t.ty}px) rotate(${t.rotate}deg)`,
+            }}
+          >
+            {t.emoji}
           </div>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   )
 }
@@ -72,8 +92,13 @@ export function StackedAvatarPreview({ chips, extra }: { chips: TripMember[]; ex
       </div>,
     )
   }
+  // Same `height: 100% + minHeight` fallback as the emoji preview — keeps
+  // vertical centring working even when iOS computes the chain's h-full as 0.
   return (
-    <div className="h-full flex items-center justify-center">
+    <div
+      className="flex items-center justify-center"
+      style={{ height: '100%', minHeight: '60px' }}
+    >
       <div className="flex">{nodes}</div>
     </div>
   )

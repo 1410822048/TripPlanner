@@ -2,7 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- Favicons: SVG first (modern browsers; scales crisp at any DPI),
+         PNG fallbacks for older browsers + RSS readers + crawlers that
+         haven't picked up SVG support yet. 32px tab-bar pin, 16px legacy. -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <!-- 強制 light mode：禁止瀏覽器根據系統深色偏好反轉顏色 -->
     <meta name="color-scheme" content="light" />
@@ -15,7 +20,7 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="TripMate" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <title>TripMate</title>
   </head>
   <body>

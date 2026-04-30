@@ -5,6 +5,7 @@
 // standalone route via the `fallback` prop so a crash inside e.g.
 // SocialCirclePage shows a recoverable screen instead of a white app.
 import { Component, type ReactNode, type ErrorInfo } from 'react'
+import { captureError } from '@/services/sentry'
 
 type Fallback =
   | ReactNode
@@ -28,8 +29,11 @@ export default class ErrorBoundary extends Component<Props, State> {
   static getDerivedStateFromError(error: Error): State { return { error } }
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
-    // Keep stack visible in dev; a real deploy would forward to Sentry etc.
+    // Stack still goes to console in dev; captureError forwards to Sentry
+    // in prod (no-op when DSN unset). componentStack helps identify which
+    // tree the throw came from on minified bundles.
     console.error('[ErrorBoundary]', error, info.componentStack)
+    captureError(error, { componentStack: info.componentStack })
   }
 
   reset = () => this.setState({ error: null })

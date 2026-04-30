@@ -6,17 +6,23 @@
 import type { FirebaseApp } from 'firebase/app'
 import type { Firestore } from 'firebase/firestore'
 import type { Auth } from 'firebase/auth'
+import type { FirebaseStorage } from 'firebase/storage'
 import type * as firestoreModule from 'firebase/firestore'
 import type * as authModule from 'firebase/auth'
+import type * as storageModule from 'firebase/storage'
 
 export type FirestoreModule = typeof firestoreModule
 export type AuthModule      = typeof authModule
+export type StorageModule   = typeof storageModule
 
 export interface FirebaseBundle extends FirestoreModule {
   db: Firestore
 }
 export interface AuthBundle extends AuthModule {
   auth: Auth
+}
+export interface StorageBundle extends StorageModule {
+  storage: FirebaseStorage
 }
 
 // Fail-fast in production builds when required Firebase env vars are missing.
@@ -84,6 +90,9 @@ export function getFirebase(): Promise<FirebaseBundle> {
     // `ignoreUndefinedProperties` lets optional form fields pass through as
     // `undefined` without triggering "Unsupported field value: undefined".
     // Second call on HMR throws; swallow and fall through to the existing instance.
+    // Targets the auto-created `(default)` database (no third arg). The
+    // default DB is required so Cloud Storage rules can use cross-service
+    // firestore.exists() — that feature only supports `(default)`.
     try {
       fs.initializeFirestore(app, {
         ignoreUndefinedProperties: true,
@@ -111,4 +120,22 @@ export function getFirebaseAuth(): Promise<AuthBundle> {
     return { auth: authMod.getAuth(app), ...authMod }
   })()
   return authBundlePromise
+}
+
+let storageBundlePromise: Promise<StorageBundle> | null = null
+
+/**
+ * Lazy-load + initialize the Storage bundle. Pulled separately from
+ * Firestore + Auth so pages that never touch attachments (Schedule,
+ * Expense pre-receipt-upload, etc.) don't ship the ~25KB gz of Storage
+ * code. Bookings is the primary consumer; Journal will join later when
+ * image uploads ship.
+ */
+export function getFirebaseStorage(): Promise<StorageBundle> {
+  if (storageBundlePromise) return storageBundlePromise
+  storageBundlePromise = (async () => {
+    const [app, storageMod] = await Promise.all([getApp(), import('firebase/storage')])
+    return { storage: storageMod.getStorage(app), ...storageMod }
+  })()
+  return storageBundlePromise
 }

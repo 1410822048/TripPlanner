@@ -1,0 +1,54 @@
+# Minimal CI: every push to any branch + every PR runs the four checks
+# the pre-commit hook can't (or shouldn't) run on the developer's machine —
+# typecheck, full test suite, full build. Lint is duplicated from
+# pre-commit so PRs from contributors without our husky setup still
+# get checked.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `--legacy-peer-deps` because vite-plugin-pwa hasn't published a
+      # version that pins to vite@8 yet; the resolution still works at
+      # runtime. Drop the flag once the upstream peer range is updated.
+      - name: Install
+        run: npm ci --legacy-peer-deps
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+        env:
+          # The Firebase config is read from import.meta.env at build time.
+          # CI doesn't deploy, so feed it placeholders that satisfy
+          # firebase.ts:33 fail-fast validation. Real values are set per
+          # environment in the deploy pipeline.
+          VITE_FIREBASE_API_KEY: ci-placeholder
+          VITE_FIREBASE_AUTH_DOMAIN: ci.example.com
+          VITE_FIREBASE_PROJECT_ID: ci-placeholder
+          VITE_FIREBASE_STORAGE_BUCKET: ci-placeholder.appspot.com
+          VITE_FIREBASE_MESSAGING_SENDER_ID: '0'
+          VITE_FIREBASE_APP_ID: '0:ci'

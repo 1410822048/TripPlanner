@@ -1,8 +1,9 @@
 // src/routes/index.tsx
-// Core routes (Schedule, Expense) are eager — they're on the initial-render
-// path and prefetch races caused first-click delay in testing. The four
-// placeholder / tab pages (Bookings / Journal / Planning / Account) stay
-// lazy and share the single Suspense fallback that lives inside AppLayout.
+// SchedulePage is the only eager-loaded tab — it's the start_url and the
+// landing page after sign-in, so loading it on demand would always cost
+// the user a Suspense flash on first paint. Every other tab (Expense,
+// Bookings, Wish, Planning, Account) is lazy; each is a separate chunk
+// fetched on first navigation and shares the Suspense fallback in AppLayout.
 // The three standalone top-level routes (invite / past-lodging / social-
 // circle) are eager: they're small (<5KB gz each) and eager-loading lets us
 // drop the Suspense + fallback wrappers that would otherwise be triplicated
@@ -19,11 +20,10 @@ import AppLayout from '@/layouts/AppLayout'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import RouteErrorFallback from './RouteErrorFallback'
 import SchedulePage from '@/features/schedule/components/SchedulePage'
-import ExpensePage  from '@/features/expense/components/ExpensePage'
-import InvitePage       from '@/features/schedule/components/InvitePage'
+import InvitePage       from '@/features/trips/invites/InvitePage'
 import PastLodgingPage  from '@/features/bookings/components/PastLodgingPage'
 import SocialCirclePage from '@/features/members/components/SocialCirclePage'
-import { BookingsPage, JournalPage, PlanningPage, AccountPage } from './pages'
+import { ExpensePage, BookingsPage, WishPage, PlanningPage, AccountPage } from './pages'
 
 function withBoundary(node: ReactNode): ReactNode {
   return (
@@ -42,7 +42,7 @@ export const router = createBrowserRouter([
       { path: 'schedule', element: <SchedulePage /> },
       { path: 'expense',  element: <ExpensePage  /> },
       { path: 'bookings', element: <BookingsPage /> },
-      { path: 'journal',  element: <JournalPage  /> },
+      { path: 'wish',     element: <WishPage     /> },
       { path: 'planning', element: <PlanningPage /> },
       { path: 'account',  element: <AccountPage  /> },
     ],

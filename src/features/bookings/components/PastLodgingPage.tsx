@@ -10,27 +10,15 @@
 // Route is top-level (outside AppLayout) so the page feels like a drill-
 // down — no bottom nav distractions. Back arrow uses navigate(-1) to return
 // to the previous route the user came from (/account in practice).
-import { useQueries } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { useUid } from '@/hooks/useAuth'
-import { useMyTrips } from '@/features/schedule/hooks/useTrips'
-import { getHotelBookingsByTrip } from '../services/bookingService'
+import { getMyHotelBookings } from '../services/bookingService'
 import LoadingText from '@/components/ui/LoadingText'
 import type { Booking } from '@/types'
 
-const bookingKeys = {
-  hotelByTrip: (tripId: string) => ['bookings', 'hotel', tripId] as const,
-}
-
-/** Milliseconds for ordering — use checkIn when available, fall back to createdAt. */
-function bookingSortKey(b: Booking): number {
-  if (b.checkIn) {
-    const ms = new Date(b.checkIn).getTime()
-    if (!Number.isNaN(ms)) return ms
-  }
-  return b.createdAt.toMillis()
-}
+const myHotelKey = (uid: string) => ['bookings', 'my-hotels', uid] as const
 
 function bookingYear(b: Booking): number {
   if (b.checkIn) {
@@ -58,23 +46,16 @@ function formatRange(checkIn?: string, checkOut?: string): string {
 export default function PastLodgingPage() {
   const navigate = useNavigate()
   const uid = useUid()
-  const { data: trips, isPending: tripsPending } = useMyTrips(uid)
 
-  // Fan out per-trip queries. Each shares cache with other callers if any;
-  // currently this is the sole call site, so it effectively owns the cache.
-  const results = useQueries({
-    queries: (trips ?? []).map(t => ({
-      queryKey: bookingKeys.hotelByTrip(t.id),
-      queryFn:  () => getHotelBookingsByTrip(t.id),
-      enabled:  !!trips,
-    })),
+  // Single collection-group query replaces the previous per-trip fan-out.
+  // Server-side orderBy('sortDate', 'desc') means we don't need a client
+  // sort; the rule + index pair guarantees only the user's own bookings
+  // come back via `where('memberIds', 'array-contains', uid)`.
+  const { data: bookings = [], isPending: anyLoading } = useQuery({
+    queryKey: myHotelKey(uid ?? ''),
+    queryFn:  () => getMyHotelBookings(uid!),
+    enabled:  !!uid,
   })
-
-  const anyLoading = tripsPending || results.some(r => r.isPending && r.fetchStatus !== 'idle')
-
-  const bookings: Booking[] = results
-    .flatMap(r => r.data ?? [])
-    .sort((a, b) => bookingSortKey(b) - bookingSortKey(a))
 
   return (
     <div className="fixed inset-0 max-w-[430px] mx-auto bg-app flex flex-col overflow-y-auto">
@@ -143,7 +124,7 @@ function BookingRow({ booking }: { booking: Booking }) {
       </div>
       <div className="flex-1 min-w-0">
         <div className="text-[14px] font-bold text-ink truncate">
-          {booking.title}
+          {booking.title ?? '宿泊'}
         </div>
         {range && (
           <div className="text-[11px] text-muted mt-0.5 truncate">

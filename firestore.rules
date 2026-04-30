@@ -44,6 +44,22 @@ service cloud.firestore {
       return /databases/$(database)/documents/trips/$(tripId)/invites/$(token);
     }
 
+    // ─── Immutable-fields guards ──────────────────────────────────
+    // Each entity's update rule should explicitly preserve identity /
+    // ownership / creation-audit fields so a malicious (or buggy) client
+    // can't tamper with them via a doctored updateDoc payload. Without
+    // these guards, any field not specifically required by the rule is
+    // free to mutate — a member could re-assign `proposedBy` to themselves,
+    // overwrite `createdAt` to game sort order, or change `tripId` to
+    // orphan the doc into a different trip's path.
+    //
+    // `unchanged(field)` returns true iff the field has the same value
+    // on the incoming write as on the existing doc. Using bracket access
+    // so a single helper covers every field name.
+    function unchanged(field) {
+      return request.resource.data[field] == resource.data[field];
+    }
+
     // Collection-group list gate for /members. Used by getMyTrips() to find
     // every trip the user belongs to (owner OR editor OR viewer). The rule
     // restricts results to the caller's own member docs; clients must query
@@ -54,6 +70,19 @@ service cloud.firestore {
     // get/create/update/delete on individual member docs.
     match /{path=**}/members/{memberId} {
       allow list: if isSignedIn() && resource.data.userId == uid();
+    }
+
+    // Collection-group list gate for /bookings. Used by getMyHotelBookings()
+    // (PastLodgingPage) to fetch every hotel booking across every trip the
+    // user belongs to in one query, replacing the old N-trip fan-out.
+    //
+    // The rule mirrors the members pattern: clients MUST filter by
+    // `where('memberIds', 'array-contains', uid)` or Firestore rejects.
+    // The denormalised memberIds array is synced by inviteService (on
+    // accept) and memberService (on remove). Per-trip get/create/update/
+    // delete still go through the path-scoped rule below.
+    match /{path=**}/bookings/{bookingId} {
+      allow list: if isSignedIn() && uid() in resource.data.memberIds;
     }
 
     match /trips/{tripId} {
@@ -68,9 +97,12 @@ service cloud.firestore {
                     && request.resource.data.ownerId == uid()
                     && request.resource.data.title is string
                     && request.resource.data.title.size() > 0;
-      // Owner can edit trip metadata but cannot transfer ownership via update.
+      // Owner can edit trip metadata. ownerId + createdAt are pinned so
+      // ownership transfer / creation-time forgery aren't possible via a
+      // doctored update payload.
       allow update: if isTripOwner(tripId)
-                    && request.resource.data.ownerId == resource.data.ownerId;
+                    && unchanged('ownerId')
+                    && unchanged('createdAt');
       allow delete: if isTripOwner(tripId);
 
       match /members/{memberId} {
@@ -97,8 +129,13 @@ service cloud.firestore {
               && get(invitePath(tripId, request.resource.data.inviteToken)).data.expiresAt > request.time)
         );
         // Owner edits roles / removes members. Members cannot modify their own
-        // role to self-escalate.
-        allow update, delete: if isTripOwner(tripId);
+        // role to self-escalate. Identity fields (userId / tripId) and
+        // joinedAt are pinned so the audit trail can't be rewritten.
+        allow update: if isTripOwner(tripId)
+                      && unchanged('userId')
+                      && unchanged('tripId')
+                      && unchanged('joinedAt');
+        allow delete: if isTripOwner(tripId);
       }
 
       match /invites/{token} {
@@ -131,7 +168,11 @@ service cloud.firestore {
         allow create: if canWrite(tripId)
                       && request.resource.data.tripId == tripId
                       && request.resource.data.createdBy == uid();
-        allow update, delete: if canWrite(tripId);
+        allow update: if canWrite(tripId)
+                      && unchanged('tripId')
+                      && unchanged('createdBy')
+                      && unchanged('createdAt');
+        allow delete: if canWrite(tripId);
       }
 
       match /expenses/{expenseId} {
@@ -139,23 +180,102 @@ service cloud.firestore {
         allow create: if canWrite(tripId)
                       && request.resource.data.tripId == tripId
                       && request.resource.data.createdBy == uid();
-        allow update, delete: if canWrite(tripId);
+        allow update: if canWrite(tripId)
+                      && unchanged('tripId')
+                      && unchanged('createdBy')
+                      && unchanged('createdAt');
+        allow delete: if canWrite(tripId);
       }
 
-      match /journals/{journalId} {
+      match /wishes/{wishId} {
         allow read:   if isMember(tripId);
-        // Journal entries are authored (not co-edited): only the author
-        // can edit/delete their own post.
-        allow create: if canWrite(tripId)
+        // Create open to ANY member (including viewer) — wishes are a
+        // collaborative wishlist, everyone on the trip should be able
+        // to suggest places / food / activities. proposedBy must match
+        // the caller (no spoofing). Initial votes must include exactly
+        // the proposer (matches wishService — proposing counts as
+        // voting).
+        allow create: if isMember(tripId)
                       && request.resource.data.tripId == tripId
-                      && request.resource.data.authorId == uid();
-        allow update, delete: if canWrite(tripId)
-                              && resource.data.authorId == uid();
+                      && request.resource.data.proposedBy == uid()
+                      && request.resource.data.votes == [uid()];
+        // Two update paths:
+        //   1. Proposer edits any field (title/category/etc.)
+        //   2. Any member toggles their own uid in the votes array. The
+        //      diff predicate locks "votes-only change" + size delta of
+        //      exactly ±1 + the changed entry is the caller's uid. This
+        //      prevents a malicious member from clearing or hijacking
+        //      others' votes.
+        allow update: if isMember(tripId) && (
+          // 1. Proposer path: edit any field EXCEPT ownership / identity.
+          //    Without these guards a proposer could re-assign proposedBy
+          //    to themselves on someone else's wish in a race window, or
+          //    forge createdAt to game any future sort.
+          (
+            resource.data.proposedBy == uid()
+            && unchanged('tripId')
+            && unchanged('proposedBy')
+            && unchanged('createdAt')
+          )
+          ||
+          // 2. Voter path: any member toggles only their own uid in
+          //    `votes`. The diff predicate already locks every other
+          //    field — that includes proposedBy / tripId / createdAt,
+          //    so no extra guards needed here.
+          (
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['votes', 'updatedAt'])
+            && (
+              (request.resource.data.votes.size() == resource.data.votes.size() + 1
+                && uid() in request.resource.data.votes
+                && !(uid() in resource.data.votes))
+              ||
+              (request.resource.data.votes.size() == resource.data.votes.size() - 1
+                && !(uid() in request.resource.data.votes)
+                && uid() in resource.data.votes)
+            )
+          )
+        );
+        // Two deletion paths:
+        //   1. Proposer cleans up their own wish.
+        //   2. Trip owner moderates — can remove any wish (e.g. spam,
+        //      duplicates, wrong-trip mistakes). Owner already has the
+        //      power to delete the entire trip; per-wish moderation is
+        //      a strict subset of that authority.
+        allow delete: if isMember(tripId)
+                      && (resource.data.proposedBy == uid() || isTripOwner(tripId));
       }
 
       match /bookings/{bookingId} {
         allow read:   if isMember(tripId);
-        allow create, update, delete: if canWrite(tripId);
+        allow create: if canWrite(tripId);
+        // tripId / createdAt locked. memberIds isn't locked because
+        // member-add/remove triggers a denormalised batch update on every
+        // booking under the trip — that's the legitimate write path; the
+        // canWrite gate is enough since only editors/owners reach it.
+        allow update: if canWrite(tripId)
+                      && unchanged('tripId')
+                      && unchanged('createdAt');
+        allow delete: if canWrite(tripId);
+      }
+
+      // Planning checklist — collaborative pre-trip prep. Any member
+      // can add / edit / toggle / delete; the list is inherently shared
+      // (one person packs the charger, another marks "currency
+      // exchanged"). createdBy is pinned to the caller so audit trail
+      // stays honest.
+      match /planning/{itemId} {
+        allow read:   if isMember(tripId);
+        allow create: if isMember(tripId)
+                      && request.resource.data.tripId == tripId
+                      && request.resource.data.createdBy == uid();
+        // Identity / audit fields locked. Anyone can toggle done /
+        // change title / re-categorise — but they can't pretend the
+        // item belongs to a different trip or rewrite the audit trail.
+        allow update: if isMember(tripId)
+                      && unchanged('tripId')
+                      && unchanged('createdBy')
+                      && unchanged('createdAt');
+        allow delete: if isMember(tripId);
       }
     }
 

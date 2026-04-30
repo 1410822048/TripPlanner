@@ -53,9 +53,16 @@ export function initAuth(): Promise<void> {
   initPromise = (async () => {
     try {
       const { auth, onAuthStateChanged, getRedirectResult } = await getFirebaseAuth()
-      // Consume the redirect result when returning from signInWithRedirect.
-      // Non-fatal: onAuthStateChanged still fires for success.
-      getRedirectResult(auth).catch(() => { /* ignore */ })
+      // AWAIT the redirect result BEFORE wiring onAuthStateChanged. On a
+      // return from signInWithRedirect the URL carries the OAuth response;
+      // getRedirectResult consumes those params and completes the sign-in.
+      // If we register the observer first, its initial fire races the
+      // pending redirect — the observer emits signed-out, then later signed-
+      // in, and mobile users see a brief "still logged out" screen that
+      // needs another tap to resolve. Serialising them eliminates that
+      // flash: by the time the observer is registered, auth state is the
+      // real post-redirect value.
+      await getRedirectResult(auth).catch(() => { /* non-fatal — usually means no pending redirect */ })
       onAuthStateChanged(auth, u => {
         setGlobal(u ? { status: 'signed-in', user: u } : { status: 'signed-out' })
       })

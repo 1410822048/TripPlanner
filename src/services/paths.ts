@@ -26,8 +26,9 @@ export const TRIPS = 'trips'
 export const TRIP_SUBCOLLECTIONS = [
   'schedules',
   'expenses',
-  'journals',
+  'wishes',
   'bookings',
+  'planning',
   'invites',
   'members',
 ] as const
@@ -62,9 +63,13 @@ export const P = {
   expense:     (tripId: string, expenseId: string): ['trips', string, 'expenses', string] =>
     [TRIPS, tripId, 'expenses', expenseId],
 
-  journals:    (tripId: string): ['trips', string, 'journals']  => [TRIPS, tripId, 'journals'],
-  journal:     (tripId: string, journalId: string): ['trips', string, 'journals', string] =>
-    [TRIPS, tripId, 'journals', journalId],
+  wishes:      (tripId: string): ['trips', string, 'wishes']    => [TRIPS, tripId, 'wishes'],
+  wish:        (tripId: string, wishId: string): ['trips', string, 'wishes', string] =>
+    [TRIPS, tripId, 'wishes', wishId],
+
+  planning:    (tripId: string): ['trips', string, 'planning']  => [TRIPS, tripId, 'planning'],
+  planItem:    (tripId: string, itemId: string): ['trips', string, 'planning', string] =>
+    [TRIPS, tripId, 'planning', itemId],
 
   bookings:    (tripId: string): ['trips', string, 'bookings']  => [TRIPS, tripId, 'bookings'],
   booking:     (tripId: string, bookingId: string): ['trips', string, 'bookings', string] =>

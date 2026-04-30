@@ -11,6 +11,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:rules": "firebase emulators:exec --project=demo-tripmate-rules --only firestore,storage \"vitest run --config vitest.rules.config.ts\"",
+    "icons": "node scripts/generate-icons.mjs",
     "prepare": "husky"
   },
   "lint-staged": {
@@ -19,6 +21,7 @@
     ]
   },
   "dependencies": {
+    "@sentry/react": "^10.50.0",
     "@tanstack/react-query": "^5.99.2",
     "firebase": "^12.12.0",
     "lucide-react": "^1.8.0",
@@ -31,6 +34,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@firebase/rules-unit-testing": "^5.0.0",
     "@tailwindcss/vite": "^4.2.4",
     "@types/node": "^24.12.2",
     "@types/react": "^19.2.14",
@@ -41,7 +45,10 @@
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.5.0",
     "husky": "^9.1.7",
+    "jsdom": "^29.1.0",
     "lint-staged": "^16.4.0",
+    "rollup-plugin-visualizer": "^7.0.1",
+    "sharp": "^0.34.5",
     "tailwindcss": "^4.2.4",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.58.2",

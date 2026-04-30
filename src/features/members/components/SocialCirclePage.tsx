@@ -10,17 +10,15 @@
 //   4. Sort collaborators by # shared trips desc, then displayName.
 // Reads per visit: N getDocs where N = user's trip count. Typical <20;
 // cached across MembersModal / AccountPage / this page.
-import { useQueries } from '@tanstack/react-query'
+import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, ChevronRight } from 'lucide-react'
 import { useUid } from '@/hooks/useAuth'
-import { useMyTrips } from '@/features/schedule/hooks/useTrips'
-import { memberKeys } from '@/features/members/hooks/useMembers'
-import { getMembersByTrip } from '@/features/members/services/memberService'
+import { useAllTripMembers } from '@/features/members/hooks/useAllTripMembers'
 import { memberToTripMember } from '@/features/members/utils'
 import { useTripStore } from '@/store/tripStore'
 import LoadingText from '@/components/ui/LoadingText'
-import type { TripMember } from '@/features/schedule/types'
+import type { TripMember } from '@/features/trips/types'
 import type { Member, Trip } from '@/types'
 
 interface CollaboratorTrip {
@@ -50,55 +48,46 @@ export default function SocialCirclePage() {
   const navigate       = useNavigate()
   const uid            = useUid()
   const setCurrentTrip = useTripStore(s => s.setCurrentTrip)
-  const { data: trips, isPending: tripsPending } = useMyTrips(uid)
-
-  // Fan out per-trip member queries (same pattern + cache as AccountPage).
-  const memberResults = useQueries({
-    queries: (trips ?? []).map(t => ({
-      queryKey: memberKeys.all(t.id),
-      queryFn:  () => getMembersByTrip(t.id),
-      enabled:  !!trips,
-    })),
-  })
-
-  const anyMembersLoading = memberResults.some(r => r.isPending && r.fetchStatus !== 'idle')
-  const loading = tripsPending || anyMembersLoading
+  const { trips, memberResults, isLoading: loading } = useAllTripMembers(uid)
 
   // Aggregate collaborators across every trip. Key by userId so the same
-  // person appearing in multiple trips collapses into one row.
-  const byUser = new Map<string, Collaborator>()
-  ;(trips ?? []).forEach((trip, i) => {
-    const members = memberResults[i]?.data ?? []
-    for (const m of members) {
-      if (m.userId === uid) continue
-      let existing = byUser.get(m.userId)
-      if (!existing) {
-        existing = {
-          userId:      m.userId,
-          displayName: m.displayName,
-          avatarUrl:   m.avatarUrl,
-          chip:        memberToTripMember(m),
-          trips:       [],
+  // person appearing in multiple trips collapses into one row. Memoised
+  // on the upstream data so unrelated re-renders (navigation, focus
+  // changes) don't re-bucket O(trips × members).
+  const collaborators = useMemo(() => {
+    const byUser = new Map<string, Collaborator>()
+    ;(trips ?? []).forEach((trip, i) => {
+      const members = memberResults[i]?.data ?? []
+      for (const m of members) {
+        if (m.userId === uid) continue
+        let existing = byUser.get(m.userId)
+        if (!existing) {
+          existing = {
+            userId:      m.userId,
+            displayName: m.displayName,
+            avatarUrl:   m.avatarUrl,
+            chip:        memberToTripMember(m),
+            trips:       [],
+          }
+          byUser.set(m.userId, existing)
         }
-        byUser.set(m.userId, existing)
+        // Guard against accidental duplicate insertions if the member
+        // doc somehow appears twice — unlikely but defensive.
+        if (!existing.trips.some(t => t.tripId === trip.id)) {
+          existing.trips.push({
+            tripId:    trip.id,
+            tripTitle: trip.title,
+            tripIcon:  trip.icon ?? '✈️',
+            role:      m.role,
+          })
+        }
       }
-      // Guard against accidental duplicate insertions if the member doc
-      // somehow appears twice — unlikely but defensive.
-      if (!existing.trips.some(t => t.tripId === trip.id)) {
-        existing.trips.push({
-          tripId:    trip.id,
-          tripTitle: trip.title,
-          tripIcon:  trip.icon ?? '✈️',
-          role:      m.role,
-        })
-      }
-    }
-  })
-
-  const collaborators = Array.from(byUser.values()).sort((a, b) => {
-    if (b.trips.length !== a.trips.length) return b.trips.length - a.trips.length
-    return a.displayName.localeCompare(b.displayName)
-  })
+    })
+    return Array.from(byUser.values()).sort((a, b) => {
+      if (b.trips.length !== a.trips.length) return b.trips.length - a.trips.length
+      return a.displayName.localeCompare(b.displayName)
+    })
+  }, [trips, memberResults, uid])
 
   function openTrip(t: CollaboratorTrip) {
     // Resolve the full Trip object from the cached list so currentTrip in

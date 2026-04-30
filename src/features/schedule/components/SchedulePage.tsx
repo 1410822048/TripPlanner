@@ -1,27 +1,34 @@
 // src/features/schedule/components/SchedulePage.tsx
-import { useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 import { useSchedules, useCreateSchedule, useUpdateSchedule, useDeleteSchedule } from '../hooks/useSchedules'
-import { useDeleteTrip, useMyTrips, useUpdateTrip } from '../hooks/useTrips'
-import { useTripSelection } from '../hooks/useTripSelection'
+import { useDeleteTrip, useMyTrips, useUpdateTrip } from '@/features/trips/hooks/useTrips'
+import { useTripSelection } from '@/features/trips/hooks/useTripSelection'
 import { useMembers } from '@/features/members/hooks/useMembers'
 import { membersToTripMembers } from '@/features/members/utils'
 import { useTripStore } from '@/store/tripStore'
 import { useUid } from '@/hooks/useAuth'
 import type { CreateScheduleInput, CreateTripInput, Schedule, Trip } from '@/types'
-import type { MenuActionKey, TripItem } from '../types'
+import type { MenuActionKey, TripItem } from '@/features/trips/types'
 import { MOCK_SCHEDULES } from '../mocks'
 import { buildDateRange, groupByDate } from '../utils'
-import { toLocalDateString, fromLocalDateString } from '@/utils/dates'
+import { toLocalDateString } from '@/utils/dates'
 import { toast } from '@/shared/toast'
 import ScheduleFormModal from './ScheduleFormModal'
-import EditTripModal from './EditTripModal'
-import TripSwitcher from './TripSwitcher'
-import TripHeaderCard from './TripHeaderCard'
-import TimelineCard from './TimelineCard'
-import CreateTripModal from './CreateTripModal'
-import InviteModal from './InviteModal'
-import MembersModal from './MembersModal'
+import EditTripModal from '@/features/trips/components/EditTripModal'
+import TripSwitcher from '@/features/trips/components/TripSwitcher'
+import TripHeaderCard from '@/features/trips/components/TripHeaderCard'
+import DaySelector from './DaySelector'
+import DayTimeline from './DayTimeline'
+import CreateTripModal from '@/features/trips/components/CreateTripModal'
+// Lazy-loaded: InviteModal pulls in qrcode.react (~30 KB raw / ~10 KB gzip)
+// for the share-link QR code, which has no business being on the
+// initial-render critical path. The chunk loads when the user opens
+// "share trip" — by which point the page has long settled, so the
+// brief Suspense fallback (<50ms typical) is invisible.
+const InviteModal = lazy(() => import('@/features/trips/invites/InviteModal'))
+import MembersModal from '@/features/members/components/MembersModal'
 import SignInPromptModal from '@/features/auth/components/SignInPromptModal'
 import LoadingText from '@/components/ui/LoadingText'
 
@@ -47,7 +54,7 @@ export default function SchedulePage() {
   const uid = useUid()
   const isDemo = !uid
 
-  const { currentTrip, setCurrentTrip, recentTripIds } = useTripStore()
+  const { currentTrip, setCurrentTrip } = useTripStore()
   const { data: myTrips, error: tripsError, refetch: refetchTrips } = useMyTrips(uid)
 
   const [activeDate,     setActiveDate]     = useState<string | null>(null)
@@ -55,55 +62,77 @@ export default function SchedulePage() {
   const [editTarget,     setEditTarget]     = useState<Schedule | null>(null)
   const [editTripOpen,   setEditTripOpen]   = useState(false)
   const [createTripOpen, setCreateTripOpen] = useState(false)
+
+  // AccountPage's "Planner" card navigates here with state.openCreateTrip = true
+  // to deep-link straight into the create-trip flow. We consume the flag once,
+  // open the modal, and clear the state via replace so a refresh / back-button
+  // doesn't re-trigger.
+  const location = useLocation()
+  const navigate = useNavigate()
+  useEffect(() => {
+    const s = location.state as { openCreateTrip?: boolean } | null
+    if (!s?.openCreateTrip) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setCreateTripOpen(true)
+    navigate(location.pathname, { replace: true, state: null })
+  }, [location.state, location.pathname, navigate])
   const [signInOpen,     setSignInOpen]     = useState(false)
   const [inviteOpen,     setInviteOpen]     = useState(false)
   const [membersOpen,    setMembersOpen]    = useState(false)
 
   const demoSelection = useTripSelection(() => setActiveDate(null))
 
-  // Keep the Zustand `currentTrip` in sync with the TanStack Query cache. Three
-  // things happen here:
-  //   1. No trips → clear selection
-  //   2. Selection still valid, but the cache entry has drifted (e.g. an
-  //      optimistic updateTrip patch just landed) → replace with the latest
-  //      object so the tile/title/dates re-render immediately
-  //   3. No current selection, or selection points at a deleted trip →
-  //      pick a persisted recent id, else the newest
-  useEffect(() => {
-    if (isDemo || !myTrips) return
-    if (myTrips.length === 0) {
-      if (currentTrip) setCurrentTrip(null)
-      return
-    }
-    if (currentTrip) {
-      const latest = myTrips.find(t => t.id === currentTrip.id)
-      if (latest) {
-        if (latest !== currentTrip) setCurrentTrip(latest)
-        return
-      }
-      // falls through: current trip no longer in myTrips → reselect below
-    }
-    const recent = recentTripIds.map(id => myTrips.find(t => t.id === id)).find(Boolean)
-    setCurrentTrip(recent ?? myTrips[0] ?? null)
-  }, [isDemo, myTrips, currentTrip, recentTripIds, setCurrentTrip])
+  // Trip ↔ Zustand sync now lives in AppLayout via useCurrentTripSync, so
+  // /bookings / /expense after hard reload doesn't get stuck on "select a
+  // trip". This page just reads the resulting `currentTrip`.
 
   // ─── Mode-specific state ───────────────────────────────────────
-  const cloudTripItem = !isDemo && currentTrip ? cloudTripToItem(currentTrip) : null
-  const cloudTripsList: TripItem[] = !isDemo ? (myTrips ?? []).map(cloudTripToItem) : []
+  // Both memos have to exist before the downstream `selectedTrip` /
+  // `trips` memos — without them, every render creates a new TripItem
+  // object (and a new TripItem[] from .map), which would invalidate the
+  // child memos that depend on identity.
+  const cloudTripItem = useMemo(
+    () => !isDemo && currentTrip ? cloudTripToItem(currentTrip) : null,
+    [isDemo, currentTrip],
+  )
+  const cloudTripsList = useMemo<TripItem[]>(
+    () => !isDemo ? (myTrips ?? []).map(cloudTripToItem) : [],
+    [isDemo, myTrips],
+  )
 
   const tripId = isDemo ? demoSelection.selectedTrip.id : currentTrip?.id
   const { data: fbSchedules, isLoading } = useSchedules(isDemo ? undefined : tripId)
   const { data: fbMembers } = useMembers(isDemo ? undefined : tripId)
   const memberChips = useMemo(() => membersToTripMembers(fbMembers ?? []), [fbMembers])
 
-  const schedules = isDemo
-    ? (demoSelection.selectedTrip.id === 'demo' ? MOCK_SCHEDULES : [])
-    : (fbSchedules ?? [])
+  // useMemo so an empty-state render doesn't produce a fresh [] each
+  // pass — without this, the downstream `grouped` / `tripTotal` memos
+  // would invalidate on every parent re-render.
+  const schedules = useMemo(
+    () => isDemo
+      ? (demoSelection.selectedTrip.id === 'demo' ? MOCK_SCHEDULES : [])
+      : (fbSchedules ?? []),
+    [isDemo, demoSelection.selectedTrip.id, fbSchedules],
+  )
 
-  const trips        = isDemo ? demoSelection.trips        : cloudTripsList
-  const selectedTrip = isDemo
-    ? demoSelection.selectedTrip
-    : (cloudTripItem ? { ...cloudTripItem, members: memberChips } : null)
+  // Memoise the per-day bucket and the trip-wide total — the original
+  // inline reductions ran on every parent state change (modal toggle,
+  // day select, trip switcher open, etc).
+  const grouped   = useMemo(() => groupByDate(schedules), [schedules])
+  const tripTotal = useMemo(
+    () => schedules.reduce((s, i) => s + (i.estimatedCost ?? 0), 0),
+    [schedules],
+  )
+
+  const trips = isDemo ? demoSelection.trips : cloudTripsList
+  // Memoised so `TripHeaderCard` (memo'd on selectedTrip identity) and any
+  // future child that compares trip references can actually skip re-renders.
+  // Without this, the spread `{ ...cloudTripItem, members: memberChips }`
+  // produced a fresh object every render and defeated the child memo.
+  const selectedTrip = useMemo(() => {
+    if (isDemo) return demoSelection.selectedTrip
+    return cloudTripItem ? { ...cloudTripItem, members: memberChips } : null
+  }, [isDemo, demoSelection.selectedTrip, cloudTripItem, memberChips])
 
   const createMut      = useCreateSchedule(tripId ?? '')
   const updateMut      = useUpdateSchedule(tripId ?? '')
@@ -197,9 +226,9 @@ export default function SchedulePage() {
     }
   }
 
-  // Between auth resolution and the sync-useEffect picking a currentTrip,
-  // selectedTrip can briefly be null in cloud mode. Render a spinner instead
-  // of nothing.
+  // Between auth resolution and AppLayout's useCurrentTripSync picking a
+  // currentTrip, selectedTrip can briefly be null in cloud mode. Render a
+  // spinner instead of nothing.
   if (!selectedTrip) {
     return (
       <div className="flex items-center justify-center h-full text-muted text-[13px]">
@@ -209,11 +238,12 @@ export default function SchedulePage() {
   }
 
   const dateRange = buildDateRange(selectedTrip.startDate, selectedTrip.endDate)
-  const grouped   = groupByDate(schedules)
   const display   = (activeDate && dateRange.includes(activeDate)) ? activeDate : dateRange[0]
   const items     = display ? (grouped[display] ?? []) : []
+  // dayTotal stays inline — items per day are small (≤ 20 typical) and
+  // depend on selectedTrip which is null inside the early-return cases,
+  // so hoisting it costs more than it saves.
   const dayTotal  = items.reduce((s, i) => s + (i.estimatedCost ?? 0), 0)
-  const tripTotal = schedules.reduce((s, i) => s + (i.estimatedCost ?? 0), 0)
 
   function handleMenuAction(key: MenuActionKey) {
     if (key === 'edit') { setEditTripOpen(true); return }
@@ -306,128 +336,21 @@ export default function SchedulePage() {
         onInvite={() => isDemo ? setSignInOpen(true) : setInviteOpen(true)}
       />
 
-      {/* ── DAY SELECTOR ───────────────────────────────────── */}
-      <div className="mt-5">
-        <div className="px-5 pb-0.5 flex items-center justify-between">
-          <span className="text-[11px] font-bold text-muted tracking-[0.1em] uppercase">
-            日程選択
-          </span>
-          <span className="text-[11px] text-muted">{dateRange.length} 日間</span>
-        </div>
+      <DaySelector
+        dateRange={dateRange}
+        display={display}
+        grouped={grouped}
+        onSelectDay={setActiveDate}
+      />
 
-        <div className="flex gap-2 px-5 pt-2.5 pb-1 overflow-x-auto overflow-y-visible no-scrollbar">
-          {dateRange.map((date, i) => {
-            const active    = date === display
-            const d         = fromLocalDateString(date)
-            const dayItems  = grouped[date] ?? []
-            const hasItems  = dayItems.length > 0
-            return (
-              <button
-                key={date}
-                onClick={() => setActiveDate(date)}
-                aria-current={active ? 'date' : undefined}
-                aria-label={`Day${i+1} ${date}${hasItems ? `（${dayItems.length}件）` : ''}`}
-                className={[
-                  'shrink-0 relative flex flex-col items-center px-3 pt-2.5 pb-2 rounded-2xl cursor-pointer transition-all min-w-[52px] gap-0.5',
-                  active
-                    ? 'border-0 bg-accent text-white'
-                    : `border border-border bg-surface ${hasItems ? 'text-ink' : 'text-muted'}`,
-                  hasItems || active ? 'opacity-100' : 'opacity-65',
-                ].join(' ')}
-              >
-                <span className="text-[8px] font-bold tracking-[0.08em] opacity-80 uppercase">
-                  Day{i+1}
-                </span>
-                <span className="text-[20px] font-black leading-none">
-                  {d.getDate()}
-                </span>
-                <span className="text-[8.5px] opacity-70">
-                  {d.toLocaleDateString('zh-TW', { weekday:'short' })}
-                </span>
-                {hasItems ? (
-                  <div
-                    className={[
-                      'absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-[5px] rounded-[9px] text-[10px] font-extrabold tracking-[0.02em] flex items-center justify-center border-2 border-app shadow-[0_2px_6px_rgba(0,0,0,0.12)] pointer-events-none',
-                      active ? 'bg-white text-accent' : 'bg-teal text-white',
-                    ].join(' ')}
-                  >
-                    {dayItems.length}
-                  </div>
-                ) : !active && (
-                  <div className="absolute -top-[3px] -right-[3px] w-2 h-2 rounded-full bg-dot border-2 border-app pointer-events-none" />
-                )}
-              </button>
-            )
-          })}
-        </div>
-      </div>
-
-      {/* ── DAY TIMELINE ───────────────────────────────────── */}
-      <div className="mx-5 mt-5">
-        {display && (
-          <div className="flex justify-between items-center mb-3.5">
-            <div>
-              <span className="text-[15px] font-bold text-ink">
-                {new Date(display).toLocaleDateString('zh-TW', { month:'long', day:'numeric' })}
-              </span>
-              <span className="text-[12px] text-muted ml-1.5">
-                {new Date(display).toLocaleDateString('zh-TW', { weekday:'long' })}
-              </span>
-            </div>
-            {dayTotal > 0 && (
-              <div className="bg-[#F2EAE0] text-[#906848] text-[11px] font-semibold px-2.5 py-1 rounded-card">
-                合計 ¥{dayTotal.toLocaleString()}
-              </div>
-            )}
-          </div>
-        )}
-
-        {isLoading && !isDemo ? (
-          <div className="text-center py-12 text-dot text-[13px]">
-            <LoadingText />
-          </div>
-        ) : items.length === 0 ? (
-          <div className="text-center px-6 py-10 pb-8 bg-surface rounded-card border-[1.5px] border-dashed border-border">
-            <div className="text-[40px] mb-1.5 opacity-55">🗓</div>
-            <p className="m-0 mb-1 text-[13.5px] font-semibold text-ink tracking-[0.02em]">
-              この日の予定はまだありません
-            </p>
-            <p className="m-0 mb-[18px] text-[11.5px] text-muted tracking-[0.04em]">
-              さあ、最初の行程を追加しましょう
-            </p>
-            <button
-              onClick={openAdd}
-              className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-[24px] border-none bg-teal text-white text-[12.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
-              style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
-            >
-              <Plus size={14} strokeWidth={2.5} />
-              行程を追加
-            </button>
-          </div>
-        ) : (
-          <>
-            {items.map((s, idx) => (
-              <TimelineCard
-                key={s.id}
-                s={s}
-                isLast={idx === items.length - 1}
-                onEdit={() => openEdit(s)}
-              />
-            ))}
-
-            <div className="flex mt-2.5">
-              <div className="w-12 shrink-0" />
-              <button
-                onClick={openAdd}
-                className="flex-1 h-11 rounded-chip border-[1.5px] border-dashed border-border bg-transparent text-muted text-[13px] font-medium flex items-center justify-center gap-1.5 cursor-pointer tracking-[0.04em] transition-all hover:bg-teal-pale hover:border-teal hover:text-teal"
-              >
-                <Plus size={14} strokeWidth={2} />
-                行程を追加
-              </button>
-            </div>
-          </>
-        )}
-      </div>
+      <DayTimeline
+        display={display}
+        items={items}
+        dayTotal={dayTotal}
+        isLoading={isLoading && !isDemo}
+        onAdd={openAdd}
+        onEdit={openEdit}
+      />
 
       {/* Conditionally render + keyed for fresh state per open (see the
           parallel note in ExpensePage). */}
@@ -465,11 +388,18 @@ export default function SchedulePage() {
 
       {!isDemo && currentTrip && (
         <>
-          <InviteModal
-            isOpen={inviteOpen}
-            onClose={() => setInviteOpen(false)}
-            trip={currentTrip}
-          />
+          {/* `null` Suspense fallback so the lazy-loaded modal chunk
+              loads in the background without flashing the page-level
+              fallback from AppLayout. Modal pops up when chunk arrives;
+              after first open the chunk is cached so subsequent opens
+              are instant. */}
+          <Suspense fallback={null}>
+            <InviteModal
+              isOpen={inviteOpen}
+              onClose={() => setInviteOpen(false)}
+              trip={currentTrip}
+            />
+          </Suspense>
           <MembersModal
             isOpen={membersOpen}
             onClose={() => setMembersOpen(false)}

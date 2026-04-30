@@ -4,9 +4,9 @@
 // these deterministically from the member id so chips stay stable across
 // renders and reloads, without persisting presentation data to Firestore.
 import type { Member } from '@/types'
-import type { TripMember } from '@/features/schedule/types'
+import type { TripMember } from '@/features/trips/types'
 
-// Curated palette — same visual weight as DEMO_MEMBERS in schedule/mocks.ts.
+// Curated palette — same visual weight as DEMO_MEMBERS in trips/mocks.ts.
 // Ordered so the first few slots match existing demo colours for continuity.
 const CHIP_PALETTE: { color: string; bg: string }[] = [
   { color: '#3A7858', bg: '#C6DDD6' },

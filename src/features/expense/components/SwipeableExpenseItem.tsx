@@ -4,7 +4,7 @@
 import { useState, useRef, useEffect, memo } from 'react'
 import { Trash2 } from 'lucide-react'
 import type { Expense } from '@/types'
-import type { TripMember } from '@/features/schedule/types'
+import type { TripMember } from '@/features/trips/types'
 import {
   SWIPE_WIDTH, OPEN_THRESHOLD, MOVE_THRESHOLD,
   FG_TRANSITION, BG_TRANSITION,

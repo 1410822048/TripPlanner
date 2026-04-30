@@ -1,7 +1,7 @@
 // src/features/expense/services/settlement.ts
 // 精算算法 — 純函式，無 side effect。
 import type { Expense } from '@/types'
-import type { TripMember } from '@/features/schedule/types'
+import type { TripMember } from '@/features/trips/types'
 
 export interface MemberBalance {
   memberId: string

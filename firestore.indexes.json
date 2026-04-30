@@ -15,6 +15,23 @@
         { "fieldPath": "date",      "order": "DESCENDING" },
         { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "bookings",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "type",     "order": "ASCENDING"  },
+        { "fieldPath": "sortDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "bookings",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "memberIds", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "type",      "order": "ASCENDING"  },
+        { "fieldPath": "sortDate",  "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": [

@@ -2,8 +2,8 @@
 // Demo 模式下的本地 trips 清單 + 選取狀態（signed-out 或尚無雲端行程時）。
 // 當使用者登入並建立雲端 trip 後，SchedulePage 會切到 useTripStore / useMyTrips。
 import { create } from 'zustand'
-import type { TripItem } from '@/features/schedule/types'
-import { INITIAL_TRIPS } from '@/features/schedule/mocks'
+import type { TripItem } from '@/features/trips/types'
+import { INITIAL_TRIPS } from '@/features/trips/mocks'
 
 interface DemoTripStore {
   trips:          TripItem[]

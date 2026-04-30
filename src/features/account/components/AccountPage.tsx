@@ -26,9 +26,8 @@
 // cleanly and long names don't get truncated in a narrow side column.
 // Card #1 routes to /past-lodging; Card #2 aggregates unique non-self
 // members across every trip (informational, non-clickable).
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useQueries } from '@tanstack/react-query'
 import { LogOut } from 'lucide-react'
 import ConfirmSheet from '@/components/ui/ConfirmSheet'
 import GoogleIcon from '@/components/icons/GoogleIcon'
@@ -37,14 +36,12 @@ import FeatureCard from './FeatureCard'
 import AccountPageSkeleton from './AccountPageSkeleton'
 import { StackedEmojiPreview, StackedAvatarPreview } from './StackedPreviews'
 import { useAuth } from '@/hooks/useAuth'
-import { useMyTrips } from '@/features/schedule/hooks/useTrips'
-import { memberKeys } from '@/features/members/hooks/useMembers'
-import { getMembersByTrip } from '@/features/members/services/memberService'
+import { useAllTripMembers } from '@/features/members/hooks/useAllTripMembers'
 import { memberToTripMember } from '@/features/members/utils'
 import { useTripStore } from '@/store/tripStore'
 import { toast } from '@/shared/toast'
 import { daysBetween } from '@/utils/dates'
-import type { TripMember } from '@/features/schedule/types'
+import type { TripMember } from '@/features/trips/types'
 import type { Trip } from '@/types'
 
 // Static thumbnail deck for "過往の旅程". Real data source is the bookings
@@ -80,21 +77,28 @@ export default function AccountPage() {
   const navigate = useNavigate()
 
   const uid = state.status === 'signed-in' ? state.user.uid : undefined
-  const { data: trips } = useMyTrips(uid)
+  const { trips, memberResults } = useAllTripMembers(uid)
 
-  // Fan out per-trip member queries unconditionally — rules-of-hooks forbids
-  // gating a hook on a signed-in check, and useMyTrips already returns empty
-  // for signed-out users so this resolves to zero queries until sign-in.
-  // Each entry shares cache with useMembers(tripId) used by /schedule +
-  // MembersModal, so repeat visits are free. N parallel reads when N trips —
-  // acceptable for typical <20-trip accounts.
-  const memberResults = useQueries({
-    queries: (trips ?? []).map(t => ({
-      queryKey: memberKeys.all(t.id),
-      queryFn:  () => getMembersByTrip(t.id),
-      enabled:  !!trips,
-    })),
-  })
+  // Aggregations memoised on the upstream data — without these they
+  // re-ran on every signing-state toggle / logout-sheet open / etc.
+  const totalDays = useMemo(
+    () => (trips ?? []).reduce((s, t) => s + tripDays(t), 0),
+    [trips],
+  )
+  const { collaboratorChips, collaboratorCount } = useMemo(() => {
+    const seen  = new Set<string>()
+    const chips: TripMember[] = []
+    let   count = 0
+    for (const r of memberResults) {
+      for (const m of r.data ?? []) {
+        if (m.userId === uid || seen.has(m.userId)) continue
+        seen.add(m.userId)
+        count++
+        if (chips.length < 3) chips.push(memberToTripMember(m))
+      }
+    }
+    return { collaboratorChips: chips, collaboratorCount: count }
+  }, [memberResults, uid])
 
   const [signingIn,  setSigningIn]  = useState(false)
   const [signingOut, setSigningOut] = useState(false)
@@ -177,23 +181,7 @@ export default function AccountPage() {
   const user = state.user
   const initial   = (user.displayName ?? user.email ?? '?').trim().charAt(0).toUpperCase() || '?'
   const tripCount = trips?.length ?? 0
-  const totalDays = (trips ?? []).reduce((s, t) => s + tripDays(t), 0)
   const ageLabel  = accountAgeLabel(user.metadata.creationTime)
-
-  // Aggregate unique collaborators (non-self) across every trip. Iterate in
-  // the natural member order so the preview chips stay stable across
-  // re-renders as long as the underlying data order is stable.
-  const seenUserIds       = new Set<string>()
-  const collaboratorChips: TripMember[] = []
-  let   collaboratorCount = 0
-  for (const r of memberResults) {
-    for (const m of r.data ?? []) {
-      if (m.userId === uid || seenUserIds.has(m.userId)) continue
-      seenUserIds.add(m.userId)
-      collaboratorCount++
-      if (collaboratorChips.length < 3) collaboratorChips.push(memberToTripMember(m))
-    }
-  }
 
 
   return (
@@ -281,10 +269,12 @@ export default function AccountPage() {
       </div>
 
       {/* Planner promo — wide card matching the Airbnb "成為房東" pattern.
-          Tap opens /schedule where the user can add or edit trips. */}
+          Tap navigates to /schedule AND deep-links into the create-trip
+          modal via location.state.openCreateTrip — SchedulePage consumes
+          the flag once and clears it on first render. */}
       <div className="mx-4 mt-3">
         <button
-          onClick={() => navigate('/schedule')}
+          onClick={() => navigate('/schedule', { state: { openCreateTrip: true } })}
           className="w-full bg-surface border border-border rounded-[22px] px-5 py-4 flex items-center gap-4 text-left cursor-pointer transition-all hover:-translate-y-px hover:shadow-[0_4px_18px_rgba(0,0,0,0.08)] shadow-[0_2px_12px_rgba(0,0,0,0.05)]"
         >
           <div className="w-[72px] h-[72px] rounded-2xl shrink-0 flex items-center justify-center text-[40px] bg-accent-pale shadow-[inset_0_1px_3px_rgba(0,0,0,0.06)]">

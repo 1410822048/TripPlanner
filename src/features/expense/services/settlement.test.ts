@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { computeBalances, computeSettlements } from './settlement'
 import { MOCK_TIMESTAMP as TS } from '@/mocks/utils'
 import type { Expense } from '@/types'
-import type { TripMember } from '@/features/schedule/types'
+import type { TripMember } from '@/features/trips/types'
 
 const MEMBERS: TripMember[] = [
   { id: 'm1', label: 'A', color: '#000', bg: '#fff' },

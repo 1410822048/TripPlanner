@@ -2,6 +2,7 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
+import { visualizer } from 'rollup-plugin-visualizer'
 import path from 'path'
 import { readFileSync } from 'fs'
 
@@ -22,12 +23,30 @@ export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
+    // Bundle visualiser. Off by default; opt-in via `ANALYZE=1 npm run build`
+    // so the normal build stays fast and doesn't open browser tabs.
+    ...(process.env.ANALYZE
+      ? [visualizer({
+          filename: 'dist/stats.html',
+          open:     true,
+          gzipSize: true,
+          brotliSize: true,
+        })]
+      : []),
     VitePWA({
       // `prompt` keeps the new SW in "waiting" state until the user clicks
       // "reload" in PwaUpdatePrompt. Prevents silent mid-session reloads
       // that would wipe any in-progress form edits.
       registerType: 'prompt',
-      includeAssets: ['favicon.ico', 'apple-touch-icon.png'],
+      // Bundle these into the precache so the install prompt can fetch
+      // them, and so the SW serves them offline (favicon shows in the
+      // tab even with no network).
+      includeAssets: [
+        'favicon.svg',
+        'favicon-16x16.png',
+        'favicon-32x32.png',
+        'apple-touch-icon.png',
+      ],
       manifest: {
         name: 'TripMate - 旅遊行程助手',
         short_name: 'TripMate',
@@ -37,19 +56,21 @@ export default defineConfig({
         display: 'standalone',
         orientation: 'portrait',
         scope: '/',
-        start_url: '/',
+        // Always boot a fresh launch into /schedule. Resume-from-background
+        // can't be controlled from the manifest (the OS picks whatever URL
+        // was last visible), so the App-entry redirect in App.tsx handles
+        // that path; this manifest line is the cold-start half.
+        start_url: '/schedule',
+        // Three entries instead of overloading one with `purpose: 'any
+        // maskable'`. Splitting them lets each variant be art-directed:
+        //   - any:      full-bleed icon (Windows / macOS / Chromebook)
+        //   - maskable: padded variant on the cream background_color so
+        //               Android adaptive-icon shapes (circle / squircle /
+        //               teardrop) don't crop into the styled card.
         icons: [
-          {
-            src: 'pwa-192x192.png',
-            sizes: '192x192',
-            type: 'image/png',
-          },
-          {
-            src: 'pwa-512x512.png',
-            sizes: '512x512',
-            type: 'image/png',
-            purpose: 'any maskable',
-          },
+          { src: 'pwa-192x192.png',          sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: 'pwa-512x512.png',          sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: 'pwa-maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
       },
       workbox: {

@@ -13,6 +13,7 @@ import { inputClass } from '@/components/ui/inputStyle'
 import SaveButton from '@/components/ui/SaveButton'
 import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
+import { useFormReducer } from '@/hooks/useFormReducer'
 
 const CATEGORIES: { value: ScheduleCategory; label: string }[] = [
   { value: 'transport',     label: '交通' },
@@ -22,6 +23,32 @@ const CATEGORIES: { value: ScheduleCategory; label: string }[] = [
   { value: 'shopping',      label: '購物' },
   { value: 'other',         label: '其他' },
 ]
+
+// `type` (not `interface`) so TS treats it as closed and the shape
+// satisfies useFormReducer's `Record<string, unknown>` constraint.
+type FormState = {
+  title:     string
+  date:      string
+  startTime: string
+  endTime:   string
+  category:  ScheduleCategory
+  location:  string
+  desc:      string
+  cost:      string                // string for input control; coerced to number on save
+}
+
+function initFormState(t: Schedule | null, defaultDate: string): FormState {
+  return {
+    title:     t?.title ?? '',
+    date:      t?.date ?? defaultDate,
+    startTime: t?.startTime ?? '',
+    endTime:   t?.endTime ?? '',
+    category:  t?.category ?? 'activity',
+    location:  t?.location?.name ?? '',
+    desc:      t?.description ?? '',
+    cost:      t?.estimatedCost ? String(t.estimatedCost) : '',
+  }
+}
 
 interface Props {
   editTarget:  Schedule | null
@@ -36,41 +63,35 @@ interface Props {
 export default function ScheduleFormModal({
   editTarget, defaultDate, isOpen, isSaving, onClose, onSave, onDelete,
 }: Props) {
-  const [title,     setTitle]    = useState(editTarget?.title ?? '')
-  const [date,      setDate]     = useState(editTarget?.date ?? defaultDate)
-  const [startTime, setStart]    = useState(editTarget?.startTime ?? '')
-  const [endTime,   setEnd]      = useState(editTarget?.endTime ?? '')
-  const [category,  setCategory] = useState<ScheduleCategory>(editTarget?.category ?? 'activity')
-  const [location,  setLocation] = useState(editTarget?.location?.name ?? '')
-  const [desc,      setDesc]     = useState(editTarget?.description ?? '')
-  const [cost,      setCost]     = useState(editTarget?.estimatedCost ? String(editTarget.estimatedCost) : '')
-  const [errors,    setErrors]   = useState<Record<string, string>>({})
+  const { state, setField } = useFormReducer<FormState>(
+    () => initFormState(editTarget, defaultDate),
+  )
+  const [errors, setErrors] = useState<Record<string, string>>({})
   const [confirmDelete, setConfirmDelete] = useState(false)
 
   const titleRef = useRef<HTMLInputElement>(null)
-
   useAutoFocus(titleRef, isOpen)
 
   function validate() {
     const e: Record<string, string> = {}
-    if (!title.trim()) e.title = '請輸入標題'
-    if (!date)         e.date  = '請選擇日期'
-    if (cost && isNaN(Number(cost))) e.cost = '請輸入數字'
+    if (!state.title.trim()) e.title = '請輸入標題'
+    if (!state.date)         e.date  = '請選擇日期'
+    if (state.cost && isNaN(Number(state.cost))) e.cost = '請輸入數字'
     setErrors(e)
     return Object.keys(e).length === 0
   }
 
   function handleSave() {
     if (!validate()) return
-    const loc = location.trim()
+    const loc = state.location.trim()
     onSave({
-      title: title.trim(),
-      date,
-      startTime:     startTime || undefined,
-      endTime:       endTime   || undefined,
-      category,
-      description:   desc      || undefined,
-      estimatedCost: cost ? Number(cost) : undefined,
+      title: state.title.trim(),
+      date:  state.date,
+      startTime:     state.startTime || undefined,
+      endTime:       state.endTime   || undefined,
+      category:      state.category,
+      description:   state.desc      || undefined,
+      estimatedCost: state.cost ? Number(state.cost) : undefined,
       location:      loc ? { name: loc } : undefined,
     } as CreateScheduleInput)
   }
@@ -91,8 +112,8 @@ export default function ScheduleFormModal({
       <FormField label="タイトル" error={errors.title} required>
         <input
           ref={titleRef}
-          value={title}
-          onChange={e => setTitle(e.target.value)}
+          value={state.title}
+          onChange={e => setField('title', e.target.value)}
           placeholder="例：淺草雷門を見学"
           className={inputClass(!!errors.title)}
         />
@@ -101,12 +122,12 @@ export default function ScheduleFormModal({
       <FormField label="カテゴリ">
         <div className="flex gap-[7px] flex-wrap">
           {CATEGORIES.map(c => {
-            const active = category === c.value
+            const active = state.category === c.value
             return (
               <button
                 key={c.value}
                 type="button"
-                onClick={() => setCategory(c.value)}
+                onClick={() => setField('category', c.value)}
                 className={[
                   'flex items-center gap-[5px] px-3 py-1.5 rounded-card text-[12px] cursor-pointer transition-all border-[1.5px]',
                   active
@@ -123,18 +144,18 @@ export default function ScheduleFormModal({
 
       <FormField label="日付" error={errors.date} required>
         <DatePicker
-          value={date}
-          onChange={v => setDate(v)}
+          value={state.date}
+          onChange={v => setField('date', v)}
           error={!!errors.date}
         />
       </FormField>
 
       <div className="grid grid-cols-2 gap-2.5">
         <FormField label="開始時間">
-          <TimePicker value={startTime} onChange={setStart} />
+          <TimePicker value={state.startTime} onChange={v => setField('startTime', v)} />
         </FormField>
         <FormField label="終了時間">
-          <TimePicker value={endTime} onChange={setEnd} />
+          <TimePicker value={state.endTime} onChange={v => setField('endTime', v)} />
         </FormField>
       </div>
 
@@ -142,8 +163,8 @@ export default function ScheduleFormModal({
         <div className="relative">
           <MapPin size={14} className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-muted" />
           <input
-            value={location}
-            onChange={e => setLocation(e.target.value)}
+            value={state.location}
+            onChange={e => setField('location', e.target.value)}
             placeholder="例：淺草寺"
             className={`${inputClass(false)} pl-[34px]`}
           />
@@ -155,8 +176,8 @@ export default function ScheduleFormModal({
           <span className="absolute left-[13px] top-1/2 -translate-y-1/2 text-muted text-[13px] pointer-events-none">¥</span>
           <input
             type="number"
-            value={cost}
-            onChange={e => setCost(e.target.value)}
+            value={state.cost}
+            onChange={e => setField('cost', e.target.value)}
             placeholder="0"
             min={0}
             className={`${inputClass(!!errors.cost)} pl-7`}
@@ -166,8 +187,8 @@ export default function ScheduleFormModal({
 
       <FormField label="メモ">
         <textarea
-          value={desc}
-          onChange={e => setDesc(e.target.value)}
+          value={state.desc}
+          onChange={e => setField('desc', e.target.value)}
           placeholder="備考・注意事項など"
           rows={3}
           className={`${inputClass(false)} resize-none leading-[1.6] py-2.5 h-auto`}
