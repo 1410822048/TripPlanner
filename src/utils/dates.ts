@@ -55,3 +55,30 @@ export function buildDateRange(startDate: string, endDate: string): string[] {
   }
   return dates
 }
+
+/**
+ * Add a (possibly negative) integer number of days to a 'YYYY-MM-DD'
+ * string and return the result as a 'YYYY-MM-DD' string. Used by
+ * copyTrip to shift schedule dates relative to the source trip's start.
+ *
+ * Stays in local-midnight space (no UTC conversion) so DST transitions
+ * inside a trip date range don't shift by an hour and accidentally
+ * round into the previous or next day.
+ */
+export function addDays(dateStr: string, days: number): string {
+  const d = fromLocalDateString(dateStr)
+  d.setDate(d.getDate() + days)
+  return toLocalDateString(d)
+}
+
+/**
+ * Day delta between two 'YYYY-MM-DD' strings, exclusive of the second
+ * day. `diffDays('2026-05-01', '2026-05-04') === 3`.
+ *
+ * Returns a signed integer — negative when `to` is earlier than `from`.
+ */
+export function diffDays(from: string, to: string): number {
+  const a = fromLocalDateString(from).getTime()
+  const b = fromLocalDateString(to).getTime()
+  return Math.round((b - a) / 86_400_000)
+}

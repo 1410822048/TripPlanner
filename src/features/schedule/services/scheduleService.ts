@@ -3,6 +3,7 @@ import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'
+import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
 import { ScheduleDocSchema, UpdateScheduleSchema, type Schedule, type CreateScheduleInput, type UpdateScheduleInput } from '@/types'
 
 /** Defensive cap — see bookingService for rationale. Schedules can run
@@ -11,12 +12,7 @@ const LIST_LIMIT = 200
 
 /** 驗證一份 Firestore doc 是否符合 Schedule schema；失敗時丟出錯誤以利觀測 */
 function scheduleFromDoc(d: QueryDocumentSnapshot): Schedule {
-  const parsed = ScheduleDocSchema.safeParse(d.data())
-  if (!parsed.success) {
-    captureError(parsed.error, { source: 'scheduleFromDoc', docId: d.id })
-    throw new Error(`Schedule ${d.id} failed schema validation`)
-  }
-  return { id: d.id, ...parsed.data }
+  return firestoreDocFromSchema(ScheduleDocSchema, d, 'scheduleFromDoc')
 }
 
 // ─── Read ─────────────────────────────────────────────────────────

@@ -3,6 +3,7 @@ import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'
+import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
 import { ExpenseDocSchema, UpdateExpenseSchema, type Expense, type CreateExpenseInput, type UpdateExpenseInput } from '@/types'
 
 /** Defensive cap — see bookingService. Expenses can pile up on long trips
@@ -11,12 +12,7 @@ const LIST_LIMIT = 200
 
 /** 驗證一份 Firestore doc 是否符合 Expense schema；失敗時丟出錯誤以利觀測 */
 function expenseFromDoc(d: QueryDocumentSnapshot): Expense {
-  const parsed = ExpenseDocSchema.safeParse(d.data())
-  if (!parsed.success) {
-    captureError(parsed.error, { source: 'expenseFromDoc', docId: d.id })
-    throw new Error(`Expense ${d.id} failed schema validation`)
-  }
-  return { id: d.id, ...parsed.data }
+  return firestoreDocFromSchema(ExpenseDocSchema, d, 'expenseFromDoc')
 }
 
 // ─── Read ─────────────────────────────────────────────────────────

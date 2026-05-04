@@ -25,7 +25,6 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
   const { state, signInWithGoogle } = useAuth(isOpen)
   const createMut      = useCreateTrip()
   const setCurrentTrip = useTripStore(s => s.setCurrentTrip)
-  const addRecentTrip  = useTripStore(s => s.addRecentTrip)
 
   const [title,       setTitle]       = useState('')
   const [destination, setDestination] = useState('')
@@ -69,8 +68,9 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
     if (state.status !== 'signed-in') return
     try {
       const trip = await createMut.mutateAsync({ input: data, user: state.user })
+      // setCurrentTrip already prepends the new id to recentTripIds + dedups
+      // (see tripStore.ts setCurrentTrip), so no separate addRecentTrip call.
       setCurrentTrip(trip)
-      addRecentTrip(trip.id)
       toast.success(`「${trip.title}」を作成しました`)
       close()
     } catch (e) {

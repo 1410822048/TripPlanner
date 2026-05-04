@@ -5,7 +5,7 @@
 // are built lazily through the Firestore bundle import.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { User } from 'firebase/auth'
-import { createTrip, deleteTrip, getMyTrips, getMyTripIds, updateTrip } from '../services/tripService'
+import { copyTrip, createTrip, deleteTrip, getMyTrips, getMyTripIds, updateTrip, type CopyTripInput, type CopyTripResult } from '../services/tripService'
 import { getFirebase } from '@/services/firebase'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
 import { toast } from '@/shared/toast'
@@ -55,6 +55,27 @@ export function useCreateTrip() {
       // member fan-out (my-ids) pick up the new trip immediately without a
       // round-trip. Without the my-ids update, AccountPage's collaborator
       // count would lag until the cache invalidates.
+      qc.setQueryData<Trip[]>(tripKeys.mine(user.uid), prev =>
+        prev ? [trip, ...prev.filter(t => t.id !== trip.id)] : [trip],
+      )
+      qc.setQueryData<string[]>(tripKeys.myIds(user.uid), prev =>
+        prev ? [trip.id, ...prev.filter(id => id !== trip.id)] : [trip.id],
+      )
+    },
+  })
+}
+
+/**
+ * Duplicate a trip + selected subcollections. Same cache-seeding
+ * approach as useCreateTrip so the new trip appears in the switcher
+ * immediately, no round-trip wait.
+ */
+export function useCopyTrip() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ source, input, user }: { source: Trip; input: CopyTripInput; user: User }): Promise<CopyTripResult> =>
+      copyTrip(source, input, user),
+    onSuccess: ({ trip }, { user }) => {
       qc.setQueryData<Trip[]>(tripKeys.mine(user.uid), prev =>
         prev ? [trip, ...prev.filter(t => t.id !== trip.id)] : [trip],
       )

@@ -17,10 +17,8 @@ const ACCEPT_TYPES = 'image/*'
 const MAX_FILE_BYTES = 5 * 1024 * 1024
 
 const CATEGORIES: { value: WishCategory; emoji: string; label: string }[] = [
-  { value: 'place',    emoji: '🗺️', label: '行く所' },
-  { value: 'food',     emoji: '🍜', label: '食べる' },
-  { value: 'activity', emoji: '🎯', label: 'やる事' },
-  { value: 'other',    emoji: '📌', label: 'その他' },
+  { value: 'place', emoji: '🗺️', label: '景點' },
+  { value: 'food',  emoji: '🍜', label: '餐廳' },
 ]
 
 // `type` (not `interface`): TS won't widen interfaces to satisfy
@@ -33,9 +31,9 @@ type FormState = {
   link:        string
 }
 
-function initFromTarget(t: Wish | null): FormState {
+function initFromTarget(t: Wish | null, defaultCategory: WishCategory): FormState {
   return {
-    category:    t?.category ?? 'place',
+    category:    t?.category ?? defaultCategory,
     title:       t?.title ?? '',
     description: t?.description ?? '',
     link:        t?.link ?? '',
@@ -51,6 +49,9 @@ export interface WishFormResult {
 
 interface Props {
   editTarget: Wish | null
+  /** Pre-select this category when adding a new wish. Lets WishPage's
+   *  current tab pre-fill the form so users don't have to re-pick. */
+  defaultCategory?: WishCategory
   isOpen:     boolean
   isSaving:   boolean
   onClose:    () => void
@@ -60,9 +61,11 @@ interface Props {
 }
 
 export default function WishFormModal({
-  editTarget, isOpen, isSaving, onClose, onSave, onDelete,
+  editTarget, defaultCategory = 'place', isOpen, isSaving, onClose, onSave, onDelete,
 }: Props) {
-  const { state, setField } = useFormReducer<FormState>(() => initFromTarget(editTarget))
+  const { state, setField } = useFormReducer<FormState>(
+    () => initFromTarget(editTarget, defaultCategory),
+  )
 
   // Image state — single optional. Mirror booking's tri-state contract.
   const [existing, setExisting] = useState<WishImage | null>(editTarget?.image ?? null)

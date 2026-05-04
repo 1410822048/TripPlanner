@@ -8,7 +8,9 @@ import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'
+import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
 import { BookingDocSchema, UpdateBookingSchema, type Booking, type CreateBookingInput, type UpdateBookingInput } from '@/types'
+import { stripEmpty } from '@/utils/stripEmpty'
 import { uploadAttachment, purgeAttachments } from './bookingStorage'
 
 /**
@@ -27,12 +29,7 @@ const LIST_LIMIT = 100
  * scheduleFromDoc behaviour for cross-service consistency.
  */
 function bookingFromDoc(d: QueryDocumentSnapshot): Booking {
-  const parsed = BookingDocSchema.safeParse(d.data())
-  if (!parsed.success) {
-    captureError(parsed.error, { source: 'bookingFromDoc', docId: d.id })
-    throw new Error(`Booking ${d.id} failed schema validation`)
-  }
-  return { id: d.id, ...parsed.data } as Booking
+  return firestoreDocFromSchema(BookingDocSchema, d, 'bookingFromDoc') as Booking
 }
 
 // ─── Read ─────────────────────────────────────────────────────────
@@ -83,19 +80,6 @@ export async function getMyHotelBookings(uid: string): Promise<Booking[]> {
   if (snap.size >= LIST_LIMIT) {
     captureError(new Error(`getMyHotelBookings truncated at ${LIST_LIMIT}`), { uid })
   }
-  return snap.docs.map(bookingFromDoc)
-}
-
-/** Per-trip hotel filter (kept for any future uses; PastLodgingPage now uses
- *  getMyHotelBookings). */
-export async function getHotelBookingsByTrip(tripId: string): Promise<Booking[]> {
-  const { db, collection, query, where, orderBy, limit, getDocs } = await getFirebase()
-  const snap = await getDocs(query(
-    collection(db, ...P.bookings(tripId)),
-    where('type', '==', 'hotel'),
-    orderBy('sortDate', 'desc'),
-    limit(LIST_LIMIT),
-  ))
   return snap.docs.map(bookingFromDoc)
 }
 
@@ -267,12 +251,3 @@ export async function deleteBooking(
   await deleteDoc(doc(db, ...P.booking(tripId, bookingId)))
 }
 
-/** Drop empty-string and undefined values so Firestore doesn't store noise. */
-function stripEmpty<T extends Record<string, unknown>>(o: T): Partial<T> {
-  const out: Partial<T> = {}
-  for (const [k, v] of Object.entries(o)) {
-    if (v === undefined || v === '') continue
-    ;(out as Record<string, unknown>)[k] = v
-  }
-  return out
-}

@@ -44,10 +44,12 @@ import { daysBetween } from '@/utils/dates'
 import type { TripMember } from '@/features/trips/types'
 import type { Trip } from '@/types'
 
-// Static thumbnail deck for "過往の旅程". Real data source is the bookings
-// subcollection filtered by `type == 'hotel'`; that feature isn't shipped
-// yet (bookings page is a placeholder), so we preview with a curated emoji
-// set until the query is wired in.
+// Static thumbnail deck for the "過往の旅程" feature card. Intentionally
+// decorative — the real listing lives at /past-lodging via
+// PastLodgingPage + getMyHotelBookings(). Wiring the actual hotel
+// thumbnails into this card was considered but rejected: the card is
+// a CTA, not a preview, and the per-card cost (one collection-group
+// query on every AccountPage render) outweighs the visual upside.
 const PAST_LODGING_EMOJIS = ['🏨', '🛏️', '🏖️']
 
 function tripDays(trip: Trip): number {

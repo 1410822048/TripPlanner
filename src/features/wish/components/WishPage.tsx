@@ -2,6 +2,12 @@
 // List of wish items for the current trip — server-sorted by votes
 // then createdAt. Heart-tap toggles the caller's vote optimistically;
 // tapping the row body opens edit (proposer) or read (others).
+//
+// Two-tab layout (景點 / 餐廳) replaces the earlier flat list. Each
+// tab filters by `category`; new wishes default to whichever tab is
+// currently active so the user's intent is reflected without an extra
+// dropdown click.
+import { useMemo, useState } from 'react'
 import { Plus, Heart } from 'lucide-react'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
 import { toast } from '@/shared/toast'
@@ -14,17 +20,45 @@ import {
   useWishes, useCreateWish, useUpdateWish, useDeleteWish, useToggleWishVote,
 } from '../hooks/useWishes'
 import { MOCK_WISHES } from '../mocks'
-import type { Wish } from '@/types'
+import type { Wish, WishCategory } from '@/types'
 import WishFormModal, { type WishFormResult } from './WishFormModal'
 import WishCard from './WishCard'
+
+const TABS: { value: WishCategory; emoji: string; label: string }[] = [
+  { value: 'place', emoji: '🗺️', label: '景點' },
+  { value: 'food',  emoji: '🍜', label: '餐廳' },
+]
 
 export default function WishPage() {
   const { ctx, uid, cloudTripId, mutationTripId, isDemo, modal, signIn } =
     useFeatureListPage<Wish>()
+  const [activeTab, setActiveTab] = useState<WishCategory>('place')
 
   const { data: cloudWishes, isLoading } = useWishes(cloudTripId)
-  const demoWishes = ctx.status === 'demo' && ctx.trip.id === 'demo' ? MOCK_WISHES : []
-  const wishes = ctx.status === 'demo' ? demoWishes : (cloudWishes ?? [])
+  // useMemo so an empty-state render doesn't produce a fresh [] each
+  // pass — without this, downstream `counts` / `filteredWishes` memos
+  // would invalidate on every parent re-render.
+  const wishes = useMemo(() => {
+    if (ctx.status === 'demo') return ctx.trip.id === 'demo' ? MOCK_WISHES : []
+    return cloudWishes ?? []
+  }, [ctx, cloudWishes])
+
+  // Per-tab counts so the badge always reflects the full data set, not
+  // the visible (filtered) subset. Memoised on `wishes` so unrelated
+  // re-renders (modal toggles, vote ticks) don't re-iterate.
+  const counts = useMemo(() => {
+    let place = 0, food = 0
+    for (const w of wishes) {
+      if (w.category === 'place') place++
+      else if (w.category === 'food') food++
+    }
+    return { place, food }
+  }, [wishes])
+
+  const filteredWishes = useMemo(
+    () => wishes.filter(w => w.category === activeTab),
+    [wishes, activeTab],
+  )
 
   const createMut = useCreateWish(mutationTripId)
   const updateMut = useUpdateWish(mutationTripId)
@@ -97,21 +131,52 @@ export default function WishPage() {
         </h1>
       </div>
 
+      {/* Tab switcher: 景點 / 餐廳. The active tab drives both the list
+          filter (filteredWishes) and the form's defaultCategory below,
+          so adding from one tab pre-selects the matching category. */}
+      <div className="mx-4 mt-3 flex gap-1 p-1 rounded-card bg-app border border-border">
+        {TABS.map(t => {
+          const active = activeTab === t.value
+          return (
+            <button
+              key={t.value}
+              type="button"
+              onClick={() => setActiveTab(t.value)}
+              className={[
+                'flex-1 h-9 rounded-[8px] text-[12.5px] font-semibold cursor-pointer transition-all flex items-center justify-center gap-1.5',
+                active ? 'bg-surface text-ink shadow-[0_1px_3px_rgba(0,0,0,0.08)]' : 'bg-transparent text-muted',
+              ].join(' ')}
+            >
+              <span>{t.emoji}</span>
+              <span>{t.label}</span>
+              <span className={[
+                'text-[10.5px] font-medium tabular-nums',
+                active ? 'text-muted' : 'text-muted opacity-70',
+              ].join(' ')}>
+                {counts[t.value]}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+
       <div className="mt-4 px-4">
         {isLoading && !isDemo ? (
           <div className="text-center py-12 text-dot text-[13px]">
             <LoadingText />
           </div>
-        ) : wishes.length === 0 ? (
+        ) : filteredWishes.length === 0 ? (
           <div className="text-center px-6 py-10 pb-8 bg-surface rounded-card border-[1.5px] border-dashed border-border">
             <div className="w-14 h-14 rounded-full bg-app flex items-center justify-center mx-auto mb-3 text-muted">
               <Heart size={24} strokeWidth={1.6} />
             </div>
             <p className="m-0 mb-1 text-[13.5px] font-semibold text-ink tracking-[0.02em]">
-              まだウィッシュがありません
+              {activeTab === 'place' ? 'まだ景點がありません' : 'まだ餐廳がありません'}
             </p>
             <p className="m-0 mb-[18px] text-[11.5px] text-muted tracking-[0.04em]">
-              行きたい所、食べたい物、やりたい事を共有しましょう
+              {activeTab === 'place'
+                ? '行きたい所をみんなで共有しましょう'
+                : '食べたいお店をみんなで共有しましょう'}
             </p>
             <button
               onClick={modal.openAdd}
@@ -125,7 +190,7 @@ export default function WishPage() {
         ) : (
           <>
             <div className="flex flex-col gap-1.5">
-              {wishes.map(w => (
+              {filteredWishes.map(w => (
                 <WishCard
                   key={w.id}
                   wish={w}
@@ -153,6 +218,7 @@ export default function WishPage() {
           key={modal.key}
           isOpen
           editTarget={modal.editTarget}
+          defaultCategory={activeTab}
           isSaving={isSaving}
           onClose={modal.close}
           onSave={handleSave}

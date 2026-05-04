@@ -30,7 +30,6 @@ interface TripStore {
 
   // ─── Actions ───────────────────────────────────────────────────
   setCurrentTrip: (trip: Trip | null) => void
-  addRecentTrip:  (tripId: string) => void
   clearTrip:      () => void
 }
 
@@ -48,11 +47,6 @@ export const useTripStore = create<TripStore>()(
           recentTripIds:  trip
             ? [trip.id, ...s.recentTripIds.filter((id) => id !== trip.id)].slice(0, 5)
             : s.recentTripIds,
-        })),
-
-      addRecentTrip: (tripId) =>
-        set((s) => ({
-          recentTripIds: [tripId, ...s.recentTripIds.filter((id) => id !== tripId)].slice(0, 5),
         })),
 
       clearTrip: () => set({ currentTrip: null, selectedTripId: null }),

@@ -3,12 +3,13 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 import { useSchedules, useCreateSchedule, useUpdateSchedule, useDeleteSchedule } from '../hooks/useSchedules'
-import { useDeleteTrip, useMyTrips, useUpdateTrip } from '@/features/trips/hooks/useTrips'
+import { useCopyTrip, useDeleteTrip, useMyTrips, useUpdateTrip } from '@/features/trips/hooks/useTrips'
+import type { CopyTripInput } from '@/features/trips/services/tripService'
 import { useTripSelection } from '@/features/trips/hooks/useTripSelection'
 import { useMembers } from '@/features/members/hooks/useMembers'
 import { membersToTripMembers } from '@/features/members/utils'
 import { useTripStore } from '@/store/tripStore'
-import { useUid } from '@/hooks/useAuth'
+import { useAuth } from '@/hooks/useAuth'
 import type { CreateScheduleInput, CreateTripInput, Schedule, Trip } from '@/types'
 import type { MenuActionKey, TripItem } from '@/features/trips/types'
 import { MOCK_SCHEDULES } from '../mocks'
@@ -17,6 +18,7 @@ import { toLocalDateString } from '@/utils/dates'
 import { toast } from '@/shared/toast'
 import ScheduleFormModal from './ScheduleFormModal'
 import EditTripModal from '@/features/trips/components/EditTripModal'
+import CopyTripModal from '@/features/trips/components/CopyTripModal'
 import TripSwitcher from '@/features/trips/components/TripSwitcher'
 import TripHeaderCard from '@/features/trips/components/TripHeaderCard'
 import DaySelector from './DaySelector'
@@ -51,7 +53,11 @@ export default function SchedulePage() {
   // Auth drives the mode split. While uid is undefined we render demo data
   // (even mid-load) so the initial paint is never a spinner — a key part of
   // the preview-first UX.
-  const uid = useUid()
+  // copyTrip needs displayName + photoURL → owner member doc, so we
+  // pull the full auth state. uid is derived from it; no separate
+  // useUid() subscription needed.
+  const { state: authState } = useAuth(true)
+  const uid = authState.status === 'signed-in' ? authState.user.uid : undefined
   const isDemo = !uid
 
   const { currentTrip, setCurrentTrip } = useTripStore()
@@ -62,6 +68,7 @@ export default function SchedulePage() {
   const [editTarget,     setEditTarget]     = useState<Schedule | null>(null)
   const [editTripOpen,   setEditTripOpen]   = useState(false)
   const [createTripOpen, setCreateTripOpen] = useState(false)
+  const [copyTripOpen,   setCopyTripOpen]   = useState(false)
 
   // AccountPage's "Planner" card navigates here with state.openCreateTrip = true
   // to deep-link straight into the create-trip flow. We consume the flag once,
@@ -139,6 +146,7 @@ export default function SchedulePage() {
   const deleteMut      = useDeleteSchedule(tripId ?? '')
   const updateTripMut  = useUpdateTrip(uid)
   const deleteTripMut  = useDeleteTrip(uid)
+  const copyTripMut    = useCopyTrip()
   const isSaving       = createMut.isPending || updateMut.isPending
 
   const selectTrip   = isDemo
@@ -262,7 +270,36 @@ export default function SchedulePage() {
       setInviteOpen(true)
       return
     }
+    if (key === 'copy') {
+      if (isDemo)        { setSignInOpen(true); return }
+      if (!currentTrip)  return
+      setCopyTripOpen(true)
+      return
+    }
     toast.info(`${key} は開発中です`)
+  }
+
+  // Cloud-only — gate is in handleMenuAction. uid is guaranteed at this point
+  // (signed-in branch) but we read auth state defensively for the createTrip
+  // payload (ownerId, displayName).
+  async function handleCopyTrip(input: CopyTripInput) {
+    if (!currentTrip || !uid || authState.status !== 'signed-in') return
+    try {
+      const { trip, copiedSchedules, copiedPlanItems, orphanedSchedules } =
+        await copyTripMut.mutateAsync({ source: currentTrip, input, user: authState.user })
+      setCurrentTrip(trip)
+      setActiveDate(null)
+      setCopyTripOpen(false)
+      const parts = [`「${trip.title}」を作成`]
+      if (input.copySchedules) parts.push(`行程 ${copiedSchedules} 件`)
+      if (input.copyPlanning)  parts.push(`計畫 ${copiedPlanItems} 件`)
+      toast.success(parts.join(' · '))
+      if (orphanedSchedules > 0) {
+        toast.info(`${orphanedSchedules} 件の行程が新しい日付範圍外`)
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? `複製に失敗：${e.message}` : '複製に失敗しました')
+    }
   }
 
   function openAdd()             { setEditTarget(null); setModalOpen(true) }
@@ -385,6 +422,19 @@ export default function SchedulePage() {
         isOpen={createTripOpen}
         onClose={() => setCreateTripOpen(false)}
       />
+
+      {!isDemo && currentTrip && copyTripOpen && (
+        // Conditionally rendered + keyed so every open initialises form
+        // state from props (matches the EditTrip / Schedule modal pattern).
+        <CopyTripModal
+          key={currentTrip.id}
+          isOpen
+          source={currentTrip}
+          isSaving={copyTripMut.isPending}
+          onClose={() => setCopyTripOpen(false)}
+          onConfirm={handleCopyTrip}
+        />
+      )}
 
       {!isDemo && currentTrip && (
         <>

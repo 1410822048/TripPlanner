@@ -16,7 +16,9 @@ import { getFirebase, getFirebaseStorage } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { compressImage } from '@/utils/image'
 import { retry, isTransientStorageError } from '@/utils/retry'
+import { stripEmpty } from '@/utils/stripEmpty'
 import { captureError } from '@/services/sentry'
+import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
 import {
   WishDocSchema,
   UpdateWishSchema,
@@ -29,14 +31,7 @@ import {
 const LIST_LIMIT = 100
 
 function wishFromDoc(d: QueryDocumentSnapshot): Wish {
-  const parsed = WishDocSchema.safeParse(d.data())
-  if (!parsed.success) {
-    // Production data corruption is the scariest invisible failure mode —
-    // surface it to Sentry so we hear about it before users do.
-    captureError(parsed.error, { source: 'wishFromDoc', docId: d.id })
-    throw new Error(`Wish ${d.id} failed schema validation`)
-  }
-  return { id: d.id, ...parsed.data }
+  return firestoreDocFromSchema(WishDocSchema, d, 'wishFromDoc')
 }
 
 // ─── Read ─────────────────────────────────────────────────────────
@@ -232,12 +227,3 @@ export async function toggleWishVote(
   })
 }
 
-/** Drop empty-string and undefined values so Firestore doesn't store noise. */
-function stripEmpty<T extends Record<string, unknown>>(o: T): Partial<T> {
-  const out: Partial<T> = {}
-  for (const [k, v] of Object.entries(o)) {
-    if (v === undefined || v === '') continue
-    ;(out as Record<string, unknown>)[k] = v
-  }
-  return out
-}

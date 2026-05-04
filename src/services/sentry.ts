@@ -70,4 +70,6 @@ export function captureError(err: unknown, context?: Record<string, unknown>): v
   }
 }
 
-export { Sentry }
+// (Earlier versions re-exported the full `Sentry` namespace for escape-
+// hatch use; nothing in src/ ever consumed it that way, so it's been
+// removed. Add a named export here if a real consumer appears.)

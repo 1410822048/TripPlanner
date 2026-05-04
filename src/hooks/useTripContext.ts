@@ -20,8 +20,10 @@
 //   cloud          → signed-in with a selected real trip. `trip` is the
 //                    Firestore Trip object (note: TripItem ≠ Trip — they
 //                    differ on `dest`/`destination`, `emoji`/`icon`, and
-//                    date types). Use `cloudTripToItem` from SchedulePage
-//                    when you need a unified shape.
+//                    date types). SchedulePage has a private
+//                    `cloudTripToItem` adapter for the conversion; if a
+//                    second consumer ever needs the same shape, promote
+//                    that adapter to a shared util before duplicating it.
 //
 // Why a discriminated union (not a flat object with optional fields)?
 //   - The TS narrowing makes the demo / cloud branch unambiguous

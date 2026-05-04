@@ -3,16 +3,12 @@ import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'
+import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
 import { removeMemberFromTripBookings } from '@/services/memberSync'
 import { MemberDocSchema, type Member } from '@/types'
 
 function memberFromDoc(d: QueryDocumentSnapshot): Member {
-  const parsed = MemberDocSchema.safeParse(d.data())
-  if (!parsed.success) {
-    captureError(parsed.error, { source: 'memberFromDoc', docId: d.id })
-    throw new Error(`Member ${d.id} failed schema validation`)
-  }
-  return { id: d.id, ...parsed.data }
+  return firestoreDocFromSchema(MemberDocSchema, d, 'memberFromDoc')
 }
 
 export async function getMembersByTrip(tripId: string): Promise<Member[]> {

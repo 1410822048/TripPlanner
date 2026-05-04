@@ -8,10 +8,8 @@ import { Heart, ExternalLink } from 'lucide-react'
 import type { Wish } from '@/types'
 
 const CATEGORY_EMOJI: Record<Wish['category'], string> = {
-  place:    '🗺️',
-  food:     '🍜',
-  activity: '🎯',
-  other:    '📌',
+  place: '🗺️',
+  food:  '🍜',
 }
 
 interface Props {

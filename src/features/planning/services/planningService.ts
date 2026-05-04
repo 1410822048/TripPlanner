@@ -7,6 +7,8 @@ import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'
+import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
+import { stripEmpty } from '@/utils/stripEmpty'
 import {
   PlanItemDocSchema,
   UpdatePlanItemSchema,
@@ -18,12 +20,7 @@ import {
 const LIST_LIMIT = 200
 
 function planItemFromDoc(d: QueryDocumentSnapshot): PlanItem {
-  const parsed = PlanItemDocSchema.safeParse(d.data())
-  if (!parsed.success) {
-    captureError(parsed.error, { source: 'planItemFromDoc', docId: d.id })
-    throw new Error(`PlanItem ${d.id} failed schema validation`)
-  }
-  return { id: d.id, ...parsed.data }
+  return firestoreDocFromSchema(PlanItemDocSchema, d, 'planItemFromDoc')
 }
 
 // ─── Read ─────────────────────────────────────────────────────────
@@ -117,11 +114,3 @@ export async function deletePlanItem(tripId: string, itemId: string): Promise<vo
   await deleteDoc(doc(db, ...P.planItem(tripId, itemId)))
 }
 
-function stripEmpty<T extends Record<string, unknown>>(o: T): Partial<T> {
-  const out: Partial<T> = {}
-  for (const [k, v] of Object.entries(o)) {
-    if (v === undefined || v === '') continue
-    ;(out as Record<string, unknown>)[k] = v
-  }
-  return out
-}

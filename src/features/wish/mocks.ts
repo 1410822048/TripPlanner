@@ -27,7 +27,7 @@ export const MOCK_WISHES: Wish[] = [
   },
   {
     id: 'w3', tripId: 'demo',
-    category: 'activity',
+    category: 'place',
     title: '隅田川ナイトクルーズ',
     description: '夜景を眺めながら 1 時間のクルーズ',
     proposedBy: 'm2',

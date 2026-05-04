@@ -8,7 +8,13 @@ import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
 import { TimestampSchema } from './_shared'
 
-export type WishCategory = 'place' | 'food' | 'activity' | 'other'
+// Two-category model: 景點 vs 餐廳. Earlier versions had four
+// (place / food / activity / other); the simpler split matches how
+// users actually plan trips ("things to see" vs "things to eat") and
+// removes the ambiguous "other" bucket. Legacy docs with `activity`
+// or `other` need to run scripts/migrate-wish-categories.mjs once
+// before this stricter enum is deployed.
+export type WishCategory = 'place' | 'food'
 
 export interface WishImage {
   url:       string
@@ -46,7 +52,7 @@ export const WishImageSchema = z.object({
 
 export const WishDocSchema = z.object({
   tripId:      z.string(),
-  category:    z.enum(['place', 'food', 'activity', 'other']),
+  category:    z.enum(['place', 'food']),
   title:       z.string(),
   description: z.string().optional(),
   link:        z.string().optional(),
@@ -60,7 +66,7 @@ export const WishDocSchema = z.object({
 /** Form input for creating / editing a wish. Image upload + vote toggle
  *  are handled out-of-band. */
 export const CreateWishSchema = z.object({
-  category:    z.enum(['place', 'food', 'activity', 'other']),
+  category:    z.enum(['place', 'food']),
   title:       z.string().min(1, '請輸入標題').max(100),
   description: z.string().max(500).optional(),
   link:        z.string().max(500).optional(),
