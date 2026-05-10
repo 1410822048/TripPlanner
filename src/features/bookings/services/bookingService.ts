@@ -9,6 +9,7 @@ import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
+import { subscribeToCollection } from '@/services/realtimeQuery'
 import { BookingDocSchema, UpdateBookingSchema, type Booking, type CreateBookingInput, type UpdateBookingInput } from '@/types'
 import { stripEmpty } from '@/utils/stripEmpty'
 import { uploadAttachment, purgeAttachments } from './bookingStorage'
@@ -58,6 +59,26 @@ export async function getBookingsByTrip(tripId: string): Promise<Booking[]> {
 }
 
 /**
+ * Realtime variant of getBookingsByTrip — same sortDate-desc query
+ * pushed via onSnapshot so the bookings list reflects co-member
+ * changes live.
+ */
+export const subscribeToBookings = (
+  tripId: string,
+  onData: (data: Booking[]) => void,
+  onError: (e: Error) => void,
+) => subscribeToCollection<Booking>({
+  buildQuery: ({ db, collection, query, orderBy, limit }) => query(
+    collection(db, ...P.bookings(tripId)),
+    orderBy('sortDate', 'desc'),
+    limit(LIST_LIMIT),
+  ),
+  fromDoc: bookingFromDoc,
+  source:  'subscribeToBookings',
+  limit:   LIST_LIMIT,
+}, onData, onError)
+
+/**
  * Single-user "every hotel booking across every trip I'm a member of",
  * used by PastLodgingPage. Replaces the previous N-trip fan-out
  * (useQueries calling getHotelBookingsByTrip per trip) with a single
@@ -82,6 +103,30 @@ export async function getMyHotelBookings(uid: string): Promise<Booking[]> {
   }
   return snap.docs.map(bookingFromDoc)
 }
+
+/**
+ * Realtime variant of getMyHotelBookings — collection-group listener
+ * across every trip the user is in, filtered to hotel bookings via
+ * the denormalised `memberIds` array. Fires when a co-traveller adds
+ * / edits / deletes a hotel booking on any shared trip, so the
+ * cross-trip lodging history stays current.
+ */
+export const subscribeToMyHotelBookings = (
+  uid:    string,
+  onData: (data: Booking[]) => void,
+  onError: (e: Error) => void,
+) => subscribeToCollection<Booking>({
+  buildQuery: ({ db, collectionGroup, query, where, orderBy, limit }) => query(
+    collectionGroup(db, 'bookings'),
+    where('memberIds', 'array-contains', uid),
+    where('type', '==', 'hotel'),
+    orderBy('sortDate', 'desc'),
+    limit(LIST_LIMIT),
+  ),
+  fromDoc: bookingFromDoc,
+  source:  'subscribeToMyHotelBookings',
+  limit:   LIST_LIMIT,
+}, onData, onError)
 
 /** Fetch the uid list for a trip's members. Used by createBooking to seed
  *  the booking's `memberIds` denormalisation. One extra read per create. */
@@ -192,7 +237,7 @@ export async function updateBooking(
 
   // Erase optional text fields the user cleared in the form. Without
   // deleteField() the existing values would persist on the doc.
-  for (const k of ['confirmationCode', 'provider', 'checkIn', 'checkOut', 'note'] as const) {
+  for (const k of ['confirmationCode', 'provider', 'checkIn', 'checkOut', 'address', 'note'] as const) {
     if (k in validated && (validated[k] === undefined || validated[k] === '')) {
       patch[k] = deleteField()
     }

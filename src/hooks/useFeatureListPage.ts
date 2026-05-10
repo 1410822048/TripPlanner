@@ -18,6 +18,7 @@ import { useCallback, useState } from 'react'
 import { useUid } from './useAuth'
 import { useTripContext, type TripContext } from './useTripContext'
 import { useFormModal, type UseFormModalResult } from './useFormModal'
+import { useCanWrite, useIsTripOwner } from '@/features/trips/hooks/useTripRole'
 
 interface Identifiable { id: string }
 
@@ -33,6 +34,14 @@ export interface FeatureListPageState<T extends Identifiable> {
    *  never actually used. */
   mutationTripId: string
   isDemo: boolean
+  /** Owner / editor — gates create / update / delete affordances on
+   *  schedule / booking / expense pages (mirrors `canWrite` in
+   *  firestore.rules). True in demo (no real ownership concept). */
+  canWrite: boolean
+  /** Trip owner — gates owner-only affordances (invite link, trip
+   *  metadata edit). Mirrors `isTripOwner` in firestore.rules. True
+   *  in demo. */
+  isOwner: boolean
   modal: UseFormModalResult<T>
   signIn: {
     isOpen:  boolean
@@ -54,12 +63,21 @@ export function useFeatureListPage<T extends Identifiable>(): FeatureListPageSta
   const mutationTripId = cloudTripId ?? ''
   const isDemo         = ctx.status === 'demo'
 
+  // Role gates baked into the abstraction so individual pages don't
+  // each re-derive them (the duplicated `useCanWrite(cloudTripId, isDemo)`
+  // / `currentTrip.ownerId === uid` patterns we previously had on every
+  // list page).
+  const canWrite = useCanWrite(cloudTripId, isDemo)
+  const isOwner  = useIsTripOwner(cloudTripId, isDemo)
+
   return {
     ctx,
     uid,
     cloudTripId,
     mutationTripId,
     isDemo,
+    canWrite,
+    isOwner,
     modal,
     signIn: { isOpen: signInOpen, open: openSignIn, close: closeSignIn },
   }

@@ -18,6 +18,7 @@ export type BookingFormState = {
   provider:         string
   checkIn:          string
   checkOut:         string
+  address:          string
   note:             string
 }
 
@@ -38,6 +39,7 @@ function initFromBooking(b: Booking | null): BookingFormState {
     provider:         b?.provider ?? '',
     checkIn:          toDateOnly(b?.checkIn),
     checkOut:         toDateOnly(b?.checkOut),
+    address:          b?.address ?? '',
     note:             b?.note ?? '',
   }
 }

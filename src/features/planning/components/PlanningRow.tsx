@@ -6,13 +6,10 @@
 // When the row is swiped open, taps on either the body or the checkbox
 // are short-circuited to "close the row" so the user can dismiss the
 // delete affordance without accidentally toggling state.
-import { useState, useRef, useEffect, memo } from 'react'
+import { memo } from 'react'
 import { Check, Trash2 } from 'lucide-react'
 import type { PlanItem } from '@/types'
-import {
-  SWIPE_WIDTH, OPEN_THRESHOLD, MOVE_THRESHOLD,
-  FG_TRANSITION, BG_TRANSITION,
-} from '@/components/ui/swipeConstants'
+import { useSwipeRow, SWIPE_WIDTH, BG_TRANSITION, FG_TRANSITION } from '@/hooks/useSwipeRow'
 
 interface Props {
   item:          PlanItem
@@ -32,134 +29,18 @@ function PlanningRow({
   item, isPreviewOnly, isOpen,
   onToggleDone, onTap, onOpen, onClose, onDelete,
 }: Props) {
-  const [confirming, setConfirming] = useState(false)
-  const fgRef = useRef<HTMLDivElement>(null)
-  const bgRef = useRef<HTMLDivElement>(null)
-  const drag  = useRef({
-    startX: 0, startY: 0,
-    currentX: 0,
-    dragging: false,
-    mode: null as 'swipe' | null,
-    didDrag: false,
-  })
-
-  function writeTransform(x: number) {
-    drag.current.currentX = x
-    const fg = fgRef.current, bg = bgRef.current
-    if (fg) fg.style.transform = `translate3d(${x}px,0,0)`
-    if (bg) {
-      bg.style.transform = `translate3d(${SWIPE_WIDTH + x}px,0,0)`
-      bg.style.pointerEvents = x < 0 ? 'auto' : 'none'
-    }
-  }
-
-  // Reset the "tap once to confirm" gate when the row swipes shut.
-  useEffect(() => {
-    if (!isOpen) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setConfirming(false)
-    }
-  }, [isOpen])
-
-  function onPointerDown(e: React.PointerEvent) {
-    drag.current.startX   = e.clientX
-    drag.current.startY   = e.clientY
-    drag.current.mode     = null
-    drag.current.didDrag  = false
-    drag.current.dragging = true
-    const fg = fgRef.current, bg = bgRef.current
-    if (fg) { fg.style.transition = 'none'; fg.style.willChange = 'transform' }
-    if (bg) { bg.style.transition = 'background 0.15s'; bg.style.willChange = 'transform' }
-    try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId) }
-    catch { /* ignore */ }
-  }
-
-  function onPointerMove(e: React.PointerEvent) {
-    if (!drag.current.dragging) return
-    const dx = e.clientX - drag.current.startX
-    const dy = e.clientY - drag.current.startY
-
-    if (drag.current.mode === 'swipe') {
-      drag.current.didDrag = true
-      const base = isOpen ? -SWIPE_WIDTH : 0
-      const next = Math.min(0, Math.max(-SWIPE_WIDTH, base + dx))
-      writeTransform(next)
-      return
-    }
-
-    if (Math.abs(dx) < MOVE_THRESHOLD && Math.abs(dy) < MOVE_THRESHOLD) return
-
-    if (Math.abs(dx) > Math.abs(dy)) {
-      drag.current.mode = 'swipe'
-      drag.current.didDrag = true
-    } else {
-      drag.current.dragging = false
-      try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) }
-      catch { /* no-op */ }
-    }
-  }
-
-  function onPointerUp(e: React.PointerEvent) {
-    if (!drag.current.dragging) return
-    drag.current.dragging = false
-    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) }
-    catch { /* no-op */ }
-
-    const fg = fgRef.current, bg = bgRef.current
-    if (fg) fg.style.transition = FG_TRANSITION
-    if (bg) bg.style.transition = BG_TRANSITION
-
-    if (drag.current.mode === 'swipe') {
-      const x = drag.current.currentX
-      if (x <= -OPEN_THRESHOLD) {
-        writeTransform(-SWIPE_WIDTH)
-        if (!isOpen) onOpen()
-      } else {
-        writeTransform(0)
-        if (isOpen) onClose()
-      }
-    }
-
-    window.setTimeout(() => {
-      if (fg) fg.style.willChange = ''
-      if (bg) bg.style.willChange = ''
-    }, 280)
-  }
-
-  // Inner buttons stop propagation so they don't fight the row's pointer
-  // gesture, and short-circuit to onClose() when the row is swiped — that
-  // way the user can dismiss the delete affordance with any tap on the
-  // row itself, instead of being forced to swipe back.
-  function handleCheckboxTap(e: React.MouseEvent) {
-    e.stopPropagation()
-    if (drag.current.didDrag) { drag.current.didDrag = false; return }
-    if (isOpen) { onClose(); return }
-    onToggleDone()
-  }
-  function handleBodyTap(e: React.MouseEvent) {
-    e.stopPropagation()
-    if (drag.current.didDrag) { drag.current.didDrag = false; return }
-    if (isOpen) { onClose(); return }
-    onTap()
-  }
-
-  function handleDeleteTap(e: React.MouseEvent) {
-    e.stopPropagation()
-    if (!confirming) { setConfirming(true); return }
-    onDelete()
-  }
-
-  const openX = isOpen ? -SWIPE_WIDTH : 0
+  const {
+    bindFg, bindBg, pointerProps, deleteProps, openX, confirming, wrapTap,
+  } = useSwipeRow({ isOpen, onOpen, onClose, onDelete })
 
   return (
     <div className={[
       'relative rounded-[14px] overflow-hidden bg-surface border border-border transition-opacity',
       item.done ? 'opacity-60' : 'opacity-100',
     ].join(' ')}>
-      {/* delete background button */}
       <div
-        ref={bgRef}
-        onClick={handleDeleteTap}
+        ref={bindBg}
+        {...deleteProps}
         className={[
           'absolute top-0 right-0 bottom-0 flex items-center justify-center cursor-pointer',
           confirming ? 'bg-[#A83A3A]' : 'bg-[#D85A5A]',
@@ -185,14 +66,9 @@ function PlanningRow({
         )}
       </div>
 
-      {/* foreground content (swipe target) */}
       <div
-        ref={fgRef}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onContextMenu={e => e.preventDefault()}
+        ref={bindFg}
+        {...pointerProps}
         className="relative select-none flex items-stretch gap-2 bg-surface"
         style={{
           transform: `translate3d(${openX}px,0,0)`,
@@ -203,7 +79,7 @@ function PlanningRow({
         }}
       >
         <button
-          onClick={handleCheckboxTap}
+          onClick={wrapTap(onToggleDone)}
           aria-pressed={item.done}
           aria-label={item.done ? 'チェック解除' : 'チェック'}
           className={[
@@ -220,7 +96,7 @@ function PlanningRow({
         </button>
 
         <button
-          onClick={handleBodyTap}
+          onClick={wrapTap(onTap)}
           className="flex-1 min-w-0 px-3 py-2.5 text-left bg-transparent border-none cursor-pointer hover:bg-app transition-colors"
         >
           <div className={[

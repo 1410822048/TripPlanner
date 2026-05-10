@@ -1,11 +1,32 @@
 // src/features/trips/hooks/useTrips.ts
-// Mutations follow the same optimistic pattern as useSchedules: cache is
-// patched in onMutate, rolled back in onError (with a toast), reconciled via
-// invalidate in onSettled. Edit needs async onMutate because date Timestamps
-// are built lazily through the Firestore bundle import.
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+// Realtime-backed via:
+//   - useMyTripIds: a /members collection-group listener filtered by
+//     `userId == uid`. Pushes the new id list whenever the user joins
+//     or leaves a trip.
+//   - useMyTrips:   useMyTripIds + per-trip doc listeners. Aggregates
+//     N trip-doc pushes into a single Trip[] cache so the trip
+//     switcher / SchedulePage header / etc. all reflect metadata
+//     edits live.
+//
+// We deliberately do NOT use `where(documentId(), 'in', ids)` for the
+// per-trip fetch — it routes through the /trips LIST rule (owner-only)
+// and 403s for non-owner members. The L3 (R3) regression in 2026-04
+// burnt this in once already; sticking with N independent listeners
+// keeps reads identical for a typical 5-trip user and avoids that
+// pitfall entirely.
+import { useEffect } from 'react'
+import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
 import type { User } from 'firebase/auth'
-import { copyTrip, createTrip, deleteTrip, getMyTrips, getMyTripIds, updateTrip, type CopyTripInput, type CopyTripResult } from '../services/tripService'
+import {
+  createTrip,
+  getMyTripIds, getTripsByIds,
+  subscribeToMyTripIds, subscribeToTrip,
+  updateTrip,
+} from '../services/tripService'
+import { deleteTrip } from '../services/tripCascade'
+import { copyTrip, type CopyTripInput, type CopyTripResult } from '../services/tripCopy'
+import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
+import { captureError } from '@/services/sentry'
 import { getFirebase } from '@/services/firebase'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
 import { toast } from '@/shared/toast'
@@ -18,31 +39,97 @@ export const tripKeys = {
 }
 
 /**
- * Fetch trips owned by the signed-in user. Disabled until uid is known so
- * we don't fire a query against an unauthenticated client.
+ * Realtime trip-id list — collection-group listener on /members
+ * filtered to docs owned by this uid. Resolves ~half the time of
+ * useMyTrips because it skips the per-trip getDoc fan-out, exposing
+ * the ids early for callers (AccountPage's member fan-out) that can
+ * start downstream queries in parallel.
  */
-export function useMyTrips(uid: string | undefined) {
-  return useQuery({
-    queryKey: tripKeys.mine(uid ?? ''),
-    queryFn:  () => getMyTrips(uid!),
-    enabled:  !!uid,
-  })
-}
+export const useMyTripIds = createRealtimeListHook<string>({
+  queryKeyFactory: tripKeys.myIds,
+  initialFetch:    getMyTripIds,
+  subscribe:       subscribeToMyTripIds,
+  source:          'useMyTripIds',
+})
 
 /**
- * Fetch just the trip ids the user belongs to (stage 1 of getMyTrips).
- * Resolves ~half the time of `useMyTrips` because it skips the per-trip
- * getDoc fan-out — useful when a caller only needs ids to fan out further
- * Firestore queries (e.g. AccountPage's per-trip member fetches), letting
- * those run in parallel with the trip-doc fetches inside `useMyTrips`
- * instead of waiting for the full Trip[] to land.
+ * Realtime trip list. Internally:
+ *   1. subscribes to the user's member-collection-group (via
+ *      useMyTripIds) to keep the id list fresh,
+ *   2. opens one trip-doc listener per id and aggregates pushes into
+ *      tripKeys.mine(uid)'s array cache.
+ *
+ * The split lets membership changes (join / leave) and metadata edits
+ * (title / dates / icon) propagate independently without re-querying
+ * the unchanged half. Listeners are disposed when ids change so we
+ * don't leak subscriptions to trips the user no longer belongs to.
  */
-export function useMyTripIds(uid: string | undefined) {
-  return useQuery({
-    queryKey: tripKeys.myIds(uid ?? ''),
-    queryFn:  () => getMyTripIds(uid!),
-    enabled:  !!uid,
+export function useMyTrips(uid: string | undefined): UseQueryResult<Trip[]> {
+  const qc = useQueryClient()
+  const idsResult = useMyTripIds(uid)
+  const ids = idsResult.data ?? []
+  // Stable string for effect dep: array refs change every render, but
+  // joining means same-content arrays produce same dep, so listeners
+  // only re-subscribe on actual id changes.
+  const idsKey = ids.join(',')
+
+  const result = useQuery<Trip[]>({
+    queryKey:  tripKeys.mine(uid ?? ''),
+    queryFn:   () => getTripsByIds(ids),
+    enabled:   !!uid && idsResult.isSuccess,
+    staleTime: Infinity,
   })
+
+  useEffect(() => {
+    if (!uid || ids.length === 0) {
+      // No trips → ensure cache reflects empty rather than a stale list.
+      if (uid && idsResult.isSuccess) qc.setQueryData<Trip[]>(tripKeys.mine(uid), [])
+      return
+    }
+
+    let mounted = true
+    const unsubs: Array<() => void> = []
+    // Per-id Trip object accumulator. Listener pushes update individual
+    // entries; we recompute the array on each change so React-Query
+    // reference equality fires component updates.
+    const tripMap = new Map<string, Trip>()
+    const publish = () => {
+      if (!mounted) return
+      const arr = ids
+        .map(id => tripMap.get(id))
+        .filter((t): t is Trip => !!t)
+        .sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis())
+      qc.setQueryData<Trip[]>(tripKeys.mine(uid), arr)
+    }
+
+    ids.forEach(id => {
+      void subscribeToTrip(
+        id,
+        trip => {
+          if (trip) tripMap.set(id, trip)
+          else      tripMap.delete(id)
+          publish()
+        },
+        err => captureError(err, { source: 'useMyTrips/tripDoc', tripId: id }),
+      ).then(unsub => {
+        if (mounted) unsubs.push(unsub)
+        else unsub()
+      }).catch(e => {
+        captureError(e, { source: 'useMyTrips/subscribe-init', tripId: id })
+      })
+    })
+
+    return () => {
+      mounted = false
+      unsubs.forEach(u => u())
+    }
+    // idsKey is the stable representation of ids; uid + qc are also
+    // tracked. Lint can't infer that idsKey ≡ ids, hence the eslint
+    // disable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid, idsKey, qc])
+
+  return result
 }
 
 export function useCreateTrip() {
@@ -112,7 +199,7 @@ export function useUpdateTrip(uid: string | undefined) {
     },
     onError: (err, _vars, ctx) => {
       if (uid && ctx?.prev !== undefined) qc.setQueryData(tripKeys.mine(uid), ctx.prev)
-      toast.error(err instanceof Error ? `更新に失敗：${err.message}` : '更新に失敗しました')
+      toast.mutationError(err, '更新')
     },
     // No onSettled invalidate: the optimistic patch already covers every field
     // the UI renders (title / destination / icon / dates). The only field
@@ -141,13 +228,9 @@ export function useDeleteTrip(uid: string | undefined) {
         if (ctx?.prevTrips !== undefined) qc.setQueryData(tripKeys.mine(uid), ctx.prevTrips)
         if (ctx?.prevIds   !== undefined) qc.setQueryData(tripKeys.myIds(uid), ctx.prevIds)
       }
-      toast.error(err instanceof Error ? `削除に失敗：${err.message}` : '削除に失敗しました')
+      toast.mutationError(err, '削除')
     },
-    onSettled: () => {
-      if (uid) {
-        qc.invalidateQueries({ queryKey: tripKeys.mine(uid) })
-        qc.invalidateQueries({ queryKey: tripKeys.myIds(uid) })
-      }
-    },
+    // No onSettled invalidate: the realtime listeners on tripKeys.mine
+    // and tripKeys.myIds reconcile with server state on their own.
   })
 }

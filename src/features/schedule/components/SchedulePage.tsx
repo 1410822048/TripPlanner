@@ -4,8 +4,9 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 import { useSchedules, useCreateSchedule, useUpdateSchedule, useDeleteSchedule } from '../hooks/useSchedules'
 import { useCopyTrip, useDeleteTrip, useMyTrips, useUpdateTrip } from '@/features/trips/hooks/useTrips'
-import type { CopyTripInput } from '@/features/trips/services/tripService'
+import type { CopyTripInput } from '@/features/trips/services/tripCopy'
 import { useTripSelection } from '@/features/trips/hooks/useTripSelection'
+import { useCanWrite, useIsTripOwner } from '@/features/trips/hooks/useTripRole'
 import { useMembers } from '@/features/members/hooks/useMembers'
 import { membersToTripMembers } from '@/features/members/utils'
 import { useTripStore } from '@/store/tripStore'
@@ -36,8 +37,10 @@ import LoadingText from '@/components/ui/LoadingText'
 
 // Adapter: Firestore Trip → presentation TripItem. `icon` is persisted on the
 // Trip doc (default ✈️ for trips created before the field existed). Member
-// chips come from useMembers separately.
-function cloudTripToItem(trip: Trip): TripItem {
+// chips come from useMembers separately. `uid` is needed to compute
+// `ownedByMe` so TripSwitcher can gate per-trip delete swipe / button on
+// trip ownership (mirrors firestore.rules `isTripOwner`).
+function cloudTripToItem(trip: Trip, uid: string | undefined): TripItem {
   return {
     id:        trip.id,
     title:     trip.title,
@@ -46,6 +49,7 @@ function cloudTripToItem(trip: Trip): TripItem {
     startDate: toLocalDateString(trip.startDate.toDate()),
     endDate:   toLocalDateString(trip.endDate.toDate()),
     members:   [],
+    ownedByMe: !!uid && trip.ownerId === uid,
   }
 }
 
@@ -60,7 +64,10 @@ export default function SchedulePage() {
   const uid = authState.status === 'signed-in' ? authState.user.uid : undefined
   const isDemo = !uid
 
-  const { currentTrip, setCurrentTrip } = useTripStore()
+  const currentTrip    = useTripStore(s => s.currentTrip)
+  const setCurrentTrip = useTripStore(s => s.setCurrentTrip)
+  const tripOrder      = useTripStore(s => s.tripOrder)
+  const setTripOrder   = useTripStore(s => s.setTripOrder)
   const { data: myTrips, error: tripsError, refetch: refetchTrips } = useMyTrips(uid)
 
   const [activeDate,     setActiveDate]     = useState<string | null>(null)
@@ -99,17 +106,36 @@ export default function SchedulePage() {
   // object (and a new TripItem[] from .map), which would invalidate the
   // child memos that depend on identity.
   const cloudTripItem = useMemo(
-    () => !isDemo && currentTrip ? cloudTripToItem(currentTrip) : null,
-    [isDemo, currentTrip],
+    () => !isDemo && currentTrip ? cloudTripToItem(currentTrip, uid) : null,
+    [isDemo, currentTrip, uid],
   )
-  const cloudTripsList = useMemo<TripItem[]>(
-    () => !isDemo ? (myTrips ?? []).map(cloudTripToItem) : [],
-    [isDemo, myTrips],
-  )
+  const cloudTripsList = useMemo<TripItem[]>(() => {
+    if (isDemo) return []
+    const items = (myTrips ?? []).map(t => cloudTripToItem(t, uid))
+    if (tripOrder.length === 0) return items
+    // Apply user's saved order from drag-to-reorder. Trips not in the
+    // saved list (newly joined / created since last reorder) bubble to
+    // the top so they remain discoverable; saved trips fall in
+    // explicit positions after.
+    const orderIdx = new Map(tripOrder.map((id, i) => [id, i]))
+    return [...items].sort((a, b) => {
+      const ai = orderIdx.get(a.id)
+      const bi = orderIdx.get(b.id)
+      if (ai === undefined && bi === undefined) return 0
+      if (ai === undefined) return -1
+      if (bi === undefined) return 1
+      return ai - bi
+    })
+  }, [isDemo, myTrips, uid, tripOrder])
 
   const tripId = isDemo ? demoSelection.selectedTrip.id : currentTrip?.id
   const { data: fbSchedules, isLoading } = useSchedules(isDemo ? undefined : tripId)
   const { data: fbMembers } = useMembers(isDemo ? undefined : tripId)
+  // Viewers can read schedules but not create/edit/delete — mirrors the
+  // canWrite gate in firestore.rules. Hide the affordances they can't
+  // actually use (add buttons in DayTimeline, delete in the form modal).
+  const canWrite = useCanWrite(isDemo ? undefined : tripId, isDemo)
+  const isOwner  = useIsTripOwner(isDemo ? undefined : tripId, isDemo)
   const memberChips = useMemo(() => membersToTripMembers(fbMembers ?? []), [fbMembers])
 
   // useMemo so an empty-state render doesn't produce a fresh [] each
@@ -193,7 +219,19 @@ export default function SchedulePage() {
     })
   }
 
-  const reorderTrips = isDemo ? demoSelection.reorderTrips : () => {}
+  // Cloud reorder: persist a per-user trip-id order in the zustand
+  // store (localStorage-backed). The `cloudTripsList` memo above
+  // applies this order on render, so the splice + setTripOrder is
+  // sufficient — no Firestore write involved (ordering is a personal
+  // view preference, not shared trip metadata).
+  const reorderTrips = isDemo ? demoSelection.reorderTrips : (fromIdx: number, toIdx: number) => {
+    if (fromIdx === toIdx) return
+    const ids = cloudTripsList.map(t => t.id)
+    const [moved] = ids.splice(fromIdx, 1)
+    if (!moved) return
+    ids.splice(toIdx, 0, moved)
+    setTripOrder(ids)
+  }
 
   // Cloud mode: distinguish "loading" (undefined + no error) from "empty"
   // (length === 0) from "error" (query threw). Previous version collapsed
@@ -360,6 +398,11 @@ export default function SchedulePage() {
           onReorder={reorderTrips}
           onCreateTrip={() => setCreateTripOpen(true)}
           canDeleteLast={!isDemo}
+          // Demo mode has no real ownership — every trip belongs to "you",
+          // so all menu actions are visible. In cloud mode, gate owner-only
+          // entries (edit metadata / share invite link / settings) behind a
+          // real ownerId match.
+          isOwner={isOwner}
         />
       </div>
 
@@ -369,6 +412,7 @@ export default function SchedulePage() {
         tripDays={dateRange.length}
         scheduleCount={schedules.length}
         tripTotal={tripTotal}
+        canInvite={isOwner}
         onEditTrip={() => setEditTripOpen(true)}
         onInvite={() => isDemo ? setSignInOpen(true) : setInviteOpen(true)}
       />
@@ -385,6 +429,7 @@ export default function SchedulePage() {
         items={items}
         dayTotal={dayTotal}
         isLoading={isLoading && !isDemo}
+        canWrite={canWrite}
         onAdd={openAdd}
         onEdit={openEdit}
       />
@@ -397,10 +442,16 @@ export default function SchedulePage() {
           isOpen
           editTarget={editTarget}
           defaultDate={display ?? new Date().toISOString().slice(0,10)}
+          // Trip date range — the picker disables days outside this
+          // window and the form blocks save with an inline message if
+          // an edit somehow lands a stored value out of range (e.g.
+          // owner shrunk the trip after the schedule was created).
+          tripStartDate={selectedTrip.startDate}
+          tripEndDate={selectedTrip.endDate}
           isSaving={isSaving}
           onClose={closeModal}
           onSave={handleSave}
-          onDelete={editTarget ? handleDelete : undefined}
+          onDelete={editTarget && canWrite ? handleDelete : undefined}
         />
       )}
 

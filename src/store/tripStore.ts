@@ -27,10 +27,20 @@ interface TripStore {
    * useCurrentTripSync when the selected id is missing.
    */
   recentTripIds: string[]
+  /**
+   * User-defined trip order (drag-to-reorder in TripSwitcher). Stored
+   * here rather than on the trip docs because it's a personal view
+   * preference — different users have different orderings of the same
+   * shared trip. Trips not in this list fall through to the default
+   * sort (createdAt desc) at the top, so newly-joined trips don't
+   * vanish under stale ordering.
+   */
+  tripOrder: string[]
 
   // ─── Actions ───────────────────────────────────────────────────
   setCurrentTrip: (trip: Trip | null) => void
   clearTrip:      () => void
+  setTripOrder:   (ids: string[]) => void
 }
 
 export const useTripStore = create<TripStore>()(
@@ -39,6 +49,7 @@ export const useTripStore = create<TripStore>()(
       currentTrip:    null,
       selectedTripId: null,
       recentTripIds:  [],
+      tripOrder:      [],
 
       setCurrentTrip: (trip) =>
         set((s) => ({
@@ -50,15 +61,19 @@ export const useTripStore = create<TripStore>()(
         })),
 
       clearTrip: () => set({ currentTrip: null, selectedTripId: null }),
+
+      setTripOrder: (ids) => set({ tripOrder: ids }),
     }),
     {
       name: 'tripmate-trip-store',
-      // Persist selectedTripId + recentTripIds. The Trip object itself
-      // can't round-trip JSON (Timestamp instances) — we rehydrate it
-      // from the TanStack Query cache via useCurrentTripSync on boot.
+      // Persist selectedTripId + recentTripIds + tripOrder. The Trip
+      // object itself can't round-trip JSON (Timestamp instances) — we
+      // rehydrate it from the TanStack Query cache via useCurrentTripSync
+      // on boot.
       partialize: (s) => ({
         selectedTripId: s.selectedTripId,
         recentTripIds:  s.recentTripIds,
+        tripOrder:      s.tripOrder,
       }),
     }
   )

@@ -5,6 +5,7 @@ import { useRef, useState } from 'react'
 import type { PlanItem, PlanCategory, CreatePlanItemInput } from '@/types'
 import FormModalShell from '@/components/ui/FormModalShell'
 import FormField from '@/components/ui/FormField'
+import DeleteConfirm from '@/components/ui/DeleteConfirm'
 import { inputClass } from '@/components/ui/inputStyle'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
@@ -52,7 +53,6 @@ export default function PlanningFormModal({
     () => initFromTarget(editTarget, defaultCategory),
   )
   const [errors, setErrors] = useState<Record<string, string>>({})
-  const [confirmDelete, setConfirmDelete] = useState(false)
 
   const titleRef = useRef<HTMLInputElement>(null)
   useAutoFocus(titleRef, isOpen)
@@ -121,34 +121,7 @@ export default function PlanningFormModal({
         />
       </FormField>
 
-      {editTarget && onDelete && (
-        confirmDelete ? (
-          <div className="flex gap-2 p-3 rounded-xl bg-danger-pale border border-danger-soft">
-            <span className="flex-1 text-[12px] text-danger self-center leading-[1.5]">
-              この項目を削除しますか？
-            </span>
-            <button
-              onClick={() => setConfirmDelete(false)}
-              className="px-3 py-1.5 rounded-lg border border-border bg-transparent text-muted text-[12px] font-medium cursor-pointer whitespace-nowrap hover:bg-app transition-colors"
-            >
-              キャンセル
-            </button>
-            <button
-              onClick={onDelete}
-              className="px-3 py-1.5 rounded-lg border border-danger-soft bg-transparent text-danger text-[12px] font-medium cursor-pointer whitespace-nowrap hover:bg-danger-pale transition-colors"
-            >
-              削除
-            </button>
-          </div>
-        ) : (
-          <button
-            onClick={() => setConfirmDelete(true)}
-            className="w-full p-[11px] rounded-xl border border-danger-soft bg-transparent text-danger text-[13px] font-medium cursor-pointer tracking-[0.04em] hover:bg-danger-pale transition-colors"
-          >
-            この項目を削除
-          </button>
-        )
-      )}
+      {editTarget && onDelete && <DeleteConfirm noun="項目" onDelete={onDelete} />}
     </FormModalShell>
   )
 }

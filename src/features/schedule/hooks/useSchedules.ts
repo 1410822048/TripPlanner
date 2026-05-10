@@ -1,15 +1,23 @@
 // src/features/schedule/hooks/useSchedules.ts
-// All mutations use optimistic updates: cache is patched in `onMutate`, rolled
-// back in `onError` (also surfacing a toast), and reconciled via invalidate
-// in `onSettled`. This keeps UI snappy on spotty travel Wi-Fi — the alternative
-// (wait for round-trip) freezes the modal for 300-1500ms.
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+// useSchedules is realtime-backed: the initial getDocs populates the
+// cache, then a Firestore onSnapshot listener pushes subsequent changes
+// (other members adding / editing schedules) into the cache live.
+//
+// Mutations remain optimistic for instant local feedback. The listener
+// delivers the authoritative server state shortly after the write
+// commits, reconciling whatever the optimistic patch did. Rollback
+// path on failure is unchanged.
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getSchedulesByTrip,
+  subscribeToSchedules,
   createSchedule,
   updateSchedule,
   deleteSchedule,
 } from '../services/scheduleService'
+import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
+import { tempId } from '@/utils/tempId'
+import { patchListCache, rollbackListCache } from '@/utils/queryCache'
 import type { CreateScheduleInput, Schedule } from '@/types'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
 import { toast } from '@/shared/toast'
@@ -18,43 +26,29 @@ export const scheduleKeys = {
   all: (tripId: string) => ['schedules', tripId] as const,
 }
 
-function tempId() { return `temp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }
-
-/** Snapshot + write helper; returns rollback context for onError. */
-function patchCache(
-  qc: ReturnType<typeof useQueryClient>,
-  tripId: string,
-  fn: (prev: Schedule[]) => Schedule[],
-): { prev: Schedule[] | undefined } {
-  const key  = scheduleKeys.all(tripId)
-  const prev = qc.getQueryData<Schedule[]>(key)
-  qc.setQueryData<Schedule[]>(key, fn(prev ?? []))
-  return { prev }
-}
-
-export function useSchedules(tripId: string | undefined) {
-  return useQuery({
-    queryKey: scheduleKeys.all(tripId ?? ''),
-    queryFn:  () => getSchedulesByTrip(tripId!),
-    enabled:  !!tripId,
-  })
-}
+export const useSchedules = createRealtimeListHook<Schedule>({
+  queryKeyFactory: scheduleKeys.all,
+  initialFetch:    getSchedulesByTrip,
+  subscribe:       subscribeToSchedules,
+  source:          'useSchedules',
+})
 
 export function useCreateSchedule(tripId: string) {
   const qc = useQueryClient()
+  const key = scheduleKeys.all(tripId)
   // Next order = max+1 within the same day, computed from the React Query cache
   // so we avoid an extra Firestore query per create. Delete-gaps are safe (max+1
   // skips the gap). Concurrent creates by two users still race — acceptable for v1.
   const nextOrderForDate = (date: string): number => {
-    const cached = qc.getQueryData<Schedule[]>(scheduleKeys.all(tripId)) ?? []
+    const cached = qc.getQueryData<Schedule[]>(key) ?? []
     return cached.filter(s => s.date === date)
       .reduce((m, s) => Math.max(m, s.order), -1) + 1
   }
   return useMutation({
     mutationFn: ({ input, userId }: { input: CreateScheduleInput; userId: string }) =>
       createSchedule(tripId, input, userId, nextOrderForDate(input.date)),
-    onMutate: ({ input, userId }) => {
-      return patchCache(qc, tripId, prev => {
+    onMutate: ({ input, userId }) =>
+      patchListCache<Schedule>(qc, key, prev => {
         const sameDay = prev.filter(s => s.date === input.date)
         const nextOrder = sameDay.reduce((m, s) => Math.max(m, s.order), -1) + 1
         const optimistic: Schedule = {
@@ -67,43 +61,41 @@ export function useCreateSchedule(tripId: string) {
           ...input,
         }
         return [...prev, optimistic]
-      })
-    },
+      }),
     onError: (err, _vars, ctx) => {
-      if (ctx?.prev !== undefined) qc.setQueryData(scheduleKeys.all(tripId), ctx.prev)
-      toast.error(err instanceof Error ? `行程の追加に失敗：${err.message}` : '行程の追加に失敗しました')
+      rollbackListCache<Schedule>(qc, key, ctx)
+      toast.mutationError(err, '行程の追加')
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: scheduleKeys.all(tripId) }),
   })
 }
 
 export function useUpdateSchedule(tripId: string) {
   const qc = useQueryClient()
+  const key = scheduleKeys.all(tripId)
   return useMutation({
     mutationFn: ({ scheduleId, updates }: { scheduleId: string; updates: Partial<CreateScheduleInput> }) =>
       updateSchedule(tripId, scheduleId, updates),
     onMutate: ({ scheduleId, updates }) =>
-      patchCache(qc, tripId, prev =>
+      patchListCache<Schedule>(qc, key, prev =>
         prev.map(s => s.id === scheduleId ? { ...s, ...updates, updatedAt: MOCK_TIMESTAMP } : s),
       ),
     onError: (err, _vars, ctx) => {
-      if (ctx?.prev !== undefined) qc.setQueryData(scheduleKeys.all(tripId), ctx.prev)
-      toast.error(err instanceof Error ? `更新に失敗：${err.message}` : '更新に失敗しました')
+      rollbackListCache<Schedule>(qc, key, ctx)
+      toast.mutationError(err, '更新')
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: scheduleKeys.all(tripId) }),
   })
 }
 
 export function useDeleteSchedule(tripId: string) {
   const qc = useQueryClient()
+  const key = scheduleKeys.all(tripId)
   return useMutation({
     mutationFn: (scheduleId: string) => deleteSchedule(tripId, scheduleId),
     onMutate: scheduleId =>
-      patchCache(qc, tripId, prev => prev.filter(s => s.id !== scheduleId)),
+      patchListCache<Schedule>(qc, key, prev => prev.filter(s => s.id !== scheduleId)),
     onError: (err, _vars, ctx) => {
-      if (ctx?.prev !== undefined) qc.setQueryData(scheduleKeys.all(tripId), ctx.prev)
-      toast.error(err instanceof Error ? `削除に失敗：${err.message}` : '削除に失敗しました')
+      rollbackListCache<Schedule>(qc, key, ctx)
+      toast.mutationError(err, '削除')
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: scheduleKeys.all(tripId) }),
   })
 }

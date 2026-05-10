@@ -17,15 +17,8 @@ import BookingFormModal, { type BookingFormResult } from './BookingFormModal'
 import SwipeableBookingItem from './SwipeableBookingItem'
 import AttachmentPreviewModal from './AttachmentPreviewModal'
 import BookingsListSkeleton from './BookingsListSkeleton'
-import { bookingDisplayName } from '../utils'
-
-const TYPE_META: Record<Booking['type'], { emoji: string; label: string }> = {
-  flight: { emoji: '✈️', label: 'フライト' },
-  hotel:  { emoji: '🏨', label: 'ホテル'   },
-  train:  { emoji: '🚆', label: '電車'     },
-  bus:    { emoji: '🚌', label: 'バス'     },
-  other:  { emoji: '📌', label: 'その他'   },
-}
+import { bookingDisplayName, BOOKING_TYPE_META } from '../utils'
+import { toLocalDateString } from '@/utils/dates'
 
 /**
  * Format the user-facing date / range for a booking. Flights use a single
@@ -57,7 +50,7 @@ function formatWhen(b: Booking): string {
 }
 
 export default function BookingsPage() {
-  const { ctx, uid, cloudTripId, mutationTripId, isDemo, modal, signIn } =
+  const { ctx, uid, cloudTripId, mutationTripId, isDemo, canWrite, modal, signIn } =
     useFeatureListPage<Booking>()
   const swipe = useSwipeOpen()
   const [previewBooking, setPreviewBooking] = useState<Booking | null>(null)
@@ -77,6 +70,17 @@ export default function BookingsPage() {
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Ticket} reason="予約を管理" />
 
   const title = ctx.trip.title
+
+  // Trip date range as 'YYYY-MM-DD' strings — cloud trips store them as
+  // Firestore Timestamps, demo trips already have ISO strings. Pass to
+  // DatePicker so check-in / check-out land on the trip's first month
+  // and disable days outside the range.
+  const tripStartDate = ctx.status === 'cloud'
+    ? toLocalDateString(ctx.trip.startDate.toDate())
+    : ctx.trip.startDate
+  const tripEndDate = ctx.status === 'cloud'
+    ? toLocalDateString(ctx.trip.endDate.toDate())
+    : ctx.trip.endDate
 
   // Group by booking type for the section headers. Order is fixed so the
   // page layout doesn't shuffle when a type's count drops to zero.
@@ -111,6 +115,22 @@ export default function BookingsPage() {
       bookingId: b.id,
       paths:     { filePath: b.filePath, thumbPath: b.thumbPath },
     }).catch(() => {})
+  }
+
+  /** Inline delete from the edit modal — closes the form on success
+   *  so the user lands back on the list. Demo mode short-circuits to
+   *  the sign-in prompt (mutation can't run without a real trip). */
+  async function handleFormDelete() {
+    const target = modal.editTarget
+    if (!target) return
+    if (isDemo) { modal.close(); signIn.open(); return }
+    try {
+      await deleteMut.mutateAsync({
+        bookingId: target.id,
+        paths:     { filePath: target.filePath, thumbPath: target.thumbPath },
+      })
+      modal.close()
+    } catch { /* hook onError already surfaced the toast */ }
   }
 
   return (
@@ -151,16 +171,20 @@ export default function BookingsPage() {
               まだ予約が登録されていません
             </p>
             <p className="m-0 mb-[18px] text-[11.5px] text-muted tracking-[0.04em]">
-              フライト・ホテル・電車などの確認書をここにまとめましょう
+              {canWrite
+                ? 'フライト・ホテル・電車などの確認書をここにまとめましょう'
+                : '閲覧者として参加中です。予約の追加はオーナー / 編集者のみ行えます。'}
             </p>
-            <button
-              onClick={modal.openAdd}
-              className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-[24px] border-none bg-teal text-white text-[12.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
-              style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
-            >
-              <Plus size={14} strokeWidth={2.5} />
-              予約を追加
-            </button>
+            {canWrite && (
+              <button
+                onClick={modal.openAdd}
+                className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-[24px] border-none bg-teal text-white text-[12.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
+                style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
+              >
+                <Plus size={14} strokeWidth={2.5} />
+                予約を追加
+              </button>
+            )}
           </div>
         ) : (
           <>
@@ -170,7 +194,7 @@ export default function BookingsPage() {
                 <div key={t} className="mb-4">
                   <div className="flex items-center justify-between px-1 mb-2">
                     <span className="text-[12px] font-bold text-ink tracking-[0.02em]">
-                      {TYPE_META[t].emoji} {TYPE_META[t].label}
+                      {BOOKING_TYPE_META[t].emoji} {BOOKING_TYPE_META[t].label}
                     </span>
                     <span className="text-[11px] text-muted font-medium tabular-nums">
                       {grouped[t].length} 件
@@ -178,31 +202,38 @@ export default function BookingsPage() {
                   </div>
 
                   <div className="flex flex-col gap-1.5">
-                    {grouped[t].map(b => (
-                      <SwipeableBookingItem
-                        key={b.id}
-                        booking={b}
-                        whenLabel={formatWhen(b)}
-                        {...swipe.bindRow(b.id)}
-                        // Tapping a different row's body: its inner stopPropagation
-                        // prevents the page-wrapper handler from firing, so we clear
-                        // any open swipe here before doing the row's primary action.
-                        onSelect={() => { swipe.closeAll(); modal.openEdit(b) }}
-                        onDelete={() => handleSwipeDelete(b)}
-                        onPreview={() => setPreviewBooking(b)}
-                      />
-                    ))}
+                    {grouped[t].map(b => {
+                      // Viewer mode: no swipe affordance + no delete
+                      // callback. SwipeableBookingItem reads `isOpen`
+                      // / `onOpen` / `onDelete` to decide whether to
+                      // arm the gesture; passing nothing renders a
+                      // plain non-swipeable card.
+                      const swipeProps = canWrite ? swipe.bindRow(b.id) : {}
+                      return (
+                        <SwipeableBookingItem
+                          key={b.id}
+                          booking={b}
+                          whenLabel={formatWhen(b)}
+                          {...swipeProps}
+                          onSelect={() => { swipe.closeAll(); modal.openEdit(b) }}
+                          onDelete={canWrite ? () => handleSwipeDelete(b) : undefined}
+                          onPreview={() => setPreviewBooking(b)}
+                        />
+                      )
+                    })}
                   </div>
                 </div>
               ))}
 
-            <button
-              onClick={modal.openAdd}
-              className="w-full h-11 rounded-chip border-[1.5px] border-dashed border-border bg-transparent text-muted text-[13px] font-medium flex items-center justify-center gap-1.5 cursor-pointer tracking-[0.04em] transition-all hover:bg-teal-pale hover:border-teal hover:text-teal"
-            >
-              <Plus size={14} strokeWidth={2} />
-              予約を追加
-            </button>
+            {canWrite && (
+              <button
+                onClick={modal.openAdd}
+                className="w-full h-11 rounded-chip border-[1.5px] border-dashed border-border bg-transparent text-muted text-[13px] font-medium flex items-center justify-center gap-1.5 cursor-pointer tracking-[0.04em] transition-all hover:bg-teal-pale hover:border-teal hover:text-teal"
+              >
+                <Plus size={14} strokeWidth={2} />
+                予約を追加
+              </button>
+            )}
           </>
         )}
       </div>
@@ -217,9 +248,12 @@ export default function BookingsPage() {
           key={modal.key}
           isOpen
           editTarget={modal.editTarget}
+          tripStartDate={tripStartDate}
+          tripEndDate={tripEndDate}
           isSaving={isSaving}
           onClose={modal.close}
           onSave={handleSave}
+          onDelete={modal.editTarget && !isDemo && canWrite ? handleFormDelete : undefined}
         />
       )}
 

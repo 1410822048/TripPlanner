@@ -4,6 +4,20 @@
 import type { Booking } from '@/types'
 
 /**
+ * Per-type display metadata — emoji shown in section headers / fallback
+ * card thumbnails, label rendered as the section heading text. Single
+ * source of truth so adding a new booking type is a one-file edit and
+ * BookingsPage / GenericCard never disagree on the icon.
+ */
+export const BOOKING_TYPE_META: Record<Booking['type'], { emoji: string; label: string }> = {
+  flight: { emoji: '✈️', label: 'フライト' },
+  hotel:  { emoji: '🏨', label: 'ホテル'   },
+  train:  { emoji: '🚆', label: '電車'     },
+  bus:    { emoji: '🚌', label: 'バス'     },
+  other:  { emoji: '📌', label: 'その他'   },
+}
+
+/**
  * Primary user-facing label for a booking. Transport types prefer the
  * "出発 → 到着" route; everything else uses the title. Falls back to a
  * generic word when neither is set so the UI never renders an empty header.

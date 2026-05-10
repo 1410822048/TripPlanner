@@ -11,6 +11,7 @@ import { DatePicker, TimePicker } from '@/components/ui/pickers'
 import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
 import SaveButton from '@/components/ui/SaveButton'
+import DeleteConfirm from '@/components/ui/DeleteConfirm'
 import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
@@ -53,6 +54,11 @@ function initFormState(t: Schedule | null, defaultDate: string): FormState {
 interface Props {
   editTarget:  Schedule | null
   defaultDate: string
+  /** Inclusive trip date range — schedule must fall inside this window.
+   *  Forwarded to DatePicker so out-of-range days are disabled in the
+   *  calendar UI rather than rejected after submission. */
+  tripStartDate?: string
+  tripEndDate?:   string
   isOpen:      boolean
   isSaving:    boolean
   onClose:     () => void
@@ -61,22 +67,39 @@ interface Props {
 }
 
 export default function ScheduleFormModal({
-  editTarget, defaultDate, isOpen, isSaving, onClose, onSave, onDelete,
+  editTarget, defaultDate, tripStartDate, tripEndDate,
+  isOpen, isSaving, onClose, onSave, onDelete,
 }: Props) {
   const { state, setField } = useFormReducer<FormState>(
     () => initFormState(editTarget, defaultDate),
   )
   const [errors, setErrors] = useState<Record<string, string>>({})
-  const [confirmDelete, setConfirmDelete] = useState(false)
 
   const titleRef = useRef<HTMLInputElement>(null)
   useAutoFocus(titleRef, isOpen)
+
+  // Drop a single key from the errors map. Used by the time-picker
+  // onChange handlers to clear the end-time conflict message as soon
+  // as the user fixes the ordering, without waiting for next save.
+  function clearError(key: string) {
+    setErrors(prev => {
+      if (!(key in prev)) return prev
+      const next: Record<string, string> = {}
+      for (const k of Object.keys(prev)) if (k !== key) next[k] = prev[k]!
+      return next
+    })
+  }
 
   function validate() {
     const e: Record<string, string> = {}
     if (!state.title.trim()) e.title = '請輸入標題'
     if (!state.date)         e.date  = '請選擇日期'
     if (state.cost && isNaN(Number(state.cost))) e.cost = '請輸入數字'
+    // 'HH:MM' strings sort lexicographically the same as time-of-day,
+    // so a direct string compare correctly catches end < start.
+    if (state.startTime && state.endTime && state.endTime < state.startTime) {
+      e.endTime = '終了は開始より後の時刻にしてください'
+    }
     setErrors(e)
     return Object.keys(e).length === 0
   }
@@ -147,15 +170,36 @@ export default function ScheduleFormModal({
           value={state.date}
           onChange={v => setField('date', v)}
           error={!!errors.date}
+          minDate={tripStartDate}
+          maxDate={tripEndDate}
         />
       </FormField>
 
-      <div className="grid grid-cols-2 gap-2.5">
+      <div className="grid grid-cols-2 gap-2.5 items-start">
         <FormField label="開始時間">
-          <TimePicker value={state.startTime} onChange={v => setField('startTime', v)} />
+          <TimePicker
+            value={state.startTime}
+            onChange={v => {
+              setField('startTime', v)
+              // Clear the endTime error eagerly when the user fixes the
+              // ordering by changing startTime — avoids the warning
+              // sticking after the conflict is resolved but before save.
+              if (errors.endTime && (!state.endTime || v <= state.endTime)) {
+                clearError('endTime')
+              }
+            }}
+          />
         </FormField>
-        <FormField label="終了時間">
-          <TimePicker value={state.endTime} onChange={v => setField('endTime', v)} />
+        <FormField label="終了時間" error={errors.endTime}>
+          <TimePicker
+            value={state.endTime}
+            onChange={v => {
+              setField('endTime', v)
+              if (errors.endTime && (!state.startTime || v >= state.startTime)) {
+                clearError('endTime')
+              }
+            }}
+          />
         </FormField>
       </div>
 
@@ -195,34 +239,7 @@ export default function ScheduleFormModal({
         />
       </FormField>
 
-      {editTarget && onDelete && (
-        confirmDelete ? (
-          <div className="flex gap-2 p-3 rounded-xl bg-danger-pale border border-danger-soft">
-            <span className="flex-1 text-[12px] text-danger self-center leading-[1.5]">
-              この行程を削除しますか？
-            </span>
-            <button
-              onClick={() => setConfirmDelete(false)}
-              className="px-3 py-1.5 rounded-lg border border-border bg-transparent text-muted text-[12px] font-medium cursor-pointer whitespace-nowrap hover:bg-app transition-colors"
-            >
-              キャンセル
-            </button>
-            <button
-              onClick={onDelete}
-              className="px-3 py-1.5 rounded-lg border border-danger-soft bg-transparent text-danger text-[12px] font-medium cursor-pointer whitespace-nowrap hover:bg-danger-pale transition-colors"
-            >
-              削除
-            </button>
-          </div>
-        ) : (
-          <button
-            onClick={() => setConfirmDelete(true)}
-            className="w-full p-[11px] rounded-xl border border-danger-soft bg-transparent text-danger text-[13px] font-medium cursor-pointer tracking-[0.04em] hover:bg-danger-pale transition-colors"
-          >
-            この行程を削除
-          </button>
-        )
-      )}
+      {editTarget && onDelete && <DeleteConfirm noun="行程" onDelete={onDelete} />}
     </BottomSheet>
   )
 }

@@ -17,12 +17,16 @@ interface Props {
   items:      Schedule[]
   dayTotal:   number                    // sum of estimatedCost for items
   isLoading:  boolean
+  /** Owner / editor — controls visibility of add affordances. Viewers
+   *  see the timeline but no add buttons (mirrors firestore.rules
+   *  canWrite gating on the schedules subcollection). */
+  canWrite:   boolean
   onAdd:      () => void
   onEdit:     (s: Schedule) => void
 }
 
 function DayTimeline({
-  display, items, dayTotal, isLoading, onAdd, onEdit,
+  display, items, dayTotal, isLoading, canWrite, onAdd, onEdit,
 }: Props) {
   return (
     <div className="mx-5 mt-5">
@@ -55,16 +59,20 @@ function DayTimeline({
             この日の予定はまだありません
           </p>
           <p className="m-0 mb-[18px] text-[11.5px] text-muted tracking-[0.04em]">
-            さあ、最初の行程を追加しましょう
+            {canWrite
+              ? 'さあ、最初の行程を追加しましょう'
+              : '閲覧者として参加中です。行程の追加はオーナー / 編集者のみ行えます。'}
           </p>
-          <button
-            onClick={onAdd}
-            className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-[24px] border-none bg-teal text-white text-[12.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
-            style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
-          >
-            <Plus size={14} strokeWidth={2.5} />
-            行程を追加
-          </button>
+          {canWrite && (
+            <button
+              onClick={onAdd}
+              className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-[24px] border-none bg-teal text-white text-[12.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
+              style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
+            >
+              <Plus size={14} strokeWidth={2.5} />
+              行程を追加
+            </button>
+          )}
         </div>
       ) : (
         <>
@@ -77,16 +85,18 @@ function DayTimeline({
             />
           ))}
 
-          <div className="flex mt-2.5">
-            <div className="w-12 shrink-0" />
-            <button
-              onClick={onAdd}
-              className="flex-1 h-11 rounded-chip border-[1.5px] border-dashed border-border bg-transparent text-muted text-[13px] font-medium flex items-center justify-center gap-1.5 cursor-pointer tracking-[0.04em] transition-all hover:bg-teal-pale hover:border-teal hover:text-teal"
-            >
-              <Plus size={14} strokeWidth={2} />
-              行程を追加
-            </button>
-          </div>
+          {canWrite && (
+            <div className="flex mt-2.5">
+              <div className="w-12 shrink-0" />
+              <button
+                onClick={onAdd}
+                className="flex-1 h-11 rounded-chip border-[1.5px] border-dashed border-border bg-transparent text-muted text-[13px] font-medium flex items-center justify-center gap-1.5 cursor-pointer tracking-[0.04em] transition-all hover:bg-teal-pale hover:border-teal hover:text-teal"
+              >
+                <Plus size={14} strokeWidth={2} />
+                行程を追加
+              </button>
+            </div>
+          )}
         </>
       )}
     </div>
@@ -101,5 +111,6 @@ export default memo(DayTimeline, (prev, next) => (
   prev.display === next.display &&
   prev.items === next.items &&
   prev.dayTotal === next.dayTotal &&
-  prev.isLoading === next.isLoading
+  prev.isLoading === next.isLoading &&
+  prev.canWrite === next.canWrite
 ))

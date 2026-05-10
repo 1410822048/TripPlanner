@@ -30,8 +30,13 @@ export default function PwaUpdatePrompt() {
   return (
     <div
       role="status"
-      className="fixed left-1/2 -translate-x-1/2 bottom-[76px] z-[300] w-[min(94vw,400px)] bg-surface border border-border rounded-[18px] px-4 py-3 shadow-[0_8px_24px_rgba(0,0,0,0.15)] flex items-center gap-3"
-      style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 12px)' }}
+      className="fixed left-1/2 -translate-x-1/2 z-[300] w-[min(94vw,400px)] bg-surface border border-border rounded-[18px] px-4 py-3 shadow-[0_8px_24px_rgba(0,0,0,0.15)] flex items-center gap-3"
+      // Sit 12px above the nav's top edge. The nav already spans the
+      // viewport's bottom var(--nav-h) — including the iOS home-indicator
+      // safe area on standalone PWAs — so layering an extra
+      // env(safe-area-inset-bottom) here would double-count that space
+      // and push the banner ~34px higher than the user expects on iPhone.
+      style={{ bottom: 'calc(var(--nav-h) + 12px)' }}
     >
       <div className="w-9 h-9 rounded-full bg-accent-pale shrink-0 flex items-center justify-center text-accent">
         <RefreshCw size={16} strokeWidth={2} />

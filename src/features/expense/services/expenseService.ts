@@ -4,6 +4,7 @@ import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
+import { subscribeToCollection } from '@/services/realtimeQuery'
 import { ExpenseDocSchema, UpdateExpenseSchema, type Expense, type CreateExpenseInput, type UpdateExpenseInput } from '@/types'
 
 /** Defensive cap — see bookingService. Expenses can pile up on long trips
@@ -30,6 +31,23 @@ export async function getExpensesByTrip(tripId: string): Promise<Expense[]> {
   }
   return snap.docs.map(expenseFromDoc)
 }
+
+/** Realtime variant — same query shape, pushed via onSnapshot. */
+export const subscribeToExpenses = (
+  tripId: string,
+  onData: (data: Expense[]) => void,
+  onError: (e: Error) => void,
+) => subscribeToCollection<Expense>({
+  buildQuery: ({ db, collection, query, orderBy, limit }) => query(
+    collection(db, ...P.expenses(tripId)),
+    orderBy('date', 'desc'),
+    orderBy('createdAt', 'desc'),
+    limit(LIST_LIMIT),
+  ),
+  fromDoc: expenseFromDoc,
+  source:  'subscribeToExpenses',
+  limit:   LIST_LIMIT,
+}, onData, onError)
 
 // ─── Write ────────────────────────────────────────────────────────
 export async function createExpense(

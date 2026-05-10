@@ -36,6 +36,11 @@ export const STRANGER_UID = 'stranger-uid'
 
 export const TRIP_ID    = 'trip-1'
 export const BOOKING_ID = 'booking-1'
+// Second booking whose memberIds intentionally OMITS viewer — used to
+// verify the bookings memberSync path: a member must be able to append
+// their own uid (the legitimate accept-invite flow), but blocked from
+// piggybacking other changes / adding strangers / bulk-adding.
+export const BOOKING_NO_VIEWER_ID = 'booking-no-viewer'
 export const WISH_ID    = 'wish-1'
 
 let cachedEnv: RulesTestEnvironment | null = null
@@ -99,6 +104,12 @@ export async function seedFixture(env: RulesTestEnvironment): Promise<void> {
     await setDoc(doc(db, 'trips', TRIP_ID, 'bookings', BOOKING_ID), {
       tripId: TRIP_ID, type: 'hotel', title: 'Test Hotel',
       memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+      createdAt: serverTimestamp(),
+      sortDate:  serverTimestamp(),
+    })
+    await setDoc(doc(db, 'trips', TRIP_ID, 'bookings', BOOKING_NO_VIEWER_ID), {
+      tripId: TRIP_ID, type: 'hotel', title: 'Hotel without viewer',
+      memberIds: [OWNER_UID, EDITOR_UID],
       createdAt: serverTimestamp(),
       sortDate:  serverTimestamp(),
     })

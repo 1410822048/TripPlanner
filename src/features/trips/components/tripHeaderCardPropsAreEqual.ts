@@ -18,6 +18,10 @@ export interface TripHeaderCardProps {
   tripDays:      number
   scheduleCount: number
   tripTotal:     number
+  /** Owner-only: controls visibility of the invite "+" button.
+   *  firestore.rules gates /invites create on isTripOwner — non-owners
+   *  who tap would 403, so we hide rather than show-then-fail. */
+  canInvite:     boolean
   onEditTrip:    () => void
   onInvite:      () => void
 }
@@ -31,5 +35,6 @@ export function tripHeaderCardPropsAreEqual(
     && prev.tripDays === next.tripDays
     && prev.scheduleCount === next.scheduleCount
     && prev.tripTotal === next.tripTotal
+    && prev.canInvite === next.canInvite
   )
 }

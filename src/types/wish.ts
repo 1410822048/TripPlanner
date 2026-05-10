@@ -30,8 +30,18 @@ export interface Wish {
   category: WishCategory
   title: string
   description?: string
-  /** External URL — Google Maps / restaurant page / Instagram. Optional. */
+  /** External URL — restaurant page / Instagram / official site.
+   *  Optional. The maps chip is now driven by `address` below;
+   *  legacy data with a Google Maps URL pasted here still works
+   *  (LinkChip auto-detects when `address` is absent). */
   link?: string
+  /** Free-form address used as a Google Maps search query. When set,
+   *  the card surfaces a dedicated 🗺 chip pointing at
+   *  https://www.google.com/maps/search/?api=1&query={address}.
+   *  Can be a street address, place name, or even lat/lng — Google
+   *  resolves all three. Independent from `link` so users can keep
+   *  the official site URL AND the address. */
+  address?: string
   /** Single optional cover image. Multi-image isn't needed for wishes;
    *  one representative photo plus a link covers most cases. */
   image?: WishImage
@@ -56,6 +66,7 @@ export const WishDocSchema = z.object({
   title:       z.string(),
   description: z.string().optional(),
   link:        z.string().optional(),
+  address:     z.string().optional(),
   image:       WishImageSchema.optional(),
   proposedBy:  z.string(),
   votes:       z.array(z.string()),
@@ -70,6 +81,7 @@ export const CreateWishSchema = z.object({
   title:       z.string().min(1, '請輸入標題').max(100),
   description: z.string().max(500).optional(),
   link:        z.string().max(500).optional(),
+  address:     z.string().max(200).optional(),
 })
 export type CreateWishInput = z.infer<typeof CreateWishSchema>
 

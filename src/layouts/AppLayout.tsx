@@ -3,8 +3,19 @@ import { Suspense } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { CalendarDays, Ticket, Receipt, Heart, ListChecks, UserCircle } from 'lucide-react'
 import LoadingText from '@/components/ui/LoadingText'
+import PwaUpdatePrompt from '@/components/PwaUpdatePrompt'
+import PwaInstallPrompt from '@/components/PwaInstallPrompt'
 import { useCurrentTripSync } from '@/features/trips/hooks/useCurrentTripSync'
 import { usePrefetchBookings } from '@/features/bookings/hooks/usePrefetchBookings'
+
+// Single source of truth for the bottom-nav height. Used by:
+//   - <main>'s `bottom` (so content doesn't scroll under the nav)
+//   - <nav>'s `height`
+//   - PWA banners' `bottom` offset (read via the --nav-h var below)
+// Keeping it as one constant means changing the nav height (e.g. for
+// a redesign) is a one-line edit; the previous setup hard-coded `h-16`
+// in two places + a magic 64px in each banner.
+const NAV_H = '4rem'
 
 const TABS = [
   { path: '/schedule', label: '行程', Icon: CalendarDays },
@@ -35,8 +46,17 @@ export default function AppLayout() {
   // the auth SDK never loads until the user actually triggers a write.
 
   return (
-    <div className="fixed inset-0 max-w-[430px] mx-auto bg-app">
-      <main className="absolute top-0 bottom-16 inset-x-0 overflow-y-auto overflow-x-hidden bg-app">
+    <div
+      className="fixed inset-0 max-w-[430px] mx-auto bg-app"
+      // Expose nav height as a CSS variable so descendant overlays
+      // (PwaUpdatePrompt / PwaInstallPrompt below) read the same value
+      // their layout depends on, no magic number duplication.
+      style={{ '--nav-h': NAV_H } as React.CSSProperties}
+    >
+      <main
+        className="absolute top-0 inset-x-0 overflow-y-auto overflow-x-hidden bg-app"
+        style={{ bottom: 'var(--nav-h)' }}
+      >
         <Suspense fallback={
           <div className="flex items-center justify-center h-full text-muted text-[13px]">
             <LoadingText />
@@ -48,8 +68,9 @@ export default function AppLayout() {
 
       <nav
         aria-label="主要ナビゲーション"
-        className="absolute bottom-0 inset-x-0 h-16 flex items-center border-t border-border/60 px-1 z-10"
+        className="absolute bottom-0 inset-x-0 flex items-center border-t border-border/60 px-1 z-10"
         style={{
+          height: 'var(--nav-h)',
           background: 'rgba(253,250,245,0.94)',
           backdropFilter: 'blur(24px)',
           WebkitBackdropFilter: 'blur(24px)',
@@ -84,6 +105,14 @@ export default function AppLayout() {
           )
         })}
       </nav>
+
+      {/* PWA prompts: scoped to AppLayout so they only appear on routes
+          that have a bottom nav. Standalone routes (invite redeem,
+          past lodging, social circle) keep their canvas clean for
+          their transactional flow. Both banners read --nav-h from the
+          parent <div> to position themselves above the nav. */}
+      <PwaUpdatePrompt />
+      <PwaInstallPrompt />
     </div>
   )
 }

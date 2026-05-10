@@ -29,7 +29,7 @@ function formatDateHeading(date: string): string {
 }
 
 export default function ExpensePage() {
-  const { ctx, uid, cloudTripId, mutationTripId, isDemo, modal, signIn } =
+  const { ctx, uid, cloudTripId, mutationTripId, isDemo, canWrite, modal, signIn } =
     useFeatureListPage<Expense>()
   const swipe = useSwipeOpen()
 
@@ -165,14 +165,16 @@ export default function ExpensePage() {
             ))}
           </div>
 
-          <button
-            onClick={modal.openAdd}
-            className="mt-4 w-full h-11 rounded-chip border-none bg-teal text-white text-[13px] font-bold tracking-[0.04em] flex items-center justify-center gap-1.5 cursor-pointer transition-all hover:-translate-y-px"
-            style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
-          >
-            <Plus size={14} strokeWidth={2.5} />
-            費用を追加
-          </button>
+          {canWrite && (
+            <button
+              onClick={modal.openAdd}
+              className="mt-4 w-full h-11 rounded-chip border-none bg-teal text-white text-[13px] font-bold tracking-[0.04em] flex items-center justify-center gap-1.5 cursor-pointer transition-all hover:-translate-y-px"
+              style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
+            >
+              <Plus size={14} strokeWidth={2.5} />
+              費用を追加
+            </button>
+          )}
         </div>
       </div>
 
@@ -194,7 +196,9 @@ export default function ExpensePage() {
               まだ費用が記録されていません
             </p>
             <p className="m-0 text-[11.5px] text-muted tracking-[0.04em]">
-              上のボタンから最初の費用を追加しましょう
+              {canWrite
+                ? '上のボタンから最初の費用を追加しましょう'
+                : '閲覧者として参加中です。費用の追加はオーナー / 編集者のみ行えます。'}
             </p>
           </div>
         ) : (
@@ -213,18 +217,24 @@ export default function ExpensePage() {
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  {items.map(e => (
-                    <SwipeableExpenseItem
-                      key={e.id}
-                      expense={e}
-                      payer={members.find(m => m.id === e.paidBy)}
-                      summary={splitSummary(e, members.length)}
-                      categoryEmoji={CATEGORY_EMOJI[e.category]}
-                      {...swipe.bindRow(e.id)}
-                      onSelect={() => { swipe.closeAll(); modal.openEdit(e) }}
-                      onDelete={() => handleSwipeDelete(e.id)}
-                    />
-                  ))}
+                  {items.map(e => {
+                    // Viewer mode: swipe affordance + delete callback omitted so
+                    // SwipeableExpenseItem renders a plain non-swipeable row
+                    // (tap still routes to the read-only edit modal view).
+                    const swipeProps = canWrite ? swipe.bindRow(e.id) : {}
+                    return (
+                      <SwipeableExpenseItem
+                        key={e.id}
+                        expense={e}
+                        payer={members.find(m => m.id === e.paidBy)}
+                        summary={splitSummary(e, members.length)}
+                        categoryEmoji={CATEGORY_EMOJI[e.category]}
+                        {...swipeProps}
+                        onSelect={() => { swipe.closeAll(); modal.openEdit(e) }}
+                        onDelete={canWrite ? () => handleSwipeDelete(e.id) : undefined}
+                      />
+                    )
+                  })}
                 </div>
               </div>
             )

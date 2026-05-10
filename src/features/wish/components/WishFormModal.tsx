@@ -4,14 +4,14 @@
 // not photo memories). Form state via useReducer; image via the same
 // tri-state pattern as bookings.
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Plus, X as XIcon, Trash2, FileText } from 'lucide-react'
+import { Plus, X as XIcon, FileText } from 'lucide-react'
 import type { Wish, WishCategory, WishImage, CreateWishInput } from '@/types'
 import FormModalShell from '@/components/ui/FormModalShell'
 import FormField from '@/components/ui/FormField'
+import DeleteConfirm from '@/components/ui/DeleteConfirm'
 import { inputClass } from '@/components/ui/inputStyle'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
-import ConfirmSheet from '@/components/ui/ConfirmSheet'
 
 const ACCEPT_TYPES = 'image/*'
 const MAX_FILE_BYTES = 5 * 1024 * 1024
@@ -29,6 +29,7 @@ type FormState = {
   title:       string
   description: string
   link:        string
+  address:     string
 }
 
 function initFromTarget(t: Wish | null, defaultCategory: WishCategory): FormState {
@@ -37,6 +38,7 @@ function initFromTarget(t: Wish | null, defaultCategory: WishCategory): FormStat
     title:       t?.title ?? '',
     description: t?.description ?? '',
     link:        t?.link ?? '',
+    address:     t?.address ?? '',
   }
 }
 
@@ -82,7 +84,6 @@ export default function WishFormModal({
   }, [newFileBlobUrl])
 
   const [errors, setErrors] = useState<Record<string, string>>({})
-  const [confirmDelete, setConfirmDelete] = useState(false)
 
   const titleRef = useRef<HTMLInputElement>(null)
   const fileRef  = useRef<HTMLInputElement>(null)
@@ -128,6 +129,7 @@ export default function WishFormModal({
       title:       state.title.trim(),
       description: state.description.trim() || undefined,
       link:        state.link.trim() || undefined,
+      address:     state.address.trim() || undefined,
     }
     return { input, attachment: pickAttachmentChange() }
   }
@@ -199,8 +201,21 @@ export default function WishFormModal({
           inputMode="url"
           value={state.link}
           onChange={e => setField('link', e.target.value)}
-          placeholder="https://maps.google.com/..."
+          placeholder="https://example.com/restaurant"
           className={inputClass(!!errors.link)}
+        />
+      </FormField>
+
+      <FormField label="住所（任意）">
+        {/* Free-text — Google Maps treats the value as a search query so
+            anything from "Shibuya Sky" to a full street address resolves.
+            No URL formatting required from the user. */}
+        <input
+          value={state.address}
+          onChange={e => setField('address', e.target.value)}
+          placeholder="例：東京都港区芝公園 4-2-8"
+          maxLength={200}
+          className={inputClass(false)}
         />
       </FormField>
 
@@ -250,26 +265,7 @@ export default function WishFormModal({
         )}
       </FormField>
 
-      {onDelete && (
-        <button
-          type="button"
-          onClick={() => setConfirmDelete(true)}
-          className="mt-2 inline-flex items-center justify-center gap-1.5 self-start px-3 py-1.5 rounded-card text-[12px] font-medium text-danger border border-danger/30 bg-transparent cursor-pointer hover:bg-danger/5 transition-colors"
-        >
-          <Trash2 size={13} strokeWidth={2} />
-          このウィッシュを削除
-        </button>
-      )}
-
-      <ConfirmSheet
-        isOpen={confirmDelete}
-        title="削除しますか？"
-        description="このウィッシュと投票が失われます。"
-        confirmLabel="削除する"
-        tone="danger"
-        onConfirm={() => { setConfirmDelete(false); onDelete?.() }}
-        onClose={() => setConfirmDelete(false)}
-      />
+      {editTarget && onDelete && <DeleteConfirm noun="ウィッシュ" onDelete={onDelete} />}
     </FormModalShell>
   )
 }

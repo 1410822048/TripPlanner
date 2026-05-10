@@ -1,150 +1,92 @@
 // src/features/expense/components/SwipeableExpenseItem.tsx
-// 費用列表 row — 左滑露出刪除。drag 期間以 ref 直接寫 DOM transform（不走 React state），
-// 避免每一 pointermove 都重新渲染整個 row。
-import { useState, useRef, useEffect, memo } from 'react'
+// 費用列表 row — 左滑露出刪除。Gesture mechanics live in useSwipeRow
+// so the body here is just layout + content per row.
+//
+// Swipe affordance is permission-gated by the caller: when delete
+// permission isn't available (viewer role), the swipe props +
+// onDelete are omitted and we render a plain non-swipeable row.
+// Tap-to-edit still works in that branch — viewers can read details.
+import { memo } from 'react'
 import { Trash2 } from 'lucide-react'
 import type { Expense } from '@/types'
 import type { TripMember } from '@/features/trips/types'
-import {
-  SWIPE_WIDTH, OPEN_THRESHOLD, MOVE_THRESHOLD,
-  FG_TRANSITION, BG_TRANSITION,
-} from '@/components/ui/swipeConstants'
+import { useSwipeRow, SWIPE_WIDTH, BG_TRANSITION, FG_TRANSITION } from '@/hooks/useSwipeRow'
 
 export interface SwipeableExpenseItemProps {
   expense:      Expense
   payer:        TripMember | undefined
   summary:      string
   categoryEmoji: string
-  isOpen:       boolean
   onSelect:     () => void
-  onOpen:       () => void
-  onClose:      () => void
-  onDelete:     () => void
+  /** Swipe-state controlled by parent (useSwipeOpen). Optional — when
+   *  any of these are absent the row renders without swipe affordance
+   *  (used for viewers without delete permission). */
+  isOpen?:      boolean
+  onOpen?:      () => void
+  onClose?:     () => void
+  onDelete?:    () => void
 }
 
 function SwipeableExpenseItem({
   expense, payer, summary, categoryEmoji,
   isOpen, onSelect, onOpen, onClose, onDelete,
 }: SwipeableExpenseItemProps) {
-  const [confirming, setConfirming] = useState(false)
-  const fgRef = useRef<HTMLDivElement>(null)
-  const bgRef = useRef<HTMLDivElement>(null)
-  const drag  = useRef({
-    startX: 0, startY: 0,
-    currentX: 0,
-    dragging: false,
-    mode: null as 'swipe' | null,
-    didDrag: false,
-  })
+  const swipeable = !!onDelete && !!onOpen && !!onClose
+  const {
+    bindFg, bindBg, pointerProps, deleteProps, openX, confirming, wrapTap,
+  } = useSwipeRow({ isOpen: !!isOpen, onOpen, onClose, onDelete, enabled: swipeable })
 
-  function writeTransform(x: number) {
-    drag.current.currentX = x
-    const fg = fgRef.current, bg = bgRef.current
-    if (fg) fg.style.transform = `translate3d(${x}px,0,0)`
-    if (bg) {
-      bg.style.transform = `translate3d(${SWIPE_WIDTH + x}px,0,0)`
-      bg.style.pointerEvents = x < 0 ? 'auto' : 'none'
-    }
+  const body = (
+    <div className="flex items-center gap-3 px-3 py-2.5">
+      <div className="w-9 h-9 rounded-input bg-tile shrink-0 flex items-center justify-center text-[17px] pointer-events-none">
+        {categoryEmoji}
+      </div>
+      <div className="flex-1 min-w-0 pointer-events-none">
+        <div className="text-[13px] font-semibold text-ink -tracking-[0.1px] overflow-hidden text-ellipsis whitespace-nowrap">
+          {expense.title}
+        </div>
+        <div className="flex items-center gap-1.5 mt-0.5 text-[10.5px] text-muted">
+          {payer && (
+            <>
+              <span
+                className="inline-flex items-center justify-center w-[14px] h-[14px] rounded-full text-[8px] font-bold shrink-0"
+                style={{ background: payer.bg, color: payer.color }}
+              >
+                {payer.label}
+              </span>
+              <span>立替</span>
+              <span className="text-border">·</span>
+            </>
+          )}
+          <span>{summary}</span>
+        </div>
+      </div>
+      <div className="text-[14px] font-bold text-ink tabular-nums shrink-0 pointer-events-none">
+        ¥{expense.amount.toLocaleString()}
+      </div>
+    </div>
+  )
+
+  // Non-swipeable branch: viewers without delete permission get a plain
+  // tap-to-edit row. Pointer handlers omitted entirely so there's no
+  // chance of a half-armed gesture.
+  if (!swipeable) {
+    return (
+      <div
+        onClick={onSelect}
+        className="relative rounded-xl overflow-hidden bg-surface border border-border cursor-pointer select-none"
+      >
+        {body}
+      </div>
+    )
   }
-
-  // Clear the "confirming delete" sub-state when the swipe panel closes. The
-  // parent only toggles isOpen; this component owns the confirming flag, so
-  // a sync-in-effect here is the natural place. setState-in-effect is flagged
-  // by the purity lint but this is an edge-triggered reset, not a render
-  // cascade, and the next render is the one we want.
-  useEffect(() => {
-    if (!isOpen) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setConfirming(false)
-    }
-  }, [isOpen])
-
-  function onPointerDown(e: React.PointerEvent) {
-    drag.current.startX   = e.clientX
-    drag.current.startY   = e.clientY
-    drag.current.mode     = null
-    drag.current.didDrag  = false
-    drag.current.dragging = true
-    const fg = fgRef.current, bg = bgRef.current
-    if (fg) { fg.style.transition = 'none'; fg.style.willChange = 'transform' }
-    if (bg) { bg.style.transition = 'background 0.15s'; bg.style.willChange = 'transform' }
-    try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId) }
-    catch { /* 某些瀏覽器對 pointer capture 會拋錯 — 可忽略 */ }
-  }
-
-  function onPointerMove(e: React.PointerEvent) {
-    if (!drag.current.dragging) return
-    const dx = e.clientX - drag.current.startX
-    const dy = e.clientY - drag.current.startY
-
-    if (drag.current.mode === 'swipe') {
-      drag.current.didDrag = true
-      const base = isOpen ? -SWIPE_WIDTH : 0
-      const next = Math.min(0, Math.max(-SWIPE_WIDTH, base + dx))
-      writeTransform(next)
-      return
-    }
-
-    if (Math.abs(dx) < MOVE_THRESHOLD && Math.abs(dy) < MOVE_THRESHOLD) return
-
-    if (Math.abs(dx) > Math.abs(dy)) {
-      drag.current.mode = 'swipe'
-      drag.current.didDrag = true
-    } else {
-      drag.current.dragging = false
-      try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) }
-      catch { /* no-op */ }
-    }
-  }
-
-  function onPointerUp(e: React.PointerEvent) {
-    if (!drag.current.dragging) return
-    drag.current.dragging = false
-    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) }
-    catch { /* no-op */ }
-
-    const fg = fgRef.current, bg = bgRef.current
-    if (fg) fg.style.transition = FG_TRANSITION
-    if (bg) bg.style.transition = BG_TRANSITION
-
-    if (drag.current.mode === 'swipe') {
-      const x = drag.current.currentX
-      if (x <= -OPEN_THRESHOLD) {
-        writeTransform(-SWIPE_WIDTH)
-        if (!isOpen) onOpen()
-      } else {
-        writeTransform(0)
-        if (isOpen) onClose()
-      }
-    }
-
-    // 動畫結束後釋放合成器層（避免長期佔用 GPU 記憶體）
-    window.setTimeout(() => {
-      if (fg) fg.style.willChange = ''
-      if (bg) bg.style.willChange = ''
-    }, 280)
-  }
-
-  function handleClick() {
-    if (drag.current.didDrag) { drag.current.didDrag = false; return }
-    if (isOpen) { onClose(); return }
-    onSelect()
-  }
-
-  function handleDeleteTap(e: React.MouseEvent) {
-    e.stopPropagation()
-    if (!confirming) { setConfirming(true); return }
-    onDelete()
-  }
-
-  const openX = isOpen ? -SWIPE_WIDTH : 0
 
   return (
     <div className="relative rounded-xl overflow-hidden bg-surface border border-border">
       {/* 刪除背景按鈕 */}
       <div
-        ref={bgRef}
-        onClick={handleDeleteTap}
+        ref={bindBg}
+        {...deleteProps}
         className={[
           'absolute top-0 right-0 bottom-0 flex items-center justify-center cursor-pointer',
           confirming ? 'bg-[#A83A3A]' : 'bg-[#D85A5A]',
@@ -172,13 +114,9 @@ function SwipeableExpenseItem({
 
       {/* 前景內容層 */}
       <div
-        ref={fgRef}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onClick={handleClick}
-        onContextMenu={e => e.preventDefault()}
+        ref={bindFg}
+        {...pointerProps}
+        onClick={wrapTap(onSelect)}
         className="relative select-none cursor-pointer bg-surface"
         style={{
           transform: `translate3d(${openX}px,0,0)`,
@@ -188,34 +126,7 @@ function SwipeableExpenseItem({
           WebkitTapHighlightColor: 'transparent',
         }}
       >
-        <div className="flex items-center gap-3 px-3 py-2.5">
-          <div className="w-9 h-9 rounded-input bg-tile shrink-0 flex items-center justify-center text-[17px] pointer-events-none">
-            {categoryEmoji}
-          </div>
-          <div className="flex-1 min-w-0 pointer-events-none">
-            <div className="text-[13px] font-semibold text-ink -tracking-[0.1px] overflow-hidden text-ellipsis whitespace-nowrap">
-              {expense.title}
-            </div>
-            <div className="flex items-center gap-1.5 mt-0.5 text-[10.5px] text-muted">
-              {payer && (
-                <>
-                  <span
-                    className="inline-flex items-center justify-center w-[14px] h-[14px] rounded-full text-[8px] font-bold shrink-0"
-                    style={{ background: payer.bg, color: payer.color }}
-                  >
-                    {payer.label}
-                  </span>
-                  <span>立替</span>
-                  <span className="text-border">·</span>
-                </>
-              )}
-              <span>{summary}</span>
-            </div>
-          </div>
-          <div className="text-[14px] font-bold text-ink tabular-nums shrink-0 pointer-events-none">
-            ¥{expense.amount.toLocaleString()}
-          </div>
-        </div>
+        {body}
       </div>
     </div>
   )

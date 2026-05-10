@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeBalances, computeSettlements } from './settlement'
+import { computeBalances, computeSettlements, expandWithGhosts, ghostMember } from './settlement'
 import { MOCK_TIMESTAMP as TS } from '@/mocks/utils'
 import type { Expense } from '@/types'
 import type { TripMember } from '@/features/trips/types'
@@ -37,14 +37,26 @@ describe('computeBalances', () => {
     ])
   })
 
-  it('ignores paidBy / splits referencing unknown member ids', () => {
+  it('appends ghost rows for paidBy / split ids missing from members', () => {
+    // Scenario: an ex-member ('ghost') paid 500, splitting between a
+    // current member (m1: 300) and another ex-member ('phantom': 200).
+    // Both unknown ids must produce balance rows so the totals
+    // reconcile — otherwise settlement math breaks.
     const expenses = [
       mkExpense('ghost', 500, [['m1', 300], ['phantom', 200]]),
     ]
     const r = computeBalances(expenses, MEMBERS)
-    expect(r.find(b => b.memberId === 'm1')?.owed).toBe(300)
-    // Unknown ids are dropped — sum(net) does NOT balance here by design.
-    expect(r.every(b => b.paid === 0)).toBe(true)
+
+    // Active members first, ghosts at the tail in first-seen order.
+    expect(r.map(b => b.memberId)).toEqual(['m1', 'm2', 'm3', 'ghost', 'phantom'])
+    expect(r.find(b => b.memberId === 'm1')!.owed).toBe(300)
+    expect(r.find(b => b.memberId === 'ghost')!.paid).toBe(500)
+    expect(r.find(b => b.memberId === 'phantom')!.owed).toBe(200)
+
+    // Critical invariant: sum(net) ≈ 0. Without ghost rows this would
+    // fail (the +500 paidBy 'ghost' would be silently dropped).
+    const totalNet = r.reduce((s, b) => s + b.net, 0)
+    expect(totalNet).toBe(0)
   })
 
   it('returns zero rows when there are no expenses', () => {
@@ -53,6 +65,38 @@ describe('computeBalances', () => {
       { memberId: 'm2', paid: 0, owed: 0, net: 0 },
       { memberId: 'm3', paid: 0, owed: 0, net: 0 },
     ])
+  })
+})
+
+describe('expandWithGhosts', () => {
+  it('returns the input unchanged when every uid is a known member', () => {
+    const expenses = [mkExpense('m1', 300, [['m1', 100], ['m2', 100], ['m3', 100]])]
+    expect(expandWithGhosts(MEMBERS, expenses)).toBe(MEMBERS)  // referential identity
+  })
+
+  it('appends one ghost per unknown uid (deduped, first-seen order)', () => {
+    const expenses = [
+      mkExpense('ghost', 500, [['m1', 300], ['phantom', 200]]),
+      mkExpense('ghost', 200, [['ghost', 200]]),  // dup — must not produce a 2nd ghost row
+    ]
+    const r = expandWithGhosts(MEMBERS, expenses)
+    expect(r.length).toBe(MEMBERS.length + 2)
+    expect(r.slice(0, 3)).toEqual(MEMBERS)
+    expect(r.slice(3).map(m => m.id)).toEqual(['ghost', 'phantom'])
+    // Ghost rows are flagged so UI can render them differently.
+    expect(r[3]!.isGhost).toBe(true)
+    expect(r[4]!.isGhost).toBe(true)
+  })
+})
+
+describe('ghostMember', () => {
+  it('produces a TripMember-shaped placeholder with isGhost set', () => {
+    const g = ghostMember('left-the-trip')
+    expect(g.id).toBe('left-the-trip')
+    expect(g.isGhost).toBe(true)
+    expect(typeof g.label).toBe('string')
+    expect(typeof g.color).toBe('string')
+    expect(typeof g.bg).toBe('string')
   })
 })
 

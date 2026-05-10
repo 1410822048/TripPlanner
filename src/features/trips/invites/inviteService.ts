@@ -15,8 +15,10 @@ import type { Timestamp } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'
+import { subscribeToCollection } from '@/services/realtimeQuery'
 import { InviteDocSchema, type Invite, type Trip } from '@/types'
 import { addMemberToTripBookings } from '@/services/memberSync'
+import { getTripsByIds } from '@/features/trips/services/tripService'
 
 export type InviteErrorCode = 'not-found' | 'expired'
 
@@ -30,6 +32,24 @@ export class InviteError extends Error {
 }
 
 export type AcceptOutcome = 'joined' | 'already-member'
+
+/**
+ * Result of redeeming an invite. Carries the freshly-loaded Trip object
+ * alongside the outcome so the caller can:
+ *   - seed TanStack Query's tripKeys.mine / myIds caches synchronously
+ *     (no 1+ second wait for an invalidate refetch to round-trip)
+ *   - call setCurrentTrip(trip) before navigating to /schedule, so the
+ *     destination page renders pointing at the just-joined trip instead
+ *     of whatever was selected before
+ *
+ * `trip` may be null in the unlikely case that the post-redeem fetch
+ * fails (rules race, schema mismatch); callers fall back to their
+ * invalidate/refetch path.
+ */
+export interface AcceptResult {
+  outcome: AcceptOutcome
+  trip:    Trip | null
+}
 
 const DEFAULT_EXPIRY_MS = 5 * 60 * 60 * 1000   // 5 hours
 const TOKEN_BYTES       = 32                   // 256 bits → infeasible to guess
@@ -161,6 +181,24 @@ export async function listInvites(tripId: string): Promise<Invite[]> {
     .sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis())
 }
 
+/**
+ * Realtime variant — pushes Invite[] when the owner creates or revokes
+ * an invite. Same client-side sort (newest first) as listInvites so
+ * both code paths produce matching shapes. No LIST_LIMIT: invite
+ * counts are bounded (typically 0-1 per trip thanks to the "one
+ * active invite at a time" semantic).
+ */
+export const subscribeToInvites = (
+  tripId: string,
+  onData: (data: Invite[]) => void,
+  onError: (e: Error) => void,
+) => subscribeToCollection<Invite>({
+  buildQuery: ({ db, collection }) => collection(db, ...P.invites(tripId)),
+  fromDoc:    d => toInvite(d.id, d.data({ serverTimestamps: 'estimate' })),
+  postProcess: items => items.sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis()),
+  source:     'subscribeToInvites',
+}, onData, onError)
+
 /** Owner revokes an invite by deleting it. */
 export async function revokeInvite(tripId: string, token: string): Promise<void> {
   const { db, doc, deleteDoc } = await getFirebase()
@@ -202,14 +240,20 @@ export async function acceptInvite(
   tripId: string,
   token: string,
   user: User,
-): Promise<AcceptOutcome> {
+): Promise<AcceptResult> {
   const { db, doc, getDoc, setDoc, serverTimestamp } = await getFirebase()
 
   const invite = await getInvite(tripId, token)  // throws on not-found/expired
 
   const memberRef = doc(db, ...P.member(tripId, user.uid))
   const memberSnap = await getDoc(memberRef)
-  if (memberSnap.exists()) return 'already-member'
+  if (memberSnap.exists()) {
+    // Idempotent path: user already a member. Still fetch the Trip so the
+    // caller can switch the active trip / seed caches consistently with
+    // the joined branch below.
+    const [trip] = await getTripsByIds([tripId])
+    return { outcome: 'already-member', trip: trip ?? null }
+  }
 
   const memberPayload: Record<string, unknown> = {
     tripId,
@@ -237,5 +281,12 @@ export async function acceptInvite(
     captureError(e, { source: 'acceptInvite/syncBookings', tripId, uid: user.uid })
   }
 
-  return 'joined'
+  // Fetch the Trip object so the caller can seed query caches + switch
+  // the active trip without waiting for an invalidate-driven refetch.
+  // Failure here is non-fatal — caller falls back to invalidate.
+  const [trip] = await getTripsByIds([tripId]).catch(e => {
+    captureError(e, { source: 'acceptInvite/postFetchTrip', tripId, uid: user.uid })
+    return [] as Trip[]
+  })
+  return { outcome: 'joined', trip: trip ?? null }
 }

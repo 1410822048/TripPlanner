@@ -4,6 +4,7 @@ import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
+import { subscribeToCollection } from '@/services/realtimeQuery'
 import { ScheduleDocSchema, UpdateScheduleSchema, type Schedule, type CreateScheduleInput, type UpdateScheduleInput } from '@/types'
 
 /** Defensive cap — see bookingService for rationale. Schedules can run
@@ -30,6 +31,26 @@ export async function getSchedulesByTrip(tripId: string): Promise<Schedule[]> {
   }
   return snap.docs.map(scheduleFromDoc)
 }
+
+/**
+ * Realtime variant of getSchedulesByTrip — onSnapshot listener pushing
+ * Schedule[] shaped identically to the one-shot fetcher above.
+ */
+export const subscribeToSchedules = (
+  tripId: string,
+  onData: (data: Schedule[]) => void,
+  onError: (e: Error) => void,
+) => subscribeToCollection<Schedule>({
+  buildQuery: ({ db, collection, query, orderBy, limit }) => query(
+    collection(db, ...P.schedules(tripId)),
+    orderBy('date'),
+    orderBy('order'),
+    limit(LIST_LIMIT),
+  ),
+  fromDoc: scheduleFromDoc,
+  source:  'subscribeToSchedules',
+  limit:   LIST_LIMIT,
+}, onData, onError)
 
 // ─── Write ────────────────────────────────────────────────────────
 export async function createSchedule(

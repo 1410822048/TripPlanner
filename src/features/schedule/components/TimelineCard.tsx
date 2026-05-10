@@ -4,6 +4,7 @@ import {
   Utensils, Bus, Hotel, ShoppingBag, Star,
 } from 'lucide-react'
 import type { Schedule, ScheduleCategory } from '@/types'
+import { mapsSearchUrl } from '@/utils/maps'
 
 const CAT: Record<ScheduleCategory, { bg: string; color: string; Icon: React.ElementType }> = {
   transport:     { bg:'#E8EEF5', color:'#4A6FA0', Icon: Bus         },
@@ -23,8 +24,31 @@ interface Props {
 export default function TimelineCard({ s, isLast, onEdit }: Props) {
   const cat  = CAT[s.category]
   const Icon = cat.Icon
+  // Inline maps link on the location label — keeps the meta row to one
+  // line instead of stacking a separate chip below (which thickened the
+  // timeline noticeably across many cards). The whole pin + name is the
+  // tap target; stopPropagation peels the click off the parent so it
+  // doesn't double-fire as tap-to-edit.
+  const locationName = s.location?.name
+  const mapHref      = locationName ? mapsSearchUrl(locationName) : null
+
+  // role="button" + keyboard handler instead of a real <button>: an
+  // <a> can't nest inside <button> per HTML spec, and we need the
+  // location anchor to live in the same tap-to-edit region. The
+  // tabIndex + Enter/Space handler restore the keyboard semantics
+  // we'd lose by switching off <button>.
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      onEdit()
+    }
+  }
+
   return (
-    <div className="flex items-stretch">
+    <div className={[
+      'flex items-stretch',
+      isLast ? 'mb-0' : 'mb-2.5',
+    ].join(' ')}>
       <div className="flex flex-col items-center w-12 shrink-0">
         <div
           className="w-[34px] h-[34px] rounded-input flex items-center justify-center shrink-0"
@@ -42,16 +66,16 @@ export default function TimelineCard({ s, isLast, onEdit }: Props) {
         )}
       </div>
 
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
         onClick={onEdit}
+        onKeyDown={handleKeyDown}
         aria-label={`${s.title} を編集`}
         className={[
           'flex-1 flex items-center gap-2 bg-surface border border-border rounded-chip px-3.5 py-[11px] pr-3',
-          'cursor-pointer text-left font-[inherit] text-[color:inherit] transition-colors',
+          'cursor-pointer transition-colors',
           'hover:bg-[#F5F1EA] focus-visible:outline-2 focus-visible:outline-accent',
-          'tap-highlight-transparent',
-          isLast ? 'mb-0' : 'mb-2.5',
         ].join(' ')}
         style={{ WebkitTapHighlightColor: 'transparent' }}
       >
@@ -76,11 +100,27 @@ export default function TimelineCard({ s, isLast, onEdit }: Props) {
                 {s.startTime}{s.endTime ? ` — ${s.endTime}` : ''}
               </span>
             )}
-            {s.location?.name && (
-              <span className="flex items-center gap-[3px] text-[11px] text-muted">
-                <MapPin size={10} strokeWidth={2} />
-                {s.location.name}
-              </span>
+            {locationName && (
+              mapHref ? (
+                <a
+                  href={mapHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={e => e.stopPropagation()}
+                  onPointerDown={e => e.stopPropagation()}
+                  onKeyDown={e => e.stopPropagation()}
+                  aria-label={`${locationName} を地図で開く`}
+                  className="flex items-center gap-[3px] text-[11px] text-accent no-underline hover:underline"
+                >
+                  <MapPin size={10} strokeWidth={2} />
+                  {locationName}
+                </a>
+              ) : (
+                <span className="flex items-center gap-[3px] text-[11px] text-muted">
+                  <MapPin size={10} strokeWidth={2} />
+                  {locationName}
+                </span>
+              )
             )}
           </div>
           {s.description && (
@@ -90,7 +130,7 @@ export default function TimelineCard({ s, isLast, onEdit }: Props) {
           )}
         </div>
         <Pencil size={12} color="#CCC8C0" strokeWidth={1.8} className="shrink-0" />
-      </button>
+      </div>
     </div>
   )
 }

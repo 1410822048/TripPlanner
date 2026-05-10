@@ -12,15 +12,24 @@
 // diverge enough that a unified return type would just push branching
 // downstream.
 //
-// Optimisation note: the member fan-out queries off `tripIds` (stage 1
-// of getMyTrips, ~half the latency) so they start in parallel with
-// stage 2's per-trip getDoc fan-out instead of waiting for the full
-// Trip[]. Each entry shares cache with `useMembers(tripId)` in
-// SchedulePage / MembersModal — repeat visits are free.
-import { useQueries, type UseQueryResult } from '@tanstack/react-query'
+// Realtime: each per-trip member query is backed by a Firestore
+// onSnapshot listener (started in this hook's effect, dispatched to
+// the same memberKeys.all(tripId) cache that useMembers uses). When a
+// member doc changes anywhere — invitee redeems, owner kicks someone,
+// role flip — the corresponding cache slot updates and useQueries
+// re-emits without any manual refetch.
+//
+// Why we run the listeners here (not just rely on useMembers): the
+// SocialCirclePage / AccountPage callers don't mount useMembers for
+// every trip (they aren't on a single-trip view), so without these
+// listeners the cross-trip view would only refresh when a trip is
+// individually visited. Running them here closes that gap.
+import { useEffect } from 'react'
+import { useQueries, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
 import { useMyTrips, useMyTripIds } from '@/features/trips/hooks/useTrips'
 import { memberKeys } from './useMembers'
-import { getMembersByTrip } from '../services/memberService'
+import { getMembersByTrip, subscribeToMembers } from '../services/memberService'
+import { captureError } from '@/services/sentry'
 import type { Member, Trip } from '@/types'
 
 export interface UseAllTripMembersResult {
@@ -37,16 +46,50 @@ export interface UseAllTripMembersResult {
 }
 
 export function useAllTripMembers(uid: string | undefined): UseAllTripMembersResult {
+  const qc = useQueryClient()
   const { data: trips,   isPending: tripsPending } = useMyTrips(uid)
   const { data: tripIds }                          = useMyTripIds(uid)
+  const ids = tripIds ?? []
+  // Stable string for effect dep; arrays are fresh refs every render.
+  const idsKey = ids.join(',')
 
   const memberResults = useQueries({
-    queries: (tripIds ?? []).map(id => ({
-      queryKey: memberKeys.all(id),
-      queryFn:  () => getMembersByTrip(id),
-      enabled:  !!tripIds,
+    queries: ids.map(id => ({
+      queryKey:  memberKeys.all(id),
+      queryFn:   () => getMembersByTrip(id),
+      enabled:   !!tripIds,
+      // Listener is the source of truth once attached (see effect below).
+      staleTime: Infinity,
     })),
   })
+
+  useEffect(() => {
+    if (ids.length === 0) return
+    let mounted = true
+    const unsubs: Array<() => void> = []
+
+    ids.forEach(id => {
+      void subscribeToMembers(
+        id,
+        data => {
+          if (mounted) qc.setQueryData<Member[]>(memberKeys.all(id), data)
+        },
+        err => captureError(err, { source: 'useAllTripMembers/members', tripId: id }),
+      ).then(unsub => {
+        if (mounted) unsubs.push(unsub)
+        else unsub()
+      }).catch(e => {
+        captureError(e, { source: 'useAllTripMembers/subscribe-init', tripId: id })
+      })
+    })
+
+    return () => {
+      mounted = false
+      unsubs.forEach(u => u())
+    }
+    // idsKey ≡ ids in content; lint can't see that.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idsKey, qc])
 
   // `fetchStatus !== 'idle'` excludes the disabled-because-no-uid state,
   // which would otherwise leave the page stuck "loading" for signed-out

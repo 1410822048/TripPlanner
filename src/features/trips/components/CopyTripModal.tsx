@@ -21,7 +21,7 @@ import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
 import { addDays, daysBetween, toLocalDateString } from '@/utils/dates'
 import type { Trip } from '@/types'
-import type { CopyTripInput } from '../services/tripService'
+import type { CopyTripInput } from '../services/tripCopy'
 
 // `type` (not `interface`) so TS treats the shape as closed and it
 // satisfies useFormReducer's `Record<string, unknown>` constraint.

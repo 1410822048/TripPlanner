@@ -1,10 +1,15 @@
 // src/App.tsx
+// Note: PwaUpdatePrompt + PwaInstallPrompt are rendered INSIDE AppLayout,
+// not here. Standalone routes (/invite/:tripId, /past-lodging, etc.)
+// don't have a bottom nav, so the banner's bottom-anchored layout has
+// no nav to clear; rendering them at app-root would float them awkwardly
+// in those pages. Scoping them to AppLayout also lets nav height live
+// in one place via a CSS variable, no cross-tree DOM hacks.
 import { useState } from 'react'
 import { RouterProvider } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { router } from '@/routes'
 import ErrorBoundary from '@/components/ErrorBoundary'
-import PwaUpdatePrompt from '@/components/PwaUpdatePrompt'
 import Splash from '@/components/Splash'
 import Toaster from '@/shared/Toaster'
 import { initAuth } from '@/hooks/useAuth'
@@ -67,7 +72,6 @@ export default function App() {
         <RouterProvider router={router} />
         {!splashDone && <Splash onDone={() => setSplashDone(true)} />}
         <Toaster />
-        <PwaUpdatePrompt />
       </QueryClientProvider>
     </ErrorBoundary>
   )

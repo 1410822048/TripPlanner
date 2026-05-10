@@ -8,6 +8,7 @@ import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
+import { subscribeToCollection } from '@/services/realtimeQuery'
 import { stripEmpty } from '@/utils/stripEmpty'
 import {
   PlanItemDocSchema,
@@ -37,6 +38,22 @@ export async function getPlanItemsByTrip(tripId: string): Promise<PlanItem[]> {
   }
   return snap.docs.map(planItemFromDoc)
 }
+
+/** Realtime variant of getPlanItemsByTrip — onSnapshot push of PlanItem[]. */
+export const subscribeToPlanItems = (
+  tripId: string,
+  onData: (data: PlanItem[]) => void,
+  onError: (e: Error) => void,
+) => subscribeToCollection<PlanItem>({
+  buildQuery: ({ db, collection, query, orderBy, limit }) => query(
+    collection(db, ...P.planning(tripId)),
+    orderBy('createdAt', 'desc'),
+    limit(LIST_LIMIT),
+  ),
+  fromDoc: planItemFromDoc,
+  source:  'subscribeToPlanItems',
+  limit:   LIST_LIMIT,
+}, onData, onError)
 
 // ─── Write ────────────────────────────────────────────────────────
 

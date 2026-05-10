@@ -34,9 +34,10 @@ import GoogleIcon from '@/components/icons/GoogleIcon'
 import StatCell from './StatCell'
 import FeatureCard from './FeatureCard'
 import AccountPageSkeleton from './AccountPageSkeleton'
-import { StackedEmojiPreview, StackedAvatarPreview } from './StackedPreviews'
+import { StackedEmojiPreview, StackedImagePreview, StackedAvatarPreview } from './StackedPreviews'
 import { useAuth } from '@/hooks/useAuth'
 import { useAllTripMembers } from '@/features/members/hooks/useAllTripMembers'
+import { useMyHotelBookings } from '@/features/bookings/hooks/useBookings'
 import { memberToTripMember } from '@/features/members/utils'
 import { useTripStore } from '@/store/tripStore'
 import { toast } from '@/shared/toast'
@@ -44,12 +45,16 @@ import { daysBetween } from '@/utils/dates'
 import type { TripMember } from '@/features/trips/types'
 import type { Trip } from '@/types'
 
-// Static thumbnail deck for the "過往の旅程" feature card. Intentionally
-// decorative — the real listing lives at /past-lodging via
-// PastLodgingPage + getMyHotelBookings(). Wiring the actual hotel
-// thumbnails into this card was considered but rejected: the card is
-// a CTA, not a preview, and the per-card cost (one collection-group
-// query on every AccountPage render) outweighs the visual upside.
+// Fallback thumbnail deck for the "過往の旅程" card when the user has
+// no hotel bookings (yet) or none of them carry an attachment image.
+// When at least one booking has a thumbUrl / fileUrl we replace this
+// deck with the real photos via StackedImagePreview below.
+//
+// The realtime listener is shared with PastLodgingPage via
+// `useMyHotelBookings` → createRealtimeListHook (refCount semantics),
+// so wiring this here costs no extra Firestore reads — the user
+// would have paid for the same query the moment they tapped the
+// card to navigate to /past-lodging.
 const PAST_LODGING_EMOJIS = ['🏨', '🛏️', '🏖️']
 
 function tripDays(trip: Trip): number {
@@ -80,6 +85,7 @@ export default function AccountPage() {
 
   const uid = state.status === 'signed-in' ? state.user.uid : undefined
   const { trips, memberResults } = useAllTripMembers(uid)
+  const { data: hotelBookings } = useMyHotelBookings(uid)
 
   // Aggregations memoised on the upstream data — without these they
   // re-ran on every signing-state toggle / logout-sheet open / etc.
@@ -87,6 +93,20 @@ export default function AccountPage() {
     () => (trips ?? []).reduce((s, t) => s + tripDays(t), 0),
     [trips],
   )
+  // Up to 3 hotel-booking thumbnails, newest check-in first
+  // (useMyHotelBookings already returns sortDate-desc). Falls back
+  // to fileUrl for older bookings created before the thumbnail
+  // pipeline existed (M2 task — see types/booking.ts:65 comment).
+  const lodgingThumbs = useMemo(() => {
+    const urls: string[] = []
+    for (const b of hotelBookings ?? []) {
+      const url = b.thumbUrl ?? b.fileUrl
+      if (url) urls.push(url)
+      if (urls.length === 3) break
+    }
+    return urls
+  }, [hotelBookings])
+
   const { collaboratorChips, collaboratorCount } = useMemo(() => {
     const seen  = new Set<string>()
     const chips: TripMember[] = []
@@ -251,7 +271,9 @@ export default function AccountPage() {
           sublabel="住宿の記録"
           onClick={openPastLodging}
         >
-          <StackedEmojiPreview emojis={PAST_LODGING_EMOJIS} />
+          {lodgingThumbs.length > 0
+            ? <StackedImagePreview urls={lodgingThumbs} />
+            : <StackedEmojiPreview emojis={PAST_LODGING_EMOJIS} />}
         </FeatureCard>
 
         <FeatureCard

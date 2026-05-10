@@ -3,7 +3,7 @@ import { memo, useMemo } from 'react'
 import { ArrowRight, Check } from 'lucide-react'
 import type { Expense } from '@/types'
 import type { TripMember } from '@/features/trips/types'
-import { computeBalances, computeSettlements } from '../services/settlement'
+import { computeBalances, computeSettlements, expandWithGhosts } from '../services/settlement'
 
 interface Props {
   expenses: Expense[]
@@ -26,15 +26,27 @@ function MemberChip({ m, size = 28 }: { m: TripMember; size?: number }) {
 }
 
 function SettlementSummary({ expenses, members }: Props) {
+  // Expand `members` with ghost rows for any uid in expenses that's no
+  // longer an active trip member. Without this, the chip lookups below
+  // would silently `return null` for kicked-out members and their
+  // amounts would visually disappear from settlement — even though the
+  // math still includes them. Doing the expand here keeps the page
+  // self-contained: callers pass `members` (active only) and we
+  // surface the full list to render.
+  const allParticipants = useMemo(
+    () => expandWithGhosts(members, expenses),
+    [members, expenses],
+  )
+
   const { balances, settlements } = useMemo(() => {
-    const bs = computeBalances(expenses, members)
+    const bs = computeBalances(expenses, allParticipants)
     const ss = computeSettlements(bs)
     return { balances: bs, settlements: ss }
-  }, [expenses, members])
+  }, [expenses, allParticipants])
 
   const memberById = useMemo(
-    () => new Map(members.map(m => [m.id, m])),
-    [members],
+    () => new Map(allParticipants.map(m => [m.id, m])),
+    [allParticipants],
   )
 
   if (expenses.length === 0) return null
@@ -59,19 +71,25 @@ function SettlementSummary({ expenses, members }: Props) {
         {/* ── 每位成員的淨額 ────────────────────────────── */}
         <div className="flex flex-col gap-[3px]">
           {balances.map(b => {
-            const m = memberById.get(b.memberId)
-            if (!m) return null
+            // memberById is expandWithGhosts-backed → never misses.
+            // Non-null assertion is safe here because every balance row
+            // came from the same participant list we built memberById from.
+            const m = memberById.get(b.memberId)!
             const isCredit = b.net > 0.5
             const isDebit  = b.net < -0.5
             const rounded  = Math.round(Math.abs(b.net))
             return (
-              <div key={b.memberId} className="flex items-center gap-2.5 py-[3px]">
+              <div key={b.memberId} className={[
+                'flex items-center gap-2.5 py-[3px]',
+                m.isGhost ? 'opacity-70' : '',
+              ].join(' ')}>
                 <MemberChip m={m} />
                 <div className="flex-1 min-w-0">
                   <div className="text-[12.5px] text-ink font-semibold leading-tight">
                     {m.label}
                   </div>
                   <div className="text-[10px] text-muted tabular-nums mt-px">
+                    {m.isGhost && <span className="text-danger font-semibold">退出済み · </span>}
                     立替 ¥{b.paid.toLocaleString()} · 分担 ¥{b.owed.toLocaleString()}
                   </div>
                 </div>
@@ -105,9 +123,9 @@ function SettlementSummary({ expenses, members }: Props) {
             </div>
             <div className="flex flex-col gap-1.5">
               {settlements.map((s, i) => {
-                const from = memberById.get(s.fromId)
-                const to   = memberById.get(s.toId)
-                if (!from || !to) return null
+                // memberById is ghost-backed → both lookups always hit.
+                const from = memberById.get(s.fromId)!
+                const to   = memberById.get(s.toId)!
                 return (
                   <div
                     key={`${s.fromId}-${s.toId}-${i}`}

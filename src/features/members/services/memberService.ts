@@ -4,6 +4,7 @@ import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
+import { subscribeToCollection } from '@/services/realtimeQuery'
 import { removeMemberFromTripBookings } from '@/services/memberSync'
 import { MemberDocSchema, type Member } from '@/types'
 
@@ -20,6 +21,24 @@ export async function getMembersByTrip(tripId: string): Promise<Member[]> {
   const snap = await getDocs(q)
   return snap.docs.map(memberFromDoc)
 }
+
+/**
+ * Realtime variant — pushes Member[] when someone joins via invite or
+ * the owner kicks a member. No LIST_LIMIT: trip member counts are
+ * bounded by social reality (~20).
+ */
+export const subscribeToMembers = (
+  tripId: string,
+  onData: (data: Member[]) => void,
+  onError: (e: Error) => void,
+) => subscribeToCollection<Member>({
+  buildQuery: ({ db, collection, query, orderBy }) => query(
+    collection(db, ...P.members(tripId)),
+    orderBy('joinedAt'),
+  ),
+  fromDoc: memberFromDoc,
+  source:  'subscribeToMembers',
+}, onData, onError)
 
 /**
  * Remove a member from a trip. Rule-gated to trip owner; attempting to kick

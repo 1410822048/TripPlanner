@@ -6,12 +6,27 @@ import { useSwipeOpen } from '@/hooks/useSwipeOpen'
 import { toast } from '@/shared/toast'
 import type { TripItem, MenuActionKey } from '@/features/trips/types'
 
-const MENU_ACTIONS: { key: MenuActionKey; emoji: string; label: string; sub: string; danger: boolean }[] = [
-  { key:'edit',     emoji:'✏️',  label:'編輯行程資訊', sub:'修改名稱・日期・目的地', danger:false },
-  { key:'members',  emoji:'👥',  label:'管理成員',     sub:'邀請・移除旅伴',         danger:false },
-  { key:'copy',     emoji:'📋',  label:'複製行程',     sub:'建立此行程的副本',        danger:false },
-  { key:'share',    emoji:'🔗',  label:'分享行程',     sub:'產生邀請連結',            danger:false },
-  { key:'settings', emoji:'⚙️',  label:'行程設定',     sub:'幣別・時區・隱私',        danger:false },
+// `ownerOnly` gates entries that only the trip owner can usefully
+// invoke — e.g. editing trip metadata or generating invite links both
+// route through firestore.rules `isTripOwner` writes, so showing them
+// to editors/viewers would result in a "更新失敗" toast or an empty
+// invite list. Hiding them up-front keeps "if you can see it you can
+// use it" intact. The MembersModal handles the fine-grained "owner
+// can manage, others view-only" distinction itself, so 'members' stays
+// visible to everyone.
+const MENU_ACTIONS: {
+  key:       MenuActionKey
+  emoji:     string
+  label:     string
+  sub:       string
+  danger:    boolean
+  ownerOnly: boolean
+}[] = [
+  { key:'edit',     emoji:'✏️',  label:'編輯行程資訊', sub:'修改名稱・日期・目的地', danger:false, ownerOnly:true  },
+  { key:'members',  emoji:'👥',  label:'管理成員',     sub:'邀請・移除旅伴',         danger:false, ownerOnly:false },
+  { key:'copy',     emoji:'📋',  label:'複製行程',     sub:'建立此行程的副本',        danger:false, ownerOnly:false },
+  { key:'share',    emoji:'🔗',  label:'分享行程',     sub:'產生邀請連結',            danger:false, ownerOnly:true  },
+  { key:'settings', emoji:'⚙️',  label:'行程設定',     sub:'幣別・時區・隱私',        danger:false, ownerOnly:true  },
 ]
 
 interface TripSwitcherProps {
@@ -28,11 +43,19 @@ interface TripSwitcherProps {
    * leaves it off — `useTripSelection` relies on a non-empty `trips[0]!`.
    */
   canDeleteLast?: boolean
+  /**
+   * True when the signed-in user owns the selected trip. Drives the
+   * `ownerOnly` filter on MENU_ACTIONS so editors / viewers don't see
+   * options that would error out in firestore.rules. Defaults to true
+   * for demo mode (no real ownership concept).
+   */
+  isOwner?:      boolean
 }
 
 export default function TripSwitcher({
   trips, selected, onSelect, onAction, onDelete, onReorder, onCreateTrip,
   canDeleteLast = false,
+  isOwner = true,
 }: TripSwitcherProps) {
   const [open, setOpen] = useState(false)
   const swipe = useSwipeOpen()
@@ -197,7 +220,13 @@ export default function TripSwitcher({
                     trip={trip}
                     isActive={trip.id === selected.id}
                     {...swipe.bindRow(trip.id)}
-                    canDelete={trips.length > 1 || canDeleteLast}
+                    // Per-trip ownership gate: only the trip owner can
+                    // delete (firestore.rules `isTripOwner`). Non-owned
+                    // trips render without the swipe affordance and
+                    // without the red delete background. The
+                    // count-based guard still applies on top so the
+                    // demo last-trip stays undeletable.
+                    canDelete={trip.ownedByMe && (trips.length > 1 || canDeleteLast)}
                     canReorder={trips.length > 1}
                     isDragging={draggingId === trip.id}
                     dragY={draggingId === trip.id ? dragY : 0}
@@ -233,7 +262,7 @@ export default function TripSwitcher({
                   管理
                 </span>
               </div>
-              {MENU_ACTIONS.map(({ key, emoji, label, sub, danger }) => (
+              {MENU_ACTIONS.filter(a => isOwner || !a.ownerOnly).map(({ key, emoji, label, sub, danger }) => (
                 <button
                   key={key}
                   onClick={() => { onAction(key); setOpen(false) }}

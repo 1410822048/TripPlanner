@@ -19,6 +19,7 @@ import { retry, isTransientStorageError } from '@/utils/retry'
 import { stripEmpty } from '@/utils/stripEmpty'
 import { captureError } from '@/services/sentry'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
+import { subscribeToCollection } from '@/services/realtimeQuery'
 import {
   WishDocSchema,
   UpdateWishSchema,
@@ -58,8 +59,34 @@ export async function getWishesByTrip(tripId: string): Promise<Wish[]> {
   }
   // Stable sort: votes.length desc; createdAt-desc tiebreak preserved
   // because the input is already in that order.
-  return snap.docs.map(wishFromDoc).sort((a, b) => b.votes.length - a.votes.length)
+  return snap.docs.map(wishFromDoc).sort(byVotesDesc)
 }
+
+/** Stable comparator extracted so the realtime subscriber re-applies the
+ *  same ordering as getWishesByTrip on every snapshot push. */
+function byVotesDesc(a: Wish, b: Wish): number {
+  return b.votes.length - a.votes.length
+}
+
+/**
+ * Realtime variant of getWishesByTrip — listener delivers Wish[] in
+ * the same votes-desc order as the one-shot fetcher.
+ */
+export const subscribeToWishes = (
+  tripId: string,
+  onData: (data: Wish[]) => void,
+  onError: (e: Error) => void,
+) => subscribeToCollection<Wish>({
+  buildQuery: ({ db, collection, query, orderBy, limit }) => query(
+    collection(db, ...P.wishes(tripId)),
+    orderBy('createdAt', 'desc'),
+    limit(LIST_LIMIT),
+  ),
+  fromDoc:     wishFromDoc,
+  postProcess: items => items.sort(byVotesDesc),
+  source:      'subscribeToWishes',
+  limit:       LIST_LIMIT,
+}, onData, onError)
 
 // ─── Storage helpers ──────────────────────────────────────────────
 
@@ -176,7 +203,7 @@ export async function updateWish(
     ...stripEmpty(validated),
     updatedAt: serverTimestamp(),
   }
-  for (const k of ['description', 'link'] as const) {
+  for (const k of ['description', 'link', 'address'] as const) {
     if (k in validated && (validated[k] === undefined || validated[k] === '')) {
       patch[k] = deleteField()
     }

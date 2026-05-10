@@ -27,12 +27,26 @@ import { captureError } from './sentry'
 
 // Constrained to object schemas. Caller guarantees the schema describes
 // an object — anything else can't be merged with `{ id }` anyway.
+//
+// `serverTimestamps: 'estimate'` makes pending serverTimestamp() values
+// resolve to a client-side estimated Timestamp instead of `null` while
+// the server confirms the write. Without this, our onSnapshot listeners
+// would receive a local-pending push with `createdAt = null`, fail Zod
+// validation, and noisily error to Sentry every time someone created or
+// edited a doc. The estimate is replaced by the real server value when
+// the server-confirmed snapshot fires ~100-300ms later — visually
+// imperceptible.
+//
+// Safe for `getDocs` callers too: server-confirmed reads don't have
+// pending writes, so the option has no effect on that path. Setting it
+// here (rather than per-listener) means new collections get the right
+// behaviour by default.
 export function firestoreDocFromSchema<T extends z.ZodObject<z.ZodRawShape>>(
   schema: T,
   doc:    QueryDocumentSnapshot,
   source: string,
 ): { id: string } & z.infer<T> {
-  const parsed = schema.safeParse(doc.data())
+  const parsed = schema.safeParse(doc.data({ serverTimestamps: 'estimate' }))
   if (!parsed.success) {
     captureError(parsed.error, { source, docId: doc.id })
     throw new Error(`Doc ${doc.id} (${source}) failed schema validation`)

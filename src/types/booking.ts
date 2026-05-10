@@ -69,6 +69,12 @@ export interface Booking {
   thumbPath?: string
   /** Mime type at upload time — drives icon vs <img> rendering in the UI. */
   fileType?: string
+  /** Free-form address used as a Google Maps search query. Most useful
+   *  for hotels / venues where the user wants a one-tap deep link to
+   *  the location; transport types already convey origin/destination
+   *  through their dedicated fields. Same shape + URL builder as
+   *  Wish.address — see utils/maps.ts. */
+  address?: string
   note?: string
   createdAt: Timestamp
 }
@@ -96,6 +102,7 @@ export const BookingDocSchema = z.object({
   thumbUrl:         z.string().optional(),
   thumbPath:        z.string().optional(),
   fileType:         z.string().optional(),
+  address:          z.string().optional(),
   note:             z.string().optional(),
   createdAt:        TimestampSchema,
   sortDate:         TimestampSchema.optional(),
@@ -118,6 +125,7 @@ export const CreateBookingSchema = z.object({
   provider:         z.string().max(60).optional(),
   checkIn:          z.string().optional(),
   checkOut:         z.string().optional(),
+  address:          z.string().max(200).optional(),
   note:             z.string().optional(),
 })
 export type CreateBookingInput = z.infer<typeof CreateBookingSchema>

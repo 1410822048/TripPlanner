@@ -10,15 +10,12 @@
 // Route is top-level (outside AppLayout) so the page feels like a drill-
 // down — no bottom nav distractions. Back arrow uses navigate(-1) to return
 // to the previous route the user came from (/account in practice).
-import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { useUid } from '@/hooks/useAuth'
-import { getMyHotelBookings } from '../services/bookingService'
+import { useMyHotelBookings } from '../hooks/useBookings'
 import LoadingText from '@/components/ui/LoadingText'
 import type { Booking } from '@/types'
-
-const myHotelKey = (uid: string) => ['bookings', 'my-hotels', uid] as const
 
 function bookingYear(b: Booking): number {
   if (b.checkIn) {
@@ -47,15 +44,12 @@ export default function PastLodgingPage() {
   const navigate = useNavigate()
   const uid = useUid()
 
-  // Single collection-group query replaces the previous per-trip fan-out.
-  // Server-side orderBy('sortDate', 'desc') means we don't need a client
-  // sort; the rule + index pair guarantees only the user's own bookings
-  // come back via `where('memberIds', 'array-contains', uid)`.
-  const { data: bookings = [], isPending: anyLoading } = useQuery({
-    queryKey: myHotelKey(uid ?? ''),
-    queryFn:  () => getMyHotelBookings(uid!),
-    enabled:  !!uid,
-  })
+  // Realtime collection-group query: replaces the previous per-trip
+  // fan-out. Server-side orderBy('sortDate', 'desc') means no client
+  // sort; rule + index guarantee only the user's own bookings via
+  // `where('memberIds', 'array-contains', uid)`. New hotel bookings
+  // on any shared trip surface here without a manual reload.
+  const { data: bookings = [], isPending: anyLoading } = useMyHotelBookings(uid)
 
   return (
     <div className="fixed inset-0 max-w-[430px] mx-auto bg-app flex flex-col overflow-y-auto">
@@ -117,10 +111,18 @@ export default function PastLodgingPage() {
 
 function BookingRow({ booking }: { booking: Booking }) {
   const range = formatRange(booking.checkIn, booking.checkOut)
+  // Prefer the compressed thumbnail; fall back to the full attachment
+  // for older bookings created before the M2 thumbnail pipeline (see
+  // types/booking.ts:65). When neither exists, the 🏨 emoji shows as
+  // the bg-tile child — same fallback shape as AccountPage's deck.
+  const thumb = booking.thumbUrl ?? booking.fileUrl
   return (
     <div className="flex items-center gap-3 bg-surface border border-border rounded-[18px] px-3 py-2.5 shadow-[0_2px_10px_rgba(0,0,0,0.05)]">
-      <div className="w-14 h-14 rounded-xl shrink-0 flex items-center justify-center text-[26px] bg-tile border border-black/5">
-        🏨
+      <div
+        className="w-14 h-14 rounded-xl shrink-0 flex items-center justify-center text-[26px] bg-tile bg-cover bg-center border border-black/5"
+        style={thumb ? { backgroundImage: `url(${thumb})` } : undefined}
+      >
+        {thumb ? null : '🏨'}
       </div>
       <div className="flex-1 min-w-0">
         <div className="text-[14px] font-bold text-ink truncate">

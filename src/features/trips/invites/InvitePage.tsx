@@ -25,6 +25,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Check, X } from 'lucide-react'
 import GoogleIcon from '@/components/icons/GoogleIcon'
 import { useAuth } from '@/hooks/useAuth'
+import { useTripStore } from '@/store/tripStore'
 import { useAcceptInvite } from './useInvites'
 import { getInvite, InviteError, formatInviteExpiry } from './inviteService'
 import { toast } from '@/shared/toast'
@@ -73,7 +74,12 @@ export default function InvitePage() {
   async function handleAccept() {
     if (state.status !== 'signed-in' || !inviteQ.data || !tripId || !token) return
     try {
-      const outcome = await acceptMut.mutateAsync({ tripId, token, user: state.user })
+      const { outcome, trip } = await acceptMut.mutateAsync({ tripId, token, user: state.user })
+      // Switch the active trip to the just-joined one BEFORE navigating, so
+      // /schedule renders pointing at the new trip (not whatever was selected
+      // before). Without this, users with a pre-existing trip would land on
+      // their old trip and have to manually switch via the picker.
+      if (trip) useTripStore.getState().setCurrentTrip(trip)
       toast.success(outcome === 'already-member' ? '既に参加中です' : '旅程に参加しました')
       navigate('/schedule', { replace: true })
     } catch (e) {

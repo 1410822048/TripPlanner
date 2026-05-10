@@ -13,6 +13,15 @@ interface Props {
   onChange:    (v: string) => void
   placeholder?: string
   error?:      boolean
+  /**
+   * Optional inclusive lower bound — dates before this are rendered
+   * disabled (greyed + non-clickable). 'YYYY-MM-DD' format. Used by
+   * ScheduleFormModal to keep schedule dates inside the trip's date
+   * range.
+   */
+  minDate?:    string
+  /** Optional inclusive upper bound. */
+  maxDate?:    string
 }
 
 /** Imperative handle — lets a parent chain pickers (pick start → auto-open end). */
@@ -26,15 +35,42 @@ export interface DatePickerHandle {
 }
 
 const DatePicker = forwardRef<DatePickerHandle, Props>(function DatePicker(
-  { value, onChange, placeholder = '日付を選択', error = false },
+  { value, onChange, placeholder = '日付を選択', error = false, minDate, maxDate },
   ref,
 ) {
+  // Build a 'YYYY-MM-DD' from year/month/day for cheap lexicographic
+  // bound comparison (no Date construction per cell).
+  const isoFromYMD = (y: number, m: number, d: number): string =>
+    `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+  const inRange = (iso: string): boolean => {
+    if (minDate && iso < minDate) return false
+    if (maxDate && iso > maxDate) return false
+    return true
+  }
   const today  = new Date()
   const parsed = value ? fromLocalDateString(value) : null
 
+  // Default-view priority when picker opens with no selection:
+  //   1. value (if set) — show the month containing it
+  //   2. minDate (if set) — opening on a trip-locked picker should land
+  //      inside the trip range, not on today (which is often months
+  //      away from the trip dates)
+  //   3. today
+  // This keeps "open picker → see clickable days right away" — landing
+  // on a fully-greyed-out month is a UX dead-end users have to scroll
+  // through to find their range.
+  const initialView = (() => {
+    if (parsed) return { y: parsed.getFullYear(), m: parsed.getMonth() }
+    if (minDate) {
+      const min = fromLocalDateString(minDate)
+      if (!Number.isNaN(min.getTime())) return { y: min.getFullYear(), m: min.getMonth() }
+    }
+    return { y: today.getFullYear(), m: today.getMonth() }
+  })()
+
   const [open,      setOpen]      = useState(false)
-  const [viewYear,  setViewYear]  = useState(() => parsed ? parsed.getFullYear() : today.getFullYear())
-  const [viewMonth, setViewMonth] = useState(() => parsed ? parsed.getMonth()    : today.getMonth())
+  const [viewYear,  setViewYear]  = useState(initialView.y)
+  const [viewMonth, setViewMonth] = useState(initialView.m)
   const [mode,      setMode]      = useState<'day' | 'month' | 'year'>('day')
 
   // Sync view to external value changes — intentionally only re-runs on `value`.
@@ -76,9 +112,9 @@ const DatePicker = forwardRef<DatePickerHandle, Props>(function DatePicker(
   }
 
   function selectDay(day: number) {
-    const mm = String(viewMonth + 1).padStart(2, '0')
-    const dd = String(day).padStart(2, '0')
-    onChange(`${viewYear}-${mm}-${dd}`)
+    const iso = isoFromYMD(viewYear, viewMonth, day)
+    if (!inRange(iso)) return  // belt + braces: disabled cells already block onClick
+    onChange(iso)
     setOpen(false)
   }
 
@@ -252,25 +288,31 @@ const DatePicker = forwardRef<DatePickerHandle, Props>(function DatePicker(
                 const todayCell = cell.cur && isToday(cell.day)
                 const isSun     = col === 0
                 const isSat     = col === 6
+                // Out-of-bounds (trip-range) days render the same way as
+                // other-month grey cells — they're "exists but not for
+                // you" rather than "doesn't exist", so the visual signal
+                // is the same.
+                const outOfRange = cell.cur && !inRange(isoFromYMD(viewYear, viewMonth, cell.day))
+                const clickable  = cell.cur && !outOfRange
 
-                const bg = selected ? 'var(--color-accent)' : todayCell ? PICKER_COLORS.todayBg : 'transparent'
+                const bg = selected ? 'var(--color-accent)' : todayCell && !outOfRange ? PICKER_COLORS.todayBg : 'transparent'
                 const color = selected ? 'white'
-                  : !cell.cur ? PICKER_COLORS.disabled
+                  : (!cell.cur || outOfRange) ? PICKER_COLORS.disabled
                   : todayCell ? PICKER_COLORS.today
                   : isSun ? PICKER_COLORS.sunday
                   : isSat ? PICKER_COLORS.saturday
                   : 'var(--color-ink)'
-                const border = todayCell && !selected ? `1.5px solid ${PICKER_COLORS.today}` : 'none'
+                const border = todayCell && !selected && !outOfRange ? `1.5px solid ${PICKER_COLORS.today}` : 'none'
 
                 return (
                   <button
                     key={idx}
-                    onClick={() => cell.cur && selectDay(cell.day)}
-                    disabled={!cell.cur}
+                    onClick={() => clickable && selectDay(cell.day)}
+                    disabled={!clickable}
                     className={[
                       'aspect-square rounded-lg text-[13px] flex items-center justify-center transition-colors',
-                      cell.cur ? 'cursor-pointer hover:brightness-95' : 'cursor-default',
-                      selected || todayCell ? 'font-bold' : 'font-normal',
+                      clickable ? 'cursor-pointer hover:brightness-95' : 'cursor-default',
+                      selected || (todayCell && !outOfRange) ? 'font-bold' : 'font-normal',
                     ].join(' ')}
                     style={{ background: bg, color, border }}
                   >
@@ -281,22 +323,30 @@ const DatePicker = forwardRef<DatePickerHandle, Props>(function DatePicker(
             </div>
 
             <div className="mt-2.5 flex justify-center">
-              <button
-                onClick={() => {
-                  const y = today.getFullYear()
-                  const m = today.getMonth()
-                  const d = today.getDate()
-                  setViewYear(y)
-                  setViewMonth(m)
-                  const mm = String(m + 1).padStart(2, '0')
-                  const dd = String(d).padStart(2, '0')
-                  onChange(`${y}-${mm}-${dd}`)
-                  setOpen(false)
-                }}
-                className="px-4 py-[5px] rounded-card border border-border bg-transparent text-muted text-[11px] cursor-pointer tracking-[0.06em] font-medium hover:bg-app transition-colors"
-              >
-                今日
-              </button>
+              {(() => {
+                const todayIso = isoFromYMD(today.getFullYear(), today.getMonth(), today.getDate())
+                const todayInRange = inRange(todayIso)
+                return (
+                  <button
+                    disabled={!todayInRange}
+                    onClick={() => {
+                      if (!todayInRange) return
+                      setViewYear(today.getFullYear())
+                      setViewMonth(today.getMonth())
+                      onChange(todayIso)
+                      setOpen(false)
+                    }}
+                    className={[
+                      'px-4 py-[5px] rounded-card border border-border bg-transparent text-[11px] tracking-[0.06em] font-medium transition-colors',
+                      todayInRange
+                        ? 'text-muted cursor-pointer hover:bg-app'
+                        : 'text-border cursor-not-allowed',
+                    ].join(' ')}
+                  >
+                    今日
+                  </button>
+                )
+              })()}
             </div>
           </div>
         )}

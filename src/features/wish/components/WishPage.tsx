@@ -10,6 +10,7 @@
 import { useMemo, useState } from 'react'
 import { Plus, Heart } from 'lucide-react'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
+import { useSwipeOpen } from '@/hooks/useSwipeOpen'
 import { toast } from '@/shared/toast'
 import LoadingText from '@/components/ui/LoadingText'
 import TripLoading from '@/components/ui/TripLoading'
@@ -30,9 +31,10 @@ const TABS: { value: WishCategory; emoji: string; label: string }[] = [
 ]
 
 export default function WishPage() {
-  const { ctx, uid, cloudTripId, mutationTripId, isDemo, modal, signIn } =
+  const { ctx, uid, cloudTripId, mutationTripId, isDemo, isOwner, modal, signIn } =
     useFeatureListPage<Wish>()
   const [activeTab, setActiveTab] = useState<WishCategory>('place')
+  const swipe = useSwipeOpen()
 
   const { data: cloudWishes, isLoading } = useWishes(cloudTripId)
   // useMemo so an empty-state render doesn't produce a fresh [] each
@@ -70,9 +72,6 @@ export default function WishPage() {
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Heart} reason="ウィッシュを投票" />
 
   const title = ctx.trip.title
-  // Trip owner can delete any wish (moderation power); other members
-  // can only delete their own. Demo trips have no real owner concept.
-  const isTripOwner = ctx.status === 'cloud' && !!uid && ctx.trip.ownerId === uid
 
   async function handleSave({ input, attachment }: WishFormResult) {
     if (isDemo) { modal.close(); signIn.open(); return }
@@ -118,8 +117,25 @@ export default function WishPage() {
     })
   }
 
+  /** Whether the current viewer can delete a given wish. Mirrors the
+   *  firestore.rules predicate (proposer === uid OR caller is trip
+   *  owner) so the swipe-delete affordance only appears when the
+   *  delete will actually succeed. */
+  function canDelete(w: Wish): boolean {
+    if (isDemo || !uid) return false
+    return w.proposedBy === uid || isOwner
+  }
+
+  async function handleSwipeDelete(w: Wish) {
+    swipe.closeAll()
+    if (isDemo) { signIn.open(); return }
+    await deleteMut.mutateAsync({ wishId: w.id, image: w.image }).catch(() => {})
+  }
+
   return (
-    <div className="bg-app min-h-full pb-8">
+    // Wrapper onClick closes any open swipe — the row's inner buttons
+    // stopPropagation, so this only fires for taps in non-row areas.
+    <div className="bg-app min-h-full pb-8" onClick={swipe.closeAll}>
       {isDemo && <DemoBanner reason="投票を保存" onSignIn={signIn.open} />}
 
       <div className="px-5 pt-4 pb-2">
@@ -189,17 +205,27 @@ export default function WishPage() {
           </div>
         ) : (
           <>
-            <div className="flex flex-col gap-1.5">
-              {filteredWishes.map(w => (
-                <WishCard
-                  key={w.id}
-                  wish={w}
-                  isVoted={!!uid && w.votes.includes(uid)}
-                  isPreviewOnly={isDemo}
-                  onTap={() => modal.openEdit(w)}
-                  onToggleVote={() => handleToggleVote(w)}
-                />
-              ))}
+            <div className="flex flex-col gap-3">
+              {filteredWishes.map(w => {
+                const deletable = canDelete(w)
+                // Only pass swipe / delete props when the viewer
+                // actually has permission. Cards without these props
+                // render as plain non-swipeable rows (heart still
+                // works; tap-to-edit still works).
+                const swipeProps = deletable ? swipe.bindRow(w.id) : {}
+                return (
+                  <WishCard
+                    key={w.id}
+                    wish={w}
+                    isVoted={!!uid && w.votes.includes(uid)}
+                    isPreviewOnly={isDemo}
+                    {...swipeProps}
+                    onTap={() => { swipe.closeAll(); modal.openEdit(w) }}
+                    onToggleVote={() => { swipe.closeAll(); handleToggleVote(w) }}
+                    onDelete={deletable ? () => handleSwipeDelete(w) : undefined}
+                  />
+                )
+              })}
             </div>
 
             <button
@@ -223,7 +249,7 @@ export default function WishPage() {
           onClose={modal.close}
           onSave={handleSave}
           onDelete={
-            modal.editTarget && !isDemo && (modal.editTarget.proposedBy === uid || isTripOwner)
+            modal.editTarget && !isDemo && (modal.editTarget.proposedBy === uid || isOwner)
               ? handleDelete
               : undefined
           }

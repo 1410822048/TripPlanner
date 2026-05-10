@@ -10,7 +10,7 @@ import { Pencil } from 'lucide-react'
 import { tripHeaderCardPropsAreEqual, type TripHeaderCardProps as Props } from './tripHeaderCardPropsAreEqual'
 
 function TripHeaderCard({
-  selectedTrip, tripDays, scheduleCount, tripTotal,
+  selectedTrip, tripDays, scheduleCount, tripTotal, canInvite,
   onEditTrip, onInvite,
 }: Props) {
   const stats = [
@@ -61,14 +61,16 @@ function TripHeaderCard({
                 {m.label}
               </div>
             ))}
-            <button
-              onClick={onInvite}
-              aria-label="メンバーを招待"
-              className="w-[34px] h-[34px] rounded-full bg-app text-muted border-2 border-surface -ml-2 relative flex items-center justify-center text-[15px] font-light shadow-[0_1px_4px_rgba(0,0,0,0.06)] cursor-pointer transition-colors hover:bg-accent-pale hover:text-accent hover:border-accent/30"
-              style={{ zIndex: 0 }}
-            >
-              +
-            </button>
+            {canInvite && (
+              <button
+                onClick={onInvite}
+                aria-label="メンバーを招待"
+                className="w-[34px] h-[34px] rounded-full bg-app text-muted border-2 border-surface -ml-2 relative flex items-center justify-center text-[15px] font-light shadow-[0_1px_4px_rgba(0,0,0,0.06)] cursor-pointer transition-colors hover:bg-accent-pale hover:text-accent hover:border-accent/30"
+                style={{ zIndex: 0 }}
+              >
+                +
+              </button>
+            )}
           </div>
         </div>
 

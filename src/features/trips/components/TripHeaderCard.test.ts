@@ -18,6 +18,7 @@ const trip: TripItem = {
   startDate: '2026-05-01',
   endDate:   '2026-05-05',
   members:   [],
+  ownedByMe: true,
 }
 
 const baseProps = {
@@ -25,6 +26,7 @@ const baseProps = {
   tripDays:      5,
   scheduleCount: 12,
   tripTotal:     45000,
+  canInvite:     true,
   onEditTrip:    () => {},
   onInvite:      () => {},
 }
@@ -56,5 +58,9 @@ describe('tripHeaderCardPropsAreEqual', () => {
 
   test('returns false when tripTotal changes', () => {
     expect(tripHeaderCardPropsAreEqual(baseProps, { ...baseProps, tripTotal: 50000 })).toBe(false)
+  })
+
+  test('returns false when canInvite flips (owner ↔ non-owner role change)', () => {
+    expect(tripHeaderCardPropsAreEqual(baseProps, { ...baseProps, canInvite: false })).toBe(false)
   })
 })

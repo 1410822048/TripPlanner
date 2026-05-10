@@ -11,7 +11,8 @@ import { useRef, useState } from 'react'
 import { Paperclip, FileText, X as XIcon, ArrowRight } from 'lucide-react'
 import type { Booking, CreateBookingInput } from '@/types'
 import FormModalShell from '@/components/ui/FormModalShell'
-import { DatePicker } from '@/components/ui/pickers'
+import DeleteConfirm from '@/components/ui/DeleteConfirm'
+import { DatePicker, type DatePickerHandle } from '@/components/ui/pickers'
 import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
@@ -66,23 +67,34 @@ export interface BookingFormResult {
 
 interface Props {
   editTarget: Booking | null
+  /** Inclusive trip date range — DatePickers (checkIn / checkOut) open
+   *  on the trip's first month and disable days outside the window.
+   *  When omitted (e.g. demo mode without a real trip) the pickers
+   *  fall back to today's month, no range constraint. */
+  tripStartDate?: string
+  tripEndDate?:   string
   isOpen:     boolean
   isSaving:   boolean
   onClose:    () => void
   onSave:     (data: BookingFormResult) => void
+  /** Only present in edit mode for users with delete permission.
+   *  Renders a two-step inline confirm above the save button. */
+  onDelete?:  () => void
 }
 
 export default function BookingFormModal({
-  editTarget, isOpen, isSaving, onClose, onSave,
+  editTarget, tripStartDate, tripEndDate,
+  isOpen, isSaving, onClose, onSave, onDelete,
 }: Props) {
   const { state, setField } = useBookingFormState(editTarget)
   const att = useBookingAttachment(editTarget)
   const [errors,      setErrors]      = useState<Record<string, string>>({})
   const [previewOpen, setPreviewOpen] = useState(false)
 
-  const titleRef  = useRef<HTMLInputElement>(null)
-  const originRef = useRef<HTMLInputElement>(null)
-  const fileRef   = useRef<HTMLInputElement>(null)
+  const titleRef    = useRef<HTMLInputElement>(null)
+  const originRef   = useRef<HTMLInputElement>(null)
+  const fileRef     = useRef<HTMLInputElement>(null)
+  const checkOutRef = useRef<DatePickerHandle>(null)
   // For transport types the user wants origin first, so focus that input
   // on open. Hotel / other open with their primary text field focused.
   const isTransport = TRANSPORT_TYPES.has(state.type)
@@ -128,6 +140,10 @@ export default function BookingFormModal({
       provider:         state.provider.trim() || undefined,
       checkIn:          state.checkIn || undefined,
       checkOut:         showRange ? (state.checkOut || undefined) : undefined,
+      // Address is most useful for hotel + その他 (the user wants a
+      // map deep-link). Transport types already convey location via
+      // origin/destination so we don't show the input there.
+      address:          isTransport ? undefined : state.address.trim() || undefined,
       note:             state.note.trim() || undefined,
     }
 
@@ -232,15 +248,60 @@ export default function BookingFormModal({
       {showRange ? (
         <div className="flex gap-2.5">
           <FormField label="チェックイン" className="flex-1">
-            <DatePicker value={state.checkIn} onChange={v => setField('checkIn', v)} placeholder="日付" />
+            <DatePicker
+              value={state.checkIn}
+              onChange={v => {
+                setField('checkIn', v)
+                // Mirror EditTripModal's chained-picker UX: after the
+                // user picks check-in, auto-open check-out on the same
+                // month so they don't have to tap a second field. The
+                // 160ms delay lets the first dialog's close transition
+                // finish before the second opens — without it the two
+                // dialogs briefly overlap on iOS.
+                if (v) setTimeout(() => checkOutRef.current?.open({ viewDate: v }), 160)
+              }}
+              placeholder="日付"
+              minDate={tripStartDate}
+              maxDate={tripEndDate}
+            />
           </FormField>
           <FormField label="チェックアウト" error={errors.checkOut} className="flex-1">
-            <DatePicker value={state.checkOut} onChange={v => setField('checkOut', v)} placeholder="日付" error={!!errors.checkOut} />
+            <DatePicker
+              ref={checkOutRef}
+              value={state.checkOut}
+              onChange={v => setField('checkOut', v)}
+              placeholder="日付"
+              error={!!errors.checkOut}
+              minDate={tripStartDate}
+              maxDate={tripEndDate}
+            />
           </FormField>
         </div>
       ) : (
         <FormField label="日付">
-          <DatePicker value={state.checkIn} onChange={v => setField('checkIn', v)} placeholder="日付" />
+          <DatePicker
+            value={state.checkIn}
+            onChange={v => setField('checkIn', v)}
+            placeholder="日付"
+            minDate={tripStartDate}
+            maxDate={tripEndDate}
+          />
+        </FormField>
+      )}
+
+      {/* Address — only useful for hotel / その他 (transport types
+          already convey location via origin/destination). Free-text;
+          Google Maps treats it as a search query so anything from a
+          street address to a venue name resolves cleanly. */}
+      {!isTransport && (
+        <FormField label="住所（任意）">
+          <input
+            value={state.address}
+            onChange={e => setField('address', e.target.value)}
+            placeholder={state.type === 'hotel' ? '例：東京都台東区浅草 1-1-1' : '例：上野公園'}
+            maxLength={200}
+            className={inputClass(false)}
+          />
         </FormField>
       )}
 
@@ -314,6 +375,8 @@ export default function BookingFormModal({
           className={`${inputClass(false)} resize-none leading-[1.6] py-2.5 h-auto`}
         />
       </FormField>
+
+      {editTarget && onDelete && <DeleteConfirm noun="予約" onDelete={onDelete} />}
 
       {previewOpen && att.previewUrl && (
         <AttachmentPreviewModal

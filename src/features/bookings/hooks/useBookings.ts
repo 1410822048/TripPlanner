@@ -1,74 +1,83 @@
 // src/features/bookings/hooks/useBookings.ts
-// Mirrors the optimistic-update pattern from useExpenses / useSchedules:
-//   - onMutate patches the cache immediately
-//   - onError rolls back to the snapshot
-//   - onSettled invalidates so the server's authoritative state replaces
-//     any temp-id row
+// useBookings is realtime-backed via createRealtimeListHook — initial
+// getDocs populates the cache, then a Firestore onSnapshot listener
+// pushes co-member edits live (someone else adding a hotel booking
+// shows up immediately, no manual refresh).
+//
+// Mutations stay optimistic for instant local feedback; the listener
+// reconciles temp-id rows once the server-confirmed write lands. Roll
+// back is unchanged on failure.
+//
 // Attachment uploads are awaited inside the mutationFn — the optimistic
 // patch can't render the URL anyway (the file is local), so we keep the
-// optimistic row attachment-less and let the invalidation refetch surface
-// the final URL.
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+// optimistic row attachment-less and let the snapshot listener surface
+// the final URL once the server-side write resolves.
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getBookingsByTrip,
+  getMyHotelBookings,
+  subscribeToBookings,
+  subscribeToMyHotelBookings,
   createBooking,
   updateBooking,
   deleteBooking,
 } from '../services/bookingService'
+import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
+import { tempId } from '@/utils/tempId'
+import { patchListCache, rollbackListCache } from '@/utils/queryCache'
 import type { Booking, CreateBookingInput } from '@/types'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
 import { toast } from '@/shared/toast'
 
 export const bookingKeys = {
-  all: (tripId: string) => ['bookings', tripId] as const,
+  all:       (tripId: string) => ['bookings', tripId] as const,
+  myHotels:  (uid: string)    => ['bookings', 'my-hotels', uid] as const,
 }
 
-function tempId() { return `temp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }
+/**
+ * Cross-trip hotel-booking history for the signed-in user — backs
+ * PastLodgingPage. Uses a collection-group query with a server-side
+ * filter (`memberIds array-contains uid && type == 'hotel'`) so it
+ * resolves in O(1) Firestore round-trips regardless of trip count.
+ *
+ * Realtime: a new hotel booking on any trip you're a member of pushes
+ * here automatically.
+ */
+export const useMyHotelBookings = createRealtimeListHook<Booking>({
+  queryKeyFactory: bookingKeys.myHotels,
+  initialFetch:    getMyHotelBookings,
+  subscribe:       subscribeToMyHotelBookings,
+  source:          'useMyHotelBookings',
+})
 
-function patchCache(
-  qc: ReturnType<typeof useQueryClient>,
-  tripId: string,
-  fn: (prev: Booking[]) => Booking[],
-): { prev: Booking[] | undefined } {
-  const key  = bookingKeys.all(tripId)
-  const prev = qc.getQueryData<Booking[]>(key)
-  qc.setQueryData<Booking[]>(key, fn(prev ?? []))
-  return { prev }
-}
-
-export function useBookings(tripId: string | undefined) {
-  return useQuery({
-    queryKey: bookingKeys.all(tripId ?? ''),
-    queryFn:  () => getBookingsByTrip(tripId!),
-    enabled:  !!tripId,
-  })
-}
+export const useBookings = createRealtimeListHook<Booking>({
+  queryKeyFactory: bookingKeys.all,
+  initialFetch:    getBookingsByTrip,
+  subscribe:       subscribeToBookings,
+  source:          'useBookings',
+})
 
 export function useCreateBooking(tripId: string) {
   const qc = useQueryClient()
+  const key = bookingKeys.all(tripId)
   return useMutation({
     mutationFn: ({ input, file }: { input: CreateBookingInput; file: File | null }) =>
       createBooking(tripId, input, file),
     onMutate: ({ input }) =>
-      patchCache(qc, tripId, prev => {
-        const optimistic: Booking = {
-          id:        tempId(),
-          tripId,
-          createdAt: MOCK_TIMESTAMP,
-          ...input,
-        }
-        return [optimistic, ...prev]
-      }),
+      patchListCache<Booking>(qc, key, prev => [
+        { id: tempId(), tripId, createdAt: MOCK_TIMESTAMP, ...input },
+        ...prev,
+      ]),
     onError: (err, _vars, ctx) => {
-      if (ctx?.prev !== undefined) qc.setQueryData(bookingKeys.all(tripId), ctx.prev)
-      toast.error(err instanceof Error ? `予約の追加に失敗：${err.message}` : '予約の追加に失敗しました')
+      rollbackListCache<Booking>(qc, key, ctx)
+      toast.mutationError(err, '予約の追加')
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: bookingKeys.all(tripId) }),
   })
 }
 
 export function useUpdateBooking(tripId: string) {
   const qc = useQueryClient()
+  const key = bookingKeys.all(tripId)
   return useMutation({
     mutationFn: ({
       bookingId, updates, attachment, existing,
@@ -79,30 +88,29 @@ export function useUpdateBooking(tripId: string) {
       existing:   { filePath?: string; thumbPath?: string }
     }) => updateBooking(tripId, bookingId, updates, attachment, existing),
     onMutate: ({ bookingId, updates }) =>
-      patchCache(qc, tripId, prev =>
+      patchListCache<Booking>(qc, key, prev =>
         prev.map(b => b.id === bookingId ? { ...b, ...updates } : b),
       ),
     onError: (err, _vars, ctx) => {
-      if (ctx?.prev !== undefined) qc.setQueryData(bookingKeys.all(tripId), ctx.prev)
-      toast.error(err instanceof Error ? `更新に失敗：${err.message}` : '更新に失敗しました')
+      rollbackListCache<Booking>(qc, key, ctx)
+      toast.mutationError(err, '更新')
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: bookingKeys.all(tripId) }),
   })
 }
 
 export function useDeleteBooking(tripId: string) {
   const qc = useQueryClient()
+  const key = bookingKeys.all(tripId)
   return useMutation({
     mutationFn: ({ bookingId, paths }: {
       bookingId: string
       paths:     { filePath?: string; thumbPath?: string }
     }) => deleteBooking(tripId, bookingId, paths),
     onMutate: ({ bookingId }) =>
-      patchCache(qc, tripId, prev => prev.filter(b => b.id !== bookingId)),
+      patchListCache<Booking>(qc, key, prev => prev.filter(b => b.id !== bookingId)),
     onError: (err, _vars, ctx) => {
-      if (ctx?.prev !== undefined) qc.setQueryData(bookingKeys.all(tripId), ctx.prev)
-      toast.error(err instanceof Error ? `削除に失敗：${err.message}` : '削除に失敗しました')
+      rollbackListCache<Booking>(qc, key, ctx)
+      toast.mutationError(err, '削除')
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: bookingKeys.all(tripId) }),
   })
 }

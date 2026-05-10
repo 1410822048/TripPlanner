@@ -22,7 +22,7 @@ import {
 import {
   setupTestEnv, teardownTestEnv, seedFixture,
   asOwner, asEditor, asViewer, asStranger, asAnon,
-  TRIP_ID, WISH_ID, BOOKING_ID,
+  TRIP_ID, WISH_ID, BOOKING_ID, BOOKING_NO_VIEWER_ID,
   OWNER_UID, EDITOR_UID, VIEWER_UID, STRANGER_UID,
 } from './helpers'
 import type { RulesTestEnvironment } from '@firebase/rules-unit-testing'
@@ -225,5 +225,108 @@ describe('/{path=**}/members collection-group', () => {
     )
     // Single-trip path ok (isMember rule)
     await assertSucceeds(getDocs(q))
+  })
+})
+
+// ─── Member self-read (invite redeem path) ─────────────────────────
+// Pins the May-2026 regression where acceptInvite's idempotency check
+// (getDoc on own member path) returned 403 because the rule required
+// isMember(tripId) — but the redeemer hasn't joined yet at that point.
+// The fix: self-read is allowed independent of membership.
+describe('/trips/{tripId}/members get with self-access', () => {
+  test('non-member can getDoc their OWN member path (used by acceptInvite)', async () => {
+    // STRANGER is not a member of TRIP_ID, but must be able to read
+    // /trips/TRIP_ID/members/STRANGER_UID (returns "not found") so the
+    // invite redeem flow can ask "am I already a member?" before writing.
+    await assertSucceeds(
+      getDoc(doc(asStranger(env).firestore(), 'trips', TRIP_ID, 'members', STRANGER_UID)),
+    )
+  })
+
+  test('non-member CANNOT getDoc someone else\'s member path', async () => {
+    await assertFails(
+      getDoc(doc(asStranger(env).firestore(), 'trips', TRIP_ID, 'members', OWNER_UID)),
+    )
+  })
+
+  test('member can getDoc any member doc in the trip (roster view)', async () => {
+    await assertSucceeds(
+      getDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'members', OWNER_UID)),
+    )
+  })
+
+  test('signed-out CANNOT getDoc any member path', async () => {
+    await assertFails(
+      getDoc(doc(asAnon(env).firestore(), 'trips', TRIP_ID, 'members', OWNER_UID)),
+    )
+  })
+})
+
+// ─── Booking memberSync path (member self-add to memberIds) ────────
+// Pins the secondary May-2026 finding: addMemberToTripBookings runs at
+// the end of acceptInvite to keep collection-group hotel queries
+// consistent. The original update rule required canWrite, locking out
+// viewers — so viewer invitees joined OK but their bookings.memberIds
+// never got synced (failure swallowed by inviteService's try/catch).
+//
+// New rule: any member can append THEIR OWN uid to memberIds, exactly
+// once, with no piggybacking. These tests check both the positive path
+// and every escape hatch a malicious member might try.
+describe('/trips/{tripId}/bookings memberSync (self-add path)', () => {
+  test('viewer can append OWN uid to memberIds (acceptInvite sync)', async () => {
+    await assertSucceeds(
+      updateDoc(
+        doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_NO_VIEWER_ID),
+        { memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID] },
+      ),
+    )
+  })
+
+  test('viewer CANNOT append SOMEONE ELSE\'s uid (no granting access via side door)', async () => {
+    await assertFails(
+      updateDoc(
+        doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_NO_VIEWER_ID),
+        { memberIds: [OWNER_UID, EDITOR_UID, STRANGER_UID] },
+      ),
+    )
+  })
+
+  test('viewer CANNOT bulk-add multiple uids in one update', async () => {
+    await assertFails(
+      updateDoc(
+        doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_NO_VIEWER_ID),
+        { memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID, STRANGER_UID] },
+      ),
+    )
+  })
+
+  test('memberSync path CANNOT piggyback other field changes', async () => {
+    // The changedOnly(['memberIds']) clause must reject any extra field
+    // touched in the same update — otherwise a viewer could edit booking
+    // titles by smuggling them through the self-add path.
+    await assertFails(
+      updateDoc(
+        doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_NO_VIEWER_ID),
+        { memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID], title: 'Hijacked' },
+      ),
+    )
+  })
+
+  test('non-member CANNOT use memberSync path to add themselves', async () => {
+    await assertFails(
+      updateDoc(
+        doc(asStranger(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_NO_VIEWER_ID),
+        { memberIds: [OWNER_UID, EDITOR_UID, STRANGER_UID] },
+      ),
+    )
+  })
+
+  test('editor can still update booking content via canWrite path (no regression)', async () => {
+    await assertSucceeds(
+      updateDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_ID),
+        { title: 'Renamed Hotel' },
+      ),
+    )
   })
 })

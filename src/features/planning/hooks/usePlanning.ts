@@ -1,15 +1,23 @@
 // src/features/planning/hooks/usePlanning.ts
-// Same optimistic-update pattern as useBookings / useWishes. The
-// toggleDone mutation is split out so the checkbox tap latency is as
-// low as possible (no full-doc patch shape).
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+// Realtime-backed via createRealtimeListHook — when a co-member ticks
+// off "currency exchanged" or adds a packing item, you see it
+// immediately. Mutations stay optimistic; the listener handles
+// reconciliation (no onSettled invalidate needed).
+//
+// The toggleDone mutation is split out so the checkbox tap latency is
+// as low as possible (no full-doc patch shape).
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getPlanItemsByTrip,
+  subscribeToPlanItems,
   createPlanItem,
   updatePlanItem,
   togglePlanItemDone,
   deletePlanItem,
 } from '../services/planningService'
+import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
+import { tempId } from '@/utils/tempId'
+import { patchListCache, rollbackListCache } from '@/utils/queryCache'
 import type { CreatePlanItemInput, PlanItem } from '@/types'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
 import { toast } from '@/shared/toast'
@@ -18,35 +26,22 @@ export const planningKeys = {
   all: (tripId: string) => ['planning', tripId] as const,
 }
 
-function tempId() { return `temp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }
-
-function patchCache(
-  qc: ReturnType<typeof useQueryClient>,
-  tripId: string,
-  fn: (prev: PlanItem[]) => PlanItem[],
-): { prev: PlanItem[] | undefined } {
-  const key  = planningKeys.all(tripId)
-  const prev = qc.getQueryData<PlanItem[]>(key)
-  qc.setQueryData<PlanItem[]>(key, fn(prev ?? []))
-  return { prev }
-}
-
-export function usePlanning(tripId: string | undefined) {
-  return useQuery({
-    queryKey: planningKeys.all(tripId ?? ''),
-    queryFn:  () => getPlanItemsByTrip(tripId!),
-    enabled:  !!tripId,
-  })
-}
+export const usePlanning = createRealtimeListHook<PlanItem>({
+  queryKeyFactory: planningKeys.all,
+  initialFetch:    getPlanItemsByTrip,
+  subscribe:       subscribeToPlanItems,
+  source:          'usePlanning',
+})
 
 export function useCreatePlanItem(tripId: string) {
   const qc = useQueryClient()
+  const key = planningKeys.all(tripId)
   return useMutation({
     mutationFn: ({ input, createdBy }: { input: CreatePlanItemInput; createdBy: string }) =>
       createPlanItem(tripId, input, createdBy),
     onMutate: ({ input, createdBy }) =>
-      patchCache(qc, tripId, prev => {
-        const optimistic: PlanItem = {
+      patchListCache<PlanItem>(qc, key, prev => [
+        {
           id: tempId(),
           tripId,
           ...input,
@@ -54,46 +49,47 @@ export function useCreatePlanItem(tripId: string) {
           createdBy,
           createdAt: MOCK_TIMESTAMP,
           updatedAt: MOCK_TIMESTAMP,
-        }
-        return [optimistic, ...prev]
-      }),
+        },
+        ...prev,
+      ]),
     onError: (err, _vars, ctx) => {
-      if (ctx?.prev !== undefined) qc.setQueryData(planningKeys.all(tripId), ctx.prev)
-      toast.error(err instanceof Error ? `追加に失敗：${err.message}` : '追加に失敗しました')
+      rollbackListCache<PlanItem>(qc, key, ctx)
+      toast.mutationError(err, '追加')
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: planningKeys.all(tripId) }),
   })
 }
 
 export function useUpdatePlanItem(tripId: string) {
   const qc = useQueryClient()
+  const key = planningKeys.all(tripId)
   return useMutation({
     mutationFn: ({ itemId, updates }: { itemId: string; updates: Partial<CreatePlanItemInput> }) =>
       updatePlanItem(tripId, itemId, updates),
     onMutate: ({ itemId, updates }) =>
-      patchCache(qc, tripId, prev =>
+      patchListCache<PlanItem>(qc, key, prev =>
         prev.map(p => p.id === itemId ? { ...p, ...updates, updatedAt: MOCK_TIMESTAMP } : p),
       ),
     onError: (err, _vars, ctx) => {
-      if (ctx?.prev !== undefined) qc.setQueryData(planningKeys.all(tripId), ctx.prev)
-      toast.error(err instanceof Error ? `更新に失敗：${err.message}` : '更新に失敗しました')
+      rollbackListCache<PlanItem>(qc, key, ctx)
+      toast.mutationError(err, '更新')
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: planningKeys.all(tripId) }),
   })
 }
 
 /**
- * Toggle done. Optimistic so the checkbox flips immediately. We don't
- * invalidate on settle for the speed-critical happy path; on error we
- * roll back the optimistic patch.
+ * Toggle done. Optimistic so the checkbox flips immediately. The
+ * snapshot listener will deliver the server-confirmed state; the
+ * optimistic patch is exact (toggling is idempotent + per-doc) so no
+ * extra reconciliation needed.
  */
 export function useTogglePlanItem(tripId: string) {
   const qc = useQueryClient()
+  const key = planningKeys.all(tripId)
   return useMutation({
     mutationFn: ({ itemId, uid, done }: { itemId: string; uid: string; done: boolean }) =>
       togglePlanItemDone(tripId, itemId, uid, done),
     onMutate: ({ itemId, uid, done }) =>
-      patchCache(qc, tripId, prev =>
+      patchListCache<PlanItem>(qc, key, prev =>
         prev.map(p => p.id === itemId
           ? {
               ...p,
@@ -105,24 +101,22 @@ export function useTogglePlanItem(tripId: string) {
         ),
       ),
     onError: (_err, _vars, ctx) => {
-      if (ctx?.prev !== undefined) qc.setQueryData(planningKeys.all(tripId), ctx.prev)
+      rollbackListCache<PlanItem>(qc, key, ctx)
       toast.error('更新に失敗しました')
     },
-    // No onSettled invalidate: the optimistic patch is exact (toggling
-    // is idempotent + per-doc). Skipping the refetch keeps the UI snappy.
   })
 }
 
 export function useDeletePlanItem(tripId: string) {
   const qc = useQueryClient()
+  const key = planningKeys.all(tripId)
   return useMutation({
     mutationFn: (itemId: string) => deletePlanItem(tripId, itemId),
     onMutate: (itemId) =>
-      patchCache(qc, tripId, prev => prev.filter(p => p.id !== itemId)),
+      patchListCache<PlanItem>(qc, key, prev => prev.filter(p => p.id !== itemId)),
     onError: (err, _vars, ctx) => {
-      if (ctx?.prev !== undefined) qc.setQueryData(planningKeys.all(tripId), ctx.prev)
-      toast.error(err instanceof Error ? `削除に失敗：${err.message}` : '削除に失敗しました')
+      rollbackListCache<PlanItem>(qc, key, ctx)
+      toast.mutationError(err, '削除')
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: planningKeys.all(tripId) }),
   })
 }
