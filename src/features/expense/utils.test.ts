@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { splitEqually, splitSummary } from './utils'
+import { splitEqually, splitSummary, splitsFromItems } from './utils'
 import { MOCK_TIMESTAMP as TS } from '@/mocks/utils'
 import type { Expense } from '@/types'
 
@@ -46,6 +46,46 @@ describe('splitEqually', () => {
         expect(r.reduce((s, x) => s + x.amount, 0)).toBe(total)
       }
     }
+  })
+
+  it('handles negative totals — discount / cashback lines', () => {
+    // -6 / 2 → each -3
+    const r = splitEqually(-6, ['a', 'b'])
+    expect(r.map(s => s.amount)).toEqual([-3, -3])
+    expect(r.reduce((s, x) => s + x.amount, 0)).toBe(-6)
+  })
+
+  it('distributes negative remainder correctly', () => {
+    // -7 / 2 → base 3, rem 1 → [-4, -3], sum -7 (NOT JS's naive Math.floor(-7/2) = -4 trap)
+    const r = splitEqually(-7, ['a', 'b'])
+    expect(r.map(s => s.amount)).toEqual([-4, -3])
+    expect(r.reduce((s, x) => s + x.amount, 0)).toBe(-7)
+  })
+})
+
+describe('splitsFromItems', () => {
+  it('aggregates per-member shares across multiple items', () => {
+    // Realistic receipt: A & B share a meal, plus a shared discount
+    const r = splitsFromItems([
+      { name: 'Donut',     amount:  118, assignees: ['A']       },
+      { name: 'Bread',     amount:  110, assignees: ['A']       },
+      { name: 'Coffee',    amount:  100, assignees: ['B']       },
+      { name: 'Cashback',  amount:   -6, assignees: ['A', 'B']  },
+    ])
+    const byId = Object.fromEntries(r.map(s => [s.memberId, s.amount]))
+    // A: 118 + 110 + (-3) = 225
+    // B: 100 + (-3) = 97
+    expect(byId.A).toBe(225)
+    expect(byId.B).toBe(97)
+    expect(r.reduce((s, x) => s + x.amount, 0)).toBe(322)
+  })
+
+  it('skips items with no assignees (form blocks save before reaching here)', () => {
+    const r = splitsFromItems([
+      { name: 'Orphan', amount: 50, assignees: [] },
+      { name: 'Real',   amount: 100, assignees: ['A'] },
+    ])
+    expect(r).toEqual([{ memberId: 'A', amount: 100 }])
   })
 })
 

@@ -10,9 +10,14 @@ export default function Splash({ onDone }: Props) {
   const [leaving, setLeaving] = useState(false)
 
   useEffect(() => {
-    const rafId = requestAnimationFrame(() => setEntered(true))
-    const leaveTimer = setTimeout(() => setLeaving(true), 1200)
-    const doneTimer  = setTimeout(() => onDone(), 1600)
+    // Brand moment kept to ~500ms total so it doesn't pile on top of
+    // the real boot (auth + Firestore handshake) which already takes
+    // its own 2–5s on cold mobile launches. Previous 1.6s baseline
+    // stacked, making cold launches feel >7s. Splash is now a quick
+    // wipe rather than a held card.
+    const rafId      = requestAnimationFrame(() => setEntered(true))
+    const leaveTimer = setTimeout(() => setLeaving(true), 300)
+    const doneTimer  = setTimeout(() => onDone(),         500)
     return () => {
       cancelAnimationFrame(rafId)
       clearTimeout(leaveTimer)

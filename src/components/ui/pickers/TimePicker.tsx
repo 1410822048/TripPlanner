@@ -42,22 +42,22 @@ export default function TimePicker({
     return snapMinute(new Date().getMinutes(), minuteStep)
   })
 
-  // Reset draft to the current value (or "now") whenever the picker re-opens.
-  // Implemented as an effect on `open` because the draft state lives inside
-  // this component and the parent only toggles open/close — a key-remount
-  // would remount the dialog shell too and break the open/close transition.
-  // rules-of-hooks flags setState-in-effect as a cascade-render smell; here
-  // it's intentional (reset on edge trigger), the next render is the one we
-  // want, so we opt out of the rule with an explicit comment.
-  useEffect(() => {
-    if (!open) return
-    const now = new Date()
-    /* eslint-disable react-hooks/set-state-in-effect */
-    setDraftH(hh !== '' ? Number(hh) : now.getHours())
-    setDraftM(mm !== '' ? Number(mm) : snapMinute(now.getMinutes(), minuteStep))
-    /* eslint-enable react-hooks/set-state-in-effect */
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
+  // Reset draft to the current value (or "now") whenever the picker
+  // edge-triggers from closed to open. Uses the React-official
+  // "compare previous prop" pattern (https://react.dev/reference/react/useState#storing-information-from-previous-renders)
+  // instead of an effect — no setState-in-effect rule violation, no
+  // missing-deps disable, and React Compiler can auto-memoise the
+  // surrounding component. The if-during-render is safe: subsequent
+  // renders see prevOpen === open and skip the branch.
+  const [prevOpen, setPrevOpen] = useState(open)
+  if (open !== prevOpen) {
+    setPrevOpen(open)
+    if (open) {
+      const now = new Date()
+      setDraftH(hh !== '' ? Number(hh) : now.getHours())
+      setDraftM(mm !== '' ? Number(mm) : snapMinute(now.getMinutes(), minuteStep))
+    }
+  }
 
   function commit() {
     const hStr = String(draftH).padStart(2, '0')

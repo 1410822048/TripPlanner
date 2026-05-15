@@ -5,7 +5,7 @@
 // so `<Modal key={key}>` triggers an unmount → remount on switch,
 // which gives every open a fresh useState init from props (no
 // setState-in-effect needed for prop sync).
-import { useCallback, useState } from 'react'
+import { useState } from 'react'
 
 interface Identifiable { id: string }
 
@@ -23,18 +23,19 @@ export function useFormModal<T extends Identifiable>(): UseFormModalResult<T> {
   const [isOpen, setIsOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<T | null>(null)
 
-  const openAdd = useCallback(() => {
+  // Compiler memoises these — no manual useCallback needed.
+  const openAdd = () => {
     setEditTarget(null)
     setIsOpen(true)
-  }, [])
-  const openEdit = useCallback((target: T) => {
+  }
+  const openEdit = (target: T) => {
     setEditTarget(target)
     setIsOpen(true)
-  }, [])
-  const close = useCallback(() => {
+  }
+  const close = () => {
     setIsOpen(false)
     setEditTarget(null)
-  }, [])
+  }
 
   return {
     isOpen,

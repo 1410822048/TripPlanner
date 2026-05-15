@@ -14,7 +14,7 @@
 // list rendering, mutation handlers, and form modal — the abstraction
 // is intentionally narrow so future divergent pages don't have to
 // fight a one-size-fits-all shell.
-import { useCallback, useState } from 'react'
+import { useState } from 'react'
 import { useUid } from './useAuth'
 import { useTripContext, type TripContext } from './useTripContext'
 import { useFormModal, type UseFormModalResult } from './useFormModal'
@@ -56,8 +56,9 @@ export function useFeatureListPage<T extends Identifiable>(): FeatureListPageSta
   const modal = useFormModal<T>()
   const [signInOpen, setSignInOpen] = useState(false)
 
-  const openSignIn  = useCallback(() => setSignInOpen(true), [])
-  const closeSignIn = useCallback(() => setSignInOpen(false), [])
+  // Compiler memoises these — no manual useCallback needed.
+  const openSignIn  = () => setSignInOpen(true)
+  const closeSignIn = () => setSignInOpen(false)
 
   const cloudTripId    = ctx.status === 'cloud' ? ctx.trip.id : undefined
   const mutationTripId = cloudTripId ?? ''

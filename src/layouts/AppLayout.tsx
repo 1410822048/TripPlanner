@@ -3,6 +3,7 @@ import { Suspense } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { CalendarDays, Ticket, Receipt, Heart, ListChecks, UserCircle } from 'lucide-react'
 import LoadingText from '@/components/ui/LoadingText'
+import OfflineBanner from '@/components/ui/OfflineBanner'
 import PwaUpdatePrompt from '@/components/PwaUpdatePrompt'
 import PwaInstallPrompt from '@/components/PwaInstallPrompt'
 import { useCurrentTripSync } from '@/features/trips/hooks/useCurrentTripSync'
@@ -12,10 +13,20 @@ import { usePrefetchBookings } from '@/features/bookings/hooks/usePrefetchBookin
 //   - <main>'s `bottom` (so content doesn't scroll under the nav)
 //   - <nav>'s `height`
 //   - PWA banners' `bottom` offset (read via the --nav-h var below)
-// Keeping it as one constant means changing the nav height (e.g. for
-// a redesign) is a one-line edit; the previous setup hard-coded `h-16`
-// in two places + a magic 64px in each banner.
-const NAV_H = '4rem'
+//
+// On Face-ID iPhones running as PWAs, `env(safe-area-inset-bottom)`
+// reports the home-indicator strip (~34px). Without accounting for it
+// the nav's icon row sat *underneath* the indicator and tap targets
+// were cropped. We bake the safe-area into the nav HEIGHT (not into
+// a separate offset) so:
+//   - main content's bottom stays clear of indicator + nav
+//   - PWA banners auto-shift up too (they read --nav-h)
+//   - <nav>'s `padding-bottom` pushes the icon row above the indicator
+//     while the indicator zone keeps the nav's blurred background, so
+//     visually it reads as one unbroken bar.
+// Android / desktop / pre-iPhone-X resolve safe-area to 0, so they get
+// the original 4rem behaviour for free.
+const NAV_H = 'calc(4rem + env(safe-area-inset-bottom))'
 
 const TABS = [
   { path: '/schedule', label: '行程', Icon: CalendarDays },
@@ -57,6 +68,10 @@ export default function AppLayout() {
         className="absolute top-0 inset-x-0 overflow-y-auto overflow-x-hidden bg-app"
         style={{ bottom: 'var(--nav-h)' }}
       >
+        {/* 接在 main 內最頂部 — 跟頁面一起捲動,進頁面必看到一次,
+            離線時持續存在不自動消失,回線後短暫顯示「同期しました」綠
+            條 2 秒。 */}
+        <OfflineBanner />
         <Suspense fallback={
           <div className="flex items-center justify-center h-full text-muted text-[13px]">
             <LoadingText />
@@ -68,9 +83,16 @@ export default function AppLayout() {
 
       <nav
         aria-label="主要ナビゲーション"
-        className="absolute bottom-0 inset-x-0 flex items-center border-t border-border/60 px-1 z-10"
+        className="absolute bottom-0 inset-x-0 flex items-stretch border-t border-border/60 px-1 z-10"
         style={{
           height: 'var(--nav-h)',
+          // Padding-bottom carves out the home-indicator strip so the
+          // 6 nav buttons stretch into the TOP 4rem only. items-stretch
+          // (replacing items-center) makes flex children fill the
+          // padding box's content area — i.e. 4rem regardless of
+          // safe-area size — so icons stay vertically centred in the
+          // visible row, not pushed down by the indicator gap.
+          paddingBottom: 'env(safe-area-inset-bottom)',
           background: 'rgba(253,250,245,0.94)',
           backdropFilter: 'blur(24px)',
           WebkitBackdropFilter: 'blur(24px)',
@@ -84,7 +106,11 @@ export default function AppLayout() {
               onClick={() => navigate(path)}
               aria-current={active ? 'page' : undefined}
               className={[
-                'flex-1 h-full flex flex-col items-center justify-center gap-[3px] p-0 border-none bg-transparent cursor-pointer transition-colors',
+                // `h-full` removed — `items-stretch` on parent now sizes
+                // each button to the content-box height (4rem after the
+                // safe-area padding). `h-full` would resolve to the full
+                // padded height and push icons down on iPhone X+.
+                'flex-1 flex flex-col items-center justify-center gap-[3px] p-0 border-none bg-transparent cursor-pointer transition-colors',
                 'focus-visible:outline-2 focus-visible:outline-accent',
                 active ? 'text-accent' : 'text-[#B8B4AE] hover:text-ink',
               ].join(' ')}

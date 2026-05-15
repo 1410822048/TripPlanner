@@ -17,11 +17,12 @@
 // into the SAME pointer handlers, so the gesture state machine has
 // extra modes ('swipe' | 'reorder'). Keeping it bespoke avoids a
 // hook with 'maybe-reorder' branches that would obscure both flows.
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   SWIPE_WIDTH, OPEN_THRESHOLD, MOVE_THRESHOLD,
   FG_TRANSITION, BG_TRANSITION,
 } from '@/components/ui/swipeConstants'
+import { haptic } from '@/utils/haptics'
 
 export interface UseSwipeRowProps {
   isOpen:  boolean
@@ -80,8 +81,9 @@ export function useSwipeRow({
   const [confirming, setConfirming] = useState(false)
   const fgRef = useRef<HTMLDivElement | null>(null)
   const bgRef = useRef<HTMLDivElement | null>(null)
-  const bindFg = useCallback((el: HTMLDivElement | null) => { fgRef.current = el }, [])
-  const bindBg = useCallback((el: HTMLDivElement | null) => { bgRef.current = el }, [])
+  // Compiler memoises these callback refs.
+  const bindFg = (el: HTMLDivElement | null) => { fgRef.current = el }
+  const bindBg = (el: HTMLDivElement | null) => { bgRef.current = el }
   const drag  = useRef({
     startX: 0, startY: 0,
     currentX: 0,
@@ -90,13 +92,15 @@ export function useSwipeRow({
     didDrag: false,
   })
 
-  // Reset the "tap once to confirm" gate when the row swipes shut.
-  useEffect(() => {
-    if (!isOpen) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setConfirming(false)
-    }
-  }, [isOpen])
+  // Reset "tap once to confirm" gate when the row swipes shut. Uses the
+  // React-official "compare previous prop" pattern instead of an effect
+  // so set-state-in-effect lint stays clean + React Compiler can fully
+  // auto-memoise this hook.
+  const [prevIsOpen, setPrevIsOpen] = useState(isOpen)
+  if (isOpen !== prevIsOpen) {
+    setPrevIsOpen(isOpen)
+    if (!isOpen) setConfirming(false)
+  }
 
   function writeTransform(x: number) {
     drag.current.currentX = x
@@ -161,7 +165,7 @@ export function useSwipeRow({
       const x = drag.current.currentX
       if (x <= -OPEN_THRESHOLD) {
         writeTransform(-SWIPE_WIDTH)
-        if (!isOpen) onOpen?.()
+        if (!isOpen) { haptic('light'); onOpen?.() }
       } else {
         writeTransform(0)
         if (isOpen) onClose?.()
@@ -176,7 +180,15 @@ export function useSwipeRow({
 
   function handleDeleteTap(e: React.MouseEvent) {
     e.stopPropagation()
-    if (!confirming) { setConfirming(true); return }
+    if (!confirming) {
+      // 第一段:轉成「確認削除」紅字。較重的 haptic 對應「警告中」語意。
+      haptic('medium')
+      setConfirming(true)
+      return
+    }
+    // 第二段:真正執行刪除。success 模式(三段震動)讓使用者明確感受
+    // 到「動作已生效」,跟一般 tap 區分。
+    haptic('success')
     onDelete?.()
   }
 

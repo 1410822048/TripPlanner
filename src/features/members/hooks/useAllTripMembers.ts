@@ -64,11 +64,17 @@ export function useAllTripMembers(uid: string | undefined): UseAllTripMembersRes
   })
 
   useEffect(() => {
-    if (ids.length === 0) return
+    // Derive `ids` from idsKey inside the effect — `idsKey` is the
+    // canonical content-stable identity (a comma-joined string), and
+    // re-splitting it here keeps the dep array honest. The outer `ids`
+    // array reference changes every render (recomputed from tripIds),
+    // which is why we keyed on the joined string in the first place.
+    const idList = idsKey ? idsKey.split(',') : []
+    if (idList.length === 0) return
     let mounted = true
     const unsubs: Array<() => void> = []
 
-    ids.forEach(id => {
+    idList.forEach(id => {
       void subscribeToMembers(
         id,
         data => {
@@ -87,8 +93,6 @@ export function useAllTripMembers(uid: string | undefined): UseAllTripMembersRes
       mounted = false
       unsubs.forEach(u => u())
     }
-    // idsKey ≡ ids in content; lint can't see that.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idsKey, qc])
 
   // `fetchStatus !== 'idle'` excludes the disabled-because-no-uid state,

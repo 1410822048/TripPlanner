@@ -12,13 +12,7 @@ import { router } from '@/routes'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import Splash from '@/components/Splash'
 import Toaster from '@/shared/Toaster'
-import { initAuth } from '@/hooks/useAuth'
-
-// Kick the auth observer off before React mounts so the SDK chunk downloads
-// during splash. By the time SchedulePage renders, onAuthStateChanged has
-// usually already fired — eliminating the demo-data flash on cold load, and
-// making the first sign-in tap skip a bundle download round-trip.
-void initAuth()
+import PerfStrip from '@/components/ui/PerfStrip'
 
 /**
  * Force every fresh session to land on /schedule, regardless of which page
@@ -72,6 +66,7 @@ export default function App() {
         <RouterProvider router={router} />
         {!splashDone && <Splash onDone={() => setSplashDone(true)} />}
         <Toaster />
+        <PerfStrip />
       </QueryClientProvider>
     </ErrorBoundary>
   )

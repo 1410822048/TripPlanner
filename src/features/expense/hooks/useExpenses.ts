@@ -33,8 +33,8 @@ export function useCreateExpense(tripId: string) {
   const qc = useQueryClient()
   const key = expenseKeys.all(tripId)
   return useMutation({
-    mutationFn: ({ input, userId }: { input: CreateExpenseInput; userId: string }) =>
-      createExpense(tripId, input, userId),
+    mutationFn: ({ input, userId, attachment }: { input: CreateExpenseInput; userId: string; attachment?: File | null }) =>
+      createExpense(tripId, input, userId, attachment),
     onMutate: ({ input, userId }) =>
       patchListCache<Expense>(qc, key, prev => [
         ...prev,
@@ -58,8 +58,15 @@ export function useUpdateExpense(tripId: string) {
   const qc = useQueryClient()
   const key = expenseKeys.all(tripId)
   return useMutation({
-    mutationFn: ({ expenseId, updates }: { expenseId: string; updates: Partial<CreateExpenseInput> }) =>
-      updateExpense(tripId, expenseId, updates),
+    mutationFn: ({
+      expenseId, updates, attachment, existing,
+    }: {
+      expenseId: string
+      updates:   Partial<CreateExpenseInput>
+      attachment?: File | null
+      existing?: { path?: string; thumbPath?: string }
+    }) =>
+      updateExpense(tripId, expenseId, updates, attachment, existing),
     onMutate: ({ expenseId, updates }) =>
       patchListCache<Expense>(qc, key, prev =>
         prev.map(e => e.id === expenseId ? { ...e, ...updates, updatedAt: MOCK_TIMESTAMP } : e),
@@ -75,8 +82,9 @@ export function useDeleteExpense(tripId: string) {
   const qc = useQueryClient()
   const key = expenseKeys.all(tripId)
   return useMutation({
-    mutationFn: (expenseId: string) => deleteExpense(tripId, expenseId),
-    onMutate: expenseId =>
+    mutationFn: ({ expenseId, paths }: { expenseId: string; paths?: { path?: string; thumbPath?: string } }) =>
+      deleteExpense(tripId, expenseId, paths),
+    onMutate: ({ expenseId }) =>
       patchListCache<Expense>(qc, key, prev => prev.filter(e => e.id !== expenseId)),
     onError: (err, _vars, ctx) => {
       rollbackListCache<Expense>(qc, key, ctx)

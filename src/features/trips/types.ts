@@ -34,6 +34,12 @@ export interface TripItem {
    * concept, so demo trips set this to true unconditionally.
    */
   ownedByMe: boolean
+  /**
+   * ISO 4217 currency code for all amounts on this trip (expenses,
+   * estimated costs, settlement). Consumed via useTripCurrency() →
+   * formatAmount(); see utils/currency.ts for the supported set.
+   */
+  currency:  string
 }
 
-export type MenuActionKey = 'edit' | 'members' | 'copy' | 'share' | 'settings'
+export type MenuActionKey = 'edit' | 'members' | 'copy' | 'share'

@@ -6,11 +6,11 @@
 //   - has items                      → timeline + dashed ghost CTA
 //
 // Extracted from SchedulePage to keep the page focused on orchestration.
-import { memo } from 'react'
 import { Plus } from 'lucide-react'
 import LoadingText from '@/components/ui/LoadingText'
 import TimelineCard from './TimelineCard'
 import type { Schedule } from '@/types'
+import { formatAmount } from '@/utils/currency'
 
 interface Props {
   display:    string | undefined        // active 'YYYY-MM-DD'
@@ -21,12 +21,17 @@ interface Props {
    *  see the timeline but no add buttons (mirrors firestore.rules
    *  canWrite gating on the schedules subcollection). */
   canWrite:   boolean
+  /** ISO currency code of the active trip — passed in (rather than
+   *  hooked via useTripCurrency) so the memo comparator below includes
+   *  it. Without that the daily total + per-card costs would stay in
+   *  the old symbol after the user changes currency. */
+  currency:   string
   onAdd:      () => void
   onEdit:     (s: Schedule) => void
 }
 
 function DayTimeline({
-  display, items, dayTotal, isLoading, canWrite, onAdd, onEdit,
+  display, items, dayTotal, isLoading, canWrite, currency, onAdd, onEdit,
 }: Props) {
   return (
     <div className="mx-5 mt-5">
@@ -41,8 +46,8 @@ function DayTimeline({
             </span>
           </div>
           {dayTotal > 0 && (
-            <div className="bg-[#F2EAE0] text-[#906848] text-[11px] font-semibold px-2.5 py-1 rounded-card">
-              合計 ¥{dayTotal.toLocaleString()}
+            <div className="bg-[#F2EAE0] text-[#906848] text-[11px] font-semibold px-2.5 py-1 rounded-card tabular-nums">
+              合計 {formatAmount(dayTotal, currency)}
             </div>
           )}
         </div>
@@ -81,6 +86,7 @@ function DayTimeline({
               key={s.id}
               s={s}
               isLast={idx === items.length - 1}
+              currency={currency}
               onEdit={() => onEdit(s)}
             />
           ))}
@@ -103,14 +109,4 @@ function DayTimeline({
   )
 }
 
-// Memoised with custom comparator: ignore inline callback props
-// (onAdd, onEdit have fresh identity each render). The data props
-// drive output; items array comes from the memoised `grouped` map in
-// SchedulePage so unchanged days have stable identity.
-export default memo(DayTimeline, (prev, next) => (
-  prev.display === next.display &&
-  prev.items === next.items &&
-  prev.dayTotal === next.dayTotal &&
-  prev.isLoading === next.isLoading &&
-  prev.canWrite === next.canWrite
-))
+export default DayTimeline

@@ -3,7 +3,7 @@
 // multi-image gallery — wish items are "is this the place" reference,
 // not photo memories). Form state via useReducer; image via the same
 // tri-state pattern as bookings.
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { Plus, X as XIcon, FileText } from 'lucide-react'
 import type { Wish, WishCategory, WishImage, CreateWishInput } from '@/types'
 import FormModalShell from '@/components/ui/FormModalShell'
@@ -12,6 +12,8 @@ import DeleteConfirm from '@/components/ui/DeleteConfirm'
 import { inputClass } from '@/components/ui/inputStyle'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
+import { useImageCropFlow } from '@/hooks/useImageCropFlow'
+import { useBlobUrl } from '@/hooks/useBlobUrl'
 
 const ACCEPT_TYPES = 'image/*'
 const MAX_FILE_BYTES = 5 * 1024 * 1024
@@ -74,16 +76,15 @@ export default function WishFormModal({
   const [newFile,  setNewFile]  = useState<File | null>(null)
   const [imageError, setImageError] = useState<string | null>(null)
 
-  const newFileBlobUrl = useMemo(
-    () => newFile ? URL.createObjectURL(newFile) : null,
-    [newFile],
-  )
-  useEffect(() => {
-    if (!newFileBlobUrl) return
-    return () => URL.revokeObjectURL(newFileBlobUrl)
-  }, [newFileBlobUrl])
+  // Blob URL lifecycle (create + auto-revoke) lives in useBlobUrl.
+  const newFileBlobUrl = useBlobUrl(newFile)
 
   const [errors, setErrors] = useState<Record<string, string>>({})
+
+  // Crop flow: picked file lands in the hook's pending slot, dialog
+  // shows, and on confirm the cropped File flows back into setNewFile.
+  // Wish only accepts images so non-image fallthrough never triggers.
+  const crop = useImageCropFlow(setNewFile)
 
   const titleRef = useRef<HTMLInputElement>(null)
   const fileRef  = useRef<HTMLInputElement>(null)
@@ -101,7 +102,7 @@ export default function WishFormModal({
       return
     }
     setImageError(null)
-    setNewFile(f)
+    crop.intercept(f)
   }
   function clearImage() {
     setNewFile(null)
@@ -266,6 +267,8 @@ export default function WishFormModal({
       </FormField>
 
       {editTarget && onDelete && <DeleteConfirm noun="ウィッシュ" onDelete={onDelete} />}
+
+      {crop.dialog}
     </FormModalShell>
   )
 }

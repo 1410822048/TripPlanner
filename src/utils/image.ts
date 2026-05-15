@@ -96,14 +96,79 @@ function scaleToLongEdge(srcW: number, srcH: number, target: number) {
  * Prefers OffscreenCanvas (lets the encode happen off the main thread on
  * browsers that support it); falls back to a regular DOM canvas otherwise.
  */
+/**
+ * Crop pixel rectangle on `source`'s natural image and return a new File
+ * with the same name + mime. Used by the ImageCropDialog flow: user
+ * picks a file → drags a viewbox → confirm → we slice out the rectangle
+ * here, then hand the new File to the existing upload pipeline (which
+ * still runs `compressImage` for the WebP + thumb encoding).
+ *
+ * Returns the original File untouched when:
+ *   - The mime is in PASSTHROUGH_TYPES (HEIC / PDF — canvas can't decode)
+ *   - createImageBitmap fails (corrupt JPEG, mis-reported HEIC)
+ *   - The canvas encode catastrophically fails
+ *
+ * Crop coords are pixel-space (matches react-easy-crop's
+ * `croppedAreaPixels` callback).
+ */
+export interface PixelCrop {
+  x:      number
+  y:      number
+  width:  number
+  height: number
+}
+
+export async function cropImage(source: File, area: PixelCrop): Promise<File> {
+  if (!source.type.startsWith('image/')) return source
+  if (PASSTHROUGH_TYPES.has(source.type)) return source
+
+  let bitmap: ImageBitmap
+  try {
+    bitmap = await createImageBitmap(source)
+  } catch {
+    return source
+  }
+
+  const blob = await drawToBlob(
+    bitmap,
+    Math.round(area.width),
+    Math.round(area.height),
+    0.92,
+    {
+      srcX: Math.round(area.x),
+      srcY: Math.round(area.y),
+      srcW: Math.round(area.width),
+      srcH: Math.round(area.height),
+    },
+  )
+  bitmap.close()
+
+  if (!blob) return source
+  // Keep the original filename (sans extension) so the final upload
+  // names stay tied to what the user picked.
+  const baseName = source.name.replace(/\.[^./]+$/, '')
+  return new File([blob], `${baseName}.cropped.webp`, {
+    type: 'image/webp', lastModified: Date.now(),
+  })
+}
+
 async function drawToBlob(
   bitmap: ImageBitmap, w: number, h: number, quality: number,
+  src?: { srcX: number; srcY: number; srcW: number; srcH: number },
 ): Promise<Blob | null> {
+  // When `src` is provided, draw a sub-rectangle of the bitmap instead
+  // of the whole thing — this is the crop path. Without `src`, the call
+  // collapses to the original full-frame downscale used by compressImage.
+  function paint(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) {
+    if (src) ctx.drawImage(bitmap, src.srcX, src.srcY, src.srcW, src.srcH, 0, 0, w, h)
+    else     ctx.drawImage(bitmap, 0, 0, w, h)
+  }
+
   if (typeof OffscreenCanvas !== 'undefined') {
     const off = new OffscreenCanvas(w, h)
     const ctx = off.getContext('2d')
     if (!ctx) return null
-    ctx.drawImage(bitmap, 0, 0, w, h)
+    paint(ctx)
     try {
       return await off.convertToBlob({ type: 'image/webp', quality })
     } catch {
@@ -116,7 +181,7 @@ async function drawToBlob(
   canvas.height = h
   const ctx = canvas.getContext('2d')
   if (!ctx) return null
-  ctx.drawImage(bitmap, 0, 0, w, h)
+  paint(ctx)
   return new Promise<Blob | null>(resolve => {
     canvas.toBlob(b => resolve(b), 'image/webp', quality)
   })

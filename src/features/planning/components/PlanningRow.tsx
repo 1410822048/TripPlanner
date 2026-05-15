@@ -6,7 +6,6 @@
 // When the row is swiped open, taps on either the body or the checkbox
 // are short-circuited to "close the row" so the user can dismiss the
 // delete affordance without accidentally toggling state.
-import { memo } from 'react'
 import { Check, Trash2 } from 'lucide-react'
 import type { PlanItem } from '@/types'
 import { useSwipeRow, SWIPE_WIDTH, BG_TRANSITION, FG_TRANSITION } from '@/hooks/useSwipeRow'
@@ -116,8 +115,4 @@ function PlanningRow({
   )
 }
 
-export default memo(PlanningRow, (prev, next) => (
-  prev.item === next.item &&
-  prev.isPreviewOnly === next.isPreviewOnly &&
-  prev.isOpen === next.isOpen
-))
+export default PlanningRow

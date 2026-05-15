@@ -78,6 +78,18 @@ service firebase.storage {
       allow delete: if isMember(tripId);
     }
 
+    // Expense receipts. Same canWrite gate as bookings (only owner /
+    // editor mutate). Accepts image + PDF — some online receipts come
+    // as PDFs and we want OCR to be able to ingest either.
+    match /trips/{tripId}/expenses/{expenseId}/{fileName} {
+      allow read: if isMember(tripId);
+      allow create, update: if canWriteFiles(tripId)
+                            && request.resource.size < 5 * 1024 * 1024
+                            && (request.resource.contentType.matches('image/.*')
+                                || request.resource.contentType == 'application/pdf');
+      allow delete: if canWriteFiles(tripId);
+    }
+
     match /{allPaths=**} {
       allow read, write: if false;
     }

@@ -26,7 +26,7 @@
 // cleanly and long names don't get truncated in a narrow side column.
 // Card #1 routes to /past-lodging; Card #2 aggregates unique non-self
 // members across every trip (informational, non-clickable).
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { LogOut } from 'lucide-react'
 import ConfirmSheet from '@/components/ui/ConfirmSheet'
@@ -87,40 +87,31 @@ export default function AccountPage() {
   const { trips, memberResults } = useAllTripMembers(uid)
   const { data: hotelBookings } = useMyHotelBookings(uid)
 
-  // Aggregations memoised on the upstream data — without these they
-  // re-ran on every signing-state toggle / logout-sheet open / etc.
-  const totalDays = useMemo(
-    () => (trips ?? []).reduce((s, t) => s + tripDays(t), 0),
-    [trips],
-  )
-  // Up to 3 hotel-booking thumbnails, newest check-in first
-  // (useMyHotelBookings already returns sortDate-desc). Falls back
-  // to fileUrl for older bookings created before the thumbnail
-  // pipeline existed (M2 task — see types/booking.ts:65 comment).
-  const lodgingThumbs = useMemo(() => {
-    const urls: string[] = []
-    for (const b of hotelBookings ?? []) {
-      const url = b.thumbUrl ?? b.fileUrl
-      if (url) urls.push(url)
-      if (urls.length === 3) break
-    }
-    return urls
-  }, [hotelBookings])
+  // Plain derivations — React Compiler auto-memoises based on inferred
+  // deps. Up to 3 hotel-booking thumbnails: newest check-in first
+  // (useMyHotelBookings already returns sortDate-desc). Falls back to
+  // fileUrl for older bookings created before the thumbnail pipeline
+  // existed.
+  const totalDays = (trips ?? []).reduce((s, t) => s + tripDays(t), 0)
 
-  const { collaboratorChips, collaboratorCount } = useMemo(() => {
-    const seen  = new Set<string>()
-    const chips: TripMember[] = []
-    let   count = 0
-    for (const r of memberResults) {
-      for (const m of r.data ?? []) {
-        if (m.userId === uid || seen.has(m.userId)) continue
-        seen.add(m.userId)
-        count++
-        if (chips.length < 3) chips.push(memberToTripMember(m))
-      }
+  const lodgingThumbs: string[] = []
+  for (const b of hotelBookings ?? []) {
+    const url = b.thumbUrl ?? b.fileUrl
+    if (url) lodgingThumbs.push(url)
+    if (lodgingThumbs.length === 3) break
+  }
+
+  const collabSeen  = new Set<string>()
+  const collaboratorChips: TripMember[] = []
+  let   collaboratorCount = 0
+  for (const r of memberResults) {
+    for (const m of r.data ?? []) {
+      if (m.userId === uid || collabSeen.has(m.userId)) continue
+      collabSeen.add(m.userId)
+      collaboratorCount++
+      if (collaboratorChips.length < 3) collaboratorChips.push(memberToTripMember(m))
     }
-    return { collaboratorChips: chips, collaboratorCount: count }
-  }, [memberResults, uid])
+  }
 
   const [signingIn,  setSigningIn]  = useState(false)
   const [signingOut, setSigningOut] = useState(false)

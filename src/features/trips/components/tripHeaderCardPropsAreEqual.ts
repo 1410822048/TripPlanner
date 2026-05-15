@@ -1,16 +1,8 @@
 // src/features/trips/components/tripHeaderCardPropsAreEqual.ts
-// Memo comparator for TripHeaderCard, in its own module so the component
-// file can stay pure-component-exports (Fast Refresh requirement).
-//
-// Returns true when re-render can be skipped. Ignores the inline callback
-// props (onEditTrip, onInvite — fresh identity every parent render);
-// checks the data props that actually drive output. `selectedTrip`
-// identity comes from a stable upstream (Zustand store / TanStack Query
-// cache + page-level useMemo), so unchanged trips have stable references
-// — a referential equality check is correct here.
-//
-// Pinned by `TripHeaderCard.test.ts` so a future tweak (e.g. adding a
-// new prop) that drops the memo's effectiveness fails the build.
+// Type-only module for TripHeaderCard's prop shape. The eponymous
+// propsAreEqual comparator that used to live here was removed when
+// React Compiler took over memoisation duties — manual prop comparison
+// is now redundant. File name retained to avoid a wider rename diff.
 import type { TripItem } from '@/features/trips/types'
 
 export interface TripHeaderCardProps {
@@ -22,19 +14,11 @@ export interface TripHeaderCardProps {
    *  firestore.rules gates /invites create on isTripOwner — non-owners
    *  who tap would 403, so we hide rather than show-then-fail. */
   canInvite:     boolean
+  /** Owner-only: controls whether the title block is tappable and shows
+   *  the Pencil affordance. firestore.rules gates trip update on
+   *  isTripOwner; without this gate, editors / viewers could open
+   *  EditTripModal and silently 403 on save. */
+  canEdit:       boolean
   onEditTrip:    () => void
   onInvite:      () => void
-}
-
-export function tripHeaderCardPropsAreEqual(
-  prev: TripHeaderCardProps,
-  next: TripHeaderCardProps,
-): boolean {
-  return (
-    prev.selectedTrip === next.selectedTrip
-    && prev.tripDays === next.tripDays
-    && prev.scheduleCount === next.scheduleCount
-    && prev.tripTotal === next.tripTotal
-    && prev.canInvite === next.canInvite
-  )
 }

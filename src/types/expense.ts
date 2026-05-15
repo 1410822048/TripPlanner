@@ -10,6 +10,35 @@ export interface ExpenseSplit {
   amount:   number          // 該成員實際分攤金額
 }
 
+/** Receipt photo / PDF attached to an expense — uploaded via
+ *  expenseStorage; same dual-variant pattern as booking attachments
+ *  (full + thumbnail). Optional fields exist for legacy reads + PDF
+ *  case (PDFs upload without a thumb). */
+export interface ExpenseReceipt {
+  url:        string
+  path:       string
+  /** Mime type at upload time. Drives image-vs-PDF rendering choice. */
+  type:       string
+  thumbUrl?:  string
+  thumbPath?: string
+}
+
+/** Line item from an OCR'd receipt. Only ever populated by the OCR
+ *  worker — manual entry doesn't produce items (users go straight to
+ *  custom split via memo).
+ *
+ *  Lifecycle: lives or dies with the receipt photo. Removing the
+ *  receipt clears items (the photo is items' ground truth). When
+ *  items[].length > 0, the form switches to "by-item" split mode and
+ *  splits[] is computed from item assignees at save-time. */
+export interface ExpenseItem {
+  name:      string
+  amount:    number
+  /** memberIds — non-empty. An item shared by N people splits its
+   *  amount equally across them. */
+  assignees: string[]
+}
+
 // trips/{tripId}/expenses/{expenseId}
 export interface Expense {
   id: string
@@ -21,7 +50,13 @@ export interface Expense {
   paidBy: string            // memberId
   splits: ExpenseSplit[]    // sum(splits.amount) === amount
   date: string              // 'YYYY-MM-DD'
-  receiptUrl?: string
+  /** Optional receipt — photo or PDF the user kept for record. When
+   *  OCR is run against the photo, `items` gets populated and the form
+   *  switches to chip-based split mode on edit. */
+  receipt?: ExpenseReceipt
+  /** OCR'd line items — present only when the user ran OCR against the
+   *  receipt. Drives the "by-item" split mode in the form. */
+  items?: ExpenseItem[]
   note?: string
   createdBy: string
   createdAt: Timestamp
@@ -41,6 +76,19 @@ export const ExpenseSplitSchema = z.object({
   amount:   z.number().nonnegative(),
 })
 
+export const ExpenseItemSchema = z.object({
+  name: z.string().min(1).max(200),
+  // Amount may be negative — receipts often include discount / cashback
+  // / promo lines that legitimately subtract from the total (e.g.
+  // "キャッシュレス還元 -6"). Sum-equals-total is enforced at the form
+  // layer regardless of sign.
+  amount: z.number(),
+  // Every item must have at least one assignee — enforced both client-
+  // side (form validation) and at the schema level so any future code
+  // path that tries to write a "dangling" item gets rejected.
+  assignees: z.array(z.string().min(1)).min(1, '至少需要一位分攤者'),
+})
+
 // Pulled out as a base so UpdateExpenseSchema can `.partial()` from the
 // pre-refine shape (refines don't survive .partial(), and a partial
 // update can't fully enforce the splits-sum check without joining with
@@ -53,6 +101,7 @@ const ExpenseShape = z.object({
   paidBy:   z.string().min(1, '請選擇付款人'),
   splits:   z.array(ExpenseSplitSchema).min(1, '至少需選擇一位分攤人'),
   date:     z.string().min(1, '請選擇日期'),
+  items:    z.array(ExpenseItemSchema).optional(),
   note:     z.string().optional(),
 })
 
@@ -70,6 +119,14 @@ export type CreateExpenseInput = z.infer<typeof CreateExpenseSchema>
 export const UpdateExpenseSchema = ExpenseShape.partial()
 export type UpdateExpenseInput = z.infer<typeof UpdateExpenseSchema>
 
+export const ExpenseReceiptSchema = z.object({
+  url:       z.string(),
+  path:      z.string(),
+  type:      z.string(),
+  thumbUrl:  z.string().optional(),
+  thumbPath: z.string().optional(),
+})
+
 export const ExpenseDocSchema = z.object({
   tripId:     z.string(),
   title:      z.string(),
@@ -79,7 +136,8 @@ export const ExpenseDocSchema = z.object({
   paidBy:     z.string(),
   splits:     z.array(ExpenseSplitSchema),
   date:       z.string(),
-  receiptUrl: z.string().optional(),
+  receipt:    ExpenseReceiptSchema.optional(),
+  items:      z.array(ExpenseItemSchema).optional(),
   note:       z.string().optional(),
   createdBy:  z.string(),
   createdAt:  TimestampSchema,

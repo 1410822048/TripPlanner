@@ -31,6 +31,7 @@ import { getFirebase } from '@/services/firebase'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
 import { toast } from '@/shared/toast'
 import { toLocalMidnightTimestamp } from '@/utils/dates'
+import { markPerf } from '@/utils/perf'
 import type { CreateTripInput, Trip } from '@/types'
 
 export const tripKeys = {
@@ -80,10 +81,16 @@ export function useMyTrips(uid: string | undefined): UseQueryResult<Trip[]> {
     staleTime: Infinity,
   })
 
+  const idsResultIsSuccess = idsResult.isSuccess
   useEffect(() => {
-    if (!uid || ids.length === 0) {
+    // Derive `ids` from `idsKey` inside the effect so the dep array is
+    // honest (idsKey is the content-stable joined string; the outer
+    // `ids` array reference changes every render). This keeps React
+    // Compiler + exhaustive-deps happy with no eslint-disable.
+    const idList = idsKey ? idsKey.split(',') : []
+    if (!uid || idList.length === 0) {
       // No trips → ensure cache reflects empty rather than a stale list.
-      if (uid && idsResult.isSuccess) qc.setQueryData<Trip[]>(tripKeys.mine(uid), [])
+      if (uid && idsResultIsSuccess) qc.setQueryData<Trip[]>(tripKeys.mine(uid), [])
       return
     }
 
@@ -93,16 +100,21 @@ export function useMyTrips(uid: string | undefined): UseQueryResult<Trip[]> {
     // entries; we recompute the array on each change so React-Query
     // reference equality fires component updates.
     const tripMap = new Map<string, Trip>()
+    let firstPublishMarked = false
     const publish = () => {
       if (!mounted) return
-      const arr = ids
+      const arr = idList
         .map(id => tripMap.get(id))
         .filter((t): t is Trip => !!t)
         .sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis())
       qc.setQueryData<Trip[]>(tripKeys.mine(uid), arr)
+      if (!firstPublishMarked && arr.length > 0) {
+        firstPublishMarked = true
+        markPerf('mytrips-first-publish')
+      }
     }
 
-    ids.forEach(id => {
+    idList.forEach(id => {
       void subscribeToTrip(
         id,
         trip => {
@@ -123,11 +135,7 @@ export function useMyTrips(uid: string | undefined): UseQueryResult<Trip[]> {
       mounted = false
       unsubs.forEach(u => u())
     }
-    // idsKey is the stable representation of ids; uid + qc are also
-    // tracked. Lint can't infer that idsKey ≡ ids, hence the eslint
-    // disable.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [uid, idsKey, qc])
+  }, [uid, idsKey, qc, idsResultIsSuccess])
 
   return result
 }

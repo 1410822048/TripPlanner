@@ -10,7 +10,6 @@
 //   4. Sort collaborators by # shared trips desc, then displayName.
 // Reads per visit: N getDocs where N = user's trip count. Typical <20;
 // cached across MembersModal / AccountPage / this page.
-import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, ChevronRight } from 'lucide-react'
 import { useUid } from '@/hooks/useAuth'
@@ -54,7 +53,7 @@ export default function SocialCirclePage() {
   // person appearing in multiple trips collapses into one row. Memoised
   // on the upstream data so unrelated re-renders (navigation, focus
   // changes) don't re-bucket O(trips × members).
-  const collaborators = useMemo(() => {
+  const collaborators = (() => {
     const byUser = new Map<string, Collaborator>()
     ;(trips ?? []).forEach((trip, i) => {
       const members = memberResults[i]?.data ?? []
@@ -87,7 +86,7 @@ export default function SocialCirclePage() {
       if (b.trips.length !== a.trips.length) return b.trips.length - a.trips.length
       return a.displayName.localeCompare(b.displayName)
     })
-  }, [trips, memberResults, uid])
+  })()
 
   function openTrip(t: CollaboratorTrip) {
     // Resolve the full Trip object from the cached list so currentTrip in

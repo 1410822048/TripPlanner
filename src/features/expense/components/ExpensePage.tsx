@@ -1,5 +1,4 @@
 // src/features/expense/components/ExpensePage.tsx
-import { useMemo } from 'react'
 import { Plus, Receipt } from 'lucide-react'
 import {
   useExpenses, useCreateExpense, useUpdateExpense, useDeleteExpense,
@@ -11,8 +10,8 @@ import { useSwipeOpen } from '@/hooks/useSwipeOpen'
 import { MOCK_EXPENSES } from '../mocks'
 import { splitSummary } from '../utils'
 import { toast } from '@/shared/toast'
-import type { Expense, ExpenseCategory, CreateExpenseInput } from '@/types'
-import ExpenseFormModal from './ExpenseFormModal'
+import type { Expense, ExpenseCategory } from '@/types'
+import ExpenseFormModal, { type ExpenseFormResult } from './ExpenseFormModal'
 import SwipeableExpenseItem from './SwipeableExpenseItem'
 import SettlementSummary from './SettlementSummary'
 import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
@@ -22,6 +21,8 @@ import TripLoading from '@/components/ui/TripLoading'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
 import DemoBanner from '@/components/ui/DemoBanner'
 import { fromLocalDateString } from '@/utils/dates'
+import { useTripCurrency } from '@/hooks/useTripCurrency'
+import { formatAmount, currencySymbol } from '@/utils/currency'
 
 function formatDateHeading(date: string): string {
   return fromLocalDateString(date)
@@ -31,52 +32,50 @@ function formatDateHeading(date: string): string {
 export default function ExpensePage() {
   const { ctx, uid, cloudTripId, mutationTripId, isDemo, canWrite, modal, signIn } =
     useFeatureListPage<Expense>()
-  const swipe = useSwipeOpen()
+  const swipe    = useSwipeOpen()
+  const currency = useTripCurrency()
+  const symbol   = currencySymbol(currency)
 
   const { data: fbExpenses, isLoading } = useExpenses(cloudTripId)
   const { data: fbMembers } = useMembers(cloudTripId)
 
-  const members = useMemo(() => {
-    if (ctx.status === 'demo')  return ctx.trip.members
-    if (ctx.status === 'cloud') return membersToTripMembers(fbMembers ?? [])
-    return []
-  }, [ctx, fbMembers])
+  // Plain derivations — React Compiler auto-memoises based on inferred
+  // deps. The aggregation chain (expenses → total / categoryStats /
+  // grouped) is now compiler-driven; downstream memos stay stable for
+  // the same upstream data without manual useMemo plumbing.
+  const members =
+    ctx.status === 'demo'  ? ctx.trip.members :
+    ctx.status === 'cloud' ? membersToTripMembers(fbMembers ?? []) :
+    []
 
-  // Demo 僅對應 'demo' trip（東京五日間）；其他 demo trip 顯示空狀態。
-  // useMemo so an empty-state render doesn't produce a fresh [] each pass —
-  // without this, the downstream aggregation memos would invalidate every
-  // parent re-render.
-  const expenses = useMemo(() => {
-    if (ctx.status === 'demo') {
-      return ctx.trip.id === 'demo' ? MOCK_EXPENSES : []
-    }
-    return fbExpenses ?? []
-  }, [ctx, fbExpenses])
+  // Demo 僅對應 'demo' trip(東京五日間);其他 demo trip 顯示空狀態。
+  const expenses =
+    ctx.status === 'demo'
+      ? (ctx.trip.id === 'demo' ? MOCK_EXPENSES : [])
+      : (fbExpenses ?? [])
 
   const createMut = useCreateExpense(mutationTripId)
   const updateMut = useUpdateExpense(mutationTripId)
   const deleteMut = useDeleteExpense(mutationTripId)
-  const isSaving  = createMut.isPending || updateMut.isPending
+  // isSaving stays `false` for the modal — handleSave closes the modal
+  // synchronously before the mutation fires (optimistic close), so the
+  // save button never enters a busy state. Without forcing this to false
+  // an in-flight previous mutation would leak its `isPending` into a
+  // newly-opened modal, showing "保存中" before the user even taps save.
 
-  // Aggregations memoised on `expenses` so unrelated re-renders (e.g.
-  // a swipe toggle or modal open/close) don't re-bucket O(N×categories).
-  // Hooks declared before early returns to satisfy rules-of-hooks.
-  const total = useMemo(
-    () => expenses.reduce((s, e) => s + e.amount, 0),
-    [expenses],
-  )
-  const categoryStats = useMemo(() => {
-    const sums: Partial<Record<ExpenseCategory, number>> = {}
-    for (const e of expenses) sums[e.category] = (sums[e.category] ?? 0) + e.amount
-    return (Object.entries(sums) as [ExpenseCategory, number][])
-      .filter(([, v]) => v > 0)
-      .sort((a, b) => b[1] - a[1])
-  }, [expenses])
-  const { grouped, dates } = useMemo(() => {
-    const g: Record<string, Expense[]> = {}
-    for (const e of expenses) (g[e.date] ??= []).push(e)
-    return { grouped: g, dates: Object.keys(g).sort().reverse() }
-  }, [expenses])
+  // Aggregations on `expenses` — compiler memoises so swipe toggles /
+  // modal open-close don't trigger O(N×categories) re-bucketing.
+  const total = expenses.reduce((s, e) => s + e.amount, 0)
+
+  const categoryStatsRaw: Partial<Record<ExpenseCategory, number>> = {}
+  for (const e of expenses) categoryStatsRaw[e.category] = (categoryStatsRaw[e.category] ?? 0) + e.amount
+  const categoryStats = (Object.entries(categoryStatsRaw) as [ExpenseCategory, number][])
+    .filter(([, v]) => v > 0)
+    .sort((a, b) => b[1] - a[1])
+
+  const grouped: Record<string, Expense[]> = {}
+  for (const e of expenses) (grouped[e.date] ??= []).push(e)
+  const dates = Object.keys(grouped).sort().reverse()
 
   if (ctx.status === 'loading') return <TripLoading />
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Receipt} reason="費用を記録" />
@@ -84,23 +83,47 @@ export default function ExpensePage() {
   const title = ctx.trip.title
   const perPerson = members.length > 0 ? Math.round(total / members.length) : 0
 
-  async function handleSave(data: CreateExpenseInput) {
+  function handleSave({ input, attachment }: ExpenseFormResult) {
     if (isDemo) { modal.close(); signIn.open(); return }
     if (!modal.editTarget && !uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
-    try {
-      if (modal.editTarget) {
-        await updateMut.mutateAsync({ expenseId: modal.editTarget.id, updates: data })
-      } else {
-        await createMut.mutateAsync({ input: data, userId: uid! })
-      }
-      modal.close()
-    } catch { /* hook onError already surfaced the toast */ }
+
+    // Optimistic close: the modal goes away IMMEDIATELY, the optimistic
+    // patchListCache in onMutate makes the new row appear in the list
+    // before Firestore + Storage have done anything. The real writes
+    // happen in the background — if they fail, the hook's onError fires
+    // rollbackListCache + a toast, restoring the list to its pre-save
+    // state. This is the same pattern Splitwise uses for "instant" saves.
+    //
+    // Snapshot editTarget before modal.close() in case the close handler
+    // clears it synchronously (closures can stale if we read after close).
+    const editing = modal.editTarget
+    modal.close()
+    if (editing) {
+      updateMut.mutate({
+        expenseId: editing.id,
+        updates:   input,
+        attachment,
+        existing:  {
+          path:      editing.receipt?.path,
+          thumbPath: editing.receipt?.thumbPath,
+        },
+      })
+    } else {
+      createMut.mutate({
+        input,
+        userId:     uid!,
+        attachment: attachment instanceof File ? attachment : null,
+      })
+    }
   }
-  async function handleSwipeDelete(expenseId: string) {
+  async function handleSwipeDelete(e: Expense) {
     swipe.closeAll()
     if (isDemo) { signIn.open(); return }
     // Hook onError rolls back the optimistic remove and shows the toast.
-    await deleteMut.mutateAsync(expenseId).catch(() => {})
+    await deleteMut.mutateAsync({
+      expenseId: e.id,
+      paths:     { path: e.receipt?.path, thumbPath: e.receipt?.thumbPath },
+    }).catch(() => {})
   }
 
   return (
@@ -128,7 +151,7 @@ export default function ExpensePage() {
             旅行総支出
           </div>
           <div className="mt-1 flex items-baseline gap-0.5">
-            <span className="text-[18px] font-bold text-muted leading-none">¥</span>
+            <span className="text-[18px] font-bold text-muted leading-none">{symbol}</span>
             <span className="text-[32px] font-black text-ink -tracking-[1px] leading-none tabular-nums">
               {total.toLocaleString()}
             </span>
@@ -151,7 +174,7 @@ export default function ExpensePage() {
             {[
               { value: String(expenses.length), unit: '件', label: '費用筆數' },
               { value: String(members.length),  unit: '人', label: '参加' },
-              { value: `¥${perPerson.toLocaleString()}`, unit: '', label: '1人あたり' },
+              { value: formatAmount(perPerson, currency), unit: '', label: '1人あたり' },
             ].map(({ value, unit, label }) => (
               <div key={label} className="flex flex-col items-center gap-1">
                 <div className="flex items-baseline gap-px">
@@ -179,7 +202,7 @@ export default function ExpensePage() {
       </div>
 
       {/* ── SETTLEMENT ─────────────────────────────────────── */}
-      <SettlementSummary expenses={expenses} members={members} />
+      <SettlementSummary expenses={expenses} members={members} currency={currency} />
 
       {/* ── EXPENSE LIST ───────────────────────────────────── */}
       <div className="mt-4 px-4">
@@ -212,7 +235,7 @@ export default function ExpensePage() {
                     {formatDateHeading(date)}
                   </span>
                   <span className="text-[11px] text-muted font-medium tabular-nums">
-                    ¥{subtotal.toLocaleString()}
+                    {formatAmount(subtotal, currency)}
                   </span>
                 </div>
 
@@ -229,9 +252,10 @@ export default function ExpensePage() {
                         payer={members.find(m => m.id === e.paidBy)}
                         summary={splitSummary(e, members.length)}
                         categoryEmoji={CATEGORY_EMOJI[e.category]}
+                        currency={currency}
                         {...swipeProps}
                         onSelect={() => { swipe.closeAll(); modal.openEdit(e) }}
-                        onDelete={canWrite ? () => handleSwipeDelete(e.id) : undefined}
+                        onDelete={canWrite ? () => handleSwipeDelete(e) : undefined}
                       />
                     )
                   })}
@@ -255,7 +279,7 @@ export default function ExpensePage() {
           editTarget={modal.editTarget}
           defaultDate={new Date().toISOString().slice(0, 10)}
           members={members}
-          isSaving={isSaving}
+          isSaving={false}
           onClose={modal.close}
           onSave={handleSave}
         />

@@ -22,11 +22,10 @@ const MENU_ACTIONS: {
   danger:    boolean
   ownerOnly: boolean
 }[] = [
-  { key:'edit',     emoji:'✏️',  label:'編輯行程資訊', sub:'修改名稱・日期・目的地', danger:false, ownerOnly:true  },
-  { key:'members',  emoji:'👥',  label:'管理成員',     sub:'邀請・移除旅伴',         danger:false, ownerOnly:false },
-  { key:'copy',     emoji:'📋',  label:'複製行程',     sub:'建立此行程的副本',        danger:false, ownerOnly:false },
-  { key:'share',    emoji:'🔗',  label:'分享行程',     sub:'產生邀請連結',            danger:false, ownerOnly:true  },
-  { key:'settings', emoji:'⚙️',  label:'行程設定',     sub:'幣別・時區・隱私',        danger:false, ownerOnly:true  },
+  { key:'edit',     emoji:'✏️',  label:'編輯行程資訊', sub:'名稱・日期・目的地・幣別', danger:false, ownerOnly:true  },
+  { key:'members',  emoji:'👥',  label:'管理成員',     sub:'邀請・移除旅伴',           danger:false, ownerOnly:false },
+  { key:'copy',     emoji:'📋',  label:'複製行程',     sub:'建立此行程的副本',          danger:false, ownerOnly:false },
+  { key:'share',    emoji:'🔗',  label:'分享行程',     sub:'產生邀請連結',              danger:false, ownerOnly:true  },
 ]
 
 interface TripSwitcherProps {

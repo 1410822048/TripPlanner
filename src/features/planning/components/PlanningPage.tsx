@@ -3,7 +3,7 @@
 // the checkbox to the left of each row toggles done state without
 // opening the modal. Empty categories render an inline "+ 追加" prompt
 // inside their section so the user can add directly into context.
-import { useState, useMemo } from 'react'
+import { useState } from 'react'
 import { Plus, ListChecks } from 'lucide-react'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
 import { useSwipeOpen } from '@/hooks/useSwipeOpen'
@@ -44,24 +44,16 @@ export default function PlanningPage() {
 
   const { data: cloudItems, isLoading } = usePlanning(cloudTripId)
 
-  // Memoise items so the grouped useMemo below doesn't re-bucket every
-  // render (a fresh array literal would otherwise change identity each
-  // pass). When ctx.status / cloudItems are the same, items is stable.
-  const items: PlanItem[] = useMemo(() => {
-    if (ctx.status === 'demo')  return ctx.trip.id === 'demo' ? MOCK_PLAN_ITEMS : []
-    if (ctx.status === 'cloud') return cloudItems ?? []
-    return []
-  }, [ctx, cloudItems])
+  // Compiler memoises both `items` and `grouped` based on inferred deps.
+  const items: PlanItem[] =
+    ctx.status === 'demo'  ? (ctx.trip.id === 'demo' ? MOCK_PLAN_ITEMS : []) :
+    ctx.status === 'cloud' ? (cloudItems ?? []) :
+    []
 
-  // Group items by section. useMemo because every render of the list
-  // would otherwise re-bucket O(N×5).
-  const grouped = useMemo(() => {
-    const out: Record<PlanCategory, PlanItem[]> = {
-      essentials: [], documents: [], packing: [], todo: [], other: [],
-    }
-    for (const i of items) out[i.category].push(i)
-    return out
-  }, [items])
+  const grouped: Record<PlanCategory, PlanItem[]> = {
+    essentials: [], documents: [], packing: [], todo: [], other: [],
+  }
+  for (const i of items) grouped[i.category].push(i)
 
   const totalCount = items.length
   const doneCount  = items.filter(i => i.done).length

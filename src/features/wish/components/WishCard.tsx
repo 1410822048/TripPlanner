@@ -23,12 +23,33 @@
 //     `link` still surfaces as 🗺 (the original Phase 1 behaviour);
 //     once `address` is set, the link always renders as サイト so the
 //     two chips don't both claim the map role.
-import { memo } from 'react'
+import { useState } from 'react'
 import { Heart, Map, ExternalLink, Trash2 } from 'lucide-react'
 import type { Wish } from '@/types'
+import type { TripMember } from '@/features/trips/types'
 import { useSwipeRow, SWIPE_WIDTH, BG_TRANSITION, FG_TRANSITION } from '@/hooks/useSwipeRow'
 import ActionChip from '@/components/ui/ActionChip'
 import { mapsSearchUrl } from '@/utils/maps'
+import { haptic } from '@/utils/haptics'
+
+const MAX_AVATARS = 3
+
+/** Voter chip style 對策 iOS Safari PWA 在 translate3d 父層下的殘影
+ *  bug:子層 mount/unmount 時,Safari 偶爾把 shadow + border 緩存進
+ *  父層 raster 沒重畫,留下空心圓殘影。
+ *
+ *  雙保險:
+ *   1. position: relative → 讓 zIndex 生效,並確立 chip 在 isolated
+ *      context 內的層級
+ *   2. translateZ(0) → promote 到獨立 GPU compositing layer,React
+ *      unmount 時整個 layer 一起丟,Safari 不會跟父層混淆
+ *
+ *  WebkitTransform prefix 不需要 — Safari 9+ 起 transform 就是標準名
+ *  稱,專案目標環境(React 19 PWA)遠在那之後。 */
+const AVATAR_LAYER_STYLE: React.CSSProperties = {
+  position:  'relative',
+  transform: 'translateZ(0)',
+}
 
 const CATEGORY_EMOJI: Record<Wish['category'], string> = {
   place: '🗺️',
@@ -57,6 +78,12 @@ function isMapsLink(url: string): boolean {
 interface Props {
   wish:        Wish
   isVoted:     boolean
+  /** Voters who have hearted this wish, in `wish.votes[]` order
+   *  (= first-voted first). Parent resolves uids → TripMember so we
+   *  don't have to hold a member lookup here. Unknown uids (e.g. former
+   *  members) are simply omitted by the parent; the heart count still
+   *  reflects `wish.votes.length` for honesty. */
+  voters:        TripMember[]
   /** True in demo mode — visually dim the heart so users sense it's
    *  "not real yet", but the click still fires so the parent can
    *  surface the sign-in prompt. */
@@ -73,7 +100,7 @@ interface Props {
 }
 
 function WishCard({
-  wish, isVoted, isPreviewOnly,
+  wish, isVoted, voters, isPreviewOnly,
   isOpen, onOpen, onClose, onDelete,
   onTap, onToggleVote,
 }: Props) {
@@ -85,6 +112,7 @@ function WishCard({
   const cardBody = <CardContent
     wish={wish}
     isVoted={isVoted}
+    voters={voters}
     isPreviewOnly={isPreviewOnly}
     onTap={wrapTap(onTap)}
     onToggleVote={wrapTap(onToggleVote)}
@@ -153,12 +181,13 @@ function WishCard({
 interface ContentProps {
   wish:           Wish
   isVoted:        boolean
+  voters:         TripMember[]
   isPreviewOnly:  boolean
   onTap:          (e: React.MouseEvent) => void
   onToggleVote:   (e: React.MouseEvent) => void
 }
 
-function CardContent({ wish, isVoted, isPreviewOnly, onTap, onToggleVote }: ContentProps) {
+function CardContent({ wish, isVoted, voters, isPreviewOnly, onTap, onToggleVote }: ContentProps) {
   return (
     // The card's tap-to-edit target is the whole card *body* — but we
     // can't put it on the outer div because action chips inside need to
@@ -177,6 +206,7 @@ function CardContent({ wish, isVoted, isPreviewOnly, onTap, onToggleVote }: Cont
       <WishActionRow
         wish={wish}
         isVoted={isVoted}
+        voters={voters}
         isPreviewOnly={isPreviewOnly}
         onToggleVote={onToggleVote}
       />
@@ -228,35 +258,59 @@ function WishBody({ wish }: { wish: Wish }) {
 }
 
 function WishActionRow({
-  wish, isVoted, isPreviewOnly, onToggleVote,
+  wish, isVoted, voters, isPreviewOnly, onToggleVote,
 }: {
   wish:          Wish
   isVoted:       boolean
+  voters:        TripMember[]
   isPreviewOnly: boolean
   onToggleVote:  (e: React.MouseEvent) => void
 }) {
+  // 「投票按下後的 pop 動畫」獨立 state — 點擊瞬間就觸發,不等
+  // mutation,因為視覺回饋必須在 100ms 內出現才有感。onAnimationEnd
+  // 自動 cleanup,點越快動畫越會接連觸發(每次 setState 都重啟 animation
+  // class 的 mount cycle)。
+  const [pulsing, setPulsing] = useState(false)
+
+  function handleClick(e: React.MouseEvent) {
+    // demo 模式只是開 sign-in modal,沒實際投票 — 跳過 celebration
+    // 以免「投了沒效果但有動畫」的錯覺。
+    if (!isPreviewOnly) {
+      haptic('light')
+      setPulsing(true)
+    }
+    onToggleVote(e)
+  }
+
   return (
     <div className="flex items-center gap-1.5 px-3 pb-2.5 pt-1.5">
       {wish.address && <MapChip query={wish.address} />}
       {wish.link    && <LinkChip url={wish.link} hasAddress={!!wish.address} />}
+      <VoterStack voters={voters} totalVotes={wish.votes.length} />
       <button
-        onClick={onToggleVote}
+        onClick={handleClick}
         aria-label={isVoted ? '投票を取り消す' : '投票する'}
         aria-pressed={isVoted}
         className={[
-          'ml-auto flex items-center gap-1 h-8 px-2.5 rounded-full border bg-surface cursor-pointer transition-all active:scale-[0.97]',
+          'flex items-center gap-1 h-8 px-2.5 rounded-full border bg-surface cursor-pointer transition-all active:scale-[0.97]',
+          voters.length === 0 ? 'ml-auto' : '',
           isVoted
             ? 'border-[#E04B5E] bg-[#FFF2F4]'
             : 'border-border hover:bg-app',
           isPreviewOnly ? 'opacity-60' : '',
         ].join(' ')}
       >
-        <Heart
-          size={14}
-          strokeWidth={2.2}
-          className={isVoted ? 'text-[#E04B5E]' : 'text-muted'}
-          fill={isVoted ? '#E04B5E' : 'none'}
-        />
+        <span
+          className={pulsing ? 'animate-heart-pop inline-flex' : 'inline-flex'}
+          onAnimationEnd={() => setPulsing(false)}
+        >
+          <Heart
+            size={14}
+            strokeWidth={2.2}
+            className={isVoted ? 'text-[#E04B5E]' : 'text-muted'}
+            fill={isVoted ? '#E04B5E' : 'none'}
+          />
+        </span>
         <span className={[
           'text-[11.5px] font-bold tabular-nums',
           isVoted ? 'text-[#E04B5E]' : 'text-muted',
@@ -264,6 +318,63 @@ function WishActionRow({
           {wish.votes.length}
         </span>
       </button>
+    </div>
+  )
+}
+
+/** Stacked voter avatars — first MAX_AVATARS shown overlapping, rest
+ *  collapsed into a "+N" chip. ml-auto pushes the whole group to the
+ *  right so the heart button stays at the row end.
+ *
+ *  Why purely visual (not a button):
+ *    - The heart already carries the "vote" affordance.
+ *    - A "see all voters" popover adds cognitive load for a feature
+ *      that has at most ~6 members per trip — the stacked avatars
+ *      themselves already convey "who" at a glance.
+ *
+ *  totalVotes is passed separately so the +N math reflects the source
+ *  of truth (`wish.votes.length`) even when some voters were dropped
+ *  upstream (e.g. uid not in current members). The avatars show "who
+ *  we know voted"; the heart count + "+N" cover everyone else. */
+function VoterStack({ voters, totalVotes }: { voters: TripMember[]; totalVotes: number }) {
+  if (voters.length === 0) return null
+  const shown   = voters.slice(0, MAX_AVATARS)
+  const overflow = totalVotes - shown.length
+  return (
+    // `isolation: isolate` 建立獨立的 stacking context,把 chip 的
+    // mount/unmount 鎖在這個 subtree 內。配合 AVATAR_LAYER_STYLE 上的
+    // translateZ(0),為 iOS Safari PWA 修正取消投票後 voter chip
+    // 殘影空心圓的 bug。
+    //
+    // 移除 box-shadow:shadow 是 GPU raster cache 殘影的最大主因,
+    // border-surface 的白邊已足以區隔 chip 與背景。視覺差異微乎其
+    // 微(原本只是 8% 不透明的 1px 微陰影),換來最穩定的 cleanup。
+    <div className="ml-auto flex items-center mr-1" style={{ isolation: 'isolate' }}>
+      {shown.map((m, i) => (
+        <span
+          key={m.id}
+          aria-label={m.label}
+          title={m.label}
+          className="w-[20px] h-[20px] rounded-full flex items-center justify-center text-[9.5px] font-bold border-[1.5px] border-surface"
+          style={{
+            ...AVATAR_LAYER_STYLE,
+            background: m.bg,
+            color:      m.color,
+            marginLeft: i === 0 ? 0 : -6,
+            zIndex:     shown.length - i,
+          }}
+        >
+          {m.label}
+        </span>
+      ))}
+      {overflow > 0 && (
+        <span
+          className="w-[20px] h-[20px] rounded-full flex items-center justify-center text-[9px] font-bold border-[1.5px] border-surface bg-app text-muted tabular-nums"
+          style={{ ...AVATAR_LAYER_STYLE, marginLeft: -6 }}
+        >
+          +{overflow}
+        </span>
+      )}
     </div>
   )
 }
@@ -310,9 +421,6 @@ function MapChip({ query }: { query: string }) {
   return <ActionChip href={href} icon={Map} label="地図" ariaLabel="地図で開く" />
 }
 
-export default memo(WishCard, (prev, next) => (
-  prev.wish === next.wish &&
-  prev.isVoted === next.isVoted &&
-  prev.isPreviewOnly === next.isPreviewOnly &&
-  prev.isOpen === next.isOpen
-))
+// React Compiler auto-memoises the component; manual React.memo + custom
+// propsAreEqual is now redundant.
+export default WishCard

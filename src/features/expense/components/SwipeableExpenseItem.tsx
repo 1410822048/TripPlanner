@@ -6,17 +6,21 @@
 // permission isn't available (viewer role), the swipe props +
 // onDelete are omitted and we render a plain non-swipeable row.
 // Tap-to-edit still works in that branch — viewers can read details.
-import { memo } from 'react'
-import { Trash2 } from 'lucide-react'
+import { Loader2, Trash2 } from 'lucide-react'
 import type { Expense } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import { useSwipeRow, SWIPE_WIDTH, BG_TRANSITION, FG_TRANSITION } from '@/hooks/useSwipeRow'
+import { formatAmount } from '@/utils/currency'
 
 export interface SwipeableExpenseItemProps {
   expense:      Expense
   payer:        TripMember | undefined
   summary:      string
   categoryEmoji: string
+  /** ISO currency code from the trip. Threaded as a prop (rather than
+   *  read via useTripCurrency inside) so the memo comparator can
+   *  invalidate when the user changes currency mid-trip. */
+  currency:     string
   onSelect:     () => void
   /** Swipe-state controlled by parent (useSwipeOpen). Optional — when
    *  any of these are absent the row renders without swipe affordance
@@ -28,53 +32,81 @@ export interface SwipeableExpenseItemProps {
 }
 
 function SwipeableExpenseItem({
-  expense, payer, summary, categoryEmoji,
+  expense, payer, summary, categoryEmoji, currency,
   isOpen, onSelect, onOpen, onClose, onDelete,
 }: SwipeableExpenseItemProps) {
-  const swipeable = !!onDelete && !!onOpen && !!onClose
+  // Rows added via optimistic update carry a `temp-` prefixed id until
+  // the Firestore + Storage round-trip lands. While pending we disable
+  // tap-to-edit (the doc isn't on the server yet so updateDoc would
+  // fail) and swipe-to-delete, and dim the row + show a spinner so the
+  // user knows it's still saving.
+  const isPending = expense.id.startsWith('temp-')
+  const swipeable = !!onDelete && !!onOpen && !!onClose && !isPending
   const {
     bindFg, bindBg, pointerProps, deleteProps, openX, confirming, wrapTap,
   } = useSwipeRow({ isOpen: !!isOpen, onOpen, onClose, onDelete, enabled: swipeable })
 
+  // Receipt thumbnail (if image + thumb exists) replaces the category
+  // emoji tile. PDFs without thumbnails keep the emoji — the file-type
+  // is still visible via the form modal's preview button when editing.
+  const thumb = expense.receipt?.thumbUrl
   const body = (
-    <div className="flex items-center gap-3 px-3 py-2.5">
-      <div className="w-9 h-9 rounded-input bg-tile shrink-0 flex items-center justify-center text-[17px] pointer-events-none">
-        {categoryEmoji}
+    <div className={[
+      'flex items-center gap-3 px-3 py-2.5 transition-opacity',
+      isPending ? 'opacity-55' : '',
+    ].join(' ')}>
+      <div className="w-9 h-9 rounded-input bg-tile shrink-0 flex items-center justify-center text-[17px] overflow-hidden pointer-events-none"
+           style={thumb ? { backgroundImage: `url(${thumb})`, backgroundSize: 'cover', backgroundPosition: 'center' } : undefined}>
+        {thumb ? null : categoryEmoji}
       </div>
       <div className="flex-1 min-w-0 pointer-events-none">
         <div className="text-[13px] font-semibold text-ink -tracking-[0.1px] overflow-hidden text-ellipsis whitespace-nowrap">
           {expense.title}
         </div>
         <div className="flex items-center gap-1.5 mt-0.5 text-[10.5px] text-muted">
-          {payer && (
+          {isPending ? (
             <>
-              <span
-                className="inline-flex items-center justify-center w-[14px] h-[14px] rounded-full text-[8px] font-bold shrink-0"
-                style={{ background: payer.bg, color: payer.color }}
-              >
-                {payer.label}
-              </span>
-              <span>立替</span>
-              <span className="text-border">·</span>
+              <Loader2 size={11} strokeWidth={2.2} className="animate-spin shrink-0" />
+              <span>保存中…</span>
+            </>
+          ) : (
+            <>
+              {payer && (
+                <>
+                  <span
+                    className="inline-flex items-center justify-center w-[14px] h-[14px] rounded-full text-[8px] font-bold shrink-0"
+                    style={{ background: payer.bg, color: payer.color }}
+                  >
+                    {payer.label}
+                  </span>
+                  <span>立替</span>
+                  <span className="text-border">·</span>
+                </>
+              )}
+              <span>{summary}</span>
             </>
           )}
-          <span>{summary}</span>
         </div>
       </div>
       <div className="text-[14px] font-bold text-ink tabular-nums shrink-0 pointer-events-none">
-        ¥{expense.amount.toLocaleString()}
+        {formatAmount(expense.amount, currency)}
       </div>
     </div>
   )
 
-  // Non-swipeable branch: viewers without delete permission get a plain
-  // tap-to-edit row. Pointer handlers omitted entirely so there's no
-  // chance of a half-armed gesture.
+  // Non-swipeable branch: viewers without delete permission OR rows
+  // pending optimistic save. Both share "render but don't react to tap"
+  // — for viewers tap-to-edit is allowed (they can still read details),
+  // for pending rows tap is blocked because the doc doesn't exist on
+  // the server yet (updateDoc would fail).
   if (!swipeable) {
     return (
       <div
-        onClick={onSelect}
-        className="relative rounded-xl overflow-hidden bg-surface border border-border cursor-pointer select-none"
+        onClick={isPending ? undefined : onSelect}
+        className={[
+          'relative rounded-xl overflow-hidden bg-surface border border-border select-none',
+          isPending ? 'cursor-default' : 'cursor-pointer',
+        ].join(' ')}
       >
         {body}
       </div>
@@ -132,12 +164,4 @@ function SwipeableExpenseItem({
   )
 }
 
-// callback props 在 parent render 時每次都是新 ref — 自訂 compare 忽略它們，
-// 只看會影響渲染結果的 primitive / stable-ref props。
-export default memo(SwipeableExpenseItem, (prev, next) => (
-  prev.expense === next.expense &&
-  prev.payer === next.payer &&
-  prev.summary === next.summary &&
-  prev.categoryEmoji === next.categoryEmoji &&
-  prev.isOpen === next.isOpen
-))
+export default SwipeableExpenseItem

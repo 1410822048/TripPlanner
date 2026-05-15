@@ -12,6 +12,8 @@ import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
 import SaveButton from '@/components/ui/SaveButton'
 import DeleteConfirm from '@/components/ui/DeleteConfirm'
+import { useTripCurrency } from '@/hooks/useTripCurrency'
+import { currencySymbol } from '@/utils/currency'
 import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
@@ -74,6 +76,8 @@ export default function ScheduleFormModal({
     () => initFormState(editTarget, defaultDate),
   )
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const currency = useTripCurrency()
+  const symbol   = currencySymbol(currency)
 
   const titleRef = useRef<HTMLInputElement>(null)
   useAutoFocus(titleRef, isOpen)
@@ -215,9 +219,9 @@ export default function ScheduleFormModal({
         </div>
       </FormField>
 
-      <FormField label="予算（¥）" error={errors.cost}>
+      <FormField label={`予算（${symbol}）`} error={errors.cost}>
         <div className="relative">
-          <span className="absolute left-[13px] top-1/2 -translate-y-1/2 text-muted text-[13px] pointer-events-none">¥</span>
+          <span className="absolute left-[13px] top-1/2 -translate-y-1/2 text-muted text-[13px] pointer-events-none">{symbol}</span>
           <input
             type="number"
             value={state.cost}

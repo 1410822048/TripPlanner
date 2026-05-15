@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import react, { reactCompilerPreset } from '@vitejs/plugin-react'
+import babel from '@rolldown/plugin-babel'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 import { visualizer } from 'rollup-plugin-visualizer'
@@ -22,7 +23,41 @@ export default defineConfig({
   },
   plugins: [
     react(),
+    // React Compiler integration. @vitejs/plugin-react v6 dropped its
+    // inline `babel` option (Babel is no longer a dependency of the
+    // plugin itself — JSX runs through Oxc in Rust). The supported
+    // path is a separate `@rolldown/plugin-babel` pass that consumes
+    // `reactCompilerPreset()` — the preset returns both a babel preset
+    // and a rolldown filter/applyToEnvironmentHook/optimizeDeps block,
+    // so the compiler only touches client-side React modules and the
+    // optimizeDeps bundling picks up `react/compiler-runtime` for free.
+    babel({ presets: [reactCompilerPreset({ target: '19' })] }),
     tailwindcss(),
+    // Inject <link rel="modulepreload"> for the Firebase SDK chunks
+    // into index.html at build time. Without this, the browser only
+    // discovers these chunks after main.js parses and executes
+    // initAuth() — adding ~1.5s of serial wait on first cold launch.
+    // With modulepreload the chunks download in parallel with main.js
+    // so by the time React calls initAuth() the bundle is hot.
+    {
+      name: 'preload-firebase-chunks',
+      transformIndexHtml: {
+        order: 'post',
+        handler(html, ctx) {
+          if (!ctx.bundle) return html
+          const targets: string[] = []
+          for (const [fileName, chunk] of Object.entries(ctx.bundle)) {
+            if (chunk.type !== 'chunk') continue
+            if (/vendor-firebase-(auth|firestore)/.test(fileName)) targets.push(fileName)
+          }
+          if (targets.length === 0) return html
+          const tags = targets
+            .map(f => `    <link rel="modulepreload" href="/${f}" crossorigin>`)
+            .join('\n')
+          return html.replace('</head>', `${tags}\n  </head>`)
+        },
+      },
+    },
     // Bundle visualiser. Off by default; opt-in via `ANALYZE=1 npm run build`
     // so the normal build stays fast and doesn't open browser tabs.
     ...(process.env.ANALYZE
@@ -92,6 +127,22 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+    },
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        // Stable names for Firebase SDK chunks so the modulepreload
+        // plugin below can target them by glob. (No dedupe benefit —
+        // Vite was already deduping correctly.)
+        manualChunks: id => {
+          if (id.includes('@firebase/firestore') || id.includes('firebase/firestore'))
+            return 'vendor-firebase-firestore'
+          if (id.includes('@firebase/auth') || id.includes('firebase/auth'))
+            return 'vendor-firebase-auth'
+          return undefined
+        },
+      },
     },
   },
 })

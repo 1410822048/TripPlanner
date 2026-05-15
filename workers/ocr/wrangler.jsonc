@@ -1,0 +1,23 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "tripmate-ocr",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-05-12",
+	"compatibility_flags": ["nodejs_compat"],
+	"observability": { "enabled": true },
+	"upload_source_maps": true,
+	// Keep the public *.workers.dev URL (frontend calls it).
+	"workers_dev": true,
+	// Disable per-version preview URLs — we don't do gradual rollouts,
+	// so the extra attack surface isn't worth it.
+	"preview_urls": false,
+	// Non-secret env. Hardcoded here — Firebase project ID isn't sensitive
+	// (it's literally part of every signed-in user's JWT issuer claim) and
+	// the CORS allowlist needs to be readable for debugging.
+	"vars": {
+		"FIREBASE_PROJECT_ID": "tripplanner-80a4f",
+		"ALLOWED_ORIGINS": "https://tripplanner-80a4f.web.app,https://tripplanner-80a4f.firebaseapp.com,http://localhost:5173"
+	}
+	// Secrets are set via `wrangler secret put`:
+	//   GEMINI_API_KEY  ← Google AI Studio API key
+}

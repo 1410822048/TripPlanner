@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import type { Schedule, ScheduleCategory } from '@/types'
 import { mapsSearchUrl } from '@/utils/maps'
+import { formatAmount } from '@/utils/currency'
 
 const CAT: Record<ScheduleCategory, { bg: string; color: string; Icon: React.ElementType }> = {
   transport:     { bg:'#E8EEF5', color:'#4A6FA0', Icon: Bus         },
@@ -16,12 +17,13 @@ const CAT: Record<ScheduleCategory, { bg: string; color: string; Icon: React.Ele
 }
 
 interface Props {
-  s:      Schedule
-  isLast: boolean
-  onEdit: () => void
+  s:        Schedule
+  isLast:   boolean
+  currency: string
+  onEdit:   () => void
 }
 
-export default function TimelineCard({ s, isLast, onEdit }: Props) {
+export default function TimelineCard({ s, isLast, currency, onEdit }: Props) {
   const cat  = CAT[s.category]
   const Icon = cat.Icon
   // Inline maps link on the location label — keeps the meta row to one
@@ -86,10 +88,10 @@ export default function TimelineCard({ s, isLast, onEdit }: Props) {
             </span>
             {typeof s.estimatedCost === 'number' && s.estimatedCost > 0 && (
               <span
-                className="text-[11px] font-semibold px-2 py-0.5 rounded-card shrink-0 whitespace-nowrap"
+                className="text-[11px] font-semibold px-2 py-0.5 rounded-card shrink-0 whitespace-nowrap tabular-nums"
                 style={{ color: cat.color, background: cat.bg }}
               >
-                ¥{s.estimatedCost.toLocaleString()}
+                {formatAmount(s.estimatedCost, currency)}
               </span>
             )}
           </div>

@@ -73,12 +73,17 @@ const DatePicker = forwardRef<DatePickerHandle, Props>(function DatePicker(
   const [viewMonth, setViewMonth] = useState(initialView.m)
   const [mode,      setMode]      = useState<'day' | 'month' | 'year'>('day')
 
-  // Sync view to external value changes — intentionally only re-runs on `value`.
+  // Sync view to external value changes. Re-parse inside the effect
+  // (instead of closing over the outer `parsed`) so `value` is the only
+  // honest dependency — keeps React Compiler happy without an
+  // eslint-disable. The outer `parsed` is recomputed every render
+  // anyway, so this isn't extra work.
   useEffect(() => {
-    if (!parsed) return
-    setViewYear(parsed.getFullYear())
-    setViewMonth(parsed.getMonth())
-     // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!value) return
+    const d = fromLocalDateString(value)
+    if (Number.isNaN(d.getTime())) return
+    setViewYear(d.getFullYear())
+    setViewMonth(d.getMonth())
   }, [value])
 
   function openPicker(opts?: { viewDate?: string }) {

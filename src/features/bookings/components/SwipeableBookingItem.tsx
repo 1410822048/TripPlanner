@@ -21,7 +21,6 @@
 // has check-in/out/cover; train has route/vehicle), and trying to
 // express all four in one render tree was the "single boring row for
 // everything" UX we eliminated.
-import { memo } from 'react'
 import { Trash2 } from 'lucide-react'
 import type { Booking } from '@/types'
 import { useSwipeRow, SWIPE_WIDTH, BG_TRANSITION, FG_TRANSITION } from '@/hooks/useSwipeRow'
@@ -130,8 +129,4 @@ function SwipeableBookingItem({
   )
 }
 
-export default memo(SwipeableBookingItem, (prev, next) => (
-  prev.booking === next.booking &&
-  prev.whenLabel === next.whenLabel &&
-  prev.isOpen === next.isOpen
-))
+export default SwipeableBookingItem

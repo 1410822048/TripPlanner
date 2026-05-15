@@ -49,6 +49,27 @@
   from { opacity: 0; backdrop-filter: blur(0px)  saturate(100%); -webkit-backdrop-filter: blur(0px)  saturate(100%); }
   to   { opacity: 1; backdrop-filter: blur(4px)  saturate(140%); -webkit-backdrop-filter: blur(4px)  saturate(140%); }
 }
+/* 投票 / Like 動作的 micro-celebration — 用 transform 不動 layout,
+   cause-effect 明確、不長(280ms)。reduced-motion 媒體查詢下停用,
+   尊重前庭失調 / 動暈症使用者的偏好。 */
+@keyframes heartPop {
+  0%   { transform: scale(1);    }
+  40%  { transform: scale(1.35); }
+  70%  { transform: scale(0.92); }
+  100% { transform: scale(1);    }
+}
+.animate-heart-pop { animation: heartPop 280ms ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  /* 全域降速:把所有 animation / transition 縮短到 1ms,實質上
+     等於關閉。比 animation: none 安全 — 元件邏輯仍仰賴 animationend
+     event 觸發收尾 callback(例如 heart-pop 的 cleanup)。 */
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}
 
 /* 強制 light mode：避免深色系統反轉配色 */
 :root {

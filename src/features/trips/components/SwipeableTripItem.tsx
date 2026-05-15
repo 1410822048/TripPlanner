@@ -1,7 +1,7 @@
 // src/features/trips/components/SwipeableTripItem.tsx
 // Trip 列表 row — 左滑刪除 + 長按拖曳重排。
 // drag 期間以 ref 直接寫 DOM transform（不走 React state），避免每 pointermove 的重新渲染。
-import { useState, useRef, useEffect, memo } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Trash2 } from 'lucide-react'
 import { theme as C } from '@/theme'
 import type { TripItem } from '@/features/trips/types'
@@ -327,15 +327,4 @@ function SwipeableTripItem({
   )
 }
 
-// callback props 每次 render 都是新 ref — 自訂 compare 忽略它們。
-// 拖曳時只有 active row 的 dragY 會變 → 其他 row 不會重新 render。
-export default memo(SwipeableTripItem, (prev, next) => (
-  prev.trip === next.trip &&
-  prev.isActive === next.isActive &&
-  prev.isOpen === next.isOpen &&
-  prev.canDelete === next.canDelete &&
-  prev.canReorder === next.canReorder &&
-  prev.isDragging === next.isDragging &&
-  prev.dragY === next.dragY &&
-  prev.shiftY === next.shiftY
-))
+export default SwipeableTripItem

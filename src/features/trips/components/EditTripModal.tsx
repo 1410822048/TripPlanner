@@ -13,6 +13,8 @@ import SaveButton from '@/components/ui/SaveButton'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
 import type { TripItem } from '@/features/trips/types'
+import { DEFAULT_CURRENCY } from '@/utils/currency'
+import CurrencyPicker from '@/components/ui/CurrencyPicker'
 
 const EMOJI_OPTIONS = [
   '🗼','🏯','⛩️','🗾','🌸','🍁',
@@ -38,6 +40,7 @@ type FormState = {
   emoji:     string
   startDate: string
   endDate:   string
+  currency:  string
 }
 
 function initFormState(t: TripItem | null): FormState {
@@ -47,6 +50,7 @@ function initFormState(t: TripItem | null): FormState {
     emoji:     t?.emoji     ?? '🗼',
     startDate: t?.startDate ?? '',
     endDate:   t?.endDate   ?? '',
+    currency:  t?.currency  ?? DEFAULT_CURRENCY,
   }
 }
 
@@ -88,6 +92,7 @@ export default function EditTripModal({
       emoji:     state.emoji,
       startDate: state.startDate,
       endDate:   state.endDate,
+      currency:  state.currency,
     })
   }
 
@@ -167,6 +172,13 @@ export default function EditTripModal({
           <DatePicker ref={endDateRef} value={state.endDate} onChange={v => setField('endDate', v)} error={!!errors.endDate} />
         </FormField>
       </div>
+
+      <FormField label="通貨">
+        <CurrencyPicker
+          value={state.currency}
+          onChange={v => setField('currency', v)}
+        />
+      </FormField>
 
       {orphanCount > 0 && (
         <div className="flex gap-2.5 px-3 py-[11px] rounded-xl bg-warn-bg border border-[#E8D5B0]">

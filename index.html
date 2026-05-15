@@ -22,6 +22,14 @@
     <meta name="apple-mobile-web-app-title" content="TripMate" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <title>TripMate</title>
+
+    <!-- Preconnect to Firebase backends so DNS + TLS happen in parallel
+         with bundle + chunk downloads. Saves ~100-300ms on cold start,
+         especially over mobile networks where the first handshake is
+         the slowest part of a fresh request. -->
+    <link rel="preconnect" href="https://firestore.googleapis.com" crossorigin />
+    <link rel="preconnect" href="https://securetoken.googleapis.com" crossorigin />
+    <link rel="preconnect" href="https://identitytoolkit.googleapis.com" crossorigin />
   </head>
   <body>
     <div id="root"></div>

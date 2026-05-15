@@ -15,7 +15,7 @@
 // tap behaviours were missing in some places (we patched them across 4
 // pages). Centralising in a hook prevents the next swipeable list from
 // repeating the omission.
-import { useCallback, useState } from 'react'
+import { useState } from 'react'
 
 interface RowBindings {
   /** True when this row is the currently-swiped one. */
@@ -43,13 +43,14 @@ export interface UseSwipeOpenResult<TId extends string = string> {
 export function useSwipeOpen<TId extends string = string>(): UseSwipeOpenResult<TId> {
   const [swipedId, setSwipedId] = useState<TId | null>(null)
 
-  const closeAll = useCallback(() => setSwipedId(null), [])
+  // Compiler memoises these — no manual useCallback needed.
+  const closeAll = () => setSwipedId(null)
 
-  const bindRow = useCallback((id: TId): RowBindings => ({
+  const bindRow = (id: TId): RowBindings => ({
     isOpen:  swipedId === id,
     onOpen:  () => setSwipedId(id),
     onClose: () => setSwipedId(prev => prev === id ? null : prev),
-  }), [swipedId])
+  })
 
   return { swipedId, bindRow, closeAll }
 }

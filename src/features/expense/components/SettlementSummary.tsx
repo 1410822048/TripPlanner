@@ -1,13 +1,17 @@
 // src/features/expense/components/SettlementSummary.tsx
-import { memo, useMemo } from 'react'
 import { ArrowRight, Check } from 'lucide-react'
 import type { Expense } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import { computeBalances, computeSettlements, expandWithGhosts } from '../services/settlement'
+import { formatAmount } from '@/utils/currency'
 
 interface Props {
   expenses: Expense[]
   members:  TripMember[]
+  /** ISO currency code of the trip — included in props (not hooked
+   *  internally) so the memo comparator below catches changes when
+   *  the user updates currency mid-trip. */
+  currency: string
 }
 
 function MemberChip({ m, size = 28 }: { m: TripMember; size?: number }) {
@@ -25,7 +29,7 @@ function MemberChip({ m, size = 28 }: { m: TripMember; size?: number }) {
   )
 }
 
-function SettlementSummary({ expenses, members }: Props) {
+function SettlementSummary({ expenses, members, currency }: Props) {
   // Expand `members` with ghost rows for any uid in expenses that's no
   // longer an active trip member. Without this, the chip lookups below
   // would silently `return null` for kicked-out members and their
@@ -33,21 +37,12 @@ function SettlementSummary({ expenses, members }: Props) {
   // math still includes them. Doing the expand here keeps the page
   // self-contained: callers pass `members` (active only) and we
   // surface the full list to render.
-  const allParticipants = useMemo(
-    () => expandWithGhosts(members, expenses),
-    [members, expenses],
-  )
-
-  const { balances, settlements } = useMemo(() => {
-    const bs = computeBalances(expenses, allParticipants)
-    const ss = computeSettlements(bs)
-    return { balances: bs, settlements: ss }
-  }, [expenses, allParticipants])
-
-  const memberById = useMemo(
-    () => new Map(allParticipants.map(m => [m.id, m])),
-    [allParticipants],
-  )
+  // No useMemo — React Compiler auto-memoises these derivations based
+  // on its inferred deps. Manual useMemo was redundant boilerplate.
+  const allParticipants = expandWithGhosts(members, expenses)
+  const balances        = computeBalances(expenses, allParticipants)
+  const settlements     = computeSettlements(balances)
+  const memberById      = new Map(allParticipants.map(m => [m.id, m]))
 
   if (expenses.length === 0) return null
 
@@ -90,7 +85,7 @@ function SettlementSummary({ expenses, members }: Props) {
                   </div>
                   <div className="text-[10px] text-muted tabular-nums mt-px">
                     {m.isGhost && <span className="text-danger font-semibold">退出済み · </span>}
-                    立替 ¥{b.paid.toLocaleString()} · 分担 ¥{b.owed.toLocaleString()}
+                    立替 {formatAmount(b.paid, currency)} · 分担 {formatAmount(b.owed, currency)}
                   </div>
                 </div>
                 <span
@@ -101,7 +96,7 @@ function SettlementSummary({ expenses, members }: Props) {
                       : 'text-muted',
                   ].join(' ')}
                 >
-                  {isCredit ? '+' : isDebit ? '-' : '±'}¥{rounded.toLocaleString()}
+                  {isCredit ? '+' : isDebit ? '-' : '±'}{formatAmount(rounded, currency)}
                 </span>
               </div>
             )
@@ -140,7 +135,7 @@ function SettlementSummary({ expenses, members }: Props) {
                       <span className="font-semibold text-ink">{to.label}</span>
                     </span>
                     <span className="text-[13.5px] font-extrabold text-ink tabular-nums -tracking-[0.2px]">
-                      ¥{s.amount.toLocaleString()}
+                      {formatAmount(s.amount, currency)}
                     </span>
                   </div>
                 )
@@ -157,4 +152,4 @@ function SettlementSummary({ expenses, members }: Props) {
 // here even when expenses[] / members[] are unchanged. Default Object.is
 // comparison is correct — both props come from stable upstream sources
 // (TanStack Query cache for expenses, useMemo'd members).
-export default memo(SettlementSummary)
+export default SettlementSummary

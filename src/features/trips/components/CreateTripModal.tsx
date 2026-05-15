@@ -8,6 +8,8 @@ import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
 import LoadingText from '@/components/ui/LoadingText'
 import SaveButton from '@/components/ui/SaveButton'
+import CurrencyPicker from '@/components/ui/CurrencyPicker'
+import { DEFAULT_CURRENCY } from '@/utils/currency'
 import { useAuth } from '@/hooks/useAuth'
 import { useCreateTrip } from '@/features/trips/hooks/useTrips'
 import { useTripStore } from '@/store/tripStore'
@@ -30,20 +32,22 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
   const [destination, setDestination] = useState('')
   const [startDate,   setStartDate]   = useState('')
   const [endDate,     setEndDate]     = useState('')
+  const [currency,    setCurrency]    = useState(DEFAULT_CURRENCY)
   const [errors,      setErrors]      = useState<Record<string, string>>({})
   const [signingIn,   setSigningIn]   = useState(false)
 
   const endDateRef = useRef<DatePickerHandle>(null)
 
   function resetForm() {
-    setTitle(''); setDestination(''); setStartDate(''); setEndDate(''); setErrors({})
+    setTitle(''); setDestination(''); setStartDate(''); setEndDate('')
+    setCurrency(DEFAULT_CURRENCY); setErrors({})
   }
 
   function close() { onClose(); resetForm() }
 
   function validate() {
     const parsed = CreateTripSchema.safeParse({
-      title, destination, startDate, endDate, currency: 'TWD',
+      title, destination, startDate, endDate, currency,
     })
     if (!parsed.success) {
       const errs: Record<string, string> = {}
@@ -172,6 +176,10 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
           <DatePicker ref={endDateRef} value={endDate} onChange={setEndDate} error={!!errors.endDate} />
         </FormField>
       </div>
+
+      <FormField label="通貨">
+        <CurrencyPicker value={currency} onChange={setCurrency} />
+      </FormField>
     </BottomSheet>
   )
 }

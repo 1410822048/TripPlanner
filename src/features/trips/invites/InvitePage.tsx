@@ -19,7 +19,7 @@
 //
 // Layout: standalone (no AppLayout tabs) so the redeem flow feels
 // transactional and doesn't expose nav to a user who isn't yet a member.
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Check, X } from 'lucide-react'
@@ -38,12 +38,9 @@ export default function InvitePage() {
   const { state, signInWithGoogle } = useAuth(true)
   const acceptMut  = useAcceptInvite()
 
-  // Strip the leading '#' from location.hash. React Router's `hash` always
-  // starts with '#' when present. Memoised on hash so the query key is stable.
-  const token = useMemo(
-    () => (location.hash.startsWith('#') ? location.hash.slice(1) : location.hash) || undefined,
-    [location.hash],
-  )
+  // Strip the leading '#' from location.hash. Compiler memoises this
+  // derivation so the downstream useQuery key stays referentially stable.
+  const token = (location.hash.startsWith('#') ? location.hash.slice(1) : location.hash) || undefined
 
   const uid = state.status === 'signed-in' ? state.user.uid : undefined
 

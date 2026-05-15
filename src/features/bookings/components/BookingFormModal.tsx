@@ -18,10 +18,7 @@ import { inputClass } from '@/components/ui/inputStyle'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import AttachmentPreviewModal from './AttachmentPreviewModal'
 import { useBookingFormState } from '../hooks/useBookingFormState'
-import {
-  useBookingAttachment,
-  type AttachmentChange,
-} from '../hooks/useBookingAttachment'
+import { useAttachment, type AttachmentChange } from '@/hooks/useAttachment'
 
 const TYPES: { value: Booking['type']; emoji: string; label: string }[] = [
   { value: 'flight', emoji: '✈️', label: 'フライト' },
@@ -87,7 +84,11 @@ export default function BookingFormModal({
   isOpen, isSaving, onClose, onSave, onDelete,
 }: Props) {
   const { state, setField } = useBookingFormState(editTarget)
-  const att = useBookingAttachment(editTarget)
+  const att = useAttachment({
+    url:  editTarget?.fileUrl  ?? null,
+    path: editTarget?.filePath ?? null,
+    type: editTarget?.fileType ?? null,
+  })
   const [errors,      setErrors]      = useState<Record<string, string>>({})
   const [previewOpen, setPreviewOpen] = useState(false)
 
@@ -147,7 +148,7 @@ export default function BookingFormModal({
       note:             state.note.trim() || undefined,
     }
 
-    return { input, attachment: att.pickAttachmentChange(editTarget) }
+    return { input, attachment: att.pickAttachmentChange() }
   }
 
   function handleSave() {
@@ -386,6 +387,7 @@ export default function BookingFormModal({
           onClose={() => setPreviewOpen(false)}
         />
       )}
+
     </FormModalShell>
   )
 }

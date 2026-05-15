@@ -5,45 +5,33 @@
 // than a pile of JSX. The card itself has no data dependencies beyond the
 // props passed in — all derived values (dateRange length, schedule count,
 // total cost) are computed by the caller.
-import { memo } from 'react'
 import { Pencil } from 'lucide-react'
-import { tripHeaderCardPropsAreEqual, type TripHeaderCardProps as Props } from './tripHeaderCardPropsAreEqual'
+import type { TripHeaderCardProps as Props } from './tripHeaderCardPropsAreEqual'
+import { formatAmount } from '@/utils/currency'
 
 function TripHeaderCard({
-  selectedTrip, tripDays, scheduleCount, tripTotal, canInvite,
+  selectedTrip, tripDays, scheduleCount, tripTotal, canInvite, canEdit,
   onEditTrip, onInvite,
 }: Props) {
   const stats = [
-    { value: `${tripDays}`,                    unit: '日', label: '旅行天數' },
-    { value: `${scheduleCount}`,               unit: '個', label: '行程景點' },
-    { value: `¥${tripTotal.toLocaleString()}`, unit: '',   label: '預估總費' },
+    { value: `${tripDays}`,                                     unit: '日', label: '旅行天數' },
+    { value: `${scheduleCount}`,                                unit: '個', label: '行程景點' },
+    { value: formatAmount(tripTotal, selectedTrip.currency),    unit: '',   label: '預估總費' },
   ] as const
 
   return (
     <div className="px-4">
       <div className="bg-surface border border-border rounded-[22px] px-4.5 pt-4.5 pb-4 shadow-[0_2px_16px_rgba(0,0,0,0.06)]">
         <div className="flex justify-between items-start gap-3">
-          <button
-            onClick={onEditTrip}
-            className="flex-1 min-w-0 block text-left bg-transparent border-none px-2 py-1.5 -mx-2 -my-1.5 rounded-xl cursor-pointer transition-colors hover:bg-app"
-            style={{ WebkitTapHighlightColor: 'transparent' }}
-          >
-            <p className="m-0 mb-[5px] text-[10.5px] font-semibold text-muted tracking-[0.12em] uppercase">
-              {new Date(selectedTrip.startDate).getFullYear()} · 旅の記録
-            </p>
-            <div className="flex items-center gap-1.5 mb-[5px]">
-              <h1 className="m-0 text-[26px] font-black text-teal -tracking-[0.5px] leading-[1.1]">
-                {selectedTrip.title}
-              </h1>
-              <Pencil size={13} strokeWidth={2} className="opacity-45 shrink-0 mt-1 text-teal" />
-            </div>
-            <div className="flex items-center gap-1">
-              <span className="text-[12px] text-teal">✈</span>
-              <span className="text-[12px] text-teal font-medium tracking-[0.04em] overflow-hidden text-ellipsis whitespace-nowrap">
-                {selectedTrip.dest}
-              </span>
-            </div>
-          </button>
+          {/* Title block — tappable button only for owners (whose taps
+              firestore.rules will actually accept on trip update).
+              Editors / viewers see the same content as a static block
+              with no Pencil affordance + no hover state. */}
+          <TitleBlock
+            selectedTrip={selectedTrip}
+            canEdit={canEdit}
+            onEditTrip={onEditTrip}
+          />
 
           {/* Stacked avatars + invite "+" button */}
           <div className="flex pt-1 shrink-0">
@@ -86,7 +74,7 @@ function TripHeaderCard({
               ].join(' ')}
             >
               <div className="flex items-baseline gap-px">
-                <span className="text-[20px] font-extrabold text-ink -tracking-[0.5px]">
+                <span className="text-[20px] font-extrabold text-ink -tracking-[0.5px] tabular-nums">
                   {value}
                 </span>
                 {unit && <span className="text-[11px] font-semibold text-muted ml-px">{unit}</span>}
@@ -100,8 +88,50 @@ function TripHeaderCard({
   )
 }
 
-// Memo comparator imported from a sibling file to satisfy
-// react-refresh/only-export-components — keeping the comparator
-// inline would require this file to mix component + non-component
-// exports, which breaks Fast Refresh.
-export default memo(TripHeaderCard, tripHeaderCardPropsAreEqual)
+function TitleBlock({
+  selectedTrip, canEdit, onEditTrip,
+}: {
+  selectedTrip: Props['selectedTrip']
+  canEdit:      boolean
+  onEditTrip:   () => void
+}) {
+  const year       = new Date(selectedTrip.startDate).getFullYear()
+  const innerClass = 'flex-1 min-w-0 block text-left px-2 py-1.5 -mx-2 -my-1.5 rounded-xl'
+
+  const body = (
+    <>
+      <p className="m-0 mb-[5px] text-[10.5px] font-semibold text-muted tracking-[0.12em] uppercase">
+        {year} · 旅の記録
+      </p>
+      <div className="flex items-center gap-1.5 mb-[5px]">
+        <h1 className="m-0 text-[26px] font-black text-teal -tracking-[0.5px] leading-[1.1]">
+          {selectedTrip.title}
+        </h1>
+        {canEdit && (
+          <Pencil size={13} strokeWidth={2} className="opacity-45 shrink-0 mt-1 text-teal" />
+        )}
+      </div>
+      <div className="flex items-center gap-1">
+        <span className="text-[12px] text-teal">✈</span>
+        <span className="text-[12px] text-teal font-medium tracking-[0.04em] overflow-hidden text-ellipsis whitespace-nowrap">
+          {selectedTrip.dest}
+        </span>
+      </div>
+    </>
+  )
+
+  if (!canEdit) {
+    return <div className={innerClass}>{body}</div>
+  }
+  return (
+    <button
+      onClick={onEditTrip}
+      className={`${innerClass} bg-transparent border-none cursor-pointer transition-colors hover:bg-app`}
+      style={{ WebkitTapHighlightColor: 'transparent' }}
+    >
+      {body}
+    </button>
+  )
+}
+
+export default TripHeaderCard

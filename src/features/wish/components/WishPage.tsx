@@ -7,7 +7,7 @@
 // tab filters by `category`; new wishes default to whichever tab is
 // currently active so the user's intent is reflected without an extra
 // dropdown click.
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { Plus, Heart } from 'lucide-react'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
 import { useSwipeOpen } from '@/hooks/useSwipeOpen'
@@ -21,7 +21,10 @@ import {
   useWishes, useCreateWish, useUpdateWish, useDeleteWish, useToggleWishVote,
 } from '../hooks/useWishes'
 import { MOCK_WISHES } from '../mocks'
+import { useMembers } from '@/features/members/hooks/useMembers'
+import { membersToTripMembers } from '@/features/members/utils'
 import type { Wish, WishCategory } from '@/types'
+import type { TripMember } from '@/features/trips/types'
 import WishFormModal, { type WishFormResult } from './WishFormModal'
 import WishCard from './WishCard'
 
@@ -37,30 +40,30 @@ export default function WishPage() {
   const swipe = useSwipeOpen()
 
   const { data: cloudWishes, isLoading } = useWishes(cloudTripId)
-  // useMemo so an empty-state render doesn't produce a fresh [] each
-  // pass — without this, downstream `counts` / `filteredWishes` memos
-  // would invalidate on every parent re-render.
-  const wishes = useMemo(() => {
-    if (ctx.status === 'demo') return ctx.trip.id === 'demo' ? MOCK_WISHES : []
-    return cloudWishes ?? []
-  }, [ctx, cloudWishes])
+  const { data: fbMembers } = useMembers(cloudTripId)
+  // Compiler memoises these derivations. Per-tab counts reflect the
+  // full data set, not the visible (filtered) subset, so badge numbers
+  // stay accurate when switching tabs.
+  const wishes = ctx.status === 'demo'
+    ? (ctx.trip.id === 'demo' ? MOCK_WISHES : [])
+    : (cloudWishes ?? [])
 
-  // Per-tab counts so the badge always reflects the full data set, not
-  // the visible (filtered) subset. Memoised on `wishes` so unrelated
-  // re-renders (modal toggles, vote ticks) don't re-iterate.
-  const counts = useMemo(() => {
-    let place = 0, food = 0
-    for (const w of wishes) {
-      if (w.category === 'place') place++
-      else if (w.category === 'food') food++
-    }
-    return { place, food }
-  }, [wishes])
+  // 跟 ExpensePage 同樣的三狀態邏輯。voters 需要從 uid → TripMember 解析,
+  // 所以這裡先建好 memberById lookup。
+  const members: TripMember[] =
+    ctx.status === 'demo'  ? ctx.trip.members :
+    ctx.status === 'cloud' ? membersToTripMembers(fbMembers ?? []) :
+    []
+  const memberById = new Map(members.map(m => [m.id, m]))
 
-  const filteredWishes = useMemo(
-    () => wishes.filter(w => w.category === activeTab),
-    [wishes, activeTab],
-  )
+  let placeCount = 0, foodCount = 0
+  for (const w of wishes) {
+    if (w.category === 'place') placeCount++
+    else if (w.category === 'food') foodCount++
+  }
+  const counts = { place: placeCount, food: foodCount }
+
+  const filteredWishes = wishes.filter(w => w.category === activeTab)
 
   const createMut = useCreateWish(mutationTripId)
   const updateMut = useUpdateWish(mutationTripId)
@@ -213,11 +216,21 @@ export default function WishPage() {
                 // render as plain non-swipeable rows (heart still
                 // works; tap-to-edit still works).
                 const swipeProps = deletable ? swipe.bindRow(w.id) : {}
+                // Resolve uid → TripMember in `votes[]` order (= first-
+                // voted first, since arrayUnion appends). Unknown uids
+                // (kicked / former members) are silently dropped — the
+                // card's totalVotes prop still feeds the heart count, so
+                // they show up as "+N" rather than vanishing from the
+                // tally.
+                const voters = w.votes
+                  .map(uid => memberById.get(uid))
+                  .filter((m): m is TripMember => !!m)
                 return (
                   <WishCard
                     key={w.id}
                     wish={w}
                     isVoted={!!uid && w.votes.includes(uid)}
+                    voters={voters}
                     isPreviewOnly={isDemo}
                     {...swipeProps}
                     onTap={() => { swipe.closeAll(); modal.openEdit(w) }}
