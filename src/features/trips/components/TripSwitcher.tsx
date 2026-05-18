@@ -74,27 +74,35 @@ export default function TripSwitcher({
 
   const ref = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    function handler(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    if (open) document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [open])
+  // Single close handler — every path that closes the dropdown calls
+  // this, replacing what used to be a `useEffect` that watched `open`
+  // and reset side states on transition. The effect approach tripped
+  // react-hooks/set-state-in-effect (rightly: it was a state→state
+  // cascade rather than syncing to an external system). Centralising
+  // here is the React-19-idiomatic fix: the "reopen-fresh" contract
+  // is enforced at every flip point instead of converging in a watcher.
+  function closeDropdown() {
+    setOpen(false)
+    swipe.closeAll()
+    setEditMode(false)
+  }
 
-  // When the dropdown closes (any path: outside-click, select, action,
-  // create), drop any pending swipe AND reset edit mode so reopening
-  // shows fresh state instead of stuck-open rows / lingering edit chrome.
-  // The setState-in-effect is intentional — `open` has 5 separate flip
-  // points (outside-click handler, header X, select row, menu action,
-  // create CTA) and centralising the reset into each would scatter the
-  // "reopen-fresh" contract; the effect is the single converge point.
   useEffect(() => {
-    if (!open) {
-      swipe.closeAll()
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setEditMode(false)
+    if (!open) return  // only need the outside-click listener while open
+    function handler(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        // Inline rather than calling closeDropdown so the effect's dep
+        // array stays at [open] — pulling closeDropdown in would mean
+        // the listener re-registers on every render (closeDropdown's
+        // identity changes with each render in non-compiler-memoised
+        // form). setState refs are themselves stable.
+        setOpen(false)
+        swipe.closeAll()
+        setEditMode(false)
+      }
     }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
   }, [open, swipe])
 
   const isReordering = draggingId !== null
@@ -138,7 +146,7 @@ export default function TripSwitcher({
 
       {/* Trigger */}
       <button
-        onClick={() => setOpen(o => !o)}
+        onClick={() => open ? closeDropdown() : setOpen(true)}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`現在の旅程: ${selected.title}、切り替えメニューを開く`}
@@ -191,7 +199,7 @@ export default function TripSwitcher({
       {open && (
         <>
           <div
-            onClick={() => setOpen(false)}
+            onClick={closeDropdown}
             className="fixed inset-0 z-[150]"
             style={{
               background: 'rgba(28, 22, 18, 0.34)',
@@ -266,7 +274,7 @@ export default function TripSwitcher({
                     dragY={draggingId === trip.id ? dragY : 0}
                     shiftY={computeShift(trip.id)}
                     editMode={editVisible}
-                    onSelect={() => { onSelect(trip); setOpen(false); swipe.closeAll() }}
+                    onSelect={() => { onSelect(trip); closeDropdown() }}
                     onDelete={() => { onDelete(trip.id); swipe.closeAll() }}
                     onReorderStart={(h) => startReorder(trip.id, h)}
                     onReorderMove={moveReorder}
@@ -279,7 +287,7 @@ export default function TripSwitcher({
                 onClick={() => {
                   if (onCreateTrip) onCreateTrip()
                   else toast.info('新しい旅の追加は開発中です')
-                  setOpen(false)
+                  closeDropdown()
                 }}
                 className="w-full h-10 rounded-xl border-[1.5px] border-dashed border-border bg-transparent text-muted text-[12.5px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer tracking-[0.04em] transition-all hover:bg-pick-pale hover:border-pick hover:text-pick"
               >
@@ -300,7 +308,7 @@ export default function TripSwitcher({
               {MENU_ACTIONS.filter(a => isOwner || !a.ownerOnly).map(({ key, emoji, label, sub, danger }) => (
                 <button
                   key={key}
-                  onClick={() => { onAction(key); setOpen(false) }}
+                  onClick={() => { onAction(key); closeDropdown() }}
                   className={[
                     'w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl border-none bg-transparent cursor-pointer text-left transition-colors',
                     danger ? 'hover:bg-danger-pale' : 'hover:bg-app',
