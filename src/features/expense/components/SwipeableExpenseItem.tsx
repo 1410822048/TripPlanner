@@ -21,10 +21,13 @@ export interface SwipeableExpenseItemProps {
    *  read via useTripCurrency inside) so the memo comparator can
    *  invalidate when the user changes currency mid-trip. */
   currency:     string
-  onSelect:     () => void
+  /** Tap on the row body — opens the edit modal. Optional: viewers
+   *  (no write permission) omit it; the row then has no cursor / click,
+   *  mirroring firestore.rules so save isn't reached. */
+  onSelect?:    () => void
   /** Swipe-state controlled by parent (useSwipeOpen). Optional — when
    *  any of these are absent the row renders without swipe affordance
-   *  (used for viewers without delete permission). */
+   *  (viewers, or pending optimistic rows). */
   isOpen?:      boolean
   onOpen?:      () => void
   onClose?:     () => void
@@ -94,18 +97,20 @@ function SwipeableExpenseItem({
     </div>
   )
 
-  // Non-swipeable branch: viewers without delete permission OR rows
-  // pending optimistic save. Both share "render but don't react to tap"
-  // — for viewers tap-to-edit is allowed (they can still read details),
-  // for pending rows tap is blocked because the doc doesn't exist on
-  // the server yet (updateDoc would fail).
+  // Non-swipeable branch covers two cases:
+  //   1. Pending optimistic row (`isPending`) — tap blocked because the
+  //      doc isn't on the server yet, updateDoc would fail.
+  //   2. Viewer (`!onSelect`) — no edit permission, so tap-to-edit is
+  //      not offered at all (firestore.rules would reject the save).
+  // Both render the same dimmed-or-plain card without click handler.
+  const clickable = !!onSelect && !isPending
   if (!swipeable) {
     return (
       <div
-        onClick={isPending ? undefined : onSelect}
+        onClick={clickable ? onSelect : undefined}
         className={[
           'relative rounded-xl overflow-hidden bg-surface border border-border select-none',
-          isPending ? 'cursor-default' : 'cursor-pointer',
+          clickable ? 'cursor-pointer' : 'cursor-default',
         ].join(' ')}
       >
         {body}
@@ -144,12 +149,17 @@ function SwipeableExpenseItem({
         )}
       </div>
 
-      {/* 前景內容層 */}
+      {/* 前景內容層 — swipeable 分支 implies onSelect 通常存在(因為
+          canWrite gate 同時開啟 swipe 跟 onSelect),但仍保留 conditional
+          以免未來 props 組合改變時失序。 */}
       <div
         ref={bindFg}
         {...pointerProps}
-        onClick={wrapTap(onSelect)}
-        className="relative select-none cursor-pointer bg-surface"
+        onClick={onSelect ? wrapTap(onSelect) : undefined}
+        className={[
+          'relative select-none bg-surface',
+          onSelect ? 'cursor-pointer' : '',
+        ].join(' ')}
         style={{
           transform: `translate3d(${openX}px,0,0)`,
           transition: FG_TRANSITION,

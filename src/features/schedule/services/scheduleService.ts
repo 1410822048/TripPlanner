@@ -1,68 +1,39 @@
 // src/features/schedule/services/scheduleService.ts
+// Read pair (get + subscribe) is factoried via createTripScopedListServices;
+// only the write side is hand-written because each entity has too much
+// per-collection variation to share.
 import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
-import { captureError } from '@/services/sentry'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
-import { parseListSnapshot } from '@/services/parseListSnapshot'
-import { subscribeToCollection } from '@/services/realtimeQuery'
+import { createTripScopedListServices } from '@/services/tripScopedList'
+import { validateUpdateOrThrow } from '@/services/validateUpdate'
 import { auditCreate, auditUpdate } from '@/utils/audit'
 import { getTripMemberIds } from '@/services/tripMemberIds'
 import { bumpTripActivity } from '@/services/tripActivity'
 import { ScheduleDocSchema, UpdateScheduleSchema, type Schedule, type CreateScheduleInput, type UpdateScheduleInput } from '@/types'
 
-/** Defensive cap — see bookingService for rationale. Schedules can run
- *  higher per trip (multi-day with multiple stops per day) so 200. */
+/** Defensive cap — schedules can run higher per trip (multi-day with
+ *  multiple stops per day) so 200 vs bookings' 100. */
 const LIST_LIMIT = 200
 
-/** 驗證一份 Firestore doc 是否符合 Schedule schema；失敗時丟出錯誤以利觀測 */
 function scheduleFromDoc(d: QueryDocumentSnapshot): Schedule {
   return firestoreDocFromSchema(ScheduleDocSchema, d, 'scheduleFromDoc')
 }
 
 // ─── Read ─────────────────────────────────────────────────────────
 // uid is required: list queries must `where('memberIds', 'array-contains',
-// uid)` to align with the same-doc list rule (`allow list: if uid in
-// resource.data.memberIds`). Firestore validates rule-query alignment at
-// query time, so the filter is mandatory — even for an owner whose docs
-// all already contain their uid.
-export async function getSchedulesByTrip(tripId: string, uid: string): Promise<Schedule[]> {
-  const { db, collection, query, where, orderBy, limit, getDocs } = await getFirebase()
-  const q = query(
-    collection(db, ...P.schedules(tripId)),
-    where('memberIds', 'array-contains', uid),
-    orderBy('date'),
-    orderBy('order'),
-    limit(LIST_LIMIT),
-  )
-  const snap = await getDocs(q)
-  if (snap.size >= LIST_LIMIT) {
-    captureError(new Error(`getSchedulesByTrip truncated at ${LIST_LIMIT}`), { tripId })
-  }
-  return parseListSnapshot(snap, scheduleFromDoc)
-}
-
-/**
- * Realtime variant of getSchedulesByTrip — onSnapshot listener pushing
- * Schedule[] shaped identically to the one-shot fetcher above.
- */
-export const subscribeToSchedules = (
-  tripId: string,
-  uid:    string,
-  onData: (data: Schedule[]) => void,
-  onError: (e: Error) => void,
-) => subscribeToCollection<Schedule>({
-  buildQuery: ({ db, collection, query, where, orderBy, limit }) => query(
-    collection(db, ...P.schedules(tripId)),
-    where('memberIds', 'array-contains', uid),
-    orderBy('date'),
-    orderBy('order'),
-    limit(LIST_LIMIT),
-  ),
+// uid)` to align with the same-doc list rule. The factory enforces this.
+const listServices = createTripScopedListServices<Schedule>({
+  path:    P.schedules,
   fromDoc: scheduleFromDoc,
-  source:  'subscribeToSchedules',
+  orderBy: [['date'], ['order']],
   limit:   LIST_LIMIT,
-}, onData, onError)
+  source:  'schedules',
+})
+
+export const getSchedulesByTrip = listServices.fetch
+export const subscribeToSchedules = listServices.subscribe
 
 // ─── Write ────────────────────────────────────────────────────────
 export async function createSchedule(
@@ -93,15 +64,12 @@ export async function updateSchedule(
   options: { uid: string },
 ): Promise<void> {
   const { uid } = options
-  // Defense-in-depth: see updateExpense for rationale.
-  const parsed = UpdateScheduleSchema.safeParse(updates)
-  if (!parsed.success) {
-    captureError(parsed.error, { source: 'updateSchedule', tripId, scheduleId })
-    throw new Error('Update payload failed validation')
-  }
+  const validated = validateUpdateOrThrow(UpdateScheduleSchema, updates, {
+    source: 'updateSchedule', tripId, scheduleId,
+  })
   const { db, doc, updateDoc, serverTimestamp } = await getFirebase()
   await updateDoc(doc(db, ...P.schedule(tripId, scheduleId)), {
-    ...parsed.data,
+    ...validated,
     ...auditUpdate(uid, serverTimestamp()),
   })
   void bumpTripActivity(tripId, 'schedule', uid)

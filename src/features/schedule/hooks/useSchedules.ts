@@ -1,13 +1,7 @@
 // src/features/schedule/hooks/useSchedules.ts
-// useSchedules is realtime-backed: the initial getDocs populates the
-// cache, then a Firestore onSnapshot listener pushes subsequent changes
-// (other members adding / editing schedules) into the cache live.
-//
-// Mutations remain optimistic for instant local feedback. The listener
-// delivers the authoritative server state shortly after the write
-// commits, reconciling whatever the optimistic patch did. Rollback
-// path on failure is unchanged.
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+// Realtime-backed: initial getDocs primes the cache, onSnapshot pushes
+// subsequent changes (other members adding / editing schedules) live.
+// Mutations remain optimistic for instant local feedback.
 import {
   getSchedulesByTrip,
   subscribeToSchedules,
@@ -16,12 +10,11 @@ import {
   deleteSchedule,
 } from '../services/scheduleService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
-import { useUid } from '@/hooks/useAuth'
+import { useTripListMutation } from '@/hooks/useTripListMutation'
 import { tempId } from '@/utils/tempId'
-import { patchListCache, rollbackListCache } from '@/utils/queryCache'
 import { auditCreateMock, auditUpdateMock } from '@/utils/audit'
 import type { CreateScheduleInput, Schedule } from '@/types'
-import type { MutationMeta, MutationOptions } from '@/services/queryClient'
+import type { MutationOptions } from '@/services/queryClient'
 
 export const scheduleKeys = {
   all: (tripId: string, uid?: string) => ['schedules', tripId, uid ?? ''] as const,
@@ -35,71 +28,58 @@ export const useSchedules = createRealtimeListHook<Schedule>({
   requiresUid:     true,
 })
 
+/** Next per-day `order` = max(snapshot.order in same date) + 1. Concurrent
+ *  creates by two users still race — acceptable for v1; gaps from delete
+ *  are harmless. */
+function nextOrderInDay(snapshot: Schedule[], date: string): number {
+  return snapshot.filter(s => s.date === date)
+    .reduce((m, s) => Math.max(m, s.order), -1) + 1
+}
+
 export function useCreateSchedule(tripId: string, options?: MutationOptions) {
-  const qc = useQueryClient()
-  const uid = useUid()
-  const key = scheduleKeys.all(tripId, uid)
-  // Next order = max+1 within the same day, computed from the React Query cache
-  // so we avoid an extra Firestore query per create. Delete-gaps are safe (max+1
-  // skips the gap). Concurrent creates by two users still race — acceptable for v1.
-  const nextOrderForDate = (date: string): number => {
-    const cached = qc.getQueryData<Schedule[]>(key) ?? []
-    return cached.filter(s => s.date === date)
-      .reduce((m, s) => Math.max(m, s.order), -1) + 1
-  }
-  return useMutation({
-    mutationFn: ({ input, userId }: { input: CreateScheduleInput; userId: string }) =>
-      createSchedule(tripId, input, userId, nextOrderForDate(input.date)),
-    meta: { action: '行程の追加', silent: options?.silent } satisfies MutationMeta,
-    onMutate: ({ input, userId }) =>
-      patchListCache<Schedule>(qc, key, prev => {
-        const sameDay = prev.filter(s => s.date === input.date)
-        const nextOrder = sameDay.reduce((m, s) => Math.max(m, s.order), -1) + 1
-        const optimistic: Schedule = {
-          id:    tempId(),
-          tripId,
-          order: nextOrder,
-          memberIds: [userId],
-          ...auditCreateMock(userId),
-          ...input,
-        }
-        return [...prev, optimistic]
-      }),
-    onError: (_err, _vars, ctx) => {
-      rollbackListCache<Schedule>(qc, key, ctx)
-    },
+  return useTripListMutation<Schedule, { input: CreateScheduleInput; createdBy: string }>({
+    tripId,
+    keyFactory: scheduleKeys.all,
+    mutate:     ({ input, createdBy }, { snapshot }) =>
+      createSchedule(tripId, input, createdBy, nextOrderInDay(snapshot, input.date)),
+    patch:      (prev, { input, createdBy }) => [
+      ...prev,
+      {
+        id:        tempId(),
+        tripId,
+        order:     nextOrderInDay(prev, input.date),
+        memberIds: [createdBy],
+        ...auditCreateMock(createdBy),
+        ...input,
+      },
+    ],
+    action:     '行程の追加',
+    silent:     options?.silent,
   })
 }
 
 export function useUpdateSchedule(tripId: string, options?: MutationOptions) {
-  const qc = useQueryClient()
-  const uid = useUid()
-  const key = scheduleKeys.all(tripId, uid)
-  return useMutation({
-    mutationFn: ({ scheduleId, updates, uid }: { scheduleId: string; updates: Partial<CreateScheduleInput>; uid: string }) =>
-      updateSchedule(tripId, scheduleId, updates, { uid }),
-    meta: { action: '更新', silent: options?.silent } satisfies MutationMeta,
-    onMutate: ({ scheduleId, updates, uid }) =>
-      patchListCache<Schedule>(qc, key, prev =>
-        prev.map(s => s.id === scheduleId ? { ...s, ...updates, ...auditUpdateMock(uid) } : s),
-      ),
-    onError: (_err, _vars, ctx) => {
-      rollbackListCache<Schedule>(qc, key, ctx)
-    },
+  return useTripListMutation<Schedule, {
+    scheduleId: string
+    updates:    Partial<CreateScheduleInput>
+    uid:        string
+  }>({
+    tripId,
+    keyFactory: scheduleKeys.all,
+    mutate:     ({ scheduleId, updates, uid }) => updateSchedule(tripId, scheduleId, updates, { uid }),
+    patch:      (prev, { scheduleId, updates, uid }) =>
+      prev.map(s => s.id === scheduleId ? { ...s, ...updates, ...auditUpdateMock(uid) } : s),
+    action:     '更新',
+    silent:     options?.silent,
   })
 }
 
 export function useDeleteSchedule(tripId: string) {
-  const qc = useQueryClient()
-  const uid = useUid()
-  const key = scheduleKeys.all(tripId, uid)
-  return useMutation({
-    mutationFn: (scheduleId: string) => deleteSchedule(tripId, scheduleId, uid!),
-    meta: { action: '削除' } satisfies MutationMeta,
-    onMutate: scheduleId =>
-      patchListCache<Schedule>(qc, key, prev => prev.filter(s => s.id !== scheduleId)),
-    onError: (_err, _vars, ctx) => {
-      rollbackListCache<Schedule>(qc, key, ctx)
-    },
+  return useTripListMutation<Schedule, string>({
+    tripId,
+    keyFactory: scheduleKeys.all,
+    mutate:     (scheduleId, { uid }) => deleteSchedule(tripId, scheduleId, uid),
+    patch:      (prev, scheduleId) => prev.filter(s => s.id !== scheduleId),
+    action:     '削除',
   })
 }

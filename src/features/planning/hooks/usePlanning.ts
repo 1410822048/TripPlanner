@@ -1,12 +1,9 @@
 // src/features/planning/hooks/usePlanning.ts
-// Realtime-backed via createRealtimeListHook — when a co-member ticks
-// off "currency exchanged" or adds a packing item, you see it
-// immediately. Mutations stay optimistic; the listener handles
-// reconciliation (no onSettled invalidate needed).
+// Realtime-backed — when a co-member ticks off a packing item, you see
+// it immediately. Mutations stay optimistic; listener reconciles.
 //
-// The toggleDone mutation is split out so the checkbox tap latency is
-// as low as possible (no full-doc patch shape).
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+// `toggleDone` is split out so checkbox-tap latency stays minimal
+// (no full-doc patch shape).
 import {
   getPlanItemsByTrip,
   subscribeToPlanItems,
@@ -16,13 +13,12 @@ import {
   deletePlanItem,
 } from '../services/planningService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
-import { useUid } from '@/hooks/useAuth'
+import { useTripListMutation } from '@/hooks/useTripListMutation'
 import { tempId } from '@/utils/tempId'
-import { patchListCache, rollbackListCache } from '@/utils/queryCache'
 import { auditCreateMock, auditUpdateMock } from '@/utils/audit'
 import type { CreatePlanItemInput, PlanItem } from '@/types'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
-import type { MutationMeta, MutationOptions } from '@/services/queryClient'
+import type { MutationOptions } from '@/services/queryClient'
 
 export const planningKeys = {
   all: (tripId: string, uid?: string) => ['planning', tripId, uid ?? ''] as const,
@@ -37,86 +33,63 @@ export const usePlanning = createRealtimeListHook<PlanItem>({
 })
 
 export function useCreatePlanItem(tripId: string, options?: MutationOptions) {
-  const qc = useQueryClient()
-  const uid = useUid()
-  const key = planningKeys.all(tripId, uid)
-  return useMutation({
-    mutationFn: ({ input, createdBy }: { input: CreatePlanItemInput; createdBy: string }) =>
-      createPlanItem(tripId, input, createdBy),
-    meta: { action: '追加', silent: options?.silent } satisfies MutationMeta,
-    onMutate: ({ input, createdBy }) =>
-      patchListCache<PlanItem>(qc, key, prev => [
-        { id: tempId(), tripId, memberIds: [createdBy], ...input, done: false, ...auditCreateMock(createdBy) },
-        ...prev,
-      ]),
-    onError: (_err, _vars, ctx) => {
-      rollbackListCache<PlanItem>(qc, key, ctx)
-    },
+  return useTripListMutation<PlanItem, { input: CreatePlanItemInput; createdBy: string }>({
+    tripId,
+    keyFactory: planningKeys.all,
+    mutate:     ({ input, createdBy }) => createPlanItem(tripId, input, createdBy),
+    patch:      (prev, { input, createdBy }) => [
+      { id: tempId(), tripId, memberIds: [createdBy], ...input, done: false, ...auditCreateMock(createdBy) },
+      ...prev,
+    ],
+    action:     '追加',
+    silent:     options?.silent,
   })
 }
 
 export function useUpdatePlanItem(tripId: string, options?: MutationOptions) {
-  const qc = useQueryClient()
-  const uid = useUid()
-  const key = planningKeys.all(tripId, uid)
-  return useMutation({
-    mutationFn: ({ itemId, updates, uid }: { itemId: string; updates: Partial<CreatePlanItemInput>; uid: string }) =>
-      updatePlanItem(tripId, itemId, updates, { uid }),
-    meta: { action: '更新', silent: options?.silent } satisfies MutationMeta,
-    onMutate: ({ itemId, updates, uid }) =>
-      patchListCache<PlanItem>(qc, key, prev =>
-        prev.map(p => p.id === itemId ? { ...p, ...updates, ...auditUpdateMock(uid) } : p),
-      ),
-    onError: (_err, _vars, ctx) => {
-      rollbackListCache<PlanItem>(qc, key, ctx)
-    },
+  return useTripListMutation<PlanItem, {
+    itemId:  string
+    updates: Partial<CreatePlanItemInput>
+    uid:     string
+  }>({
+    tripId,
+    keyFactory: planningKeys.all,
+    mutate:     ({ itemId, updates, uid }) => updatePlanItem(tripId, itemId, updates, { uid }),
+    patch:      (prev, { itemId, updates, uid }) =>
+      prev.map(p => p.id === itemId ? { ...p, ...updates, ...auditUpdateMock(uid) } : p),
+    action:     '更新',
+    silent:     options?.silent,
   })
 }
 
-/**
- * Toggle done. Optimistic so the checkbox flips immediately. The
- * snapshot listener will deliver the server-confirmed state; the
- * optimistic patch is exact (toggling is idempotent + per-doc) so no
- * extra reconciliation needed.
- */
+/** Optimistic checkbox flip. Toggling is idempotent + per-doc, so the
+ *  listener's eventual server-state delivery doesn't conflict. */
 export function useTogglePlanItem(tripId: string) {
-  const qc = useQueryClient()
-  const uid = useUid()
-  const key = planningKeys.all(tripId, uid)
-  return useMutation({
-    mutationFn: ({ itemId, uid, done }: { itemId: string; uid: string; done: boolean }) =>
-      togglePlanItemDone(tripId, itemId, uid, done),
-    onMutate: ({ itemId, uid, done }) =>
-      patchListCache<PlanItem>(qc, key, prev =>
-        prev.map(p => p.id === itemId
-          ? {
-              ...p,
-              done,
-              doneBy: done ? uid           : undefined,
-              doneAt: done ? MOCK_TIMESTAMP : undefined,
-              ...auditUpdateMock(uid),
-            }
-          : p,
-        ),
+  return useTripListMutation<PlanItem, { itemId: string; uid: string; done: boolean }>({
+    tripId,
+    keyFactory: planningKeys.all,
+    mutate:     ({ itemId, uid, done }) => togglePlanItemDone(tripId, itemId, uid, done),
+    patch:      (prev, { itemId, uid, done }) =>
+      prev.map(p => p.id === itemId
+        ? {
+            ...p,
+            done,
+            doneBy: done ? uid           : undefined,
+            doneAt: done ? MOCK_TIMESTAMP : undefined,
+            ...auditUpdateMock(uid),
+          }
+        : p,
       ),
-    meta: { action: '更新' } satisfies MutationMeta,
-    onError: (_err, _vars, ctx) => {
-      rollbackListCache<PlanItem>(qc, key, ctx)
-    },
+    action:     '更新',
   })
 }
 
 export function useDeletePlanItem(tripId: string) {
-  const qc = useQueryClient()
-  const uid = useUid()
-  const key = planningKeys.all(tripId, uid)
-  return useMutation({
-    mutationFn: (itemId: string) => deletePlanItem(tripId, itemId, uid!),
-    meta: { action: '削除' } satisfies MutationMeta,
-    onMutate: (itemId) =>
-      patchListCache<PlanItem>(qc, key, prev => prev.filter(p => p.id !== itemId)),
-    onError: (_err, _vars, ctx) => {
-      rollbackListCache<PlanItem>(qc, key, ctx)
-    },
+  return useTripListMutation<PlanItem, string>({
+    tripId,
+    keyFactory: planningKeys.all,
+    mutate:     (itemId, { uid }) => deletePlanItem(tripId, itemId, uid),
+    patch:      (prev, itemId) => prev.filter(p => p.id !== itemId),
+    action:     '削除',
   })
 }

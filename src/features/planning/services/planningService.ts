@@ -6,10 +6,9 @@
 import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
-import { captureError } from '@/services/sentry'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
-import { parseListSnapshot } from '@/services/parseListSnapshot'
-import { subscribeToCollection } from '@/services/realtimeQuery'
+import { createTripScopedListServices } from '@/services/tripScopedList'
+import { validateUpdateOrThrow } from '@/services/validateUpdate'
 import { stripEmpty } from '@/utils/stripEmpty'
 import { auditCreate, auditUpdate } from '@/utils/audit'
 import { getTripMemberIds } from '@/services/tripMemberIds'
@@ -29,38 +28,16 @@ function planItemFromDoc(d: QueryDocumentSnapshot): PlanItem {
 }
 
 // ─── Read ─────────────────────────────────────────────────────────
-
-export async function getPlanItemsByTrip(tripId: string, uid: string): Promise<PlanItem[]> {
-  const { db, collection, query, where, orderBy, limit, getDocs } = await getFirebase()
-  const snap = await getDocs(query(
-    collection(db, ...P.planning(tripId)),
-    where('memberIds', 'array-contains', uid),
-    orderBy('createdAt', 'desc'),
-    limit(LIST_LIMIT),
-  ))
-  if (snap.size >= LIST_LIMIT) {
-    captureError(new Error(`getPlanItemsByTrip truncated at ${LIST_LIMIT}`), { tripId })
-  }
-  return parseListSnapshot(snap, planItemFromDoc)
-}
-
-/** Realtime variant of getPlanItemsByTrip — onSnapshot push of PlanItem[]. */
-export const subscribeToPlanItems = (
-  tripId: string,
-  uid:    string,
-  onData: (data: PlanItem[]) => void,
-  onError: (e: Error) => void,
-) => subscribeToCollection<PlanItem>({
-  buildQuery: ({ db, collection, query, where, orderBy, limit }) => query(
-    collection(db, ...P.planning(tripId)),
-    where('memberIds', 'array-contains', uid),
-    orderBy('createdAt', 'desc'),
-    limit(LIST_LIMIT),
-  ),
+const listServices = createTripScopedListServices<PlanItem>({
+  path:    P.planning,
   fromDoc: planItemFromDoc,
-  source:  'subscribeToPlanItems',
+  orderBy: [['createdAt', 'desc']],
   limit:   LIST_LIMIT,
-}, onData, onError)
+  source:  'planning',
+})
+
+export const getPlanItemsByTrip = listServices.fetch
+export const subscribeToPlanItems = listServices.subscribe
 
 // ─── Write ────────────────────────────────────────────────────────
 
@@ -91,13 +68,9 @@ export async function updatePlanItem(
   options: { uid: string },
 ): Promise<void> {
   const { uid } = options
-  // Defense-in-depth: see updateExpense for rationale.
-  const parsed = UpdatePlanItemSchema.safeParse(updates)
-  if (!parsed.success) {
-    captureError(parsed.error, { source: 'updatePlanItem', tripId, itemId })
-    throw new Error('Update payload failed validation')
-  }
-  const validated = parsed.data
+  const validated = validateUpdateOrThrow(UpdatePlanItemSchema, updates, {
+    source: 'updatePlanItem', tripId, itemId,
+  })
   const { db, doc, updateDoc, deleteField, serverTimestamp } = await getFirebase()
   const patch: Record<string, unknown> = {
     ...stripEmpty(validated),
@@ -145,4 +118,3 @@ export async function deletePlanItem(tripId: string, itemId: string, uid: string
   await deleteDoc(doc(db, ...P.planItem(tripId, itemId)))
   void bumpTripActivity(tripId, 'planning', uid)
 }
-

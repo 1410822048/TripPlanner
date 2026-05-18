@@ -4,6 +4,7 @@
 // pure layout orchestration: pick a few values from the returned bag,
 // hand modals off to TripModalsHost, render.
 import { useEffect, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useFormModal, type UseFormModalResult } from '@/hooks/useFormModal'
 import { useSchedules, useCreateSchedule, useUpdateSchedule, useDeleteSchedule } from './useSchedules'
@@ -333,9 +334,15 @@ export function useSchedulePageState(): SchedulePageState {
     try {
       const { trip, copiedSchedules, copiedPlanItems, orphanedSchedules } =
         await copyTripMut.mutateAsync({ source: currentTrip, input, user: authState.user })
+      // Same flush ordering as CreateTripModal: Zustand store first so
+      // the synchronous close commit sees currentTrip=newTrip AND
+      // copyTripOpen=false in one frame. Without flushSync the
+      // copyTripOpen=false update can land in a later commit than the
+      // Zustand-driven AppLayout/listener cascade, leaving the modal
+      // visibly mounted while the page already swapped to the new trip.
       setCurrentTrip(trip)
       setActiveDate(null)
-      setCopyTripOpen(false)
+      flushSync(() => { setCopyTripOpen(false) })
       const parts = [`「${trip.title}」を作成`]
       if (input.copySchedules) parts.push(`行程 ${copiedSchedules} 件`)
       if (input.copyPlanning)  parts.push(`計畫 ${copiedPlanItems} 件`)
@@ -359,7 +366,7 @@ export function useSchedulePageState(): SchedulePageState {
       if (scheduleModal.editTarget) {
         await updateMut.mutateAsync({ scheduleId: scheduleModal.editTarget.id, updates: data, uid })
       } else {
-        await createMut.mutateAsync({ input: data, userId: uid })
+        await createMut.mutateAsync({ input: data, createdBy: uid })
       }
       scheduleModal.close()
     } catch (err) {

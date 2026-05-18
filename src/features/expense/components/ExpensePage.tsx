@@ -107,7 +107,7 @@ export default function ExpensePage() {
     } else {
       createMut.mutate({
         input,
-        userId:     uid,
+        createdBy:  uid,
         attachment: attachment instanceof File ? attachment : null,
       })
     }
@@ -232,7 +232,7 @@ export default function ExpensePage() {
             currency={currency}
             canWrite={canWrite}
             swipe={swipe}
-            onSelect={modal.openEdit}
+            onSelect={canWrite ? modal.openEdit : undefined}
             onSwipeDelete={handleSwipeDelete}
           />
         )}

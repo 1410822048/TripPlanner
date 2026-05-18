@@ -1,8 +1,7 @@
 // src/features/wish/services/wishService.ts
 // Wish items: members propose places / food / activities / etc., everyone
-// votes +1 to surface group favourites. Sorted server-side by vote count
-// then createdAt to keep the popular items at the top without a client
-// re-sort.
+// votes +1 to surface group favourites. Sorted server-side by createdAt
+// then re-ordered client-side by vote count.
 //
 // Image lifecycle: optional single cover image with full+thumb variants
 // (same compression pattern as bookings). Cover is one image only — wish
@@ -10,7 +9,7 @@
 //
 // Votes use arrayUnion / arrayRemove on the `votes: string[]` field for
 // atomic toggle. Firestore rules gate "only my own uid" mutations on the
-// non-proposer path, so a member can't tamper with others' votes.
+// non-proposer path.
 import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase, getFirebaseStorage } from '@/services/firebase'
 import { P } from '@/services/paths'
@@ -19,8 +18,8 @@ import { retry, isTransientStorageError } from '@/utils/retry'
 import { stripEmpty } from '@/utils/stripEmpty'
 import { captureError } from '@/services/sentry'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
-import { parseListSnapshot } from '@/services/parseListSnapshot'
-import { subscribeToCollection } from '@/services/realtimeQuery'
+import { createTripScopedListServices } from '@/services/tripScopedList'
+import { validateUpdateOrThrow } from '@/services/validateUpdate'
 import { auditUpdate } from '@/utils/audit'
 import { getTripMemberIds } from '@/services/tripMemberIds'
 import { bumpTripActivity } from '@/services/tripActivity'
@@ -39,61 +38,28 @@ function wishFromDoc(d: QueryDocumentSnapshot): Wish {
   return firestoreDocFromSchema(WishDocSchema, d, 'wishFromDoc')
 }
 
-// ─── Read ─────────────────────────────────────────────────────────
-
-/**
- * All wishes for a trip — most-voted first, then newest. Server-sorts by
- * `createdAt` (auto-indexed; no composite needed) then re-orders by
- * `votes.length` client-side. We can't `orderBy('votes', 'desc')` because
- * Firestore sorts arrays element-wise (lexicographic by uid), not by
- * length. Maintaining a denormalised `voteCount` field would let us
- * server-sort, but it drifts under concurrent toggles (arrayUnion is
- * idempotent; increment isn't). For lists ≤ 100, client sort is faster
- * to ship and exactly correct.
- */
-export async function getWishesByTrip(tripId: string, uid: string): Promise<Wish[]> {
-  const { db, collection, query, where, orderBy, limit, getDocs } = await getFirebase()
-  const snap = await getDocs(query(
-    collection(db, ...P.wishes(tripId)),
-    where('memberIds', 'array-contains', uid),
-    orderBy('createdAt', 'desc'),
-    limit(LIST_LIMIT),
-  ))
-  if (snap.size >= LIST_LIMIT) {
-    captureError(new Error(`getWishesByTrip truncated at ${LIST_LIMIT}`), { tripId })
-  }
-  // Stable sort: votes.length desc; createdAt-desc tiebreak preserved
-  // because the input is already in that order.
-  return parseListSnapshot(snap, wishFromDoc).sort(byVotesDesc)
-}
-
-/** Stable comparator extracted so the realtime subscriber re-applies the
- *  same ordering as getWishesByTrip on every snapshot push. */
+/** Stable comparator — votes.length desc, createdAt-desc tiebreak preserved
+ *  because the upstream query already sorts by createdAt desc and JS
+ *  Array.sort is stable. We can't `orderBy('votes', 'desc')` server-side
+ *  because Firestore sorts arrays element-wise (lexicographic by uid),
+ *  not by length. Denormalising voteCount would let us server-sort, but
+ *  drifts under concurrent toggles. ≤100 wishes → client sort is fine. */
 function byVotesDesc(a: Wish, b: Wish): number {
   return b.votes.length - a.votes.length
 }
 
-/**
- * Realtime variant of getWishesByTrip — listener delivers Wish[] in
- * the same votes-desc order as the one-shot fetcher.
- */
-export const subscribeToWishes = (
-  tripId: string,
-  uid:    string,
-  onData: (data: Wish[]) => void,
-  onError: (e: Error) => void,
-) => subscribeToCollection<Wish>({
-  buildQuery: ({ db, collection, query, where, orderBy, limit }) => query(
-    collection(db, ...P.wishes(tripId)),
-    where('memberIds', 'array-contains', uid),
-    orderBy('createdAt', 'desc'),
-    limit(LIST_LIMIT),
-  ),
-  fromDoc:     wishFromDoc,
-  postProcess: items => items.sort(byVotesDesc),
-  source:      'subscribeToWishes',
-  limit:       LIST_LIMIT,
-}, onData, onError)
+// ─── Read ─────────────────────────────────────────────────────────
+const listServices = createTripScopedListServices<Wish>({
+  path:    P.wishes,
+  fromDoc: wishFromDoc,
+  orderBy: [['createdAt', 'desc']],
+  limit:   LIST_LIMIT,
+  source:  'wishes',
+  postProcess: items => [...items].sort(byVotesDesc),
+})
+
+export const getWishesByTrip = listServices.fetch
+export const subscribeToWishes = listServices.subscribe
 
 // ─── Storage helpers ──────────────────────────────────────────────
 
@@ -155,12 +121,9 @@ async function deleteWishImage(image: WishImage): Promise<void> {
 
 // ─── Write ────────────────────────────────────────────────────────
 
-/** Create a wish. Single-shot via mint-id-first when a file is provided:
- *  doc-ref minted client-side → upload → setDoc with everything in one
- *  write. Saves the previous addDoc → updateDoc round-trip (~150-300ms
- *  p50 on attachment creates). Initial votes is the proposer's own +1
- *  because their proposal counts as their vote — matches typical
- *  wishlist UX (you wouldn't propose something you don't want). */
+/** Create a wish. Single-shot via mint-id-first when a file is provided.
+ *  Initial votes = [proposedBy] because their proposal counts as their
+ *  own vote — matches typical wishlist UX. */
 export async function createWish(
   tripId: string,
   input: CreateWishInput,
@@ -171,9 +134,9 @@ export async function createWish(
     getFirebase(),
     getTripMemberIds(tripId),
   ])
-  // Wish uses `proposedBy` as the creator field (domain naming, predates
-  // the createdBy convention) — auditCreate doesn't fit because of that
-  // alias, so spell it out and let auditUpdate cover the updatedBy half.
+  // Wish uses `proposedBy` (domain naming predates createdBy convention) —
+  // auditCreate doesn't fit because of that alias, so spell it out and
+  // let auditUpdate cover the updatedBy half.
   const ref = doc(collection(db, ...P.wishes(tripId)))
   let image: WishImage | null = null
   if (file) {
@@ -200,8 +163,7 @@ export async function createWish(
 }
 
 /** Update wish text fields and optionally replace the image. Tri-state
- *  attachment matches the booking pattern: undefined = unchanged, null
- *  = remove, File = replace. Only proposer can call this (rule-gated). */
+ *  attachment matches the booking pattern. Only proposer can call this. */
 export async function updateWish(
   tripId: string,
   wishId: string,
@@ -213,13 +175,9 @@ export async function updateWish(
   },
 ): Promise<void> {
   const { uid, attachment, existingImage } = options
-  // Defense-in-depth: see updateExpense for rationale.
-  const parsed = UpdateWishSchema.safeParse(updates)
-  if (!parsed.success) {
-    captureError(parsed.error, { source: 'updateWish', tripId, wishId })
-    throw new Error('Update payload failed validation')
-  }
-  const validated = parsed.data
+  const validated = validateUpdateOrThrow(UpdateWishSchema, updates, {
+    source: 'updateWish', tripId, wishId,
+  })
   const { db, doc, updateDoc, deleteField, serverTimestamp } = await getFirebase()
   const patch: Record<string, unknown> = {
     ...stripEmpty(validated),
@@ -263,9 +221,8 @@ export async function deleteWish(
 
 /** Toggle the caller's vote on a wish. arrayUnion / arrayRemove are
  *  atomic, so concurrent votes from multiple members compose without
- *  the lost-update problem a read-modify-write would have. The rule
- *  layer enforces that the diff only adds / removes the caller's own
- *  uid and changes nothing else. */
+ *  a lost-update problem. Rules enforce the diff only adds / removes
+ *  the caller's own uid. */
 export async function toggleWishVote(
   tripId: string,
   wishId: string,
@@ -279,4 +236,3 @@ export async function toggleWishVote(
   })
   void bumpTripActivity(tripId, 'wish', uid)
 }
-

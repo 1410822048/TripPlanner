@@ -1,35 +1,36 @@
 // src/features/wish/components/WishCard.tsx
-// Pinterest-style card for the Wish list. The wish list is inspiration-
-// driven (places I want to visit, food I want to try) — not archival,
-// so the layout leans heavily on the cover image. When no image, a
-// category-tinted gradient + large emoji keeps the hero region from
-// feeling empty.
+// Pinterest-style card for the Wish list. Wish list is inspiration-driven
+// (places I want to visit, food I want to try) — not archival — so the
+// layout leans heavily on the cover image. When no image, a category-
+// tinted gradient + large emoji keeps the hero region from feeling empty.
 //
 // Card anatomy:
-//   - 16:9 hero region (image cover OR emoji + gradient)
+//   - 16:9 hero region (image cover OR emoji + gradient) with overflow ⋮
+//     button overlaid at top-right when the viewer has actions available
 //   - Body: title + optional description (clamped 2 lines)
-//   - Action row: 🗺/🔗 chip + heart vote
+//   - Action row: 🗺/🔗 chips + voter stack + heart vote
 //
-// Tap-to-edit and swipe-to-delete remain identical to the previous row
-// version; the inner action chips stopPropagation so they don't also
-// trigger the row's primary tap.
+// Tap-to-edit fires only when `canEdit` (proposer). For non-proposer
+// viewers the card body is read-only — no cursor, no tap. The ⋮ menu
+// is the sole entry to actions (edit / delete), gated per role to
+// mirror firestore.rules. Overflow-menu (not swipe) follows the card-
+// pattern convention (Pinterest / Instagram / Tumblr) — swipe is for
+// list rows, where the gesture's discoverability cost is acceptable.
 //
 // Two map / link affordances:
 //   - `address` (free-form) → dedicated 🗺 chip pointing at
-//     google.com/maps/search/?query={address}. Set explicitly on the
-//     wish; this is the canonical map source going forward.
-//   - `link` → 🔗 サイト chip for the official URL. When `address`
-//     is empty we keep a legacy auto-detect so a Maps URL pasted into
-//     `link` still surfaces as 🗺 (the original Phase 1 behaviour);
-//     once `address` is set, the link always renders as サイト so the
-//     two chips don't both claim the map role.
+//     google.com/maps/search/?query={address}. Canonical map source.
+//   - `link` → 🔗 サイト chip for the official URL. When `address` is
+//     empty, falls back to auto-detecting Maps URLs and surfaces them
+//     as 🗺 (legacy behaviour); once `address` is set, link is always
+//     サイト so the two chips don't both claim the map role.
 import { useState } from 'react'
-import { Heart, Map, ExternalLink, Trash2 } from 'lucide-react'
+import { Heart, Map, ExternalLink, MoreVertical } from 'lucide-react'
 import type { Wish } from '@/types'
 import type { TripMember } from '@/features/trips/types'
-import { useSwipeRow, SWIPE_WIDTH, BG_TRANSITION, FG_TRANSITION } from '@/hooks/useSwipeRow'
 import ActionChip from '@/components/ui/ActionChip'
 import MemberAvatar from '@/components/ui/MemberAvatar'
+import WishActionMenu from './WishActionMenu'
 import { mapsSearchUrl } from '@/utils/maps'
 import { haptic } from '@/utils/haptics'
 
@@ -43,10 +44,7 @@ const MAX_AVATARS = 3
  *   1. position: relative → 讓 zIndex 生效,並確立 chip 在 isolated
  *      context 內的層級
  *   2. translateZ(0) → promote 到獨立 GPU compositing layer,React
- *      unmount 時整個 layer 一起丟,Safari 不會跟父層混淆
- *
- *  WebkitTransform prefix 不需要 — Safari 9+ 起 transform 就是標準名
- *  稱,專案目標環境(React 19 PWA)遠在那之後。 */
+ *      unmount 時整個 layer 一起丟,Safari 不會跟父層混淆 */
 const AVATAR_LAYER_STYLE: React.CSSProperties = {
   position:  'relative',
   transform: 'translateZ(0)',
@@ -77,133 +75,82 @@ function isMapsLink(url: string): boolean {
 }
 
 interface Props {
-  wish:        Wish
-  isVoted:     boolean
-  /** Voters who have hearted this wish, in `wish.votes[]` order
-   *  (= first-voted first). Parent resolves uids → TripMember so we
-   *  don't have to hold a member lookup here. Unknown uids (e.g. former
-   *  members) are simply omitted by the parent; the heart count still
-   *  reflects `wish.votes.length` for honesty. */
+  wish:          Wish
+  isVoted:       boolean
+  /** Voters who have hearted this wish, in `wish.votes[]` order (=
+   *  first-voted first). Parent resolves uids → TripMember so we don't
+   *  hold a member lookup here. Unknown uids (former members) are
+   *  omitted upstream; the heart count still reflects votes.length so
+   *  they show up as "+N" rather than vanishing. */
   voters:        TripMember[]
   /** True in demo mode — visually dim the heart so users sense it's
    *  "not real yet", but the click still fires so the parent can
    *  surface the sign-in prompt. */
   isPreviewOnly: boolean
-  /** Swipe-state controlled by parent (useSwipeOpen). Optional —
-   *  callers without delete permission omit these and the card renders
-   *  without swipe affordance. */
-  isOpen?:  boolean
-  onOpen?:  () => void
-  onClose?: () => void
-  onDelete?:    () => void
-  onTap:        () => void
-  onToggleVote: () => void
+  /** Whether the viewer can edit (proposer-only in cloud mode; true in
+   *  demo so the signIn prompt is reachable). Drives card-body tap +
+   *  menu "編集" item visibility. */
+  canEdit:       boolean
+  /** Whether the viewer can delete (proposer or trip owner). Drives the
+   *  menu "削除" item visibility. */
+  canDelete:     boolean
+  onEdit:        () => void
+  onDelete:      () => void
+  onToggleVote:  () => void
 }
 
 function WishCard({
   wish, isVoted, voters, isPreviewOnly,
-  isOpen, onOpen, onClose, onDelete,
-  onTap, onToggleVote,
+  canEdit, canDelete, onEdit, onDelete, onToggleVote,
 }: Props) {
-  const swipeable = !!onDelete && !!onOpen && !!onClose
-  const {
-    bindFg, bindBg, pointerProps, deleteProps, openX, confirming, wrapTap,
-  } = useSwipeRow({ isOpen: !!isOpen, onOpen, onClose, onDelete, enabled: swipeable })
+  const [menuOpen, setMenuOpen] = useState(false)
+  const hasMenu = canEdit || canDelete
 
-  const cardBody = <CardContent
-    wish={wish}
-    isVoted={isVoted}
-    voters={voters}
-    isPreviewOnly={isPreviewOnly}
-    onTap={wrapTap(onTap)}
-    onToggleVote={wrapTap(onToggleVote)}
-  />
+  // Card body tap-to-edit only when the viewer can actually edit. Read-
+  // only viewers see no cursor / no tap feedback — the absent affordance
+  // tells them "this surface isn't interactive" without an error toast.
+  const tap = canEdit ? onEdit : undefined
 
-  if (!swipeable) {
-    return (
-      <div className="bg-surface border border-border rounded-[18px] shadow-[0_2px_10px_rgba(0,0,0,0.06)] overflow-hidden">
-        {cardBody}
-      </div>
-    )
-  }
+  const heroBody = (
+    <>
+      <WishHero wish={wish} />
+      <WishBody wish={wish} />
+    </>
+  )
 
   return (
-    <div className="relative rounded-[18px] overflow-hidden bg-surface border border-border shadow-[0_2px_10px_rgba(0,0,0,0.06)]">
-      <div
-        ref={bindBg}
-        {...deleteProps}
-        className={[
-          'absolute top-0 right-0 bottom-0 flex items-center justify-center cursor-pointer',
-          confirming ? 'bg-[#A83A3A]' : 'bg-[#D85A5A]',
-        ].join(' ')}
-        style={{
-          width: SWIPE_WIDTH,
-          transform: `translate3d(${SWIPE_WIDTH + openX}px,0,0)`,
-          transition: BG_TRANSITION,
-          pointerEvents: openX < 0 ? 'auto' : 'none',
-        }}
-      >
-        {confirming ? (
-          <div className="text-white text-[11px] font-bold tracking-[0.04em] text-center leading-[1.3]">
-            確認<br/>削除
-          </div>
+    <div className="bg-surface border border-border rounded-[18px] shadow-[0_2px_10px_rgba(0,0,0,0.06)] overflow-hidden">
+      <div className="relative">
+        {tap ? (
+          <button
+            type="button"
+            onClick={tap}
+            className="block w-full bg-transparent border-none p-0 text-left cursor-pointer"
+          >
+            {heroBody}
+          </button>
         ) : (
-          <div className="flex flex-col items-center gap-0.5">
-            <Trash2 size={18} color="white" strokeWidth={2.2} />
-            <span className="text-white text-[10px] font-bold tracking-[0.04em]">
-              削除
-            </span>
-          </div>
+          <div className="block w-full text-left">{heroBody}</div>
+        )}
+
+        {hasMenu && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); setMenuOpen(true) }}
+            aria-label="その他の操作"
+            // Visual is 32×32 (w-8 h-8) — looks balanced on the card.
+            // Hit area extended to 44×44 via the ::before pseudo-element
+            // (-inset-1.5 = 6px on every side) so the touch target meets
+            // iOS HIG / Material's min spec without an oversized disc.
+            // active: handles touch-down feedback (mobile has no hover).
+            className="absolute top-2 right-2 w-8 h-8 rounded-full bg-black/40 text-white flex items-center justify-center border-none cursor-pointer transition-colors active:bg-black/60 before:content-[''] before:absolute before:-inset-1.5"
+            style={{ backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
+          >
+            <MoreVertical size={16} strokeWidth={2.4} />
+          </button>
         )}
       </div>
 
-      <div
-        ref={bindFg}
-        {...pointerProps}
-        className="relative select-none bg-surface"
-        style={{
-          transform: `translate3d(${openX}px,0,0)`,
-          transition: FG_TRANSITION,
-          touchAction: 'pan-y',
-          WebkitTouchCallout: 'none',
-          WebkitTapHighlightColor: 'transparent',
-        }}
-      >
-        {cardBody}
-      </div>
-    </div>
-  )
-}
-
-// ─── Inner content ────────────────────────────────────────────────
-// Split so the swipeable / non-swipeable wrappers stay terse and the
-// card layout itself reads as a single coherent piece.
-
-interface ContentProps {
-  wish:           Wish
-  isVoted:        boolean
-  voters:         TripMember[]
-  isPreviewOnly:  boolean
-  onTap:          (e: React.MouseEvent) => void
-  onToggleVote:   (e: React.MouseEvent) => void
-}
-
-function CardContent({ wish, isVoted, voters, isPreviewOnly, onTap, onToggleVote }: ContentProps) {
-  return (
-    // The card's tap-to-edit target is the whole card *body* — but we
-    // can't put it on the outer div because action chips inside need to
-    // intercept their own clicks. Solution: a clickable region for the
-    // hero + body, and the action row below sits OUTSIDE that region so
-    // its buttons fire freely. stopPropagation in each chip then keeps
-    // the row tap-handler from also firing.
-    <>
-      <button
-        onClick={onTap}
-        className="block w-full bg-transparent border-none p-0 text-left cursor-pointer"
-      >
-        <WishHero wish={wish} />
-        <WishBody wish={wish} />
-      </button>
       <WishActionRow
         wish={wish}
         isVoted={isVoted}
@@ -211,14 +158,27 @@ function CardContent({ wish, isVoted, voters, isPreviewOnly, onTap, onToggleVote
         isPreviewOnly={isPreviewOnly}
         onToggleVote={onToggleVote}
       />
-    </>
+
+      {menuOpen && (
+        <WishActionMenu
+          isOpen
+          wish={wish}
+          canEdit={canEdit}
+          canDelete={canDelete}
+          onEdit={onEdit}
+          onDelete={onDelete}
+          onClose={() => setMenuOpen(false)}
+        />
+      )}
+    </div>
   )
 }
 
+// ─── Hero + body sub-components ──────────────────────────────────
+
 function WishHero({ wish }: { wish: Wish }) {
   // 16:9 ratio keeps the card from getting too tall on phones while
-  // leaving plenty of room for a meaningful image. Native CSS
-  // aspect-ratio is supported in every browser we target.
+  // leaving plenty of room for a meaningful image.
   if (wish.image) {
     return (
       <div className="relative w-full aspect-[16/9] bg-tile pointer-events-none">
@@ -265,22 +225,22 @@ function WishActionRow({
   isVoted:       boolean
   voters:        TripMember[]
   isPreviewOnly: boolean
-  onToggleVote:  (e: React.MouseEvent) => void
+  onToggleVote:  () => void
 }) {
   // 「投票按下後的 pop 動畫」獨立 state — 點擊瞬間就觸發,不等
   // mutation,因為視覺回饋必須在 100ms 內出現才有感。onAnimationEnd
-  // 自動 cleanup,點越快動畫越會接連觸發(每次 setState 都重啟 animation
-  // class 的 mount cycle)。
+  // 自動 cleanup。
   const [pulsing, setPulsing] = useState(false)
 
   function handleClick(e: React.MouseEvent) {
+    e.stopPropagation()
     // demo 模式只是開 sign-in modal,沒實際投票 — 跳過 celebration
     // 以免「投了沒效果但有動畫」的錯覺。
     if (!isPreviewOnly) {
       haptic('light')
       setPulsing(true)
     }
-    onToggleVote(e)
+    onToggleVote()
   }
 
   return (
@@ -327,29 +287,18 @@ function WishActionRow({
  *  collapsed into a "+N" chip. ml-auto pushes the whole group to the
  *  right so the heart button stays at the row end.
  *
- *  Why purely visual (not a button):
- *    - The heart already carries the "vote" affordance.
- *    - A "see all voters" popover adds cognitive load for a feature
- *      that has at most ~6 members per trip — the stacked avatars
- *      themselves already convey "who" at a glance.
- *
  *  totalVotes is passed separately so the +N math reflects the source
  *  of truth (`wish.votes.length`) even when some voters were dropped
- *  upstream (e.g. uid not in current members). The avatars show "who
- *  we know voted"; the heart count + "+N" cover everyone else. */
+ *  upstream (e.g. uid not in current members). */
 function VoterStack({ voters, totalVotes }: { voters: TripMember[]; totalVotes: number }) {
   if (voters.length === 0) return null
-  const shown   = voters.slice(0, MAX_AVATARS)
+  const shown    = voters.slice(0, MAX_AVATARS)
   const overflow = totalVotes - shown.length
   return (
     // `isolation: isolate` 建立獨立的 stacking context,把 chip 的
     // mount/unmount 鎖在這個 subtree 內。配合 AVATAR_LAYER_STYLE 上的
     // translateZ(0),為 iOS Safari PWA 修正取消投票後 voter chip
     // 殘影空心圓的 bug。
-    //
-    // 移除 box-shadow:shadow 是 GPU raster cache 殘影的最大主因,
-    // border-surface 的白邊已足以區隔 chip 與背景。視覺差異微乎其
-    // 微(原本只是 8% 不透明的 1px 微陰影),換來最穩定的 cleanup。
     <div className="ml-auto flex items-center mr-1" style={{ isolation: 'isolate' }}>
       {shown.map((m, i) => (
         <MemberAvatar
@@ -380,24 +329,19 @@ function VoterStack({ voters, totalVotes }: { voters: TripMember[]; totalVotes: 
  *  user's heading to a map (geographic intent) or a generic site, and
  *  swaps icon + label.
  *
- *  Implemented as `<a target="_blank">` (not `<button>` + window.open)
- *  for two iOS-PWA-specific reasons:
- *  1. In iOS standalone mode, `window.open(url, '_blank')` navigates
- *     the PWA's own view (there is no "tab" concept) — when the user
- *     returns from Google Maps the PWA looks stuck mid-navigation.
- *     `<a target="_blank">` triggers Safari's external-link handler
- *     which keeps our view untouched.
+ *  `<a target="_blank">` (not `<button>` + window.open) for two
+ *  iOS-PWA-specific reasons:
+ *  1. In iOS standalone mode, `window.open(url, '_blank')` navigates the
+ *     PWA's own view — when the user returns from Maps the PWA looks
+ *     stuck mid-navigation. `<a target="_blank">` triggers Safari's
+ *     external-link handler instead.
  *  2. iOS Universal Links route google.com/maps anchor clicks straight
- *     into the native Maps app when installed, without bouncing
- *     through Safari at all — better deep-link UX.
- *
- *  stopPropagation in both onClick and onPointerDown still required so
- *  the parent card-body button doesn't also fire its tap-to-edit, and
- *  the swipe gesture doesn't arm when the user reaches for the chip. */
+ *     into the native Maps app when installed, without bouncing through
+ *     Safari at all — better deep-link UX. */
 function LinkChip({ url, hasAddress }: { url: string; hasAddress: boolean }) {
   // When `address` is set, the dedicated map chip already covers the
-  // map role — collapse this chip to plain サイト so both chips don't
-  // claim 地図.
+  // map role — collapse this to plain サイト so both chips don't claim
+  // 地図.
   const isMaps = !hasAddress && isMapsLink(url)
   return (
     <ActionChip
@@ -409,15 +353,12 @@ function LinkChip({ url, hasAddress }: { url: string; hasAddress: boolean }) {
   )
 }
 
-/** Address-driven map chip. Reuses ActionChip + the shared mapsSearchUrl
- *  builder — kept as a thin wrapper so call sites read as a single
- *  intent rather than re-deriving the URL inline. */
+/** Address-driven map chip. */
 function MapChip({ query }: { query: string }) {
   const href = mapsSearchUrl(query)
   if (!href) return null
   return <ActionChip href={href} icon={Map} label="地図" ariaLabel="地図で開く" />
 }
 
-// React Compiler auto-memoises the component; manual React.memo + custom
-// propsAreEqual is now redundant.
+// React Compiler auto-memoises — no manual React.memo needed.
 export default WishCard

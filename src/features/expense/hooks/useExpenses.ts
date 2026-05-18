@@ -1,9 +1,8 @@
 // src/features/expense/hooks/useExpenses.ts
 // Realtime-backed via createRealtimeListHook — co-traveller's expense
 // records appear immediately, which is the most "live" feature during
-// a trip (everyone records their share as they go). See useSchedules.ts
-// for the optimistic-update pattern rationale.
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+// a trip. Mutations stay optimistic for instant feedback; listener
+// reconciles temp-id rows on server confirmation.
 import {
   getExpensesByTrip,
   subscribeToExpenses,
@@ -12,12 +11,10 @@ import {
   deleteExpense,
 } from '../services/expenseService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
-import { useUid } from '@/hooks/useAuth'
+import { useTripListMutation } from '@/hooks/useTripListMutation'
 import { tempId } from '@/utils/tempId'
-import { patchListCache, rollbackListCache } from '@/utils/queryCache'
 import { auditCreateMock, auditUpdateMock } from '@/utils/audit'
 import type { CreateExpenseInput, Expense } from '@/types'
-import type { MutationMeta } from '@/services/queryClient'
 
 export const expenseKeys = {
   all: (tripId: string, uid?: string) => ['expenses', tripId, uid ?? ''] as const,
@@ -32,62 +29,48 @@ export const useExpenses = createRealtimeListHook<Expense>({
 })
 
 export function useCreateExpense(tripId: string) {
-  const qc = useQueryClient()
-  const uid = useUid()
-  const key = expenseKeys.all(tripId, uid)
-  return useMutation({
-    mutationFn: ({ input, userId, attachment }: { input: CreateExpenseInput; userId: string; attachment?: File | null }) =>
-      createExpense(tripId, input, userId, attachment),
-    onMutate: ({ input, userId }) =>
-      patchListCache<Expense>(qc, key, prev => [
-        ...prev,
-        { id: tempId(), tripId, memberIds: [userId], ...auditCreateMock(userId), ...input },
-      ]),
-    meta: { action: '費用の追加' } satisfies MutationMeta,
-    onError: (_err, _vars, ctx) => {
-      rollbackListCache<Expense>(qc, key, ctx)
-    },
+  return useTripListMutation<Expense, { input: CreateExpenseInput; createdBy: string; attachment?: File | null }>({
+    tripId,
+    keyFactory: expenseKeys.all,
+    mutate:     ({ input, createdBy, attachment }) => createExpense(tripId, input, createdBy, attachment),
+    // Prepend so the new expense joins the top of the date-desc list,
+    // matching where the real row will land once the listener reconciles
+    // (server-sorted by date desc + createdAt desc; today's new row goes first).
+    patch:      (prev, { input, createdBy }) => [
+      { id: tempId(), tripId, memberIds: [createdBy], ...auditCreateMock(createdBy), ...input },
+      ...prev,
+    ],
+    action:     '費用の追加',
   })
 }
 
 export function useUpdateExpense(tripId: string) {
-  const qc = useQueryClient()
-  const uid = useUid()
-  const key = expenseKeys.all(tripId, uid)
-  return useMutation({
-    mutationFn: ({
-      expenseId, updates, uid, attachment, existing,
-    }: {
-      expenseId:  string
-      updates:    Partial<CreateExpenseInput>
-      uid:        string
-      attachment?: File | null
-      existing?:  { path?: string; thumbPath?: string }
-    }) =>
+  return useTripListMutation<Expense, {
+    expenseId:  string
+    updates:    Partial<CreateExpenseInput>
+    uid:        string
+    attachment?: File | null
+    existing?:  { path?: string; thumbPath?: string }
+  }>({
+    tripId,
+    keyFactory: expenseKeys.all,
+    mutate:     ({ expenseId, updates, uid, attachment, existing }) =>
       updateExpense(tripId, expenseId, updates, { uid, attachment, existingPaths: existing }),
-    onMutate: ({ expenseId, updates, uid }) =>
-      patchListCache<Expense>(qc, key, prev =>
-        prev.map(e => e.id === expenseId ? { ...e, ...updates, ...auditUpdateMock(uid) } : e),
-      ),
-    meta: { action: '更新' } satisfies MutationMeta,
-    onError: (_err, _vars, ctx) => {
-      rollbackListCache<Expense>(qc, key, ctx)
-    },
+    patch:      (prev, { expenseId, updates, uid }) =>
+      prev.map(e => e.id === expenseId ? { ...e, ...updates, ...auditUpdateMock(uid) } : e),
+    action:     '更新',
   })
 }
 
 export function useDeleteExpense(tripId: string) {
-  const qc = useQueryClient()
-  const uid = useUid()
-  const key = expenseKeys.all(tripId, uid)
-  return useMutation({
-    mutationFn: ({ expenseId, paths }: { expenseId: string; paths?: { path?: string; thumbPath?: string } }) =>
-      deleteExpense(tripId, expenseId, uid!, paths),
-    onMutate: ({ expenseId }) =>
-      patchListCache<Expense>(qc, key, prev => prev.filter(e => e.id !== expenseId)),
-    meta: { action: '削除' } satisfies MutationMeta,
-    onError: (_err, _vars, ctx) => {
-      rollbackListCache<Expense>(qc, key, ctx)
-    },
+  return useTripListMutation<Expense, {
+    expenseId: string
+    paths?:    { path?: string; thumbPath?: string }
+  }>({
+    tripId,
+    keyFactory: expenseKeys.all,
+    mutate:     ({ expenseId, paths }, { uid }) => deleteExpense(tripId, expenseId, uid, paths),
+    patch:      (prev, { expenseId }) => prev.filter(e => e.id !== expenseId),
+    action:     '削除',
   })
 }

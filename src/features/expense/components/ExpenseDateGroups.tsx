@@ -36,7 +36,9 @@ interface Props {
   currency:      string
   canWrite:      boolean
   swipe:         ReturnType<typeof useSwipeOpen>
-  onSelect:      (e: Expense) => void
+  /** Tap on an expense row. Optional — viewers omit it (the page gates
+   *  on canWrite) so SwipeableExpenseItem renders read-only. */
+  onSelect?:     (e: Expense) => void
   onSwipeDelete: (e: Expense) => void
 }
 
@@ -118,7 +120,7 @@ export default function ExpenseDateGroups({
                       categoryEmoji={CATEGORY_EMOJI[e.category]}
                       currency={currency}
                       {...swipeProps}
-                      onSelect={() => { swipe.closeAll(); onSelect(e) }}
+                      onSelect={onSelect ? () => { swipe.closeAll(); onSelect(e) } : undefined}
                       onDelete={canWrite ? () => onSwipeDelete(e) : undefined}
                     />
                   )

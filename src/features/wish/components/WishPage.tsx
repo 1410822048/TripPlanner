@@ -10,7 +10,6 @@
 import { useState } from 'react'
 import { Plus, Heart } from 'lucide-react'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
-import { useSwipeOpen } from '@/hooks/useSwipeOpen'
 import { toast } from '@/shared/toast'
 import { simulateFailureMaybe } from '@/utils/devFailures'
 import WishListSkeleton from './WishListSkeleton'
@@ -38,7 +37,6 @@ export default function WishPage() {
   const { ctx, uid, cloudTripId, mutationTripId, isDemo, isOwner, modal, signIn } =
     useFeatureListPage<Wish>()
   const [activeTab, setActiveTab] = useState<WishCategory>('place')
-  const swipe = useSwipeOpen()
 
   const { data: cloudWishes, isLoading } = useWishes(cloudTripId)
   const { data: fbMembers } = useMembers(cloudTripId)
@@ -129,24 +127,29 @@ export default function WishPage() {
   }
 
   /** Whether the current viewer can delete a given wish. Mirrors the
-   *  firestore.rules predicate (proposer === uid OR caller is trip
-   *  owner) so the swipe-delete affordance only appears when the
-   *  delete will actually succeed. */
+   *  firestore.rules predicate (proposer === uid OR trip owner). Drives
+   *  the ⋮ menu's 削除 item visibility. */
   function canDelete(w: Wish): boolean {
     if (isDemo || !uid) return false
     return w.proposedBy === uid || isOwner
   }
 
-  async function handleSwipeDelete(w: Wish) {
-    swipe.closeAll()
+  /** Whether the current viewer can open the edit modal. Mirrors the
+   *  proposer-only update path — owner can DELETE but NOT edit text.
+   *  Demo mode opens the modal so the save-time signIn prompt is
+   *  reachable (consistent with other features). */
+  function canEdit(w: Wish): boolean {
+    if (isDemo) return true
+    return uid != null && w.proposedBy === uid
+  }
+
+  async function handleDeleteFromMenu(w: Wish) {
     if (isDemo) { signIn.open(); return }
     await deleteMut.mutateAsync({ wishId: w.id, image: w.image }).catch(() => {})
   }
 
   return (
-    // Wrapper onClick closes any open swipe — the row's inner buttons
-    // stopPropagation, so this only fires for taps in non-row areas.
-    <div className="bg-app min-h-full pb-8" onClick={swipe.closeAll}>
+    <div className="bg-app min-h-full pb-8">
       {isDemo && <DemoBanner reason="投票を保存" onSignIn={signIn.open} />}
 
       <div className="px-5 pt-4 pb-2">
@@ -216,18 +219,11 @@ export default function WishPage() {
           <>
             <div className="flex flex-col gap-3">
               {filteredWishes.map(w => {
-                const deletable = canDelete(w)
-                // Only pass swipe / delete props when the viewer
-                // actually has permission. Cards without these props
-                // render as plain non-swipeable rows (heart still
-                // works; tap-to-edit still works).
-                const swipeProps = deletable ? swipe.bindRow(w.id) : {}
                 // Resolve uid → TripMember in `votes[]` order (= first-
                 // voted first, since arrayUnion appends). Unknown uids
                 // (kicked / former members) are silently dropped — the
                 // card's totalVotes prop still feeds the heart count, so
-                // they show up as "+N" rather than vanishing from the
-                // tally.
+                // they show up as "+N" rather than vanishing.
                 const voters = w.votes
                   .map(uid => memberById.get(uid))
                   .filter((m): m is TripMember => !!m)
@@ -238,10 +234,11 @@ export default function WishPage() {
                     isVoted={!!uid && w.votes.includes(uid)}
                     voters={voters}
                     isPreviewOnly={isDemo}
-                    {...swipeProps}
-                    onTap={() => { swipe.closeAll(); modal.openEdit(w) }}
-                    onToggleVote={() => { swipe.closeAll(); handleToggleVote(w) }}
-                    onDelete={deletable ? () => handleSwipeDelete(w) : undefined}
+                    canEdit={canEdit(w)}
+                    canDelete={canDelete(w)}
+                    onEdit={() => modal.openEdit(w)}
+                    onDelete={() => handleDeleteFromMenu(w)}
+                    onToggleVote={() => handleToggleVote(w)}
                   />
                 )
               })}
@@ -269,7 +266,7 @@ export default function WishPage() {
           onClose={modal.close}
           onSave={handleSave}
           onDelete={
-            modal.editTarget && !isDemo && (modal.editTarget.proposedBy === uid || isOwner)
+            modal.editTarget && canDelete(modal.editTarget)
               ? handleDelete
               : undefined
           }

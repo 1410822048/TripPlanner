@@ -227,7 +227,7 @@ export default function BookingsPage() {
                           booking={b}
                           whenLabel={formatWhen(b)}
                           {...swipeProps}
-                          onSelect={() => { swipe.closeAll(); modal.openEdit(b) }}
+                          onSelect={canWrite ? () => { swipe.closeAll(); modal.openEdit(b) } : undefined}
                           onDelete={canWrite ? () => handleSwipeDelete(b) : undefined}
                           onPreview={() => setPreviewBooking(b)}
                         />

@@ -2,74 +2,35 @@
 import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
-import { captureError } from '@/services/sentry'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
-import { parseListSnapshot } from '@/services/parseListSnapshot'
-import { subscribeToCollection } from '@/services/realtimeQuery'
+import { createTripScopedListServices } from '@/services/tripScopedList'
+import { validateUpdateOrThrow } from '@/services/validateUpdate'
 import { auditCreate, auditUpdate } from '@/utils/audit'
 import { getTripMemberIds } from '@/services/tripMemberIds'
 import { bumpTripActivity } from '@/services/tripActivity'
 import { ExpenseDocSchema, UpdateExpenseSchema, type Expense, type ExpenseReceipt, type CreateExpenseInput, type UpdateExpenseInput } from '@/types'
 import { uploadReceipt, purgeReceipt } from './expenseStorage'
 
-/** Defensive cap — see bookingService. Expenses can pile up on long trips
- *  with shared meals; 200 covers a 14-day group trip with healthy margin. */
+/** 200 covers a 14-day group trip with healthy margin. */
 const LIST_LIMIT = 200
 
-/** 驗證一份 Firestore doc 是否符合 Expense schema；失敗時丟出錯誤以利觀測 */
 function expenseFromDoc(d: QueryDocumentSnapshot): Expense {
   return firestoreDocFromSchema(ExpenseDocSchema, d, 'expenseFromDoc')
 }
 
 // ─── Read ─────────────────────────────────────────────────────────
-export async function getExpensesByTrip(tripId: string, uid: string): Promise<Expense[]> {
-  const { db, collection, query, where, orderBy, limit, getDocs } = await getFirebase()
-  const q = query(
-    collection(db, ...P.expenses(tripId)),
-    where('memberIds', 'array-contains', uid),
-    orderBy('date', 'desc'),
-    orderBy('createdAt', 'desc'),
-    limit(LIST_LIMIT),
-  )
-  const snap = await getDocs(q)
-  if (snap.size >= LIST_LIMIT) {
-    captureError(new Error(`getExpensesByTrip truncated at ${LIST_LIMIT}`), { tripId })
-  }
-  return parseListSnapshot(snap, expenseFromDoc)
-}
-
-/** Realtime variant — same query shape, pushed via onSnapshot. */
-export const subscribeToExpenses = (
-  tripId: string,
-  uid:    string,
-  onData: (data: Expense[]) => void,
-  onError: (e: Error) => void,
-) => subscribeToCollection<Expense>({
-  buildQuery: ({ db, collection, query, where, orderBy, limit }) => query(
-    collection(db, ...P.expenses(tripId)),
-    where('memberIds', 'array-contains', uid),
-    orderBy('date', 'desc'),
-    orderBy('createdAt', 'desc'),
-    limit(LIST_LIMIT),
-  ),
+const listServices = createTripScopedListServices<Expense>({
+  path:    P.expenses,
   fromDoc: expenseFromDoc,
-  source:  'subscribeToExpenses',
+  orderBy: [['date', 'desc'], ['createdAt', 'desc']],
   limit:   LIST_LIMIT,
-}, onData, onError)
+  source:  'expenses',
+})
+
+export const getExpensesByTrip = listServices.fetch
+export const subscribeToExpenses = listServices.subscribe
 
 // ─── Write ────────────────────────────────────────────────────────
-/**
- * Create an expense + optional receipt. Two-phase write when a file is
- * present:
- *   1. addDoc with the form fields (so we get a doc id for the Storage
- *      folder)
- *   2. uploadReceipt against `trips/{tripId}/expenses/{id}/...`
- *   3. updateDoc to patch the receipt URLs onto the newly-created doc
- *
- * The two-phase pattern mirrors createBooking — Storage rules gate
- * writes on the trip's canWrite, so we don't need a transactional
- * guarantee that one doesn't race the other.
- */
 /**
  * Create an expense + optional receipt. Single-shot via mint-id-first
  * when a file is provided: doc-ref minted client-side, uploadReceipt
@@ -77,9 +38,6 @@ export const subscribeToExpenses = (
  * writes everything in one shot. Storage rules gate uploads on
  * canWriteFiles(tripId) without checking the doc existence, so the
  * upload-before-write order is safe.
- *
- * Saves the previous addDoc → updateDoc round-trip on receipt-bearing
- * creates (~150-300ms p50 plus one less rules eval).
  */
 export async function createExpense(
   tripId: string,
@@ -109,14 +67,10 @@ export async function createExpense(
 }
 
 /**
- * Update with optional receipt change. Tri-state attachment matches
- * the booking pattern + useAttachment's pickAttachmentChange():
+ * Update with optional receipt change. Tri-state attachment:
  *   undefined → leave receipt untouched
  *   null      → remove existing receipt (Storage purge + Firestore deleteField)
  *   File      → replace (purge old → upload new → patch doc)
- *
- * `existingPaths` is the snapshot of paths to purge on replace/clear.
- * Caller (useExpenses hook) reads from the cached doc.
  */
 export async function updateExpense(
   tripId: string,
@@ -129,33 +83,23 @@ export async function updateExpense(
   },
 ): Promise<void> {
   const { uid, attachment, existingPaths } = options
-  // Defense-in-depth: TS gates this at the call site, but a Zod check
-  // at the service boundary catches edge cases like a future code path
-  // that bypasses the typed form layer. captureError so corruption
-  // attempts (or stale clients) surface in Sentry, not silently.
-  const parsed = UpdateExpenseSchema.safeParse(updates)
-  if (!parsed.success) {
-    captureError(parsed.error, { source: 'updateExpense', tripId, expenseId })
-    throw new Error('Update payload failed validation')
-  }
+  const validated = validateUpdateOrThrow(UpdateExpenseSchema, updates, {
+    source: 'updateExpense', tripId, expenseId,
+  })
   const { db, doc, updateDoc, serverTimestamp, deleteField } = await getFirebase()
   const patch: Record<string, unknown> = {
-    ...parsed.data,
+    ...validated,
     ...auditUpdate(uid, serverTimestamp()),
   }
 
-  // Receipt mutation paths
   if (attachment === null) {
-    // Clear — purge Storage first (best-effort), then deleteField on the doc
     if (existingPaths) await purgeReceipt(existingPaths)
     patch.receipt = deleteField()
   } else if (attachment instanceof File) {
-    // Replace — purge the old then upload the new
     if (existingPaths) await purgeReceipt(existingPaths)
     const receipt: ExpenseReceipt = await uploadReceipt(tripId, expenseId, attachment)
     patch.receipt = receipt
   }
-  // attachment === undefined → leave receipt untouched
 
   await updateDoc(doc(db, ...P.expense(tripId, expenseId)), patch)
   void bumpTripActivity(tripId, 'expense', uid)

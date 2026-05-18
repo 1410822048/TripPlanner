@@ -11,10 +11,12 @@
 //                              its own PDF-preview button so the
 //                              dispatcher stays type-agnostic)
 //
-// Swipe affordance is permission-gated by the caller: when delete
-// permission isn't available (viewer role), the swipe props +
-// onDelete are omitted and we render a plain non-swipeable card.
-// Tap-to-edit still works in that branch — viewers can read details.
+// Permission gates are caller-driven:
+//   - Swipe + delete: omit swipe props + onDelete → no swipe affordance.
+//   - Edit (card tap): omit onSelect → no cursor / no click. Viewers
+//     can still read everything visible on the card; the edit modal
+//     wouldn't show new info, and saving was blocked by firestore.rules
+//     anyway, which produced the "open edit, hit save, get error" UX.
 //
 // Why dispatch instead of one big component: each type has very
 // different information density (flight has flight#/conf/seats; hotel
@@ -32,7 +34,9 @@ import GenericCard from './cards/GenericCard'
 export interface SwipeableBookingItemProps {
   booking:    Booking
   whenLabel:  string
-  onSelect:   () => void
+  /** Tap on the card body — opens the edit modal. Optional: viewers
+   *  (no write permission) omit it; the card then has no cursor/click. */
+  onSelect?:  () => void
   /** Tap on the attachment thumbnail/PDF icon — opens the preview modal. */
   onPreview:  () => void
   /** Swipe-state controlled by parent (useSwipeOpen). Optional — when
@@ -64,14 +68,18 @@ function SwipeableBookingItem({
     }
   }
 
-  // Non-swipeable branch: viewers without delete permission get a
-  // plain tap-to-edit card. Pointer handlers omitted entirely so
-  // there's no chance of a half-armed gesture.
+  // Non-swipeable branch: pointer handlers omitted entirely so there's
+  // no chance of a half-armed gesture. Tap behaviour follows onSelect:
+  // present (editor / owner / demo) → cursor-pointer + click opens
+  // edit modal. Absent (viewer) → read-only surface.
   if (!swipeable) {
     return (
       <div
         onClick={onSelect}
-        className="relative rounded-[18px] overflow-hidden bg-surface border border-border shadow-[0_2px_10px_rgba(0,0,0,0.05)] cursor-pointer select-none"
+        className={[
+          'relative rounded-[18px] overflow-hidden bg-surface border border-border shadow-[0_2px_10px_rgba(0,0,0,0.05)] select-none',
+          onSelect ? 'cursor-pointer' : '',
+        ].join(' ')}
       >
         {renderBody()}
       </div>
@@ -109,12 +117,18 @@ function SwipeableBookingItem({
         )}
       </div>
 
-      {/* foreground (sliding) — owns the pointer gesture + click → edit. */}
+      {/* foreground (sliding) — pointer gesture always; click → edit
+          only when onSelect supplied. In current code paths, having
+          swipe+delete (canWrite path) always implies onSelect too,
+          but the conditional keeps the contract honest. */}
       <div
         ref={bindFg}
         {...pointerProps}
-        onClick={wrapTap(onSelect)}
-        className="relative select-none cursor-pointer bg-surface"
+        onClick={onSelect ? wrapTap(onSelect) : undefined}
+        className={[
+          'relative select-none bg-surface',
+          onSelect ? 'cursor-pointer' : '',
+        ].join(' ')}
         style={{
           transform: `translate3d(${openX}px,0,0)`,
           transition: FG_TRANSITION,
