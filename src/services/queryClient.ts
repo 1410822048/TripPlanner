@@ -6,9 +6,42 @@ import { QueryClient, MutationCache } from '@tanstack/react-query'
 import { toast } from '@/shared/toast'
 import { captureError } from '@/services/sentry'
 
+/** Centralised Japanese verb phrases used as `MutationMeta.action`.
+ *  Surfaces in the failure toast prefix and the Sentry tag, so a typo
+ *  silently breaks Sentry aggregation while still looking fine in the
+ *  toast. Keeping them in one constant map prevents drift and lets the
+ *  IDE autocomplete the right phrase at the call site.
+ *
+ *  Add new entries when a new mutation hook needs a phrase that isn't
+ *  one of the shared verbs. Keep entity-specific creates (`予約の追加`)
+ *  separate from generic verbs (`追加`, `更新`, `削除`) — share within
+ *  an entity family, not across. */
+export const MUTATION_ACTION = {
+  // ── Generic verbs (most entities reuse these) ──────────────────
+  ADD:    '追加',
+  UPDATE: '更新',
+  DELETE: '削除',
+
+  // ── Entity-specific create labels ──────────────────────────────
+  CREATE_BOOKING:    '予約の追加',
+  CREATE_EXPENSE:    '費用の追加',
+  CREATE_SCHEDULE:   '行程の追加',
+
+  // ── Specialty mutations ────────────────────────────────────────
+  TOGGLE_VOTE:       '投票',
+  CHANGE_ROLE:       '権限変更',
+  RECORD_SETTLEMENT: '清算記録',
+  CANCEL_SETTLEMENT: '清算取り消し',
+  CREATE_INVITE:     '邀請連結作成',
+  REVOKE_INVITE:     '取り消し',
+} as const
+
+export type MutationActionLabel = typeof MUTATION_ACTION[keyof typeof MUTATION_ACTION]
+
 export interface MutationMeta extends Record<string, unknown> {
-  /** Verb phrase for toast / Sentry tag: '追加' / '更新' / '削除' / etc. */
-  action?: string
+  /** Verb phrase for toast / Sentry tag. Prefer `MUTATION_ACTION.X`
+   *  over raw strings so typos are a TS error. */
+  action?: MutationActionLabel | string
   /** Skip the global toast. Set when the caller surfaces the failure
    *  inline(modal banner / form-level error)so the user doesn't see
    *  two notifications for the same problem. */

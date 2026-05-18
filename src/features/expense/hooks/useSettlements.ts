@@ -17,7 +17,7 @@ import {
 } from '../services/settlementService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
 import type { SettlementRecord, CreateSettlementInput } from '@/types/settlement'
-import type { MutationMeta } from '@/services/queryClient'
+import { MUTATION_ACTION, type MutationMeta } from '@/services/queryClient'
 
 export { settlementKeys }
 
@@ -32,13 +32,13 @@ export function useCreateSettlement(tripId: string) {
   return useMutation({
     mutationFn: ({ input, settledBy }: { input: CreateSettlementInput; settledBy: string }) =>
       createSettlement(tripId, input, settledBy),
-    meta: { action: '清算記録' } satisfies MutationMeta,
+    meta: { action: MUTATION_ACTION.RECORD_SETTLEMENT } satisfies MutationMeta,
   })
 }
 
 export function useDeleteSettlement(tripId: string) {
   return useMutation({
     mutationFn: (id: string) => deleteSettlement(tripId, id),
-    meta: { action: '清算取り消し' } satisfies MutationMeta,
+    meta: { action: MUTATION_ACTION.CANCEL_SETTLEMENT } satisfies MutationMeta,
   })
 }

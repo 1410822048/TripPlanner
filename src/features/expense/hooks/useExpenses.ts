@@ -14,6 +14,7 @@ import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
 import { useTripListMutation } from '@/hooks/useTripListMutation'
 import { tempId } from '@/utils/tempId'
 import { auditCreateMock, auditUpdateMock } from '@/utils/audit'
+import { MUTATION_ACTION } from '@/services/queryClient'
 import type { CreateExpenseInput, Expense } from '@/types'
 
 export const expenseKeys = {
@@ -22,8 +23,8 @@ export const expenseKeys = {
 
 export const useExpenses = createRealtimeListHook<Expense>({
   queryKeyFactory: expenseKeys.all,
-  initialFetch:    (tripId, uid) => getExpensesByTrip(tripId, uid!),
-  subscribe:       (tripId, uid, onData, onError) => subscribeToExpenses(tripId, uid!, onData, onError),
+  initialFetch:    (tripId, uid) => getExpensesByTrip(tripId, uid),
+  subscribe:       (tripId, uid, onData, onError) => subscribeToExpenses(tripId, uid, onData, onError),
   source:          'useExpenses',
   requiresUid:     true,
 })
@@ -40,7 +41,7 @@ export function useCreateExpense(tripId: string) {
       { id: tempId(), tripId, memberIds: [createdBy], ...auditCreateMock(createdBy), ...input },
       ...prev,
     ],
-    action:     '費用の追加',
+    action:     MUTATION_ACTION.CREATE_EXPENSE,
   })
 }
 
@@ -58,7 +59,7 @@ export function useUpdateExpense(tripId: string) {
       updateExpense(tripId, expenseId, updates, { uid, attachment, existingPaths: existing }),
     patch:      (prev, { expenseId, updates, uid }) =>
       prev.map(e => e.id === expenseId ? { ...e, ...updates, ...auditUpdateMock(uid) } : e),
-    action:     '更新',
+    action:     MUTATION_ACTION.UPDATE,
   })
 }
 
@@ -71,6 +72,6 @@ export function useDeleteExpense(tripId: string) {
     keyFactory: expenseKeys.all,
     mutate:     ({ expenseId, paths }, { uid }) => deleteExpense(tripId, expenseId, uid, paths),
     patch:      (prev, { expenseId }) => prev.filter(e => e.id !== expenseId),
-    action:     '削除',
+    action:     MUTATION_ACTION.DELETE,
   })
 }

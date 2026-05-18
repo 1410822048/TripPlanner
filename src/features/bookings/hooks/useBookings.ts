@@ -25,7 +25,7 @@ import { useTripListMutation } from '@/hooks/useTripListMutation'
 import { tempId } from '@/utils/tempId'
 import { auditCreateMock, auditUpdateMock } from '@/utils/audit'
 import type { Booking, CreateBookingInput } from '@/types'
-import type { MutationOptions } from '@/services/queryClient'
+import { MUTATION_ACTION, type MutationOptions } from '@/services/queryClient'
 
 export const bookingKeys = {
   all:       (tripId: string, uid?: string) => ['bookings', tripId, uid ?? ''] as const,
@@ -46,8 +46,8 @@ export const useMyHotelBookings = createRealtimeListHook<Booking>({
 
 export const useBookings = createRealtimeListHook<Booking>({
   queryKeyFactory: bookingKeys.all,
-  initialFetch:    (tripId, uid) => getBookingsByTrip(tripId, uid!),
-  subscribe:       (tripId, uid, onData, onError) => subscribeToBookings(tripId, uid!, onData, onError),
+  initialFetch:    (tripId, uid) => getBookingsByTrip(tripId, uid),
+  subscribe:       (tripId, uid, onData, onError) => subscribeToBookings(tripId, uid, onData, onError),
   source:          'useBookings',
   requiresUid:     true,
 })
@@ -61,7 +61,7 @@ export function useCreateBooking(tripId: string, options?: MutationOptions) {
       { id: tempId(), tripId, memberIds: [createdBy], ...auditCreateMock(createdBy), ...input },
       ...prev,
     ],
-    action:     '予約の追加',
+    action:     MUTATION_ACTION.CREATE_BOOKING,
     silent:     options?.silent,
   })
 }
@@ -80,7 +80,7 @@ export function useUpdateBooking(tripId: string, options?: MutationOptions) {
       updateBooking(tripId, bookingId, updates, { uid, attachment, existing }),
     patch:      (prev, { bookingId, updates, uid }) =>
       prev.map(b => b.id === bookingId ? { ...b, ...updates, ...auditUpdateMock(uid) } : b),
-    action:     '更新',
+    action:     MUTATION_ACTION.UPDATE,
     silent:     options?.silent,
   })
 }
@@ -94,6 +94,6 @@ export function useDeleteBooking(tripId: string) {
     keyFactory: bookingKeys.all,
     mutate:     ({ bookingId, paths }, { uid }) => deleteBooking(tripId, bookingId, uid, paths),
     patch:      (prev, { bookingId }) => prev.filter(b => b.id !== bookingId),
-    action:     '削除',
+    action:     MUTATION_ACTION.DELETE,
   })
 }

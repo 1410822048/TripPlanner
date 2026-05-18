@@ -14,7 +14,7 @@ import { useTripListMutation } from '@/hooks/useTripListMutation'
 import { tempId } from '@/utils/tempId'
 import { auditCreateMock, auditUpdateMock } from '@/utils/audit'
 import type { CreateScheduleInput, Schedule } from '@/types'
-import type { MutationOptions } from '@/services/queryClient'
+import { MUTATION_ACTION, type MutationOptions } from '@/services/queryClient'
 
 export const scheduleKeys = {
   all: (tripId: string, uid?: string) => ['schedules', tripId, uid ?? ''] as const,
@@ -22,8 +22,8 @@ export const scheduleKeys = {
 
 export const useSchedules = createRealtimeListHook<Schedule>({
   queryKeyFactory: scheduleKeys.all,
-  initialFetch:    (tripId, uid) => getSchedulesByTrip(tripId, uid!),
-  subscribe:       (tripId, uid, onData, onError) => subscribeToSchedules(tripId, uid!, onData, onError),
+  initialFetch:    (tripId, uid) => getSchedulesByTrip(tripId, uid),
+  subscribe:       (tripId, uid, onData, onError) => subscribeToSchedules(tripId, uid, onData, onError),
   source:          'useSchedules',
   requiresUid:     true,
 })
@@ -53,7 +53,7 @@ export function useCreateSchedule(tripId: string, options?: MutationOptions) {
         ...input,
       },
     ],
-    action:     '行程の追加',
+    action:     MUTATION_ACTION.CREATE_SCHEDULE,
     silent:     options?.silent,
   })
 }
@@ -69,7 +69,7 @@ export function useUpdateSchedule(tripId: string, options?: MutationOptions) {
     mutate:     ({ scheduleId, updates, uid }) => updateSchedule(tripId, scheduleId, updates, { uid }),
     patch:      (prev, { scheduleId, updates, uid }) =>
       prev.map(s => s.id === scheduleId ? { ...s, ...updates, ...auditUpdateMock(uid) } : s),
-    action:     '更新',
+    action:     MUTATION_ACTION.UPDATE,
     silent:     options?.silent,
   })
 }
@@ -80,6 +80,6 @@ export function useDeleteSchedule(tripId: string) {
     keyFactory: scheduleKeys.all,
     mutate:     (scheduleId, { uid }) => deleteSchedule(tripId, scheduleId, uid),
     patch:      (prev, scheduleId) => prev.filter(s => s.id !== scheduleId),
-    action:     '削除',
+    action:     MUTATION_ACTION.DELETE,
   })
 }

@@ -15,7 +15,7 @@ import {
 } from './inviteService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
 import { tripKeys } from '@/features/trips/hooks/useTrips'
-import type { MutationMeta } from '@/services/queryClient'
+import { MUTATION_ACTION, type MutationMeta } from '@/services/queryClient'
 import type { Invite, Trip } from '@/types'
 
 export const inviteKeys = {
@@ -51,7 +51,7 @@ export function useCreateInvite() {
       role: 'editor' | 'viewer'
       user: User
     }) => createInvite(trip, role, user),
-    meta: { action: '邀請連結作成' } satisfies MutationMeta,
+    meta: { action: MUTATION_ACTION.CREATE_INVITE } satisfies MutationMeta,
     onSuccess: (invite) => {
       // Replace (not prepend) the cache: the service atomically deletes old
       // invites when creating a new one, so after success there should be
@@ -65,7 +65,7 @@ export function useRevokeInvite(tripId: string | undefined) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (token: string) => revokeInvite(tripId!, token),
-    meta: { action: '取り消し' } satisfies MutationMeta,
+    meta: { action: MUTATION_ACTION.REVOKE_INVITE } satisfies MutationMeta,
     onMutate: (token) => {
       if (!tripId) return { prev: undefined as Invite[] | undefined }
       const key  = inviteKeys.ofTrip(tripId)

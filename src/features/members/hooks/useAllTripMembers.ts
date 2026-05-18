@@ -56,7 +56,11 @@ export function useAllTripMembers(uid: string | undefined): UseAllTripMembersRes
   const memberResults = useQueries({
     queries: ids.map(id => ({
       queryKey:  memberKeys.all(id, uid),
-      queryFn:   () => getMembersByTrip(id, uid!),
+      // uid is guaranteed truthy whenever this fires: `enabled: !!tripIds`
+      // gates on the upstream useMyTripIds(uid) returning data, which
+      // itself only succeeds with a real uid. The `if (!uid)` short-circuit
+      // makes the contract explicit so TS doesn't need a `uid!`.
+      queryFn:   () => uid ? getMembersByTrip(id, uid) : Promise.resolve([]),
       enabled:   !!tripIds,
       // Listener is the source of truth once attached (see effect below).
       staleTime: Infinity,
@@ -70,14 +74,14 @@ export function useAllTripMembers(uid: string | undefined): UseAllTripMembersRes
     // array reference changes every render (recomputed from tripIds),
     // which is why we keyed on the joined string in the first place.
     const idList = idsKey ? idsKey.split(',') : []
-    if (idList.length === 0) return
+    if (idList.length === 0 || !uid) return
     let mounted = true
     const unsubs: Array<() => void> = []
 
     idList.forEach(id => {
       void subscribeToMembers(
         id,
-        uid!,
+        uid,
         (data: Member[]) => {
           if (mounted) qc.setQueryData<Member[]>(memberKeys.all(id, uid), data)
         },

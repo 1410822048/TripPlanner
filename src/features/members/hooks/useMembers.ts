@@ -7,7 +7,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { getMembersByTrip, subscribeToMembers, removeMember, updateMemberRole } from '../services/memberService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
 import { useUid } from '@/hooks/useAuth'
-import type { MutationMeta } from '@/services/queryClient'
+import { MUTATION_ACTION, type MutationMeta } from '@/services/queryClient'
 import type { Member } from '@/types'
 
 export const memberKeys = {
@@ -16,8 +16,8 @@ export const memberKeys = {
 
 export const useMembers = createRealtimeListHook<Member>({
   queryKeyFactory: memberKeys.all,
-  initialFetch:    (tripId, uid) => getMembersByTrip(tripId, uid!),
-  subscribe:       (tripId, uid, onData, onError) => subscribeToMembers(tripId, uid!, onData, onError),
+  initialFetch:    (tripId, uid) => getMembersByTrip(tripId, uid),
+  subscribe:       (tripId, uid, onData, onError) => subscribeToMembers(tripId, uid, onData, onError),
   source:          'useMembers',
   requiresUid:     true,
 })
@@ -32,7 +32,7 @@ export function useRemoveMember(tripId: string | undefined) {
   const uid = useUid()
   return useMutation({
     mutationFn: (memberId: string) => removeMember(tripId!, memberId),
-    meta: { action: '削除' } satisfies MutationMeta,
+    meta: { action: MUTATION_ACTION.DELETE } satisfies MutationMeta,
     onMutate: (memberId) => {
       if (!tripId) return { prev: undefined as Member[] | undefined }
       const key  = memberKeys.all(tripId, uid)
@@ -57,7 +57,7 @@ export function useUpdateMemberRole(tripId: string | undefined) {
   return useMutation({
     mutationFn: ({ memberId, role }: { memberId: string; role: 'editor' | 'viewer' }) =>
       updateMemberRole(tripId!, memberId, role),
-    meta: { action: '権限変更' } satisfies MutationMeta,
+    meta: { action: MUTATION_ACTION.CHANGE_ROLE } satisfies MutationMeta,
     onMutate: ({ memberId, role }) => {
       if (!tripId) return { prev: undefined as Member[] | undefined }
       const key  = memberKeys.all(tripId, uid)

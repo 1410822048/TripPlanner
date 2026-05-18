@@ -18,7 +18,7 @@ import { tempId } from '@/utils/tempId'
 import { auditCreateMock, auditUpdateMock } from '@/utils/audit'
 import type { CreatePlanItemInput, PlanItem } from '@/types'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
-import type { MutationOptions } from '@/services/queryClient'
+import { MUTATION_ACTION, type MutationOptions } from '@/services/queryClient'
 
 export const planningKeys = {
   all: (tripId: string, uid?: string) => ['planning', tripId, uid ?? ''] as const,
@@ -26,8 +26,8 @@ export const planningKeys = {
 
 export const usePlanning = createRealtimeListHook<PlanItem>({
   queryKeyFactory: planningKeys.all,
-  initialFetch:    (tripId, uid) => getPlanItemsByTrip(tripId, uid!),
-  subscribe:       (tripId, uid, onData, onError) => subscribeToPlanItems(tripId, uid!, onData, onError),
+  initialFetch:    (tripId, uid) => getPlanItemsByTrip(tripId, uid),
+  subscribe:       (tripId, uid, onData, onError) => subscribeToPlanItems(tripId, uid, onData, onError),
   source:          'usePlanning',
   requiresUid:     true,
 })
@@ -41,7 +41,7 @@ export function useCreatePlanItem(tripId: string, options?: MutationOptions) {
       { id: tempId(), tripId, memberIds: [createdBy], ...input, done: false, ...auditCreateMock(createdBy) },
       ...prev,
     ],
-    action:     '追加',
+    action:     MUTATION_ACTION.ADD,
     silent:     options?.silent,
   })
 }
@@ -57,7 +57,7 @@ export function useUpdatePlanItem(tripId: string, options?: MutationOptions) {
     mutate:     ({ itemId, updates, uid }) => updatePlanItem(tripId, itemId, updates, { uid }),
     patch:      (prev, { itemId, updates, uid }) =>
       prev.map(p => p.id === itemId ? { ...p, ...updates, ...auditUpdateMock(uid) } : p),
-    action:     '更新',
+    action:     MUTATION_ACTION.UPDATE,
     silent:     options?.silent,
   })
 }
@@ -80,7 +80,7 @@ export function useTogglePlanItem(tripId: string) {
           }
         : p,
       ),
-    action:     '更新',
+    action:     MUTATION_ACTION.UPDATE,
   })
 }
 
@@ -90,6 +90,6 @@ export function useDeletePlanItem(tripId: string) {
     keyFactory: planningKeys.all,
     mutate:     (itemId, { uid }) => deletePlanItem(tripId, itemId, uid),
     patch:      (prev, itemId) => prev.filter(p => p.id !== itemId),
-    action:     '削除',
+    action:     MUTATION_ACTION.DELETE,
   })
 }

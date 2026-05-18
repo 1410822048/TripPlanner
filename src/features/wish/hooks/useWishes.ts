@@ -19,7 +19,7 @@ import { tempId } from '@/utils/tempId'
 import { auditUpdateMock } from '@/utils/audit'
 import type { CreateWishInput, Wish, WishImage } from '@/types'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
-import type { MutationOptions } from '@/services/queryClient'
+import { MUTATION_ACTION, type MutationOptions } from '@/services/queryClient'
 
 export const wishKeys = {
   all: (tripId: string, uid?: string) => ['wishes', tripId, uid ?? ''] as const,
@@ -27,8 +27,8 @@ export const wishKeys = {
 
 export const useWishes = createRealtimeListHook<Wish>({
   queryKeyFactory: wishKeys.all,
-  initialFetch:    (tripId, uid) => getWishesByTrip(tripId, uid!),
-  subscribe:       (tripId, uid, onData, onError) => subscribeToWishes(tripId, uid!, onData, onError),
+  initialFetch:    (tripId, uid) => getWishesByTrip(tripId, uid),
+  subscribe:       (tripId, uid, onData, onError) => subscribeToWishes(tripId, uid, onData, onError),
   source:          'useWishes',
   requiresUid:     true,
 })
@@ -55,7 +55,7 @@ export function useCreateWish(tripId: string, options?: MutationOptions) {
       },
       ...prev,
     ],
-    action:     '追加',
+    action:     MUTATION_ACTION.ADD,
     silent:     options?.silent,
   })
 }
@@ -74,7 +74,7 @@ export function useUpdateWish(tripId: string, options?: MutationOptions) {
       updateWish(tripId, wishId, updates, { uid, attachment, existingImage }),
     patch:      (prev, { wishId, updates, uid }) =>
       prev.map(w => w.id === wishId ? { ...w, ...updates, ...auditUpdateMock(uid) } : w),
-    action:     '更新',
+    action:     MUTATION_ACTION.UPDATE,
     silent:     options?.silent,
   })
 }
@@ -85,7 +85,7 @@ export function useDeleteWish(tripId: string) {
     keyFactory: wishKeys.all,
     mutate:     ({ wishId, image }, { uid }) => deleteWish(tripId, wishId, uid, image),
     patch:      (prev, { wishId }) => prev.filter(w => w.id !== wishId),
-    action:     '削除',
+    action:     MUTATION_ACTION.DELETE,
   })
 }
 
@@ -104,6 +104,6 @@ export function useToggleWishVote(tripId: string) {
           : w.votes.filter(u => u !== uid)
         return { ...w, votes: next, ...auditUpdateMock(uid) }
       }),
-    action:     '投票',
+    action:     MUTATION_ACTION.TOGGLE_VOTE,
   })
 }

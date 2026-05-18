@@ -31,42 +31,55 @@ import { useQuery, useQueryClient, type QueryKey, type UseQueryResult, type Quer
 import { captureError } from '@/services/sentry'
 import { useUid } from '@/hooks/useAuth'
 
-export interface RealtimeListConfig<T> {
+// Two-shape config — a discriminated union on `requiresUid` so callbacks
+// get the right `uid` type without callers writing `uid!`. Tried a
+// `<T, R extends boolean>` generic + conditional types first; TS
+// contextual-typing didn't infer R from `requiresUid: true` reliably
+// (it kept defaulting to false). The DU narrows cleanly once we check
+// `config.requiresUid` in the factory body.
+
+interface RealtimeListConfigBase {
   /** Build the query key from the scope key. Used by both useQuery
    *  (initial fetch + cache slot) and the listener (setQueryData target).
-   *  The factory also receives uid so per-user cache scoping is automatic
-   *  when needed; most callers ignore the second arg. */
+   *  Receives uid so per-user cache scoping is automatic when needed. */
   queryKeyFactory: (key: string, uid?: string) => QueryKey
-  /** Initial fetch — a regular getDocs. Used until the listener pushes
-   *  its first snapshot, then the cache is owned by the listener. uid is
-   *  passed so trip-scoped subcollection list queries can include the
-   *  `where('memberIds', 'array-contains', uid)` filter required by the
-   *  same-doc list rules. Pass-through optional for queries that don't
-   *  need it (collection-group queries that already filter, single-doc
-   *  reads, owner-only listings). */
-  initialFetch: (key: string, uid?: string) => Promise<T[]>
-  /** Async-resolved snapshot subscriber. uid is forwarded so listener
-   *  queries can apply the same memberIds filter. */
+  /** Identifier for Sentry context on listener errors / init failures. */
+  source: string
+  /** Caller-side opt-out — when present and false, the hook skips both
+   *  the initial fetch and the listener. Used by useInvites where only
+   *  trip owners should subscribe. */
+  isEnabled?: (key: string) => boolean
+}
+
+/** Variant for hooks that need a signed-in uid (trip-scoped subcollection
+ *  listeners needing the `memberIds` filter). Callbacks receive
+ *  `uid: string` — the factory's `enabled` gate plus the runtime
+ *  `!!uid` check guarantees it. */
+export interface RealtimeListConfigUidRequired<T> extends RealtimeListConfigBase {
+  requiresUid: true
+  initialFetch: (key: string, uid: string) => Promise<T[]>
+  subscribe: (
+    key:     string,
+    uid:     string,
+    onData:  (data: T[]) => void,
+    onError: (e: Error)  => void,
+  ) => Promise<() => void>
+}
+
+/** Variant for hooks that don't require uid (collection-group queries
+ *  with built-in filtering, owner-only listings, etc.). */
+export interface RealtimeListConfigUidOptional<T> extends RealtimeListConfigBase {
+  requiresUid?: false
+  initialFetch: (key: string, uid: string | undefined) => Promise<T[]>
   subscribe: (
     key:     string,
     uid:     string | undefined,
     onData:  (data: T[]) => void,
     onError: (e: Error)  => void,
   ) => Promise<() => void>
-  /** Identifier for Sentry context on listener errors / init failures. */
-  source: string
-  /** Caller-side opt-out — when present and false, the hook skips both
-   *  the initial fetch and the listener. Used by useInvites where only
-   *  trip owners should subscribe (rules permit list anyway, but no
-   *  point spending the read for non-owners that won't render anything). */
-  isEnabled?: (key: string) => boolean
-  /** When true, the hook requires a signed-in uid before activating.
-   *  Trip-scoped subcollection listeners need uid for the memberIds
-   *  filter. Hooks that don't (collection-group queries with built-in
-   *  uid filtering, etc.) leave this off and accept the empty cache
-   *  when signed-out. */
-  requiresUid?: boolean
 }
+
+export type RealtimeListConfig<T> = RealtimeListConfigUidRequired<T> | RealtimeListConfigUidOptional<T>
 
 interface SharedListener {
   /** Number of mounted callers currently relying on this subscription. */
@@ -178,18 +191,38 @@ function releaseListener(id: string): void {
 export function createRealtimeListHook<T>(
   config: RealtimeListConfig<T>,
 ): (key: string | undefined) => UseQueryResult<T[]> {
-  const { queryKeyFactory, initialFetch, subscribe, source, isEnabled, requiresUid } = config
+  // Access via `config.X` (not destructure) so the discriminated union
+  // narrows on `config.requiresUid` inside the dispatch helpers.
+  const { queryKeyFactory, source, isEnabled } = config
+
+  // Type-safe dispatch: pattern-match on the discriminator so each call
+  // hits the matching `initialFetch` / `subscribe` overload. The
+  // `as` cast in the uid-required branch is sound because callerEnabled
+  // gates on `!!uid`, so we never reach this when uid is undefined.
+  function runInitialFetch(key: string, uid: string | undefined): Promise<T[]> {
+    if (config.requiresUid) return config.initialFetch(key, uid as string)
+    return config.initialFetch(key, uid)
+  }
+  function runSubscribe(
+    key:     string,
+    uid:     string | undefined,
+    onData:  (data: T[]) => void,
+    onError: (e: Error)  => void,
+  ): Promise<() => void> {
+    if (config.requiresUid) return config.subscribe(key, uid as string, onData, onError)
+    return config.subscribe(key, uid, onData, onError)
+  }
 
   return function useRealtimeList(key: string | undefined): UseQueryResult<T[]> {
     const qc  = useQueryClient()
     const uid = useUid()
     const callerEnabled = !!key
       && (isEnabled ? isEnabled(key) : true)
-      && (requiresUid ? !!uid : true)
+      && (config.requiresUid ? !!uid : true)
 
     const result = useQuery<T[]>({
       queryKey:  queryKeyFactory(key ?? '', uid),
-      queryFn:   () => initialFetch(key!, uid),
+      queryFn:   () => runInitialFetch(key!, uid),
       enabled:   callerEnabled,
       staleTime: Infinity,
     })
@@ -200,7 +233,7 @@ export function createRealtimeListHook<T>(
         queryKeyFactory(key, uid),
         key,
         qc,
-        (onData, onError) => subscribe(key, uid, onData, onError),
+        (onData, onError) => runSubscribe(key, uid, onData, onError),
         source,
       )
       return release

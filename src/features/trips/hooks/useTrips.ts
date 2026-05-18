@@ -30,7 +30,7 @@ import { captureError } from '@/services/sentry'
 import { getFirebase } from '@/services/firebase'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
 import { toLocalMidnightTimestamp } from '@/utils/dates'
-import type { MutationMeta, MutationOptions } from '@/services/queryClient'
+import { MUTATION_ACTION, type MutationMeta, type MutationOptions } from '@/services/queryClient'
 import { markPerf } from '@/utils/perf'
 import { useLastViewedStore } from '@/store/lastViewedStore'
 import type { CreateTripInput, Trip } from '@/types'
@@ -203,7 +203,7 @@ export function useUpdateTrip(uid: string | undefined, options?: MutationOptions
   return useMutation({
     mutationFn: ({ tripId, updates }: { tripId: string; updates: Partial<CreateTripInput> }) =>
       updateTrip(tripId, updates),
-    meta: { action: '更新', silent: options?.silent } satisfies MutationMeta,
+    meta: { action: MUTATION_ACTION.UPDATE, silent: options?.silent } satisfies MutationMeta,
     onMutate: async ({ tripId, updates }) => {
       if (!uid) return { prev: undefined as Trip[] | undefined }
       const key  = tripKeys.mine(uid)
@@ -237,8 +237,14 @@ export function useUpdateTrip(uid: string | undefined, options?: MutationOptions
 export function useDeleteTrip(uid: string | undefined) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (tripId: string) => deleteTrip(tripId, uid!),
-    meta: { action: '削除' } satisfies MutationMeta,
+    mutationFn: (tripId: string) => {
+      // Pages gate on signed-in state before calling; throwing here
+      // turns a missed gate into a loud Sentry event instead of a
+      // silent no-op or `uid!` assertion.
+      if (!uid) throw new Error('useDeleteTrip: uid is undefined')
+      return deleteTrip(tripId, uid)
+    },
+    meta: { action: MUTATION_ACTION.DELETE } satisfies MutationMeta,
     onMutate: (tripId) => {
       if (!uid) return { prevTrips: undefined as Trip[] | undefined, prevIds: undefined as string[] | undefined }
       const tripsKey = tripKeys.mine(uid)
