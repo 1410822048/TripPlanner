@@ -4,11 +4,11 @@
 // pure layout orchestration: pick a few values from the returned bag,
 // hand modals off to TripModalsHost, render.
 import { useEffect, useState } from 'react'
-import { flushSync } from 'react-dom'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useFormModal, type UseFormModalResult } from '@/hooks/useFormModal'
 import { useSchedules, useCreateSchedule, useUpdateSchedule, useDeleteSchedule } from './useSchedules'
 import { useCopyTrip, useDeleteTrip, useMyTrips, useUpdateTrip } from '@/features/trips/hooks/useTrips'
+import { useCurrentTrip } from '@/features/trips/hooks/useCurrentTrip'
 import type { CopyTripInput } from '@/features/trips/services/tripCopy'
 import { useTripSelection } from '@/features/trips/hooks/useTripSelection'
 import { useCanWrite, useIsTripOwner } from '@/features/trips/hooks/useTripRole'
@@ -135,9 +135,9 @@ export function useSchedulePageState(): SchedulePageState {
   const wasSignedIn   = authState.status === 'loading' && authState.wasSignedIn
   const isDemo        = !uid && !wasSignedIn
 
-  const currentTrip    = useTripStore(s => s.currentTrip)
-  const setCurrentTrip = useTripStore(s => s.setCurrentTrip)
-  const tripOrder      = useTripStore(s => s.tripOrder)
+  const currentTrip       = useCurrentTrip()
+  const setSelectedTripId = useTripStore(s => s.setSelectedTripId)
+  const tripOrder         = useTripStore(s => s.tripOrder)
   const setTripOrder   = useTripStore(s => s.setTripOrder)
 
   const { data: myTrips, error: tripsError, refetch: refetchTrips } = useMyTrips(uid)
@@ -246,8 +246,13 @@ export function useSchedulePageState(): SchedulePageState {
   const selectTrip = isDemo
     ? demoSelection.selectTrip
     : (item: TripItem) => {
-        const next = myTrips?.find(t => t.id === item.id)
-        if (next) { setCurrentTrip(next); setActiveDate(null) }
+        // myTrips lookup retained as a "trip exists" gate — picking
+        // an id the user no longer has access to would just produce
+        // a null useCurrentTrip downstream and a confused UI.
+        if (myTrips?.some(t => t.id === item.id)) {
+          setSelectedTripId(item.id)
+          setActiveDate(null)
+        }
       }
 
   // Cloud edit: diff against the current trip and only send changed
@@ -276,15 +281,15 @@ export function useSchedulePageState(): SchedulePageState {
   // user isn't left on a different trip than the cache shows.
   const deleteTrip = isDemo ? demoSelection.deleteTrip : (deletedId: string) => {
     const wasCurrent = currentTrip?.id === deletedId
-    const restore    = currentTrip
+    const restoreId  = currentTrip?.id
     if (wasCurrent) {
       const remaining = (myTrips ?? []).filter(t => t.id !== deletedId)
-      setCurrentTrip(remaining[0] ?? null)
+      setSelectedTripId(remaining[0]?.id ?? null)
       setActiveDate(null)
     }
     deleteTripMut.mutate(deletedId, {
       onSuccess: () => toast.success('旅程を削除しました'),
-      onError:   () => { if (wasCurrent && restore) setCurrentTrip(restore) },
+      onError:   () => { if (wasCurrent && restoreId) setSelectedTripId(restoreId) },
     })
   }
 
@@ -338,15 +343,14 @@ export function useSchedulePageState(): SchedulePageState {
     try {
       const { trip, copiedSchedules, copiedPlanItems, orphanedSchedules } =
         await copyTripMut.mutateAsync({ source: currentTrip, input, user: authState.user })
-      // Same flush ordering as CreateTripModal: Zustand store first so
-      // the synchronous close commit sees currentTrip=newTrip AND
-      // copyTripOpen=false in one frame. Without flushSync the
-      // copyTripOpen=false update can land in a later commit than the
-      // Zustand-driven AppLayout/listener cascade, leaving the modal
-      // visibly mounted while the page already swapped to the new trip.
-      setCurrentTrip(trip)
+      // No flushSync needed: currentTrip is now derived from the React
+      // Query cache (via useCurrentTrip), so useCopyTrip's onSuccess
+      // cache patch + this `setSelectedTripId` + `setCopyTripOpen(false)`
+      // all batch into one React 18 commit. The previous dual-store
+      // had two notification paths and needed flushSync to align them.
+      setSelectedTripId(trip.id)
       setActiveDate(null)
-      flushSync(() => { setCopyTripOpen(false) })
+      setCopyTripOpen(false)
       const parts = [`「${trip.title}」を作成`]
       if (input.copySchedules) parts.push(`行程 ${copiedSchedules} 件`)
       if (input.copyPlanning)  parts.push(`計畫 ${copiedPlanItems} 件`)
@@ -396,13 +400,11 @@ export function useSchedulePageState(): SchedulePageState {
     cloudTripsLoading: (authResolving && wasSignedIn)
       || (!isDemo && myTrips === undefined && !tripsError),
     cloudTripsError:   !isDemo && tripsError && myTrips === undefined ? tripsError : null,
-    // `&& !currentTrip` belt: just after a trip is created, the cache
-    // push that fills myTrips is on a separate notifyManager microtask
-    // from setCurrentTrip's Zustand notification, so myTrips can still
-    // read as [] for one render after currentTrip is already the new
-    // trip. Without this guard the page would briefly flash EmptyTrips
-    // between sheet-close and the main-content commit.
-    cloudTripsEmpty:   !isDemo && myTrips !== undefined && myTrips.length === 0 && !currentTrip,
+    // No `&& !currentTrip` belt needed: with `currentTrip` derived
+    // from `myTrips`, the cache push + selectedTripId update + modal
+    // close all batch into one React 18 commit. EmptyTrips no longer
+    // races against the create / copy flow.
+    cloudTripsEmpty:   !isDemo && myTrips !== undefined && myTrips.length === 0,
     refetchTrips,
 
     trips, selectedTrip, dateRange, display, items, dayTotal,

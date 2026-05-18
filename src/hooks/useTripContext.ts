@@ -34,7 +34,7 @@ import type { Trip } from '@/types'
 import type { TripItem } from '@/features/trips/types'
 import { useAuth } from '@/hooks/useAuth'
 import { useMyTrips } from '@/features/trips/hooks/useTrips'
-import { useTripStore } from '@/store/tripStore'
+import { useCurrentTrip } from '@/features/trips/hooks/useCurrentTrip'
 import { useSelectedDemoTrip } from '@/store/demoTripStore'
 
 export type TripContext =
@@ -53,7 +53,7 @@ export function useTripContext(): TripContext {
 
   // Both queries always run — TanStack dedupes against AppLayout's calls.
   const { data: myTrips, isPending: tripsPending } = useMyTrips(uid)
-  const currentTrip = useTripStore(s => s.currentTrip)
+  const currentTrip = useCurrentTrip()
   const demoTrip = useSelectedDemoTrip()
 
   if (authState.status === 'loading') {

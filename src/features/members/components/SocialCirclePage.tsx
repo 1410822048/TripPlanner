@@ -19,7 +19,7 @@ import { useTripStore } from '@/store/tripStore'
 import LoadingText from '@/components/ui/LoadingText'
 import MemberAvatar from '@/components/ui/MemberAvatar'
 import type { TripMember } from '@/features/trips/types'
-import type { Member, Trip } from '@/types'
+import type { Member } from '@/types'
 
 interface CollaboratorTrip {
   tripId:    string
@@ -44,9 +44,9 @@ function roleLabel(role: Member['role']): string {
 }
 
 export default function SocialCirclePage() {
-  const navigate       = useNavigate()
-  const uid            = useUid()
-  const setCurrentTrip = useTripStore(s => s.setCurrentTrip)
+  const navigate          = useNavigate()
+  const uid               = useUid()
+  const setSelectedTripId = useTripStore(s => s.setSelectedTripId)
   const { trips, memberResults, isLoading: loading } = useAllTripMembers(uid)
 
   // Aggregate collaborators across every trip. Key by userId so the same
@@ -88,10 +88,10 @@ export default function SocialCirclePage() {
   })()
 
   function openTrip(t: CollaboratorTrip) {
-    // Resolve the full Trip object from the cached list so currentTrip in
-    // the Zustand store has the right shape (Firestore Timestamps etc.).
-    const full = (trips ?? []).find(x => x.id === t.tripId)
-    if (full) setCurrentTrip(full as Trip)
+    // Just pin the id — the full Trip object is already in the React
+    // Query cache (useAllTripMembers pulled it in), and useCurrentTrip
+    // on /schedule will derive from there.
+    setSelectedTripId(t.tripId)
     navigate('/schedule')
   }
 

@@ -71,7 +71,7 @@ export default function AppLayout() {
   // doesn't flash a phantom badge after they navigate away — without
   // it, lastViewed = enter-time would be older than the just-created
   // item's serverTimestamp.
-  const tripId = useTripStore(s => s.currentTrip?.id)
+  const tripId = useTripStore(s => s.selectedTripId)
   const activeFeature = pathToFeature(pathname)
   const activeActivity = activeFeature ? activity[activeFeature] : 0
   useEffect(() => {

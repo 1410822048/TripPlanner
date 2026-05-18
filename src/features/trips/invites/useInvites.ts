@@ -89,7 +89,7 @@ export function useRevokeInvite(tripId: string | undefined) {
  * naturally.
  *
  * The trip object travels back through the mutation result so the
- * caller (InvitePage) can also setCurrentTrip(trip) before navigating
+ * caller (InvitePage) can also setSelectedTripId(trip.id) before navigating
  * to /schedule. If the service couldn't fetch the trip post-redeem
  * (rare — rules race, schema mismatch), we skip the seed; the
  * listeners will fill the cache shortly anyway.

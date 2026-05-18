@@ -43,9 +43,10 @@ export type AcceptOutcome = 'joined' | 'already-member'
  * alongside the outcome so the caller can:
  *   - seed TanStack Query's tripKeys.mine / myIds caches synchronously
  *     (no 1+ second wait for an invalidate refetch to round-trip)
- *   - call setCurrentTrip(trip) before navigating to /schedule, so the
- *     destination page renders pointing at the just-joined trip instead
- *     of whatever was selected before
+ *   - call setSelectedTripId(trip.id) before navigating to /schedule,
+ *     so the destination page renders pointing at the just-joined trip
+ *     instead of whatever was selected before (useCurrentTrip on the
+ *     destination resolves the Trip object from the seeded cache)
  *
  * `trip` may be null in the unlikely case that the post-redeem fetch
  * fails (rules race, schema mismatch); callers fall back to their

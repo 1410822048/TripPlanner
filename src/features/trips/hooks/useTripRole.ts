@@ -20,7 +20,7 @@
 import type { Member } from '@/types'
 import { useUid } from '@/hooks/useAuth'
 import { useMembers } from '@/features/members/hooks/useMembers'
-import { useTripStore } from '@/store/tripStore'
+import { useCurrentTrip } from '@/features/trips/hooks/useCurrentTrip'
 
 export type TripRole = Member['role']
 
@@ -61,14 +61,14 @@ export function useCanWrite(tripId: string | undefined, isDemo: boolean): boolea
  * firestore.rules). Used to gate owner-only UI affordances —
  * invite-link generation, trip metadata edit, member role changes.
  *
- * Reads `currentTrip.ownerId` from the trip store rather than the
- * members subcollection so it doesn't pay the second cache lookup
- * the role-based gates need. Demo mode short-circuits to true (no
- * real ownership concept).
+ * Reads `currentTrip.ownerId` (derived from the React Query trip
+ * cache via `useCurrentTrip`) rather than the members subcollection
+ * so it doesn't pay the second cache lookup the role-based gates
+ * need. Demo mode short-circuits to true (no real ownership concept).
  */
 export function useIsTripOwner(tripId: string | undefined, isDemo: boolean): boolean {
   const uid = useUid()
-  const currentTrip = useTripStore(s => s.currentTrip)
+  const currentTrip = useCurrentTrip()
   if (isDemo) return true
   if (!uid || !tripId || !currentTrip || currentTrip.id !== tripId) return false
   return currentTrip.ownerId === uid

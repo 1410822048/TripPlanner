@@ -76,7 +76,9 @@ export default function InvitePage() {
       // /schedule renders pointing at the new trip (not whatever was selected
       // before). Without this, users with a pre-existing trip would land on
       // their old trip and have to manually switch via the picker.
-      if (trip) useTripStore.getState().setCurrentTrip(trip)
+      // The full Trip object lives in the React Query cache (seeded by
+      // useAcceptInvite's onSuccess); useCurrentTrip will resolve it.
+      if (trip) useTripStore.getState().setSelectedTripId(trip.id)
       toast.success(outcome === 'already-member' ? '既に参加中です' : '旅程に参加しました')
       navigate('/schedule', { replace: true })
     } catch (e) {

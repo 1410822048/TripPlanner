@@ -1,21 +1,20 @@
 // src/features/trips/hooks/useCurrentTripSync.ts
-// Keeps the Zustand `currentTrip` in lockstep with the user's TanStack
-// Query trip cache. Designed to run from the layout level (AppLayout) so
-// the rehydration happens regardless of which tab the user lands on after
-// a hard reload — previously this useEffect lived only in SchedulePage,
-// which meant /bookings or /expense after refresh would render the
-// "select a trip" empty state until the user manually navigated through
-// /schedule.
+// Keeps `selectedTripId` (Zustand, persisted) pointing at a trip the
+// user actually has access to. Runs at the layout level so a hard
+// reload landing on any tab picks the user's last trip without
+// forcing them through /schedule first.
+//
+// The full `Trip` object is no longer hydrated here — consumers read
+// it via `useCurrentTrip()`, which derives from this id + the React
+// Query trip cache. That single source removed the create / copy
+// flash bugs that the previous dual-store had needed flushSync to
+// paper over.
 //
 // Rehydration rules:
-//   1. Demo mode (no uid) → leave currentTrip alone, no fetch
-//   2. myTrips loaded but empty → clear currentTrip
-//   3. currentTrip points at a still-existing trip → swap in the latest
-//      cache entry if it has drifted (e.g. an optimistic update landed)
-//   4. currentTrip is null OR points at a deleted trip → pick:
-//        a) the persisted selectedTripId if still in myTrips
-//        b) the first recentTripIds entry that's still in myTrips
-//        c) myTrips[0]
+//   1. Demo mode (no uid)            → no-op
+//   2. myTrips empty                 → clear selectedTripId
+//   3. selectedTripId still in list  → no-op (don't churn recents)
+//   4. selectedTripId missing/null   → recents[0] in list ?? myTrips[0]
 import { useEffect } from 'react'
 import { useUid } from '@/hooks/useAuth'
 import { useTripStore } from '@/store/tripStore'
@@ -24,30 +23,21 @@ import { useMyTrips } from './useTrips'
 export function useCurrentTripSync(): void {
   const uid = useUid()
   const isDemo = !uid
-  const { currentTrip, setCurrentTrip, selectedTripId, recentTripIds } = useTripStore()
+  const { selectedTripId, recentTripIds, setSelectedTripId } = useTripStore()
   const { data: myTrips } = useMyTrips(uid)
 
   useEffect(() => {
     if (isDemo || !myTrips) return
     if (myTrips.length === 0) {
-      if (currentTrip) setCurrentTrip(null)
+      if (selectedTripId) setSelectedTripId(null)
       return
     }
-    if (currentTrip) {
-      const latest = myTrips.find(t => t.id === currentTrip.id)
-      if (latest) {
-        if (latest !== currentTrip) setCurrentTrip(latest)
-        return
-      }
-      // current trip no longer in cache → fall through to reselect
-    }
-    // Reselect priority: persisted selection → recents → newest. One
-    // O(T) pass to build the index, then O(1) lookups — avoids the
-    // O(R×T) `recentTripIds.map(id => myTrips.find(...))` that the
-    // previous shape had.
-    const tripById  = new Map(myTrips.map(t => [t.id, t]))
-    const persisted = selectedTripId ? tripById.get(selectedTripId) : undefined
-    const recent    = recentTripIds.map(id => tripById.get(id)).find(Boolean)
-    setCurrentTrip(persisted ?? recent ?? myTrips[0] ?? null)
-  }, [isDemo, myTrips, currentTrip, selectedTripId, recentTripIds, setCurrentTrip])
+    // Selection still valid → no write (avoid recents churn on every
+    // trip-doc cache push).
+    if (selectedTripId && myTrips.some(t => t.id === selectedTripId)) return
+    // Reselect priority: most-recent that's still accessible → newest.
+    const tripById = new Map(myTrips.map(t => [t.id, t]))
+    const recent   = recentTripIds.find(id => tripById.has(id))
+    setSelectedTripId(recent ?? myTrips[0]?.id ?? null)
+  }, [isDemo, myTrips, selectedTripId, recentTripIds, setSelectedTripId])
 }

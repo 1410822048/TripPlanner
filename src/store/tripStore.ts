@@ -1,30 +1,25 @@
 // src/store/tripStore.ts
+// Persisted trip-selection state — selectedTripId is the source of
+// truth for "which trip is the user currently viewing?". The full Trip
+// object is derived via `useCurrentTrip()` from the React Query cache,
+// so we don't duplicate it here (Timestamps wouldn't survive JSON
+// anyway). See features/trips/hooks/useCurrentTrip.ts.
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { Trip } from '@/types'
 
 interface TripStore {
   // ─── State ─────────────────────────────────────────────────────
-  /** In-memory selected trip object. Hydrated from query cache by
-   *  useCurrentTripSync — see also `selectedTripId` below for the
-   *  persistent half. */
-  currentTrip: Trip | null
   /**
-   * Last selected trip id, persisted to localStorage. Used by AppLayout's
-   * useCurrentTripSync as the preferred id to pin on cold load — falls
-   * back to recentTripIds[0] when the persisted id is no longer in the
-   * user's trip list.
-   *
-   * Why a separate id (not just persisting `currentTrip`)? The Trip
-   * object contains Firestore Timestamp instances that don't round-trip
-   * through JSON.stringify. Persisting only the id keeps the store
-   * serialisation safe and lets us rehydrate the object from the
-   * TanStack Query cache (the source of truth) on next load.
+   * Last selected trip id, persisted to localStorage. The active
+   * `Trip` object comes from `useCurrentTrip()` (= myTrips.find(id)).
+   * Persisting only the id keeps the store JSON-safe and avoids a
+   * parallel notification path that used to cause one-frame UI
+   * flashes after create / copy.
    */
   selectedTripId: string | null
   /**
    * Most-recent-first id list (cap 5). Used as a fallback ordering for
-   * useCurrentTripSync when the selected id is missing.
+   * useCurrentTripSync when the selected id leaves the trip list.
    */
   recentTripIds: string[]
   /**
@@ -38,29 +33,29 @@ interface TripStore {
   tripOrder: string[]
 
   // ─── Actions ───────────────────────────────────────────────────
-  setCurrentTrip: (trip: Trip | null) => void
-  clearTrip:      () => void
-  setTripOrder:   (ids: string[]) => void
+  /** Pick a trip as active. Also promotes the id into recentTripIds[0]. */
+  setSelectedTripId: (id: string | null) => void
+  /** Clear selection (sign-out). */
+  clearTrip:         () => void
+  setTripOrder:      (ids: string[]) => void
 }
 
 export const useTripStore = create<TripStore>()(
   persist(
     (set) => ({
-      currentTrip:    null,
       selectedTripId: null,
       recentTripIds:  [],
       tripOrder:      [],
 
-      setCurrentTrip: (trip) =>
+      setSelectedTripId: (id) =>
         set((s) => ({
-          currentTrip:    trip,
-          selectedTripId: trip?.id ?? null,
-          recentTripIds:  trip
-            ? [trip.id, ...s.recentTripIds.filter((id) => id !== trip.id)].slice(0, 5)
+          selectedTripId: id,
+          recentTripIds:  id
+            ? [id, ...s.recentTripIds.filter((x) => x !== id)].slice(0, 5)
             : s.recentTripIds,
         })),
 
-      clearTrip: () => set({ currentTrip: null, selectedTripId: null }),
+      clearTrip: () => set({ selectedTripId: null }),
 
       setTripOrder: (ids) => set({ tripOrder: ids }),
     }),
@@ -72,10 +67,6 @@ export const useTripStore = create<TripStore>()(
       // a version, future schema drifts hydrate stale data silently and
       // can corrupt the rehydration logic in useCurrentTripSync.
       version: 1,
-      // Persist selectedTripId + recentTripIds + tripOrder. The Trip
-      // object itself can't round-trip JSON (Timestamp instances) — we
-      // rehydrate it from the TanStack Query cache via useCurrentTripSync
-      // on boot.
       partialize: (s) => ({
         selectedTripId: s.selectedTripId,
         recentTripIds:  s.recentTripIds,

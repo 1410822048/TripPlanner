@@ -13,7 +13,7 @@
 // the trip doc. Read cost drops to 0 new listeners (we piggyback on
 // the existing trip-doc listener); 5 listeners → 0.
 import { useLastViewedStore, type BadgeFeature } from '@/store/lastViewedStore'
-import { useTripStore } from '@/store/tripStore'
+import { useCurrentTrip } from '@/features/trips/hooks/useCurrentTrip'
 import { useUid } from '@/hooks/useAuth'
 
 export type FeatureBadges = Record<BadgeFeature, boolean>
@@ -30,7 +30,7 @@ export interface UseFeatureBadgesResult {
 const FEATURES: BadgeFeature[] = ['schedule', 'expense', 'bookings', 'wish', 'planning']
 
 export function useFeatureBadges(): UseFeatureBadgesResult {
-  const trip   = useTripStore(s => s.currentTrip)
+  const trip   = useCurrentTrip()
   const tripId = trip?.id
   const viewed = useLastViewedStore(s => (tripId ? s.viewed[tripId] : undefined))
   const uid    = useUid()

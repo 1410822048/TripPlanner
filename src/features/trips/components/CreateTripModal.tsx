@@ -1,6 +1,5 @@
 // src/features/trips/components/CreateTripModal.tsx
 import { useRef, useState } from 'react'
-import { flushSync } from 'react-dom'
 import { MapPin } from 'lucide-react'
 import BottomSheet from '@/components/ui/BottomSheet'
 import GoogleIcon from '@/components/icons/GoogleIcon'
@@ -26,8 +25,8 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
   // Lazy auth: SDK only loads when the modal opens — preview-mode users who
   // never tap "create trip" pay nothing.
   const { state, signInWithGoogle } = useAuth(isOpen)
-  const createMut      = useCreateTrip()
-  const setCurrentTrip = useTripStore(s => s.setCurrentTrip)
+  const createMut         = useCreateTrip()
+  const setSelectedTripId = useTripStore(s => s.setSelectedTripId)
 
   const [title,       setTitle]       = useState('')
   const [destination, setDestination] = useState('')
@@ -75,13 +74,14 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
     // sheet must keep the user's form data for retry.
     try {
       const trip = await createMut.mutateAsync({ input: data, user: state.user })
-      // Order matters: Zustand store first, then flushSync(close). The
-      // single synchronous commit must see currentTrip=trip AND
-      // createTripOpen=false together — either alone produces a one-frame
-      // flash (modal lingering over new layout, or EmptyTrips between
-      // close and the Zustand cascade).
-      setCurrentTrip(trip)
-      flushSync(() => { close() })
+      // No flushSync needed: with `currentTrip` derived from the
+      // React Query cache (via useCurrentTrip), useCreateTrip's
+      // onSuccess cache patch + this `setSelectedTripId` + the
+      // `close()` modal-state update all batch into one React 18
+      // commit. The previous dual-store had two separate
+      // notification paths and needed flushSync to align them.
+      setSelectedTripId(trip.id)
+      close()
       toast.success(`「${trip.title}」を作成しました`)
     } catch (e) {
       toast.error(e instanceof Error ? `作成に失敗：${e.message}` : '作成に失敗しました')
