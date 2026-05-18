@@ -17,15 +17,20 @@ import { captureError } from '@/services/sentry'
  *  separate from generic verbs (`追加`, `更新`, `削除`) — share within
  *  an entity family, not across. */
 export const MUTATION_ACTION = {
-  // ── Generic verbs (most entities reuse these) ──────────────────
-  ADD:    '追加',
+  // ── Generic verbs (update / delete reused across all entities) ─
   UPDATE: '更新',
   DELETE: '削除',
 
   // ── Entity-specific create labels ──────────────────────────────
+  // All five list entities get their own create label so the failure
+  // toast (`{label}に失敗`) reads naturally and the Sentry tag pinpoints
+  // which entity broke. Don't fall back to a generic `ADD` — it
+  // fragments aggregation and reads worse in the UI.
   CREATE_BOOKING:    '予約の追加',
   CREATE_EXPENSE:    '費用の追加',
   CREATE_SCHEDULE:   '行程の追加',
+  CREATE_WISH:       '希望の追加',
+  CREATE_PLAN:       '準備項目の追加',
 
   // ── Specialty mutations ────────────────────────────────────────
   TOGGLE_VOTE:       '投票',
@@ -39,9 +44,10 @@ export const MUTATION_ACTION = {
 export type MutationActionLabel = typeof MUTATION_ACTION[keyof typeof MUTATION_ACTION]
 
 export interface MutationMeta extends Record<string, unknown> {
-  /** Verb phrase for toast / Sentry tag. Prefer `MUTATION_ACTION.X`
-   *  over raw strings so typos are a TS error. */
-  action?: MutationActionLabel | string
+  /** Verb phrase for toast / Sentry tag. Must come from `MUTATION_ACTION`
+   *  — keeping the union closed prevents typo'd raw strings from silently
+   *  fragmenting the Sentry aggregation. Add new labels there. */
+  action?: MutationActionLabel
   /** Skip the global toast. Set when the caller surfaces the failure
    *  inline(modal banner / form-level error)so the user doesn't see
    *  two notifications for the same problem. */

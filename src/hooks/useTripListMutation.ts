@@ -19,7 +19,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useUid } from '@/hooks/useAuth'
 import { patchListCache, rollbackListCache, type PatchCacheContext } from '@/utils/queryCache'
-import type { MutationMeta } from '@/services/queryClient'
+import type { MutationActionLabel, MutationMeta } from '@/services/queryClient'
 
 export interface TripListMutateContext<T> {
   /** Guaranteed non-null — the factory throws before invoking `mutate`
@@ -40,8 +40,9 @@ export interface UseTripListMutationOpts<T, Vars> {
   /** Optimistic patch — receives prev list + vars, returns new list.
    *  Omit when no optimistic UI is desired (rare; usually you want one). */
   patch?:     (prev: T[], vars: Vars) => T[]
-  /** Sentry tag + global-toast prefix when the mutation fails. */
-  action:     string
+  /** Sentry tag + global-toast prefix when the mutation fails. Closed
+   *  union from `MUTATION_ACTION` — add new labels there if needed. */
+  action:     MutationActionLabel
   /** When true, the global MutationCache.onError skips its toast — modal
    *  flows surface errors via inline banner instead. See queryClient.ts. */
   silent?:    boolean

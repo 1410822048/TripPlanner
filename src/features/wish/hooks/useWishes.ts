@@ -55,7 +55,7 @@ export function useCreateWish(tripId: string, options?: MutationOptions) {
       },
       ...prev,
     ],
-    action:     MUTATION_ACTION.ADD,
+    action:     MUTATION_ACTION.CREATE_WISH,
     silent:     options?.silent,
   })
 }

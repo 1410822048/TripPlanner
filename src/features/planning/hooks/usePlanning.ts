@@ -41,7 +41,7 @@ export function useCreatePlanItem(tripId: string, options?: MutationOptions) {
       { id: tempId(), tripId, memberIds: [createdBy], ...input, done: false, ...auditCreateMock(createdBy) },
       ...prev,
     ],
-    action:     MUTATION_ACTION.ADD,
+    action:     MUTATION_ACTION.CREATE_PLAN,
     silent:     options?.silent,
   })
 }

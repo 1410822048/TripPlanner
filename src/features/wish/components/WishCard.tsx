@@ -119,37 +119,35 @@ function WishCard({
   )
 
   return (
-    <div className="bg-surface border border-border rounded-[18px] shadow-[0_2px_10px_rgba(0,0,0,0.06)] overflow-hidden">
-      <div className="relative">
-        {tap ? (
-          <button
-            type="button"
-            onClick={tap}
-            className="block w-full bg-transparent border-none p-0 text-left cursor-pointer"
-          >
-            {heroBody}
-          </button>
-        ) : (
-          <div className="block w-full text-left">{heroBody}</div>
-        )}
+    <div className="relative bg-surface border border-border rounded-[18px] shadow-[0_2px_10px_rgba(0,0,0,0.06)] overflow-hidden">
+      {tap ? (
+        <button
+          type="button"
+          onClick={tap}
+          className="block w-full bg-transparent border-none p-0 text-left cursor-pointer"
+        >
+          {heroBody}
+        </button>
+      ) : (
+        heroBody
+      )}
 
-        {hasMenu && (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); setMenuOpen(true) }}
-            aria-label="その他の操作"
-            // Visual is 32×32 (w-8 h-8) — looks balanced on the card.
-            // Hit area extended to 44×44 via the ::before pseudo-element
-            // (-inset-1.5 = 6px on every side) so the touch target meets
-            // iOS HIG / Material's min spec without an oversized disc.
-            // active: handles touch-down feedback (mobile has no hover).
-            className="absolute top-2 right-2 w-8 h-8 rounded-full bg-black/40 text-white flex items-center justify-center border-none cursor-pointer transition-colors active:bg-black/60 before:content-[''] before:absolute before:-inset-1.5"
-            style={{ backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
-          >
-            <MoreVertical size={16} strokeWidth={2.4} />
-          </button>
-        )}
-      </div>
+      {hasMenu && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); setMenuOpen(true) }}
+          aria-label="その他の操作"
+          // Visual is 32×32 (w-8 h-8) — looks balanced on the card.
+          // Hit area extended to 44×44 via the ::before pseudo-element
+          // (-inset-1.5 = 6px on every side) so the touch target meets
+          // iOS HIG / Material's min spec without an oversized disc.
+          // active: handles touch-down feedback (mobile has no hover).
+          className="absolute top-2 right-2 w-8 h-8 rounded-full bg-black/40 text-white flex items-center justify-center border-none cursor-pointer transition-colors active:bg-black/60 before:content-[''] before:absolute before:-inset-1.5"
+          style={{ backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
+        >
+          <MoreVertical size={16} strokeWidth={2.4} />
+        </button>
+      )}
 
       <WishActionRow
         wish={wish}
