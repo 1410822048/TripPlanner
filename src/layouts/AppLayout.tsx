@@ -1,5 +1,5 @@
 // src/layouts/AppLayout.tsx
-import { Suspense, useEffect } from 'react'
+import { Suspense, startTransition, useState, useEffect } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { CalendarDays, Ticket, Receipt, Heart, ListChecks, UserCircle } from 'lucide-react'
 import PageLoadingSkeleton from '@/components/ui/PageLoadingSkeleton'
@@ -48,6 +48,26 @@ function pathToFeature(pathname: string): BadgeFeature | null {
 export default function AppLayout() {
   const { pathname } = useLocation()
   const navigate = useNavigate()
+
+  // Optimistic active-tab state — wraps tab navigation in startTransition
+  // so the new page render is deferred (concurrent), but the BottomNav
+  // active highlight paints immediately from this synchronous state.
+  // Without this, INP on tab-switch was driven by the next page's full
+  // render (~200ms peak); with it, INP = AppLayout re-render only.
+  // Pattern matches Vercel rerender-transitions for non-urgent updates.
+  const [pendingPath, setPendingPath] = useState<string | null>(null)
+  // Clear pendingPath the render after pathname catches up — derived
+  // during render (React-official "compare prev prop" pattern) instead
+  // of useEffect+setState, which the set-state-in-effect lint rightly
+  // flags as a cascade.
+  if (pendingPath && pathname.startsWith(pendingPath)) {
+    setPendingPath(null)
+  }
+  function handleTabClick(path: string) {
+    if (pathname.startsWith(path)) return
+    setPendingPath(path)
+    startTransition(() => navigate(path))
+  }
 
   // Trip rehydration runs at layout level so a hard reload landing on
   // /bookings, /expense, etc. picks the user's last trip without forcing
@@ -124,14 +144,17 @@ export default function AppLayout() {
         }}
       >
         {TABS.map(({ path, label, Icon, feature }) => {
-          const active = pathname.startsWith(path)
+          // Active highlight reads from pendingPath OR pathname so the
+          // visual feedback paints synchronously on click, even though
+          // the new page render is in a transition.
+          const active = pathname.startsWith(path) || pendingPath === path
           // Only non-active feature tabs can show unread dot — opening
           // the tab marks-viewed, and the account tab has no data.
           const showDot = !active && feature !== null && badges[feature]
           return (
             <button
               key={path}
-              onClick={() => navigate(path)}
+              onClick={() => handleTabClick(path)}
               aria-current={active ? 'page' : undefined}
               className={[
                 'flex-1 flex flex-col items-center justify-center gap-[3px] p-0 border-none bg-transparent cursor-pointer transition-colors',
