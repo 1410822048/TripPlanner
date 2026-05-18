@@ -16,7 +16,7 @@
 // (Account / PastLodging) still apply CSS center-crop on top, but
 // since the user has now centred their subject inside the 16:9, the
 // 1:1 inner crop also lands on it.
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import Cropper, { type Area } from 'react-easy-crop'
 import { Check, X as XIcon } from 'lucide-react'
@@ -38,12 +38,17 @@ export default function ImageCropDialog({ src, onCancel, onConfirm, aspect = 16 
   const [zoom, setZoom] = useState(1)
   const [area, setArea] = useState<Area | null>(null)
 
-  // Esc / hardware back closes
+  // Esc / hardware back closes. onCancel is read via a ref so callers
+  // can pass inline arrows (`onCancel={() => setOpen(false)}`) without
+  // re-subscribing the listener on every parent render — same pattern
+  // as BottomSheet's onCloseRef.
+  const onCancelRef = useRef(onCancel)
+  useEffect(() => { onCancelRef.current = onCancel })
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancelRef.current() }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [onCancel])
+  }, [])
 
   // Portal so the dialog sits above any parent BottomSheet without
   // being clipped by its overflow-hidden / rounded corners.

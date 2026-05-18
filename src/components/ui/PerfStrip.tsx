@@ -18,7 +18,11 @@ function isEnabled(): boolean {
 
 export default function PerfStrip() {
   const [, tick] = useState(0)
-  const enabled = isEnabled()
+  // Lazy init: localStorage flip happens at most once per page load (and
+  // requires a manual console command), so reading it on every render is
+  // wasted work. Passing the function reference defers the call to the
+  // initial render only.
+  const [enabled] = useState(isEnabled)
 
   useEffect(() => {
     if (!enabled) return

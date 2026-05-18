@@ -121,9 +121,15 @@ export async function createBooking(
   file: File | null,
   createdBy: string,
 ): Promise<string> {
-  const { db, collection, doc, setDoc, serverTimestamp, Timestamp } = await getFirebase()
+  // Parallelise the Firebase SDK warm-up + member-id read. getFirebase()
+  // is cached after first boot so its await is usually instant, but the
+  // shape matches the other 4 entity services (expense / schedule /
+  // planning / wish) — keeps the pattern uniform across the service layer.
+  const [{ db, collection, doc, setDoc, serverTimestamp, Timestamp }, memberIds] = await Promise.all([
+    getFirebase(),
+    getTripMemberIds(tripId),
+  ])
   const checkInTs = checkInToTimestamp(input.checkIn, Timestamp)
-  const memberIds = await getTripMemberIds(tripId)
   const ref = doc(collection(db, ...P.bookings(tripId)))
 
   let attachmentMeta: Awaited<ReturnType<typeof uploadAttachment>> | null = null

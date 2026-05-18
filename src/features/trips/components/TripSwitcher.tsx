@@ -65,7 +65,14 @@ export default function TripSwitcher({
   const swipe = useSwipeOpen()
 
   const [draggingId, setDraggingId] = useState<string | null>(null)
-  const [dragY, setDragY] = useState(0)
+  // dragY lives in a ref + CSS variable so the per-pointermove update
+  // doesn't re-render TripSwitcher + every SwipeableTripItem 60–120Hz.
+  // The dragged row reads `var(--drag-y)` directly for smooth visual
+  // follow; only crossing a row threshold (discrete) bumps `targetIdx`
+  // state, which triggers a single React render that shifts the
+  // neighbour rows.
+  const dragYRef = useRef(0)
+  const [targetIdx, setTargetIdx] = useState<number | null>(null)
   const [itemHeight, setItemHeight] = useState(55)
 
   const ref = useRef<HTMLDivElement>(null)
@@ -98,37 +105,50 @@ export default function TripSwitcher({
 
   const isReordering = draggingId !== null
 
-  function computeTargetIdx(fromIdx: number): number {
-    const offset = Math.round(dragY / itemHeight)
+  function clampTargetIdx(fromIdx: number, dy: number): number {
+    const offset = Math.round(dy / itemHeight)
     return Math.max(0, Math.min(trips.length - 1, fromIdx + offset))
   }
 
   function startReorder(id: string, measuredHeight: number) {
     swipe.closeAll()
     setDraggingId(id)
-    setDragY(0)
+    dragYRef.current = 0
+    setTargetIdx(trips.findIndex(t => t.id === id))
     setItemHeight(measuredHeight || 55)
+    if (ref.current) ref.current.style.setProperty('--drag-y', '0px')
   }
-  function moveReorder(dy: number) { setDragY(dy) }
+  function moveReorder(dy: number) {
+    dragYRef.current = dy
+    // Imperative: smooth per-frame transform for the dragged row only,
+    // via inherited CSS custom property — bypasses React reconciliation.
+    if (ref.current) ref.current.style.setProperty('--drag-y', `${dy}px`)
+    // Discrete: only flip targetIdx when crossing a row threshold so
+    // neighbour rows re-render at most a handful of times per drag.
+    if (!draggingId) return
+    const fromIdx = trips.findIndex(t => t.id === draggingId)
+    if (fromIdx === -1) return
+    const nextTarget = clampTargetIdx(fromIdx, dy)
+    if (nextTarget !== targetIdx) setTargetIdx(nextTarget)
+  }
   function endReorder() {
     if (!draggingId) return
     const fromIdx = trips.findIndex(t => t.id === draggingId)
-    if (fromIdx !== -1) {
-      const toIdx = computeTargetIdx(fromIdx)
-      if (toIdx !== fromIdx) onReorder(fromIdx, toIdx)
-    }
+    const toIdx   = targetIdx ?? fromIdx
+    if (fromIdx !== -1 && toIdx !== fromIdx) onReorder(fromIdx, toIdx)
     setDraggingId(null)
-    setDragY(0)
+    setTargetIdx(null)
+    dragYRef.current = 0
+    if (ref.current) ref.current.style.removeProperty('--drag-y')
   }
 
   function computeShift(itemId: string): number {
-    if (!draggingId || draggingId === itemId) return 0
+    if (!draggingId || draggingId === itemId || targetIdx === null) return 0
     const fromIdx = trips.findIndex(t => t.id === draggingId)
     const itemIdx = trips.findIndex(t => t.id === itemId)
     if (fromIdx === -1 || itemIdx === -1) return 0
-    const toIdx = computeTargetIdx(fromIdx)
-    if (itemIdx > fromIdx && itemIdx <= toIdx) return -itemHeight
-    if (itemIdx < fromIdx && itemIdx >= toIdx) return itemHeight
+    if (itemIdx > fromIdx && itemIdx <= targetIdx) return -itemHeight
+    if (itemIdx < fromIdx && itemIdx >= targetIdx) return itemHeight
     return 0
   }
 
@@ -262,7 +282,6 @@ export default function TripSwitcher({
                     canDelete={trip.ownedByMe && (trips.length > 1 || canDeleteLast)}
                     canReorder={trips.length > 1}
                     isDragging={draggingId === trip.id}
-                    dragY={draggingId === trip.id ? dragY : 0}
                     shiftY={computeShift(trip.id)}
                     editMode={editVisible}
                     onSelect={() => { onSelect(trip); closeDropdown() }}

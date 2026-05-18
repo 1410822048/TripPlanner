@@ -15,7 +15,7 @@
 | 即時同步 | Firestore `onSnapshot` 包裝在 `createRealtimeListHook` factory |
 | 收據 OCR | **Cloudflare Worker** + **Gemini 3 Flash Preview**(workers/ocr/) |
 | Hosting | **Cloudflare Pages**(`tripmate-2wg.pages.dev`)+ **Firebase Hosting**(`tripplanner-80a4f.web.app`)雙 host 並存 |
-| 觀測 | Sentry(lazy-loaded replayIntegration) |
+| 觀測 | Sentry(@sentry/react,init 同步;拆獨立 `vendor-sentry` chunk + modulepreload 平行下載) |
 | 測試 | Vitest + @cloudflare/vitest-pool-workers(Worker 測試) |
 | CI | GitHub Actions(`.github/workflows/ci.yml`) |
 | Pre-commit | Lefthook(typecheck/lint/test gating) |

@@ -65,7 +65,7 @@ export default defineConfig({
           const targets: string[] = []
           for (const [fileName, chunk] of Object.entries(ctx.bundle)) {
             if (chunk.type !== 'chunk') continue
-            if (/vendor-firebase-(auth|firestore)/.test(fileName)) targets.push(fileName)
+            if (/vendor-(firebase-(auth|firestore)|sentry)/.test(fileName)) targets.push(fileName)
           }
           if (targets.length === 0) return html
           const tags = targets
@@ -149,14 +149,17 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
-        // Stable names for Firebase SDK chunks so the modulepreload
-        // plugin below can target them by glob. (No dedupe benefit —
-        // Vite was already deduping correctly.)
+        // Stable names for vendor chunks the modulepreload plugin above
+        // can target. Splitting Sentry off keeps it out of the main bundle
+        // (~60 KB gz) so the main critical-path chunk parses faster — the
+        // chunk still downloads in parallel via modulepreload.
         manualChunks: id => {
           if (id.includes('@firebase/firestore') || id.includes('firebase/firestore'))
             return 'vendor-firebase-firestore'
           if (id.includes('@firebase/auth') || id.includes('firebase/auth'))
             return 'vendor-firebase-auth'
+          if (id.includes('@sentry'))
+            return 'vendor-sentry'
           return undefined
         },
       },

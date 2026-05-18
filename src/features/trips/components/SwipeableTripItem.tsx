@@ -18,7 +18,10 @@ export interface SwipeableTripItemProps {
   canDelete:   boolean
   canReorder:  boolean
   isDragging:  boolean
-  dragY:       number
+  /** Discrete row-shift offset (-itemHeight / 0 / +itemHeight) applied to
+   *  the neighbours of the dragged row. The dragged row itself ignores
+   *  this and reads `var(--drag-y)` for its own continuous transform —
+   *  see TripSwitcher's moveReorder for the CSS-var write path. */
   shiftY:      number
   /** When true, inline trash + grip icons replace the hidden swipe
    *  affordance. Swipe-to-delete is disabled so the user sees only one
@@ -38,7 +41,7 @@ const LONG_PRESS_MS = 380
 
 function SwipeableTripItem({
   trip, isActive, isOpen, canDelete, canReorder,
-  isDragging, dragY, shiftY, editMode,
+  isDragging, shiftY, editMode,
   onSelect, onOpen, onClose, onDelete,
   onReorderStart, onReorderMove, onReorderEnd,
 }: SwipeableTripItemProps) {
@@ -67,21 +70,22 @@ function SwipeableTripItem({
     }
   }
 
-  // Edge-triggered state resets on prop changes. Each is a simple "when a
-  // parent-controlled prop flips, clear a child-local sub-state" — the
-  // setState-in-effect purity lint flags this as a cascade, but here the
-  // cascade is the goal (one follow-up render) rather than a smell.
-  useEffect(() => {
-    if (!isOpen) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setConfirming(false)
-    }
-  }, [isOpen])
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setHover(false)
-  }, [isActive, isOpen, isDragging])
+  // Edge-triggered state resets on prop changes — compare-prev-prop pattern
+  // (React-official "derived state during render") instead of useEffect+
+  // setState. Saves one extra commit cycle per swipe-close / activeness
+  // change, which matters on the reorder hot path where every transient
+  // prop flip would otherwise schedule a follow-up render.
+  const [prevIsOpen, setPrevIsOpen] = useState(isOpen)
+  if (isOpen !== prevIsOpen) {
+    setPrevIsOpen(isOpen)
+    if (!isOpen && confirming) setConfirming(false)
+  }
+  const hoverKey = `${isActive}-${isOpen}-${isDragging}`
+  const [prevHoverKey, setPrevHoverKey] = useState(hoverKey)
+  if (hoverKey !== prevHoverKey) {
+    setPrevHoverKey(hoverKey)
+    if (hover) setHover(false)
+  }
 
   useEffect(() => {
     // Capture the ref *object* (stable) — then read its .current at cleanup
@@ -218,8 +222,12 @@ function SwipeableTripItem({
 
   const openX = canDelete && isOpen ? -SWIPE_WIDTH : 0
 
+  // Dragged row: reads the CSS variable TripSwitcher writes on each
+  // pointermove. The fallback `0px` keeps the row visually stationary
+  // if for some reason the var isn't set (shouldn't happen, but a noisy
+  // visual glitch on a missing var would be worse than silent no-op).
   const outerTransform = isDragging
-    ? `translate3d(0,${dragY}px,0) scale(1.04)`
+    ? 'translate3d(0, var(--drag-y, 0px), 0) scale(1.04)'
     : shiftY !== 0 ? `translate3d(0,${shiftY}px,0)` : undefined
 
   const outerTransition = isDragging
