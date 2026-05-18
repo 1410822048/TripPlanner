@@ -66,6 +66,12 @@ export const useTripStore = create<TripStore>()(
     }),
     {
       name: 'tripmate-trip-store',
+      // Schema version — bump when the persisted shape changes (rename /
+      // remove a field, switch a string id to a branded type, etc.) and
+      // add a `migrate(persistedState, fromVersion)` handler here. Without
+      // a version, future schema drifts hydrate stale data silently and
+      // can corrupt the rehydration logic in useCurrentTripSync.
+      version: 1,
       // Persist selectedTripId + recentTripIds + tripOrder. The Trip
       // object itself can't round-trip JSON (Timestamp instances) — we
       // rehydrate it from the TanStack Query cache via useCurrentTripSync

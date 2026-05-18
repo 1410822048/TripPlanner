@@ -105,8 +105,10 @@ export function useMyTrips(uid: string | undefined): UseQueryResult<Trip[]> {
     const publish = () => {
       if (!mounted) return
       const arr = idList
-        .map(id => tripMap.get(id))
-        .filter((t): t is Trip => !!t)
+        .flatMap(id => {
+          const t = tripMap.get(id)
+          return t ? [t] : []
+        })
         .sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis())
       qc.setQueryData<Trip[]>(tripKeys.mine(uid), arr)
       if (!firstPublishMarked && arr.length > 0) {

@@ -283,15 +283,18 @@ export function computeBalances(
  * 的優化情況(例:A→B→C→A 各 10,net 全 0,suggestion 為空)。
  */
 export function computeSettlements(balances: MemberBalance[]): Settlement[] {
-  const creditors = balances
-    .filter(b => b.net > EPS)
-    .map(b => ({ id: b.memberId, amt: b.net }))
-    .sort((a, b) => b.amt - a.amt)
-
-  const debtors = balances
-    .filter(b => b.net < -EPS)
-    .map(b => ({ id: b.memberId, amt: -b.net }))
-    .sort((a, b) => b.amt - a.amt)
+  // Single partition pass — was two `.filter().map()` chains that walked
+  // `balances` twice. N≤10 in practice so the speedup is unmeasurable,
+  // but the rewrite reads as one intent (split into +/− buckets) rather
+  // than two near-duplicate stanzas.
+  const creditors: { id: string; amt: number }[] = []
+  const debtors:   { id: string; amt: number }[] = []
+  for (const b of balances) {
+    if      (b.net >  EPS) creditors.push({ id: b.memberId, amt:  b.net })
+    else if (b.net < -EPS) debtors.push  ({ id: b.memberId, amt: -b.net })
+  }
+  creditors.sort((a, b) => b.amt - a.amt)
+  debtors.sort  ((a, b) => b.amt - a.amt)
 
   const out: Settlement[] = []
   let i = 0, j = 0

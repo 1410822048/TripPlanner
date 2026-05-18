@@ -146,6 +146,13 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  // Force-pre-bundle lucide-react: it ships as a barrel re-exporting ~1900
+  // individual icon ESM files, and without pre-bundling Vite's dev server
+  // walks every file on cold start (~2-3s slower). Prod is unaffected —
+  // Rollup tree-shakes correctly because the package has `sideEffects: false`.
+  optimizeDeps: {
+    include: ['lucide-react'],
+  },
   build: {
     rollupOptions: {
       output: {

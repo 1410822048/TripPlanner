@@ -224,9 +224,10 @@ export default function WishPage() {
                 // (kicked / former members) are silently dropped — the
                 // card's totalVotes prop still feeds the heart count, so
                 // they show up as "+N" rather than vanishing.
-                const voters = w.votes
-                  .map(uid => memberById.get(uid))
-                  .filter((m): m is TripMember => !!m)
+                const voters = w.votes.flatMap(uid => {
+                  const m = memberById.get(uid)
+                  return m ? [m] : []
+                })
                 return (
                   <WishCard
                     key={w.id}

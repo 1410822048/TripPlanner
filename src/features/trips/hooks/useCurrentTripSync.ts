@@ -41,9 +41,13 @@ export function useCurrentTripSync(): void {
       }
       // current trip no longer in cache → fall through to reselect
     }
-    // Reselect priority: persisted selection → recents → newest.
-    const persisted = selectedTripId ? myTrips.find(t => t.id === selectedTripId) : undefined
-    const recent    = recentTripIds.map(id => myTrips.find(t => t.id === id)).find(Boolean)
+    // Reselect priority: persisted selection → recents → newest. One
+    // O(T) pass to build the index, then O(1) lookups — avoids the
+    // O(R×T) `recentTripIds.map(id => myTrips.find(...))` that the
+    // previous shape had.
+    const tripById  = new Map(myTrips.map(t => [t.id, t]))
+    const persisted = selectedTripId ? tripById.get(selectedTripId) : undefined
+    const recent    = recentTripIds.map(id => tripById.get(id)).find(Boolean)
     setCurrentTrip(persisted ?? recent ?? myTrips[0] ?? null)
   }, [isDemo, myTrips, currentTrip, selectedTripId, recentTripIds, setCurrentTrip])
 }

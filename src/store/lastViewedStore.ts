@@ -56,6 +56,11 @@ export const useLastViewedStore = create<LastViewedStore>()(
     }),
     {
       name: 'tripmate-last-viewed',
+      // Schema version — bump + add a `migrate` handler when the `viewed`
+      // shape changes (e.g. adding a new BadgeFeature key, switching to a
+      // nested per-feature object). Without a version, an old shape would
+      // hydrate into the new typed slot and silently break badge math.
+      version: 1,
       partialize: (s) => ({ viewed: s.viewed }),
     },
   ),
