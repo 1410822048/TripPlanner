@@ -58,13 +58,9 @@ export default function TripSwitcher({
 }: TripSwitcherProps) {
   const [open, setOpen] = useState(false)
   const [editMode, setEditMode] = useState(false)
-  // Effective edit visibility ties to trips.length > 1 — same guard the
-  // toggle button uses. Decouples the "edit mode is on" intent from the
-  // "edit chrome can render" condition: when a delete drops trips to 1,
-  // the toggle disappears but the rows would still render their trash
-  // icons against this state — and clicking those would delete the last
-  // trip immediately (canDelete still true under canDeleteLast). Deriving
-  // it here keeps both gates honest.
+  // Tied to trips.length > 1 so that a delete dropping trips to 1 immediately
+  // hides edit chrome — otherwise lingering trash icons could delete the
+  // last trip (canDelete still true under canDeleteLast).
   const editVisible = editMode && trips.length > 1
   const swipe = useSwipeOpen()
 
@@ -74,13 +70,10 @@ export default function TripSwitcher({
 
   const ref = useRef<HTMLDivElement>(null)
 
-  // Single close handler — every path that closes the dropdown calls
-  // this, replacing what used to be a `useEffect` that watched `open`
-  // and reset side states on transition. The effect approach tripped
-  // react-hooks/set-state-in-effect (rightly: it was a state→state
-  // cascade rather than syncing to an external system). Centralising
-  // here is the React-19-idiomatic fix: the "reopen-fresh" contract
-  // is enforced at every flip point instead of converging in a watcher.
+  // Every close path calls this. Replaced the previous useEffect-on-open
+  // cascade (state→state sync is what react-hooks/set-state-in-effect
+  // rightly flags); centralising at the flip points keeps the
+  // "reopen-fresh" contract local.
   function closeDropdown() {
     setOpen(false)
     swipe.closeAll()
@@ -88,14 +81,12 @@ export default function TripSwitcher({
   }
 
   useEffect(() => {
-    if (!open) return  // only need the outside-click listener while open
+    if (!open) return
     function handler(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) {
-        // Inline rather than calling closeDropdown so the effect's dep
-        // array stays at [open] — pulling closeDropdown in would mean
-        // the listener re-registers on every render (closeDropdown's
-        // identity changes with each render in non-compiler-memoised
-        // form). setState refs are themselves stable.
+        // Inlined (not closeDropdown call) so the effect deps stay [open] —
+        // closeDropdown's identity changes per render and would re-register
+        // the listener.
         setOpen(false)
         swipe.closeAll()
         setEditMode(false)

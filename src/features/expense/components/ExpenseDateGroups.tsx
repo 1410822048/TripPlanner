@@ -19,12 +19,10 @@ import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
 import { splitSummary } from '../utils'
 import { fromLocalDateString } from '@/utils/dates'
 import { formatAmount } from '@/utils/currency'
+import { groupBy } from '@/utils/groupBy'
 
-/** How many most-recent days stay open by default. 2 days = "today +
- *  yesterday" — a single day on a typical trip accumulates a lot of
- *  receipt rows (meals, transport, snacks), so even 3 days expanded
- *  pushed the list past one screen. 2 keeps the most-relevant context
- *  visible without scroll. */
+/** 預設展開最近 N 天 — "today + yesterday"。一天 receipts 很容易破 10 筆,
+ *  3 天就會推離首屏。 */
 const DEFAULT_EXPANDED_DAYS = 2
 
 function formatDateHeading(date: string): string {
@@ -45,11 +43,11 @@ interface Props {
 export default function ExpenseDateGroups({
   expenses, members, currency, canWrite, swipe, onSelect, onSwipeDelete,
 }: Props) {
-  const grouped: Record<string, Expense[]> = {}
-  for (const e of expenses) {
-    (grouped[e.date] ??= []).push(e)
-  }
+  const grouped = groupBy(expenses, e => e.date)
   const dates = Object.keys(grouped).sort((a, b) => (a < b ? 1 : -1))
+  // O(1) per-row lookup. `members.find` inside `.map` was O(N×M) on every
+  // SettlementSummary / swipe / modal cascade re-render.
+  const memberById = new Map(members.map(m => [m.id, m]))
 
   // User overrides per-date. Anything NOT in this map falls back to the
   // idx-based default (top N expanded). A map means we can store both
@@ -115,7 +113,7 @@ export default function ExpenseDateGroups({
                     <SwipeableExpenseItem
                       key={e.id}
                       expense={e}
-                      payer={members.find(m => m.id === e.paidBy)}
+                      payer={memberById.get(e.paidBy)}
                       summary={splitSummary(e, members.length)}
                       categoryEmoji={CATEGORY_EMOJI[e.category]}
                       currency={currency}

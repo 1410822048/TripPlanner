@@ -5,49 +5,34 @@ import type { Expense } from '@/types'
 import type { SettlementRecord } from '@/types/settlement'
 import type { TripMember } from '@/features/trips/types'
 import MemberAvatar from '@/components/ui/MemberAvatar'
-import {
-  computeBalancesFull,
-  computeSettlements,
-  expandWithGhosts,
-} from '../services/settlement'
+import { computeBalancesFull, computeSettlements } from '../services/settlement'
 import { formatAmount } from '@/utils/currency'
 
 interface Props {
   expenses:    Expense[]
   members:     TripMember[]
   settlements: SettlementRecord[]
-  /** ISO currency code of the trip — included in props(not hooked
-   *  internally)so the memo comparator below catches changes when
-   *  the user updates currency mid-trip. */
+  /** ISO currency code of the trip — used to format amounts inline. */
   currency: string
-  /** Current user uid — must equal `toUid` (receiver) for the「済み」
-   *  button to enable. Receiver-only mirrors firestore.rules and prevents
-   *  the payer from marking themselves settled before the payee actually
-   *  confirms receipt. */
+  /** Current user uid — must equal `toUid` for the「済み」button to
+   *  enable. Receiver-only mirrors firestore.rules. */
   uid: string | null
-  /** Records a settlement of the suggested transfer. Disabled returns
-   *  silently from caller when the user can't sign or the amount is 0. */
   onMarkSettled: (fromId: string, toId: string, amount: number) => void
-  /** Removes a previously recorded settlement (e.g. user wants to undo
-   *  a「済み」mark, or the underlying expense was deleted and the
-   *  record is now orphan). Caller wires this to useDeleteSettlement;
-   *  firestore.rules limits delete to the settledBy uid or the trip owner. */
+  /** Removes a previously recorded settlement. Used to clean up
+   *  orphans whose expense was deleted, or to undo a premature「済み」. */
   onDeleteSettlement: (id: string) => void
 }
 
-function SettlementSummary({
+export default function SettlementSummary({
   expenses, members, settlements, currency, uid,
   onMarkSettled, onDeleteSettlement,
 }: Props) {
-  // Expand `members` with ghost rows for any uid in expenses or
-  // settlements that's no longer an active trip member. Without this,
-  // the chip lookups below would silently `return null` for kicked-out
-  // members and their amounts would visually disappear from settlement —
-  // even though the math still includes them.
-  const allParticipants = expandWithGhosts(members, expenses, settlements)
-  const { balances, orphans } = computeBalancesFull(expenses, allParticipants, settlements)
+  // computeBalancesFull also returns `participants` (members + ghosts
+  // for kicked-out uids still in expenses/settlements). Reusing that
+  // list avoids walking expenses/splits/settlements a second time.
+  const { balances, orphans, participants } = computeBalancesFull(expenses, members, settlements)
   const suggestions = computeSettlements(balances)
-  const memberById  = new Map(allParticipants.map(m => [m.id, m]))
+  const memberById  = new Map(participants.map(m => [m.id, m]))
 
   // Don't render if nothing to show. Even without expenses we still
   // surface the section when settlement records exist (e.g. user deleted
@@ -129,8 +114,7 @@ function SettlementSummary({
                 const from = memberById.get(s.fromId)!
                 const to   = memberById.get(s.toId)!
                 // Receiver-only: only the payee (toId) can mark settled.
-                // Avoids disputes from a payer unilaterally claiming they
-                // paid back. Demo / signed-out / payer all see disabled.
+                // Payer / third-party see a status pill, not a button.
                 const canRecord = uid != null && uid === s.toId
                 const isPayer   = uid != null && uid === s.fromId
                 return (
@@ -141,17 +125,10 @@ function SettlementSummary({
                     <MemberAvatar member={from} size={28} />
                     <ArrowRight size={12} strokeWidth={2.5} className="text-muted shrink-0" />
                     <MemberAvatar member={to}   size={28} />
-                    {/* Name labels removed — avatar→avatar already conveys who pays
-                        whom. Bumped avatar size 24→28 since the row's now less
-                        cluttered and the photos read better. aria-label on the
-                        action button still carries the textual context for
-                        screen readers. */}
                     <div className="flex-1 min-w-0 text-[14.5px] font-extrabold text-ink tabular-nums -tracking-[0.2px]">
                       {formatAmount(s.amount, currency)}
                     </div>
                     {canRecord ? (
-                      // 收款人 — 才有「済み」這個 action 按鈕,因為只有他能
-                      // 確認真的收到了錢(rules + UX 同步收緊到 toUid 唯一)。
                       <button
                         type="button"
                         onClick={() => onMarkSettled(s.fromId, s.toId, s.amount)}
@@ -162,10 +139,6 @@ function SettlementSummary({
                         済み
                       </button>
                     ) : (
-                      // 付款人 / 第三者 — 看到的是 status 不是 button,
-                      // 視覺上明確區隔「我能按」vs「等對方按」。沒 onClick、
-                      // 沒 button 樣式、icon 用 Clock 而非 Check,讀作「待回應」
-                      // 而非「未完成行動」。
                       <div
                         role="status"
                         aria-label={isPayer
@@ -351,8 +324,3 @@ function SettlementRow({ record, from, to, currency, canDelete, onDelete }: RowP
   )
 }
 
-// Memoised: ExpensePage state changes (modal toggle, swipe, etc.) cascade
-// here even when expenses[] / members[] are unchanged. Default Object.is
-// comparison is correct — both props come from stable upstream sources
-// (TanStack Query cache for expenses, useMemo'd members).
-export default SettlementSummary

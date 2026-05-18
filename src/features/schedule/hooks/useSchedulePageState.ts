@@ -3,9 +3,6 @@
 // SchedulePage. Extracting this lets the page component itself read as
 // pure layout orchestration: pick a few values from the returned bag,
 // hand modals off to TripModalsHost, render.
-//
-// Hook order is intentional and matches the original inline order — if
-// you reorder, double-check React's rules-of-hooks invariants survive.
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useFormModal, type UseFormModalResult } from '@/hooks/useFormModal'
@@ -300,30 +297,32 @@ export function useSchedulePageState(): SchedulePageState {
     setTripOrder(ids)
   }
 
+  // Demo mode lacks a real tripId, so every cloud-only action funnels
+  // through the sign-in prompt before mutating state.
   function handleMenuAction(key: MenuActionKey) {
-    if (key === 'edit') { setEditTripOpen(true); return }
-    // 'members' opens the roster/admin sheet (list + remove). 'share'
-    // opens the invite-link sheet. They used to share one modal;
-    // separating them matches the menu copy ("管理成員" vs "分享行程")
-    // and keeps each sheet focused on a single responsibility. Demo
-    // mode has no real tripId → sign-in prompt.
-    if (key === 'members') {
-      if (isDemo) { setSignInOpen(true); return }
-      setMembersOpen(true)
-      return
+    switch (key) {
+      case 'edit':
+        setEditTripOpen(true)
+        return
+      case 'members':
+        if (isDemo) setSignInOpen(true)
+        else        setMembersOpen(true)
+        return
+      case 'share':
+        if (isDemo) setSignInOpen(true)
+        else        setInviteOpen(true)
+        return
+      case 'copy':
+        if (isDemo)             setSignInOpen(true)
+        else if (currentTrip)   setCopyTripOpen(true)
+        return
+      default: {
+        // Exhaustiveness check: if MenuActionKey gains a member, TS will
+        // flag this assignment until the new case is handled.
+        const _exhaustive: never = key
+        toast.info(`${_exhaustive} は開発中です`)
+      }
     }
-    if (key === 'share') {
-      if (isDemo) { setSignInOpen(true); return }
-      setInviteOpen(true)
-      return
-    }
-    if (key === 'copy') {
-      if (isDemo)        { setSignInOpen(true); return }
-      if (!currentTrip)  return
-      setCopyTripOpen(true)
-      return
-    }
-    toast.info(`${key} は開発中です`)
   }
 
   // Cloud-only — gate is in handleMenuAction. uid is guaranteed at this

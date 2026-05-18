@@ -63,9 +63,24 @@ export interface OrphanSettlement {
 export interface BalanceResult {
   balances: MemberBalance[]
   orphans:  OrphanSettlement[]
+  /** Active members + any ghosts surfaced during expansion. Same order
+   *  as `balances`. Returned so callers don't need a separate
+   *  `expandWithGhosts` pass over the same expenses/settlements. */
+  participants: TripMember[]
 }
 
 const EPS = 0.5
+
+/** Lazy-create `record[key]` as an empty sub-map and return it for
+ *  in-place writes. Replaces the repeated `record[k] ?? (record[k] = {})`
+ *  fallback-assign idiom across the 4 pairwise maps below
+ *  (gross/applied/orphanByPair/remaining/normalized). */
+function ensureSlot<T>(
+  record: Record<string, Record<string, T>>,
+  key:    string,
+): Record<string, T> {
+  return record[key] ?? (record[key] = {})
+}
 
 /** Visual style for ghost participants — chip 灰色 + 「退」字。 */
 const GHOST_CHIP = { label: '退', color: '#7a7a7a', bg: '#e5e5e5' } as const
@@ -130,33 +145,33 @@ export function computeBalancesFull(
   members:     TripMember[],
   settlements: SettlementRecord[] = [],
 ): BalanceResult {
-  // 維護展開後的順序列表:active 先、ghost 後(按 expense/settlement
-  // 中首次出現為準),確保 output 順序可預測。
+  // order 維護全參與者 ID(active 先、ghost 按首見順序在後);ghosts 同
+  // 步累積 TripMember 物件,讓回傳的 participants 一次走完免重複 walk。
   const order: string[] = members.map(m => m.id)
   const known = new Set(order)
+  const ghosts: TripMember[] = []
   const ensure = (id: string) => {
-    if (!known.has(id)) {
-      known.add(id)
-      order.push(id)
-    }
+    if (known.has(id)) return
+    known.add(id)
+    order.push(id)
+    ghosts.push(ghostMember(id))
   }
 
-  // Display accumulators — expenses only, never settlements.
   // 立替 = 你代墊給整組的金額;分擔 = 你的那份。Settlement 是 payment
-  // layer,不該污染這兩個語義(否則「立替」會把你還的錢也算進去)。
+  // layer,不該污染這兩個語義(否則「立替」會把還的錢也算進去)。
   const paid: Record<string, number> = {}
   const owed: Record<string, number> = {}
 
   // gross[from][to] = 來自 expenses 的天然債務,from 欠 to。
   const gross: Record<string, Record<string, number>> = {}
   const addGross = (from: string, to: string, amount: number) => {
-    if (from === to) return  // 自己分擔自己付的不算 debt
+    if (from === to) return
     ensure(from); ensure(to)
-    gross[from] ??= {}
-    gross[from][to] = (gross[from][to] ?? 0) + amount
+    const slot = ensureSlot(gross, from)
+    slot[to] = (slot[to] ?? 0) + amount
   }
 
-  // ── Step 1: 由 expenses 建 gross debt + paid/owed display ──────
+  // Step 1: gross debt + paid/owed display
   for (const e of expenses) {
     ensure(e.paidBy)
     paid[e.paidBy] = (paid[e.paidBy] ?? 0) + e.amount
@@ -167,83 +182,61 @@ export function computeBalancesFull(
     }
   }
 
-  // ── Step 2: 套用 settlements,cap 在每個 pair 的 gross debt ────
-  // 核心不變式:applied[from][to] ≤ gross[from][to]。超出的部分變成
-  // orphan,完全不影響 balance,只交給上層 UI 提示使用者。
+  // Step 2: settlements cap at gross per pair. 核心不變式:applied ≤ gross。
+  // 超額部分變 orphan,不影響 balance — 只供上層 UI 提示使用者。
   const applied: Record<string, Record<string, number>> = {}
   const orphanByPair: Record<string, Record<string, number>> = {}
 
   for (const st of settlements) {
-    if (st.fromUid === st.toUid) continue  // 自我 settlement (應該不存在,但 defensive)
+    if (st.fromUid === st.toUid) continue
     ensure(st.fromUid); ensure(st.toUid)
     const debt = gross[st.fromUid]?.[st.toUid] ?? 0
-    // Capture slot via fallback-assign so TS narrows it to non-undefined
-    // for the subsequent indexed writes — `??=` doesn't propagate the
-    // narrowing in current TS strict mode.
-    const appliedSlot = applied[st.fromUid] ?? (applied[st.fromUid] = {})
+    const appliedSlot = ensureSlot(applied, st.fromUid)
     const already = appliedSlot[st.toUid] ?? 0
-    const room = Math.max(0, debt - already)
-    const usable = Math.min(st.amount, room)
+    const usable = Math.min(st.amount, Math.max(0, debt - already))
     appliedSlot[st.toUid] = already + usable
     const leftover = st.amount - usable
     if (leftover > 0) {
-      const orphanSlot = orphanByPair[st.fromUid] ?? (orphanByPair[st.fromUid] = {})
+      const orphanSlot = ensureSlot(orphanByPair, st.fromUid)
       orphanSlot[st.toUid] = (orphanSlot[st.toUid] ?? 0) + leftover
     }
   }
 
-  // ── Step 3: remaining = max(0, gross - applied) ────────────────
+  // Step 3: remaining = max(0, gross - applied)
   const remaining: Record<string, Record<string, number>> = {}
   for (const from of Object.keys(gross)) {
-    for (const to of Object.keys(gross[from] ?? {})) {
-      const debt    = gross[from]?.[to] ?? 0
-      const settled = applied[from]?.[to] ?? 0
-      const rest    = Math.max(0, debt - settled)
-      if (rest > EPS) {
-        remaining[from] ??= {}
-        remaining[from][to] = rest
-      }
+    const grossRow = gross[from]!
+    for (const to of Object.keys(grossRow)) {
+      const rest = Math.max(0, (grossRow[to] ?? 0) - (applied[from]?.[to] ?? 0))
+      if (rest > EPS) ensureSlot(remaining, from)[to] = rest
     }
   }
 
-  // ── Step 4: Normalize cross-debt ──────────────────────────────
-  // 對每一組無序 pair (a, b),把 remaining[a][b] 跟 remaining[b][a]
-  // 對抵,只留淨額方向。例如:
-  //   A→B = 30、B→A = 50  →  normalize 後  B→A = 20
-  // 對 settlement suggestion 無影響(computeSettlements 走 net),但是
-  // 對任何用 pairwise edge 的 UI(未來「兩兩明細」)或 transfer route
-  // 直接顯示都會變乾淨。
+  // Step 4: normalize. 對每組無序 pair 把對抵的反方向邊合併成淨額。
+  // 例:A→B=30、B→A=50  →  B→A=20。對 net 沒影響(net 不看方向只看
+  // 邊權),但任何用 pairwise edge 的 UI 都會更乾淨。
   const normalized: Record<string, Record<string, number>> = {}
   const seenPair = new Set<string>()
-  const allFroms = new Set<string>([...Object.keys(remaining)])
 
-  for (const from of allFroms) {
-    for (const to of Object.keys(remaining[from] ?? {})) {
+  for (const from of Object.keys(remaining)) {
+    for (const to of Object.keys(remaining[from]!)) {
       const key = from < to ? `${from}|${to}` : `${to}|${from}`
       if (seenPair.has(key)) continue
       seenPair.add(key)
 
       const fwd = remaining[from]?.[to] ?? 0
       const bwd = remaining[to]?.[from] ?? 0
-
-      if (fwd - bwd > EPS) {
-        normalized[from] ??= {}
-        normalized[from][to] = fwd - bwd
-      } else if (bwd - fwd > EPS) {
-        normalized[to] ??= {}
-        normalized[to][from] = bwd - fwd
-      }
-      // |fwd - bwd| ≤ EPS  →  完全抵銷,無 edge
+      if (fwd - bwd > EPS) ensureSlot(normalized, from)[to] = fwd - bwd
+      else if (bwd - fwd > EPS) ensureSlot(normalized, to)[from] = bwd - fwd
+      // |fwd - bwd| ≤ EPS → 完全抵銷,無 edge
     }
   }
 
-  // ── Step 5: net per person 從 normalized remaining 算 ──────────
-  // net[i] = Σ_j normalized[j][i] (others owe me)  −  Σ_j normalized[i][j] (I owe others)
+  // Step 5: net[i] = Σ normalized[j][i] − Σ normalized[i][j]
   const net: Record<string, number> = {}
   for (const id of order) net[id] = 0
   for (const from of Object.keys(normalized)) {
-    const row = normalized[from]
-    if (!row) continue
+    const row = normalized[from]!
     for (const to of Object.keys(row)) {
       const amount = row[to] ?? 0
       net[from] = (net[from] ?? 0) - amount
@@ -251,14 +244,12 @@ export function computeBalancesFull(
     }
   }
 
-  // ── Flatten orphan structure to array ──────────────────────────
   const orphans: OrphanSettlement[] = []
   for (const from of Object.keys(orphanByPair)) {
-    for (const to of Object.keys(orphanByPair[from] ?? {})) {
-      const amount = orphanByPair[from]?.[to] ?? 0
-      if (amount > EPS) {
-        orphans.push({ fromUserId: from, toUserId: to, amount })
-      }
+    const row = orphanByPair[from]!
+    for (const to of Object.keys(row)) {
+      const amount = row[to] ?? 0
+      if (amount > EPS) orphans.push({ fromUserId: from, toUserId: to, amount })
     }
   }
 
@@ -269,7 +260,8 @@ export function computeBalancesFull(
     net:  net[id]  ?? 0,
   }))
 
-  return { balances, orphans }
+  const participants = ghosts.length === 0 ? members : [...members, ...ghosts]
+  return { balances, orphans, participants }
 }
 
 /**

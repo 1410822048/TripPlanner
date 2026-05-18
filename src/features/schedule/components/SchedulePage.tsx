@@ -1,9 +1,8 @@
 // src/features/schedule/components/SchedulePage.tsx
-// Layout orchestration only: pull state from useSchedulePageState, hand
-// the modal slice to TripModalsHost, render the trip switcher + header
-// card + day timeline. Anything stateful or behavioural lives in the
-// hook; anything per-modal lives in TripModalsHost.
-import type { ReactNode } from 'react'
+// Layout orchestration only — state lives in useSchedulePageState,
+// modals in TripModalsHost. TripModalsHost is rendered as a sibling
+// (not nested in a conditional branch) so CreateTripModal survives the
+// EmptyTrips → main-content transition without remounting and flashing.
 import TripSwitcher from '@/features/trips/components/TripSwitcher'
 import TripHeaderCard from '@/features/trips/components/TripHeaderCard'
 import SchedulePageSkeleton from './SchedulePageSkeleton'
@@ -26,26 +25,37 @@ export default function SchedulePage() {
     setCreateTripOpen, setEditTripOpen, setInviteOpen, setSignInOpen,
   } = state
 
-  // TripModalsHost is mounted as a sibling to whatever the content
-  // branch resolves to, so CreateTripModal stays mounted across the
-  // empty → main transition. Previously the empty branch had its own
-  // CreateTripModal; after creating the first trip, that branch
-  // unmounted and TripModalsHost remounted a fresh CreateTripModal —
-  // briefly with `isOpen=true` until the close-state batch caught up,
-  // producing a one-frame flash before the sheet closed.
-  let content: ReactNode
+  const modals = <TripModalsHost state={state} />
+
   if (cloudTripsError) {
-    content = <TripsErrorState message={cloudTripsError.message} onRetry={refetchTrips} />
-  } else if (cloudTripsLoading) {
-    content = <SchedulePageSkeleton />
-  } else if (cloudTripsEmpty) {
-    content = <EmptyTrips onCreate={() => setCreateTripOpen(true)} />
-  } else if (!selectedTrip) {
-    // Between auth resolution and AppLayout's useCurrentTripSync picking
-    // a currentTrip, selectedTrip can briefly be null in cloud mode.
-    content = <SchedulePageSkeleton />
-  } else {
-    content = (
+    return <>
+      <TripsErrorState message={cloudTripsError.message} onRetry={refetchTrips} />
+      {modals}
+    </>
+  }
+  if (cloudTripsLoading) {
+    return <>
+      <SchedulePageSkeleton />
+      {modals}
+    </>
+  }
+  if (cloudTripsEmpty) {
+    return <>
+      <EmptyTrips onCreate={() => setCreateTripOpen(true)} />
+      {modals}
+    </>
+  }
+  // Between auth resolution and AppLayout's useCurrentTripSync picking
+  // a currentTrip, selectedTrip can briefly be null in cloud mode.
+  if (!selectedTrip) {
+    return <>
+      <SchedulePageSkeleton />
+      {modals}
+    </>
+  }
+
+  return (
+    <>
       <div className="bg-app min-h-full pb-8">
         {isDemo && (
           <div className="mx-4 mt-3 mb-1 px-3 py-2 rounded-xl bg-accent-pale border border-accent/15 flex items-center gap-2">
@@ -73,10 +83,6 @@ export default function SchedulePage() {
             onReorder={reorderTrips}
             onCreateTrip={() => setCreateTripOpen(true)}
             canDeleteLast={!isDemo}
-            // Demo mode has no real ownership — every trip belongs to
-            // "you", so all menu actions are visible. In cloud mode, gate
-            // owner-only entries (edit metadata / share invite link /
-            // settings) behind a real ownerId match.
             isOwner={isOwner}
           />
         </div>
@@ -110,13 +116,7 @@ export default function SchedulePage() {
           onEdit={scheduleModal.openEdit}
         />
       </div>
-    )
-  }
-
-  return (
-    <>
-      {content}
-      <TripModalsHost state={state} />
+      {modals}
     </>
   )
 }
