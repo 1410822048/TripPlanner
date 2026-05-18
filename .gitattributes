@@ -1,0 +1,28 @@
+# Normalise all text files to LF on commit, regardless of contributor OS.
+# `text=auto` lets Git detect text vs binary; `eol=lf` forces LF in the
+# repository AND on checkout (overriding the user's core.autocrlf setting).
+# Without this, Windows contributors silently commit CRLF and the diff
+# noise + cross-platform tooling pain compounds over time.
+* text=auto eol=lf
+
+# Windows-native scripts must keep CRLF or cmd.exe / PowerShell mis-parse them.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# Binary assets — disable any text processing so Git never tries to diff
+# or munge line endings. `binary` is shorthand for `-text -diff`.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.pdf   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.eot   binary
+*.zip   binary
+*.gz    binary
