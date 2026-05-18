@@ -16,7 +16,7 @@
 	// the CORS allowlist needs to be readable for debugging.
 	"vars": {
 		"FIREBASE_PROJECT_ID": "tripplanner-80a4f",
-		"ALLOWED_ORIGINS": "https://tripplanner-80a4f.web.app,https://tripplanner-80a4f.firebaseapp.com,http://localhost:5173"
+		"ALLOWED_ORIGINS": "https://tripplanner-80a4f.web.app,https://tripplanner-80a4f.firebaseapp.com,https://tripmate-2wg.pages.dev,*.tripmate-2wg.pages.dev,http://localhost:5173"
 	}
 	// Secrets are set via `wrangler secret put`:
 	//   GEMINI_API_KEY  ← Google AI Studio API key

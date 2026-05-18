@@ -5,21 +5,38 @@ import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 import { visualizer } from 'rollup-plugin-visualizer'
 import path from 'path'
-import { readFileSync } from 'fs'
+import { execSync } from 'node:child_process'
 
-// Read the version synchronously at config-load time so it lands in the
-// bundle as a statically-inlined string (no runtime JSON import, no extra
-// network cost on the PWA critical path).
-const pkg = JSON.parse(readFileSync('./package.json', 'utf-8')) as { version: string }
+// Inline build-identifying constants at config-load time so they land in
+// the bundle as statically-inlined strings (no runtime JSON import, no
+// extra network cost on the PWA critical path).
+//
+// `__APP_VERSION__` is the short git hash of HEAD — uniquely identifies
+// every commit, much more useful than `package.json.version` (which never
+// changed: it was stuck at 0.0.0 forever). Used as Sentry release tag so
+// each error gets bucketed to a specific commit and as the user-visible
+// version on AccountPage's footer.
+//
+// `__BUILD_DATE__` is timestamp with minute resolution so multiple builds
+// on the same day are distinguishable.
+function getGitHash(): string {
+  try {
+    const hash  = execSync('git rev-parse --short HEAD').toString().trim()
+    // Append `-dirty` if working tree has uncommitted changes so we don't
+    // claim a clean commit hash for an in-progress build.
+    const dirty = execSync('git status --porcelain').toString().trim().length > 0
+    return dirty ? `${hash}-dirty` : hash
+  } catch {
+    return 'dev'
+  }
+}
+const gitHash   = getGitHash()
+const buildDate = new Date().toISOString().slice(0, 16).replace('T', ' ')
 
 export default defineConfig({
   define: {
-    // Inline as JSON-stringified literals — these become compile-time
-    // constants visible to the app as `__APP_VERSION__` / `__BUILD_DATE__`.
-    // Build date is captured at the moment Vite boots; for dev server this
-    // is the session start, for production builds it's the build time.
-    __APP_VERSION__: JSON.stringify(pkg.version),
-    __BUILD_DATE__:  JSON.stringify(new Date().toISOString().slice(0, 10)),
+    __APP_VERSION__: JSON.stringify(gitHash),
+    __BUILD_DATE__:  JSON.stringify(buildDate),
   },
   plugins: [
     react(),

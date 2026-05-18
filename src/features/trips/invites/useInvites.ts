@@ -15,11 +15,11 @@ import {
 } from './inviteService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
 import { tripKeys } from '@/features/trips/hooks/useTrips'
-import { toast } from '@/shared/toast'
+import type { MutationMeta } from '@/services/queryClient'
 import type { Invite, Trip } from '@/types'
 
 export const inviteKeys = {
-  ofTrip: (tripId: string) => ['invites', tripId] as const,
+  ofTrip: (tripId: string, _uid?: string) => ['invites', tripId] as const,
 }
 
 /** Internal realtime base — subscribes to /trips/{tripId}/invites for
@@ -28,7 +28,7 @@ export const inviteKeys = {
 const useInvitesBase = createRealtimeListHook<Invite>({
   queryKeyFactory: inviteKeys.ofTrip,
   initialFetch:    listInvites,
-  subscribe:       subscribeToInvites,
+  subscribe:       (tripId, _uid, onData, onError) => subscribeToInvites(tripId, onData, onError),
   source:          'useInvites',
 })
 
@@ -51,13 +51,13 @@ export function useCreateInvite() {
       role: 'editor' | 'viewer'
       user: User
     }) => createInvite(trip, role, user),
+    meta: { action: '邀請連結作成' } satisfies MutationMeta,
     onSuccess: (invite) => {
       // Replace (not prepend) the cache: the service atomically deletes old
       // invites when creating a new one, so after success there should be
       // exactly one invite in the list — the one we just made.
       qc.setQueryData<Invite[]>(inviteKeys.ofTrip(invite.tripId), [invite])
     },
-    onError: (err) => toast.mutationError(err, '邀請連結作成'),
   })
 }
 
@@ -65,6 +65,7 @@ export function useRevokeInvite(tripId: string | undefined) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (token: string) => revokeInvite(tripId!, token),
+    meta: { action: '取り消し' } satisfies MutationMeta,
     onMutate: (token) => {
       if (!tripId) return { prev: undefined as Invite[] | undefined }
       const key  = inviteKeys.ofTrip(tripId)
@@ -72,9 +73,8 @@ export function useRevokeInvite(tripId: string | undefined) {
       if (prev) qc.setQueryData<Invite[]>(key, prev.filter(i => i.id !== token))
       return { prev }
     },
-    onError: (err, _token, ctx) => {
+    onError: (_err, _token, ctx) => {
       if (tripId && ctx?.prev !== undefined) qc.setQueryData(inviteKeys.ofTrip(tripId), ctx.prev)
-      toast.mutationError(err, '取り消し')
     },
   })
 }

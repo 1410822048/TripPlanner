@@ -9,6 +9,17 @@ import { markPerf } from './utils/perf'
 import './index.css'
 import App from './App.tsx'
 
+// One-line boot banner so console logs are immediately attributable
+// to a specific build — pairs with the AccountPage footer display and
+// Sentry's release tag. `%c` styles keep it visually distinct from
+// app logs in DevTools.
+console.log(
+  `%cTripMate %c${__APP_VERSION__} %c· ${__BUILD_DATE__}`,
+  'font-weight:bold;color:#3D8B7A',
+  'font-weight:bold;color:#666',
+  'color:#999',
+)
+
 // Boot Sentry before React mounts so an early render-time crash gets
 // captured (init after mount → first error in App init slips through
 // uncaught). No-op when VITE_SENTRY_DSN isn't set.

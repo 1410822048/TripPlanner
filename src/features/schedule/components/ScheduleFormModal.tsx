@@ -6,11 +6,11 @@
 import { useRef, useState } from 'react'
 import { MapPin } from 'lucide-react'
 import type { Schedule, ScheduleCategory, CreateScheduleInput } from '@/types'
-import BottomSheet from '@/components/ui/BottomSheet'
+import FormModalShell from '@/components/ui/FormModalShell'
 import { DatePicker, TimePicker } from '@/components/ui/pickers'
 import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
-import SaveButton from '@/components/ui/SaveButton'
+import CurrencyInput from '@/components/ui/CurrencyInput'
 import DeleteConfirm from '@/components/ui/DeleteConfirm'
 import { useTripCurrency } from '@/hooks/useTripCurrency'
 import { currencySymbol } from '@/utils/currency'
@@ -63,6 +63,7 @@ interface Props {
   tripEndDate?:   string
   isOpen:      boolean
   isSaving:    boolean
+  saveError?:  string | null
   onClose:     () => void
   onSave:      (data: CreateScheduleInput) => void
   onDelete?:   () => void
@@ -70,7 +71,7 @@ interface Props {
 
 export default function ScheduleFormModal({
   editTarget, defaultDate, tripStartDate, tripEndDate,
-  isOpen, isSaving, onClose, onSave, onDelete,
+  isOpen, isSaving, saveError, onClose, onSave, onDelete,
 }: Props) {
   const { state, setField } = useFormReducer<FormState>(
     () => initFormState(editTarget, defaultDate),
@@ -124,17 +125,14 @@ export default function ScheduleFormModal({
   }
 
   return (
-    <BottomSheet
+    <FormModalShell
       isOpen={isOpen}
-      onClose={onClose}
+      isSaving={isSaving}
       title={editTarget ? '行程を編集' : '行程を追加'}
-      footer={
-        <SaveButton
-          onClick={handleSave}
-          isSaving={isSaving}
-          label={editTarget ? '変更を保存' : '行程を追加'}
-        />
-      }
+      saveLabel={editTarget ? '変更を保存' : '行程を追加'}
+      saveError={saveError}
+      onClose={onClose}
+      onSave={handleSave}
     >
       <FormField label="タイトル" error={errors.title} required>
         <input
@@ -220,17 +218,14 @@ export default function ScheduleFormModal({
       </FormField>
 
       <FormField label={`予算（${symbol}）`} error={errors.cost}>
-        <div className="relative">
-          <span className="absolute left-[13px] top-1/2 -translate-y-1/2 text-muted text-[13px] pointer-events-none">{symbol}</span>
-          <input
-            type="number"
-            value={state.cost}
-            onChange={e => setField('cost', e.target.value)}
-            placeholder="0"
-            min={0}
-            className={`${inputClass(!!errors.cost)} pl-7`}
-          />
-        </div>
+        <CurrencyInput
+          symbol={symbol}
+          value={state.cost}
+          onChange={e => setField('cost', e.target.value)}
+          placeholder="0"
+          min={0}
+          error={!!errors.cost}
+        />
       </FormField>
 
       <FormField label="メモ">
@@ -244,6 +239,6 @@ export default function ScheduleFormModal({
       </FormField>
 
       {editTarget && onDelete && <DeleteConfirm noun="行程" onDelete={onDelete} />}
-    </BottomSheet>
+    </FormModalShell>
   )
 }

@@ -6,18 +6,20 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { getMembersByTrip, subscribeToMembers, removeMember, updateMemberRole } from '../services/memberService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
-import { toast } from '@/shared/toast'
+import { useUid } from '@/hooks/useAuth'
+import type { MutationMeta } from '@/services/queryClient'
 import type { Member } from '@/types'
 
 export const memberKeys = {
-  all: (tripId: string) => ['members', tripId] as const,
+  all: (tripId: string, uid?: string) => ['members', tripId, uid ?? ''] as const,
 }
 
 export const useMembers = createRealtimeListHook<Member>({
   queryKeyFactory: memberKeys.all,
-  initialFetch:    getMembersByTrip,
-  subscribe:       subscribeToMembers,
+  initialFetch:    (tripId, uid) => getMembersByTrip(tripId, uid!),
+  subscribe:       (tripId, uid, onData, onError) => subscribeToMembers(tripId, uid!, onData, onError),
   source:          'useMembers',
+  requiresUid:     true,
 })
 
 /**
@@ -27,18 +29,19 @@ export const useMembers = createRealtimeListHook<Member>({
  */
 export function useRemoveMember(tripId: string | undefined) {
   const qc = useQueryClient()
+  const uid = useUid()
   return useMutation({
     mutationFn: (memberId: string) => removeMember(tripId!, memberId),
+    meta: { action: '削除' } satisfies MutationMeta,
     onMutate: (memberId) => {
       if (!tripId) return { prev: undefined as Member[] | undefined }
-      const key  = memberKeys.all(tripId)
+      const key  = memberKeys.all(tripId, uid)
       const prev = qc.getQueryData<Member[]>(key)
       if (prev) qc.setQueryData<Member[]>(key, prev.filter(m => m.id !== memberId))
       return { prev }
     },
-    onError: (err, _id, ctx) => {
-      if (tripId && ctx?.prev !== undefined) qc.setQueryData(memberKeys.all(tripId), ctx.prev)
-      toast.mutationError(err, '削除')
+    onError: (_err, _id, ctx) => {
+      if (tripId && ctx?.prev !== undefined) qc.setQueryData(memberKeys.all(tripId, uid), ctx.prev)
     },
   })
 }
@@ -50,21 +53,22 @@ export function useRemoveMember(tripId: string | undefined) {
  */
 export function useUpdateMemberRole(tripId: string | undefined) {
   const qc = useQueryClient()
+  const uid = useUid()
   return useMutation({
     mutationFn: ({ memberId, role }: { memberId: string; role: 'editor' | 'viewer' }) =>
       updateMemberRole(tripId!, memberId, role),
+    meta: { action: '権限変更' } satisfies MutationMeta,
     onMutate: ({ memberId, role }) => {
       if (!tripId) return { prev: undefined as Member[] | undefined }
-      const key  = memberKeys.all(tripId)
+      const key  = memberKeys.all(tripId, uid)
       const prev = qc.getQueryData<Member[]>(key)
       if (prev) qc.setQueryData<Member[]>(key,
         prev.map(m => m.id === memberId ? { ...m, role } : m),
       )
       return { prev }
     },
-    onError: (err, _vars, ctx) => {
-      if (tripId && ctx?.prev !== undefined) qc.setQueryData(memberKeys.all(tripId), ctx.prev)
-      toast.mutationError(err, '権限変更')
+    onError: (_err, _vars, ctx) => {
+      if (tripId && ctx?.prev !== undefined) qc.setQueryData(memberKeys.all(tripId, uid), ctx.prev)
     },
   })
 }

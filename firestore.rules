@@ -29,16 +29,23 @@ service cloud.firestore {
     function isSelf(id) {
       return isSignedIn() && id == uid();
     }
+    // Same-doc membership predicate. The denormalised `memberIds: string[]`
+    // is cascaded onto every trip-scoped doc (trip + members + 5 entity
+    // subcollections) via memberSync, so reads check membership against
+    // the doc being read — NO cross-document exists() / get() that
+    // suffers Firestore's rules-eval propagation lag window (which used
+    // to 403 listeners attaching right after a fresh batch.commit).
+    function memberOfDoc() {
+      return isSignedIn() && uid() in resource.data.memberIds;
+    }
     function memberPath(tripId) {
       return /databases/$(database)/documents/trips/$(tripId)/members/$(uid());
     }
-    function isMember(tripId) {
-      return isSignedIn() && exists(memberPath(tripId));
-    }
-    // Single get() fetches the member doc and checks role in one shot. If the
-    // doc doesn't exist the rule evaluation fails (denies) — which is the
-    // desired behavior for non-members. isSignedIn() gates first because
-    // memberPath() dereferences uid().
+    // Cross-doc canWrite kept for WRITE rules — writes are rare and
+    // user-initiated (they tolerate the rare 1-shot 403 from rules-lag
+    // far better than silent listener deaths). Switching writes to
+    // same-doc would need a `writerUids` denormalisation too; deferred
+    // until usage proves it worth the cascade cost.
     function canWrite(tripId) {
       return isSignedIn()
         && get(memberPath(tripId)).data.role in ['owner', 'editor'];
@@ -77,6 +84,37 @@ service cloud.firestore {
       return affectedKeys().hasOnly(allowed);
     }
 
+    // ─── Membership-sync update predicates ────────────────────────
+    // These authorise the memberSync cascade — when a user accepts an
+    // invite OR the owner removes a member, memberIds[] is bumped on
+    // every trip-scoped doc (trip, members, all 5 entity subcollections).
+    // The write rules below allow these specific diffs WITHOUT requiring
+    // canWrite (which would lock invitees out) or content-edit gates
+    // (which would lock owner cascade out).
+    //
+    // memberSyncSelfAdd: caller appends THEIR OWN uid, exactly once,
+    // to memberIds. Requires they hold a member doc at this trip so
+    // a stranger can't self-add via this path. The pre-existing
+    // entity/member docs that the invitee couldn't list themselves
+    // are cascaded by the OCR worker's /cascade-member endpoint
+    // (service-account, bypasses rules) — see workers/ocr/src/cascade.ts.
+    function memberSyncSelfAdd(tripId) {
+      return isSignedIn()
+        && exists(memberPath(tripId))
+        && changedOnly(['memberIds'])
+        && uid() in request.resource.data.memberIds
+        && !(uid() in resource.data.memberIds)
+        && request.resource.data.memberIds.size() == resource.data.memberIds.size() + 1;
+    }
+    // ownerSyncRemove: only the trip owner can strip a uid from memberIds.
+    // memberIds is the only field allowed to change — content edits
+    // route through the canWrite branch above.
+    function ownerSyncRemove(tripId) {
+      return isTripOwner(tripId)
+        && changedOnly(['memberIds'])
+        && request.resource.data.memberIds.size() == resource.data.memberIds.size() - 1;
+    }
+
     // Collection-group list gate for /members. Used by getMyTrips() to find
     // every trip the user belongs to (owner OR editor OR viewer). The rule
     // restricts results to the caller's own member docs; clients must query
@@ -103,23 +141,50 @@ service cloud.firestore {
     }
 
     match /trips/{tripId} {
-      // GET by id (including shared trips I'm invited to) → membership check.
-      allow get: if isMember(tripId);
+      // GET by id (including shared trips I'm invited to) → same-doc
+      // memberIds check. No cross-document exists(), no rules-lag.
+      // `resource == null` clause lets listeners on orphan/just-deleted
+      // trip docs receive `snap.exists() === false` cleanly instead of
+      // a permission-denied target error — common after cascade-delete
+      // races and Console-deleted trips that left orphan member docs
+      // in the collection-group (Firestore doesn't auto-cascade
+      // subcollection deletes from a parent doc delete in the Console).
+      allow get: if resource == null || memberOfDoc();
       // LIST/query on /trips is kept narrow: only "trips I own" via ownerId
       // filter. The primary list path is now the /members collection-group
       // query above, so this rule is effectively a defensive fallback.
       allow list: if isSignedIn() && resource.data.ownerId == uid();
-      // Anyone signed-in may create a trip they own; ownerId is pinned to their uid.
+      // Anyone signed-in may create a trip they own; ownerId is pinned
+      // to their uid. memberIds must start as exactly [uid] so the
+      // initial roster matches the owner-only state — memberSync
+      // extends it as invitees redeem.
       allow create: if isSignedIn()
                     && request.resource.data.ownerId == uid()
                     && request.resource.data.title is string
-                    && request.resource.data.title.size() > 0;
-      // Owner can edit trip metadata. ownerId + createdAt are pinned so
-      // ownership transfer / creation-time forgery aren't possible via a
-      // doctored update payload.
-      allow update: if isTripOwner(tripId)
-                    && unchanged('ownerId')
-                    && unchanged('createdAt');
+                    && request.resource.data.title.size() > 0
+                    && request.resource.data.memberIds == [uid()];
+      // Four update paths:
+      //   1. Owner edits trip metadata (title/dates/icon/currency).
+      //      ownerId + createdAt pinned to prevent transfer / forgery.
+      //      memberIds locked too — only memberSync paths can touch it.
+      //   2. Invitee self-add via memberSync cascade after acceptInvite
+      //      writes the new member doc.
+      //   3. Owner remove-member cascade strips uid from memberIds.
+      //   4. Any member bumps lastActivityByFeature — drives the
+      //      bottom-nav unread-dot badge. Called after every entity
+      //      mutation (best-effort fire-and-forget). `by` field NOT
+      //      validated server-side: forging it only causes the forger's
+      //      own badge to fire incorrectly — no security impact, so
+      //      the rule stays lenient.
+      allow update: if (
+        isTripOwner(tripId)
+        && unchanged('ownerId')
+        && unchanged('createdAt')
+        && unchanged('memberIds')
+      ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId) || (
+        memberOfDoc()
+        && changedOnly(['lastActivityByFeature', 'updatedAt'])
+      );
       allow delete: if isTripOwner(tripId);
 
       match /members/{memberId} {
@@ -130,22 +195,28 @@ service cloud.firestore {
         //      setDoc). Without the isSelf clause, redeemers got
         //      "Missing or insufficient permissions" on the read.
         // list: still member-only — viewing the full roster is a
-        //       trip-internal action.
-        allow get:  if isMember(tripId) || isSelf(memberId);
-        allow list: if isMember(tripId);
+        //       trip-internal action. Each member doc carries the full
+        //       roster via memberIds[] so the check is same-doc.
+        allow get:  if memberOfDoc() || isSelf(memberId);
+        allow list: if memberOfDoc();
         // Three creation paths:
         //   1. Owner self-bootstrap at trip creation (doc-id must be own uid,
-        //      role pinned to 'owner').
+        //      role pinned to 'owner', memberIds == [uid] to match the
+        //      trip's initial roster).
         //   2. Owner manually adds a member (Phase 3 feature).
         //   3. Invitee self-redeems: doc-id is own uid, role matches the
         //      invite doc they reference via `inviteToken`. The rule
         //      dereferences the invite to verify role + non-expired. The
         //      invite doc is reusable — its existence is the validity gate;
-        //      multiple redeemers may succeed in parallel.
-        allow create: if isSignedIn() && (
+        //      multiple redeemers may succeed in parallel. memberIds on
+        //      the new doc must include the joiner so the same-doc read
+        //      rule passes.
+        allow create: if isSignedIn()
+                      && uid() in request.resource.data.memberIds && (
           (memberId == uid()
             && request.resource.data.userId == uid()
-            && request.resource.data.role == 'owner')
+            && request.resource.data.role == 'owner'
+            && request.resource.data.memberIds == [uid()])
           || isTripOwner(tripId)
           || (memberId == uid()
               && request.resource.data.userId == uid()
@@ -154,13 +225,18 @@ service cloud.firestore {
               && get(invitePath(tripId, request.resource.data.inviteToken)).data.role == request.resource.data.role
               && get(invitePath(tripId, request.resource.data.inviteToken)).data.expiresAt > request.time)
         );
-        // Owner edits roles / removes members. Members cannot modify their own
-        // role to self-escalate. Identity fields (userId / tripId) and
-        // joinedAt are pinned so the audit trail can't be rewritten.
-        allow update: if isTripOwner(tripId)
-                      && unchanged('userId')
-                      && unchanged('tripId')
-                      && unchanged('joinedAt');
+        // Three update paths:
+        //   1. Owner edits roles. Identity fields locked, memberIds locked.
+        //   2. Invitee self-add cascade after acceptInvite (memberSync
+        //      touches every existing member doc's memberIds).
+        //   3. Owner remove-member cascade.
+        allow update: if (
+          isTripOwner(tripId)
+          && unchanged('userId')
+          && unchanged('tripId')
+          && unchanged('joinedAt')
+          && unchanged('memberIds')
+        ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
         allow delete: if isTripOwner(tripId);
       }
 
@@ -190,41 +266,61 @@ service cloud.firestore {
       }
 
       match /schedules/{scheduleId} {
-        allow read:   if isMember(tripId);
+        allow read:   if memberOfDoc();
+        // updatedBy on create must equal caller — same uid-forge defence as
+        // updates; powers the tab unread-dot filter (own writes don't badge).
         allow create: if canWrite(tripId)
                       && request.resource.data.tripId == tripId
-                      && request.resource.data.createdBy == uid();
-        allow update: if canWrite(tripId)
-                      && unchanged('tripId')
-                      && unchanged('createdBy')
-                      && unchanged('createdAt');
+                      && request.resource.data.createdBy == uid()
+                      && request.resource.data.updatedBy == uid()
+                      && uid() in request.resource.data.memberIds;
+        allow update: if (
+          canWrite(tripId)
+          && unchanged('tripId')
+          && unchanged('createdBy')
+          && unchanged('createdAt')
+          && unchanged('memberIds')
+          && request.resource.data.updatedBy == uid()
+        ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
         allow delete: if canWrite(tripId);
       }
 
       match /expenses/{expenseId} {
-        allow read:   if isMember(tripId);
+        allow read:   if memberOfDoc();
         allow create: if canWrite(tripId)
                       && request.resource.data.tripId == tripId
-                      && request.resource.data.createdBy == uid();
-        allow update: if canWrite(tripId)
-                      && unchanged('tripId')
-                      && unchanged('createdBy')
-                      && unchanged('createdAt');
+                      && request.resource.data.createdBy == uid()
+                      && request.resource.data.updatedBy == uid()
+                      && uid() in request.resource.data.memberIds;
+        allow update: if (
+          canWrite(tripId)
+          && unchanged('tripId')
+          && unchanged('createdBy')
+          && unchanged('createdAt')
+          && unchanged('memberIds')
+          && request.resource.data.updatedBy == uid()
+        ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
         allow delete: if canWrite(tripId);
       }
 
       match /wishes/{wishId} {
-        allow read:   if isMember(tripId);
+        allow read:   if memberOfDoc();
         // Create open to ANY member (including viewer) — wishes are a
         // collaborative wishlist, everyone on the trip should be able
-        // to suggest places / food / activities. proposedBy must match
-        // the caller (no spoofing). Initial votes must include exactly
-        // the proposer (matches wishService — proposing counts as
-        // voting).
-        allow create: if isMember(tripId)
+        // to suggest places / food / activities. Membership gate uses
+        // a same-doc check via memberIds (no cross-doc) — the caller
+        // must include themselves in the new doc's memberIds, AND
+        // that array must be a non-empty subset of the trip's roster.
+        // We trust the caller to copy the roster honestly because they
+        // can't grant themselves membership: if uid wasn't already in
+        // trip.memberIds, no other doc would have them, and they'd be
+        // blocked everywhere else.
+        allow create: if exists(memberPath(tripId))
                       && request.resource.data.tripId == tripId
                       && request.resource.data.proposedBy == uid()
-                      && request.resource.data.votes == [uid()];
+                      && request.resource.data.updatedBy == uid()
+                      && request.resource.data.votes == [uid()]
+                      && uid() in request.resource.data.memberIds;
         // Two update paths:
         //   1. Proposer edits any field (title/category/etc.)
         //   2. Any member toggles their own uid in the votes array. The
@@ -232,72 +328,96 @@ service cloud.firestore {
         //      exactly ±1 + the changed entry is the caller's uid. This
         //      prevents a malicious member from clearing or hijacking
         //      others' votes.
-        allow update: if isMember(tripId) && (
-          // 1. Proposer path: edit any field EXCEPT ownership / identity.
-          //    Without these guards a proposer could re-assign proposedBy
-          //    to themselves on someone else's wish in a race window, or
-          //    forge createdAt to game any future sort.
-          (
-            resource.data.proposedBy == uid()
-            && unchanged('tripId')
-            && unchanged('proposedBy')
-            && unchanged('createdAt')
-          )
-          ||
-          // 2. Voter path: any member toggles only their own uid in
-          //    `votes`. The diff predicate already locks every other
-          //    field — that includes proposedBy / tripId / createdAt,
-          //    so no extra guards needed here.
-          (
-            changedOnly(['votes', 'updatedAt'])
-            && (
-              (request.resource.data.votes.size() == resource.data.votes.size() + 1
-                && uid() in request.resource.data.votes
-                && !(uid() in resource.data.votes))
-              ||
-              (request.resource.data.votes.size() == resource.data.votes.size() - 1
-                && !(uid() in request.resource.data.votes)
-                && uid() in resource.data.votes)
+        allow update: if (
+          memberOfDoc() && (
+            // 1. Proposer path: edit any field EXCEPT ownership / identity.
+            (
+              resource.data.proposedBy == uid()
+              && unchanged('tripId')
+              && unchanged('proposedBy')
+              && unchanged('createdAt')
+              && unchanged('memberIds')
+              && request.resource.data.updatedBy == uid()
+            )
+            ||
+            // 2. Voter path: any member toggles only their own uid in `votes`.
+            (
+              changedOnly(['votes', 'updatedAt', 'updatedBy'])
+              && request.resource.data.updatedBy == uid()
+              && (
+                (request.resource.data.votes.size() == resource.data.votes.size() + 1
+                  && uid() in request.resource.data.votes
+                  && !(uid() in resource.data.votes))
+                ||
+                (request.resource.data.votes.size() == resource.data.votes.size() - 1
+                  && !(uid() in request.resource.data.votes)
+                  && uid() in resource.data.votes)
+              )
             )
           )
-        );
+        ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
         // Two deletion paths:
         //   1. Proposer cleans up their own wish.
         //   2. Trip owner moderates — can remove any wish (e.g. spam,
         //      duplicates, wrong-trip mistakes). Owner already has the
         //      power to delete the entire trip; per-wish moderation is
         //      a strict subset of that authority.
-        allow delete: if isMember(tripId)
+        allow delete: if memberOfDoc()
                       && (resource.data.proposedBy == uid() || isTripOwner(tripId));
       }
 
       match /bookings/{bookingId} {
-        allow read:   if isMember(tripId);
-        allow create: if canWrite(tripId);
-        // Two update paths:
-        //   1. Editor / owner edits booking content. tripId / createdAt
-        //      locked so a doctored payload can't orphan the doc into a
-        //      different trip's path or rewrite the audit trail.
-        //   2. Member self-sync: any member (incl. viewer) appends their
-        //      OWN uid to `memberIds` — runs on accept-invite to keep the
-        //      collection-group hotel query (PastLodgingPage) in step.
-        //      Locked down to:
-        //        - only `memberIds` may change (no piggybacking)
-        //        - own uid must end up in memberIds
-        //        - exactly one entry added (size + 1) — no bulk add others
-        //      The last clause is what stops a viewer from arrayUnion-ing
-        //      a stranger's uid to grant them access via this side door.
+        allow read:   if memberOfDoc();
+        allow create: if canWrite(tripId)
+                      && request.resource.data.tripId == tripId
+                      && request.resource.data.createdBy == uid()
+                      && request.resource.data.updatedBy == uid()
+                      && uid() in request.resource.data.memberIds;
+        // Three update paths:
+        //   1. Editor / owner edits booking content. tripId / createdBy /
+        //      createdAt locked. memberIds locked too — content edits
+        //      must NOT silently rewrite the access roster (an editor
+        //      could otherwise add a stranger's uid via a doctored
+        //      payload + the stranger would then see this trip's hotels
+        //      via the collection-group query).
+        //   2. Invitee self-add cascade after acceptInvite.
+        //   3. Owner remove-member cascade.
         allow update: if (
           canWrite(tripId)
           && unchanged('tripId')
+          && unchanged('createdBy')
           && unchanged('createdAt')
-        ) || (
-          isMember(tripId)
-          && changedOnly(['memberIds'])
-          && uid() in request.resource.data.memberIds
-          && request.resource.data.memberIds.size() == resource.data.memberIds.size() + 1
-        );
+          && unchanged('memberIds')
+          && request.resource.data.updatedBy == uid()
+        ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
         allow delete: if canWrite(tripId);
+      }
+
+      // Settlement records — bilateral "X paid Y back" entries.
+      // Only the receiver (toUid) can record it: receiver-confirms-receipt
+      // prevents the payer from unilaterally marking themselves "paid back"
+      // without the payee actually having received the money. settledBy
+      // must equal toUid (i.e. uid()). amount is positive integer in the
+      // trip currency. Immutable once recorded; revert via delete + re-create.
+      match /settlements/{settlementId} {
+        // Settlements don't carry memberIds[] (they're a bounded set
+        // per trip and writes are rare — denormalising would pay cost
+        // for no measurable benefit). Reads use the same-doc check on
+        // the parent trip via exists() — a cross-doc lookup, but
+        // settlements are only accessed inside ExpensePage which mounts
+        // long after trip create, so the rules-eval lag window has
+        // resolved by then.
+        allow read:   if exists(memberPath(tripId));
+        allow create: if exists(memberPath(tripId))
+                      && request.resource.data.tripId == tripId
+                      && request.resource.data.settledBy == uid()
+                      && request.resource.data.toUid == uid()
+                      && request.resource.data.amount is int
+                      && request.resource.data.amount > 0
+                      && request.resource.data.currency is string;
+        // Either the recorder undoing, or the trip owner moderating.
+        allow delete: if exists(memberPath(tripId))
+                      && (resource.data.settledBy == uid() || isTripOwner(tripId));
       }
 
       // Planning checklist — collaborative pre-trip prep. Any member
@@ -306,18 +426,23 @@ service cloud.firestore {
       // exchanged"). createdBy is pinned to the caller so audit trail
       // stays honest.
       match /planning/{itemId} {
-        allow read:   if isMember(tripId);
-        allow create: if isMember(tripId)
+        allow read:   if memberOfDoc();
+        allow create: if exists(memberPath(tripId))
                       && request.resource.data.tripId == tripId
-                      && request.resource.data.createdBy == uid();
-        // Identity / audit fields locked. Anyone can toggle done /
-        // change title / re-categorise — but they can't pretend the
-        // item belongs to a different trip or rewrite the audit trail.
-        allow update: if isMember(tripId)
-                      && unchanged('tripId')
-                      && unchanged('createdBy')
-                      && unchanged('createdAt');
-        allow delete: if isMember(tripId);
+                      && request.resource.data.createdBy == uid()
+                      && request.resource.data.updatedBy == uid()
+                      && uid() in request.resource.data.memberIds;
+        // Three update paths: content edit (any member), invitee
+        // self-add cascade, owner remove-member cascade.
+        allow update: if (
+          memberOfDoc()
+          && unchanged('tripId')
+          && unchanged('createdBy')
+          && unchanged('createdAt')
+          && unchanged('memberIds')
+          && request.resource.data.updatedBy == uid()
+        ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
+        allow delete: if memberOfDoc();
       }
     }
 

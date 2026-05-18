@@ -1,7 +1,14 @@
 import { describe, it, expect } from 'vitest'
-import { computeBalances, computeSettlements, expandWithGhosts, ghostMember } from './settlement'
+import {
+  computeBalances,
+  computeBalancesFull,
+  computeSettlements,
+  expandWithGhosts,
+  ghostMember,
+} from './settlement'
 import { MOCK_TIMESTAMP as TS } from '@/mocks/utils'
 import type { Expense } from '@/types'
+import type { SettlementRecord } from '@/types/settlement'
 import type { TripMember } from '@/features/trips/types'
 
 const MEMBERS: TripMember[] = [
@@ -14,17 +21,48 @@ function mkExpense(
   paidBy: string,
   amount: number,
   splits: Array<[string, number]>,
+  idSuffix = '',
 ): Expense {
   return {
-    id: `e_${paidBy}_${amount}`, tripId: 'demo', title: 't', amount,
-    currency: 'JPY', category: 'food', paidBy,
+    id: `e_${paidBy}_${amount}${idSuffix}`,
+    tripId: 'demo',
+    title: 't',
+    amount,
+    currency: 'JPY',
+    category: 'food',
+    paidBy,
     splits: splits.map(([memberId, amount]) => ({ memberId, amount })),
-    date: '2026-05-01', createdBy: 'u', createdAt: TS, updatedAt: TS,
+    date: '2026-05-01',
+    memberIds: ['m1', 'm2', 'm3'],
+    createdBy: 'u',
+    updatedBy: 'u',
+    createdAt: TS,
+    updatedAt: TS,
   }
 }
 
+function mkSettlement(
+  fromUid: string,
+  toUid:   string,
+  amount:  number,
+  idSuffix = '',
+): SettlementRecord {
+  return {
+    id: `s_${fromUid}_${toUid}_${amount}${idSuffix}`,
+    tripId: 'demo',
+    fromUid,
+    toUid,
+    amount,
+    currency: 'JPY',
+    settledBy: toUid,
+    createdAt: TS,
+  }
+}
+
+// ─── Existing coverage (regression) ───────────────────────────────
+
 describe('computeBalances', () => {
-  it('tallies paid and owed per member', () => {
+  it('tallies paid and owed per member (expenses only)', () => {
     const expenses = [
       mkExpense('m1', 3000, [['m1', 1000], ['m2', 1000], ['m3', 1000]]),
       mkExpense('m2', 600,  [['m1', 300],  ['m2', 300]]),
@@ -38,25 +76,15 @@ describe('computeBalances', () => {
   })
 
   it('appends ghost rows for paidBy / split ids missing from members', () => {
-    // Scenario: an ex-member ('ghost') paid 500, splitting between a
-    // current member (m1: 300) and another ex-member ('phantom': 200).
-    // Both unknown ids must produce balance rows so the totals
-    // reconcile — otherwise settlement math breaks.
     const expenses = [
       mkExpense('ghost', 500, [['m1', 300], ['phantom', 200]]),
     ]
     const r = computeBalances(expenses, MEMBERS)
-
-    // Active members first, ghosts at the tail in first-seen order.
     expect(r.map(b => b.memberId)).toEqual(['m1', 'm2', 'm3', 'ghost', 'phantom'])
     expect(r.find(b => b.memberId === 'm1')!.owed).toBe(300)
     expect(r.find(b => b.memberId === 'ghost')!.paid).toBe(500)
     expect(r.find(b => b.memberId === 'phantom')!.owed).toBe(200)
-
-    // Critical invariant: sum(net) ≈ 0. Without ghost rows this would
-    // fail (the +500 paidBy 'ghost' would be silently dropped).
-    const totalNet = r.reduce((s, b) => s + b.net, 0)
-    expect(totalNet).toBe(0)
+    expect(r.reduce((s, b) => s + b.net, 0)).toBe(0)
   })
 
   it('returns zero rows when there are no expenses', () => {
@@ -68,22 +96,200 @@ describe('computeBalances', () => {
   })
 })
 
+// ─── Settlement basics ────────────────────────────────────────────
+
+describe('computeBalances + settlements', () => {
+  it('a single settlement that exactly matches the debt zeros both nets', () => {
+    const expenses = [mkExpense('m1', 100, [['m1', 50], ['m2', 50]])]
+    const settlements = [mkSettlement('m2', 'm1', 50)]
+    const { balances, orphans } = computeBalancesFull(expenses, MEMBERS, settlements)
+    expect(orphans).toEqual([])
+    const m1 = balances.find(b => b.memberId === 'm1')!
+    const m2 = balances.find(b => b.memberId === 'm2')!
+    expect(m1).toMatchObject({ paid: 100, owed: 50, net: 0 })
+    expect(m2).toMatchObject({ paid: 0,   owed: 50, net: 0 })
+  })
+
+  it('paid / owed are derived from expenses only — settlements never inflate them', () => {
+    // Old algorithm bug: settlement amount got added to paid (for sender)
+    // and owed (for receiver), making "立替 / 分担" display read 2x of
+    // reality for any pair that had settled. Debt-edge model fixes this.
+    const expenses = [mkExpense('m1', 100, [['m1', 50], ['m2', 50]])]
+    const settlements = [mkSettlement('m2', 'm1', 50)]
+    const r = computeBalances(expenses, MEMBERS, settlements)
+    expect(r.find(b => b.memberId === 'm1')!.paid).toBe(100)  // not 150
+    expect(r.find(b => b.memberId === 'm1')!.owed).toBe(50)   // not 100
+    expect(r.find(b => b.memberId === 'm2')!.paid).toBe(0)    // not 50
+    expect(r.find(b => b.memberId === 'm2')!.owed).toBe(50)   // not 50 + extras
+  })
+})
+
+// ─── Multiple settlements per pair ────────────────────────────────
+
+describe('multiple settlements per pair', () => {
+  it('sums multiple partial settlements toward the same pair', () => {
+    // m2 owes m1 a total of 100, paid back in three chunks
+    const expenses = [mkExpense('m1', 200, [['m1', 100], ['m2', 100]])]
+    const settlements = [
+      mkSettlement('m2', 'm1', 40, '_a'),
+      mkSettlement('m2', 'm1', 30, '_b'),
+      mkSettlement('m2', 'm1', 30, '_c'),
+    ]
+    const { balances, orphans } = computeBalancesFull(expenses, MEMBERS, settlements)
+    expect(orphans).toEqual([])
+    expect(balances.find(b => b.memberId === 'm1')!.net).toBe(0)
+    expect(balances.find(b => b.memberId === 'm2')!.net).toBe(0)
+  })
+
+  it('partial settlements leave the remaining debt for the suggestion list', () => {
+    // m2 owes m1 100, settled 60 → 40 outstanding
+    const expenses = [mkExpense('m1', 200, [['m1', 100], ['m2', 100]])]
+    const settlements = [mkSettlement('m2', 'm1', 60)]
+    const { balances } = computeBalancesFull(expenses, MEMBERS, settlements)
+    expect(balances.find(b => b.memberId === 'm1')!.net).toBe(40)
+    expect(balances.find(b => b.memberId === 'm2')!.net).toBe(-40)
+
+    const suggestions = computeSettlements(balances)
+    expect(suggestions).toEqual([{ fromId: 'm2', toId: 'm1', amount: 40 }])
+  })
+
+  it('once-overshooting last settlement of a chain produces an orphan', () => {
+    // m2 owes m1 100. Pays 60, then 50 (total 110, 10 too many).
+    const expenses = [mkExpense('m1', 200, [['m1', 100], ['m2', 100]])]
+    const settlements = [
+      mkSettlement('m2', 'm1', 60, '_a'),
+      mkSettlement('m2', 'm1', 50, '_b'),
+    ]
+    const { balances, orphans } = computeBalancesFull(expenses, MEMBERS, settlements)
+    expect(balances.find(b => b.memberId === 'm1')!.net).toBe(0)
+    expect(balances.find(b => b.memberId === 'm2')!.net).toBe(0)
+    expect(orphans).toEqual([
+      { fromUserId: 'm2', toUserId: 'm1', amount: 10 },
+    ])
+  })
+})
+
+// ─── Cross debt + normalize ──────────────────────────────────────
+
+describe('cross-debt normalization', () => {
+  it('normalises opposite-direction edges to the net direction', () => {
+    // Two expenses crossing the same pair:
+    //   m1 paid 100, split m1:50 m2:50 → m2 owes m1 50
+    //   m2 paid 80,  split m1:40 m2:40 → m1 owes m2 40
+    // Without normalize: 2 edges (50 and 40). With normalize: m2 owes m1 10.
+    const expenses = [
+      mkExpense('m1', 100, [['m1', 50], ['m2', 50]], '_a'),
+      mkExpense('m2', 80,  [['m1', 40], ['m2', 40]], '_b'),
+    ]
+    const { balances } = computeBalancesFull(expenses, MEMBERS)
+    expect(balances.find(b => b.memberId === 'm1')!.net).toBe(10)
+    expect(balances.find(b => b.memberId === 'm2')!.net).toBe(-10)
+
+    const suggestions = computeSettlements(balances)
+    expect(suggestions).toEqual([{ fromId: 'm2', toId: 'm1', amount: 10 }])
+  })
+
+  it('zero-sum cross debt produces no edge and no suggestion', () => {
+    // m1 pays 100 (split 50/50 with m2) AND m2 pays 100 (split 50/50 with m1)
+    // — both owe each other 50. Net out completely.
+    const expenses = [
+      mkExpense('m1', 100, [['m1', 50], ['m2', 50]], '_a'),
+      mkExpense('m2', 100, [['m1', 50], ['m2', 50]], '_b'),
+    ]
+    const { balances } = computeBalancesFull(expenses, MEMBERS)
+    expect(balances.find(b => b.memberId === 'm1')!.net).toBe(0)
+    expect(balances.find(b => b.memberId === 'm2')!.net).toBe(0)
+    expect(computeSettlements(balances)).toEqual([])
+  })
+
+  it('settlement on the normalised direction settles the pair fully', () => {
+    // Same as the first cross-debt test: net m2 → m1 = 10. m2 settles 10.
+    const expenses = [
+      mkExpense('m1', 100, [['m1', 50], ['m2', 50]], '_a'),
+      mkExpense('m2', 80,  [['m1', 40], ['m2', 40]], '_b'),
+    ]
+    // NOTE: settlement still applies to the underlying gross edge m2→m1.
+    // The reverse edge m1→m2 (40) remains as orphan-free debt because
+    // there's no settlement record consuming it. Normalize then cancels
+    // it against remaining gross m2→m1 (= 50 − 50 = 0).
+    //   - gross[m2][m1] = 50,  applied 50 → remaining[m2][m1] = 0
+    //   - gross[m1][m2] = 40,  applied 0  → remaining[m1][m2] = 40
+    //   - normalize: m1 owes m2 40
+    const settlements = [mkSettlement('m2', 'm1', 50)]
+    const { balances, orphans } = computeBalancesFull(expenses, MEMBERS, settlements)
+    expect(orphans).toEqual([])
+    expect(balances.find(b => b.memberId === 'm1')!.net).toBe(-40)
+    expect(balances.find(b => b.memberId === 'm2')!.net).toBe(40)
+  })
+})
+
+// ─── Orphan cases ─────────────────────────────────────────────────
+
+describe('orphan settlements', () => {
+  it('overpayment: settlement amount exceeds gross debt → orphan', () => {
+    // m2 owes m1 30, but pays back 50 (10 too much, but caused by editing
+    // an expense down after the settlement was recorded, say).
+    const expenses = [mkExpense('m1', 60, [['m1', 30], ['m2', 30]])]
+    const settlements = [mkSettlement('m2', 'm1', 50)]
+    const { balances, orphans } = computeBalancesFull(expenses, MEMBERS, settlements)
+    expect(orphans).toEqual([
+      { fromUserId: 'm2', toUserId: 'm1', amount: 20 },
+    ])
+    // Critical: the overpayment does NOT flip m1 into a debtor position.
+    // Net is at most "0 on this pair" — no reverse-debt creation.
+    expect(balances.find(b => b.memberId === 'm1')!.net).toBe(0)
+    expect(balances.find(b => b.memberId === 'm2')!.net).toBe(0)
+  })
+
+  it('expense fully deleted but settlement remains → all orphan, no reverse debt', () => {
+    // This was THE bug: previously, deleting an expense after a settlement
+    // had been recorded surfaced the settlement as reverse debt — the
+    // settled-payer appeared to be owed money. Debt-edge model produces
+    // all-zero balances with the settlement recorded as orphan.
+    const settlements = [mkSettlement('m2', 'm1', 50)]
+    const { balances, orphans } = computeBalancesFull([], MEMBERS, settlements)
+    expect(orphans).toEqual([
+      { fromUserId: 'm2', toUserId: 'm1', amount: 50 },
+    ])
+    for (const b of balances) {
+      expect(b.net).toBe(0)
+    }
+  })
+
+  it('orphans are tracked per pair, not per record', () => {
+    // Two pairs each have a small orphan after delete; both are surfaced.
+    const expenses = [mkExpense('m1', 40, [['m1', 20], ['m2', 20]])]
+    const settlements = [
+      mkSettlement('m2', 'm1', 30),  // m2 owes m1 20, paid 30 → orphan 10
+      mkSettlement('m3', 'm1', 15),  // m3 owes m1 nothing → orphan 15
+    ]
+    const { orphans } = computeBalancesFull(expenses, MEMBERS, settlements)
+    // Sort for stable comparison
+    const sorted = [...orphans].sort((a, b) => a.fromUserId.localeCompare(b.fromUserId))
+    expect(sorted).toEqual([
+      { fromUserId: 'm2', toUserId: 'm1', amount: 10 },
+      { fromUserId: 'm3', toUserId: 'm1', amount: 15 },
+    ])
+  })
+})
+
+// ─── Existing structural tests (must still pass) ──────────────────
+
 describe('expandWithGhosts', () => {
   it('returns the input unchanged when every uid is a known member', () => {
     const expenses = [mkExpense('m1', 300, [['m1', 100], ['m2', 100], ['m3', 100]])]
-    expect(expandWithGhosts(MEMBERS, expenses)).toBe(MEMBERS)  // referential identity
+    expect(expandWithGhosts(MEMBERS, expenses)).toBe(MEMBERS)
   })
 
   it('appends one ghost per unknown uid (deduped, first-seen order)', () => {
     const expenses = [
       mkExpense('ghost', 500, [['m1', 300], ['phantom', 200]]),
-      mkExpense('ghost', 200, [['ghost', 200]]),  // dup — must not produce a 2nd ghost row
+      mkExpense('ghost', 200, [['ghost', 200]]),
     ]
     const r = expandWithGhosts(MEMBERS, expenses)
     expect(r.length).toBe(MEMBERS.length + 2)
     expect(r.slice(0, 3)).toEqual(MEMBERS)
     expect(r.slice(3).map(m => m.id)).toEqual(['ghost', 'phantom'])
-    // Ghost rows are flagged so UI can render them differently.
     expect(r[3]!.isGhost).toBe(true)
     expect(r[4]!.isGhost).toBe(true)
   })
@@ -102,14 +308,11 @@ describe('ghostMember', () => {
 
 describe('computeSettlements', () => {
   it('produces at most N-1 transfers for N members with non-zero balance', () => {
-    // m1 paid 3000 for all, everyone owes 1000
     const expenses = [mkExpense('m1', 3000, [['m1', 1000], ['m2', 1000], ['m3', 1000]])]
     const bal = computeBalances(expenses, MEMBERS)
     const s = computeSettlements(bal)
     expect(s.length).toBeLessThanOrEqual(2)
-    // Every transfer flows to m1
     expect(s.every(t => t.toId === 'm1')).toBe(true)
-    // And the sum settles m1's credit
     expect(s.reduce((sum, t) => sum + t.amount, 0)).toBe(2000)
   })
 
@@ -118,23 +321,31 @@ describe('computeSettlements', () => {
       mkExpense('m1', 3000, [['m1', 1000], ['m2', 1000], ['m3', 1000]]),
       mkExpense('m3', 900,  [['m1', 300],  ['m2', 300],  ['m3', 300]]),
     ]
-    // m1 net: paid 3000 - owed 1300 = +1700
-    // m2 net: paid 0    - owed 1300 = -1300
-    // m3 net: paid 900  - owed 1300 = -400
     const bal = computeBalances(expenses, MEMBERS)
     const s = computeSettlements(bal)
-
     const outFor = (id: string) => s.filter(t => t.fromId === id).reduce((x, t) => x + t.amount, 0)
     expect(outFor('m2')).toBe(1300)
     expect(outFor('m3')).toBe(400)
   })
 
   it('skips pairs within the epsilon threshold (no spam 0/1 円 transfers)', () => {
-    // All equal → zero balances → zero settlements
     const expenses = [
       mkExpense('m1', 300, [['m1', 100], ['m2', 100], ['m3', 100]]),
       mkExpense('m2', 300, [['m1', 100], ['m2', 100], ['m3', 100]]),
       mkExpense('m3', 300, [['m1', 100], ['m2', 100], ['m3', 100]]),
+    ]
+    const bal = computeBalances(expenses, MEMBERS)
+    expect(computeSettlements(bal)).toEqual([])
+  })
+
+  it('3-person cycle (A→B→C→A each 10): net-based suggestion correctly produces zero transfers', () => {
+    // Each person paid 30, split equally — everyone's net is 0 but the
+    // pairwise edges form a cycle. greedy via net (not pairwise) gives
+    // the optimal answer: nothing needs to move.
+    const expenses = [
+      mkExpense('m1', 30, [['m1', 10], ['m2', 10], ['m3', 10]], '_a'),
+      mkExpense('m2', 30, [['m1', 10], ['m2', 10], ['m3', 10]], '_b'),
+      mkExpense('m3', 30, [['m1', 10], ['m2', 10], ['m3', 10]], '_c'),
     ]
     const bal = computeBalances(expenses, MEMBERS)
     expect(computeSettlements(bal)).toEqual([])

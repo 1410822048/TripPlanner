@@ -26,7 +26,18 @@ export default defineConfig([
     // that the compiler safely skips, and we don't want CI to red-flag
     // them all at once.
     plugins: { 'react-compiler': reactCompiler },
-    rules: { 'react-compiler/react-compiler': 'warn' },
+    rules: {
+      'react-compiler/react-compiler': 'warn',
+      // Allow `_`-prefixed args / vars to opt out of the unused check —
+      // standard convention for "I know this is unused, kept to match a
+      // factory / callback signature". Used in queryKeyFactory / subscribe
+      // callbacks that take a uid arg they don't actually need.
+      '@typescript-eslint/no-unused-vars': ['error', {
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+        caughtErrorsIgnorePattern: '^_',
+      }],
+    },
     languageOptions: {
       ecmaVersion: 2020,
       globals: globals.browser,

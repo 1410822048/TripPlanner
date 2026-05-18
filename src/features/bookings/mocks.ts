@@ -3,7 +3,7 @@
 // 'demo' trip (東京五日間). Other demo trips render empty so the user can
 // see the empty state UI as well.
 import type { Booking } from '@/types'
-import { MOCK_TIMESTAMP as TS } from '@/mocks/utils'
+import { DEMO_AUDIT } from '@/utils/audit'
 
 export const MOCK_BOOKINGS: Booking[] = [
   {
@@ -14,7 +14,7 @@ export const MOCK_BOOKINGS: Booking[] = [
     provider: 'ANA',
     checkIn: '2026-05-01T07:30',
     note: 'Terminal 1 · 06:30 報到',
-    createdAt: TS,
+    ...DEMO_AUDIT,
   },
   {
     id: 'b2', tripId: 'demo', type: 'hotel',
@@ -22,7 +22,7 @@ export const MOCK_BOOKINGS: Booking[] = [
     confirmationCode: 'DI-7745201',
     provider: 'Booking.com',
     checkIn: '2026-05-01', checkOut: '2026-05-05',
-    createdAt: TS,
+    ...DEMO_AUDIT,
   },
   {
     id: 'b3', tripId: 'demo', type: 'train',
@@ -32,7 +32,7 @@ export const MOCK_BOOKINGS: Booking[] = [
     provider: 'JR Central',
     checkIn: '2026-05-02',
     note: 'グリーン車 5号車',
-    createdAt: TS,
+    ...DEMO_AUDIT,
   },
   {
     id: 'b4', tripId: 'demo', type: 'flight',
@@ -41,6 +41,6 @@ export const MOCK_BOOKINGS: Booking[] = [
     confirmationCode: 'ABC123',
     provider: 'ANA',
     checkIn: '2026-05-08T18:00',
-    createdAt: TS,
+    ...DEMO_AUDIT,
   },
 ]

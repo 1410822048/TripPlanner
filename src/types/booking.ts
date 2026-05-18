@@ -48,10 +48,10 @@ export interface Booking {
    *   - createBooking populates from current member roster
    *   - acceptInvite (member added) appends uid to every booking
    *   - removeMember splices uid from every booking
-   * Optional in the type for backward-compat; old rows must be backfilled
-   * to appear in collection-group queries.
+   * Doubles as the read-rule gate: `allow read: if request.auth.uid in
+   * resource.data.memberIds` — same-doc check, no cross-document lag.
    */
-  memberIds?: string[]
+  memberIds: string[]
   /** Public download URL — full-size, used by the preview modal. */
   fileUrl?: string
   /**
@@ -76,7 +76,11 @@ export interface Booking {
    *  Wish.address — see utils/maps.ts. */
   address?: string
   note?: string
+  createdBy: string
+  /** Last-writer uid. See useFeatureBadges. */
+  updatedBy: string
   createdAt: Timestamp
+  updatedAt: Timestamp
 }
 
 /**
@@ -104,9 +108,12 @@ export const BookingDocSchema = z.object({
   fileType:         z.string().optional(),
   address:          z.string().optional(),
   note:             z.string().optional(),
+  createdBy:        z.string(),
+  updatedBy:        z.string(),
   createdAt:        TimestampSchema,
+  updatedAt:        TimestampSchema,
   sortDate:         TimestampSchema.optional(),
-  memberIds:        z.array(z.string()).optional(),
+  memberIds:        z.array(z.string().min(1)).min(1),
 })
 
 /**

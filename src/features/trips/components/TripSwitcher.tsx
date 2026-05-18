@@ -57,6 +57,15 @@ export default function TripSwitcher({
   isOwner = true,
 }: TripSwitcherProps) {
   const [open, setOpen] = useState(false)
+  const [editMode, setEditMode] = useState(false)
+  // Effective edit visibility ties to trips.length > 1 — same guard the
+  // toggle button uses. Decouples the "edit mode is on" intent from the
+  // "edit chrome can render" condition: when a delete drops trips to 1,
+  // the toggle disappears but the rows would still render their trash
+  // icons against this state — and clicking those would delete the last
+  // trip immediately (canDelete still true under canDeleteLast). Deriving
+  // it here keeps both gates honest.
+  const editVisible = editMode && trips.length > 1
   const swipe = useSwipeOpen()
 
   const [draggingId, setDraggingId] = useState<string | null>(null)
@@ -74,10 +83,18 @@ export default function TripSwitcher({
   }, [open])
 
   // When the dropdown closes (any path: outside-click, select, action,
-  // create), drop any pending swipe so reopening shows fresh state instead
-  // of the previously-swiped row stuck open.
+  // create), drop any pending swipe AND reset edit mode so reopening
+  // shows fresh state instead of stuck-open rows / lingering edit chrome.
+  // The setState-in-effect is intentional — `open` has 5 separate flip
+  // points (outside-click handler, header X, select row, menu action,
+  // create CTA) and centralising the reset into each would scatter the
+  // "reopen-fresh" contract; the effect is the single converge point.
   useEffect(() => {
-    if (!open) swipe.closeAll()
+    if (!open) {
+      swipe.closeAll()
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setEditMode(false)
+    }
   }, [open, swipe])
 
   const isReordering = draggingId !== null
@@ -203,10 +220,28 @@ export default function TripSwitcher({
                   <span className="text-[10px] font-bold text-muted tracking-[0.1em] uppercase">
                     マイ旅程
                   </span>
+                  <span className="text-[9.5px] text-muted font-semibold">
+                    {trips.length} 件
+                  </span>
                 </div>
-                <span className="text-[9.5px] text-muted font-semibold">
-                  {trips.length} 件
-                </span>
+                {/* Edit toggle — gated by trips.length > 1 so the affordance
+                    only appears when there's something meaningful to reorder
+                    or compare-and-delete. */}
+                {trips.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditMode(e => !e)
+                      swipe.closeAll()
+                    }}
+                    className={[
+                      'text-[10.5px] font-semibold tracking-[0.04em] px-2 py-0.5 rounded-card border-none cursor-pointer transition-colors',
+                      editMode ? 'bg-pick text-white' : 'bg-app text-pick hover:bg-pick-pale',
+                    ].join(' ')}
+                  >
+                    {editMode ? '完了' : '編集'}
+                  </button>
+                )}
               </div>
 
               <div
@@ -230,6 +265,7 @@ export default function TripSwitcher({
                     isDragging={draggingId === trip.id}
                     dragY={draggingId === trip.id ? dragY : 0}
                     shiftY={computeShift(trip.id)}
+                    editMode={editVisible}
                     onSelect={() => { onSelect(trip); setOpen(false); swipe.closeAll() }}
                     onDelete={() => { onDelete(trip.id); swipe.closeAll() }}
                     onReorderStart={(h) => startReorder(trip.id, h)}

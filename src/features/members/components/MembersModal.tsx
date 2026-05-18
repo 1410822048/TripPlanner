@@ -11,6 +11,7 @@ import { useState } from 'react'
 import BottomSheet from '@/components/ui/BottomSheet'
 import ConfirmSheet from '@/components/ui/ConfirmSheet'
 import LoadingText from '@/components/ui/LoadingText'
+import MemberAvatar from '@/components/ui/MemberAvatar'
 import { Trash2, ArrowLeftRight } from 'lucide-react'
 import { useMembers, useRemoveMember, useUpdateMemberRole } from '@/features/members/hooks/useMembers'
 import { memberToTripMember } from '@/features/members/utils'
@@ -86,13 +87,11 @@ export default function MembersModal({ isOpen, onClose, trip }: Props) {
                   key={m.id}
                   className="flex items-center gap-2.5 p-2.5 bg-surface border border-border rounded-xl"
                 >
-                  <div
-                    className="w-10 h-10 rounded-full shrink-0 flex items-center justify-center text-[13px] font-bold shadow-[0_1px_4px_rgba(0,0,0,0.08)]"
-                    style={{ background: chip.bg, color: chip.color }}
-                    aria-hidden
-                  >
-                    {chip.label}
-                  </div>
+                  <MemberAvatar
+                    member={chip}
+                    size={40}
+                    className="text-[13px] shadow-[0_1px_4px_rgba(0,0,0,0.08)]"
+                  />
                   <div className="flex-1 min-w-0">
                     <div className="text-[13px] font-semibold text-ink truncate">
                       {m.displayName}

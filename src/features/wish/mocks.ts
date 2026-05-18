@@ -13,7 +13,9 @@ export const MOCK_WISHES: Wish[] = [
     description: '築地場外の老舗。朝食に並んででも食べたい',
     address: '東京都中央区築地 4-13-18',
     proposedBy: 'demo',
+    updatedBy: 'demo',
     votes: ['demo', 'm2', 'm3', 'm4'],
+    memberIds: ['demo', 'm2', 'm3', 'm4'],
     createdAt: TS, updatedAt: TS,
   },
   {
@@ -23,7 +25,9 @@ export const MOCK_WISHES: Wish[] = [
     description: '桜・つつじ・新緑、季節を問わず見応えあり',
     address: '新宿御苑',
     proposedBy: 'demo',
+    updatedBy: 'demo',
     votes: ['demo', 'm2', 'm3'],
+    memberIds: ['demo', 'm2', 'm3', 'm4'],
     createdAt: TS, updatedAt: TS,
   },
   {
@@ -32,7 +36,9 @@ export const MOCK_WISHES: Wish[] = [
     title: '隅田川ナイトクルーズ',
     description: '夜景を眺めながら 1 時間のクルーズ',
     proposedBy: 'm2',
+    updatedBy: 'm2',
     votes: ['demo', 'm2'],
+    memberIds: ['demo', 'm2', 'm3', 'm4'],
     createdAt: TS, updatedAt: TS,
   },
   {
@@ -40,7 +46,9 @@ export const MOCK_WISHES: Wish[] = [
     category: 'food',
     title: '一蘭ラーメン',
     proposedBy: 'm3',
+    updatedBy: 'm3',
     votes: ['m3'],
+    memberIds: ['demo', 'm2', 'm3', 'm4'],
     createdAt: TS, updatedAt: TS,
   },
 ]

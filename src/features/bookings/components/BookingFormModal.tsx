@@ -72,6 +72,7 @@ interface Props {
   tripEndDate?:   string
   isOpen:     boolean
   isSaving:   boolean
+  saveError?: string | null
   onClose:    () => void
   onSave:     (data: BookingFormResult) => void
   /** Only present in edit mode for users with delete permission.
@@ -81,7 +82,7 @@ interface Props {
 
 export default function BookingFormModal({
   editTarget, tripStartDate, tripEndDate,
-  isOpen, isSaving, onClose, onSave, onDelete,
+  isOpen, isSaving, saveError, onClose, onSave, onDelete,
 }: Props) {
   const { state, setField } = useBookingFormState(editTarget)
   const att = useAttachment({
@@ -162,6 +163,7 @@ export default function BookingFormModal({
       isSaving={isSaving}
       title={editTarget ? '予約を編集' : '予約を追加'}
       saveLabel={editTarget ? '変更を保存' : '予約を追加'}
+      saveError={saveError}
       onClose={onClose}
       onSave={handleSave}
     >

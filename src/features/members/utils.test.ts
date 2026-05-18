@@ -6,7 +6,7 @@ import type { Member } from '@/types'
 function mkMember(id: string, displayName: string): Member {
   return {
     id, tripId: 'demo', userId: 'u', displayName,
-    role: 'editor', joinedAt: TS,
+    role: 'editor', memberIds: ['u'], joinedAt: TS,
   }
 }
 

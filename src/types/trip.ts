@@ -6,6 +6,22 @@ import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
 import { TimestampSchema } from './_shared'
 
+// Per-tab unread-dot key. Mirrors BadgeFeature in lastViewedStore;
+// kept identical so the trip-doc aggregate (lastActivityByFeature)
+// can be indexed by the same keys clients use to render dots.
+export type ActivityFeature = 'schedule' | 'expense' | 'bookings' | 'wish' | 'planning'
+
+/** Per-feature "last activity" stamp denormalised onto the trip doc.
+ *  Powers the bottom-nav unread-dot badge WITHOUT mounting per-entity
+ *  listeners — useFeatureBadges reads this single field instead of
+ *  scanning 5 subcollections for max(updatedAt). `by` is the uid that
+ *  caused the bump; useFeatureBadges filters own writes by checking
+ *  `by === currentUid`. */
+export interface ActivityStamp {
+  ts: Timestamp
+  by: string
+}
+
 // ─── Trip ─────────────────────────────────────────────────────────
 // trips/{tripId}
 export interface Trip {
@@ -18,6 +34,30 @@ export interface Trip {
   endDate: Timestamp
   currency: string          // 'TWD' | 'JPY' | 'USD' ...
   ownerId: string
+  /**
+   * Denormalised list of all member uids. Mirrored from
+   * /trips/{id}/members/* and updated via memberSync on every
+   * membership change. Drives the read rules — `allow get / list:
+   * if request.auth.uid in resource.data.memberIds` — so rules
+   * evaluate against THIS doc only, not a cross-document exists()
+   * lookup. Eliminates the rules-eval propagation lag window that
+   * used to 403 listeners right after a fresh batch.commit.
+   *
+   * Sync invariants:
+   *   - createTrip seeds with [ownerUid]
+   *   - acceptInvite appends invitee uid
+   *   - removeMember strips removed uid
+   *   - deleteTrip removes the whole doc; no cleanup needed
+   */
+  memberIds: string[]
+  /**
+   * Per-feature "last activity" stamps. Drives the bottom-nav unread-
+   * dot badge — see useFeatureBadges. Each service mutation calls
+   * bumpTripActivity() best-effort after the main write to update the
+   * matching feature key. Optional for backward-compat with trip docs
+   * created before this field existed; missing → no badge.
+   */
+  lastActivityByFeature?: Partial<Record<ActivityFeature, ActivityStamp>>
   createdAt: Timestamp
   updatedAt: Timestamp
 }
@@ -36,6 +76,11 @@ export type CreateTripInput = z.infer<typeof CreateTripSchema>
 export const UpdateTripSchema = CreateTripSchema.partial()
 export type UpdateTripInput = z.infer<typeof UpdateTripSchema>
 
+const ActivityStampSchema = z.object({
+  ts: TimestampSchema,
+  by: z.string(),
+})
+
 export const TripDocSchema = z.object({
   title:       z.string().min(1),
   destination: z.string(),
@@ -45,6 +90,14 @@ export const TripDocSchema = z.object({
   endDate:     TimestampSchema,
   currency:    z.string(),
   ownerId:     z.string().min(1),
+  memberIds:   z.array(z.string().min(1)).min(1),
+  lastActivityByFeature: z.object({
+    schedule: ActivityStampSchema.optional(),
+    expense:  ActivityStampSchema.optional(),
+    bookings: ActivityStampSchema.optional(),
+    wish:     ActivityStampSchema.optional(),
+    planning: ActivityStampSchema.optional(),
+  }).optional(),
   createdAt:   TimestampSchema,
   updatedAt:   TimestampSchema,
 })
@@ -65,6 +118,13 @@ export interface Member {
    * at create time. Kept post-commit as an audit trail.
    */
   inviteToken?: string
+  /**
+   * Mirror of trip.memberIds. Lets the members-list rule check
+   * `request.auth.uid in resource.data.memberIds` against THIS doc
+   * instead of a cross-document exists() — same-doc, no lag.
+   * Cascade-updated via memberSync alongside other entity docs.
+   */
+  memberIds: string[]
 }
 
 export const MemberDocSchema = z.object({
@@ -75,6 +135,7 @@ export const MemberDocSchema = z.object({
   role:        z.enum(['owner', 'editor', 'viewer']),
   joinedAt:    TimestampSchema,
   inviteToken: z.string().optional(),
+  memberIds:   z.array(z.string().min(1)).min(1),
 })
 
 // ─── Invite ───────────────────────────────────────────────────────

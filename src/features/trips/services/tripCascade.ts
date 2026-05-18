@@ -20,7 +20,16 @@
 // purgeStorageFolder is idempotent (already-deleted files don't appear
 // in listAll), and the Firestore subcollection loops are convergent.
 import { getFirebase, getFirebaseStorage } from '@/services/firebase'
-import { P, TRIP_SUBCOLLECTIONS } from '@/services/paths'
+import { P, TRIP_SUBCOLLECTIONS, type TripSubcollection } from '@/services/paths'
+
+/** Subcollections whose list rule is gated by same-doc memberIds —
+ *  i.e. the query MUST include `where('memberIds', 'array-contains', uid)`
+ *  to be accepted. `invites` (gated by isTripOwner, no memberIds field)
+ *  and `settlements` (gated by exists(memberPath), no memberIds field)
+ *  fall through to unfiltered listing. */
+const MEMBER_IDS_GATED: ReadonlySet<TripSubcollection> = new Set([
+  'schedules', 'expenses', 'wishes', 'bookings', 'planning', 'members',
+])
 
 /**
  * Recursively delete every Storage object under a prefix. Used during
@@ -45,9 +54,14 @@ async function purgeStorageFolder(prefix: string): Promise<void> {
 /**
  * Cascade-delete a trip and every subcollection doc that lives under it.
  * See module header for ordering rationale and retry semantics.
+ *
+ * `uid` is the caller's uid — required to satisfy the same-doc list
+ * rules on memberIds-gated subcollections. The caller must be the trip
+ * owner (rule-enforced); owners are always in memberIds, so the filter
+ * is a no-op on results but mandatory for Firestore query validation.
  */
-export async function deleteTrip(tripId: string): Promise<void> {
-  const { db, collection, doc, getDocs, writeBatch, deleteDoc } = await getFirebase()
+export async function deleteTrip(tripId: string, uid: string): Promise<void> {
+  const { db, collection, doc, query, where, getDocs, writeBatch, deleteDoc } = await getFirebase()
 
   try {
     await purgeStorageFolder(`trips/${tripId}`)
@@ -62,7 +76,11 @@ export async function deleteTrip(tripId: string): Promise<void> {
   for (const name of TRIP_SUBCOLLECTIONS) {
     try {
       for (;;) {
-        const snap = await getDocs(collection(db, ...P.subcollection(tripId, name)))
+        const colRef = collection(db, ...P.subcollection(tripId, name))
+        const listQuery = MEMBER_IDS_GATED.has(name)
+          ? query(colRef, where('memberIds', 'array-contains', uid))
+          : colRef
+        const snap = await getDocs(listQuery)
         if (snap.empty) break
         const chunk = snap.docs.slice(0, 500)
         const batch = writeBatch(db)

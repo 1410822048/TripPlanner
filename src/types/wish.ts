@@ -47,6 +47,11 @@ export interface Wish {
   image?: WishImage
   /** uid of the member who proposed this wish. */
   proposedBy: string
+  /** Last-writer uid (incl. vote toggle). See useFeatureBadges. */
+  updatedBy: string
+  /** Denormalised member uids — drives the same-doc read rule. See
+   *  trip.memberIds for rationale. */
+  memberIds: string[]
   /** uids that have +1'd this wish. Sort key: votes.length desc. */
   votes: string[]
   createdAt: Timestamp
@@ -69,6 +74,8 @@ export const WishDocSchema = z.object({
   address:     z.string().optional(),
   image:       WishImageSchema.optional(),
   proposedBy:  z.string(),
+  updatedBy:   z.string(),
+  memberIds:   z.array(z.string().min(1)).min(1),
   votes:       z.array(z.string()),
   createdAt:   TimestampSchema,
   updatedAt:   TimestampSchema,

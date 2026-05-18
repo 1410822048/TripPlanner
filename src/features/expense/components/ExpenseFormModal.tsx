@@ -26,7 +26,9 @@ import FormModalShell from '@/components/ui/FormModalShell'
 import { DatePicker } from '@/components/ui/pickers'
 import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
+import CurrencyInput from '@/components/ui/CurrencyInput'
 import MemberChip from '@/components/ui/MemberChip'
+import MemberAvatar from '@/components/ui/MemberAvatar'
 import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
@@ -481,18 +483,14 @@ export default function ExpenseFormModal({
 
       <div className="flex gap-2.5">
         <FormField label={`金額（${symbol}）`} error={errors.amount} required className="flex-1">
-          <div className="relative">
-            <span className="absolute left-[13px] top-1/2 -translate-y-1/2 text-muted text-[13px] pointer-events-none">{symbol}</span>
-            <input
-              type="number"
-              inputMode="numeric"
-              value={state.amount}
-              onChange={e => setField('amount', e.target.value)}
-              placeholder="0"
-              min={0}
-              className={`${inputClass(!!errors.amount)} pl-7`}
-            />
-          </div>
+          <CurrencyInput
+            symbol={symbol}
+            value={state.amount}
+            onChange={e => setField('amount', e.target.value)}
+            placeholder="0"
+            min={0}
+            error={!!errors.amount}
+          />
         </FormField>
         <FormField label="日付" error={errors.date} required className="flex-1">
           <DatePicker value={state.date} onChange={v => setField('date', v)} error={!!errors.date} />
@@ -516,14 +514,13 @@ export default function ExpenseFormModal({
                 aria-label={`立替: ${m.label}`}
                 aria-pressed={active}
                 className={[
-                  'w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-bold cursor-pointer transition-all border-none',
+                  'p-0 bg-transparent border-none cursor-pointer rounded-full transition-all',
                   active
                     ? 'ring-2 ring-accent ring-offset-2 ring-offset-app scale-110'
                     : 'opacity-55 hover:opacity-100',
                 ].join(' ')}
-                style={{ background: m.bg, color: m.color }}
               >
-                {m.label}
+                <MemberAvatar member={m} size={32} />
               </button>
             )
           })}
@@ -558,19 +555,17 @@ export default function ExpenseFormModal({
                       placeholder="項目名"
                       className="flex-1 min-w-0 h-9 px-2.5 rounded-[8px] border-[1.5px] border-border bg-app text-[16px] text-ink outline-none focus-visible:border-accent"
                     />
-                    <div className="relative shrink-0 w-[120px]">
-                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted text-[12px] pointer-events-none">{symbol}</span>
-                      <input
-                        type="number"
-                        inputMode="numeric"
+                    <div className="shrink-0 w-[120px]">
+                      <CurrencyInput
+                        symbol={symbol}
+                        size="compact"
+                        alignRight
+                        shellClassName="h-9 px-2.5 rounded-[8px]"
                         value={it.amount || ''}
                         onChange={e => items.setAmount(i, e.target.value)}
                         placeholder="0"
-                        className={[
-                          'w-full h-9 pl-7 pr-2 rounded-[8px] border-[1.5px] border-border bg-app text-[16px] text-right tabular-nums outline-none focus-visible:border-accent',
-                          // Tint negative amounts so discounts read as such at a glance.
-                          it.amount < 0 ? 'text-warn' : 'text-ink',
-                        ].join(' ')}
+                        // Tint negative amounts so discounts read as such at a glance.
+                        className={it.amount < 0 ? 'text-warn' : ''}
                       />
                     </div>
                   </div>
@@ -677,12 +672,7 @@ export default function ExpenseFormModal({
                       included ? 'border-border bg-surface' : 'border-border bg-app opacity-55',
                     ].join(' ')}
                   >
-                    <span
-                      className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0"
-                      style={{ background: m.bg, color: m.color }}
-                    >
-                      {m.label}
-                    </span>
+                    <MemberAvatar member={m} size={28} />
                     <span className="flex-1 text-[13px] text-ink font-medium">{m.label}</span>
 
                     {splits.state.mode === 'equal' ? (
@@ -698,16 +688,16 @@ export default function ExpenseFormModal({
                         />
                       </>
                     ) : (
-                      <div className="relative w-[110px]">
-                        <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted text-[12px] pointer-events-none">{symbol}</span>
-                        <input
-                          type="number"
-                          inputMode="numeric"
+                      <div className="w-[110px]">
+                        <CurrencyInput
+                          symbol={symbol}
+                          size="compact"
+                          alignRight
+                          shellClassName="h-9 px-2.5 rounded-[8px]"
                           min={0}
                           value={splits.state.custom[m.id] ?? ''}
                           onChange={e => splits.setCustom(m.id, e.target.value)}
                           placeholder="0"
-                          className="w-full h-9 pl-6 pr-2 rounded-[8px] border-[1.5px] border-border bg-app text-[16px] text-ink text-right tabular-nums outline-none focus-visible:border-accent"
                         />
                       </div>
                     )}

@@ -4,7 +4,8 @@ import { Plus, Ticket } from 'lucide-react'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
 import { useSwipeOpen } from '@/hooks/useSwipeOpen'
 import { toast } from '@/shared/toast'
-import TripLoading from '@/components/ui/TripLoading'
+import { simulateFailureMaybe } from '@/utils/devFailures'
+import BookingsPageSkeleton from './BookingsPageSkeleton'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
 import DemoBanner from '@/components/ui/DemoBanner'
 import SignInPromptModal from '@/features/auth/components/SignInPromptModal'
@@ -61,12 +62,14 @@ export default function BookingsPage() {
   const demoBookings = ctx.status === 'demo' && ctx.trip.id === 'demo' ? MOCK_BOOKINGS : []
   const bookings = ctx.status === 'demo' ? demoBookings : (cloudBookings ?? [])
 
-  const createMut = useCreateBooking(mutationTripId)
-  const updateMut = useUpdateBooking(mutationTripId)
+  // silent — modal surfaces errors via inline banner(useFormModal.saveError),
+  // global toast would double-notify.
+  const createMut = useCreateBooking(mutationTripId, { silent: true })
+  const updateMut = useUpdateBooking(mutationTripId, { silent: true })
   const deleteMut = useDeleteBooking(mutationTripId)
   const isSaving  = createMut.isPending || updateMut.isPending
 
-  if (ctx.status === 'loading') return <TripLoading />
+  if (ctx.status === 'loading') return <BookingsPageSkeleton />
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Ticket} reason="予約を管理" />
 
   const title = ctx.trip.title
@@ -92,20 +95,29 @@ export default function BookingsPage() {
 
   async function handleSave({ input, attachment }: BookingFormResult) {
     if (isDemo) { modal.close(); signIn.open(); return }
-    if (!modal.editTarget && !uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+    if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+    modal.clearError()
     try {
+      await simulateFailureMaybe()
       if (modal.editTarget) {
         await updateMut.mutateAsync({
           bookingId:        modal.editTarget.id,
           updates:          input,
+          uid,
           attachment,
           existing:         { filePath: modal.editTarget.filePath, thumbPath: modal.editTarget.thumbPath },
         })
       } else {
-        await createMut.mutateAsync({ input, file: attachment instanceof File ? attachment : null })
+        await createMut.mutateAsync({
+          input,
+          file:      attachment instanceof File ? attachment : null,
+          createdBy: uid,
+        })
       }
       modal.close()
-    } catch { /* hook onError already surfaced the toast */ }
+    } catch (err) {
+      modal.setError(err instanceof Error ? err.message : '保存に失敗しました')
+    }
   }
 
   async function handleSwipeDelete(b: Booking) {
@@ -251,6 +263,7 @@ export default function BookingsPage() {
           tripStartDate={tripStartDate}
           tripEndDate={tripEndDate}
           isSaving={isSaving}
+          saveError={modal.saveError}
           onClose={modal.close}
           onSave={handleSave}
           onDelete={modal.editTarget && !isDemo && canWrite ? handleFormDelete : undefined}

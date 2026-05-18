@@ -29,6 +29,7 @@ import type { Wish } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import { useSwipeRow, SWIPE_WIDTH, BG_TRANSITION, FG_TRANSITION } from '@/hooks/useSwipeRow'
 import ActionChip from '@/components/ui/ActionChip'
+import MemberAvatar from '@/components/ui/MemberAvatar'
 import { mapsSearchUrl } from '@/utils/maps'
 import { haptic } from '@/utils/haptics'
 
@@ -351,21 +352,17 @@ function VoterStack({ voters, totalVotes }: { voters: TripMember[]; totalVotes: 
     // 微(原本只是 8% 不透明的 1px 微陰影),換來最穩定的 cleanup。
     <div className="ml-auto flex items-center mr-1" style={{ isolation: 'isolate' }}>
       {shown.map((m, i) => (
-        <span
+        <MemberAvatar
           key={m.id}
-          aria-label={m.label}
-          title={m.label}
-          className="w-[20px] h-[20px] rounded-full flex items-center justify-center text-[9.5px] font-bold border-[1.5px] border-surface"
+          member={m}
+          size={20}
+          className="border-[1.5px] border-surface text-[9.5px]"
           style={{
             ...AVATAR_LAYER_STYLE,
-            background: m.bg,
-            color:      m.color,
             marginLeft: i === 0 ? 0 : -6,
             zIndex:     shown.length - i,
           }}
-        >
-          {m.label}
-        </span>
+        />
       ))}
       {overflow > 0 && (
         <span

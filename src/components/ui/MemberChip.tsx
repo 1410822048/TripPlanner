@@ -12,6 +12,12 @@
 // Future callers needing a different combination (e.g. sm + primary)
 // can add a `variant` prop — kept tight to the two real call sites
 // for now to avoid premature abstraction.
+//
+// Avatar: renders the member's Google / OAuth profile photo when
+// available (avatarUrl), falls back to label-on-coloured-circle.
+// onError flips back to the label fallback so a 404 / CORS reject
+// doesn't leave a broken-image icon inside the chip.
+import { useState } from 'react'
 import type { TripMember } from '@/features/trips/types'
 
 interface Props {
@@ -39,6 +45,8 @@ const SIZES = {
 
 export default function MemberChip({ member, active, onClick, size = 'md', disabled }: Props) {
   const s = SIZES[size]
+  const [imgFailed, setImgFailed] = useState(false)
+  const showImg = !!member.avatarUrl && !imgFailed
   return (
     <button
       type="button"
@@ -53,10 +61,20 @@ export default function MemberChip({ member, active, onClick, size = 'md', disab
       ].join(' ')}
     >
       <span
-        className={`${s.avatar} rounded-full flex items-center justify-center font-bold shrink-0`}
+        className={`${s.avatar} rounded-full flex items-center justify-center font-bold shrink-0 overflow-hidden`}
         style={{ background: member.bg, color: member.color }}
       >
-        {member.label}
+        {showImg ? (
+          <img
+            src={member.avatarUrl}
+            alt=""
+            referrerPolicy="no-referrer"
+            className="w-full h-full object-cover"
+            onError={() => setImgFailed(true)}
+          />
+        ) : (
+          member.label
+        )}
       </span>
       {member.label}
     </button>

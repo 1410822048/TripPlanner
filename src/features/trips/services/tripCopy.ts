@@ -23,6 +23,7 @@ import type { User } from 'firebase/auth'
 import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { addDays, diffDays, toLocalDateString, toLocalMidnightTimestamp } from '@/utils/dates'
+import { auditCreate } from '@/utils/audit'
 import type { Trip } from '@/types'
 
 export interface CopyTripInput {
@@ -45,8 +46,8 @@ export interface CopyTripResult {
 /** Skipped fields when rebuilding doc payloads from source. Schedule
  *  preserves done state isn't relevant; planning explicitly resets
  *  `done` so a copied checklist starts unticked. */
-const SCHEDULE_SKIP = new Set(['createdAt', 'updatedAt', 'createdBy', 'tripId'])
-const PLAN_SKIP     = new Set(['createdAt', 'updatedAt', 'createdBy', 'tripId', 'done', 'doneAt', 'doneBy'])
+const SCHEDULE_SKIP = new Set(['createdAt', 'updatedAt', 'createdBy', 'updatedBy', 'memberIds', 'tripId'])
+const PLAN_SKIP     = new Set(['createdAt', 'updatedAt', 'createdBy', 'updatedBy', 'memberIds', 'tripId', 'done', 'doneAt', 'doneBy'])
 
 /**
  * Build a fresh doc payload from a source doc's data: drop the named
@@ -85,6 +86,12 @@ export async function copyTrip(
     db, doc, collection, getDocs, writeBatch, Timestamp, serverTimestamp,
   } = await getFirebase()
 
+  // Roster on a copied trip is just the user that triggered the copy —
+  // existing members of `source` aren't carried over (privacy / scope).
+  // Cascaded onto every copied schedule + planning row so the read
+  // rules pass via same-doc memberIds check.
+  const memberIds = [user.uid]
+
   // Compute new endDate by shifting endDate by the same delta as
   // startDate — preserves the trip's original duration.
   const dateOffset = diffDays(
@@ -105,6 +112,7 @@ export async function copyTrip(
     displayName: user.displayName ?? 'Me',
     role:        'owner',
     joinedAt:    serverTimestamp(),
+    memberIds,
   }
   if (user.photoURL) memberPayload.avatarUrl = user.photoURL
 
@@ -117,6 +125,7 @@ export async function copyTrip(
     endDate:     newEndTs,
     currency:    source.currency,
     ownerId:     user.uid,
+    memberIds,
     createdAt:   serverTimestamp(),
     updatedAt:   serverTimestamp(),
   })
@@ -124,10 +133,18 @@ export async function copyTrip(
   await batch1.commit()
 
   // ── Phase 2a: copy schedules (date-shifted) ───────────────────
+  // Filter by caller's uid to satisfy the same-doc list rule
+  // (allow list: if uid in resource.data.memberIds). The caller is a
+  // member of the source trip, and memberSync keeps memberIds aligned
+  // across every entity doc, so the filter returns the full set.
   let copiedSchedules   = 0
   let orphanedSchedules = 0
   if (input.copySchedules) {
-    const sourceSchedules = await getDocs(collection(db, ...P.schedules(source.id)))
+    const { query, where } = await getFirebase()
+    const sourceSchedules = await getDocs(query(
+      collection(db, ...P.schedules(source.id)),
+      where('memberIds', 'array-contains', user.uid),
+    ))
 
     for (let i = 0; i < sourceSchedules.docs.length; i += 500) {
       const batch = writeBatch(db)
@@ -139,11 +156,10 @@ export async function copyTrip(
         if (newDate < input.newStartDate || newDate > newEndDate) orphanedSchedules++
         const newRef = doc(collection(db, ...P.schedules(tripRef.id)))
         batch.set(newRef, rebuildPayload(data, SCHEDULE_SKIP, {
-          date:      newDate,
-          tripId:    tripRef.id,
-          createdBy: user.uid,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
+          date:   newDate,
+          tripId: tripRef.id,
+          memberIds,
+          ...auditCreate(user.uid, serverTimestamp()),
         }))
         copiedSchedules++
       }
@@ -154,7 +170,11 @@ export async function copyTrip(
   // ── Phase 2b: copy planning items (no date concept) ──────────
   let copiedPlanItems = 0
   if (input.copyPlanning) {
-    const sourcePlanning = await getDocs(collection(db, ...P.planning(source.id)))
+    const { query, where } = await getFirebase()
+    const sourcePlanning = await getDocs(query(
+      collection(db, ...P.planning(source.id)),
+      where('memberIds', 'array-contains', user.uid),
+    ))
     for (let i = 0; i < sourcePlanning.docs.length; i += 500) {
       const batch = writeBatch(db)
       for (const d of sourcePlanning.docs.slice(i, i + 500)) {
@@ -162,11 +182,10 @@ export async function copyTrip(
         // `done: false` resets the new trip's checklist — the original
         // trip's progress isn't relevant to the duplicate.
         batch.set(newRef, rebuildPayload(d.data(), PLAN_SKIP, {
-          done:      false,
-          tripId:    tripRef.id,
-          createdBy: user.uid,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
+          done:   false,
+          tripId: tripRef.id,
+          memberIds,
+          ...auditCreate(user.uid, serverTimestamp()),
         }))
         copiedPlanItems++
       }
@@ -184,6 +203,7 @@ export async function copyTrip(
     endDate:     newEndTs,
     currency:    source.currency,
     ownerId:     user.uid,
+    memberIds,
     createdAt:   nowTs,
     updatedAt:   nowTs,
   }

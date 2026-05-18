@@ -20,13 +20,16 @@ export default function Toaster() {
       className="fixed left-1/2 -translate-x-1/2 z-[9999] flex flex-col gap-2 pointer-events-none"
       style={{ top: 'calc(env(safe-area-inset-top, 0px) + 14px)', maxWidth: '92vw' }}
     >
+      {/* Outer is <div>, not <button>: HTML disallows nested <button>
+          and the action slot itself is a button. The message area is its
+          own inner button so tapping it still dismisses. */}
       {items.map(t => {
         const s = KIND_STYLE[t.kind]
         return (
-          <button
+          <div
             key={t.id}
-            onClick={() => dismiss(t.id)}
-            className="pointer-events-auto flex items-center gap-2.5 px-3.5 py-2.5 rounded-2xl border-none text-[13px] font-semibold text-left cursor-pointer transition-transform"
+            role="status"
+            className="pointer-events-auto flex items-center gap-2.5 px-3.5 py-2.5 rounded-2xl text-[13px] font-semibold"
             style={{
               background:   s.bg,
               color:        s.fg,
@@ -42,8 +45,29 @@ export default function Toaster() {
             >
               {s.icon}
             </span>
-            <span className="flex-1">{t.message}</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => dismiss(t.id)}
+              aria-label="閉じる"
+              className="flex-1 text-left border-none bg-transparent p-0 cursor-pointer font-semibold"
+              style={{ color: s.fg }}
+            >
+              {t.message}
+            </button>
+            {t.action && (
+              <button
+                type="button"
+                onClick={() => { t.action!.onClick(); dismiss(t.id) }}
+                className="shrink-0 px-2.5 py-1 rounded-full border-none text-[12px] font-bold cursor-pointer"
+                style={{
+                  background: s.fg,
+                  color:      s.bg,
+                }}
+              >
+                {t.action.label}
+              </button>
+            )}
+          </div>
         )
       })}
       <style>{`

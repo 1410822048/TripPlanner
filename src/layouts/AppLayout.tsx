@@ -1,13 +1,16 @@
 // src/layouts/AppLayout.tsx
-import { Suspense } from 'react'
+import { Suspense, useEffect } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { CalendarDays, Ticket, Receipt, Heart, ListChecks, UserCircle } from 'lucide-react'
-import LoadingText from '@/components/ui/LoadingText'
+import PageLoadingSkeleton from '@/components/ui/PageLoadingSkeleton'
 import OfflineBanner from '@/components/ui/OfflineBanner'
 import PwaUpdatePrompt from '@/components/PwaUpdatePrompt'
 import PwaInstallPrompt from '@/components/PwaInstallPrompt'
 import { useCurrentTripSync } from '@/features/trips/hooks/useCurrentTripSync'
 import { usePrefetchBookings } from '@/features/bookings/hooks/usePrefetchBookings'
+import { useFeatureBadges } from '@/hooks/useFeatureBadges'
+import { useLastViewedStore, type BadgeFeature } from '@/store/lastViewedStore'
+import { useTripStore } from '@/store/tripStore'
 
 // Single source of truth for the bottom-nav height. Used by:
 //   - <main>'s `bottom` (so content doesn't scroll under the nav)
@@ -29,13 +32,18 @@ import { usePrefetchBookings } from '@/features/bookings/hooks/usePrefetchBookin
 const NAV_H = 'calc(4rem + env(safe-area-inset-bottom))'
 
 const TABS = [
-  { path: '/schedule', label: '行程', Icon: CalendarDays },
-  { path: '/bookings', label: '訂單', Icon: Ticket       },
-  { path: '/expense',  label: '費用', Icon: Receipt      },
-  { path: '/wish',     label: 'Wish', Icon: Heart        },
-  { path: '/planning', label: '規劃', Icon: ListChecks  },
-  { path: '/account',  label: '我的', Icon: UserCircle   },
+  { path: '/schedule', label: '行程', Icon: CalendarDays, feature: 'schedule' as const },
+  { path: '/bookings', label: '訂單', Icon: Ticket,       feature: 'bookings' as const },
+  { path: '/expense',  label: '費用', Icon: Receipt,      feature: 'expense'  as const },
+  { path: '/wish',     label: 'Wish', Icon: Heart,        feature: 'wish'     as const },
+  { path: '/planning', label: '規劃', Icon: ListChecks,   feature: 'planning' as const },
+  { path: '/account',  label: '我的', Icon: UserCircle,   feature: null },
 ] as const
+
+function pathToFeature(pathname: string): BadgeFeature | null {
+  const tab = TABS.find(t => pathname.startsWith(t.path))
+  return tab?.feature ?? null
+}
 
 export default function AppLayout() {
   const { pathname } = useLocation()
@@ -51,6 +59,27 @@ export default function AppLayout() {
   // navigate to /bookings, the list resolves from cache — closes the
   // visible "header showing but list still loading" gap on cold load.
   usePrefetchBookings()
+
+  // Always-on listeners for all 5 feature collections so unread dots in
+  // the bottom nav reflect others' changes without requiring the user to
+  // open each tab. See useFeatureBadges for the trade-off discussion.
+  const { badges, activity } = useFeatureBadges()
+
+  // Mark the active tab's feature as viewed, watermarking lastViewed to
+  // the latest known item activity. The activity dep makes the effect
+  // re-fire on cache push, so a user's own mutation on the current tab
+  // doesn't flash a phantom badge after they navigate away — without
+  // it, lastViewed = enter-time would be older than the just-created
+  // item's serverTimestamp.
+  const tripId = useTripStore(s => s.currentTrip?.id)
+  const activeFeature = pathToFeature(pathname)
+  const activeActivity = activeFeature ? activity[activeFeature] : 0
+  useEffect(() => {
+    if (!tripId || !activeFeature) return
+    // +1 ensures lastViewed strictly exceeds the latest item ts.
+    const watermark = Math.max(activeActivity + 1, Date.now())
+    useLastViewedStore.getState().markViewed(tripId, activeFeature, watermark)
+  }, [tripId, activeFeature, activeActivity])
 
   // Preview-first: layout renders for everyone. Auth is prompted per action
   // (create trip / save schedule / save expense) inside each feature page;
@@ -72,11 +101,7 @@ export default function AppLayout() {
             離線時持續存在不自動消失,回線後短暫顯示「同期しました」綠
             條 2 秒。 */}
         <OfflineBanner />
-        <Suspense fallback={
-          <div className="flex items-center justify-center h-full text-muted text-[13px]">
-            <LoadingText />
-          </div>
-        }>
+        <Suspense fallback={<PageLoadingSkeleton />}>
           <Outlet />
         </Suspense>
       </main>
@@ -98,28 +123,33 @@ export default function AppLayout() {
           WebkitBackdropFilter: 'blur(24px)',
         }}
       >
-        {TABS.map(({ path, label, Icon }) => {
+        {TABS.map(({ path, label, Icon, feature }) => {
           const active = pathname.startsWith(path)
+          // Only non-active feature tabs can show unread dot — opening
+          // the tab marks-viewed, and the account tab has no data.
+          const showDot = !active && feature !== null && badges[feature]
           return (
             <button
               key={path}
               onClick={() => navigate(path)}
               aria-current={active ? 'page' : undefined}
               className={[
-                // `h-full` removed — `items-stretch` on parent now sizes
-                // each button to the content-box height (4rem after the
-                // safe-area padding). `h-full` would resolve to the full
-                // padded height and push icons down on iPhone X+.
                 'flex-1 flex flex-col items-center justify-center gap-[3px] p-0 border-none bg-transparent cursor-pointer transition-colors',
                 'focus-visible:outline-2 focus-visible:outline-accent',
                 active ? 'text-accent' : 'text-[#B8B4AE] hover:text-ink',
               ].join(' ')}
             >
               <div className={[
-                'w-10 h-[26px] rounded-[13px] flex items-center justify-center transition-colors',
+                'relative w-10 h-[26px] rounded-[13px] flex items-center justify-center transition-colors',
                 active ? 'bg-accent-pale' : 'bg-transparent',
               ].join(' ')}>
                 <Icon size={17} strokeWidth={active ? 2.2 : 1.6} />
+                {showDot && (
+                  <span
+                    aria-label="未読の更新があります"
+                    className="absolute top-[1px] right-[7px] w-[7px] h-[7px] rounded-full bg-danger border-2 border-[#FDFAF5]"
+                  />
+                )}
               </div>
               <span className={[
                 'text-[9.5px] tracking-[0.04em]',

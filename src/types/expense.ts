@@ -59,6 +59,11 @@ export interface Expense {
   items?: ExpenseItem[]
   note?: string
   createdBy: string
+  /** Last-writer uid. See useFeatureBadges. */
+  updatedBy: string
+  /** Denormalised member uids — drives the same-doc read rule. See
+   *  trip.memberIds for rationale. */
+  memberIds: string[]
   createdAt: Timestamp
   updatedAt: Timestamp
 }
@@ -140,6 +145,8 @@ export const ExpenseDocSchema = z.object({
   items:      z.array(ExpenseItemSchema).optional(),
   note:       z.string().optional(),
   createdBy:  z.string(),
+  updatedBy:  z.string(),
+  memberIds:  z.array(z.string().min(1)).min(1),
   createdAt:  TimestampSchema,
   updatedAt:  TimestampSchema,
 })

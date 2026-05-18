@@ -1,26 +1,76 @@
 // src/components/PwaUpdatePrompt.tsx
-// Surfaces a subtle banner when the service worker has a new version waiting.
-// Clicking "更新" triggers updateServiceWorker(), which activates the new SW
-// and reloads the page. The banner is dismissible so users mid-task can
-// defer until they're ready.
+// Banner shown when the service worker has a new version waiting.
+// Clicking "更新" activates the new SW and reloads. The banner is
+// dismissible so users mid-task can defer until they're ready.
 //
-// Integrates with vite-plugin-pwa's `registerType: 'prompt'` mode — without
-// that mode the SW auto-updates silently and this prompt never fires.
+// Integrates with vite-plugin-pwa's `registerType: 'prompt'` mode —
+// without that mode the SW auto-updates silently and this prompt
+// never fires.
+//
+// Update-detection triggers (so the banner appears promptly without
+// hammering the network):
+//   - Initial registration → immediate `r.update()` — covers iOS PWA
+//     cold launches, where the previous session was killed by the OS
+//     and `visibilitychange` never fires on the way back
+//   - visibilitychange → visible — user returns to tab / PWA from
+//     background; near-zero latency for the common case
+//   - pageshow (persisted) — fired on bfcache restore on iOS Safari
+//     (back / forward nav), which doesn't trigger visibilitychange
+//   - 3-minute interval (only fires when tab is visible, so background
+//     tabs don't keep polling) — fallback for continuously-active
+//     sessions that never blur
+//
+// We deliberately do NOT silent-reload (Linear-style) here. Earlier
+// experiments showed too many edge cases that would need an entire
+// state-persistence architecture to do safely (lost scroll / activeDate
+// / mid-OCR uploads / mid-invite-flow). Banner-driven reload puts the
+// user in control — they pick the moment, and we never yank their work.
 import { RefreshCw, X } from 'lucide-react'
 import { useRegisterSW } from 'virtual:pwa-register/react'
 import { captureError } from '@/services/sentry'
+
+const PERIODIC_CHECK_MS = 3 * 60_000   // 3 min
 
 export default function PwaUpdatePrompt() {
   const {
     needRefresh: [needRefresh, setNeedRefresh],
     updateServiceWorker,
   } = useRegisterSW({
+    onRegistered(r) {
+      if (!r) return
+      // Immediate check on boot — covers iOS PWA cold launches (when
+      // the OS killed the previous session and there's no
+      // visibilitychange to ride on). Cheap: if SW.js hasn't changed
+      // this is a single HEAD request that gets short-circuited.
+      void r.update()
+      // Periodic fallback check — gated by visibility so background
+      // tabs don't keep waking the network. Listeners live for the
+      // page's lifetime (matching the SW's own lifetime); useRegisterSW
+      // shares state via module singleton so multiple mounts won't
+      // multiply intervals in practice.
+      setInterval(() => {
+        if (document.visibilityState === 'visible') void r.update()
+      }, PERIODIC_CHECK_MS)
+      // Re-check whenever the tab becomes visible — covers the common
+      // "user switched apps, deploy happened, user comes back" case
+      // with near-zero latency.
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') void r.update()
+      })
+      // bfcache restore (iOS Safari back/forward) — doesn't trigger
+      // visibilitychange but the page state is effectively fresh from
+      // the user's perspective. `persisted=true` filters out the
+      // first-load case where pageshow fires alongside DOMContentLoaded.
+      window.addEventListener('pageshow', e => {
+        if (e.persisted) void r.update()
+      })
+    },
     onRegisterError(error) {
-      // Non-fatal: if SW registration fails (first visit without SW support,
-      // dev mode quirks), the app still works — we just lose PWA features.
-      // Forward to Sentry so unexpected SW failures (e.g. CSP regressions
-      // breaking Workbox) surface in monitoring instead of silent loss
-      // of the offline experience.
+      // Non-fatal: if SW registration fails (first visit without SW
+      // support, dev mode quirks), the app still works — we just lose
+      // PWA features. Forward to Sentry so unexpected SW failures (e.g.
+      // CSP regressions breaking Workbox) surface in monitoring instead
+      // of silent loss of the offline experience.
       captureError(error, { source: 'pwa-sw-register' })
     },
   })
@@ -57,7 +107,7 @@ export default function PwaUpdatePrompt() {
         <X size={14} strokeWidth={2} />
       </button>
       <button
-        onClick={() => { void updateServiceWorker() }}
+        onClick={() => { void updateServiceWorker(true) }}
         className="shrink-0 h-8 px-3 rounded-full bg-accent text-white text-[11.5px] font-bold tracking-[0.04em] border-none cursor-pointer hover:brightness-110 active:scale-[0.97] transition-all"
         style={{ boxShadow: '0 2px 6px rgba(61,139,122,0.25)' }}
       >

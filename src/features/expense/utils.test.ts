@@ -7,7 +7,7 @@ function mkExpense(splits: Array<{ memberId: string; amount: number }>): Expense
   return {
     id: 'e1', tripId: 'demo', title: 't', amount: splits.reduce((s, x) => s + x.amount, 0),
     currency: 'JPY', category: 'food', paidBy: 'm1', splits,
-    date: '2026-05-01', createdBy: 'u', createdAt: TS, updatedAt: TS,
+    date: '2026-05-01', memberIds: ['m1', 'm2', 'm3', 'm4'], createdBy: 'u', updatedBy: 'u', createdAt: TS, updatedAt: TS,
   }
 }
 

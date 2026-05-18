@@ -8,8 +8,9 @@ import { Plus, ListChecks } from 'lucide-react'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
 import { useSwipeOpen } from '@/hooks/useSwipeOpen'
 import { toast } from '@/shared/toast'
-import LoadingText from '@/components/ui/LoadingText'
-import TripLoading from '@/components/ui/TripLoading'
+import { simulateFailureMaybe } from '@/utils/devFailures'
+import PlanningListSkeleton from './PlanningListSkeleton'
+import PlanningPageSkeleton from './PlanningPageSkeleton'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
 import DemoBanner from '@/components/ui/DemoBanner'
 import SignInPromptModal from '@/features/auth/components/SignInPromptModal'
@@ -58,13 +59,15 @@ export default function PlanningPage() {
   const totalCount = items.length
   const doneCount  = items.filter(i => i.done).length
 
-  const createMut = useCreatePlanItem(mutationTripId)
-  const updateMut = useUpdatePlanItem(mutationTripId)
+  // silent — modal surfaces errors via inline banner(useFormModal.saveError),
+  // global toast would double-notify.
+  const createMut = useCreatePlanItem(mutationTripId, { silent: true })
+  const updateMut = useUpdatePlanItem(mutationTripId, { silent: true })
   const toggleMut = useTogglePlanItem(mutationTripId)
   const deleteMut = useDeletePlanItem(mutationTripId)
   const isSaving  = createMut.isPending || updateMut.isPending
 
-  if (ctx.status === 'loading') return <TripLoading />
+  if (ctx.status === 'loading') return <PlanningPageSkeleton />
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={ListChecks} reason="旅前準備のリストを管理" />
 
   const title = ctx.trip.title
@@ -76,15 +79,19 @@ export default function PlanningPage() {
 
   async function handleSave(input: CreatePlanItemInput) {
     if (isDemo) { modal.close(); signIn.open(); return }
-    if (!modal.editTarget && !uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+    if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+    modal.clearError()
     try {
+      await simulateFailureMaybe()
       if (modal.editTarget) {
-        await updateMut.mutateAsync({ itemId: modal.editTarget.id, updates: input })
+        await updateMut.mutateAsync({ itemId: modal.editTarget.id, updates: input, uid })
       } else {
-        await createMut.mutateAsync({ input, createdBy: uid! })
+        await createMut.mutateAsync({ input, createdBy: uid })
       }
       modal.close()
-    } catch { /* hook onError already toasted */ }
+    } catch (err) {
+      modal.setError(err instanceof Error ? err.message : '保存に失敗しました')
+    }
   }
 
   async function handleDelete() {
@@ -138,9 +145,7 @@ export default function PlanningPage() {
 
       <div className="mt-4 px-4">
         {isLoading && !isDemo ? (
-          <div className="text-center py-12 text-dot text-[13px]">
-            <LoadingText />
-          </div>
+          <PlanningListSkeleton />
         ) : totalCount === 0 ? (
           <div className="text-center px-6 py-10 pb-8 bg-surface rounded-card border-[1.5px] border-dashed border-border">
             <div className="w-14 h-14 rounded-full bg-app flex items-center justify-center mx-auto mb-3 text-muted">
@@ -213,6 +218,7 @@ export default function PlanningPage() {
           editTarget={modal.editTarget}
           defaultCategory={defaultCategory}
           isSaving={isSaving}
+          saveError={modal.saveError}
           onClose={modal.close}
           onSave={handleSave}
           onDelete={modal.editTarget && !isDemo ? handleDelete : undefined}

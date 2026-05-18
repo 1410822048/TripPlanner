@@ -40,6 +40,7 @@ interface Props {
   defaultCategory: PlanCategory
   isOpen:          boolean
   isSaving:        boolean
+  saveError?:      string | null
   onClose:         () => void
   onSave:          (data: CreatePlanItemInput) => void
   /** Visible only in edit mode. */
@@ -47,7 +48,7 @@ interface Props {
 }
 
 export default function PlanningFormModal({
-  editTarget, defaultCategory, isOpen, isSaving, onClose, onSave, onDelete,
+  editTarget, defaultCategory, isOpen, isSaving, saveError, onClose, onSave, onDelete,
 }: Props) {
   const { state, setField } = useFormReducer<FormState>(
     () => initFromTarget(editTarget, defaultCategory),
@@ -75,6 +76,7 @@ export default function PlanningFormModal({
       isSaving={isSaving}
       title={editTarget ? '項目を編集' : '項目を追加'}
       saveLabel={editTarget ? '変更を保存' : '追加'}
+      saveError={saveError}
       onClose={onClose}
       onSave={handleSave}
     >

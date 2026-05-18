@@ -1,13 +1,8 @@
 // src/features/schedule/components/DayTimeline.tsx
 // Renders the schedule cards for a single day plus the "add" affordance.
-// Three states:
-//   - loading (cloud mode, fetching) → spinner
-//   - empty                          → empty card with primary CTA
-//   - has items                      → timeline + dashed ghost CTA
-//
-// Extracted from SchedulePage to keep the page focused on orchestration.
+// Three states: loading skeleton / empty card with CTA / timeline + add row.
 import { Plus } from 'lucide-react'
-import LoadingText from '@/components/ui/LoadingText'
+import TimelineSkeleton from './TimelineSkeleton'
 import TimelineCard from './TimelineCard'
 import type { Schedule } from '@/types'
 import { formatAmount } from '@/utils/currency'
@@ -54,9 +49,7 @@ function DayTimeline({
       )}
 
       {isLoading ? (
-        <div className="text-center py-12 text-dot text-[13px]">
-          <LoadingText />
-        </div>
+        <TimelineSkeleton />
       ) : items.length === 0 ? (
         <div className="text-center px-6 py-10 pb-8 bg-surface rounded-card border-[1.5px] border-dashed border-border">
           <div className="text-[40px] mb-1.5 opacity-55">🗓</div>

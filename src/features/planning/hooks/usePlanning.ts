@@ -16,62 +16,59 @@ import {
   deletePlanItem,
 } from '../services/planningService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
+import { useUid } from '@/hooks/useAuth'
 import { tempId } from '@/utils/tempId'
 import { patchListCache, rollbackListCache } from '@/utils/queryCache'
+import { auditCreateMock, auditUpdateMock } from '@/utils/audit'
 import type { CreatePlanItemInput, PlanItem } from '@/types'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
-import { toast } from '@/shared/toast'
+import type { MutationMeta, MutationOptions } from '@/services/queryClient'
 
 export const planningKeys = {
-  all: (tripId: string) => ['planning', tripId] as const,
+  all: (tripId: string, uid?: string) => ['planning', tripId, uid ?? ''] as const,
 }
 
 export const usePlanning = createRealtimeListHook<PlanItem>({
   queryKeyFactory: planningKeys.all,
-  initialFetch:    getPlanItemsByTrip,
-  subscribe:       subscribeToPlanItems,
+  initialFetch:    (tripId, uid) => getPlanItemsByTrip(tripId, uid!),
+  subscribe:       (tripId, uid, onData, onError) => subscribeToPlanItems(tripId, uid!, onData, onError),
   source:          'usePlanning',
+  requiresUid:     true,
 })
 
-export function useCreatePlanItem(tripId: string) {
+export function useCreatePlanItem(tripId: string, options?: MutationOptions) {
   const qc = useQueryClient()
-  const key = planningKeys.all(tripId)
+  const uid = useUid()
+  const key = planningKeys.all(tripId, uid)
   return useMutation({
     mutationFn: ({ input, createdBy }: { input: CreatePlanItemInput; createdBy: string }) =>
       createPlanItem(tripId, input, createdBy),
+    meta: { action: '追加', silent: options?.silent } satisfies MutationMeta,
     onMutate: ({ input, createdBy }) =>
       patchListCache<PlanItem>(qc, key, prev => [
-        {
-          id: tempId(),
-          tripId,
-          ...input,
-          done: false,
-          createdBy,
-          createdAt: MOCK_TIMESTAMP,
-          updatedAt: MOCK_TIMESTAMP,
-        },
+        { id: tempId(), tripId, memberIds: [createdBy], ...input, done: false, ...auditCreateMock(createdBy) },
         ...prev,
       ]),
-    onError: (err, _vars, ctx) => {
+    onError: (_err, _vars, ctx) => {
       rollbackListCache<PlanItem>(qc, key, ctx)
-      toast.mutationError(err, '追加')
     },
   })
 }
 
-export function useUpdatePlanItem(tripId: string) {
+export function useUpdatePlanItem(tripId: string, options?: MutationOptions) {
   const qc = useQueryClient()
-  const key = planningKeys.all(tripId)
+  const uid = useUid()
+  const key = planningKeys.all(tripId, uid)
   return useMutation({
-    mutationFn: ({ itemId, updates }: { itemId: string; updates: Partial<CreatePlanItemInput> }) =>
-      updatePlanItem(tripId, itemId, updates),
-    onMutate: ({ itemId, updates }) =>
+    mutationFn: ({ itemId, updates, uid }: { itemId: string; updates: Partial<CreatePlanItemInput>; uid: string }) =>
+      updatePlanItem(tripId, itemId, updates, { uid }),
+    meta: { action: '更新', silent: options?.silent } satisfies MutationMeta,
+    onMutate: ({ itemId, updates, uid }) =>
       patchListCache<PlanItem>(qc, key, prev =>
-        prev.map(p => p.id === itemId ? { ...p, ...updates, updatedAt: MOCK_TIMESTAMP } : p),
+        prev.map(p => p.id === itemId ? { ...p, ...updates, ...auditUpdateMock(uid) } : p),
       ),
-    onError: (err, _vars, ctx) => {
+    onError: (_err, _vars, ctx) => {
       rollbackListCache<PlanItem>(qc, key, ctx)
-      toast.mutationError(err, '更新')
     },
   })
 }
@@ -84,7 +81,8 @@ export function useUpdatePlanItem(tripId: string) {
  */
 export function useTogglePlanItem(tripId: string) {
   const qc = useQueryClient()
-  const key = planningKeys.all(tripId)
+  const uid = useUid()
+  const key = planningKeys.all(tripId, uid)
   return useMutation({
     mutationFn: ({ itemId, uid, done }: { itemId: string; uid: string; done: boolean }) =>
       togglePlanItemDone(tripId, itemId, uid, done),
@@ -96,27 +94,29 @@ export function useTogglePlanItem(tripId: string) {
               done,
               doneBy: done ? uid           : undefined,
               doneAt: done ? MOCK_TIMESTAMP : undefined,
+              ...auditUpdateMock(uid),
             }
           : p,
         ),
       ),
+    meta: { action: '更新' } satisfies MutationMeta,
     onError: (_err, _vars, ctx) => {
       rollbackListCache<PlanItem>(qc, key, ctx)
-      toast.error('更新に失敗しました')
     },
   })
 }
 
 export function useDeletePlanItem(tripId: string) {
   const qc = useQueryClient()
-  const key = planningKeys.all(tripId)
+  const uid = useUid()
+  const key = planningKeys.all(tripId, uid)
   return useMutation({
-    mutationFn: (itemId: string) => deletePlanItem(tripId, itemId),
+    mutationFn: (itemId: string) => deletePlanItem(tripId, itemId, uid!),
+    meta: { action: '削除' } satisfies MutationMeta,
     onMutate: (itemId) =>
       patchListCache<PlanItem>(qc, key, prev => prev.filter(p => p.id !== itemId)),
-    onError: (err, _vars, ctx) => {
+    onError: (_err, _vars, ctx) => {
       rollbackListCache<PlanItem>(qc, key, ctx)
-      toast.mutationError(err, '削除')
     },
   })
 }

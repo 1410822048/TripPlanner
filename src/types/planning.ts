@@ -31,6 +31,11 @@ export interface PlanItem {
   doneBy?: string
   doneAt?: Timestamp
   createdBy: string
+  /** Last-writer uid (incl. toggleDone). See useFeatureBadges. */
+  updatedBy: string
+  /** Denormalised member uids — drives the same-doc read rule. See
+   *  trip.memberIds for rationale. */
+  memberIds: string[]
   createdAt: Timestamp
   updatedAt: Timestamp
 }
@@ -44,6 +49,8 @@ export const PlanItemDocSchema = z.object({
   doneBy:    z.string().optional(),
   doneAt:    TimestampSchema.optional(),
   createdBy: z.string(),
+  updatedBy: z.string(),
+  memberIds: z.array(z.string().min(1)).min(1),
   createdAt: TimestampSchema,
   updatedAt: TimestampSchema,
 })

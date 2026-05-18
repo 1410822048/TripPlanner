@@ -55,8 +55,8 @@ export function useAllTripMembers(uid: string | undefined): UseAllTripMembersRes
 
   const memberResults = useQueries({
     queries: ids.map(id => ({
-      queryKey:  memberKeys.all(id),
-      queryFn:   () => getMembersByTrip(id),
+      queryKey:  memberKeys.all(id, uid),
+      queryFn:   () => getMembersByTrip(id, uid!),
       enabled:   !!tripIds,
       // Listener is the source of truth once attached (see effect below).
       staleTime: Infinity,
@@ -77,8 +77,9 @@ export function useAllTripMembers(uid: string | undefined): UseAllTripMembersRes
     idList.forEach(id => {
       void subscribeToMembers(
         id,
-        data => {
-          if (mounted) qc.setQueryData<Member[]>(memberKeys.all(id), data)
+        uid!,
+        (data: Member[]) => {
+          if (mounted) qc.setQueryData<Member[]>(memberKeys.all(id, uid), data)
         },
         err => captureError(err, { source: 'useAllTripMembers/members', tripId: id }),
       ).then(unsub => {
@@ -93,7 +94,7 @@ export function useAllTripMembers(uid: string | undefined): UseAllTripMembersRes
       mounted = false
       unsubs.forEach(u => u())
     }
-  }, [idsKey, qc])
+  }, [idsKey, qc, uid])
 
   // `fetchStatus !== 'idle'` excludes the disabled-because-no-uid state,
   // which would otherwise leave the page stuck "loading" for signed-out

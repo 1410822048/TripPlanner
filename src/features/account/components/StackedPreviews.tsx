@@ -16,6 +16,7 @@
 //   - Outer wrapper has `minHeight` so even if `height: 100%` resolves to 0
 //     (iOS quirk in deep flex chains) the centring still has room to work.
 import type { TripMember } from '@/features/trips/types'
+import MemberAvatar from '@/components/ui/MemberAvatar'
 
 // Stack-tile geometry shared by the emoji + image variants. Geometry
 // is keyed by *visual position in the deck* (back / middle / front),
@@ -126,18 +127,16 @@ export function StackedAvatarPreview({ chips, extra }: { chips: TripMember[]; ex
   // Overlap from right to left to match the stacked-avatars pattern used
   // on the trip card — first chip is visually on top (front-most).
   const nodes = chips.slice(0, 3).map((c, i) => (
-    <div
+    <MemberAvatar
       key={c.id}
-      className="w-12 h-12 rounded-full flex items-center justify-center text-[14px] font-bold border-2 border-surface shadow-[0_2px_6px_rgba(0,0,0,0.1)]"
+      member={c}
+      size={48}
+      className="text-[14px] border-2 border-surface shadow-[0_2px_6px_rgba(0,0,0,0.1)]"
       style={{
-        background: c.bg,
-        color: c.color,
         marginLeft: i === 0 ? 0 : '-14px',
         zIndex: chips.length - i,
       }}
-    >
-      {c.label}
-    </div>
+    />
   ))
   if (extra > 0) {
     nodes.push(

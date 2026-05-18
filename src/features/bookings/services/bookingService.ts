@@ -9,9 +9,13 @@ import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
+import { parseListSnapshot } from '@/services/parseListSnapshot'
 import { subscribeToCollection } from '@/services/realtimeQuery'
 import { BookingDocSchema, UpdateBookingSchema, type Booking, type CreateBookingInput, type UpdateBookingInput } from '@/types'
 import { stripEmpty } from '@/utils/stripEmpty'
+import { auditCreate, auditUpdate } from '@/utils/audit'
+import { getTripMemberIds } from '@/services/tripMemberIds'
+import { bumpTripActivity } from '@/services/tripActivity'
 import { uploadAttachment, purgeAttachments } from './bookingStorage'
 
 /**
@@ -42,10 +46,11 @@ function bookingFromDoc(d: QueryDocumentSnapshot): Booking {
  * because Firestore can't orderBy a field that's optional / sometimes-null
  * without a composite index per category, which isn't worth the cost.
  */
-export async function getBookingsByTrip(tripId: string): Promise<Booking[]> {
-  const { db, collection, query, orderBy, limit, getDocs } = await getFirebase()
+export async function getBookingsByTrip(tripId: string, uid: string): Promise<Booking[]> {
+  const { db, collection, query, where, orderBy, limit, getDocs } = await getFirebase()
   const snap = await getDocs(query(
     collection(db, ...P.bookings(tripId)),
+    where('memberIds', 'array-contains', uid),
     orderBy('sortDate', 'desc'),
     limit(LIST_LIMIT),
   ))
@@ -55,7 +60,7 @@ export async function getBookingsByTrip(tripId: string): Promise<Booking[]> {
   // Server-sorted via the sortDate index — no client-side sort needed.
   // Bookings created before the sortDate migration won't appear here;
   // they need a one-time backfill (see scripts/backfill-bookings.md).
-  return snap.docs.map(bookingFromDoc)
+  return parseListSnapshot(snap, bookingFromDoc)
 }
 
 /**
@@ -65,11 +70,13 @@ export async function getBookingsByTrip(tripId: string): Promise<Booking[]> {
  */
 export const subscribeToBookings = (
   tripId: string,
+  uid:    string,
   onData: (data: Booking[]) => void,
   onError: (e: Error) => void,
 ) => subscribeToCollection<Booking>({
-  buildQuery: ({ db, collection, query, orderBy, limit }) => query(
+  buildQuery: ({ db, collection, query, where, orderBy, limit }) => query(
     collection(db, ...P.bookings(tripId)),
+    where('memberIds', 'array-contains', uid),
     orderBy('sortDate', 'desc'),
     limit(LIST_LIMIT),
   ),
@@ -101,7 +108,7 @@ export async function getMyHotelBookings(uid: string): Promise<Booking[]> {
   if (snap.size >= LIST_LIMIT) {
     captureError(new Error(`getMyHotelBookings truncated at ${LIST_LIMIT}`), { uid })
   }
-  return snap.docs.map(bookingFromDoc)
+  return parseListSnapshot(snap, bookingFromDoc)
 }
 
 /**
@@ -128,14 +135,6 @@ export const subscribeToMyHotelBookings = (
   limit:   LIST_LIMIT,
 }, onData, onError)
 
-/** Fetch the uid list for a trip's members. Used by createBooking to seed
- *  the booking's `memberIds` denormalisation. One extra read per create. */
-async function getTripMemberIds(tripId: string): Promise<string[]> {
-  const { db, collection, getDocs } = await getFirebase()
-  const snap = await getDocs(collection(db, ...P.members(tripId)))
-  return snap.docs.map(d => d.id)
-}
-
 /**
  * Convert a checkIn string ('YYYY-MM-DD' or 'YYYY-MM-DDTHH:mm') to a
  * Firestore Timestamp suitable for sortDate. Returns null for missing /
@@ -160,19 +159,23 @@ function checkInToTimestamp(
 // ─── Write ────────────────────────────────────────────────────────
 
 /**
- * Create a booking. If `file` is provided, the doc is created first to
- * obtain its id (used as the storage folder name), then the upload runs and
- * the doc is patched with the resulting URL. Two writes is acceptable —
- * the alternative would be to mint a UUID client-side, but Firestore's
- * server-side id generation pairs cleanly with the security model and the
- * cost difference is one extra round-trip.
+ * Create a booking. Single-shot via mint-id-first when a file is
+ * provided: doc-ref minted client-side, uploadAttachment runs first
+ * using the pre-minted id as the Storage folder, then setDoc writes
+ * everything in one shot. Saves the previous addDoc → updateDoc
+ * round-trip (~150-300ms p50 on attachment-bearing creates).
+ *
+ * Upload-before-doc ordering is safe: Storage rules gate on
+ * canWriteFiles(tripId) without checking the doc's existence. If the
+ * upload fails, the doc was never written → no orphan to clean up.
  */
 export async function createBooking(
   tripId: string,
   input: CreateBookingInput,
   file: File | null,
+  createdBy: string,
 ): Promise<string> {
-  const { db, collection, addDoc, doc, updateDoc, serverTimestamp, Timestamp } = await getFirebase()
+  const { db, collection, doc, setDoc, serverTimestamp, Timestamp } = await getFirebase()
   // sortDate: prefer the user-meaningful checkIn; fall back to
   // serverTimestamp() so we always have an indexable value.
   const checkInTs = checkInToTimestamp(input.checkIn, Timestamp)
@@ -181,34 +184,36 @@ export async function createBooking(
   // fan-out. Synced on member add/remove via inviteService /
   // memberService.
   const memberIds = await getTripMemberIds(tripId)
-  const ref = await addDoc(collection(db, ...P.bookings(tripId)), {
-    ...stripEmpty(input),
-    tripId,
-    createdAt: serverTimestamp(),
-    sortDate:  checkInTs ?? serverTimestamp(),
-    memberIds,
-  })
+  const ref = doc(collection(db, ...P.bookings(tripId)))
+
+  let attachmentMeta: Awaited<ReturnType<typeof uploadAttachment>> | null = null
   if (file) {
     try {
-      const meta = await uploadAttachment(tripId, ref.id, file)
-      // updateDoc rejects undefined values when ignoreUndefinedProperties
-      // isn't set per-call, so build the patch only with concrete values.
-      const patch: Record<string, unknown> = {
-        fileUrl:  meta.fileUrl,
-        filePath: meta.filePath,
-        fileType: meta.fileType,
-      }
-      if (meta.thumbUrl)  patch.thumbUrl  = meta.thumbUrl
-      if (meta.thumbPath) patch.thumbPath = meta.thumbPath
-      await updateDoc(doc(db, ...P.booking(tripId, ref.id)), patch)
+      attachmentMeta = await uploadAttachment(tripId, ref.id, file)
     } catch (e) {
-      // Upload failed but the doc exists. Leave the doc — user can retry the
-      // upload via edit. Surfacing a partial success is better than rolling
-      // back the whole booking and losing the typed metadata.
+      // Upload-before-doc means a failure leaves nothing behind — the
+      // doc was never written, so there's nothing to roll back.
       captureError(e, { source: 'createBooking/uploadAttachment', tripId, bookingId: ref.id })
       throw e
     }
   }
+
+  const payload: Record<string, unknown> = {
+    ...stripEmpty(input),
+    tripId,
+    ...auditCreate(createdBy, serverTimestamp()),
+    sortDate:  checkInTs ?? serverTimestamp(),
+    memberIds,
+  }
+  if (attachmentMeta) {
+    payload.fileUrl   = attachmentMeta.fileUrl
+    payload.filePath  = attachmentMeta.filePath
+    payload.fileType  = attachmentMeta.fileType
+    if (attachmentMeta.thumbUrl)  payload.thumbUrl  = attachmentMeta.thumbUrl
+    if (attachmentMeta.thumbPath) payload.thumbPath = attachmentMeta.thumbPath
+  }
+  await setDoc(ref, payload)
+  void bumpTripActivity(tripId, 'bookings', createdBy)
   return ref.id
 }
 
@@ -222,9 +227,13 @@ export async function updateBooking(
   tripId: string,
   bookingId: string,
   updates: UpdateBookingInput,
-  attachment: File | null | undefined,
-  existing: { filePath?: string; thumbPath?: string },
+  options: {
+    uid:        string
+    attachment: File | null | undefined
+    existing:   { filePath?: string; thumbPath?: string }
+  },
 ): Promise<void> {
+  const { uid, attachment, existing } = options
   // Defense-in-depth: see updateExpense for rationale.
   const parsed = UpdateBookingSchema.safeParse(updates)
   if (!parsed.success) {
@@ -233,7 +242,10 @@ export async function updateBooking(
   }
   const validated = parsed.data
   const { db, doc, updateDoc, getDoc, deleteField, serverTimestamp, Timestamp } = await getFirebase()
-  const patch: Record<string, unknown> = stripEmpty(validated)
+  const patch: Record<string, unknown> = {
+    ...stripEmpty(validated),
+    ...auditUpdate(uid, serverTimestamp()),
+  }
 
   // Erase optional text fields the user cleared in the form. Without
   // deleteField() the existing values would persist on the doc.
@@ -278,6 +290,7 @@ export async function updateBooking(
   }
 
   await updateDoc(doc(db, ...P.booking(tripId, bookingId)), patch)
+  void bumpTripActivity(tripId, 'bookings', uid)
 }
 
 /**
@@ -289,10 +302,12 @@ export async function updateBooking(
 export async function deleteBooking(
   tripId: string,
   bookingId: string,
+  uid: string,
   paths: { filePath?: string; thumbPath?: string },
 ): Promise<void> {
   await purgeAttachments(paths)
   const { db, doc, deleteDoc } = await getFirebase()
   await deleteDoc(doc(db, ...P.booking(tripId, bookingId)))
+  void bumpTripActivity(tripId, 'bookings', uid)
 }
 

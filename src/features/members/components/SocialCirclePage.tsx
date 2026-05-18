@@ -17,6 +17,7 @@ import { useAllTripMembers } from '@/features/members/hooks/useAllTripMembers'
 import { memberToTripMember } from '@/features/members/utils'
 import { useTripStore } from '@/store/tripStore'
 import LoadingText from '@/components/ui/LoadingText'
+import MemberAvatar from '@/components/ui/MemberAvatar'
 import type { TripMember } from '@/features/trips/types'
 import type { Member, Trip } from '@/types'
 
@@ -30,7 +31,6 @@ interface CollaboratorTrip {
 interface Collaborator {
   userId:      string
   displayName: string
-  avatarUrl?:  string
   chip:        TripMember
   trips:       CollaboratorTrip[]
 }
@@ -64,7 +64,6 @@ export default function SocialCirclePage() {
           existing = {
             userId:      m.userId,
             displayName: m.displayName,
-            avatarUrl:   m.avatarUrl,
             chip:        memberToTripMember(m),
             trips:       [],
           }
@@ -151,22 +150,16 @@ function CollaboratorCard({ collaborator, onTripTap }: {
   collaborator: Collaborator
   onTripTap:    (t: CollaboratorTrip) => void
 }) {
-  const { chip, displayName, avatarUrl, trips } = collaborator
+  const { chip, displayName, trips } = collaborator
   return (
     <div className="bg-surface border border-border rounded-[20px] p-4 shadow-[0_2px_12px_rgba(0,0,0,0.05)]">
       {/* Header: avatar + name + trip count */}
       <div className="flex items-center gap-3">
-        <div
-          className="w-12 h-12 rounded-full shrink-0 flex items-center justify-center text-[15px] font-bold overflow-hidden shadow-[0_1px_4px_rgba(0,0,0,0.08)]"
-          style={{ background: chip.bg, color: chip.color }}
-          aria-hidden
-        >
-          {avatarUrl ? (
-            <img src={avatarUrl} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
-          ) : (
-            chip.label
-          )}
-        </div>
+        <MemberAvatar
+          member={chip}
+          size={48}
+          className="text-[15px] shadow-[0_1px_4px_rgba(0,0,0,0.08)]"
+        />
         <div className="flex-1 min-w-0">
           <div className="text-[14px] font-black text-ink truncate -tracking-[0.1px]">
             {displayName}

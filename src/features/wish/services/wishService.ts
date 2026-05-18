@@ -19,7 +19,11 @@ import { retry, isTransientStorageError } from '@/utils/retry'
 import { stripEmpty } from '@/utils/stripEmpty'
 import { captureError } from '@/services/sentry'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
+import { parseListSnapshot } from '@/services/parseListSnapshot'
 import { subscribeToCollection } from '@/services/realtimeQuery'
+import { auditUpdate } from '@/utils/audit'
+import { getTripMemberIds } from '@/services/tripMemberIds'
+import { bumpTripActivity } from '@/services/tripActivity'
 import {
   WishDocSchema,
   UpdateWishSchema,
@@ -47,10 +51,11 @@ function wishFromDoc(d: QueryDocumentSnapshot): Wish {
  * idempotent; increment isn't). For lists ≤ 100, client sort is faster
  * to ship and exactly correct.
  */
-export async function getWishesByTrip(tripId: string): Promise<Wish[]> {
-  const { db, collection, query, orderBy, limit, getDocs } = await getFirebase()
+export async function getWishesByTrip(tripId: string, uid: string): Promise<Wish[]> {
+  const { db, collection, query, where, orderBy, limit, getDocs } = await getFirebase()
   const snap = await getDocs(query(
     collection(db, ...P.wishes(tripId)),
+    where('memberIds', 'array-contains', uid),
     orderBy('createdAt', 'desc'),
     limit(LIST_LIMIT),
   ))
@@ -59,7 +64,7 @@ export async function getWishesByTrip(tripId: string): Promise<Wish[]> {
   }
   // Stable sort: votes.length desc; createdAt-desc tiebreak preserved
   // because the input is already in that order.
-  return snap.docs.map(wishFromDoc).sort(byVotesDesc)
+  return parseListSnapshot(snap, wishFromDoc).sort(byVotesDesc)
 }
 
 /** Stable comparator extracted so the realtime subscriber re-applies the
@@ -74,11 +79,13 @@ function byVotesDesc(a: Wish, b: Wish): number {
  */
 export const subscribeToWishes = (
   tripId: string,
+  uid:    string,
   onData: (data: Wish[]) => void,
   onError: (e: Error) => void,
 ) => subscribeToCollection<Wish>({
-  buildQuery: ({ db, collection, query, orderBy, limit }) => query(
+  buildQuery: ({ db, collection, query, where, orderBy, limit }) => query(
     collection(db, ...P.wishes(tripId)),
+    where('memberIds', 'array-contains', uid),
     orderBy('createdAt', 'desc'),
     limit(LIST_LIMIT),
   ),
@@ -148,36 +155,47 @@ async function deleteWishImage(image: WishImage): Promise<void> {
 
 // ─── Write ────────────────────────────────────────────────────────
 
-/** Create a wish. Two-phase if `file` provided (doc → upload → patch
- *  with image refs). Initial votes is the proposer's own +1 because
- *  their proposal counts as their vote — matches typical wishlist UX
- *  (you wouldn't propose something you don't want). */
+/** Create a wish. Single-shot via mint-id-first when a file is provided:
+ *  doc-ref minted client-side → upload → setDoc with everything in one
+ *  write. Saves the previous addDoc → updateDoc round-trip (~150-300ms
+ *  p50 on attachment creates). Initial votes is the proposer's own +1
+ *  because their proposal counts as their vote — matches typical
+ *  wishlist UX (you wouldn't propose something you don't want). */
 export async function createWish(
   tripId: string,
   input: CreateWishInput,
   file: File | null,
   proposedBy: string,
 ): Promise<string> {
-  const { db, collection, addDoc, doc, updateDoc, serverTimestamp } = await getFirebase()
-  const ref = await addDoc(collection(db, ...P.wishes(tripId)), {
-    ...stripEmpty(input),
-    tripId,
-    proposedBy,
-    votes:     [proposedBy],
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  })
+  const [{ db, collection, doc, setDoc, serverTimestamp }, memberIds] = await Promise.all([
+    getFirebase(),
+    getTripMemberIds(tripId),
+  ])
+  // Wish uses `proposedBy` as the creator field (domain naming, predates
+  // the createdBy convention) — auditCreate doesn't fit because of that
+  // alias, so spell it out and let auditUpdate cover the updatedBy half.
+  const ref = doc(collection(db, ...P.wishes(tripId)))
+  let image: WishImage | null = null
   if (file) {
     try {
-      const image = await uploadWishImage(tripId, ref.id, file)
-      if (image) {
-        await updateDoc(doc(db, ...P.wish(tripId, ref.id)), { image })
-      }
+      image = await uploadWishImage(tripId, ref.id, file)
     } catch (e) {
       captureError(e, { source: 'createWish/uploadImage', tripId, wishId: ref.id })
       throw e
     }
   }
+  const payload: Record<string, unknown> = {
+    ...stripEmpty(input),
+    tripId,
+    proposedBy,
+    memberIds,
+    votes:     [proposedBy],
+    createdAt: serverTimestamp(),
+    ...auditUpdate(proposedBy, serverTimestamp()),
+  }
+  if (image) payload.image = image
+  await setDoc(ref, payload)
+  void bumpTripActivity(tripId, 'wish', proposedBy)
   return ref.id
 }
 
@@ -188,9 +206,13 @@ export async function updateWish(
   tripId: string,
   wishId: string,
   updates: UpdateWishInput,
-  attachment: File | null | undefined,
-  existingImage: WishImage | undefined,
+  options: {
+    uid:            string
+    attachment:     File | null | undefined
+    existingImage:  WishImage | undefined
+  },
 ): Promise<void> {
+  const { uid, attachment, existingImage } = options
   // Defense-in-depth: see updateExpense for rationale.
   const parsed = UpdateWishSchema.safeParse(updates)
   if (!parsed.success) {
@@ -201,7 +223,7 @@ export async function updateWish(
   const { db, doc, updateDoc, deleteField, serverTimestamp } = await getFirebase()
   const patch: Record<string, unknown> = {
     ...stripEmpty(validated),
-    updatedAt: serverTimestamp(),
+    ...auditUpdate(uid, serverTimestamp()),
   }
   for (const k of ['description', 'link', 'address'] as const) {
     if (k in validated && (validated[k] === undefined || validated[k] === '')) {
@@ -220,11 +242,13 @@ export async function updateWish(
   }
 
   await updateDoc(doc(db, ...P.wish(tripId, wishId)), patch)
+  void bumpTripActivity(tripId, 'wish', uid)
 }
 
 export async function deleteWish(
   tripId: string,
   wishId: string,
+  uid: string,
   image: WishImage | undefined,
 ): Promise<void> {
   if (image) {
@@ -234,6 +258,7 @@ export async function deleteWish(
   }
   const { db, doc, deleteDoc } = await getFirebase()
   await deleteDoc(doc(db, ...P.wish(tripId, wishId)))
+  void bumpTripActivity(tripId, 'wish', uid)
 }
 
 /** Toggle the caller's vote on a wish. arrayUnion / arrayRemove are
@@ -249,8 +274,9 @@ export async function toggleWishVote(
 ): Promise<void> {
   const { db, doc, updateDoc, arrayUnion, arrayRemove, serverTimestamp } = await getFirebase()
   await updateDoc(doc(db, ...P.wish(tripId, wishId)), {
-    votes:     isVoting ? arrayUnion(uid) : arrayRemove(uid),
-    updatedAt: serverTimestamp(),
+    votes: isVoting ? arrayUnion(uid) : arrayRemove(uid),
+    ...auditUpdate(uid, serverTimestamp()),
   })
+  void bumpTripActivity(tripId, 'wish', uid)
 }
 

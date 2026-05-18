@@ -22,6 +22,7 @@
 import type { Query, QueryDocumentSnapshot, QuerySnapshot } from 'firebase/firestore'
 import { getFirebase, type FirebaseBundle } from '@/services/firebase'
 import { captureError } from '@/services/sentry'
+import { parseListSnapshot } from '@/services/parseListSnapshot'
 
 export interface SubscribeToCollectionOpts<T> {
   /**
@@ -76,7 +77,9 @@ export async function subscribeToCollection<T>(
           { source: opts.source },
         )
       }
-      const items = snap.docs.map(opts.fromDoc)
+      // Per-doc tolerance: see parseListSnapshot for why list reads
+      // skip malformed rows while single-doc reads still throw.
+      const items = parseListSnapshot(snap, opts.fromDoc)
       onData(opts.postProcess ? opts.postProcess(items) : items)
     },
     onError,

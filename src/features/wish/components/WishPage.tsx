@@ -12,8 +12,9 @@ import { Plus, Heart } from 'lucide-react'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
 import { useSwipeOpen } from '@/hooks/useSwipeOpen'
 import { toast } from '@/shared/toast'
-import LoadingText from '@/components/ui/LoadingText'
-import TripLoading from '@/components/ui/TripLoading'
+import { simulateFailureMaybe } from '@/utils/devFailures'
+import WishListSkeleton from './WishListSkeleton'
+import WishPageSkeleton from './WishPageSkeleton'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
 import DemoBanner from '@/components/ui/DemoBanner'
 import SignInPromptModal from '@/features/auth/components/SignInPromptModal'
@@ -65,25 +66,30 @@ export default function WishPage() {
 
   const filteredWishes = wishes.filter(w => w.category === activeTab)
 
-  const createMut = useCreateWish(mutationTripId)
-  const updateMut = useUpdateWish(mutationTripId)
+  // silent — modal surfaces errors via inline banner(useFormModal.saveError),
+  // global toast would double-notify.
+  const createMut = useCreateWish(mutationTripId, { silent: true })
+  const updateMut = useUpdateWish(mutationTripId, { silent: true })
   const deleteMut = useDeleteWish(mutationTripId)
   const voteMut   = useToggleWishVote(mutationTripId)
   const isSaving  = createMut.isPending || updateMut.isPending
 
-  if (ctx.status === 'loading') return <TripLoading />
+  if (ctx.status === 'loading') return <WishPageSkeleton />
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Heart} reason="ウィッシュを投票" />
 
   const title = ctx.trip.title
 
   async function handleSave({ input, attachment }: WishFormResult) {
     if (isDemo) { modal.close(); signIn.open(); return }
-    if (!modal.editTarget && !uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+    if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+    modal.clearError()
     try {
+      await simulateFailureMaybe()
       if (modal.editTarget) {
         await updateMut.mutateAsync({
           wishId:        modal.editTarget.id,
           updates:       input,
+          uid,
           attachment,
           existingImage: modal.editTarget.image,
         })
@@ -91,11 +97,13 @@ export default function WishPage() {
         await createMut.mutateAsync({
           input,
           file:       attachment instanceof File ? attachment : null,
-          proposedBy: uid!,
+          proposedBy: uid,
         })
       }
       modal.close()
-    } catch { /* hook onError already toasted */ }
+    } catch (err) {
+      modal.setError(err instanceof Error ? err.message : '保存に失敗しました')
+    }
   }
 
   async function handleDelete() {
@@ -181,9 +189,7 @@ export default function WishPage() {
 
       <div className="mt-4 px-4">
         {isLoading && !isDemo ? (
-          <div className="text-center py-12 text-dot text-[13px]">
-            <LoadingText />
-          </div>
+          <WishListSkeleton />
         ) : filteredWishes.length === 0 ? (
           <div className="text-center px-6 py-10 pb-8 bg-surface rounded-card border-[1.5px] border-dashed border-border">
             <div className="w-14 h-14 rounded-full bg-app flex items-center justify-center mx-auto mb-3 text-muted">
@@ -259,6 +265,7 @@ export default function WishPage() {
           editTarget={modal.editTarget}
           defaultCategory={activeTab}
           isSaving={isSaving}
+          saveError={modal.saveError}
           onClose={modal.close}
           onSave={handleSave}
           onDelete={

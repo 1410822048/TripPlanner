@@ -3,31 +3,26 @@ import { Plus, Receipt } from 'lucide-react'
 import {
   useExpenses, useCreateExpense, useUpdateExpense, useDeleteExpense,
 } from '../hooks/useExpenses'
+import { useSettlements, useCreateSettlement, useDeleteSettlement } from '../hooks/useSettlements'
 import { useMembers } from '@/features/members/hooks/useMembers'
 import { membersToTripMembers } from '@/features/members/utils'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
 import { useSwipeOpen } from '@/hooks/useSwipeOpen'
 import { MOCK_EXPENSES } from '../mocks'
-import { splitSummary } from '../utils'
 import { toast } from '@/shared/toast'
 import type { Expense, ExpenseCategory } from '@/types'
 import ExpenseFormModal, { type ExpenseFormResult } from './ExpenseFormModal'
-import SwipeableExpenseItem from './SwipeableExpenseItem'
 import SettlementSummary from './SettlementSummary'
+import ExpenseListSkeleton from './ExpenseListSkeleton'
+import ExpensePageSkeleton from './ExpensePageSkeleton'
+import ExpenseListEmpty from './ExpenseListEmpty'
+import ExpenseDateGroups from './ExpenseDateGroups'
 import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
 import SignInPromptModal from '@/features/auth/components/SignInPromptModal'
-import LoadingText from '@/components/ui/LoadingText'
-import TripLoading from '@/components/ui/TripLoading'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
 import DemoBanner from '@/components/ui/DemoBanner'
-import { fromLocalDateString } from '@/utils/dates'
 import { useTripCurrency } from '@/hooks/useTripCurrency'
-import { formatAmount, currencySymbol } from '@/utils/currency'
-
-function formatDateHeading(date: string): string {
-  return fromLocalDateString(date)
-    .toLocaleDateString('ja-JP', { month: 'long', day: 'numeric', weekday: 'short' })
-}
+import { currencySymbol, formatAmount } from '@/utils/currency'
 
 export default function ExpensePage() {
   const { ctx, uid, cloudTripId, mutationTripId, isDemo, canWrite, modal, signIn } =
@@ -38,6 +33,10 @@ export default function ExpensePage() {
 
   const { data: fbExpenses, isLoading } = useExpenses(cloudTripId)
   const { data: fbMembers } = useMembers(cloudTripId)
+  const { data: fbSettlements } = useSettlements(cloudTripId)
+  const settlements = ctx.status === 'cloud' ? (fbSettlements ?? []) : []
+  const createSettlementMut = useCreateSettlement(mutationTripId)
+  const deleteSettlementMut = useDeleteSettlement(mutationTripId)
 
   // Plain derivations — React Compiler auto-memoises based on inferred
   // deps. The aggregation chain (expenses → total / categoryStats /
@@ -73,11 +72,7 @@ export default function ExpensePage() {
     .filter(([, v]) => v > 0)
     .sort((a, b) => b[1] - a[1])
 
-  const grouped: Record<string, Expense[]> = {}
-  for (const e of expenses) (grouped[e.date] ??= []).push(e)
-  const dates = Object.keys(grouped).sort().reverse()
-
-  if (ctx.status === 'loading') return <TripLoading />
+  if (ctx.status === 'loading') return <ExpensePageSkeleton />
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Receipt} reason="費用を記録" />
 
   const title = ctx.trip.title
@@ -85,7 +80,7 @@ export default function ExpensePage() {
 
   function handleSave({ input, attachment }: ExpenseFormResult) {
     if (isDemo) { modal.close(); signIn.open(); return }
-    if (!modal.editTarget && !uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+    if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
 
     // Optimistic close: the modal goes away IMMEDIATELY, the optimistic
     // patchListCache in onMutate makes the new row appear in the list
@@ -102,6 +97,7 @@ export default function ExpensePage() {
       updateMut.mutate({
         expenseId: editing.id,
         updates:   input,
+        uid,
         attachment,
         existing:  {
           path:      editing.receipt?.path,
@@ -111,7 +107,7 @@ export default function ExpensePage() {
     } else {
       createMut.mutate({
         input,
-        userId:     uid!,
+        userId:     uid,
         attachment: attachment instanceof File ? attachment : null,
       })
     }
@@ -202,67 +198,43 @@ export default function ExpensePage() {
       </div>
 
       {/* ── SETTLEMENT ─────────────────────────────────────── */}
-      <SettlementSummary expenses={expenses} members={members} currency={currency} />
+      <SettlementSummary
+        expenses={expenses}
+        members={members}
+        settlements={settlements}
+        currency={currency}
+        uid={uid ?? null}
+        onMarkSettled={(fromUid, toUid, amount) => {
+          if (isDemo) { signIn.open(); return }
+          if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+          createSettlementMut.mutate({
+            input: { fromUid, toUid, amount, currency },
+            settledBy: uid,
+          })
+        }}
+        onDeleteSettlement={id => {
+          if (isDemo) { signIn.open(); return }
+          if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+          deleteSettlementMut.mutate(id)
+        }}
+      />
 
       {/* ── EXPENSE LIST ───────────────────────────────────── */}
       <div className="mt-4 px-4">
         {isLoading && !isDemo ? (
-          <div className="text-center py-12 text-dot text-[13px]">
-            <LoadingText />
-          </div>
+          <ExpenseListSkeleton />
         ) : expenses.length === 0 ? (
-          <div className="text-center px-6 py-10 pb-8 bg-surface rounded-card border-[1.5px] border-dashed border-border">
-            <div className="w-14 h-14 rounded-full bg-app flex items-center justify-center mx-auto mb-3 text-muted">
-              <Receipt size={24} strokeWidth={1.6} />
-            </div>
-            <p className="m-0 mb-1 text-[13.5px] font-semibold text-ink tracking-[0.02em]">
-              まだ費用が記録されていません
-            </p>
-            <p className="m-0 text-[11.5px] text-muted tracking-[0.04em]">
-              {canWrite
-                ? '上のボタンから最初の費用を追加しましょう'
-                : '閲覧者として参加中です。費用の追加はオーナー / 編集者のみ行えます。'}
-            </p>
-          </div>
+          <ExpenseListEmpty canWrite={canWrite} onAdd={modal.openAdd} />
         ) : (
-          dates.map(date => {
-            const items = grouped[date] ?? []
-            const subtotal = items.reduce((s, e) => s + e.amount, 0)
-            return (
-              <div key={date} className="mb-4">
-                <div className="flex items-center justify-between px-1 mb-2">
-                  <span className="text-[12px] font-bold text-ink tracking-[0.02em]">
-                    {formatDateHeading(date)}
-                  </span>
-                  <span className="text-[11px] text-muted font-medium tabular-nums">
-                    {formatAmount(subtotal, currency)}
-                  </span>
-                </div>
-
-                <div className="flex flex-col gap-1.5">
-                  {items.map(e => {
-                    // Viewer mode: swipe affordance + delete callback omitted so
-                    // SwipeableExpenseItem renders a plain non-swipeable row
-                    // (tap still routes to the read-only edit modal view).
-                    const swipeProps = canWrite ? swipe.bindRow(e.id) : {}
-                    return (
-                      <SwipeableExpenseItem
-                        key={e.id}
-                        expense={e}
-                        payer={members.find(m => m.id === e.paidBy)}
-                        summary={splitSummary(e, members.length)}
-                        categoryEmoji={CATEGORY_EMOJI[e.category]}
-                        currency={currency}
-                        {...swipeProps}
-                        onSelect={() => { swipe.closeAll(); modal.openEdit(e) }}
-                        onDelete={canWrite ? () => handleSwipeDelete(e) : undefined}
-                      />
-                    )
-                  })}
-                </div>
-              </div>
-            )
-          })
+          <ExpenseDateGroups
+            expenses={expenses}
+            members={members}
+            currency={currency}
+            canWrite={canWrite}
+            swipe={swipe}
+            onSelect={modal.openEdit}
+            onSwipeDelete={handleSwipeDelete}
+          />
         )}
       </div>
 

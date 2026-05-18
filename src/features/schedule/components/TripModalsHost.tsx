@@ -31,8 +31,8 @@ interface Props {
 export default function TripModalsHost({ state }: Props) {
   const {
     isDemo, canWrite, selectedTrip, schedules, currentTrip, display,
-    scheduleModalOpen, scheduleEditTarget, scheduleIsSaving,
-    closeScheduleModal, onScheduleSave, onScheduleDelete,
+    scheduleModal, scheduleIsSaving,
+    onScheduleSave, onScheduleDelete,
     editTripOpen,    setEditTripOpen,
     createTripOpen,  setCreateTripOpen,
     copyTripOpen,    setCopyTripOpen, copyTripPending, onCopyTrip,
@@ -46,11 +46,11 @@ export default function TripModalsHost({ state }: Props) {
     <>
       {/* Conditionally render + keyed for fresh state per open (see the
           parallel note in ExpensePage). */}
-      {scheduleModalOpen && selectedTrip && (
+      {scheduleModal.isOpen && selectedTrip && (
         <ScheduleFormModal
-          key={scheduleEditTarget?.id ?? 'new'}
+          key={scheduleModal.key}
           isOpen
-          editTarget={scheduleEditTarget}
+          editTarget={scheduleModal.editTarget}
           defaultDate={display ?? new Date().toISOString().slice(0, 10)}
           // Trip date range — the picker disables days outside this
           // window and the form blocks save with an inline message if
@@ -59,9 +59,10 @@ export default function TripModalsHost({ state }: Props) {
           tripStartDate={selectedTrip.startDate}
           tripEndDate={selectedTrip.endDate}
           isSaving={scheduleIsSaving}
-          onClose={closeScheduleModal}
+          saveError={scheduleModal.saveError}
+          onClose={scheduleModal.close}
           onSave={onScheduleSave}
-          onDelete={scheduleEditTarget && canWrite ? onScheduleDelete : undefined}
+          onDelete={scheduleModal.editTarget && canWrite ? onScheduleDelete : undefined}
         />
       )}
 

@@ -1,0 +1,6 @@
+# Cloudflare Pages SPA fallback — every non-asset path falls through to
+# index.html so React Router takes over client-side. Without this, a hard
+# reload on /expense / /wish / etc. would 404. Vite copies anything in
+# public/ into the dist root at build time, so this file lands at /dist/
+# /_redirects exactly where Pages expects it.
+/*    /index.html   200

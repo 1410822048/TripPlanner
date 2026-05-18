@@ -8,8 +8,12 @@ import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
+import { parseListSnapshot } from '@/services/parseListSnapshot'
 import { subscribeToCollection } from '@/services/realtimeQuery'
 import { stripEmpty } from '@/utils/stripEmpty'
+import { auditCreate, auditUpdate } from '@/utils/audit'
+import { getTripMemberIds } from '@/services/tripMemberIds'
+import { bumpTripActivity } from '@/services/tripActivity'
 import {
   PlanItemDocSchema,
   UpdatePlanItemSchema,
@@ -26,27 +30,30 @@ function planItemFromDoc(d: QueryDocumentSnapshot): PlanItem {
 
 // ─── Read ─────────────────────────────────────────────────────────
 
-export async function getPlanItemsByTrip(tripId: string): Promise<PlanItem[]> {
-  const { db, collection, query, orderBy, limit, getDocs } = await getFirebase()
+export async function getPlanItemsByTrip(tripId: string, uid: string): Promise<PlanItem[]> {
+  const { db, collection, query, where, orderBy, limit, getDocs } = await getFirebase()
   const snap = await getDocs(query(
     collection(db, ...P.planning(tripId)),
+    where('memberIds', 'array-contains', uid),
     orderBy('createdAt', 'desc'),
     limit(LIST_LIMIT),
   ))
   if (snap.size >= LIST_LIMIT) {
     captureError(new Error(`getPlanItemsByTrip truncated at ${LIST_LIMIT}`), { tripId })
   }
-  return snap.docs.map(planItemFromDoc)
+  return parseListSnapshot(snap, planItemFromDoc)
 }
 
 /** Realtime variant of getPlanItemsByTrip — onSnapshot push of PlanItem[]. */
 export const subscribeToPlanItems = (
   tripId: string,
+  uid:    string,
   onData: (data: PlanItem[]) => void,
   onError: (e: Error) => void,
 ) => subscribeToCollection<PlanItem>({
-  buildQuery: ({ db, collection, query, orderBy, limit }) => query(
+  buildQuery: ({ db, collection, query, where, orderBy, limit }) => query(
     collection(db, ...P.planning(tripId)),
+    where('memberIds', 'array-contains', uid),
     orderBy('createdAt', 'desc'),
     limit(LIST_LIMIT),
   ),
@@ -62,15 +69,18 @@ export async function createPlanItem(
   input: CreatePlanItemInput,
   createdBy: string,
 ): Promise<string> {
-  const { db, collection, addDoc, serverTimestamp } = await getFirebase()
+  const [{ db, collection, addDoc, serverTimestamp }, memberIds] = await Promise.all([
+    getFirebase(),
+    getTripMemberIds(tripId),
+  ])
   const ref = await addDoc(collection(db, ...P.planning(tripId)), {
     ...stripEmpty(input),
     tripId,
     done: false,
-    createdBy,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
+    memberIds,
+    ...auditCreate(createdBy, serverTimestamp()),
   })
+  void bumpTripActivity(tripId, 'planning', createdBy)
   return ref.id
 }
 
@@ -78,7 +88,9 @@ export async function updatePlanItem(
   tripId: string,
   itemId: string,
   updates: UpdatePlanItemInput,
+  options: { uid: string },
 ): Promise<void> {
+  const { uid } = options
   // Defense-in-depth: see updateExpense for rationale.
   const parsed = UpdatePlanItemSchema.safeParse(updates)
   if (!parsed.success) {
@@ -89,13 +101,14 @@ export async function updatePlanItem(
   const { db, doc, updateDoc, deleteField, serverTimestamp } = await getFirebase()
   const patch: Record<string, unknown> = {
     ...stripEmpty(validated),
-    updatedAt: serverTimestamp(),
+    ...auditUpdate(uid, serverTimestamp()),
   }
   // Erase optional fields the user cleared in the form.
   if ('note' in validated && (validated.note === undefined || validated.note === '')) {
     patch.note = deleteField()
   }
   await updateDoc(doc(db, ...P.planItem(tripId, itemId)), patch)
+  void bumpTripActivity(tripId, 'planning', uid)
 }
 
 /**
@@ -113,21 +126,23 @@ export async function togglePlanItemDone(
   const { db, doc, updateDoc, deleteField, serverTimestamp } = await getFirebase()
   await updateDoc(doc(db, ...P.planItem(tripId, itemId)), done
     ? {
-        done:      true,
-        doneBy:    uid,
-        doneAt:    serverTimestamp(),
-        updatedAt: serverTimestamp(),
+        done:   true,
+        doneBy: uid,
+        doneAt: serverTimestamp(),
+        ...auditUpdate(uid, serverTimestamp()),
       }
     : {
-        done:      false,
-        doneBy:    deleteField(),
-        doneAt:    deleteField(),
-        updatedAt: serverTimestamp(),
+        done:   false,
+        doneBy: deleteField(),
+        doneAt: deleteField(),
+        ...auditUpdate(uid, serverTimestamp()),
       })
+  void bumpTripActivity(tripId, 'planning', uid)
 }
 
-export async function deletePlanItem(tripId: string, itemId: string): Promise<void> {
+export async function deletePlanItem(tripId: string, itemId: string, uid: string): Promise<void> {
   const { db, doc, deleteDoc } = await getFirebase()
   await deleteDoc(doc(db, ...P.planItem(tripId, itemId)))
+  void bumpTripActivity(tripId, 'planning', uid)
 }
 

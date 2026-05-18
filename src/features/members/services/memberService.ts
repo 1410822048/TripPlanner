@@ -4,6 +4,7 @@ import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
+import { parseListSnapshot } from '@/services/parseListSnapshot'
 import { subscribeToCollection } from '@/services/realtimeQuery'
 import { removeMemberFromTripBookings } from '@/services/memberSync'
 import { MemberDocSchema, type Member } from '@/types'
@@ -12,14 +13,15 @@ function memberFromDoc(d: QueryDocumentSnapshot): Member {
   return firestoreDocFromSchema(MemberDocSchema, d, 'memberFromDoc')
 }
 
-export async function getMembersByTrip(tripId: string): Promise<Member[]> {
-  const { db, collection, query, orderBy, getDocs } = await getFirebase()
+export async function getMembersByTrip(tripId: string, uid: string): Promise<Member[]> {
+  const { db, collection, query, where, orderBy, getDocs } = await getFirebase()
   const q = query(
     collection(db, ...P.members(tripId)),
+    where('memberIds', 'array-contains', uid),
     orderBy('joinedAt'),
   )
   const snap = await getDocs(q)
-  return snap.docs.map(memberFromDoc)
+  return parseListSnapshot(snap, memberFromDoc)
 }
 
 /**
@@ -29,11 +31,13 @@ export async function getMembersByTrip(tripId: string): Promise<Member[]> {
  */
 export const subscribeToMembers = (
   tripId: string,
+  uid:    string,
   onData: (data: Member[]) => void,
   onError: (e: Error) => void,
 ) => subscribeToCollection<Member>({
-  buildQuery: ({ db, collection, query, orderBy }) => query(
+  buildQuery: ({ db, collection, query, where, orderBy }) => query(
     collection(db, ...P.members(tripId)),
+    where('memberIds', 'array-contains', uid),
     orderBy('joinedAt'),
   ),
   fromDoc: memberFromDoc,

@@ -174,6 +174,13 @@ export async function createTrip(input: CreateTripInput, user: User): Promise<Tr
   const endTs   = toLocalMidnightTimestamp(data.endDate,   Timestamp)
   const icon    = data.icon ?? '✈️'
 
+  // memberIds is denormalised onto trip + every member/entity doc so
+  // read rules can check `request.auth.uid in resource.data.memberIds`
+  // SAME-DOC — no cross-document exists() that suffers rules-eval lag.
+  // On create the roster is just the owner; memberSync extends it on
+  // accept-invite / remove-member.
+  const memberIds = [user.uid]
+
   const tripPayload = {
     title:       data.title,
     destination: data.destination,
@@ -182,6 +189,7 @@ export async function createTrip(input: CreateTripInput, user: User): Promise<Tr
     endDate:     endTs,
     currency:    data.currency,
     ownerId:     user.uid,
+    memberIds,
     createdAt:   serverTimestamp(),
     updatedAt:   serverTimestamp(),
   }
@@ -192,6 +200,7 @@ export async function createTrip(input: CreateTripInput, user: User): Promise<Tr
     displayName: user.displayName ?? 'Me',
     role:        'owner',
     joinedAt:    serverTimestamp(),
+    memberIds,
   }
   // avatarUrl omitted when null — ignoreUndefinedProperties strips undefined;
   // explicit branch keeps the payload tight.
@@ -214,6 +223,7 @@ export async function createTrip(input: CreateTripInput, user: User): Promise<Tr
     endDate:     endTs,
     currency:    data.currency,
     ownerId:     user.uid,
+    memberIds,
     createdAt:   nowTs,
     updatedAt:   nowTs,
   }

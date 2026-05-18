@@ -8,6 +8,7 @@
 import { Pencil } from 'lucide-react'
 import type { TripHeaderCardProps as Props } from './tripHeaderCardPropsAreEqual'
 import { formatAmount } from '@/utils/currency'
+import MemberAvatar from '@/components/ui/MemberAvatar'
 
 function TripHeaderCard({
   selectedTrip, tripDays, scheduleCount, tripTotal, canInvite, canEdit,
@@ -36,18 +37,16 @@ function TripHeaderCard({
           {/* Stacked avatars + invite "+" button */}
           <div className="flex pt-1 shrink-0">
             {selectedTrip.members.map((m, i) => (
-              <div
+              <MemberAvatar
                 key={m.id}
-                className="w-[34px] h-[34px] rounded-full border-2 border-surface relative flex items-center justify-center text-[11px] font-bold shadow-[0_1px_4px_rgba(0,0,0,0.1)]"
+                member={m}
+                size={34}
+                className="text-[11px] border-2 border-surface relative shadow-[0_1px_4px_rgba(0,0,0,0.1)]"
                 style={{
-                  background: m.bg,
-                  color: m.color,
                   marginLeft: i === 0 ? 0 : '-8px',
                   zIndex: selectedTrip.members.length - i,
                 }}
-              >
-                {m.label}
-              </div>
+              />
             ))}
             {canInvite && (
               <button

@@ -4,6 +4,7 @@
       "collectionGroup": "schedules",
       "queryScope": "COLLECTION",
       "fields": [
+        { "fieldPath": "memberIds", "arrayConfig": "CONTAINS" },
         { "fieldPath": "date",  "order": "ASCENDING" },
         { "fieldPath": "order", "order": "ASCENDING" }
       ]
@@ -12,6 +13,7 @@
       "collectionGroup": "expenses",
       "queryScope": "COLLECTION",
       "fields": [
+        { "fieldPath": "memberIds", "arrayConfig": "CONTAINS" },
         { "fieldPath": "date",      "order": "DESCENDING" },
         { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
@@ -20,8 +22,8 @@
       "collectionGroup": "bookings",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "type",     "order": "ASCENDING"  },
-        { "fieldPath": "sortDate", "order": "DESCENDING" }
+        { "fieldPath": "memberIds", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "sortDate",  "order": "DESCENDING" }
       ]
     },
     {
@@ -31,6 +33,30 @@
         { "fieldPath": "memberIds", "arrayConfig": "CONTAINS" },
         { "fieldPath": "type",      "order": "ASCENDING"  },
         { "fieldPath": "sortDate",  "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "wishes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "memberIds", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "planning",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "memberIds", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "members",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "memberIds", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "joinedAt",  "order": "ASCENDING" }
       ]
     }
   ],

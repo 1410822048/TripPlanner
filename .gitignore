@@ -25,6 +25,13 @@ dist-ssr
 .env.production
 .env.development
 
+# ─── Firebase service-account credentials ─────────────────────
+# Generated keys MUST NOT be committed — they bypass rules and
+# grant admin access. Used locally only to feed the OCR worker's
+# FIREBASE_SERVICE_ACCOUNT secret via `wrangler secret put`.
+*-firebase-adminsdk-*.json
+*service-account*.json
+
 # ─── Firebase CLI artefacts ────────────────────────────────────
 .firebase/
 firebase-debug.log*

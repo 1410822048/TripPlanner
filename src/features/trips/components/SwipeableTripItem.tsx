@@ -2,8 +2,9 @@
 // Trip 列表 row — 左滑刪除 + 長按拖曳重排。
 // drag 期間以 ref 直接寫 DOM transform（不走 React state），避免每 pointermove 的重新渲染。
 import { useState, useRef, useEffect } from 'react'
-import { Trash2 } from 'lucide-react'
+import { Trash2, GripVertical } from 'lucide-react'
 import { theme as C } from '@/theme'
+import { haptic } from '@/utils/haptics'
 import type { TripItem } from '@/features/trips/types'
 import {
   SWIPE_WIDTH, OPEN_THRESHOLD, MOVE_THRESHOLD,
@@ -19,6 +20,11 @@ export interface SwipeableTripItemProps {
   isDragging:  boolean
   dragY:       number
   shiftY:      number
+  /** When true, inline trash + grip icons replace the hidden swipe
+   *  affordance. Swipe-to-delete is disabled so the user sees only one
+   *  way to delete (the visible trash button). Long-press reorder still
+   *  works — the grip is a visual hint, not a separate handler. */
+  editMode:    boolean
   onSelect:       () => void
   onOpen:         () => void
   onClose:        () => void
@@ -32,7 +38,7 @@ const LONG_PRESS_MS = 380
 
 function SwipeableTripItem({
   trip, isActive, isOpen, canDelete, canReorder,
-  isDragging, dragY, shiftY,
+  isDragging, dragY, shiftY, editMode,
   onSelect, onOpen, onClose, onDelete,
   onReorderStart, onReorderMove, onReorderEnd,
 }: SwipeableTripItemProps) {
@@ -124,10 +130,7 @@ function SwipeableTripItem({
         setPressed(false)
         const h = rootRef.current?.getBoundingClientRect().height ?? 55
         onReorderStart(h)
-        if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-          try { navigator.vibrate?.(12) }
-          catch { /* 部分裝置會拋 NotAllowed — 可忽略 */ }
-        }
+        haptic('light')
       }, LONG_PRESS_MS)
     }
   }
@@ -155,7 +158,10 @@ function SwipeableTripItem({
     cancelLongPress()
 
     if (Math.abs(dx) > Math.abs(dy)) {
-      if (canDelete) {
+      // In edit mode, the inline trash button replaces swipe-to-delete —
+      // swipe is suppressed so the user doesn't see two ways to do the
+      // same thing (one visible, one hidden).
+      if (canDelete && !editMode) {
         drag.current.mode = 'swipe'
         drag.current.didDrag = true
       } else {
@@ -242,7 +248,7 @@ function SwipeableTripItem({
         willChange: isDragging ? 'transform' : undefined,
       }}
     >
-      {canDelete && (
+      {canDelete && !editMode && (
         <div
           ref={bgRef}
           onClick={handleDeleteTap}
@@ -316,10 +322,37 @@ function SwipeableTripItem({
               {trip.dest}
             </div>
           </div>
-          {isActive && (
+          {isActive && !editMode && (
             <span className="text-[9px] font-bold text-pick bg-pick-pale px-[7px] py-0.5 rounded-card tracking-[0.04em] shrink-0 pointer-events-none">
               進行中
             </span>
+          )}
+          {editMode && (
+            <div className="flex items-center gap-1 shrink-0">
+              {canReorder && (
+                <span
+                  aria-hidden
+                  className="text-muted/70 flex items-center justify-center w-7 h-7"
+                  title="長押しで並べ替え"
+                >
+                  <GripVertical size={16} strokeWidth={2} />
+                </span>
+              )}
+              {canDelete && (
+                <button
+                  type="button"
+                  onClick={handleDeleteTap}
+                  onPointerDown={e => e.stopPropagation()}
+                  aria-label={confirming ? '削除を確定' : `${trip.title}を削除`}
+                  className={[
+                    'w-7 h-7 rounded-full border-none flex items-center justify-center cursor-pointer transition-colors',
+                    confirming ? 'bg-[#A83A3A] text-white' : 'bg-danger-pale text-danger hover:bg-danger-soft',
+                  ].join(' ')}
+                >
+                  <Trash2 size={13} strokeWidth={2.2} />
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>

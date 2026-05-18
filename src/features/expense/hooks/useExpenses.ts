@@ -12,83 +12,82 @@ import {
   deleteExpense,
 } from '../services/expenseService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
+import { useUid } from '@/hooks/useAuth'
 import { tempId } from '@/utils/tempId'
 import { patchListCache, rollbackListCache } from '@/utils/queryCache'
+import { auditCreateMock, auditUpdateMock } from '@/utils/audit'
 import type { CreateExpenseInput, Expense } from '@/types'
-import { MOCK_TIMESTAMP } from '@/mocks/utils'
-import { toast } from '@/shared/toast'
+import type { MutationMeta } from '@/services/queryClient'
 
 export const expenseKeys = {
-  all: (tripId: string) => ['expenses', tripId] as const,
+  all: (tripId: string, uid?: string) => ['expenses', tripId, uid ?? ''] as const,
 }
 
 export const useExpenses = createRealtimeListHook<Expense>({
   queryKeyFactory: expenseKeys.all,
-  initialFetch:    getExpensesByTrip,
-  subscribe:       subscribeToExpenses,
+  initialFetch:    (tripId, uid) => getExpensesByTrip(tripId, uid!),
+  subscribe:       (tripId, uid, onData, onError) => subscribeToExpenses(tripId, uid!, onData, onError),
   source:          'useExpenses',
+  requiresUid:     true,
 })
 
 export function useCreateExpense(tripId: string) {
   const qc = useQueryClient()
-  const key = expenseKeys.all(tripId)
+  const uid = useUid()
+  const key = expenseKeys.all(tripId, uid)
   return useMutation({
     mutationFn: ({ input, userId, attachment }: { input: CreateExpenseInput; userId: string; attachment?: File | null }) =>
       createExpense(tripId, input, userId, attachment),
     onMutate: ({ input, userId }) =>
       patchListCache<Expense>(qc, key, prev => [
         ...prev,
-        {
-          id:        tempId(),
-          tripId,
-          createdBy: userId,
-          createdAt: MOCK_TIMESTAMP,
-          updatedAt: MOCK_TIMESTAMP,
-          ...input,
-        },
+        { id: tempId(), tripId, memberIds: [userId], ...auditCreateMock(userId), ...input },
       ]),
-    onError: (err, _vars, ctx) => {
+    meta: { action: '費用の追加' } satisfies MutationMeta,
+    onError: (_err, _vars, ctx) => {
       rollbackListCache<Expense>(qc, key, ctx)
-      toast.mutationError(err, '費用の追加')
     },
   })
 }
 
 export function useUpdateExpense(tripId: string) {
   const qc = useQueryClient()
-  const key = expenseKeys.all(tripId)
+  const uid = useUid()
+  const key = expenseKeys.all(tripId, uid)
   return useMutation({
     mutationFn: ({
-      expenseId, updates, attachment, existing,
+      expenseId, updates, uid, attachment, existing,
     }: {
-      expenseId: string
-      updates:   Partial<CreateExpenseInput>
+      expenseId:  string
+      updates:    Partial<CreateExpenseInput>
+      uid:        string
       attachment?: File | null
-      existing?: { path?: string; thumbPath?: string }
+      existing?:  { path?: string; thumbPath?: string }
     }) =>
-      updateExpense(tripId, expenseId, updates, attachment, existing),
-    onMutate: ({ expenseId, updates }) =>
+      updateExpense(tripId, expenseId, updates, { uid, attachment, existingPaths: existing }),
+    onMutate: ({ expenseId, updates, uid }) =>
       patchListCache<Expense>(qc, key, prev =>
-        prev.map(e => e.id === expenseId ? { ...e, ...updates, updatedAt: MOCK_TIMESTAMP } : e),
+        prev.map(e => e.id === expenseId ? { ...e, ...updates, ...auditUpdateMock(uid) } : e),
       ),
-    onError: (err, _vars, ctx) => {
+    meta: { action: '更新' } satisfies MutationMeta,
+    onError: (_err, _vars, ctx) => {
       rollbackListCache<Expense>(qc, key, ctx)
-      toast.mutationError(err, '更新')
     },
   })
 }
 
 export function useDeleteExpense(tripId: string) {
   const qc = useQueryClient()
-  const key = expenseKeys.all(tripId)
+  const uid = useUid()
+  const key = expenseKeys.all(tripId, uid)
   return useMutation({
     mutationFn: ({ expenseId, paths }: { expenseId: string; paths?: { path?: string; thumbPath?: string } }) =>
-      deleteExpense(tripId, expenseId, paths),
+      deleteExpense(tripId, expenseId, uid!, paths),
     onMutate: ({ expenseId }) =>
       patchListCache<Expense>(qc, key, prev => prev.filter(e => e.id !== expenseId)),
-    onError: (err, _vars, ctx) => {
+    meta: { action: '削除' } satisfies MutationMeta,
+    onError: (_err, _vars, ctx) => {
       rollbackListCache<Expense>(qc, key, ctx)
-      toast.mutationError(err, '削除')
     },
   })
 }

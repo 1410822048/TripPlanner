@@ -1,5 +1,6 @@
 // src/features/trips/components/CreateTripModal.tsx
 import { useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { MapPin } from 'lucide-react'
 import BottomSheet from '@/components/ui/BottomSheet'
 import GoogleIcon from '@/components/icons/GoogleIcon'
@@ -70,13 +71,28 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
     const data = validate()
     if (!data) return
     if (state.status !== 'signed-in') return
+    // NOT optimistic close: trip is the root entity (everything else
+    // depends on it). If create fails, the sheet must stay open with
+    // the user's data intact so they can fix the error and retry.
     try {
       const trip = await createMut.mutateAsync({ input: data, user: state.user })
-      // setCurrentTrip already prepends the new id to recentTripIds + dedups
-      // (see tripStore.ts setCurrentTrip), so no separate addRecentTrip call.
+      // Order matters: Zustand first, flushSync(close) second.
+      //   - setCurrentTrip(trip) updates the Zustand store synchronously.
+      //   - flushSync(close) then forces a single React commit that
+      //     simultaneously sees currentTrip=trip (via useSyncExternalStore)
+      //     AND createTripOpen=false (the freshly-queued React state).
+      // Without flushSync the close render could be scheduled separately
+      // from the Zustand-driven cascade — producing the one-frame window
+      // where the sheet was still visible while the layout behind it had
+      // already swapped to the new-trip view. With flushSync but the
+      // wrong order, the synchronous commit would see currentTrip=null
+      // and briefly flash EmptyTrips between sheet-close and the next
+      // commit. setCurrentTrip already prepends the new id to
+      // recentTripIds + dedups (see tripStore.ts setCurrentTrip), so no
+      // separate addRecentTrip call.
       setCurrentTrip(trip)
+      flushSync(() => { close() })
       toast.success(`「${trip.title}」を作成しました`)
-      close()
     } catch (e) {
       toast.error(e instanceof Error ? `作成に失敗：${e.message}` : '作成に失敗しました')
     }

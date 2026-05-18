@@ -29,9 +29,10 @@ import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
 import { captureError } from '@/services/sentry'
 import { getFirebase } from '@/services/firebase'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
-import { toast } from '@/shared/toast'
 import { toLocalMidnightTimestamp } from '@/utils/dates'
+import type { MutationMeta, MutationOptions } from '@/services/queryClient'
 import { markPerf } from '@/utils/perf'
+import { useLastViewedStore } from '@/store/lastViewedStore'
 import type { CreateTripInput, Trip } from '@/types'
 
 export const tripKeys = {
@@ -49,7 +50,7 @@ export const tripKeys = {
 export const useMyTripIds = createRealtimeListHook<string>({
   queryKeyFactory: tripKeys.myIds,
   initialFetch:    getMyTripIds,
-  subscribe:       subscribeToMyTripIds,
+  subscribe:       (uid, _uid2, onData, onError) => subscribeToMyTripIds(uid, onData, onError),
   source:          'useMyTripIds',
 })
 
@@ -115,6 +116,9 @@ export function useMyTrips(uid: string | undefined): UseQueryResult<Trip[]> {
     }
 
     idList.forEach(id => {
+      // No retry: trip docs use the same same-doc memberIds read rule
+      // as entity subcollections, so permission-denied here is a real
+      // revoke (trip deleted / left), not a propagation lag.
       void subscribeToTrip(
         id,
         trip => {
@@ -122,7 +126,20 @@ export function useMyTrips(uid: string | undefined): UseQueryResult<Trip[]> {
           else      tripMap.delete(id)
           publish()
         },
-        err => captureError(err, { source: 'useMyTrips/tripDoc', tripId: id }),
+        err => {
+          const code = (err as { code?: string }).code
+          if (code === 'permission-denied') {
+            if (import.meta.env.DEV) {
+              console.warn(`[useMyTrips/tripDoc:${id}] listener permission revoked`, err)
+            }
+            return
+          }
+          const e = err instanceof Error ? err : new Error(String(err))
+          const tagged = new Error(`[useMyTrips/tripDoc:${id}] ${e.message}`)
+          tagged.name  = e.name
+          tagged.stack = e.stack
+          captureError(tagged, { source: 'useMyTrips/tripDoc', tripId: id })
+        },
       ).then(unsub => {
         if (mounted) unsubs.push(unsub)
         else unsub()
@@ -181,11 +198,12 @@ export function useCopyTrip() {
   })
 }
 
-export function useUpdateTrip(uid: string | undefined) {
+export function useUpdateTrip(uid: string | undefined, options?: MutationOptions) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ tripId, updates }: { tripId: string; updates: Partial<CreateTripInput> }) =>
       updateTrip(tripId, updates),
+    meta: { action: '更新', silent: options?.silent } satisfies MutationMeta,
     onMutate: async ({ tripId, updates }) => {
       if (!uid) return { prev: undefined as Trip[] | undefined }
       const key  = tripKeys.mine(uid)
@@ -205,9 +223,8 @@ export function useUpdateTrip(uid: string | undefined) {
       }))
       return { prev }
     },
-    onError: (err, _vars, ctx) => {
+    onError: (_err, _vars, ctx) => {
       if (uid && ctx?.prev !== undefined) qc.setQueryData(tripKeys.mine(uid), ctx.prev)
-      toast.mutationError(err, '更新')
     },
     // No onSettled invalidate: the optimistic patch already covers every field
     // the UI renders (title / destination / icon / dates). The only field
@@ -220,7 +237,8 @@ export function useUpdateTrip(uid: string | undefined) {
 export function useDeleteTrip(uid: string | undefined) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (tripId: string) => deleteTrip(tripId),
+    mutationFn: (tripId: string) => deleteTrip(tripId, uid!),
+    meta: { action: '削除' } satisfies MutationMeta,
     onMutate: (tripId) => {
       if (!uid) return { prevTrips: undefined as Trip[] | undefined, prevIds: undefined as string[] | undefined }
       const tripsKey = tripKeys.mine(uid)
@@ -231,12 +249,16 @@ export function useDeleteTrip(uid: string | undefined) {
       if (prevIds)   qc.setQueryData<string[]>(idsKey, prevIds.filter(id => id !== tripId))
       return { prevTrips, prevIds }
     },
-    onError: (err, _vars, ctx) => {
+    onSuccess: (_data, tripId) => {
+      // Drop per-trip lastViewed entry so localStorage doesn't accumulate
+      // stale records for deleted trips.
+      useLastViewedStore.getState().clearTrip(tripId)
+    },
+    onError: (_err, _vars, ctx) => {
       if (uid) {
         if (ctx?.prevTrips !== undefined) qc.setQueryData(tripKeys.mine(uid), ctx.prevTrips)
         if (ctx?.prevIds   !== undefined) qc.setQueryData(tripKeys.myIds(uid), ctx.prevIds)
       }
-      toast.mutationError(err, '削除')
     },
     // No onSettled invalidate: the realtime listeners on tripKeys.mine
     // and tripKeys.myIds reconcile with server state on their own.

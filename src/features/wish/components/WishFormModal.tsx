@@ -58,6 +58,9 @@ interface Props {
   defaultCategory?: WishCategory
   isOpen:     boolean
   isSaving:   boolean
+  /** Inline error from the last save attempt — surfaced via FormModalShell
+   *  above the SaveButton. Sticks until the next attempt / modal close. */
+  saveError?: string | null
   onClose:    () => void
   onSave:     (data: WishFormResult) => void
   /** Only present in edit mode for the proposer. Hidden otherwise. */
@@ -65,7 +68,7 @@ interface Props {
 }
 
 export default function WishFormModal({
-  editTarget, defaultCategory = 'place', isOpen, isSaving, onClose, onSave, onDelete,
+  editTarget, defaultCategory = 'place', isOpen, isSaving, saveError, onClose, onSave, onDelete,
 }: Props) {
   const { state, setField } = useFormReducer<FormState>(
     () => initFromTarget(editTarget, defaultCategory),
@@ -150,6 +153,7 @@ export default function WishFormModal({
       isSaving={isSaving}
       title={editTarget ? 'ウィッシュを編集' : 'ウィッシュを追加'}
       saveLabel={editTarget ? '変更を保存' : '追加'}
+      saveError={saveError}
       onClose={onClose}
       onSave={handleSave}
     >

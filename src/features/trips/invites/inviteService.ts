@@ -12,13 +12,18 @@
 // the new one). No client ever writes to an invite doc — only create+delete.
 import type { User } from 'firebase/auth'
 import type { Timestamp } from 'firebase/firestore'
-import { getFirebase } from '@/services/firebase'
+import { getFirebase, getFirebaseAuth } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'
 import { subscribeToCollection } from '@/services/realtimeQuery'
 import { InviteDocSchema, type Invite, type Trip } from '@/types'
-import { addMemberToTripBookings } from '@/services/memberSync'
 import { getTripsByIds } from '@/features/trips/services/tripService'
+
+/** OCR worker base URL — also hosts the /cascade-member endpoint that
+ *  finishes the accept-invite membership cascade server-side (the
+ *  invitee can't list pre-existing entity docs under the same-doc
+ *  memberIds rule, so client-side cascade alone misses them). */
+const WORKER_BASE = 'https://tripmate-ocr.tripmate.workers.dev'
 
 export type InviteErrorCode = 'not-found' | 'expired'
 
@@ -241,52 +246,94 @@ export async function acceptInvite(
   token: string,
   user: User,
 ): Promise<AcceptResult> {
-  const { db, doc, getDoc, setDoc, serverTimestamp } = await getFirebase()
+  const { db, doc, getDoc, setDoc, updateDoc, arrayUnion, serverTimestamp } = await getFirebase()
 
   const invite = await getInvite(tripId, token)  // throws on not-found/expired
 
   const memberRef = doc(db, ...P.member(tripId, user.uid))
   const memberSnap = await getDoc(memberRef)
-  if (memberSnap.exists()) {
-    // Idempotent path: user already a member. Still fetch the Trip so the
-    // caller can switch the active trip / seed caches consistently with
-    // the joined branch below.
-    const [trip] = await getTripsByIds([tripId])
-    return { outcome: 'already-member', trip: trip ?? null }
+  const isNewMember = !memberSnap.exists()
+
+  // ─── Step 1: ensure member doc (skip if already a member) ─────────
+  if (isNewMember) {
+    // memberIds seeded as [self] only — the invitee can't read
+    // trip.memberIds yet to compute the full roster (trip get rule
+    // requires same-doc membership they don't have). The worker
+    // cascade in Step 2b reads trip.memberIds via admin SDK and
+    // arrayUnion's the full roster onto this doc afterward, so
+    // existing members' array-contains listeners pick up the new
+    // doc on the next snapshot.
+    const memberPayload: Record<string, unknown> = {
+      tripId,
+      userId:      user.uid,
+      displayName: user.displayName ?? 'Member',
+      role:        invite.role,
+      joinedAt:    serverTimestamp(),
+      inviteToken: token,
+      memberIds:   [user.uid],
+    }
+    // avatarUrl omitted when null — ignoreUndefinedProperties strips undefined;
+    // explicit branch matches the shape used in createTrip.
+    if (user.photoURL) memberPayload.avatarUrl = user.photoURL
+
+    await setDoc(memberRef, memberPayload)
   }
 
-  const memberPayload: Record<string, unknown> = {
-    tripId,
-    userId:      user.uid,
-    displayName: user.displayName ?? 'Member',
-    role:        invite.role,
-    joinedAt:    serverTimestamp(),
-    inviteToken: token,
-  }
-  // avatarUrl omitted when null — ignoreUndefinedProperties strips undefined;
-  // explicit branch matches the shape used in createTrip.
-  if (user.photoURL) memberPayload.avatarUrl = user.photoURL
+  // ─── Step 2: idempotent reconciliation (always runs) ──────────────
+  // Both 'joined' and 'already-member' paths fall through here so a
+  // reload after a worker failure repairs the cascade. arrayUnion is
+  // a no-op when the uid is already present, the worker pre-checks
+  // and skips already-cascaded subcollection docs the same way.
 
-  await setDoc(memberRef, memberPayload)
-
-  // Sync the new member into every booking's denormalised `memberIds`
-  // array so collection-group queries (PastLodgingPage's hotel history)
-  // pick up this trip's bookings immediately. Failure here is non-fatal:
-  // the member doc already landed, so the user has access via standard
-  // per-trip queries — they just won't appear in the cross-trip history
-  // until a later sync. We log to Sentry so persistent failures surface.
+  // 2a. Trip-doc self-add via memberSyncSelfAdd rule. Fast path that
+  // gives the invitee trip-level access immediately, without waiting
+  // for the worker round-trip. The worker also writes trip.memberIds
+  // (idempotent arrayUnion) so failure here is non-fatal — we log
+  // and continue; worker step recovers the invariant.
   try {
-    await addMemberToTripBookings(tripId, user.uid)
+    await updateDoc(
+      doc(db, ...P.trip(tripId)),
+      { memberIds: arrayUnion(user.uid) },
+    )
   } catch (e) {
-    captureError(e, { source: 'acceptInvite/syncBookings', tripId, uid: user.uid })
+    captureError(e, { source: 'acceptInvite/tripSelfAdd', tripId, uid: user.uid })
   }
 
-  // Fetch the Trip object so the caller can seed query caches + switch
-  // the active trip without waiting for an invalidate-driven refetch.
-  // Failure here is non-fatal — caller falls back to invalidate.
+  // 2b. Worker cascade: arrayUnion the invitee's uid onto every
+  // existing /members/*, entity subcollection doc, AND the trip doc.
+  // The worker uses a service-account (admin SDK), bypassing the
+  // same-doc list rule that blocks the invitee from listing those
+  // docs client-side. arrayUnion is idempotent so the redundancy
+  // with 2a costs nothing but gives reliability. Failure here is
+  // non-fatal in two ways: (i) trip-level access already established
+  // by 2a; (ii) subsequent reloads re-run this step idempotently
+  // to fill in entity-doc access if the first attempt was cut short.
+  try {
+    const { auth } = await getFirebaseAuth()
+    const idToken = await auth.currentUser?.getIdToken()
+    if (!idToken) throw new Error('No ID token available for cascade')
+    const res = await fetch(`${WORKER_BASE}/cascade-member`, {
+      method:  'POST',
+      headers: {
+        Authorization:  `Bearer ${idToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ tripId, memberUid: user.uid }),
+    })
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '<unreadable>')
+      throw new Error(`cascade-member ${res.status}: ${detail.slice(0, 200)}`)
+    }
+  } catch (e) {
+    captureError(e, { source: 'acceptInvite/cascade', tripId, uid: user.uid })
+  }
+
+  // ─── Step 3: fetch trip for caller cache seeding ──────────────────
+  // Trip is now readable thanks to Step 2a. Failure here is non-fatal —
+  // caller falls back to invalidate.
   const [trip] = await getTripsByIds([tripId]).catch(e => {
     captureError(e, { source: 'acceptInvite/postFetchTrip', tripId, uid: user.uid })
     return [] as Trip[]
   })
-  return { outcome: 'joined', trip: trip ?? null }
+  return { outcome: isNewMember ? 'joined' : 'already-member', trip: trip ?? null }
 }

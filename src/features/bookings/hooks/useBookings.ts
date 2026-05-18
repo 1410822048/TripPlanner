@@ -23,15 +23,16 @@ import {
   deleteBooking,
 } from '../services/bookingService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
+import { useUid } from '@/hooks/useAuth'
 import { tempId } from '@/utils/tempId'
 import { patchListCache, rollbackListCache } from '@/utils/queryCache'
+import { auditCreateMock, auditUpdateMock } from '@/utils/audit'
 import type { Booking, CreateBookingInput } from '@/types'
-import { MOCK_TIMESTAMP } from '@/mocks/utils'
-import { toast } from '@/shared/toast'
+import type { MutationMeta, MutationOptions } from '@/services/queryClient'
 
 export const bookingKeys = {
-  all:       (tripId: string) => ['bookings', tripId] as const,
-  myHotels:  (uid: string)    => ['bookings', 'my-hotels', uid] as const,
+  all:       (tripId: string, uid?: string) => ['bookings', tripId, uid ?? ''] as const,
+  myHotels:  (uid: string)                  => ['bookings', 'my-hotels', uid] as const,
 }
 
 /**
@@ -46,71 +47,76 @@ export const bookingKeys = {
 export const useMyHotelBookings = createRealtimeListHook<Booking>({
   queryKeyFactory: bookingKeys.myHotels,
   initialFetch:    getMyHotelBookings,
-  subscribe:       subscribeToMyHotelBookings,
+  subscribe:       (uid, _uid2, onData, onError) => subscribeToMyHotelBookings(uid, onData, onError),
   source:          'useMyHotelBookings',
 })
 
 export const useBookings = createRealtimeListHook<Booking>({
   queryKeyFactory: bookingKeys.all,
-  initialFetch:    getBookingsByTrip,
-  subscribe:       subscribeToBookings,
+  initialFetch:    (tripId, uid) => getBookingsByTrip(tripId, uid!),
+  subscribe:       (tripId, uid, onData, onError) => subscribeToBookings(tripId, uid!, onData, onError),
   source:          'useBookings',
+  requiresUid:     true,
 })
 
-export function useCreateBooking(tripId: string) {
+export function useCreateBooking(tripId: string, options?: MutationOptions) {
   const qc = useQueryClient()
-  const key = bookingKeys.all(tripId)
+  const uid = useUid()
+  const key = bookingKeys.all(tripId, uid)
   return useMutation({
-    mutationFn: ({ input, file }: { input: CreateBookingInput; file: File | null }) =>
-      createBooking(tripId, input, file),
-    onMutate: ({ input }) =>
+    mutationFn: ({ input, file, createdBy }: { input: CreateBookingInput; file: File | null; createdBy: string }) =>
+      createBooking(tripId, input, file, createdBy),
+    meta: { action: '予約の追加', silent: options?.silent } satisfies MutationMeta,
+    onMutate: ({ input, createdBy }) =>
       patchListCache<Booking>(qc, key, prev => [
-        { id: tempId(), tripId, createdAt: MOCK_TIMESTAMP, ...input },
+        { id: tempId(), tripId, memberIds: [createdBy], ...auditCreateMock(createdBy), ...input },
         ...prev,
       ]),
-    onError: (err, _vars, ctx) => {
+    onError: (_err, _vars, ctx) => {
       rollbackListCache<Booking>(qc, key, ctx)
-      toast.mutationError(err, '予約の追加')
     },
   })
 }
 
-export function useUpdateBooking(tripId: string) {
+export function useUpdateBooking(tripId: string, options?: MutationOptions) {
   const qc = useQueryClient()
-  const key = bookingKeys.all(tripId)
+  const uid = useUid()
+  const key = bookingKeys.all(tripId, uid)
   return useMutation({
     mutationFn: ({
-      bookingId, updates, attachment, existing,
+      bookingId, updates, uid, attachment, existing,
     }: {
       bookingId:  string
       updates:    Partial<CreateBookingInput>
+      uid:        string
       attachment: File | null | undefined
       existing:   { filePath?: string; thumbPath?: string }
-    }) => updateBooking(tripId, bookingId, updates, attachment, existing),
-    onMutate: ({ bookingId, updates }) =>
+    }) => updateBooking(tripId, bookingId, updates, { uid, attachment, existing }),
+    meta: { action: '更新', silent: options?.silent } satisfies MutationMeta,
+    onMutate: ({ bookingId, updates, uid }) =>
       patchListCache<Booking>(qc, key, prev =>
-        prev.map(b => b.id === bookingId ? { ...b, ...updates } : b),
+        prev.map(b => b.id === bookingId ? { ...b, ...updates, ...auditUpdateMock(uid) } : b),
       ),
-    onError: (err, _vars, ctx) => {
+    onError: (_err, _vars, ctx) => {
       rollbackListCache<Booking>(qc, key, ctx)
-      toast.mutationError(err, '更新')
     },
   })
 }
 
 export function useDeleteBooking(tripId: string) {
   const qc = useQueryClient()
-  const key = bookingKeys.all(tripId)
+  const uid = useUid()
+  const key = bookingKeys.all(tripId, uid)
   return useMutation({
     mutationFn: ({ bookingId, paths }: {
       bookingId: string
       paths:     { filePath?: string; thumbPath?: string }
-    }) => deleteBooking(tripId, bookingId, paths),
+    }) => deleteBooking(tripId, bookingId, uid!, paths),
+    meta: { action: '削除' } satisfies MutationMeta,
     onMutate: ({ bookingId }) =>
       patchListCache<Booking>(qc, key, prev => prev.filter(b => b.id !== bookingId)),
-    onError: (err, _vars, ctx) => {
+    onError: (_err, _vars, ctx) => {
       rollbackListCache<Booking>(qc, key, ctx)
-      toast.mutationError(err, '削除')
     },
   })
 }

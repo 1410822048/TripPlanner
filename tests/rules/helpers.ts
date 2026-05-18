@@ -78,6 +78,7 @@ export async function teardownTestEnv(): Promise<void> {
  * runtime gate, not the bootstrap path.
  */
 export async function seedFixture(env: RulesTestEnvironment): Promise<void> {
+  const allMembers = [OWNER_UID, EDITOR_UID, VIEWER_UID]
   await env.withSecurityRulesDisabled(async ctx => {
     const db = ctx.firestore()
     const now = Timestamp.now()
@@ -88,6 +89,7 @@ export async function seedFixture(env: RulesTestEnvironment): Promise<void> {
       endDate:     now,
       currency:    'JPY',
       ownerId:     OWNER_UID,
+      memberIds:   allMembers,
       createdAt:   serverTimestamp(),
       updatedAt:   serverTimestamp(),
     })
@@ -98,24 +100,30 @@ export async function seedFixture(env: RulesTestEnvironment): Promise<void> {
     ] as const) {
       await setDoc(doc(db, 'trips', TRIP_ID, 'members', uid), {
         tripId: TRIP_ID, userId: uid, displayName: uid, role,
+        memberIds: allMembers,
         joinedAt: serverTimestamp(),
       })
     }
     await setDoc(doc(db, 'trips', TRIP_ID, 'bookings', BOOKING_ID), {
       tripId: TRIP_ID, type: 'hotel', title: 'Test Hotel',
-      memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+      memberIds: allMembers,
+      createdBy: OWNER_UID, updatedBy: OWNER_UID,
       createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
       sortDate:  serverTimestamp(),
     })
     await setDoc(doc(db, 'trips', TRIP_ID, 'bookings', BOOKING_NO_VIEWER_ID), {
       tripId: TRIP_ID, type: 'hotel', title: 'Hotel without viewer',
       memberIds: [OWNER_UID, EDITOR_UID],
+      createdBy: OWNER_UID, updatedBy: OWNER_UID,
       createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
       sortDate:  serverTimestamp(),
     })
     await setDoc(doc(db, 'trips', TRIP_ID, 'wishes', WISH_ID), {
       tripId: TRIP_ID, title: 'Test Wish', category: 'place',
-      proposedBy: EDITOR_UID, votes: [EDITOR_UID],
+      proposedBy: EDITOR_UID, updatedBy: EDITOR_UID, votes: [EDITOR_UID],
+      memberIds: allMembers,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     })

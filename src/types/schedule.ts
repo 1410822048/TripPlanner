@@ -18,6 +18,12 @@ export interface Schedule {
   category: ScheduleCategory
   estimatedCost?: number
   createdBy: string
+  /** Last-writer uid. See useFeatureBadges. */
+  updatedBy: string
+  /** Denormalised member uids — drives the same-doc read rule
+   *  `allow read: if request.auth.uid in resource.data.memberIds`.
+   *  Synced via memberSync on every membership change. */
+  memberIds: string[]
   createdAt: Timestamp
   updatedAt: Timestamp
 }
@@ -80,6 +86,8 @@ export const ScheduleDocSchema = z.object({
   category:      z.enum(['transport','accommodation','food','activity','shopping','other']),
   estimatedCost: z.number().optional(),
   createdBy:     z.string(),
+  updatedBy:     z.string(),
+  memberIds:     z.array(z.string().min(1)).min(1),
   createdAt:     TimestampSchema,
   updatedAt:     TimestampSchema,
 })

@@ -29,6 +29,7 @@ export const TRIP_SUBCOLLECTIONS = [
   'wishes',
   'bookings',
   'planning',
+  'settlements',
   'invites',
   'members',
 ] as const
@@ -74,4 +75,8 @@ export const P = {
   bookings:    (tripId: string): ['trips', string, 'bookings']  => [TRIPS, tripId, 'bookings'],
   booking:     (tripId: string, bookingId: string): ['trips', string, 'bookings', string] =>
     [TRIPS, tripId, 'bookings', bookingId],
+
+  settlements: (tripId: string): ['trips', string, 'settlements'] => [TRIPS, tripId, 'settlements'],
+  settlement:  (tripId: string, id: string): ['trips', string, 'settlements', string] =>
+    [TRIPS, tripId, 'settlements', id],
 } as const

@@ -19,84 +19,92 @@ import {
   toggleWishVote,
 } from '../services/wishService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
+import { useUid } from '@/hooks/useAuth'
 import { tempId } from '@/utils/tempId'
 import { patchListCache, rollbackListCache } from '@/utils/queryCache'
+import { auditUpdateMock } from '@/utils/audit'
 import type { CreateWishInput, Wish, WishImage } from '@/types'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
-import { toast } from '@/shared/toast'
+import type { MutationMeta, MutationOptions } from '@/services/queryClient'
 
 export const wishKeys = {
-  all: (tripId: string) => ['wishes', tripId] as const,
+  all: (tripId: string, uid?: string) => ['wishes', tripId, uid ?? ''] as const,
 }
 
 export const useWishes = createRealtimeListHook<Wish>({
   queryKeyFactory: wishKeys.all,
-  initialFetch:    getWishesByTrip,
-  subscribe:       subscribeToWishes,
+  initialFetch:    (tripId, uid) => getWishesByTrip(tripId, uid!),
+  subscribe:       (tripId, uid, onData, onError) => subscribeToWishes(tripId, uid!, onData, onError),
   source:          'useWishes',
+  requiresUid:     true,
 })
 
-export function useCreateWish(tripId: string) {
+export function useCreateWish(tripId: string, options?: MutationOptions) {
   const qc = useQueryClient()
-  const key = wishKeys.all(tripId)
+  const uid = useUid()
+  const key = wishKeys.all(tripId, uid)
   return useMutation({
     mutationFn: ({ input, file, proposedBy }: {
       input:      CreateWishInput
       file:       File | null
       proposedBy: string
     }) => createWish(tripId, input, file, proposedBy),
+    meta: { action: '追加', silent: options?.silent } satisfies MutationMeta,
     onMutate: ({ input, proposedBy }) =>
       patchListCache<Wish>(qc, key, prev => [
         {
           id: tempId(),
           tripId,
+          memberIds: [proposedBy],
           ...input,
           proposedBy,
           votes:     [proposedBy],
           createdAt: MOCK_TIMESTAMP,
-          updatedAt: MOCK_TIMESTAMP,
+          ...auditUpdateMock(proposedBy),
         },
         ...prev,
       ]),
-    onError: (err, _vars, ctx) => {
+    onError: (_err, _vars, ctx) => {
       rollbackListCache<Wish>(qc, key, ctx)
-      toast.mutationError(err, '追加')
     },
   })
 }
 
-export function useUpdateWish(tripId: string) {
+export function useUpdateWish(tripId: string, options?: MutationOptions) {
   const qc = useQueryClient()
-  const key = wishKeys.all(tripId)
+  const uid = useUid()
+  const key = wishKeys.all(tripId, uid)
   return useMutation({
-    mutationFn: ({ wishId, updates, attachment, existingImage }: {
+    mutationFn: ({ wishId, updates, uid, attachment, existingImage }: {
       wishId:        string
       updates:       Partial<CreateWishInput>
+      uid:           string
       attachment:    File | null | undefined
       existingImage: WishImage | undefined
-    }) => updateWish(tripId, wishId, updates, attachment, existingImage),
-    onMutate: ({ wishId, updates }) =>
+    }) => updateWish(tripId, wishId, updates, { uid, attachment, existingImage }),
+    meta: { action: '更新', silent: options?.silent } satisfies MutationMeta,
+    onMutate: ({ wishId, updates, uid }) =>
       patchListCache<Wish>(qc, key, prev =>
-        prev.map(w => w.id === wishId ? { ...w, ...updates, updatedAt: MOCK_TIMESTAMP } : w),
+        prev.map(w => w.id === wishId ? { ...w, ...updates, ...auditUpdateMock(uid) } : w),
       ),
-    onError: (err, _vars, ctx) => {
+    onError: (_err, _vars, ctx) => {
       rollbackListCache<Wish>(qc, key, ctx)
-      toast.mutationError(err, '更新')
     },
   })
 }
 
 export function useDeleteWish(tripId: string) {
   const qc = useQueryClient()
-  const key = wishKeys.all(tripId)
+  const uid = useUid()
+  const key = wishKeys.all(tripId, uid)
   return useMutation({
     mutationFn: ({ wishId, image }: { wishId: string; image: WishImage | undefined }) =>
-      deleteWish(tripId, wishId, image),
+      deleteWish(tripId, wishId, uid!, image),
+    meta: { action: '削除' } satisfies MutationMeta,
     onMutate: ({ wishId }) =>
       patchListCache<Wish>(qc, key, prev => prev.filter(w => w.id !== wishId)),
-    onError: (err, _vars, ctx) => {
+    onError: (_err, _vars, ctx) => {
       rollbackListCache<Wish>(qc, key, ctx)
-      toast.mutationError(err, '削除')
     },
   })
 }
@@ -108,7 +116,8 @@ export function useDeleteWish(tripId: string) {
  */
 export function useToggleWishVote(tripId: string) {
   const qc = useQueryClient()
-  const key = wishKeys.all(tripId)
+  const uid = useUid()
+  const key = wishKeys.all(tripId, uid)
   return useMutation({
     mutationFn: ({ wishId, uid, isVoting }: {
       wishId:   string
@@ -122,12 +131,12 @@ export function useToggleWishVote(tripId: string) {
           const next = isVoting
             ? w.votes.includes(uid) ? w.votes : [...w.votes, uid]
             : w.votes.filter(u => u !== uid)
-          return { ...w, votes: next }
+          return { ...w, votes: next, ...auditUpdateMock(uid) }
         }),
       ),
+    meta: { action: '投票' } satisfies MutationMeta,
     onError: (_err, _vars, ctx) => {
       rollbackListCache<Wish>(qc, key, ctx)
-      toast.error('投票に失敗しました')
     },
   })
 }
