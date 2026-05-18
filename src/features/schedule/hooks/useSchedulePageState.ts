@@ -125,7 +125,11 @@ export function useSchedulePageState(): SchedulePageState {
   // demo. The `wasSignedIn` flag on `authState.status === 'loading'`
   // is a synchronous localStorage hint set by useAuth's observer;
   // it tells us which sub-case we're in.
-  const { state: authState } = useAuth(true)
+  // Hint-gated by default — see useAuth's docstring. Never-signed-in
+  // visitors never trigger the Auth SDK fetch here; the `wasSignedIn`
+  // hint on the loading state gives SchedulePage the synchronous
+  // demo/cloud signal it needs without loading the observer.
+  const { state: authState } = useAuth()
   const uid           = authState.status === 'signed-in' ? authState.user.uid : undefined
   const authResolving = authState.status === 'loading'
   const wasSignedIn   = authState.status === 'loading' && authState.wasSignedIn

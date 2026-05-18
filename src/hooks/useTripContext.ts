@@ -44,7 +44,11 @@ export type TripContext =
   | { status: 'cloud'; trip: Trip }
 
 export function useTripContext(): TripContext {
-  const { state: authState } = useAuth(true)
+  // useAuth() defaults to hint-gated — never-signed-in visitors return
+  // `{ status: 'loading', wasSignedIn: false }` without triggering the
+  // Auth SDK chunk fetch. The loading branch below short-circuits that
+  // case to demo so they aren't stuck on a forever spinner.
+  const { state: authState } = useAuth()
   const uid = authState.status === 'signed-in' ? authState.user.uid : undefined
 
   // Both queries always run — TanStack dedupes against AppLayout's calls.
@@ -52,7 +56,12 @@ export function useTripContext(): TripContext {
   const currentTrip = useTripStore(s => s.currentTrip)
   const demoTrip = useSelectedDemoTrip()
 
-  if (authState.status === 'loading') return { status: 'loading' }
+  if (authState.status === 'loading') {
+    // Hint=false → never-signed-in, render demo directly so we don't
+    // wait for an SDK that's deliberately not being loaded.
+    if (!authState.wasSignedIn) return { status: 'demo', trip: demoTrip }
+    return { status: 'loading' }
+  }
   if (authState.status === 'signed-out') return { status: 'demo', trip: demoTrip }
 
   // Signed-in branches:

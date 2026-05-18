@@ -40,7 +40,7 @@ export interface UseAuthResult {
 //   the pre-hint behaviour.
 const AUTH_HINT_KEY = 'tripmate.auth.hint'
 
-function readAuthHint(): boolean {
+export function readAuthHint(): boolean {
   try { return typeof localStorage !== 'undefined' && localStorage.getItem(AUTH_HINT_KEY) === '1' }
   catch { return false }
 }
@@ -118,20 +118,27 @@ export function initAuth(): Promise<void> {
 
 /**
  * Subscribe to auth state via `useSyncExternalStore` — React's canonical API
- * for external singletons. The `enabled` parameter gates whether this call
- * should boot the auth observer; passing `false` (e.g. from a modal that
- * hasn't been opened yet) preserves the original "demo-only sessions never
- * pull the Auth SDK" optimisation.
+ * for external singletons.
+ *
+ * The `enabled` parameter gates whether this call boots the auth observer.
+ * When omitted, it defaults to the localStorage auth hint:
+ *   - hint=true  (returning user, previously signed in) → trigger SDK load
+ *   - hint=false (never signed in) → defer until a caller passes `true`
+ *     explicitly (typically SignInPromptModal opening)
+ * This keeps the ~45 KB gz Auth SDK chunk off the cold-start path for
+ * demo-only sessions. Callers that always need auth (sign-out screen,
+ * invite-redeem flow) pass `true` explicitly to override the hint.
  *
  * Sign-in uses signInWithPopup; falls back to signInWithRedirect when the
  * popup is blocked (iOS PWA home-screen, in-app browsers, some Android
  * embedded webviews).
  */
-export function useAuth(enabled: boolean = true): UseAuthResult {
+export function useAuth(enabled?: boolean): UseAuthResult {
   // Boot the observer on first use. Idempotent — multiple calls share the
   // same promise. Kick off synchronously during render so subscribers hook
   // into the global state before any effect runs.
-  if (enabled && !initPromise) void initAuth()
+  const effectiveEnabled = enabled ?? readAuthHint()
+  if (effectiveEnabled && !initPromise) void initAuth()
 
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 
@@ -163,8 +170,9 @@ export function useAuth(enabled: boolean = true): UseAuthResult {
   return { state, signInWithGoogle, signOut: doSignOut }
 }
 
-/** Convenience: returns the uid once signed-in, `undefined` otherwise. */
-export function useUid(enabled: boolean = true): string | undefined {
+/** Convenience: returns the uid once signed-in, `undefined` otherwise.
+ *  Same hint-based default as `useAuth` — see its docstring. */
+export function useUid(enabled?: boolean): string | undefined {
   const { state } = useAuth(enabled)
   return state.status === 'signed-in' ? state.user.uid : undefined
 }

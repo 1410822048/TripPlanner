@@ -3,7 +3,6 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './utils/perf'   // FIRST — captures the app-start mark on module load
 import { initSentry } from './services/sentry'
-import { initAuth } from './hooks/useAuth'
 import { getFirebase } from './services/firebase'
 import { markPerf } from './utils/perf'
 import './index.css'
@@ -25,15 +24,17 @@ console.log(
 // uncaught). No-op when VITE_SENTRY_DSN isn't set.
 initSentry()
 
-// Warm-up Firebase SDKs in parallel with React's mount → first render.
-// Both calls cache module-level promises, so the first useAuth() /
-// useMyTrips() inside React await the in-flight result instead of
-// starting from cold. Saves ~500ms–1.5s on cold launch (the Auth +
-// Firestore chunk downloads now overlap with React's parse + mount).
-// Returning these promises from main.tsx is intentional fire-and-forget;
-// React still owns the loading state for any UI that depends on them.
-markPerf('boot-init-auth')
-void initAuth()
+// Warm-up Firestore in parallel with React's mount → first render.
+// The first useMyTrips() inside React awaits the in-flight result
+// instead of starting from cold. Saves ~500ms–1s on cold launch.
+//
+// Auth is NOT warmed here — it's loaded on demand by the first
+// `useAuth()` call (which happens during SchedulePage's render via
+// useTripContext). The Auth SDK is ~45 KB gz; deferring keeps it off
+// the bandwidth-competition path during initial render and skips it
+// entirely for visitors who never tap sign-in. The auth hint
+// (localStorage `tripmate.auth.hint`) gives SchedulePage a correct
+// synchronous "demo vs signed-in" answer while the chunk loads.
 markPerf('boot-init-firestore')
 void getFirebase()
 

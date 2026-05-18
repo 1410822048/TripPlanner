@@ -65,7 +65,14 @@ export default defineConfig({
           const targets: string[] = []
           for (const [fileName, chunk] of Object.entries(ctx.bundle)) {
             if (chunk.type !== 'chunk') continue
-            if (/vendor-(firebase-(auth|firestore)|sentry)/.test(fileName)) targets.push(fileName)
+            // Note: vendor-firebase-auth deliberately NOT preloaded.
+            // Auth SDK is ~45 KB gz, only needed when a user actually
+            // taps sign-in. Preloading would steal bandwidth from the
+            // main critical-path bundle for never-signed-in visitors
+            // who only browse demo data. Returning users pay a small
+            // chunk-fetch cost (~50-200ms) on first useAuth() call,
+            // which falls inside the existing auth-hint loading window.
+            if (/vendor-(firebase-firestore|sentry)/.test(fileName)) targets.push(fileName)
           }
           if (targets.length === 0) return html
           const tags = targets
