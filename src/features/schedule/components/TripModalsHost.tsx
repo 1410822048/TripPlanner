@@ -35,7 +35,7 @@ export default function TripModalsHost({ state }: Props) {
     onScheduleSave, onScheduleDelete,
     editTripOpen,    setEditTripOpen,
     createTripOpen,  setCreateTripOpen,
-    copyTripOpen,    setCopyTripOpen, copyTripPending, onCopyTrip,
+    copyTripOpen,    setCopyTripOpen, copyTripSource, copyTripPending, onCopyTrip,
     inviteOpen,      setInviteOpen,
     membersOpen,     setMembersOpen,
     signInOpen,      setSignInOpen,
@@ -85,13 +85,16 @@ export default function TripModalsHost({ state }: Props) {
         onClose={() => setCreateTripOpen(false)}
       />
 
-      {!isDemo && currentTrip && copyTripOpen && (
-        // Conditionally rendered + keyed so every open initialises form
-        // state from props (matches the EditTrip / Schedule modal pattern).
+      {!isDemo && copyTripSource && copyTripOpen && (
+        // Conditionally rendered + keyed on the SNAPSHOT (not currentTrip)
+        // so the post-confirm `setSelectedTripId(newTrip.id)` doesn't
+        // re-key this modal mid-close. The snapshot was captured when
+        // the modal opened — see useSchedulePageState's handleMenuAction
+        // 'copy' branch.
         <CopyTripModal
-          key={currentTrip.id}
+          key={copyTripSource.id}
           isOpen
-          source={currentTrip}
+          source={copyTripSource}
           isSaving={copyTripPending}
           onClose={() => setCopyTripOpen(false)}
           onConfirm={onCopyTrip}

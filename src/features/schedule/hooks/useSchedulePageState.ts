@@ -95,6 +95,10 @@ export interface SchedulePageState {
 
   copyTripOpen:    boolean
   setCopyTripOpen: (open: boolean) => void
+  /** Snapshot of the trip taken when the copy modal opens. TripModalsHost
+   *  renders CopyTripModal off this (not `currentTrip`) so post-mutation
+   *  trip switches don't re-key the modal during its close transition. */
+  copyTripSource:  Trip | null
   copyTripPending: boolean
   onCopyTrip:      (input: CopyTripInput) => Promise<void>
 
@@ -151,6 +155,14 @@ export function useSchedulePageState(): SchedulePageState {
   const [editTripOpen,   setEditTripOpen]   = useState(false)
   const [createTripOpen, setCreateTripOpen] = useState(false)
   const [copyTripOpen,   setCopyTripOpen]   = useState(false)
+  // Snapshot of `currentTrip` taken when the copy modal opens. Decouples
+  // the modal's identity (key + source) from currentTrip so the post-
+  // mutation `setSelectedTripId(newTrip.id)` doesn't re-key the modal
+  // mid-close — that re-key was causing a 3-frame flash
+  // (close→open→close) because the modal's key changed from sourceId
+  // to newTripId in the same render where copyTripOpen was still true.
+  // The snapshot stays put until the next open.
+  const [copyTripSource, setCopyTripSource] = useState<Trip | null>(null)
   const [signInOpen,     setSignInOpen]     = useState(false)
   const [inviteOpen,     setInviteOpen]     = useState(false)
   const [membersOpen,    setMembersOpen]    = useState(false)
@@ -323,8 +335,15 @@ export function useSchedulePageState(): SchedulePageState {
         else        setInviteOpen(true)
         return
       case 'copy':
-        if (isDemo)             setSignInOpen(true)
-        else if (currentTrip)   setCopyTripOpen(true)
+        if (isDemo) {
+          setSignInOpen(true)
+        } else if (currentTrip) {
+          // Snapshot the source NOW — modal's key + source props read
+          // from this snapshot so the post-mutation trip switch doesn't
+          // re-key the modal mid-close.
+          setCopyTripSource(currentTrip)
+          setCopyTripOpen(true)
+        }
         return
       default: {
         // Exhaustiveness check: if MenuActionKey gains a member, TS will
@@ -339,15 +358,18 @@ export function useSchedulePageState(): SchedulePageState {
   // point (signed-in branch) but we read auth state defensively for the
   // createTrip payload (ownerId, displayName).
   async function onCopyTrip(input: CopyTripInput) {
-    if (!currentTrip || !uid || authState.status !== 'signed-in') return
+    // Read from the snapshot, not currentTrip — by the time this fires
+    // the user is mid-confirm and currentTrip could theoretically
+    // change under us (rare but possible). The snapshot is what the
+    // modal is showing, so use the same value for the mutation.
+    if (!copyTripSource || !uid || authState.status !== 'signed-in') return
     try {
       const { trip, copiedSchedules, copiedPlanItems, orphanedSchedules } =
-        await copyTripMut.mutateAsync({ source: currentTrip, input, user: authState.user })
-      // No flushSync needed: currentTrip is now derived from the React
-      // Query cache (via useCurrentTrip), so useCopyTrip's onSuccess
-      // cache patch + this `setSelectedTripId` + `setCopyTripOpen(false)`
-      // all batch into one React 18 commit. The previous dual-store
-      // had two notification paths and needed flushSync to align them.
+        await copyTripMut.mutateAsync({ source: copyTripSource, input, user: authState.user })
+      // Modal close commits cleanly because its render gate
+      // (copyTripSource + copyTripOpen) doesn't depend on currentTrip.
+      // setSelectedTripId can flip currentTrip = newTrip in the same
+      // commit; modal doesn't see it.
       setSelectedTripId(trip.id)
       setActiveDate(null)
       setCopyTripOpen(false)
@@ -421,6 +443,7 @@ export function useSchedulePageState(): SchedulePageState {
     editTripOpen, setEditTripOpen,
     createTripOpen, setCreateTripOpen,
     copyTripOpen, setCopyTripOpen,
+    copyTripSource,
     copyTripPending: copyTripMut.isPending,
     onCopyTrip,
     inviteOpen, setInviteOpen,
