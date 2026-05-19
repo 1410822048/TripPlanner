@@ -55,4 +55,20 @@ describe('OCR worker routing', () => {
 		})
 		expect(res.status).toBe(401)
 	})
+
+	it('POST /ocr with Content-Length above 9MB returns 413', async () => {
+		// Body size guard fires before auth, so no token is needed.
+		// Content-Length is client-supplied; an honest oversized client
+		// gets rejected without parsing the body.
+		const res = await call('POST', '/ocr', {
+			headers: {
+				'Content-Type':   'application/json',
+				'Content-Length': String(10 * 1024 * 1024),
+			},
+			body: JSON.stringify({}),
+		})
+		expect(res.status).toBe(413)
+		const body = await res.json() as { error: string }
+		expect(body.error).toContain('Body too large')
+	})
 })
