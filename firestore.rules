@@ -183,6 +183,9 @@ service cloud.firestore {
                     && request.resource.data.ownerId == uid()
                     && request.resource.data.title is string
                     && request.resource.data.title.size() > 0
+                    && request.resource.data.title.size() <= 100
+                    && request.resource.data.destination is string
+                    && request.resource.data.destination.size() <= 200
                     && request.resource.data.memberIds == [uid()];
       // Four update paths:
       //   1. Owner edits trip metadata (title/dates/icon/currency).
@@ -205,6 +208,10 @@ service cloud.firestore {
       ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId) || (
         memberOfDoc()
         && changedOnly(['lastActivityByFeature', 'updatedAt'])
+        && request.resource.data.lastActivityByFeature is map
+        && request.resource.data.lastActivityByFeature.keys().hasOnly(
+             ['schedule', 'bookings', 'expense', 'wish', 'planning']
+           )
       );
       allow delete: if isTripOwner(tripId);
 
@@ -238,7 +245,14 @@ service cloud.firestore {
             && request.resource.data.userId == uid()
             && request.resource.data.role == 'owner'
             && request.resource.data.memberIds == [uid()])
-          || isTripOwner(tripId)
+          || (
+              // Owner manually adds a member (Phase 3 feature, not yet
+              // wired in client). Lock userId / role so the owner can't
+              // bypass the role allowlist or write mismatched identity.
+              isTripOwner(tripId)
+              && request.resource.data.userId == memberId
+              && request.resource.data.role in ['editor', 'viewer']
+            )
           || (memberId == uid()
               && request.resource.data.userId == uid()
               && request.resource.data.role in ['editor', 'viewer']
@@ -291,11 +305,18 @@ service cloud.firestore {
         // updatedBy on create must equal caller — same uid-forge defence as
         // updates; powers the tab unread-dot filter (own writes don't badge).
         // memberIdsMatchTrip blocks editor-side injection of stranger uids.
+        // Type / size / enum checks mirror the client Zod schema as
+        // defense-in-depth against REST-API misuse.
         allow create: if canWrite(tripId)
                       && request.resource.data.tripId == tripId
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()
-                      && memberIdsMatchTrip(tripId);
+                      && memberIdsMatchTrip(tripId)
+                      && request.resource.data.title is string
+                      && request.resource.data.title.size() > 0
+                      && request.resource.data.title.size() <= 200
+                      && request.resource.data.category in
+                           ['transport','accommodation','food','activity','shopping','other'];
         allow update: if (
           canWrite(tripId)
           && unchanged('tripId')
@@ -313,7 +334,16 @@ service cloud.firestore {
                       && request.resource.data.tripId == tripId
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()
-                      && memberIdsMatchTrip(tripId);
+                      && memberIdsMatchTrip(tripId)
+                      && request.resource.data.title is string
+                      && request.resource.data.title.size() > 0
+                      && request.resource.data.title.size() <= 200
+                      && request.resource.data.amount is number
+                      && request.resource.data.amount > 0
+                      && request.resource.data.splits is list
+                      && request.resource.data.splits.size() <= 50
+                      && request.resource.data.category in
+                           ['food','transport','accommodation','activity','shopping','other'];
         allow update: if (
           canWrite(tripId)
           && unchanged('tripId')
@@ -342,7 +372,17 @@ service cloud.firestore {
                       && request.resource.data.proposedBy == uid()
                       && request.resource.data.updatedBy == uid()
                       && request.resource.data.votes == [uid()]
-                      && memberIdsMatchTrip(tripId);
+                      && memberIdsMatchTrip(tripId)
+                      && request.resource.data.title is string
+                      && request.resource.data.title.size() > 0
+                      && request.resource.data.title.size() <= 200
+                      && request.resource.data.category in ['place', 'food']
+                      && (!('description' in request.resource.data)
+                            || request.resource.data.description.size() <= 1000)
+                      && (!('address' in request.resource.data)
+                            || request.resource.data.address.size() <= 400)
+                      && (!('link' in request.resource.data)
+                            || request.resource.data.link.size() <= 1000);
         // Two update paths:
         //   1. Proposer edits any field (title/category/etc.)
         //   2. Any member toggles their own uid in the votes array. The
@@ -394,7 +434,20 @@ service cloud.firestore {
                       && request.resource.data.tripId == tripId
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()
-                      && memberIdsMatchTrip(tripId);
+                      && memberIdsMatchTrip(tripId)
+                      && request.resource.data.type in ['flight','hotel','train','bus','other']
+                      && (!('title' in request.resource.data)
+                            || request.resource.data.title.size() <= 200)
+                      && (!('origin' in request.resource.data)
+                            || request.resource.data.origin.size() <= 100)
+                      && (!('destination' in request.resource.data)
+                            || request.resource.data.destination.size() <= 100)
+                      && (!('confirmationCode' in request.resource.data)
+                            || request.resource.data.confirmationCode.size() <= 100)
+                      && (!('provider' in request.resource.data)
+                            || request.resource.data.provider.size() <= 100)
+                      && (!('address' in request.resource.data)
+                            || request.resource.data.address.size() <= 400);
         // Three update paths:
         //   1. Editor / owner edits booking content. tripId / createdBy /
         //      createdAt locked. memberIds locked too — content edits
@@ -436,7 +489,14 @@ service cloud.firestore {
                       && request.resource.data.toUid == uid()
                       && request.resource.data.amount is int
                       && request.resource.data.amount > 0
-                      && request.resource.data.currency is string;
+                      && request.resource.data.currency is string
+                      // fromUid must be a real, distinct trip member —
+                      // otherwise a receiver could fabricate
+                      // "Charlie 還我 ¥100" records that pollute the
+                      // settlement audit log without Charlie's input.
+                      && request.resource.data.fromUid is string
+                      && request.resource.data.fromUid != uid()
+                      && exists(/databases/$(database)/documents/trips/$(tripId)/members/$(request.resource.data.fromUid));
         // Either the recorder undoing, or the trip owner moderating.
         allow delete: if exists(memberPath(tripId))
                       && (resource.data.settledBy == uid() || isTripOwner(tripId));
@@ -453,7 +513,14 @@ service cloud.firestore {
                       && request.resource.data.tripId == tripId
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()
-                      && memberIdsMatchTrip(tripId);
+                      && memberIdsMatchTrip(tripId)
+                      && request.resource.data.title is string
+                      && request.resource.data.title.size() > 0
+                      && request.resource.data.title.size() <= 200
+                      && request.resource.data.category in
+                           ['essentials','documents','packing','todo','other']
+                      && (!('note' in request.resource.data)
+                            || request.resource.data.note.size() <= 1000);
         // Three update paths: content edit (any member), invitee
         // self-add cascade, owner remove-member cascade.
         allow update: if (
