@@ -157,6 +157,146 @@ describe('/trips/{tripId}/bookings', () => {
     )
   })
 
+  // Attachment-shape validation. The fileUrl / filePath / fileType etc.
+  // come from the storage upload result on the honest service path, so
+  // legit clients always satisfy the rule. These tests target the raw-
+  // SDK forge attempts: external URL, wrong path, wrong mime.
+  const VALID_ATTACHMENT = {
+    fileUrl:   'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fbookings%2Fb-att%2Ffile.webp?alt=media&token=abc',
+    filePath:  'trips/trip-1/bookings/b-att/file.webp',
+    fileType:  'image/webp',
+  }
+
+  function bookingWithAttachment(att: object) {
+    return {
+      tripId: TRIP_ID, type: 'hotel', title: 'X',
+      memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+      createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      sortDate:  serverTimestamp(),
+      attachment: att,
+    }
+  }
+
+  test('editor can create a booking with a valid attachment', async () => {
+    await assertSucceeds(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'),
+        bookingWithAttachment(VALID_ATTACHMENT),
+      ),
+    )
+  })
+
+  test('attachment with external fileUrl is rejected', async () => {
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'),
+        bookingWithAttachment({
+          ...VALID_ATTACHMENT,
+          fileUrl: 'https://evil.example.com/tracking.png',
+        }),
+      ),
+    )
+  })
+
+  test('attachment with filePath outside the booking folder is rejected', async () => {
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'),
+        bookingWithAttachment({
+          ...VALID_ATTACHMENT,
+          filePath: 'trips/other-trip/bookings/x/file.webp',
+        }),
+      ),
+    )
+  })
+
+  test('attachment with non-allowlisted fileType is rejected', async () => {
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'),
+        bookingWithAttachment({
+          ...VALID_ATTACHMENT,
+          fileType: 'text/html',
+        }),
+      ),
+    )
+  })
+
+  test('attachment with same-bucket cross-trip fileUrl is rejected', async () => {
+    // Same bucket, but the encoded path inside the URL points at a
+    // different trip. URL/path binding via validStorageUrlFor() catches
+    // this — without it, only the bucket prefix would be checked and the
+    // cross-trip URL would pass while filePath looks legit.
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'),
+        bookingWithAttachment({
+          ...VALID_ATTACHMENT,
+          fileUrl: 'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Fother-trip%2Fbookings%2Fb-att%2Ffile.webp?alt=media&token=xyz',
+        }),
+      ),
+    )
+  })
+
+  test('attachment with fileUrl pointing at a different filename than filePath is rejected', async () => {
+    // Same trip, same booking folder — but filename mismatch. Without
+    // filename binding, this would create an orphan: delete purges
+    // `file.webp` based on filePath, the URL'd `other.webp` stays in
+    // Storage forever.
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'),
+        bookingWithAttachment({
+          ...VALID_ATTACHMENT,
+          fileUrl: 'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fbookings%2Fb-att%2Fother.webp?alt=media&token=xyz',
+        }),
+      ),
+    )
+  })
+
+  test('attachment with thumbUrl but no thumbPath is rejected', async () => {
+    // Pair invariant — preventing the "UI fetches thumb but delete has
+    // nothing to purge" orphan surface.
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'),
+        bookingWithAttachment({
+          ...VALID_ATTACHMENT,
+          thumbUrl: 'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fbookings%2Fb-att%2Fthumb.webp?alt=media&token=t',
+          // no thumbPath
+        }),
+      ),
+    )
+  })
+
+  test('attachment with thumbPath but no thumbUrl is rejected', async () => {
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'),
+        bookingWithAttachment({
+          ...VALID_ATTACHMENT,
+          thumbPath: 'trips/trip-1/bookings/b-att/thumb.webp',
+          // no thumbUrl
+        }),
+      ),
+    )
+  })
+
+  test('attachment with valid paired thumb passes', async () => {
+    await assertSucceeds(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'),
+        bookingWithAttachment({
+          ...VALID_ATTACHMENT,
+          thumbUrl:  'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fbookings%2Fb-att%2Fthumb.webp?alt=media&token=t',
+          thumbPath: 'trips/trip-1/bookings/b-att/thumb.webp',
+        }),
+      ),
+    )
+  })
+
   test('list query MUST include memberIds array-contains filter', async () => {
     // Without filter, Firestore can't prove the same-doc rule
     // (uid in resource.data.memberIds) is satisfied by all results
@@ -244,6 +384,104 @@ describe('/trips/{tripId}/wishes vote toggle', () => {
         updatedBy: EDITOR_UID,
         updatedAt: serverTimestamp(),
       }),
+    )
+  })
+
+  // Image-shape validation (same family as booking attachment tests).
+  const VALID_WISH_IMAGE = {
+    url:       'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fwishes%2Fw-img%2Ffile.webp?alt=media&token=abc',
+    path:      'trips/trip-1/wishes/w-img/file.webp',
+    thumbUrl:  'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fwishes%2Fw-img%2Fthumb.webp?alt=media&token=def',
+    thumbPath: 'trips/trip-1/wishes/w-img/thumb.webp',
+  }
+
+  function wishWithImage(image: object) {
+    return {
+      tripId: TRIP_ID, category: 'place', title: 'X',
+      proposedBy: VIEWER_UID, updatedBy: VIEWER_UID, votes: [VIEWER_UID],
+      memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      image,
+    }
+  }
+
+  test('viewer can create wish with valid image', async () => {
+    await assertSucceeds(
+      setDoc(
+        doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-img'),
+        wishWithImage(VALID_WISH_IMAGE),
+      ),
+    )
+  })
+
+  test('wish with external image.url is rejected', async () => {
+    await assertFails(
+      setDoc(
+        doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-img'),
+        wishWithImage({ ...VALID_WISH_IMAGE, url: 'https://evil.example.com/track.png' }),
+      ),
+    )
+  })
+
+  test('wish with cross-trip image.path is rejected', async () => {
+    await assertFails(
+      setDoc(
+        doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-img'),
+        wishWithImage({ ...VALID_WISH_IMAGE, path: 'trips/other-trip/wishes/y/file.webp' }),
+      ),
+    )
+  })
+})
+
+// ─── Expense receipt shape validation ──────────────────────────────
+describe('/trips/{tripId}/expenses receipt shape', () => {
+  const VALID_RECEIPT = {
+    url:  'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fexpenses%2Fe-rcpt%2Ffile.webp?alt=media&token=abc',
+    path: 'trips/trip-1/expenses/e-rcpt/file.webp',
+    type: 'image/webp',
+  }
+
+  function expenseWithReceipt(receipt: object) {
+    return {
+      tripId: TRIP_ID, title: 'X',
+      amount: 1000, currency: 'JPY',
+      category: 'food',
+      paidBy: EDITOR_UID,
+      splits: [{ memberId: EDITOR_UID, amount: 1000 }],
+      date: '2026-05-19',
+      memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+      createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      receipt,
+    }
+  }
+
+  test('editor can create expense with valid receipt', async () => {
+    await assertSucceeds(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-rcpt'),
+        expenseWithReceipt(VALID_RECEIPT),
+      ),
+    )
+  })
+
+  test('expense with external receipt.url is rejected', async () => {
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-rcpt'),
+        expenseWithReceipt({ ...VALID_RECEIPT, url: 'https://evil.example.com/track.png' }),
+      ),
+    )
+  })
+
+  test('expense with non-allowlisted receipt.type is rejected', async () => {
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-rcpt'),
+        expenseWithReceipt({ ...VALID_RECEIPT, type: 'text/html' }),
+      ),
     )
   })
 })

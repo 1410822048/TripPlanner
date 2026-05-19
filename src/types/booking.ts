@@ -93,12 +93,21 @@ export interface Booking {
 /**
  * `type` 限制在現行支援集合，未來擴充時需同步擴表。
  */
+/** Accepted attachment mime types. Mirrors `extForMime()` in
+ *  bookingStorage.ts AND the `fileType in [...]` check in firestore.rules
+ *  `validBookingAttachment()` — drift would let one layer accept bytes
+ *  the other rejects. */
+export const BOOKING_ATTACHMENT_MIME_TYPES = [
+  'image/webp', 'image/jpeg', 'image/png', 'image/heic', 'image/heif',
+  'application/pdf',
+] as const
+
 export const BookingAttachmentSchema = z.object({
-  fileUrl:   z.string(),
-  filePath:  z.string(),
-  fileType:  z.string(),
-  thumbUrl:  z.string().optional(),
-  thumbPath: z.string().optional(),
+  fileUrl:   z.string().url().max(2048),
+  filePath:  z.string().min(1).max(500),
+  fileType:  z.enum(BOOKING_ATTACHMENT_MIME_TYPES),
+  thumbUrl:  z.string().url().max(2048).optional(),
+  thumbPath: z.string().min(1).max(500).optional(),
 })
 
 export const BookingDocSchema = z.object({

@@ -105,6 +105,148 @@ service cloud.firestore {
         get(/databases/$(database)/documents/trips/$(tripId)).data.memberIds;
     }
 
+    // ─── Attachment shape guards ─────────────────────────────────
+    // Without these, an editor with a raw-SDK client could write
+    // `attachment.fileUrl: 'https://evil.com/track.png'` and every
+    // trip member's UI would fetch that URL on render (privacy /
+    // tracking leak). Same risk for filePath pointing outside the
+    // booking's own Storage folder (subsequent delete fails to purge
+    // the orphaned object, or worse, traverses to delete a sibling).
+    //
+    // The honest service-layer path (`bookingService.createBooking`
+    // / `updateBooking` → `uploadAttachment`) always produces values
+    // matching these constraints, so legitimate writes are unaffected.
+    // BUCKET HARDCODE — production-only contract. If a staging / mirror
+    // bucket is ever introduced, every attachment write will be denied
+    // until this constant is updated (rules don't support env-var
+    // injection). A staging deploy would need a separate rules variant.
+    //
+    // Binds a Firebase Storage download URL to its exact `expectedPath`.
+    // Without binding, an editor with raw-SDK access could write
+    // `fileUrl` pointing at a different Storage object than `filePath`
+    // claims — either cross-trip (PII leak) or same-folder different-
+    // filename (delete-purge sees `filePath`'s name, leaves the URL'd
+    // file orphan in Storage forever).
+    //
+    // We avoid regex matching here: a regex like `file.webp` would
+    // accept `fileXwebp` too (RE2's literal-`.` semantics), and rules
+    // don't have a string-escape function. Instead we split off the
+    // query string and string-compare the rest — exact match required.
+    function validStorageUrlFor(url, expectedPath) {
+      return url is string
+        && url.size() <= 2048
+        && url.split('\\?')[0] ==
+             'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/'
+             + expectedPath.replace('/', '%2F');
+    }
+    function validWishImage(tripId, wishId) {
+      return !('image' in request.resource.data) || (
+        request.resource.data.image is map
+        && request.resource.data.image.keys().hasOnly(
+             ['url', 'path', 'thumbUrl', 'thumbPath']
+           )
+        && request.resource.data.image.keys().hasAll(
+             ['url', 'path', 'thumbUrl', 'thumbPath']
+           )
+        && request.resource.data.image.path is string
+        && request.resource.data.image.path.size() <= 500
+        && request.resource.data.image.path.matches(
+             '^trips/' + tripId + '/wishes/' + wishId + '/.+'
+           )
+        && request.resource.data.image.thumbPath is string
+        && request.resource.data.image.thumbPath.size() <= 500
+        && request.resource.data.image.thumbPath.matches(
+             '^trips/' + tripId + '/wishes/' + wishId + '/.+'
+           )
+        // URL bound to its own path — blocks both the same-bucket
+        // cross-trip forge (`url=https://.../o/trips%2FOTHER%2F...`)
+        // AND the same-folder filename swap that would orphan files
+        // in Storage on delete.
+        && validStorageUrlFor(
+             request.resource.data.image.url,
+             request.resource.data.image.path
+           )
+        && validStorageUrlFor(
+             request.resource.data.image.thumbUrl,
+             request.resource.data.image.thumbPath
+           )
+      );
+    }
+    function validExpenseReceipt(tripId, expenseId) {
+      return !('receipt' in request.resource.data) || (
+        request.resource.data.receipt is map
+        && request.resource.data.receipt.keys().hasOnly(
+             ['url', 'path', 'type', 'thumbUrl', 'thumbPath']
+           )
+        && request.resource.data.receipt.keys().hasAll(
+             ['url', 'path', 'type']
+           )
+        // thumbUrl and thumbPath are paired — both present or both absent.
+        // Without this, raw SDK could set thumbUrl alone, UI displays the
+        // (unbacked) thumbUrl, but delete sees no thumbPath to purge.
+        && ('thumbUrl' in request.resource.data.receipt) ==
+             ('thumbPath' in request.resource.data.receipt)
+        && request.resource.data.receipt.type in
+             ['image/webp', 'image/jpeg', 'image/png', 'image/heic', 'image/heif', 'application/pdf']
+        && request.resource.data.receipt.path is string
+        && request.resource.data.receipt.path.size() <= 500
+        && request.resource.data.receipt.path.matches(
+             '^trips/' + tripId + '/expenses/' + expenseId + '/.+'
+           )
+        && validStorageUrlFor(
+             request.resource.data.receipt.url,
+             request.resource.data.receipt.path
+           )
+        && (!('thumbUrl' in request.resource.data.receipt) || (
+              request.resource.data.receipt.thumbPath is string
+              && request.resource.data.receipt.thumbPath.size() <= 500
+              && request.resource.data.receipt.thumbPath.matches(
+                   '^trips/' + tripId + '/expenses/' + expenseId + '/.+'
+                 )
+              && validStorageUrlFor(
+                   request.resource.data.receipt.thumbUrl,
+                   request.resource.data.receipt.thumbPath
+                 )
+           ))
+      );
+    }
+    function validBookingAttachment(tripId, bookingId) {
+      return !('attachment' in request.resource.data) || (
+        request.resource.data.attachment is map
+        && request.resource.data.attachment.keys().hasOnly(
+             ['fileUrl', 'filePath', 'fileType', 'thumbUrl', 'thumbPath']
+           )
+        && request.resource.data.attachment.keys().hasAll(
+             ['fileUrl', 'filePath', 'fileType']
+           )
+        // thumbUrl and thumbPath are paired — see validExpenseReceipt above.
+        && ('thumbUrl' in request.resource.data.attachment) ==
+             ('thumbPath' in request.resource.data.attachment)
+        && request.resource.data.attachment.fileType in
+             ['image/webp', 'image/jpeg', 'image/png', 'image/heic', 'image/heif', 'application/pdf']
+        && request.resource.data.attachment.filePath is string
+        && request.resource.data.attachment.filePath.size() <= 500
+        && request.resource.data.attachment.filePath.matches(
+             '^trips/' + tripId + '/bookings/' + bookingId + '/.+'
+           )
+        && validStorageUrlFor(
+             request.resource.data.attachment.fileUrl,
+             request.resource.data.attachment.filePath
+           )
+        && (!('thumbUrl' in request.resource.data.attachment) || (
+              request.resource.data.attachment.thumbPath is string
+              && request.resource.data.attachment.thumbPath.size() <= 500
+              && request.resource.data.attachment.thumbPath.matches(
+                   '^trips/' + tripId + '/bookings/' + bookingId + '/.+'
+                 )
+              && validStorageUrlFor(
+                   request.resource.data.attachment.thumbUrl,
+                   request.resource.data.attachment.thumbPath
+                 )
+           ))
+      );
+    }
+
     // ─── Membership-sync update predicates ────────────────────────
     // These authorise the memberSync cascade — when a user accepts an
     // invite OR the owner removes a member, memberIds[] is bumped on
@@ -353,7 +495,8 @@ service cloud.firestore {
                       && request.resource.data.splits is list
                       && request.resource.data.splits.size() <= 50
                       && request.resource.data.category in
-                           ['food','transport','accommodation','activity','shopping','other'];
+                           ['food','transport','accommodation','activity','shopping','other']
+                      && validExpenseReceipt(tripId, expenseId);
         allow update: if (
           canWrite(tripId)
           && unchanged('tripId')
@@ -370,6 +513,7 @@ service cloud.firestore {
           && request.resource.data.splits.size() <= 50
           && request.resource.data.category in
                ['food','transport','accommodation','activity','shopping','other']
+          && validExpenseReceipt(tripId, expenseId)
         ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
         allow delete: if canWrite(tripId);
       }
@@ -401,7 +545,8 @@ service cloud.firestore {
                       && (!('address' in request.resource.data)
                             || request.resource.data.address.size() <= 400)
                       && (!('link' in request.resource.data)
-                            || request.resource.data.link.size() <= 1000);
+                            || request.resource.data.link.size() <= 1000)
+                      && validWishImage(tripId, wishId);
         // Two update paths:
         //   1. Proposer edits any field (title/category/etc.)
         //   2. Any member toggles their own uid in the votes array. The
@@ -429,6 +574,7 @@ service cloud.firestore {
                     || request.resource.data.address.size() <= 400)
               && (!('link' in request.resource.data)
                     || request.resource.data.link.size() <= 1000)
+              && validWishImage(tripId, wishId)
             )
             ||
             // 2. Voter path: any member toggles only their own uid in `votes`.
@@ -476,7 +622,8 @@ service cloud.firestore {
                       && (!('provider' in request.resource.data)
                             || request.resource.data.provider.size() <= 100)
                       && (!('address' in request.resource.data)
-                            || request.resource.data.address.size() <= 400);
+                            || request.resource.data.address.size() <= 400)
+                      && validBookingAttachment(tripId, bookingId);
         // Three update paths:
         //   1. Editor / owner edits booking content. tripId / createdBy /
         //      createdAt locked. memberIds locked too — content edits
@@ -506,6 +653,7 @@ service cloud.firestore {
                 || request.resource.data.provider.size() <= 100)
           && (!('address' in request.resource.data)
                 || request.resource.data.address.size() <= 400)
+          && validBookingAttachment(tripId, bookingId)
         ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
         allow delete: if canWrite(tripId);
       }

@@ -58,11 +58,16 @@ export interface Wish {
   updatedAt: Timestamp
 }
 
+// Shape + size guards only. The Storage-origin + path-binding contract
+// (URL must point at this wish's own Storage folder) is enforced by
+// firestore.rules `validWishImage()` / `validStorageUrlFor()`; Zod here
+// stays bucket-agnostic so a future bucket move doesn't require both
+// layers to update in lockstep.
 export const WishImageSchema = z.object({
-  url:       z.string(),
-  path:      z.string(),
-  thumbUrl:  z.string(),
-  thumbPath: z.string(),
+  url:       z.string().url().max(2048),
+  path:      z.string().min(1).max(500),
+  thumbUrl:  z.string().url().max(2048),
+  thumbPath: z.string().min(1).max(500),
 })
 
 export const WishDocSchema = z.object({
