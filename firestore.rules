@@ -84,6 +84,27 @@ service cloud.firestore {
       return affectedKeys().hasOnly(allowed);
     }
 
+    // ─── memberIds anti-injection guard ──────────────────────────
+    // Defends against an editor injecting a stranger's uid into a new
+    // entity's `memberIds`. Without this, the collection-group list
+    // rule on /bookings (`uid in resource.data.memberIds`) would let
+    // that stranger see this trip's hotel via PastLodgingPage's
+    // cross-trip query. Same risk exists for any rule that grants
+    // read based on `uid in memberIds` (memberOfDoc).
+    //
+    // Strategy: pin memberIds on new entity docs to be exactly equal
+    // to the parent trip's current memberIds. The service layer
+    // (`getTripMemberIds(tripId)`) reads from `trip.memberIds`, so
+    // honest clients always satisfy this — only forged payloads fail.
+    //
+    // memberSync cascade paths (memberSyncSelfAdd / ownerSyncRemove)
+    // operate via `update`, not `create`, so this gate doesn't conflict
+    // with the invite-accept / remove-member flows.
+    function memberIdsMatchTrip(tripId) {
+      return request.resource.data.memberIds ==
+        get(/databases/$(database)/documents/trips/$(tripId)).data.memberIds;
+    }
+
     // ─── Membership-sync update predicates ────────────────────────
     // These authorise the memberSync cascade — when a user accepts an
     // invite OR the owner removes a member, memberIds[] is bumped on
@@ -269,11 +290,12 @@ service cloud.firestore {
         allow read:   if memberOfDoc();
         // updatedBy on create must equal caller — same uid-forge defence as
         // updates; powers the tab unread-dot filter (own writes don't badge).
+        // memberIdsMatchTrip blocks editor-side injection of stranger uids.
         allow create: if canWrite(tripId)
                       && request.resource.data.tripId == tripId
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()
-                      && uid() in request.resource.data.memberIds;
+                      && memberIdsMatchTrip(tripId);
         allow update: if (
           canWrite(tripId)
           && unchanged('tripId')
@@ -291,7 +313,7 @@ service cloud.firestore {
                       && request.resource.data.tripId == tripId
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()
-                      && uid() in request.resource.data.memberIds;
+                      && memberIdsMatchTrip(tripId);
         allow update: if (
           canWrite(tripId)
           && unchanged('tripId')
@@ -320,7 +342,7 @@ service cloud.firestore {
                       && request.resource.data.proposedBy == uid()
                       && request.resource.data.updatedBy == uid()
                       && request.resource.data.votes == [uid()]
-                      && uid() in request.resource.data.memberIds;
+                      && memberIdsMatchTrip(tripId);
         // Two update paths:
         //   1. Proposer edits any field (title/category/etc.)
         //   2. Any member toggles their own uid in the votes array. The
@@ -372,7 +394,7 @@ service cloud.firestore {
                       && request.resource.data.tripId == tripId
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()
-                      && uid() in request.resource.data.memberIds;
+                      && memberIdsMatchTrip(tripId);
         // Three update paths:
         //   1. Editor / owner edits booking content. tripId / createdBy /
         //      createdAt locked. memberIds locked too — content edits
@@ -431,7 +453,7 @@ service cloud.firestore {
                       && request.resource.data.tripId == tripId
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()
-                      && uid() in request.resource.data.memberIds;
+                      && memberIdsMatchTrip(tripId);
         // Three update paths: content edit (any member), invitee
         // self-add cascade, owner remove-member cascade.
         allow update: if (
