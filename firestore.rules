@@ -205,6 +205,11 @@ service cloud.firestore {
         && unchanged('ownerId')
         && unchanged('createdAt')
         && unchanged('memberIds')
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 100
+        && request.resource.data.destination is string
+        && request.resource.data.destination.size() <= 200
       ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId) || (
         memberOfDoc()
         && changedOnly(['lastActivityByFeature', 'updatedAt'])
@@ -324,6 +329,11 @@ service cloud.firestore {
           && unchanged('createdAt')
           && unchanged('memberIds')
           && request.resource.data.updatedBy == uid()
+          && request.resource.data.title is string
+          && request.resource.data.title.size() > 0
+          && request.resource.data.title.size() <= 200
+          && request.resource.data.category in
+               ['transport','accommodation','food','activity','shopping','other']
         ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
         allow delete: if canWrite(tripId);
       }
@@ -351,6 +361,15 @@ service cloud.firestore {
           && unchanged('createdAt')
           && unchanged('memberIds')
           && request.resource.data.updatedBy == uid()
+          && request.resource.data.title is string
+          && request.resource.data.title.size() > 0
+          && request.resource.data.title.size() <= 200
+          && request.resource.data.amount is number
+          && request.resource.data.amount > 0
+          && request.resource.data.splits is list
+          && request.resource.data.splits.size() <= 50
+          && request.resource.data.category in
+               ['food','transport','accommodation','activity','shopping','other']
         ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
         allow delete: if canWrite(tripId);
       }
@@ -400,6 +419,16 @@ service cloud.firestore {
               && unchanged('createdAt')
               && unchanged('memberIds')
               && request.resource.data.updatedBy == uid()
+              && request.resource.data.title is string
+              && request.resource.data.title.size() > 0
+              && request.resource.data.title.size() <= 200
+              && request.resource.data.category in ['place', 'food']
+              && (!('description' in request.resource.data)
+                    || request.resource.data.description.size() <= 1000)
+              && (!('address' in request.resource.data)
+                    || request.resource.data.address.size() <= 400)
+              && (!('link' in request.resource.data)
+                    || request.resource.data.link.size() <= 1000)
             )
             ||
             // 2. Voter path: any member toggles only their own uid in `votes`.
@@ -464,6 +493,19 @@ service cloud.firestore {
           && unchanged('createdAt')
           && unchanged('memberIds')
           && request.resource.data.updatedBy == uid()
+          && request.resource.data.type in ['flight','hotel','train','bus','other']
+          && (!('title' in request.resource.data)
+                || request.resource.data.title.size() <= 200)
+          && (!('origin' in request.resource.data)
+                || request.resource.data.origin.size() <= 100)
+          && (!('destination' in request.resource.data)
+                || request.resource.data.destination.size() <= 100)
+          && (!('confirmationCode' in request.resource.data)
+                || request.resource.data.confirmationCode.size() <= 100)
+          && (!('provider' in request.resource.data)
+                || request.resource.data.provider.size() <= 100)
+          && (!('address' in request.resource.data)
+                || request.resource.data.address.size() <= 400)
         ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
         allow delete: if canWrite(tripId);
       }
@@ -530,6 +572,13 @@ service cloud.firestore {
           && unchanged('createdAt')
           && unchanged('memberIds')
           && request.resource.data.updatedBy == uid()
+          && request.resource.data.title is string
+          && request.resource.data.title.size() > 0
+          && request.resource.data.title.size() <= 200
+          && request.resource.data.category in
+               ['essentials','documents','packing','todo','other']
+          && (!('note' in request.resource.data)
+                || request.resource.data.note.size() <= 1000)
         ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
         allow delete: if memberOfDoc();
       }
