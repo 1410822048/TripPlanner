@@ -168,7 +168,7 @@ export default function AccountPage() {
 
   if (state.status !== 'signed-in') {
     return (
-      <div className="flex flex-col items-center justify-center h-full px-6 py-10 text-center">
+      <div className="flex flex-col items-center justify-center min-h-full px-6 py-10 text-center">
         <div className="text-[44px] leading-none mb-3">☁️</div>
         <h2 className="m-0 mb-2 text-[18px] font-bold text-ink tracking-[0.02em] font-serif-ja">
           アカウント
