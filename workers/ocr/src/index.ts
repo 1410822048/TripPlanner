@@ -12,12 +12,24 @@ import { verifyFirebaseToken, extractBearerToken } from './auth'
 import { extractReceiptItems, GeminiError }       from './gemini'
 import { OcrRequestSchema }                       from './schema'
 import { cascadeMemberAdd, CascadeRequestSchema, CascadeError } from './cascade'
+import { checkGlobalRateLimit }                   from './rate-limiter'
+
+export { GlobalRateLimiter } from './rate-limiter'
 
 interface WorkerEnv {
   FIREBASE_PROJECT_ID:      string
   ALLOWED_ORIGINS:          string  // comma-separated
   GEMINI_API_KEY:           string  // secret
   FIREBASE_SERVICE_ACCOUNT: string  // secret — JSON string of service account key
+  /** Per-PoP per-uid rate limiter for the OCR endpoint. Cheap first-line
+   *  filter (~0ms). Counters are local to each Cloudflare location. */
+  OCR_RATE_LIMITER:         RateLimit
+  /** Per-PoP per-uid rate limiter for the cascade endpoint. */
+  CASCADE_RATE_LIMITER:     RateLimit
+  /** Cross-PoP global rate limiter. Durable Object — strongly
+   *  consistent counter per-uid that catches multi-PoP abuse that
+   *  would slip past the per-PoP binding. ~10-50ms latency cost. */
+  GLOBAL_LIMITER:           DurableObjectNamespace
 }
 
 /** Resolve CORS headers for a given request origin. We allowlist
@@ -26,14 +38,28 @@ interface WorkerEnv {
  *  Pages assigns per-deployment subdomains (e.g. `0b885524.tripmate-
  *  2wg.pages.dev`) so an exact-only match would force every preview
  *  deploy to be re-listed. The wildcard scope is bounded to a single
- *  trusted apex domain we own. */
+ *  trusted apex domain we own.
+ *
+ *  Origin parsing uses URL() so we never fall for substring tricks
+ *  (`https://evil.com/?x=tripmate-2wg.pages.dev` would have failed the
+ *  old string `indexOf('://')` check anyway, but explicit parse is
+ *  cleaner and rejects malformed origins outright). */
 function originAllowed(origin: string, patterns: string[]): boolean {
+  let parsed: URL
+  try {
+    parsed = new URL(origin)
+  } catch {
+    return false  // malformed Origin header
+  }
+  // Only allow https + http (latter for localhost dev). Avoids exotic
+  // schemes (file:, data:, chrome-extension:, etc.) being whitelisted
+  // via wildcard match.
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false
+
+  const host = parsed.host  // hostname[:port]
   return patterns.some(p => {
     if (p.startsWith('*.')) {
       const suffix = p.slice(1)  // ".tripmate-2wg.pages.dev"
-      const idx = origin.indexOf('://')
-      if (idx < 0) return false
-      const host = origin.slice(idx + 3)
       return host.endsWith(suffix) && host.length > suffix.length
     }
     return p === origin
@@ -61,6 +87,14 @@ function json(body: unknown, status: number, headers: Record<string, string>): R
   })
 }
 
+/** Truncated uid for logs. Full Firebase uids are 28 chars; logs end up
+ *  in Workers tail / observability storage and we don't need full uids
+ *  to diagnose abuse — the prefix is enough to correlate without
+ *  retaining a fully-identifying token. */
+function uidTag(uid: string): string {
+  return uid.slice(0, 6) + '…'
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     const url     = new URL(request.url)
@@ -80,6 +114,18 @@ export default {
 
     console.log(`[req] ${request.method} ${url.pathname} origin=${request.headers.get('Origin') ?? '?'}`)
 
+    // ─── Body size guard ──────────────────────────────────────────────
+    // Done before auth so 100MB unauthenticated bodies are rejected
+    // without burning CPU on JWT verification first. 9MB covers an 8MB
+    // base64 image + JSON envelope; cascade body is <1KB so this is a
+    // no-op for it. Content-Length is client-supplied — bytes-actually-
+    // streamed are still bounded by the platform's 100MB hard cap.
+    const contentLength = Number(request.headers.get('content-length') ?? '0')
+    if (contentLength > 9 * 1024 * 1024) {
+      console.warn(`[body] too large: contentLength=${contentLength}`)
+      return json({ error: 'Body too large' }, 413, cors)
+    }
+
     // ─── Auth (shared by both routes) ─────────────────────────────────
     const token = extractBearerToken(request)
     if (!token) {
@@ -90,10 +136,39 @@ export default {
     try {
       const claims = await verifyFirebaseToken(token, env.FIREBASE_PROJECT_ID)
       uid = claims.sub
-      console.log(`[auth] ok uid=${uid}`)
+      console.log(`[auth] ok uid=${uidTag(uid)}`)
     } catch (e) {
       console.warn(`[auth] invalid token: ${(e as Error).message}`)
       return json({ error: `Invalid token: ${(e as Error).message}` }, 401, cors)
+    }
+
+    // ─── Rate limit (per-uid, two-layer) ──────────────────────────────
+    // L1: Per-PoP binding — fast (~0ms), catches single-location abuse.
+    //     Per-uid key. Done after auth so unauthenticated noise doesn't
+    //     burn counter slots.
+    // L2: Cross-PoP Durable Object — slower (~10-50ms), strongly
+    //     consistent, catches botnet-style multi-PoP multiplication
+    //     that L1 alone can't see. Cap deliberately looser than L1 —
+    //     L1's tighter per-location bound is the primary defense; L2
+    //     is the cluster ceiling.
+    const limiter = isOcr ? env.OCR_RATE_LIMITER : env.CASCADE_RATE_LIMITER
+    const localResult = await limiter.limit({ key: uid })
+    if (!localResult.success) {
+      console.warn(`[rate-limit] L1 deny uid=${uidTag(uid)} route=${url.pathname}`)
+      return json({ error: 'Rate limit exceeded' }, 429, cors)
+    }
+
+    const scope       = isOcr ? 'ocr' : 'cascade'
+    const globalLimit = isOcr ? 60   : 10   // 2× the per-PoP cap
+    const globalResult = await checkGlobalRateLimit(
+      env.GLOBAL_LIMITER, scope, uid, globalLimit, 60_000,
+    )
+    if (!globalResult.allowed) {
+      console.warn(
+        `[rate-limit] L2 deny uid=${uidTag(uid)} route=${url.pathname} ` +
+        `count=${globalResult.count} resetMs=${globalResult.resetMs}`,
+      )
+      return json({ error: 'Global rate limit exceeded' }, 429, cors)
     }
 
     // ─── Body parsing (shared) ────────────────────────────────────────
@@ -114,7 +189,7 @@ export default {
       }
       try {
         const result = await cascadeMemberAdd(uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT)
-        console.log(`[cascade] uid=${uid} trip=${parsed.data.tripId} updated=${result.updatedDocs}`)
+        console.log(`[cascade] uid=${uidTag(uid)} trip=${parsed.data.tripId} updated=${result.updatedDocs}`)
         return json({ ok: true, ...result }, 200, cors)
       } catch (e) {
         if (e instanceof CascadeError) {
@@ -139,7 +214,7 @@ export default {
         parsed.data.currency,
         env.GEMINI_API_KEY,
       )
-      console.log(`[ocr] returning ${result.items.length} items to uid=${uid}`)
+      console.log(`[ocr] returning ${result.items.length} items to uid=${uidTag(uid)}`)
       return json(result, 200, cors)
     } catch (e) {
       if (e instanceof GeminiError) {

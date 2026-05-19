@@ -13,16 +13,31 @@ import { z } from 'zod'
 
 // ─── Request ─────────────────────────────────────────────────────────────
 
+// Max base64 payload: 8MB ≈ 6MB raw image. Client compresses to
+// ~200KB WebP via compressImage(), so this is ~30× headroom for
+// edge cases (e.g. user bypasses compress path) while keeping a
+// hard ceiling on Gemini quota / CPU burn from a forged client.
+// Cloudflare's plan-level limit is 100MB so without this an
+// authenticated attacker could DoS our Gemini budget.
+const MAX_IMAGE_BASE64_BYTES = 8 * 1024 * 1024
+
 export const OcrRequestSchema = z.object({
   /** base64-encoded image bytes (no data: prefix). */
-  image:    z.string().min(100, 'image too small'),
+  image:    z.string()
+              .min(100, 'image too small')
+              .max(MAX_IMAGE_BASE64_BYTES, 'image too large'),
   /** MIME type of the image. We only allow common photo formats — PDFs
    *  are intentionally rejected (Gemini can read PDFs but receipts as
-   *  PDFs are rare and we want to limit attack surface). */
-  mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/heic']),
+   *  PDFs are rare and we want to limit attack surface). Mirrors the
+   *  client-side BOOKING_ATTACHMENT_MIME_TYPES + EXPENSE_RECEIPT_MIME_TYPES
+   *  (minus PDF). */
+  mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif']),
   /** ISO 4217 currency code hint (e.g. 'JPY', 'TWD'). The LLM uses this
-   *  as a hint when the receipt itself doesn't show a currency symbol. */
-  currency: z.string().length(3).optional(),
+   *  as a hint when the receipt itself doesn't show a currency symbol.
+   *  Regex enforces the ISO 4217 shape (three uppercase letters) without
+   *  pinning the full code set — catches obvious garbage without coupling
+   *  to a static list we'd have to maintain. */
+  currency: z.string().regex(/^[A-Z]{3}$/, 'currency must be 3 uppercase letters').optional(),
 })
 export type OcrRequest = z.infer<typeof OcrRequestSchema>
 

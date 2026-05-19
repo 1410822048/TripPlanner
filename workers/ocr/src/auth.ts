@@ -40,10 +40,11 @@ export async function verifyFirebaseToken(
 }
 
 /** Extract bearer token from Authorization header. Returns null when absent
- *  or malformed — caller treats that as 401. */
+ *  or malformed — caller treats that as 401. Scheme match is case-insensitive
+ *  per RFC 6750 / RFC 7235 (`Bearer`, `bearer`, `BEARER` all valid). */
 export function extractBearerToken(req: Request): string | null {
   const auth = req.headers.get('Authorization')
   if (!auth) return null
-  const m = /^Bearer (.+)$/.exec(auth)
-  return m ? m[1] : null
+  const m = /^Bearer\s+(.+)$/i.exec(auth)
+  return m ? m[1].trim() : null
 }

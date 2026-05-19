@@ -17,7 +17,44 @@
 	"vars": {
 		"FIREBASE_PROJECT_ID": "tripplanner-80a4f",
 		"ALLOWED_ORIGINS": "https://tripplanner-80a4f.web.app,https://tripplanner-80a4f.firebaseapp.com,https://tripmate-2wg.pages.dev,*.tripmate-2wg.pages.dev,http://localhost:5173"
-	}
+	},
+	// Per-uid rate limiting (GA 2025-09). Counters are per Cloudflare
+	// location (eventually consistent) — fine for abuse prevention,
+	// not a hard quota. namespace_id is account-scoped and arbitrary
+	// (just unique); we use 1001/1002 to keep human-readable.
+	// /ocr is the expensive path (Gemini quota) → tighter limit.
+	// /cascade-member fires once per invite accept → very tight limit.
+	"ratelimits": [
+		{
+			"name": "OCR_RATE_LIMITER",
+			"namespace_id": "1001",
+			"simple": { "limit": 30, "period": 60 }
+		},
+		{
+			"name": "CASCADE_RATE_LIMITER",
+			"namespace_id": "1002",
+			"simple": { "limit": 5, "period": 60 }
+		}
+	],
+	// Durable Object for cross-PoP rate limiting. Each instance is
+	// keyed by uid (`idFromName(uid)`); cold-instantiated on first
+	// hit, idle instances cost nothing. SQLite storage class — the
+	// modern default; old key-value storage is legacy.
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "GLOBAL_LIMITER",
+				"class_name": "GlobalRateLimiter"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["GlobalRateLimiter"]
+		}
+	]
 	// Secrets are set via `wrangler secret put`:
-	//   GEMINI_API_KEY  ← Google AI Studio API key
+	//   GEMINI_API_KEY            ← Google AI Studio API key
+	//   FIREBASE_SERVICE_ACCOUNT  ← service account JSON for /cascade-member
 }
