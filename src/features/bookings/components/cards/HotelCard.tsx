@@ -26,23 +26,13 @@
 import { Map } from 'lucide-react'
 import type { Booking } from '@/types'
 import { hotelBrand } from './brandMeta'
-import { fmtDate, fmtTime } from './dateFormat'
+import { fmtDate, fmtTime, nightsBetween } from './dateFormat'
 import ActionChip from '@/components/ui/ActionChip'
 import { mapsSearchUrl } from '@/utils/maps'
 import { attachmentThumb, isImageAttachment } from '../../utils'
 
 interface Props {
   booking: Booking
-}
-
-/** Whole-night count between check-in / check-out (rounded down). */
-function nightsBetween(checkIn: string | undefined, checkOut: string | undefined): number | null {
-  if (!checkIn || !checkOut) return null
-  const a = new Date(checkIn), b = new Date(checkOut)
-  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return null
-  const ms = b.getTime() - a.getTime()
-  if (ms <= 0) return null
-  return Math.floor(ms / (24 * 60 * 60 * 1000))
 }
 
 export default function HotelCard({ booking }: Props) {
@@ -70,6 +60,7 @@ export default function HotelCard({ booking }: Props) {
           <img
             src={coverSrc}
             alt=""
+            loading="lazy"
             decoding="async"
             draggable={false}
             className="absolute inset-0 w-full h-full object-cover"

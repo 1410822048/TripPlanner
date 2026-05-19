@@ -16,6 +16,7 @@
 import type { Booking } from '@/types'
 import { railBrand } from './brandMeta'
 import { fmtDate, fmtTime } from './dateFormat'
+import BrandBand from './BrandBand'
 
 interface Props {
   booking: Booking
@@ -30,19 +31,7 @@ export default function TrainCard({ booking }: Props) {
 
   return (
     <div className="relative bg-surface overflow-hidden">
-      {/* Operator band */}
-      <div
-        className="flex items-center justify-between px-3 h-7 text-[10.5px] font-bold tracking-[0.05em]"
-        style={{ background: brand.bg, color: brand.fg }}
-      >
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="px-1.5 py-px rounded-sm bg-black/15 text-[10px] tracking-[0.06em] shrink-0">
-            {brand.label}
-          </span>
-          <span className="truncate opacity-90">{booking.provider ?? brand.name}</span>
-        </div>
-        <span className="opacity-90 shrink-0">TICKET</span>
-      </div>
+      <BrandBand brand={brand} provider={booking.provider}>TICKET</BrandBand>
 
       {/* Route + vehicle */}
       <div className="px-4 pt-3 pb-3">

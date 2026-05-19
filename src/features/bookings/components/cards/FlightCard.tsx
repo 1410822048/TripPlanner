@@ -25,6 +25,7 @@ import { Plane } from 'lucide-react'
 import type { Booking } from '@/types'
 import { airlineBrand } from './brandMeta'
 import { fmtDate, fmtTime } from './dateFormat'
+import BrandBand from './BrandBand'
 
 interface Props {
   booking: Booking
@@ -39,40 +40,24 @@ export default function FlightCard({ booking }: Props) {
 
   return (
     <div className="relative bg-surface overflow-hidden">
-      {/* Brand band */}
-      <div
-        className="flex items-center justify-between px-3 h-7 text-[10.5px] font-bold tracking-[0.05em]"
-        style={{ background: brand.bg, color: brand.fg }}
-      >
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="px-1.5 py-px rounded-sm bg-black/15 text-[10px] tracking-[0.06em] shrink-0">
-            {brand.label}
-          </span>
-          <span className="truncate opacity-90">{booking.provider ?? brand.name}</span>
-        </div>
-        <span className="flex items-center gap-1 shrink-0 opacity-90">
-          <Plane size={11} strokeWidth={2.4} />
-          BOARDING
-        </span>
-      </div>
+      <BrandBand brand={brand} provider={booking.provider}>
+        <Plane size={11} strokeWidth={2.4} />
+        BOARDING
+      </BrandBand>
 
       {/* Route */}
       <div className="px-4 pt-3 pb-2.5">
         <div className="flex items-center gap-2">
-          <div className="flex-1 min-w-0">
-            <div className="text-[18px] font-black text-ink -tracking-[0.5px] leading-none truncate">
-              {booking.origin || '—'}
-            </div>
+          <div className="flex-1 min-w-0 text-[18px] font-black text-ink -tracking-[0.5px] leading-none truncate">
+            {booking.origin || '—'}
           </div>
           <div className="shrink-0 flex items-center text-muted">
             <div className="w-3 h-px bg-border" />
             <Plane size={14} strokeWidth={2} className="mx-1 -rotate-0" style={{ color: brand.bg }} />
             <div className="w-3 h-px bg-border" />
           </div>
-          <div className="flex-1 min-w-0 text-right">
-            <div className="text-[18px] font-black text-ink -tracking-[0.5px] leading-none truncate">
-              {booking.destination || '—'}
-            </div>
+          <div className="flex-1 min-w-0 text-right text-[18px] font-black text-ink -tracking-[0.5px] leading-none truncate">
+            {booking.destination || '—'}
           </div>
         </div>
 

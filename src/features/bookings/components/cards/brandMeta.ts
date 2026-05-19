@@ -65,6 +65,11 @@ const AIRLINES: Brand[] = [
   { label: 'AE',   name: 'Mandarin Airlines',     bg: '#F4A300', fg: '#000', aliases: ['ae', 'mandarin airlines', '華信'] },
   { label: 'GE',   name: 'Tigerair Taiwan',       bg: '#F5821F', fg: '#fff', aliases: ['ge', 'tigerair taiwan', '台灣虎航'] },
   { label: 'HX',   name: 'Hong Kong Airlines',    bg: '#A2272D', fg: '#fff', aliases: ['hx', 'hong kong airlines', '香港航空'] },
+  { label: 'MM',   name: 'Peach Aviation',        bg: '#EA0086', fg: '#fff', aliases: ['mm', 'peach', 'ピーチ', '楽桃', '樂桃', '乐桃'] },
+  { label: 'UO',   name: 'HK Express',            bg: '#B12D58', fg: '#fff', aliases: ['uo', 'hk express', 'hkexpress', '香港快運'] },
+  { label: 'AK',   name: 'AirAsia',               bg: '#ED1C24', fg: '#fff', aliases: ['ak', 'd7', 'airasia', 'air asia', '亞航', '亚航', 'エアアジア'] },
+  { label: 'BC',   name: 'Skymark Airlines',      bg: '#0064C7', fg: '#fff', aliases: ['bc', 'skymark', 'スカイマーク'] },
+  { label: '5J',   name: 'Cebu Pacific',          bg: '#FFC72C', fg: '#000', aliases: ['5j', 'cebu pacific', 'cebupacific'] },
 ]
 
 const HOTELS: Brand[] = [
@@ -93,31 +98,68 @@ const HOTELS: Brand[] = [
   { label: 'Hoshino',    name: 'Hoshino Resorts',  bg: '#2A4D44', fg: '#fff', aliases: ['hoshino', 'hoshinoya', '星野', '星のや'] },
   { label: 'Tokyu',      name: 'Tokyu Stay',       bg: '#E50012', fg: '#fff', aliases: ['tokyu stay', '東急ステイ'] },
   { label: 'Prince',     name: 'Prince Hotels',    bg: '#1E3A5F', fg: '#fff', aliases: ['prince hotel', 'プリンスホテル'] },
+  { label: 'Wyndham',    name: 'Wyndham',          bg: '#214A77', fg: '#fff', aliases: ['wyndham', 'days inn', 'ramada', 'super 8', 'super8', 'howard johnson', 'tryp'] },
+  { label: 'Choice',     name: 'Choice Hotels',    bg: '#FF8200', fg: '#fff', aliases: ['choice hotels', 'comfort inn', 'quality inn', 'sleep inn', 'cambria', 'clarion'] },
+  { label: 'Regent',     name: 'Regent / Silks',   bg: '#0E0E0E', fg: '#C9A86F', aliases: ['regent', 'silks place', 'silks club', '晶華', '麗晶', '丽晶', 'formosa regent'] },
+  { label: 'Mitsui',     name: 'Mitsui Garden',    bg: '#008542', fg: '#fff', aliases: ['mitsui garden', 'mitsui-garden', '三井ガーデン', '三井花園'] },
+  { label: 'Granvia',    name: 'Hotel Granvia',    bg: '#2D5F4D', fg: '#fff', aliases: ['hotel granvia', 'granvia', 'グランヴィア'] },
+  { label: '雲品',        name: 'Fleur Group',      bg: '#6B3A2A', fg: '#fff', aliases: ['fleur de chine', 'the lalu', '雲品', '雲朗', '云品', '云朗', '日月行館'] },
 ]
 
 const RAIL_OPERATORS: Brand[] = [
   { label: 'JR East',  name: 'JR East',  bg: '#008559', fg: '#fff', aliases: ['jr east', 'jr 東日本', 'jr東日本'] },
   { label: 'JR West',  name: 'JR West',  bg: '#0072BC', fg: '#fff', aliases: ['jr west', 'jr 西日本', 'jr西日本'] },
   { label: 'JR Tokai', name: 'JR Tokai', bg: '#F77F00', fg: '#fff', aliases: ['jr tokai', 'jr central', 'jr 東海', 'jr東海'] },
-  { label: 'JR Kyushu',name: 'JR Kyushu',bg: '#E60012', fg: '#fff', aliases: ['jr kyushu', 'jr 九州', 'jr九州'] },
-  { label: 'JR',       name: 'JR Group', bg: '#0E7C49', fg: '#fff', aliases: ['jr', 'japan rail', 'japan railways'] },
-  { label: 'Keikyu',   name: 'Keikyu',   bg: '#E60012', fg: '#fff', aliases: ['keikyu', '京急'] },
-  { label: 'Keisei',   name: 'Keisei',   bg: '#005BAC', fg: '#fff', aliases: ['keisei', '京成'] },
-  { label: 'TRA',      name: 'Taiwan Rail', bg: '#0E2A56', fg: '#fff', aliases: ['tra', 'taiwan rail', '台鐵', '臺鐵'] },
-  { label: 'THSR',     name: 'Taiwan HSR', bg: '#F36F21', fg: '#fff', aliases: ['thsr', 'taiwan high speed', '高鐵', '台灣高鐵'] },
-  { label: 'KTX',      name: 'KTX',      bg: '#003478', fg: '#fff', aliases: ['ktx', 'korail', '韓國高鐵'] },
-  { label: 'Eurostar', name: 'Eurostar', bg: '#FFD800', fg: '#000', aliases: ['eurostar'] },
+  { label: 'JR Kyushu',  name: 'JR Kyushu',     bg: '#E60012', fg: '#fff', aliases: ['jr kyushu', 'jr 九州', 'jr九州'] },
+  { label: 'JR Hokkaido',name: 'JR Hokkaido',   bg: '#00A1E4', fg: '#fff', aliases: ['jr hokkaido', 'jr 北海道', 'jr北海道'] },
+  { label: 'JR Shikoku', name: 'JR Shikoku',    bg: '#1F66B5', fg: '#fff', aliases: ['jr shikoku', 'jr 四国', 'jr四国'] },
+  { label: 'JR',         name: 'JR Group',      bg: '#0E7C49', fg: '#fff', aliases: ['jr', 'japan rail', 'japan railways'] },
+  { label: 'Keikyu',     name: 'Keikyu',        bg: '#E60012', fg: '#fff', aliases: ['keikyu', '京急'] },
+  { label: 'Keisei',     name: 'Keisei',        bg: '#005BAC', fg: '#fff', aliases: ['keisei', '京成'] },
+  { label: 'Tokyo Metro',name: 'Tokyo Metro',   bg: '#009BBF', fg: '#fff', aliases: ['tokyo metro', 'tokyometro', '東京メトロ', '東京地下鉄'] },
+  { label: 'Toei',       name: 'Toei Subway',   bg: '#006E40', fg: '#fff', aliases: ['toei', '都営', '都営地下鉄', '都営線'] },
+  { label: 'Osaka Metro',name: 'Osaka Metro',   bg: '#E60012', fg: '#fff', aliases: ['osaka metro', 'osakametro', '大阪メトロ', '大阪地下鉄'] },
+  { label: 'Kintetsu',   name: 'Kintetsu',      bg: '#DC0019', fg: '#fff', aliases: ['kintetsu', '近鉄', '近畿日本鉄道'] },
+  { label: 'Hankyu',     name: 'Hankyu',        bg: '#6E1418', fg: '#fff', aliases: ['hankyu', '阪急'] },
+  { label: 'Hanshin',    name: 'Hanshin',       bg: '#FFCD00', fg: '#000', aliases: ['hanshin', '阪神'] },
+  { label: 'Keihan',     name: 'Keihan',        bg: '#2F5B3E', fg: '#fff', aliases: ['keihan', '京阪'] },
+  { label: '北捷',        name: 'Taipei MRT',    bg: '#0070BD', fg: '#fff', aliases: ['taipei mrt', 'tpe mrt', '台北捷運', '北捷', '臺北捷運'] },
+  { label: 'MTR',        name: 'Hong Kong MTR', bg: '#C8102E', fg: '#fff', aliases: ['mtr', '港鐵', '港铁', 'hong kong mtr'] },
+  { label: 'TRA',        name: 'Taiwan Rail',   bg: '#0E2A56', fg: '#fff', aliases: ['tra', 'taiwan rail', '台鐵', '臺鐵'] },
+  { label: 'THSR',       name: 'Taiwan HSR',    bg: '#F36F21', fg: '#fff', aliases: ['thsr', 'taiwan high speed', '高鐵', '台灣高鐵'] },
+  { label: 'KTX',        name: 'KTX',           bg: '#003478', fg: '#fff', aliases: ['ktx', 'korail', '韓國高鐵'] },
+  { label: 'Eurostar',   name: 'Eurostar',      bg: '#FFD800', fg: '#000', aliases: ['eurostar'] },
 ]
+
+// Per-table memoization cache. Inside a single trip / page session the
+// same `provider` string repeats across many bookings; without the cache
+// every list re-render re-scans the alias table (60+ rows x 2-5 aliases
+// each = a few hundred substring checks per row). WeakMap keys by the
+// table identity so module-level cache is auto-namespaced per type.
+const matchCache = new WeakMap<Brand[], Map<string, Brand | null>>()
 
 function matchBrand(provider: string | undefined, table: Brand[]): Brand | null {
   if (!provider) return null
   const needle = provider.toLowerCase().trim()
   if (!needle) return null
+
+  let cache = matchCache.get(table)
+  if (!cache) {
+    cache = new Map()
+    matchCache.set(table, cache)
+  }
+  const cached = cache.get(needle)
+  if (cached !== undefined) return cached
+
   for (const b of table) {
     for (const a of b.aliases) {
-      if (needle.includes(a)) return b
+      if (needle.includes(a)) {
+        cache.set(needle, b)
+        return b
+      }
     }
   }
+  cache.set(needle, null)
   return null
 }
 

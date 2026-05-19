@@ -35,10 +35,8 @@ export default function GenericCard({ booking, whenLabel, onPreview }: Props) {
   const hasMeta  = subtitle.length > 0 || whenLabel.length > 0 || !!address
   const hasPdf   = !isImage && !!booking.attachment?.fileUrl
 
-  // Tap on PDF icon must NOT also fire the row's tap-to-edit. stopPropagation
-  // peels the click off the parent button (the swipeable foreground div in
-  // SwipeableBookingItem); pointerdown stop prevents the swipe gesture from
-  // arming when the user reaches for the PDF icon.
+  // Both handlers stop propagation so the PDF tap doesn't also arm the
+  // outer swipe gesture or fire the row's tap-to-edit.
   function handlePreviewTap(e: React.MouseEvent) {
     e.stopPropagation()
     onPreview()
@@ -49,11 +47,13 @@ export default function GenericCard({ booking, whenLabel, onPreview }: Props) {
 
   return (
     <div className="flex items-center gap-3 px-3 py-2.5 bg-surface">
-      {/* Leading slot — thumbnail OR type emoji. */}
       {showImage ? (
         <img
           src={thumbSrc}
           alt=""
+          width={48}
+          height={48}
+          loading="lazy"
           decoding="async"
           draggable={false}
           className="w-12 h-12 rounded-xl shrink-0 object-cover bg-tile border border-black/5 pointer-events-none"
