@@ -9,6 +9,7 @@
 
 import type { UploadTask, StorageReference, UploadMetadata, StorageError } from 'firebase/storage'
 import { getFirebaseStorage } from '@/services/firebase'
+import { deleteStorageObject } from '@/services/storageDelete'
 import { compressImage } from '@/utils/image'
 import { retry, isTransientStorageError } from '@/utils/retry'
 import type { ExpenseReceipt } from '@/types'
@@ -147,27 +148,14 @@ export async function uploadReceipt(
   return receipt
 }
 
-/** Delete a single Storage object. Swallows "object not found" so
- *  re-runs after a partial failure are safe. */
-async function deleteObjectAt(filePath: string): Promise<void> {
-  const { storage, ref, deleteObject } = await getFirebaseStorage()
-  try {
-    await deleteObject(ref(storage, filePath))
-  } catch (e) {
-    const code = (e as { code?: string }).code
-    if (code === 'storage/object-not-found') return
-    throw e
-  }
-}
-
 /** Delete both variants of a receipt — full + thumb. PDFs only have
- *  a full path; that's still safe (deleteObjectAt tolerates missing). */
+ *  a full path; deleteStorageObject tolerates already-deleted paths. */
 export async function purgeReceipt(existing: {
   path?:      string
   thumbPath?: string
 }): Promise<void> {
   const tasks: Promise<void>[] = []
-  if (existing.path)      tasks.push(deleteObjectAt(existing.path))
-  if (existing.thumbPath) tasks.push(deleteObjectAt(existing.thumbPath))
+  if (existing.path)      tasks.push(deleteStorageObject(existing.path))
+  if (existing.thumbPath) tasks.push(deleteStorageObject(existing.thumbPath))
   await Promise.all(tasks)
 }

@@ -24,7 +24,7 @@ import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
 import { useTripListMutation } from '@/hooks/useTripListMutation'
 import { tempId } from '@/utils/tempId'
 import { auditCreateMock, auditUpdateMock } from '@/utils/audit'
-import type { Booking, CreateBookingInput } from '@/types'
+import type { Booking, BookingAttachment, CreateBookingInput } from '@/types'
 import { MUTATION_ACTION, type MutationOptions } from '@/services/queryClient'
 
 export const bookingKeys = {
@@ -72,7 +72,7 @@ export function useUpdateBooking(tripId: string, options?: MutationOptions) {
     updates:    Partial<CreateBookingInput>
     uid:        string
     attachment: File | null | undefined
-    existing:   { filePath?: string; thumbPath?: string }
+    existing:   BookingAttachment | undefined
   }>({
     tripId,
     keyFactory: bookingKeys.all,
@@ -87,12 +87,12 @@ export function useUpdateBooking(tripId: string, options?: MutationOptions) {
 
 export function useDeleteBooking(tripId: string) {
   return useTripListMutation<Booking, {
-    bookingId: string
-    paths:     { filePath?: string; thumbPath?: string }
+    bookingId:  string
+    attachment: BookingAttachment | undefined
   }>({
     tripId,
     keyFactory: bookingKeys.all,
-    mutate:     ({ bookingId, paths }, { uid }) => deleteBooking(tripId, bookingId, uid, paths),
+    mutate:     ({ bookingId, attachment }, { uid }) => deleteBooking(tripId, bookingId, uid, attachment),
     patch:      (prev, { bookingId }) => prev.filter(b => b.id !== bookingId),
     action:     MUTATION_ACTION.DELETE,
   })

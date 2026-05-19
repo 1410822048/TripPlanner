@@ -11,7 +11,9 @@
 // onPreview without needing to know which card types support attachments.
 import { FileText, MapPin } from 'lucide-react'
 import type { Booking } from '@/types'
-import { bookingDisplayName, bookingSubtitle, BOOKING_TYPE_META } from '../../utils'
+import {
+  attachmentThumb, bookingDisplayName, bookingSubtitle, BOOKING_TYPE_META, isImageAttachment,
+} from '../../utils'
 import { mapsSearchUrl } from '@/utils/maps'
 
 interface Props {
@@ -24,14 +26,14 @@ interface Props {
 }
 
 export default function GenericCard({ booking, whenLabel, onPreview }: Props) {
-  const isImage  = (booking.fileType ?? '').startsWith('image/')
-  const thumbSrc = booking.thumbUrl ?? booking.fileUrl
+  const isImage  = isImageAttachment(booking.attachment)
+  const thumbSrc = attachmentThumb(booking.attachment)
   const showImage = isImage && thumbSrc
   const subtitle = bookingSubtitle(booking)
   const address  = booking.address
   const mapHref  = address ? mapsSearchUrl(address) : null
   const hasMeta  = subtitle.length > 0 || whenLabel.length > 0 || !!address
-  const hasPdf   = !isImage && !!booking.fileUrl
+  const hasPdf   = !isImage && !!booking.attachment?.fileUrl
 
   // Tap on PDF icon must NOT also fire the row's tap-to-edit. stopPropagation
   // peels the click off the parent button (the swipeable foreground div in

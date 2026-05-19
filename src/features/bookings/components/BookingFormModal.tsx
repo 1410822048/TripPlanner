@@ -86,9 +86,9 @@ export default function BookingFormModal({
 }: Props) {
   const { state, setField } = useBookingFormState(editTarget)
   const att = useAttachment({
-    url:  editTarget?.fileUrl  ?? null,
-    path: editTarget?.filePath ?? null,
-    type: editTarget?.fileType ?? null,
+    url:  editTarget?.attachment?.fileUrl  ?? null,
+    path: editTarget?.attachment?.filePath ?? null,
+    type: editTarget?.attachment?.fileType ?? null,
   })
   const [errors,      setErrors]      = useState<Record<string, string>>({})
   const [previewOpen, setPreviewOpen] = useState(false)

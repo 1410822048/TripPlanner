@@ -17,7 +17,7 @@ import { parseListSnapshot } from '@/services/parseListSnapshot'
 import { subscribeToCollection } from '@/services/realtimeQuery'
 import { createTripScopedListServices } from '@/services/tripScopedList'
 import { validateUpdateOrThrow } from '@/services/validateUpdate'
-import { BookingDocSchema, UpdateBookingSchema, type Booking, type CreateBookingInput, type UpdateBookingInput } from '@/types'
+import { BookingDocSchema, UpdateBookingSchema, type Booking, type BookingAttachment, type CreateBookingInput, type UpdateBookingInput } from '@/types'
 import { stripEmpty } from '@/utils/stripEmpty'
 import { auditCreate, auditUpdate } from '@/utils/audit'
 import { getTripMemberIds } from '@/services/tripMemberIds'
@@ -132,7 +132,7 @@ export async function createBooking(
   const checkInTs = checkInToTimestamp(input.checkIn, Timestamp)
   const ref = doc(collection(db, ...P.bookings(tripId)))
 
-  let attachmentMeta: Awaited<ReturnType<typeof uploadAttachment>> | null = null
+  let attachmentMeta: BookingAttachment | null = null
   if (file) {
     try {
       attachmentMeta = await uploadAttachment(tripId, ref.id, file)
@@ -149,13 +149,7 @@ export async function createBooking(
     sortDate:  checkInTs ?? serverTimestamp(),
     memberIds,
   }
-  if (attachmentMeta) {
-    payload.fileUrl   = attachmentMeta.fileUrl
-    payload.filePath  = attachmentMeta.filePath
-    payload.fileType  = attachmentMeta.fileType
-    if (attachmentMeta.thumbUrl)  payload.thumbUrl  = attachmentMeta.thumbUrl
-    if (attachmentMeta.thumbPath) payload.thumbPath = attachmentMeta.thumbPath
-  }
+  if (attachmentMeta) payload.attachment = attachmentMeta
   await setDoc(ref, payload)
   void bumpTripActivity(tripId, 'bookings', createdBy)
   return ref.id
@@ -174,7 +168,7 @@ export async function updateBooking(
   options: {
     uid:        string
     attachment: File | null | undefined
-    existing:   { filePath?: string; thumbPath?: string }
+    existing:   BookingAttachment | undefined
   },
 ): Promise<void> {
   const { uid, attachment, existing } = options
@@ -210,19 +204,10 @@ export async function updateBooking(
 
   if (attachment === null) {
     await purgeAttachments(existing)
-    patch.fileUrl   = deleteField()
-    patch.filePath  = deleteField()
-    patch.thumbUrl  = deleteField()
-    patch.thumbPath = deleteField()
-    patch.fileType  = deleteField()
+    patch.attachment = deleteField()
   } else if (attachment instanceof File) {
     await purgeAttachments(existing)
-    const meta = await uploadAttachment(tripId, bookingId, attachment)
-    patch.fileUrl   = meta.fileUrl
-    patch.filePath  = meta.filePath
-    patch.thumbUrl  = meta.thumbUrl  ?? deleteField()
-    patch.thumbPath = meta.thumbPath ?? deleteField()
-    patch.fileType  = meta.fileType
+    patch.attachment = await uploadAttachment(tripId, bookingId, attachment)
   }
 
   await updateDoc(doc(db, ...P.booking(tripId, bookingId)), patch)
@@ -238,9 +223,9 @@ export async function deleteBooking(
   tripId: string,
   bookingId: string,
   uid: string,
-  paths: { filePath?: string; thumbPath?: string },
+  attachment: BookingAttachment | undefined,
 ): Promise<void> {
-  await purgeAttachments(paths)
+  await purgeAttachments(attachment)
   const { db, doc, deleteDoc } = await getFirebase()
   await deleteDoc(doc(db, ...P.booking(tripId, bookingId)))
   void bumpTripActivity(tripId, 'bookings', uid)

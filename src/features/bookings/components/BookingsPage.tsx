@@ -105,7 +105,7 @@ export default function BookingsPage() {
           updates:          input,
           uid,
           attachment,
-          existing:         { filePath: modal.editTarget.filePath, thumbPath: modal.editTarget.thumbPath },
+          existing:         modal.editTarget.attachment,
         })
       } else {
         await createMut.mutateAsync({
@@ -124,8 +124,8 @@ export default function BookingsPage() {
     swipe.closeAll()
     if (isDemo) { signIn.open(); return }
     await deleteMut.mutateAsync({
-      bookingId: b.id,
-      paths:     { filePath: b.filePath, thumbPath: b.thumbPath },
+      bookingId:  b.id,
+      attachment: b.attachment,
     }).catch(() => {})
   }
 
@@ -138,8 +138,8 @@ export default function BookingsPage() {
     if (isDemo) { modal.close(); signIn.open(); return }
     try {
       await deleteMut.mutateAsync({
-        bookingId: target.id,
-        paths:     { filePath: target.filePath, thumbPath: target.thumbPath },
+        bookingId:  target.id,
+        attachment: target.attachment,
       })
       modal.close()
     } catch { /* hook onError already surfaced the toast */ }
@@ -276,10 +276,10 @@ export default function BookingsPage() {
         reason="予約を保存するには、"
       />
 
-      {previewBooking?.fileUrl && (
+      {previewBooking?.attachment && (
         <AttachmentPreviewModal
-          url={previewBooking.fileUrl}
-          fileType={previewBooking.fileType}
+          url={previewBooking.attachment.fileUrl}
+          fileType={previewBooking.attachment.fileType}
           fileName={bookingDisplayName(previewBooking)}
           onClose={() => setPreviewBooking(null)}
         />

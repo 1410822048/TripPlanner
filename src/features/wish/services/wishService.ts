@@ -12,6 +12,7 @@
 // non-proposer path.
 import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase, getFirebaseStorage } from '@/services/firebase'
+import { deleteStorageObject } from '@/services/storageDelete'
 import { P } from '@/services/paths'
 import { compressImage } from '@/utils/image'
 import { retry, isTransientStorageError } from '@/utils/retry'
@@ -105,18 +106,9 @@ async function uploadWishImage(
 }
 
 async function deleteWishImage(image: WishImage): Promise<void> {
-  const { storage, ref, deleteObject } = await getFirebaseStorage()
-  const tasks: Promise<void>[] = []
-  for (const p of new Set([image.path, image.thumbPath])) {
-    tasks.push(
-      deleteObject(ref(storage, p)).catch(e => {
-        const code = (e as { code?: string }).code
-        if (code === 'storage/object-not-found') return
-        throw e
-      })
-    )
-  }
-  await Promise.all(tasks)
+  // Set() dedupes when fullPath == thumbPath (some shapes had fall-through).
+  const paths = new Set([image.path, image.thumbPath])
+  await Promise.all([...paths].map(deleteStorageObject))
 }
 
 // ─── Write ────────────────────────────────────────────────────────

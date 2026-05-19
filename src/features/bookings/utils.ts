@@ -1,7 +1,20 @@
 // src/features/bookings/utils.ts
 // Shared display helpers — keeps the list, preview modal, and any future
 // booking renderer in lockstep when the schema gains optional fields.
-import type { Booking } from '@/types'
+import type { Booking, BookingAttachment } from '@/types'
+
+/** Preferred thumbnail source: smaller variant if present, otherwise the
+ *  full file. Returns undefined when there's no attachment at all so
+ *  callers can render the type emoji fallback. */
+export function attachmentThumb(att: BookingAttachment | undefined): string | undefined {
+  return att?.thumbUrl ?? att?.fileUrl
+}
+
+/** True when the attachment is renderable as an `<img>`. PDFs and other
+ *  non-image types route through the AttachmentPreviewModal instead. */
+export function isImageAttachment(att: BookingAttachment | undefined): boolean {
+  return (att?.fileType ?? '').startsWith('image/')
+}
 
 /**
  * Per-type display metadata — emoji shown in section headers / fallback

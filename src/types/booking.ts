@@ -6,6 +6,28 @@ import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
 import { TimestampSchema } from './_shared'
 
+/**
+ * Attachment metadata for a booking — single optional file (confirmation
+ * PDF / hotel photo / etc.) with an optional smaller thumbnail variant.
+ * Mirrors the Wish entity's `image: WishImage` shape.
+ */
+export interface BookingAttachment {
+  /** Public download URL — full-size, used by the preview modal. */
+  fileUrl:    string
+  /**
+   * Storage object path (`trips/{tripId}/bookings/{bookingId}/file.webp`).
+   * Stored alongside fileUrl so we can deleteObject() without parsing the
+   * URL (the path is encoded into download URLs but parsing is fragile).
+   */
+  filePath:   string
+  /** Mime type at upload time — drives icon vs <img> rendering in the UI. */
+  fileType:   string
+  /** Smaller variant (192px @ q=0.7 WebP) used by the list row thumbnail.
+   *  Optional: PDFs (and other non-image attachments) have no thumbnail. */
+  thumbUrl?:  string
+  thumbPath?: string
+}
+
 // trips/{tripId}/bookings/{bookingId}
 export interface Booking {
   id: string
@@ -52,23 +74,8 @@ export interface Booking {
    * resource.data.memberIds` — same-doc check, no cross-document lag.
    */
   memberIds: string[]
-  /** Public download URL — full-size, used by the preview modal. */
-  fileUrl?: string
-  /**
-   * Storage object path (`trips/{tripId}/bookings/{bookingId}/file.webp`).
-   * Stored alongside fileUrl so we can deleteObject() without parsing the
-   * URL (the path is encoded into download URLs but parsing is fragile).
-   */
-  filePath?: string
-  /**
-   * Smaller variant (192px @ q=0.7 WebP) used by the list row thumbnail.
-   * Falls back to fileUrl when missing (older bookings created before
-   * thumbnail support, or non-image attachments).
-   */
-  thumbUrl?:  string
-  thumbPath?: string
-  /** Mime type at upload time — drives icon vs <img> rendering in the UI. */
-  fileType?: string
+  /** Optional attached file — see BookingAttachment for shape. */
+  attachment?: BookingAttachment
   /** Free-form address used as a Google Maps search query. Most useful
    *  for hotels / venues where the user wants a one-tap deep link to
    *  the location; transport types already convey origin/destination
@@ -86,6 +93,14 @@ export interface Booking {
 /**
  * `type` 限制在現行支援集合，未來擴充時需同步擴表。
  */
+export const BookingAttachmentSchema = z.object({
+  fileUrl:   z.string(),
+  filePath:  z.string(),
+  fileType:  z.string(),
+  thumbUrl:  z.string().optional(),
+  thumbPath: z.string().optional(),
+})
+
 export const BookingDocSchema = z.object({
   tripId:           z.string(),
   type:             z.enum(['flight', 'hotel', 'train', 'bus', 'other']),
@@ -101,11 +116,7 @@ export const BookingDocSchema = z.object({
   provider:         z.string().optional(),
   checkIn:          z.string().optional(),
   checkOut:         z.string().optional(),
-  fileUrl:          z.string().optional(),
-  filePath:         z.string().optional(),
-  thumbUrl:         z.string().optional(),
-  thumbPath:        z.string().optional(),
-  fileType:         z.string().optional(),
+  attachment:       BookingAttachmentSchema.optional(),
   address:          z.string().optional(),
   note:             z.string().optional(),
   createdBy:        z.string(),

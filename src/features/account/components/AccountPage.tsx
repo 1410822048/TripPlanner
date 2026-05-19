@@ -38,6 +38,7 @@ import { StackedEmojiPreview, StackedImagePreview, StackedAvatarPreview } from '
 import { useAuth } from '@/hooks/useAuth'
 import { useAllTripMembers } from '@/features/members/hooks/useAllTripMembers'
 import { useMyHotelBookings } from '@/features/bookings/hooks/useBookings'
+import { attachmentThumb } from '@/features/bookings/utils'
 import { memberToTripMember } from '@/features/members/utils'
 import { useTripStore } from '@/store/tripStore'
 import { toast } from '@/shared/toast'
@@ -96,7 +97,7 @@ export default function AccountPage() {
 
   const lodgingThumbs: string[] = []
   for (const b of hotelBookings ?? []) {
-    const url = b.thumbUrl ?? b.fileUrl
+    const url = attachmentThumb(b.attachment)
     if (url) lodgingThumbs.push(url)
     if (lodgingThumbs.length === 3) break
   }

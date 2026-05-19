@@ -14,6 +14,7 @@ import { useNavigate } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { useUid } from '@/hooks/useAuth'
 import { useMyHotelBookings } from '../hooks/useBookings'
+import { attachmentThumb } from '../utils'
 import LoadingText from '@/components/ui/LoadingText'
 import type { Booking } from '@/types'
 
@@ -111,11 +112,9 @@ export default function PastLodgingPage() {
 
 function BookingRow({ booking }: { booking: Booking }) {
   const range = formatRange(booking.checkIn, booking.checkOut)
-  // Prefer the compressed thumbnail; fall back to the full attachment
-  // for older bookings created before the M2 thumbnail pipeline (see
-  // types/booking.ts:65). When neither exists, the 🏨 emoji shows as
-  // the bg-tile child — same fallback shape as AccountPage's deck.
-  const thumb = booking.thumbUrl ?? booking.fileUrl
+  // Thumb falls back to full when missing (PDF / pre-thumbnail-pipeline
+  // bookings). When neither exists, the 🏨 emoji shows as bg-tile child.
+  const thumb = attachmentThumb(booking.attachment)
   return (
     <div className="flex items-center gap-3 bg-surface border border-border rounded-[18px] px-3 py-2.5 shadow-[0_2px_10px_rgba(0,0,0,0.05)]">
       <div

@@ -29,6 +29,7 @@ import { hotelBrand } from './brandMeta'
 import { fmtDate, fmtTime } from './dateFormat'
 import ActionChip from '@/components/ui/ActionChip'
 import { mapsSearchUrl } from '@/utils/maps'
+import { attachmentThumb, isImageAttachment } from '../../utils'
 
 interface Props {
   booking: Booking
@@ -46,8 +47,7 @@ function nightsBetween(checkIn: string | undefined, checkOut: string | undefined
 
 export default function HotelCard({ booking }: Props) {
   const brand     = hotelBrand(booking.provider)
-  const isImage   = (booking.fileType ?? '').startsWith('image/')
-  const coverSrc  = isImage ? (booking.thumbUrl ?? booking.fileUrl) : undefined
+  const coverSrc  = isImageAttachment(booking.attachment) ? attachmentThumb(booking.attachment) : undefined
   const nights    = nightsBetween(booking.checkIn, booking.checkOut)
   const inDate    = fmtDate(booking.checkIn)
   const inTime    = fmtTime(booking.checkIn)

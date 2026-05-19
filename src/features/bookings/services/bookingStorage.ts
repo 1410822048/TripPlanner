@@ -4,6 +4,8 @@
 // mixed concerns. Service-layer logic stays in bookingService; the
 // "talk to Firebase Storage" code lives here.
 import { getFirebaseStorage } from '@/services/firebase'
+import { deleteStorageObject } from '@/services/storageDelete'
+import type { BookingAttachment } from '@/types'
 import { compressImage } from '@/utils/image'
 import { retry, isTransientStorageError } from '@/utils/retry'
 
@@ -18,17 +20,9 @@ function extForMime(mime: string): string {
   return 'bin'
 }
 
-export interface UploadResult {
-  fileUrl:    string
-  filePath:   string
-  thumbUrl?:  string
-  thumbPath?: string
-  fileType:   string
-}
-
 /**
  * Upload an attachment + (when applicable) its thumbnail variant. Returns
- * the URLs and paths so the caller can persist them on the booking doc.
+ * a `BookingAttachment` ready to assign directly to the booking doc.
  *
  * For images: full-size (1920px) and a 192px thumb are uploaded in
  * parallel. For PDFs / HEIC pass-throughs: only the full file is uploaded
@@ -43,7 +37,7 @@ export async function uploadAttachment(
   tripId: string,
   bookingId: string,
   file: File,
-): Promise<UploadResult> {
+): Promise<BookingAttachment> {
   const { full, thumb } = await compressImage(file)
   const folder = `trips/${tripId}/bookings/${bookingId}`
   const filePath  = `${folder}/file.${extForMime(full.type)}`
@@ -70,32 +64,15 @@ export async function uploadAttachment(
 }
 
 /**
- * Delete a Storage object by path. Swallows "object not found" — the doc
- * may reference a path that's already been cleaned up by a prior failed
- * attempt, and the caller cares only about the post-condition.
- */
-async function deleteAttachment(filePath: string): Promise<void> {
-  const { storage, ref, deleteObject } = await getFirebaseStorage()
-  try {
-    await deleteObject(ref(storage, filePath))
-  } catch (e) {
-    const code = (e as { code?: string }).code
-    if (code === 'storage/object-not-found') return
-    throw e
-  }
-}
-
-/**
  * Delete the full + thumb storage objects for an existing attachment.
- * Either path may be missing (PDF has no thumb; older bookings have no
- * thumb at all) — deleteAttachment tolerates that.
+ * Thumb path may be missing on PDFs — deleteStorageObject tolerates that
+ * along with already-deleted objects.
  */
-export async function purgeAttachments(existing: {
-  filePath?: string
-  thumbPath?: string
-}): Promise<void> {
-  const tasks: Promise<void>[] = []
-  if (existing.filePath)  tasks.push(deleteAttachment(existing.filePath))
-  if (existing.thumbPath) tasks.push(deleteAttachment(existing.thumbPath))
+export async function purgeAttachments(
+  existing: BookingAttachment | undefined,
+): Promise<void> {
+  if (!existing) return
+  const tasks: Promise<void>[] = [deleteStorageObject(existing.filePath)]
+  if (existing.thumbPath) tasks.push(deleteStorageObject(existing.thumbPath))
   await Promise.all(tasks)
 }
