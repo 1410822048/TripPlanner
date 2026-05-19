@@ -126,7 +126,10 @@ export async function listDocNames(
   let pageToken: string | undefined
   do {
     const url = new URL(fullName(projectId, collection))
-    url.searchParams.set('pageSize', '300')
+    // 1000 is Firestore REST's documented max — same single round-trip
+    // covers the largest trip we'd realistically see (cascades always
+    // run on a single trip's subcollections, never collection-group).
+    url.searchParams.set('pageSize', '1000')
     // Only document names needed — `mask.fieldPaths` empty would still
     // return doc bodies. We accept the body cost; collections under a
     // trip stay small (< 200) so the overhead is negligible vs. doing

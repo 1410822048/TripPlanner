@@ -26,6 +26,18 @@ interface CachedToken {
 }
 let cached: CachedToken | null = null
 
+// Parsed-JSON cache — same env string per instance, no need to
+// JSON.parse on every getAdminToken / getProjectId call. Keyed by
+// string identity to stay correct if a future caller swaps the
+// service account (e.g. rotation).
+let saCache: { json: string; parsed: ServiceAccount } | null = null
+function parseServiceAccount(json: string): ServiceAccount {
+  if (saCache && saCache.json === json) return saCache.parsed
+  const parsed = JSON.parse(json) as ServiceAccount
+  saCache = { json, parsed }
+  return parsed
+}
+
 /** Returns a Google OAuth 2.0 access token scoped for Firestore admin
  *  access. Reuses an in-process cache until ~60s before expiry. */
 export async function getAdminToken(serviceAccountJson: string): Promise<string> {
@@ -34,7 +46,7 @@ export async function getAdminToken(serviceAccountJson: string): Promise<string>
     return cached.accessToken
   }
 
-  const sa = JSON.parse(serviceAccountJson) as ServiceAccount
+  const sa = parseServiceAccount(serviceAccountJson)
   const iat = Math.floor(now / 1000)
   const exp = iat + 3600  // 1h is the max Google accepts
 
@@ -76,5 +88,13 @@ export async function getAdminToken(serviceAccountJson: string): Promise<string>
  *  the JWT signing flow. project_id keeps us from hard-coding a worker
  *  env var that already lives in the JSON. */
 export function getProjectId(serviceAccountJson: string): string {
-  return (JSON.parse(serviceAccountJson) as ServiceAccount).project_id
+  return parseServiceAccount(serviceAccountJson).project_id
+}
+
+/** Drop the cached OAuth token. Call when a downstream Firestore REST
+ *  call returns 401 — the cached token is presumed bad (e.g. the
+ *  service account key was rotated mid-cache, or Google revoked it).
+ *  Next getAdminToken() call mints fresh. */
+export function invalidateAdminToken(): void {
+  cached = null
 }

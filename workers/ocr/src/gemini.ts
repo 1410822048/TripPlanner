@@ -94,6 +94,11 @@ export async function extractReceiptItems(
   const t0 = Date.now()
   console.log(`[gemini] request: model=${MODEL} mime=${mimeType} imgBytes≈${Math.round(imageBase64.length * 0.75)} currency=${currency ?? 'auto'}`)
 
+  // Explicit subrequest timeout. Workers don't enforce a per-subrequest
+  // budget — without this, a hung Gemini call rides the whole 30s wall-
+  // time until the platform kills the worker, producing a generic
+  // failure. 45s is well under Cloudflare's wall-time budget and matches
+  // the client's 60s patience window.
   let res: Response
   try {
     res = await fetch(ENDPOINT, {
@@ -102,11 +107,20 @@ export async function extractReceiptItems(
         'Content-Type':   'application/json',
         'x-goog-api-key': apiKey,
       },
-      body: JSON.stringify(body),
+      body:   JSON.stringify(body),
+      signal: AbortSignal.timeout(45_000),
     })
   } catch (e) {
-    console.error(`[gemini] network error: ${(e as Error).message}`)
-    throw new GeminiError(`Upstream network error: ${(e as Error).message}`, 502)
+    const err = e as Error
+    // AbortSignal.timeout fires with name='TimeoutError' (DOMException);
+    // distinguish so the client / logs can act on it (retry-worthy vs
+    // upstream-network-flake).
+    if (err.name === 'TimeoutError') {
+      console.error(`[gemini] timeout after 45s`)
+      throw new GeminiError('Upstream timeout after 45s', 504)
+    }
+    console.error(`[gemini] network error: ${err.message}`)
+    throw new GeminiError(`Upstream network error: ${err.message}`, 502)
   }
 
   const elapsed = Date.now() - t0
@@ -117,6 +131,18 @@ export async function extractReceiptItems(
     // Log the truncated detail body — invaluable for diagnosing
     // "your quota is exceeded" / "model not found" / "safety block".
     console.error(`[gemini] error body (truncated): ${detail.slice(0, 500)}`)
+    // 401/403 from Gemini almost always mean OUR GEMINI_API_KEY is bad
+    // (expired, revoked, or scoped wrong) or the project lost quota
+    // grant. Emit a distinct log line so this jumps out of wrangler tail
+    // — past incidents went unnoticed for hours because the generic
+    // 502 mask buried the root cause. Client still receives 502 (we
+    // don't leak our auth state through HTTP status to callers).
+    if (res.status === 401 || res.status === 403) {
+      console.error(
+        `[gemini] OPERATOR ATTENTION: Gemini returned ${res.status} — ` +
+        `check GEMINI_API_KEY secret + Google AI quota / project enablement`,
+      )
+    }
     throw new GeminiError(
       `Gemini ${res.status}: ${detail.slice(0, 200)}`,
       res.status === 429 ? 429 : 502,

@@ -26,7 +26,7 @@
 // just-committed update — switching to idempotent redundancy
 // eliminates that class of bug entirely.
 import { z }                                from 'zod'
-import { getAdminToken, getProjectId }      from './admin'
+import { getAdminToken, getProjectId, invalidateAdminToken } from './admin'
 import {
   docExists,
   getDocMemberIds,
@@ -35,6 +35,7 @@ import {
   arrayUnionMembersOnDoc,
   buildDocName,
 } from './firestore'
+import { mapWithConcurrency }                from './concurrency'
 
 export const CascadeRequestSchema = z.object({
   tripId:    z.string().min(1).max(60),
@@ -60,7 +61,13 @@ export class CascadeError extends Error {
 }
 
 /** Drive the cascade. Throws CascadeError(status, msg) for the
- *  index.ts handler to translate into an HTTP response. */
+ *  index.ts handler to translate into an HTTP response.
+ *
+ *  Retries once on 401 from Firestore: if our cached OAuth token was
+ *  revoked mid-cache (e.g. service account key rotation), the first
+ *  attempt fails with 401 → invalidate cache → retry with freshly
+ *  minted token. All writes downstream are arrayUnion (idempotent)
+ *  so retry-from-scratch is safe. */
 export async function cascadeMemberAdd(
   callerUid:           string,
   req:                 CascadeRequest,
@@ -68,11 +75,40 @@ export async function cascadeMemberAdd(
 ): Promise<{ updatedDocs: number }> {
   // Anti-spoofing: the bearer token's uid must match the memberUid
   // they're cascading for. Otherwise A could grant B access to a
-  // trip A doesn't even belong to.
+  // trip A doesn't even belong to. Checked outside the retry loop —
+  // it's an input-validation failure, not a transient one.
   if (callerUid !== req.memberUid) {
     throw new CascadeError(403, 'caller uid does not match memberUid')
   }
 
+  return withTokenRetry(() => runCascade(req, serviceAccountJson))
+}
+
+/** Run `fn` once. If it throws an error whose message looks like a
+ *  Firestore REST 401 (the helpers in firestore.ts format as `... → 401:
+ *  ...`), invalidate the cached admin token and retry exactly once.
+ *
+ *  Exported for unit testing — the retry policy is logic-only (no
+ *  network) and is easier to verify directly than through the full
+ *  cascade flow. */
+export async function withTokenRetry<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn()
+  } catch (e) {
+    const msg = (e as Error).message ?? ''
+    if (msg.includes(' -> 401') || msg.includes(' → 401')) {
+      console.warn('[cascade] firestore returned 401; invalidating cached admin token and retrying once')
+      invalidateAdminToken()
+      return await fn()
+    }
+    throw e
+  }
+}
+
+async function runCascade(
+  req:                CascadeRequest,
+  serviceAccountJson: string,
+): Promise<{ updatedDocs: number }> {
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
 
@@ -85,23 +121,19 @@ export async function cascadeMemberAdd(
     throw new CascadeError(403, 'member doc does not exist — accept invite first')
   }
 
-  // Collect every doc that needs memberIds += uid:
-  //   - each /trips/{tripId}/<sub>/* doc
-  //   - the trip doc itself
-  // The trip doc is INCLUDED even though the client also writes it
-  // (idempotent arrayUnion) so the invariant is established
-  // unconditionally — if the client's write somehow failed silently,
-  // the worker still completes the cascade and the invitee has
-  // consistent access.
-  const docNames: string[] = []
-  for (const sub of TRIP_SUBCOLLECTIONS) {
-    const names = await listDocNames(
-      accessToken,
-      projectId,
-      `trips/${req.tripId}/${sub}`,
-    )
-    docNames.push(...names)
-  }
+  // Collect every doc that needs memberIds += uid: each /trips/{tripId}/<sub>/*
+  // doc plus the trip doc itself. The trip doc is INCLUDED even though the
+  // client also writes it (idempotent arrayUnion) — if the client's write
+  // silently failed, the worker still establishes the invariant.
+  //
+  // Concurrency cap at 3: Workers allows 6 simultaneous open connections,
+  // and listDocNames paginates internally. Running 6 listDocNames in
+  // parallel exhausts the pool so pagination subrequests serialize behind
+  // them; 3 leaves headroom for pagination + the trailing commit.
+  const lists = await mapWithConcurrency(TRIP_SUBCOLLECTIONS, 3, sub =>
+    listDocNames(accessToken, projectId, `trips/${req.tripId}/${sub}`),
+  )
+  const docNames: string[] = lists.flat()
   docNames.push(buildDocName(projectId, `trips/${req.tripId}`))
 
   // Single commit per 500-doc chunk; idempotent on re-run via
