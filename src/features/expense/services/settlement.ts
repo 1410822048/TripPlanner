@@ -46,18 +46,25 @@ export interface Settlement {
 }
 
 /**
- * 一筆 settlement 中無法對應到既存債務的金額。
- * 兩種來源:
+ * 一筆 settlement 中無法對應到既存債務的剩餘金額。
+ * 兩種來源(目前無法可靠區分,需 expense soft-delete 才能 phase-2 完整分類):
  *   1. settlement 金額超過該 pair 的天然債務(overpayment)
  *   2. 對應的 expense 已被刪除(expense deleted after settlement)
- * 兩者事後看起來一樣 —— 都是 settled > gross。Phase 2 可加 chronological
- * replay 區分原因,目前只追蹤金額。
+ *
+ * 每一筆 leftover > 0 的 settlement 各自獨立一個 entry,並夾帶
+ * `settlementId` 讓 UI 能精準指向「就是這筆要刪」。
+ *
+ * 順序穩定性:settlements 在算法內**按 `createdAt` 排序後處理**,所以
+ * 早的先消化 gross、晚的承擔 leftover。沒這層排序的話,Firestore
+ * 回傳順序左右歸因,跨頁 reload 結果會跳。
  */
 export interface OrphanSettlement {
-  fromUserId: string
-  toUserId:   string
-  /** 累積該 pair 上所有 unmatched 金額。 */
-  amount: number
+  fromUserId:   string
+  toUserId:     string
+  /** 這筆 settlement 自己的 leftover(非 pair 累積)。 */
+  amount:       number
+  /** 對應的 SettlementRecord.id,UI 用來一鍵刪除這筆 orphan。 */
+  settlementId: string
 }
 
 export interface BalanceResult {
@@ -184,10 +191,21 @@ export function computeBalancesFull(
 
   // Step 2: settlements cap at gross per pair. 核心不變式:applied ≤ gross。
   // 超額部分變 orphan,不影響 balance — 只供上層 UI 提示使用者。
-  const applied: Record<string, Record<string, number>> = {}
-  const orphanByPair: Record<string, Record<string, number>> = {}
+  //
+  // 處理順序: 按 createdAt 排序後再 fold。讓「早的 settlement 先消化
+  // 可用 gross,晚的承擔 leftover」變成確定性結果。原本走 Firestore
+  // 回傳順序(實質非確定性),per-settlement orphan 歸因會在不同 reload
+  // 之間跳。stable sort:同 ts 的 settlements 維持原 array 順序。
+  const sortedSettlements = [...settlements].sort((a, b) => {
+    const aMs = a.createdAt?.toMillis?.() ?? 0
+    const bMs = b.createdAt?.toMillis?.() ?? 0
+    return aMs - bMs
+  })
 
-  for (const st of settlements) {
+  const applied: Record<string, Record<string, number>> = {}
+  const orphans: OrphanSettlement[] = []
+
+  for (const st of sortedSettlements) {
     if (st.fromUid === st.toUid) continue
     ensure(st.fromUid); ensure(st.toUid)
     const debt = gross[st.fromUid]?.[st.toUid] ?? 0
@@ -196,9 +214,17 @@ export function computeBalancesFull(
     const usable = Math.min(st.amount, Math.max(0, debt - already))
     appliedSlot[st.toUid] = already + usable
     const leftover = st.amount - usable
-    if (leftover > 0) {
-      const orphanSlot = ensureSlot(orphanByPair, st.fromUid)
-      orphanSlot[st.toUid] = (orphanSlot[st.toUid] ?? 0) + leftover
+    if (leftover > EPS) {
+      // Per-settlement entry instead of per-pair sum so UI can target
+      // the exact unmatched record for one-tap delete. Multiple entries
+      // can share a (fromUserId, toUserId) pair if several settlements
+      // on that pair have leftover.
+      orphans.push({
+        fromUserId:   st.fromUid,
+        toUserId:     st.toUid,
+        amount:       leftover,
+        settlementId: st.id,
+      })
     }
   }
 
@@ -241,15 +267,6 @@ export function computeBalancesFull(
       const amount = row[to] ?? 0
       net[from] = (net[from] ?? 0) - amount
       net[to]   = (net[to]   ?? 0) + amount
-    }
-  }
-
-  const orphans: OrphanSettlement[] = []
-  for (const from of Object.keys(orphanByPair)) {
-    const row = orphanByPair[from]!
-    for (const to of Object.keys(row)) {
-      const amount = row[to] ?? 0
-      if (amount > EPS) orphans.push({ fromUserId: from, toUserId: to, amount })
     }
   }
 

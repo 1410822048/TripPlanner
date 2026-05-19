@@ -155,6 +155,8 @@ describe('multiple settlements per pair', () => {
 
   it('once-overshooting last settlement of a chain produces an orphan', () => {
     // m2 owes m1 100. Pays 60, then 50 (total 110, 10 too many).
+    // Chronological processing means the later '_b' settlement bears
+    // the leftover; the earlier '_a' fully consumes 60 of available 100.
     const expenses = [mkExpense('m1', 200, [['m1', 100], ['m2', 100]])]
     const settlements = [
       mkSettlement('m2', 'm1', 60, '_a'),
@@ -164,7 +166,7 @@ describe('multiple settlements per pair', () => {
     expect(balances.find(b => b.memberId === 'm1')!.net).toBe(0)
     expect(balances.find(b => b.memberId === 'm2')!.net).toBe(0)
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amount: 10 },
+      { fromUserId: 'm2', toUserId: 'm1', amount: 10, settlementId: 's_m2_m1_50_b' },
     ])
   })
 })
@@ -233,7 +235,7 @@ describe('orphan settlements', () => {
     const settlements = [mkSettlement('m2', 'm1', 50)]
     const { balances, orphans } = computeBalancesFull(expenses, MEMBERS, settlements)
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amount: 20 },
+      { fromUserId: 'm2', toUserId: 'm1', amount: 20, settlementId: 's_m2_m1_50' },
     ])
     // Critical: the overpayment does NOT flip m1 into a debtor position.
     // Net is at most "0 on this pair" — no reverse-debt creation.
@@ -249,26 +251,86 @@ describe('orphan settlements', () => {
     const settlements = [mkSettlement('m2', 'm1', 50)]
     const { balances, orphans } = computeBalancesFull([], MEMBERS, settlements)
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amount: 50 },
+      { fromUserId: 'm2', toUserId: 'm1', amount: 50, settlementId: 's_m2_m1_50' },
     ])
     for (const b of balances) {
       expect(b.net).toBe(0)
     }
   })
 
-  it('orphans are tracked per pair, not per record', () => {
-    // Two pairs each have a small orphan after delete; both are surfaced.
+  it('one orphan entry per leftover settlement (not per pair)', () => {
+    // Two pairs each have an orphan; we surface one entry per
+    // settlement so the UI can target a specific record for delete.
     const expenses = [mkExpense('m1', 40, [['m1', 20], ['m2', 20]])]
     const settlements = [
       mkSettlement('m2', 'm1', 30),  // m2 owes m1 20, paid 30 → orphan 10
       mkSettlement('m3', 'm1', 15),  // m3 owes m1 nothing → orphan 15
     ]
     const { orphans } = computeBalancesFull(expenses, MEMBERS, settlements)
-    // Sort for stable comparison
     const sorted = [...orphans].sort((a, b) => a.fromUserId.localeCompare(b.fromUserId))
     expect(sorted).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amount: 10 },
-      { fromUserId: 'm3', toUserId: 'm1', amount: 15 },
+      { fromUserId: 'm2', toUserId: 'm1', amount: 10, settlementId: 's_m2_m1_30' },
+      { fromUserId: 'm3', toUserId: 'm1', amount: 15, settlementId: 's_m3_m1_15' },
+    ])
+  })
+
+  it('two settlements on the same pair each with leftover → two orphan entries', () => {
+    // No debt at all; both settlements are fully orphaned. The point
+    // here is we get TWO entries (with their respective settlementIds),
+    // not one aggregated "from m2 to m1, amount 80".
+    const settlements = [
+      mkSettlement('m2', 'm1', 30, '_a'),
+      mkSettlement('m2', 'm1', 50, '_b'),
+    ]
+    const { orphans } = computeBalancesFull([], MEMBERS, settlements)
+    expect(orphans).toEqual([
+      { fromUserId: 'm2', toUserId: 'm1', amount: 30, settlementId: 's_m2_m1_30_a' },
+      { fromUserId: 'm2', toUserId: 'm1', amount: 50, settlementId: 's_m2_m1_50_b' },
+    ])
+  })
+})
+
+// ─── Chronological determinism ────────────────────────────────────
+
+describe('chronological settlement attribution', () => {
+  // Helper for tests that need distinct createdAt values. We spread the
+  // existing MOCK_TIMESTAMP and cast back to Timestamp because TS
+  // doesn't narrow the result of an object spread to the original
+  // branded type — only computeBalancesFull's `toMillis()` call is
+  // sensitive to the value, the rest of the shape is structural.
+  function tsAt(ms: number): typeof TS {
+    return {
+      ...TS,
+      toMillis: () => ms,
+      toDate:   () => new Date(ms),
+      seconds:  Math.floor(ms / 1000),
+    } as unknown as typeof TS
+  }
+
+  it('later settlement bears the orphan when total exceeds gross (chronological cap)', () => {
+    // m2 owes m1 100. Two settlements: 60 (earlier) + 50 (later).
+    // Earlier consumes 60 of available 100; later applies 40 (cap),
+    // leftover 10 → orphan attributed to the LATER settlement, deterministically.
+    const expenses = [mkExpense('m1', 200, [['m1', 100], ['m2', 100]])]
+    const earlier: SettlementRecord = { ...mkSettlement('m2', 'm1', 60, '_early'), createdAt: tsAt(1000) }
+    const later:   SettlementRecord = { ...mkSettlement('m2', 'm1', 50, '_late'),  createdAt: tsAt(2000) }
+    const { orphans } = computeBalancesFull(expenses, MEMBERS, [earlier, later])
+    expect(orphans).toEqual([
+      { fromUserId: 'm2', toUserId: 'm1', amount: 10, settlementId: 's_m2_m1_50_late' },
+    ])
+  })
+
+  it('orphan attribution is invariant to input array order (sorts by createdAt)', () => {
+    // Same data as the previous test, but passed in REVERSE array order.
+    // Because the algorithm sorts by createdAt first, the orphan still
+    // lands on the chronologically-later settlement — Firestore's
+    // arbitrary return order can't shift attribution between page loads.
+    const expenses = [mkExpense('m1', 200, [['m1', 100], ['m2', 100]])]
+    const earlier: SettlementRecord = { ...mkSettlement('m2', 'm1', 60, '_early'), createdAt: tsAt(1000) }
+    const later:   SettlementRecord = { ...mkSettlement('m2', 'm1', 50, '_late'),  createdAt: tsAt(2000) }
+    const { orphans } = computeBalancesFull(expenses, MEMBERS, [later, earlier])
+    expect(orphans).toEqual([
+      { fromUserId: 'm2', toUserId: 'm1', amount: 10, settlementId: 's_m2_m1_50_late' },
     ])
   })
 })
