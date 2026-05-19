@@ -133,7 +133,10 @@ describe('/trips/{tripId}/bookings', () => {
     await assertSucceeds(
       setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b2'), {
         tripId: TRIP_ID, type: 'hotel', title: 'X',
-        memberIds: [EDITOR_UID],
+        // memberIds must exactly equal trip's roster — the anti-injection
+        // guard added 2026-05-19 (memberIdsMatchTrip). Honest clients
+        // read the roster via getTripMemberIds() before writing.
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
         createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
