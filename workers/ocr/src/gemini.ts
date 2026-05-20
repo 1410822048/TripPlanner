@@ -7,13 +7,22 @@
 //   - Workers cold-start cost is proportional to bundle size
 //   - The REST call is 30 lines and stable
 //
-// Model choice: gemini-3-flash-preview — the user picked this. It's the
-// strongest Flash vision model in the Gemini 3 family. Note "preview" =
-// Google reserves the right to change behaviour or shut down; we wrap the
-// model name in a constant so future swap is one line.
+// Model choice: gemini-3.5-flash -- the GA successor to
+// gemini-3-flash-preview (Google I/O 2026, GA from day one with no
+// preview suffix). Compatible API surface (responseJsonSchema,
+// inline_data image input, generateContent endpoint) so the call
+// shape doesn't change. OCR / document extraction quality is
+// measurably stronger on Google's published benchmarks.
+//
+// Free-tier quota / paid pricing are EXTERNAL facts that Google can
+// adjust at any time -- check the current Gemini API pricing &
+// rate-limit pages before assuming the cost/quota of any swap.
+//
+// The model name is wrapped in a constant so future swaps stay a
+// one-line change.
 import { OcrResponseSchema, GEMINI_RESPONSE_SCHEMA, type OcrResponse } from './schema'
 
-const MODEL = 'gemini-3-flash-preview'
+const MODEL = 'gemini-3.5-flash'
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`
 
 // Prompt is intentionally terse — Gemini's structured-output mode does the

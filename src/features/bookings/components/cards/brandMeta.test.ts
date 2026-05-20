@@ -145,6 +145,37 @@ describe('railBrand', () => {
   })
 })
 
+describe('short-alias token-match invariants', () => {
+  // Focused regressions for the rule "short ASCII alias (<= 3) must be
+  // a whole token, never a substring". These cases are the diagnostic
+  // value of the entire isShortAsciiAlias() branch -- if a future change
+  // loosens it back to plain .includes(), these tests catch it.
+
+  test('"BA" alone still matches British Airways (positive whole-token hit)', () => {
+    expect(airlineBrand('BA').label).toBe('BA')
+    expect(airlineBrand('ba').label).toBe('BA')
+  })
+
+  test('"HK Express" does not false-match PR (substring "pr" in "express")', () => {
+    expect(airlineBrand('HK Express').label).toBe('UO')
+  })
+
+  test('"Express Air" with no real match falls back, not PR', () => {
+    // Tokens are ['express', 'air']; alias 'pr' must NOT match because
+    // it is not a whole token (it lives inside 'express').
+    expect(airlineBrand('Express Air').label).toBe('✈')
+  })
+
+  test('hotelBrand("Trip.com") hits Trip.com platform, not any short code', () => {
+    // The airline 'tr' / 'pr' codes don't exist in the hotel table, but
+    // this explicitly locks down that hotelBrand returns the Trip.com
+    // platform Brand (not, say, a fallback or some other entry whose
+    // long alias might collide). Cross-table isolation sanity check.
+    expect(hotelBrand('Trip.com').label).toBe('Trip')
+    expect(hotelBrand('Trip.com').name).toBe('Trip.com')
+  })
+})
+
 describe('cache isolation across tables', () => {
   test('same provider string in different tables returns different brands', () => {
     // "Trip.com" hits the hotel platform; airline table has no such alias
