@@ -4,14 +4,33 @@
 // real airline / hotel logos (would balloon the bundle by 100-300 KB and
 // add a third-party CDN dependency for offline PWA usage).
 //
-// Match strategy: caller passes the raw `booking.provider` string. We
-// case-insensitive-substring-match against each entry's aliases. First
-// hit wins. No match → caller falls back to a neutral palette so the
-// card still looks like a ticket, just without brand identity.
+// Match strategy: caller passes the raw `booking.provider` string,
+// which is lowercased + trimmed into a `needle`. Each entry's aliases
+// are then checked, FIRST hit wins. The matching rule splits by alias
+// length to balance "short IATA codes shouldn't false-match inside
+// longer words" against "long brand names should still match when
+// concatenated":
+//   - Short ASCII (length <= 3, e.g. 'pr', 'tr', 'ba', 'jal', 'mtr'):
+//     must equal a whole ASCII token of the needle. Prevents 'pr'
+//     matching inside 'hk e[xpr]ess' and 'tr' matching inside '[tr]ip'.
+//   - Long ASCII (length > 3, e.g. 'airasia', 'jetstar', 'booking.com'):
+//     substring match. Allows 'AirAsiaX' / 'JetstarAsia' to match even
+//     when concatenated without a boundary.
+//   - Multi-word aliases ('hk express', 'jr east'): substring (already
+//     unambiguous given length).
+//   - CJK aliases ('全日空', '近鉄'): substring (no useful concept of
+//     word boundary against kanji/kana).
+// No match → caller falls back to a neutral palette so the card still
+// looks like a ticket, just without brand identity. See matchBrand()
+// below for the implementation; the test file pins both directions
+// (short-code false-positive AND long-alias substring) as regressions.
 //
 // Adding more entries: append to the relevant array. Aliases should
 // cover (a) the IATA / standard short code, (b) the English name, and
-// (c) the local-language name when commonly used in the region.
+// (c) the local-language name when commonly used in the region. When
+// adding a new SHORT ASCII alias, sanity-check it against other entries'
+// long aliases to make sure substring collisions don't produce a stable
+// false-match (test/brandMeta.test.ts has a few sample cases).
 
 export interface Brand {
   /** Short label rendered as the "logo" chip (e.g. ANA, JAL). */
@@ -138,6 +157,22 @@ const RAIL_OPERATORS: Brand[] = [
 // table identity so module-level cache is auto-namespaced per type.
 const matchCache = new WeakMap<Brand[], Map<string, Brand | null>>()
 
+// Match strategy depends on alias length:
+//   - Short ASCII (length <= 3): MUST be a whole ASCII token. 2-3 char
+//     IATA / hotel codes ('pr', 'tr', 'ba') would otherwise false-match
+//     inside longer words ('hk e[xpr]ess', '[tr]ip.com', '[ba]li').
+//   - Long ASCII (length > 3): substring match. The catalog uses long
+//     forms like 'airasia' or 'jetstar' which legitimately appear
+//     concatenated in user input ('AirAsiaX', 'JetstarAsia') and must
+//     still match. Substring false positives on 4+ char words are rare
+//     enough in provider strings to accept.
+//   - Multi-word or CJK aliases: substring (no useful concept of token
+//     boundary against kanji/kana, and multi-word aliases are already
+//     unambiguous on their own).
+function isShortAsciiAlias(alias: string): boolean {
+  return alias.length <= 3 && /^[a-z0-9]+$/.test(alias)
+}
+
 function matchBrand(provider: string | undefined, table: Brand[]): Brand | null {
   if (!provider) return null
   const needle = provider.toLowerCase().trim()
@@ -151,9 +186,19 @@ function matchBrand(provider: string | undefined, table: Brand[]): Brand | null 
   const cached = cache.get(needle)
   if (cached !== undefined) return cached
 
+  // Extract ASCII alphanumeric runs as discrete tokens. Boundaries are
+  // any non-[a-z0-9] character -- whitespace, punctuation, AND CJK
+  // characters all count, so 'apaホテル' yields ['apa'] and 'jr-east'
+  // yields ['jr', 'east'].
+  const asciiTokens = new Set<string>()
+  for (const m of needle.matchAll(/[a-z0-9]+/g)) {
+    asciiTokens.add(m[0])
+  }
+
   for (const b of table) {
     for (const a of b.aliases) {
-      if (needle.includes(a)) {
+      const hit = isShortAsciiAlias(a) ? asciiTokens.has(a) : needle.includes(a)
+      if (hit) {
         cache.set(needle, b)
         return b
       }
