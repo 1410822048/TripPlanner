@@ -5,7 +5,12 @@ import type { Expense } from '@/types'
 import type { SettlementRecord } from '@/types/settlement'
 import type { TripMember } from '@/features/trips/types'
 import MemberAvatar from '@/components/ui/MemberAvatar'
-import { computeBalancesFull, computeSettlements, type OrphanReason } from '../services/settlement'
+import {
+  computeBalancesFull,
+  computeSettlements,
+  type OrphanReason,
+  type OrphanSettlement,
+} from '../services/settlement'
 import { formatAmount } from '@/utils/currency'
 
 interface Props {
@@ -55,6 +60,10 @@ export default function SettlementSummary({
     acc[o.reason] = (acc[o.reason] ?? 0) + o.amount
     return acc
   }, {})
+  // Per-settlement lookup so each history row can render its own reason
+  // chip without re-walking `orphans`. Map handles the "no orphan" case
+  // by returning undefined.
+  const orphanById = new Map(orphans.map(o => [o.settlementId, o]))
 
   return (
     <div className="px-4 mt-4">
@@ -181,6 +190,7 @@ export default function SettlementSummary({
             uid={uid}
             totalOrphan={totalOrphan}
             orphanByReason={orphanByReason}
+            orphanById={orphanById}
             onDelete={onDeleteSettlement}
           />
         )}
@@ -200,6 +210,19 @@ const ORPHAN_REASON_COPY: Record<OrphanReason, string> = {
   EXPENSE_DELETED: '對應的費用已被刪除。如不需要可從下方刪除這筆清算。',
   MIXED:           '同時包含過度支付與已刪除費用兩種情況。可逐筆檢查並刪除。',
   UNKNOWN:         '找不到對應的費用。如不需要可從下方刪除這筆清算。',
+}
+
+/**
+ * Short Chinese label for the per-row orphan chip. Kept short (2-3
+ * chars) so the chip fits next to the amount + delete button on
+ * narrow screens. Matches the language of ORPHAN_REASON_COPY (繁中)
+ * for consistency; full text is exposed via title for hover.
+ */
+const ORPHAN_REASON_LABEL: Record<OrphanReason, string> = {
+  OVERPAYMENT:     '多付',
+  EXPENSE_DELETED: '已刪除',
+  MIXED:           '混合',
+  UNKNOWN:         '不明',
 }
 
 function orphanReasonExplain(byReason: Partial<Record<OrphanReason, number>>): string {
@@ -223,6 +246,10 @@ interface HistoryProps {
   /** Orphan amount split by reason -- drives reason-specific banner
    *  copy. Missing keys mean 0 for that reason. */
   orphanByReason: Partial<Record<OrphanReason, number>>
+  /** Per-settlement orphan lookup. Each history row uses this to
+   *  render its own reason chip; rows whose id is absent are matched
+   *  (no chip). */
+  orphanById:  Map<string, OrphanSettlement>
   onDelete:    (id: string) => void
 }
 
@@ -236,7 +263,7 @@ interface HistoryProps {
 const DEFAULT_VISIBLE = 3
 
 function SettlementHistory({
-  settlements, memberById, currency, uid, totalOrphan, orphanByReason, onDelete,
+  settlements, memberById, currency, uid, totalOrphan, orphanByReason, orphanById, onDelete,
 }: HistoryProps) {
   const [expanded, setExpanded] = useState(false)
   const visible    = expanded ? settlements : settlements.slice(0, DEFAULT_VISIBLE)
@@ -287,6 +314,7 @@ function SettlementHistory({
               to={to}
               currency={currency}
               canDelete={canDelete}
+              orphan={orphanById.get(s.id)}
               onDelete={() => onDelete(s.id)}
             />
           )
@@ -320,10 +348,14 @@ interface RowProps {
   to:        TripMember
   currency:  string
   canDelete: boolean
+  /** Present when this row's settlement is orphan -- renders an inline
+   *  reason chip between amount and the delete button. Undefined for
+   *  matched settlements. */
+  orphan?:   OrphanSettlement
   onDelete:  () => void
 }
 
-function SettlementRow({ record, from, to, currency, canDelete, onDelete }: RowProps) {
+function SettlementRow({ record, from, to, currency, canDelete, orphan, onDelete }: RowProps) {
   // Two-tap confirm: matches the swipe-to-delete pattern elsewhere in
   // the app — first tap arms the action with a red label, second tap
   // commits. Keeps a single accidental tap from wiping a settlement.
@@ -337,6 +369,17 @@ function SettlementRow({ record, from, to, currency, canDelete, onDelete }: RowP
       <div className="flex-1 min-w-0 text-[11.5px] font-semibold text-ink tabular-nums -tracking-[0.2px]">
         {formatAmount(record.amount, currency)}
       </div>
+      {orphan && (
+        <span
+          aria-label={`未對應 · ${ORPHAN_REASON_LABEL[orphan.reason]} ${formatAmount(orphan.amount, currency)}`}
+          title={ORPHAN_REASON_COPY[orphan.reason]}
+          className="shrink-0 inline-flex items-center gap-0.5 px-1.5 h-5 rounded-full text-[9.5px] font-bold tracking-[0.02em]"
+          style={{ background: '#FFF4E0', color: '#7A4A12', border: '1px solid #F0D49B' }}
+        >
+          <AlertCircle size={9} strokeWidth={2.5} />
+          {ORPHAN_REASON_LABEL[orphan.reason]} {formatAmount(orphan.amount, currency)}
+        </span>
+      )}
       {canDelete && (
         <button
           type="button"
