@@ -15,6 +15,7 @@ import { useTripListMutation } from '@/hooks/useTripListMutation'
 import { tempId } from '@/utils/tempId'
 import { auditCreateMock, auditUpdateMock } from '@/utils/audit'
 import { MUTATION_ACTION } from '@/services/queryClient'
+import { mockTimestampNow } from '@/mocks/utils'
 import type { CreateExpenseInput, Expense } from '@/types'
 
 export const expenseKeys = {
@@ -37,8 +38,10 @@ export function useCreateExpense(tripId: string) {
     // Prepend so the new expense joins the top of the date-desc list,
     // matching where the real row will land once the listener reconciles
     // (server-sorted by date desc + createdAt desc; today's new row goes first).
+    // `deletedAt: null` matches the schema invariant enforced by the
+    // create rule and keeps optimistic cache shape consistent with server.
     patch:      (prev, { input, createdBy }) => [
-      { id: tempId(), tripId, memberIds: [createdBy], ...auditCreateMock(createdBy), ...input },
+      { id: tempId(), tripId, memberIds: [createdBy], deletedAt: null, ...auditCreateMock(createdBy), ...input },
       ...prev,
     ],
     action:     MUTATION_ACTION.CREATE_EXPENSE,
@@ -64,14 +67,16 @@ export function useUpdateExpense(tripId: string) {
 }
 
 export function useDeleteExpense(tripId: string) {
-  return useTripListMutation<Expense, {
-    expenseId: string
-    paths?:    { path?: string; thumbPath?: string }
-  }>({
+  return useTripListMutation<Expense, { expenseId: string }>({
     tripId,
     keyFactory: expenseKeys.all,
-    mutate:     ({ expenseId, paths }, { uid }) => deleteExpense(tripId, expenseId, uid, paths),
-    patch:      (prev, { expenseId }) => prev.filter(e => e.id !== expenseId),
+    mutate:     ({ expenseId }, { uid }) => deleteExpense(tripId, expenseId, uid),
+    // Soft-delete: stamp the row with deletedAt so settlement replay
+    // sees it during the optimistic window. ExpensePage's displayExpenses
+    // filter hides it from the list as if gone; SettlementSummary still
+    // has the full timeline. Listener reconciles to the real timestamp.
+    patch:      (prev, { expenseId }) =>
+      prev.map(e => e.id === expenseId ? { ...e, deletedAt: mockTimestampNow() } : e),
     action:     MUTATION_ACTION.DELETE,
   })
 }

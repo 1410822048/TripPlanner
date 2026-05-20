@@ -66,6 +66,18 @@ export interface Expense {
   memberIds: string[]
   createdAt: Timestamp
   updatedAt: Timestamp
+  /**
+   * Soft-delete tombstone. When present, the expense is considered
+   * deleted by the UI (filtered out of `useExpenses` consumers) but
+   * preserved in the underlying collection so the settlement algorithm
+   * can run chronological replay and classify orphan reasons
+   * (OVERPAYMENT vs EXPENSE_DELETED). See `computeBalancesFull` for
+   * the replay logic.
+   *
+   * Set by `deleteExpense` (the original hard-delete was replaced when
+   * settlement phase-2 shipped). Absent / null on live expenses.
+   */
+  deletedAt?: Timestamp | null
 }
 
 export type ExpenseCategory =
@@ -158,4 +170,7 @@ export const ExpenseDocSchema = z.object({
   memberIds:  z.array(z.string().min(1)).min(1),
   createdAt:  TimestampSchema,
   updatedAt:  TimestampSchema,
+  /** Soft-delete tombstone (settlement phase-2). Nullable + optional so
+   *  legacy expenses without the field still parse cleanly. */
+  deletedAt:  TimestampSchema.nullable().optional(),
 })

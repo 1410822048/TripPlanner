@@ -47,8 +47,12 @@ export default function ExpensePage() {
     ctx.status === 'cloud' ? membersToTripMembers(fbMembers ?? []) :
     []
 
-  // Demo 僅對應 'demo' trip(東京五日間);其他 demo trip 顯示空狀態。
-  const expenses =
+  // `allExpenses` keeps soft-deleted rows (settlement chronological
+  // replay needs them). `expenses` below is the active subset used by
+  // the list / totals / count / aggregation — the default-named one is
+  // the safe one to pass to new aggregators; only SettlementSummary
+  // takes `allExpenses`.
+  const allExpenses =
     ctx.status === 'demo'
       ? (ctx.trip.id === 'demo' ? MOCK_EXPENSES : [])
       : (fbExpenses ?? [])
@@ -62,12 +66,17 @@ export default function ExpensePage() {
   // an in-flight previous mutation would leak its `isPending` into a
   // newly-opened modal, showing "保存中" before the user even taps save.
 
-  // Aggregations on `expenses` — compiler memoises so swipe toggles /
-  // modal open-close don't trigger O(N×categories) re-bucketing.
-  const total = expenses.reduce((s, e) => s + e.amount, 0)
-
+  // Single pass: active list + total + category bucket together.
+  // Compiler memoises; collapses what used to be filter → reduce → for-of.
+  const expenses: Expense[] = []
   const categoryStatsRaw: Partial<Record<ExpenseCategory, number>> = {}
-  for (const e of expenses) categoryStatsRaw[e.category] = (categoryStatsRaw[e.category] ?? 0) + e.amount
+  let total = 0
+  for (const e of allExpenses) {
+    if (e.deletedAt) continue
+    expenses.push(e)
+    total += e.amount
+    categoryStatsRaw[e.category] = (categoryStatsRaw[e.category] ?? 0) + e.amount
+  }
   const categoryStats = (Object.entries(categoryStatsRaw) as [ExpenseCategory, number][])
     .filter(([, v]) => v > 0)
     .sort((a, b) => b[1] - a[1])
@@ -116,10 +125,7 @@ export default function ExpensePage() {
     swipe.closeAll()
     if (isDemo) { signIn.open(); return }
     // Hook onError rolls back the optimistic remove and shows the toast.
-    await deleteMut.mutateAsync({
-      expenseId: e.id,
-      paths:     { path: e.receipt?.path, thumbPath: e.receipt?.thumbPath },
-    }).catch(() => {})
+    await deleteMut.mutateAsync({ expenseId: e.id }).catch(() => {})
   }
 
   return (
@@ -199,7 +205,7 @@ export default function ExpensePage() {
 
       {/* ── SETTLEMENT ─────────────────────────────────────── */}
       <SettlementSummary
-        expenses={expenses}
+        expenses={allExpenses}
         members={members}
         settlements={settlements}
         currency={currency}

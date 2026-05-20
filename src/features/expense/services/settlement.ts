@@ -46,13 +46,34 @@ export interface Settlement {
 }
 
 /**
+ * Reason this settlement is orphan. Classified by chronological replay
+ * over expense create/delete events plus settlements (phase-2 work).
+ *
+ *   OVERPAYMENT     — at settlement.createdAt, the settlement amount
+ *                     already exceeded available debt. Pure case: the
+ *                     full leftover was excess from day one.
+ *   EXPENSE_DELETED — at settlement.createdAt, the settlement fit
+ *                     within available debt. Pure case: orphan exists
+ *                     entirely because a subsequent soft-delete
+ *                     reduced gross after the fact.
+ *   MIXED           — settlement was partly over at recording AND a
+ *                     subsequent delete shrunk what was within. Both
+ *                     causes contribute to the leftover; the per-row
+ *                     amount can't be cleanly attributed to one.
+ *   UNKNOWN         — at settlement.createdAt, no expense was recorded
+ *                     on this pair (gross == 0). Could be true
+ *                     overpayment OR a legacy hard-deleted expense
+ *                     pre-phase-2. We can't distinguish.
+ */
+export type OrphanReason = 'OVERPAYMENT' | 'EXPENSE_DELETED' | 'MIXED' | 'UNKNOWN'
+
+/**
  * 一筆 settlement 中無法對應到既存債務的剩餘金額。
- * 兩種來源(目前無法可靠區分,需 expense soft-delete 才能 phase-2 完整分類):
- *   1. settlement 金額超過該 pair 的天然債務(overpayment)
- *   2. 對應的 expense 已被刪除(expense deleted after settlement)
  *
  * 每一筆 leftover > 0 的 settlement 各自獨立一個 entry,並夾帶
- * `settlementId` 讓 UI 能精準指向「就是這筆要刪」。
+ * `settlementId` 讓 UI 能精準指向「就是這筆要刪」。`reason` 由
+ * `computeBalancesFull` 透過 chronological replay 推算出來 — 詳
+ * `OrphanReason`。
  *
  * 順序穩定性:settlements 在算法內**按 `createdAt` 排序後處理**,所以
  * 早的先消化 gross、晚的承擔 leftover。沒這層排序的話,Firestore
@@ -65,6 +86,9 @@ export interface OrphanSettlement {
   amount:       number
   /** 對應的 SettlementRecord.id,UI 用來一鍵刪除這筆 orphan。 */
   settlementId: string
+  /** Why this settlement is orphan -- drives the reason-specific
+   *  warning banner in SettlementSummary. */
+  reason:       OrphanReason
 }
 
 export interface BalanceResult {
@@ -178,8 +202,14 @@ export function computeBalancesFull(
     slot[to] = (slot[to] ?? 0) + amount
   }
 
-  // Step 1: gross debt + paid/owed display
-  for (const e of expenses) {
+  // Soft-deleted expenses are excluded from paid / owed / gross --
+  // they no longer represent live debt. They ARE kept for the
+  // chronological replay below (buildOrphanReasonMap) which needs
+  // their createdAt + deletedAt timeline to classify orphan reasons.
+  const activeExpenses = expenses.filter(e => !e.deletedAt)
+
+  // Step 1: gross debt + paid/owed display (active expenses only)
+  for (const e of activeExpenses) {
     ensure(e.paidBy)
     paid[e.paidBy] = (paid[e.paidBy] ?? 0) + e.amount
     for (const s of e.splits) {
@@ -201,6 +231,16 @@ export function computeBalancesFull(
     const bMs = b.createdAt?.toMillis?.() ?? 0
     return aMs - bMs
   })
+
+  // Pre-compute per-settlement at-recording state via chronological
+  // replay BEFORE the forward-cap loop. Replay answers "what was the
+  // available debt at this settlement's recording time, and by how
+  // much (if any) did the settlement exceed it then?". Forward-cap
+  // (below) answers "what's the leftover at the current state?".
+  // `classifyOrphan` combines both to decide reason -- including MIXED
+  // when leftover exceeds recording-time overpayment, meaning both
+  // causes contributed.
+  const replayById = buildOrphanReasonMap(expenses, sortedSettlements)
 
   const applied: Record<string, Record<string, number>> = {}
   const orphans: OrphanSettlement[] = []
@@ -224,6 +264,7 @@ export function computeBalancesFull(
         toUserId:     st.toUid,
         amount:       leftover,
         settlementId: st.id,
+        reason:       classifyOrphan(replayById.get(st.id), leftover),
       })
     }
   }
@@ -279,6 +320,115 @@ export function computeBalancesFull(
 
   const participants = ghosts.length === 0 ? members : [...members, ...ghosts]
   return { balances, orphans, participants }
+}
+
+/**
+ * Per-settlement state captured at its recording time by the
+ * chronological replay. Combined with the FINAL leftover (computed
+ * by the main forward-cap loop) to derive each orphan's `reason`.
+ *
+ *   atRecording      'NO_EXPENSE' | 'WITHIN' | 'OVER'
+ *                    NO_EXPENSE — no expense on this pair at recording
+ *                                 (legacy hard-delete OR true never-existed)
+ *                    WITHIN     — settlement fit available debt at recording
+ *                    OVER       — settlement exceeded available debt
+ *   overpayment      amount that exceeded available at recording (≥0).
+ *                    0 when atRecording != 'OVER'.
+ */
+interface SettlementReplayInfo {
+  atRecording: 'NO_EXPENSE' | 'WITHIN' | 'OVER'
+  overpayment: number
+}
+
+/**
+ * Chronological replay over (expense create/delete + settlement) events.
+ * Returns per-settlement replay state used by the main loop to classify
+ * each orphan reason -- including MIXED, when both at-recording
+ * overpayment AND a subsequent soft-delete contributed to the leftover.
+ *
+ * Within the same timestamp: expense_create < expense_delete <
+ * settlement, so a settlement recorded at the same ms as an expense
+ * create sees the expense as already-applied.
+ */
+function buildOrphanReasonMap(
+  expenses:    Expense[],
+  settlements: SettlementRecord[],
+): Map<string, SettlementReplayInfo> {
+  type Event =
+    | { type: 'expense_create'; ts: number; expense: Expense }
+    | { type: 'expense_delete'; ts: number; expense: Expense }
+    | { type: 'settlement';     ts: number; settlement: SettlementRecord }
+
+  const events: Event[] = []
+  for (const e of expenses) {
+    const cMs = e.createdAt?.toMillis?.() ?? 0
+    events.push({ type: 'expense_create', ts: cMs, expense: e })
+    if (e.deletedAt) {
+      const dMs = e.deletedAt.toMillis?.() ?? 0
+      events.push({ type: 'expense_delete', ts: dMs, expense: e })
+    }
+  }
+  for (const st of settlements) {
+    const stMs = st.createdAt?.toMillis?.() ?? 0
+    events.push({ type: 'settlement', ts: stMs, settlement: st })
+  }
+  const TYPE_ORDER: Record<Event['type'], number> = {
+    expense_create: 0, expense_delete: 1, settlement: 2,
+  }
+  events.sort((a, b) => a.ts - b.ts || TYPE_ORDER[a.type] - TYPE_ORDER[b.type])
+
+  const pairGrossT:   Record<string, Record<string, number>> = {}
+  const pairAppliedT: Record<string, Record<string, number>> = {}
+  const out = new Map<string, SettlementReplayInfo>()
+
+  for (const ev of events) {
+    if (ev.type === 'expense_create' || ev.type === 'expense_delete') {
+      const e    = ev.expense
+      const sign = ev.type === 'expense_create' ? +1 : -1
+      for (const split of e.splits) {
+        if (split.memberId === e.paidBy) continue
+        const slot = ensureSlot(pairGrossT, split.memberId)
+        slot[e.paidBy] = (slot[e.paidBy] ?? 0) + sign * split.amount
+      }
+      continue
+    }
+    const st = ev.settlement
+    if (st.fromUid === st.toUid) continue
+    const grossT     = pairGrossT[st.fromUid]?.[st.toUid] ?? 0
+    const appliedT   = pairAppliedT[st.fromUid]?.[st.toUid] ?? 0
+    const availableT = Math.max(0, grossT - appliedT)
+    const usableT    = Math.min(st.amount, availableT)
+    ensureSlot(pairAppliedT, st.fromUid)[st.toUid] = appliedT + usableT
+
+    let atRecording: SettlementReplayInfo['atRecording']
+    let overpayment = 0
+    if (grossT < EPS) {
+      atRecording = 'NO_EXPENSE'
+    } else if (st.amount - availableT > EPS) {
+      atRecording = 'OVER'
+      overpayment = st.amount - availableT
+    } else {
+      atRecording = 'WITHIN'
+    }
+    out.set(st.id, { atRecording, overpayment })
+  }
+  return out
+}
+
+/**
+ * Derive the orphan reason from at-recording state + final leftover.
+ * The mixed case (partly OVER at recording, partly EXPENSE_DELETED
+ * later) is detected when leftover EXCEEDS the recording-time
+ * overpayment by more than EPS -- the excess can only come from a
+ * subsequent delete shrinking the gross that the settlement was
+ * actively consuming.
+ */
+function classifyOrphan(info: SettlementReplayInfo | undefined, leftover: number): OrphanReason {
+  if (!info || info.atRecording === 'NO_EXPENSE') return 'UNKNOWN'
+  if (info.atRecording === 'WITHIN')              return 'EXPENSE_DELETED'
+  // atRecording === 'OVER'
+  if (leftover - info.overpayment > EPS)          return 'MIXED'
+  return 'OVERPAYMENT'
 }
 
 /**

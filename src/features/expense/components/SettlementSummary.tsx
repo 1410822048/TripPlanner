@@ -5,7 +5,7 @@ import type { Expense } from '@/types'
 import type { SettlementRecord } from '@/types/settlement'
 import type { TripMember } from '@/features/trips/types'
 import MemberAvatar from '@/components/ui/MemberAvatar'
-import { computeBalancesFull, computeSettlements } from '../services/settlement'
+import { computeBalancesFull, computeSettlements, type OrphanReason } from '../services/settlement'
 import { formatAmount } from '@/utils/currency'
 
 interface Props {
@@ -34,13 +34,27 @@ export default function SettlementSummary({
   const suggestions = computeSettlements(balances)
   const memberById  = new Map(participants.map(m => [m.id, m]))
 
-  // Don't render if nothing to show. Even without expenses we still
-  // surface the section when settlement records exist (e.g. user deleted
-  // every expense after settling — the orphan records need a delete entry).
-  if (expenses.length === 0 && settlements.length === 0) return null
+  // `expenses` includes soft-deleted rows (passed through for chronological
+  // replay). Active-expense visual regions (balance cards, suggestions,
+  // "清算済み" chip) need to gate on whether any LIVE expense exists --
+  // otherwise tombstone-only trips render 0-amount balances + misleading
+  // "all settled" chip. Short-circuit `some` is also the cheapest test for
+  // the early-return guard below.
+  const hasActiveExpenses = expenses.some(e => !e.deletedAt)
 
+  // Hide the whole section when there's nothing actionable: no live
+  // expense AND no settlement history. Surface when settlements exist
+  // regardless of expense state -- orphan banner + history need to be
+  // reachable even if every expense was soft-deleted.
+  if (!hasActiveExpenses && settlements.length === 0) return null
   const allSettled = suggestions.length === 0
   const totalOrphan = orphans.reduce((s, o) => s + o.amount, 0)
+  // Bucket orphan totals by reason so the warning banner can use
+  // reason-specific copy. Typed against OrphanReason for exhaustiveness.
+  const orphanByReason = orphans.reduce<Partial<Record<OrphanReason, number>>>((acc, o) => {
+    acc[o.reason] = (acc[o.reason] ?? 0) + o.amount
+    return acc
+  }, {})
 
   return (
     <div className="px-4 mt-4">
@@ -49,7 +63,7 @@ export default function SettlementSummary({
           <div className="text-[11px] font-semibold text-muted tracking-[0.1em] uppercase">
             精算
           </div>
-          {allSettled && expenses.length > 0 && (
+          {allSettled && hasActiveExpenses && (
             <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-card bg-teal-pale text-teal text-[10px] font-bold tracking-[0.04em]">
               <Check size={10} strokeWidth={3} />
               清算済み
@@ -58,7 +72,7 @@ export default function SettlementSummary({
         </div>
 
         {/* ── 每位成員的淨額 ────────────────────────────── */}
-        {expenses.length > 0 && (
+        {hasActiveExpenses && (
           <div className="flex flex-col gap-[3px]">
             {balances.map(b => {
               const m = memberById.get(b.memberId)!
@@ -97,7 +111,7 @@ export default function SettlementSummary({
         )}
 
         {/* ── 提案 ──────────────────────────────────────── */}
-        {expenses.length > 0 && (allSettled ? (
+        {hasActiveExpenses && (allSettled ? (
           <div className="mt-3 pt-3 border-t border-dashed border-border text-center">
             <div className="text-[11.5px] text-muted leading-[1.5]">
               全員の支払いがバランスしています 🎉
@@ -166,12 +180,33 @@ export default function SettlementSummary({
             currency={currency}
             uid={uid}
             totalOrphan={totalOrphan}
+            orphanByReason={orphanByReason}
             onDelete={onDeleteSettlement}
           />
         )}
       </div>
     </div>
   )
+}
+
+/**
+ * Pick a banner explanation line given the orphan reason buckets.
+ *
+ * Single-reason → that reason's copy. Mixed → generic "expand below" hint.
+ * 繁體中文 to match the surrounding orphan-banner section.
+ */
+const ORPHAN_REASON_COPY: Record<OrphanReason, string> = {
+  OVERPAYMENT:     '屬於過度支付。多出的金額視為對方的預存金,無需額外操作。',
+  EXPENSE_DELETED: '對應的費用已被刪除。如不需要可從下方刪除這筆清算。',
+  MIXED:           '同時包含過度支付與已刪除費用兩種情況。可逐筆檢查並刪除。',
+  UNKNOWN:         '找不到對應的費用。如不需要可從下方刪除這筆清算。',
+}
+
+function orphanReasonExplain(byReason: Partial<Record<OrphanReason, number>>): string {
+  const reasons = (Object.keys(byReason) as OrphanReason[]).filter(k => (byReason[k] ?? 0) > 0)
+  if (reasons.length === 0) return ''
+  if (reasons.length > 1) return '原因不一,可展開下方記錄逐筆確認。'
+  return ORPHAN_REASON_COPY[reasons[0]!]
 }
 
 // ─── Settlement history sub-component ──────────────────────────────
@@ -185,6 +220,9 @@ interface HistoryProps {
    *  banner above the list when > 0 — explains why some settlements
    *  may look detached from the balance view. */
   totalOrphan: number
+  /** Orphan amount split by reason -- drives reason-specific banner
+   *  copy. Missing keys mean 0 for that reason. */
+  orphanByReason: Partial<Record<OrphanReason, number>>
   onDelete:    (id: string) => void
 }
 
@@ -198,7 +236,7 @@ interface HistoryProps {
 const DEFAULT_VISIBLE = 3
 
 function SettlementHistory({
-  settlements, memberById, currency, uid, totalOrphan, onDelete,
+  settlements, memberById, currency, uid, totalOrphan, orphanByReason, onDelete,
 }: HistoryProps) {
   const [expanded, setExpanded] = useState(false)
   const visible    = expanded ? settlements : settlements.slice(0, DEFAULT_VISIBLE)
@@ -225,7 +263,7 @@ function SettlementHistory({
           <AlertCircle size={12} className="shrink-0 mt-px" style={{ color: '#B5651D' }} />
           <div className="text-[10.5px] leading-[1.5]" style={{ color: '#7A4A12' }}>
             <span className="font-semibold">未對應的清算 {formatAmount(totalOrphan, currency)}</span>
-            <span className="opacity-80"> · 對應費用已被刪除,或屬於過度支付。如不需要可從下方刪除。</span>
+            <span className="opacity-80">{' · '}{orphanReasonExplain(orphanByReason)}</span>
           </div>
         </div>
       )}

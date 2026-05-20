@@ -16,7 +16,7 @@ import { afterAll, beforeAll, beforeEach, describe, test } from 'vitest'
 import { assertFails, assertSucceeds } from '@firebase/rules-unit-testing'
 import {
   collection, doc, getDoc, getDocs, query, where,
-  setDoc, updateDoc, deleteDoc, serverTimestamp, Timestamp,
+  setDoc, updateDoc, deleteDoc, deleteField, serverTimestamp, Timestamp,
   documentId, writeBatch,
 } from 'firebase/firestore'
 import {
@@ -454,6 +454,8 @@ describe('/trips/{tripId}/expenses receipt shape', () => {
       createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
+      // phase-2: create rule requires deletedAt present + null.
+      deletedAt: null,
       receipt,
     }
   }
@@ -482,6 +484,288 @@ describe('/trips/{tripId}/expenses receipt shape', () => {
         doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-rcpt'),
         expenseWithReceipt({ ...VALID_RECEIPT, type: 'text/html' }),
       ),
+    )
+  })
+})
+
+describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
+  function expenseBase(overrides: Record<string, unknown> = {}) {
+    return {
+      tripId: TRIP_ID, title: 'X',
+      amount: 1000, currency: 'JPY',
+      category: 'food',
+      paidBy: EDITOR_UID,
+      splits: [{ memberId: EDITOR_UID, amount: 1000 }],
+      date: '2026-05-19',
+      memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+      createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      // Default to alive-on-create (deletedAt MUST be present + null).
+      deletedAt: null,
+      ...overrides,
+    }
+  }
+
+  test('create with deletedAt=null succeeds (alive expense)', async () => {
+    await assertSucceeds(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-1'),
+        expenseBase(),
+      ),
+    )
+  })
+
+  test('create WITHOUT deletedAt field is rejected (field is required)', async () => {
+    const { deletedAt: _omit, ...withoutField } = expenseBase()
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-1b'),
+        withoutField,
+      ),
+    )
+  })
+
+  test('create with deletedAt set to a Timestamp is rejected (no pre-deleted)', async () => {
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-2'),
+        expenseBase({ deletedAt: serverTimestamp() }),
+      ),
+    )
+  })
+
+  test('editor can soft-delete (update with deletedAt=serverTimestamp)', async () => {
+    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-3')
+    await setDoc(ref, expenseBase())
+    // serverTimestamp resolves to request.time inside the rule -- the
+    // transition check accepts it (null -> request.time path).
+    await assertSucceeds(
+      updateDoc(ref, { deletedAt: serverTimestamp(), updatedBy: EDITOR_UID, updatedAt: serverTimestamp() }),
+    )
+  })
+
+  test('soft-delete with a backdated Timestamp is rejected (no client backdate)', async () => {
+    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-3b')
+    await setDoc(ref, expenseBase())
+    // Client supplies a constant Timestamp instead of serverTimestamp().
+    // The rule requires deletedAt == request.time on the null -> Timestamp
+    // transition, so this backdated value fails.
+    await assertFails(
+      updateDoc(ref, {
+        deletedAt: Timestamp.fromMillis(1_000_000),
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('editor can clear deletedAt to null (restore path neutrally allowed)', async () => {
+    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-4')
+    await setDoc(ref, expenseBase({ deletedAt: null }))
+    await assertSucceeds(
+      updateDoc(ref, { deletedAt: null, updatedBy: EDITOR_UID, updatedAt: serverTimestamp() }),
+    )
+  })
+
+  test('non-timestamp deletedAt is rejected on update', async () => {
+    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-5')
+    await setDoc(ref, expenseBase())
+    await assertFails(
+      updateDoc(ref, { deletedAt: 'maybe-later', updatedBy: EDITOR_UID, updatedAt: serverTimestamp() }),
+    )
+  })
+
+  test('editor hard-delete (deleteDoc) is rejected -- soft-delete only', async () => {
+    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-6')
+    await setDoc(ref, expenseBase())
+    // Non-owner editors must go through soft-delete (deletedAt update).
+    // Direct deleteDoc bypasses the tombstone -- blocked.
+    await assertFails(deleteDoc(ref))
+  })
+
+  // ─────────────────────────────────────────────────────────────
+  // The next three tests describe the CASCADE WINDOW workflow gate,
+  // NOT a security boundary. The trip owner can open the window
+  // themselves via raw SDK and selectively hard-delete individual
+  // expenses inside the 5-minute window -- this is accepted risk
+  // until tripCascade moves to a Worker / Admin SDK endpoint (see
+  // KNOWN BROKEN note in firestore.rules `tripDeletionActive`
+  // helper). Tests below cover the workflow contract:
+  //
+  //   - default-closed window blocks accidental hard-delete
+  //   - explicitly opened window allows tripCascade to run
+  //   - forged Timestamps don't open the window (raw `request.time`
+  //     binding survives -- but doesn't matter when owner can just
+  //     pass `serverTimestamp()` anyway)
+  //
+  // The actual security-relevant test -- "owner can or cannot
+  // bypass tombstone via raw SDK" -- will return when the Worker
+  // migration ships and the rule reverts to `allow delete: if false`.
+  // ─────────────────────────────────────────────────────────────
+
+  test('owner hard-delete WITHOUT cascade window is rejected (workflow gate, not security)', async () => {
+    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-6b')
+    await setDoc(ref, expenseBase())
+    // Without the cascade window open, even the owner can't hard-delete.
+    // This is the default-safe state that prevents "owner did
+    // updateDoc/deleteDoc by accident outside tripCascade".
+    await assertFails(
+      deleteDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-6b')),
+    )
+  })
+
+  test('owner hard-delete INSIDE cascade window is allowed (supports tripCascade workflow)', async () => {
+    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-6c')
+    await setDoc(ref, expenseBase())
+    // Open the cascade-delete window on the parent trip doc -- this is
+    // the path tripCascade.ts walks before deleting the trip doc.
+    // ACCEPTED RISK: nothing here prevents an owner who is NOT actually
+    // running tripCascade from doing the same `updateDoc` + selective
+    // `deleteDoc`. The Worker migration is the proper closure.
+    await updateDoc(
+      doc(asOwner(env).firestore(), 'trips', TRIP_ID),
+      { deletionStartedAt: serverTimestamp() },
+    )
+    await assertSucceeds(
+      deleteDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-6c')),
+    )
+  })
+
+  test('client-forged deletionStartedAt Timestamp is rejected (request.time binding)', async () => {
+    // Rule requires `deletionStartedAt == request.time` on set. A
+    // backdated / future-dated Timestamp via Timestamp.fromMillis()
+    // fails this check. NOTE: this only closes the "set the flag to a
+    // bogus value" attack -- an owner who supplies serverTimestamp()
+    // still successfully opens the window, which the threat model
+    // already accepts.
+    await assertFails(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'trips', TRIP_ID),
+        { deletionStartedAt: Timestamp.fromMillis(1_000_000) },
+      ),
+    )
+  })
+
+  test('editing amount / splits on a tombstoned expense is rejected', async () => {
+    // Tombstone-freeze regression: once an expense is soft-deleted, the
+    // settlement chronological replay must be able to trust the historic
+    // amount / splits values. Allowing post-tombstone mutation would
+    // permit a malicious sequence: soft-delete -> edit splits to a
+    // different shape -> restore -> classifier now sees fabricated
+    // numbers. Rules limit post-tombstone edits to audit + deletedAt.
+    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-7')
+    await setDoc(ref, expenseBase())
+    // Step 1: soft-delete (this should succeed via the null -> request.time path)
+    await updateDoc(ref, {
+      deletedAt: serverTimestamp(),
+      updatedBy: EDITOR_UID,
+      updatedAt: serverTimestamp(),
+    })
+    // Step 2: try to mutate amount on the tombstoned doc -- must fail.
+    await assertFails(
+      updateDoc(ref, {
+        amount: 9999,
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+    // Step 3: same check for splits.
+    await assertFails(
+      updateDoc(ref, {
+        splits: [{ memberId: EDITOR_UID, amount: 50 }, { memberId: VIEWER_UID, amount: 950 }],
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('bundling amount mutation INTO the soft-delete write is rejected', async () => {
+    // Attack shape: same updateDoc carries both the soft-delete
+    // transition AND a fabricated amount. The earlier freeze only
+    // covered AFTER-tombstoned edits; this case slips through if the
+    // freeze isn't widened to "either end-state tombstoned".
+    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-9')
+    await setDoc(ref, expenseBase())
+    await assertFails(
+      updateDoc(ref, {
+        deletedAt: serverTimestamp(),
+        amount: 9999,
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('bundling splits mutation INTO the soft-delete write is rejected', async () => {
+    // Same as above but with splits -- the mutation field that most
+    // directly biases settlement chronological replay (gross gets
+    // computed from split.memberId / amount).
+    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-10')
+    await setDoc(ref, expenseBase())
+    await assertFails(
+      updateDoc(ref, {
+        deletedAt: serverTimestamp(),
+        splits: [
+          { memberId: EDITOR_UID, amount: 50 },
+          { memberId: VIEWER_UID, amount: 950 },
+        ],
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('using deleteField() to drop the deletedAt field is rejected', async () => {
+    // Schema invariant: once `deletedAt` is on the doc (forced at create),
+    // it must stay. Allowing deleteField() would let a client erase the
+    // field, sidestep the transition / freeze checks (both keyed off
+    // 'deletedAt' in request.resource.data), and remove the doc from a
+    // future where('deletedAt','==',null) server-side filter -- breaking
+    // the query contract. Block at the rule level regardless of whether
+    // the doc is currently alive or tombstoned.
+    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-11')
+    await setDoc(ref, expenseBase())
+    // Try on alive doc.
+    await assertFails(
+      updateDoc(ref, {
+        deletedAt: deleteField(),
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+    // Soft-delete, then try again on the tombstoned doc.
+    await updateDoc(ref, {
+      deletedAt: serverTimestamp(),
+      updatedBy: EDITOR_UID,
+      updatedAt: serverTimestamp(),
+    })
+    await assertFails(
+      updateDoc(ref, {
+        deletedAt: deleteField(),
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('clearing deletedAt to null (restore) still works after tombstone-freeze rule', async () => {
+    // The freeze allows mutating ONLY the audit + deletedAt fields. A
+    // pure restore (set deletedAt=null + bump updatedBy/updatedAt) must
+    // still succeed even with the new diff-hasOnly clause in place.
+    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-8')
+    await setDoc(ref, expenseBase())
+    await updateDoc(ref, {
+      deletedAt: serverTimestamp(),
+      updatedBy: EDITOR_UID,
+      updatedAt: serverTimestamp(),
+    })
+    await assertSucceeds(
+      updateDoc(ref, {
+        deletedAt: null,
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
     )
   })
 })

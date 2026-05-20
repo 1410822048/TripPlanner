@@ -61,7 +61,7 @@ async function purgeStorageFolder(prefix: string): Promise<void> {
  * is a no-op on results but mandatory for Firestore query validation.
  */
 export async function deleteTrip(tripId: string, uid: string): Promise<void> {
-  const { db, collection, doc, query, where, getDocs, writeBatch, deleteDoc } = await getFirebase()
+  const { db, collection, doc, query, where, getDocs, writeBatch, deleteDoc, updateDoc, serverTimestamp } = await getFirebase()
 
   try {
     await purgeStorageFolder(`trips/${tripId}`)
@@ -69,6 +69,24 @@ export async function deleteTrip(tripId: string, uid: string): Promise<void> {
     const reason = e instanceof Error ? e.message : String(e)
     throw new Error(
       `Trip ${tripId} cascade stopped during Storage cleanup: ${reason}. ` +
+      `No Firestore data was deleted; retry the operation.`,
+    )
+  }
+
+  // Open the cascade-delete window on the trip doc. firestore.rules
+  // `tripDeletionActive()` checks for this flag (within 5 minutes) when
+  // allowing per-expense hard-delete; without it, the soft-delete-only
+  // rule would block the expense subcollection batch. The flag goes
+  // away with the trip doc itself at the final step. Owner-only and
+  // server-stamped per the rule contract -- request.time is forced.
+  try {
+    await updateDoc(doc(db, ...P.trip(tripId)), {
+      deletionStartedAt: serverTimestamp(),
+    })
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e)
+    throw new Error(
+      `Trip ${tripId} cascade could not open the deletion window: ${reason}. ` +
       `No Firestore data was deleted; retry the operation.`,
     )
   }

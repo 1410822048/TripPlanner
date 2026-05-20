@@ -11,8 +11,18 @@ import { bumpTripActivity } from '@/services/tripActivity'
 import { ExpenseDocSchema, UpdateExpenseSchema, type Expense, type ExpenseReceipt, type CreateExpenseInput, type UpdateExpenseInput } from '@/types'
 import { uploadReceipt, purgeReceipt } from './expenseStorage'
 
-/** 200 covers a 14-day group trip with healthy margin. */
-const LIST_LIMIT = 200
+/**
+ * Limit on the realtime expense listener. Pre-phase-2 the cap was 200,
+ * sized for ~14-day group trips. Soft-delete leaves tombstones in the
+ * same collection so the cap now has to cover (active + deleted) until
+ * the planned hard-purge Cloud Function (10-day retention) is in place.
+ * 500 buys headroom for ~5×/day delete rate × 30 days of tombstones on
+ * top of an active set the original 200 was sized for; switching to a
+ * server-side `where('deletedAt','==',null)` filter is the proper fix
+ * but needs a composite index + legacy-data backfill (deferred -- see
+ * project_settlement_phase2_temporal memory).
+ */
+const LIST_LIMIT = 500
 
 function expenseFromDoc(d: QueryDocumentSnapshot): Expense {
   return firestoreDocFromSchema(ExpenseDocSchema, d, 'expenseFromDoc')
@@ -58,6 +68,10 @@ export async function createExpense(
     ...input,
     tripId,
     memberIds,
+    // Explicit null so the doc is queryable under
+    // where('deletedAt', '==', null). Required by firestore.rules
+    // create gate; future server-side active-only filter relies on it.
+    deletedAt: null,
     ...auditCreate(createdBy, serverTimestamp()),
   }
   if (receipt) payload.receipt = receipt
@@ -105,16 +119,21 @@ export async function updateExpense(
   void bumpTripActivity(tripId, 'expense', uid)
 }
 
+/**
+ * Soft-delete: set deletedAt instead of hard-deleting the doc. UI
+ * filters tombstones out of the list (ExpensePage.displayExpenses);
+ * settlement chronological replay still sees them to classify orphan
+ * reasons. Receipt preserved -- planned 10-day CF purge will clear it.
+ */
 export async function deleteExpense(
   tripId: string,
   expenseId: string,
   uid: string,
-  existingPaths?: { path?: string; thumbPath?: string },
 ): Promise<void> {
-  // Purge Storage first so a doc with broken refs is never the long-term
-  // state. If purge fails the doc remains; user can retry the delete.
-  if (existingPaths) await purgeReceipt(existingPaths)
-  const { db, doc, deleteDoc } = await getFirebase()
-  await deleteDoc(doc(db, ...P.expense(tripId, expenseId)))
+  const { db, doc, updateDoc, serverTimestamp } = await getFirebase()
+  await updateDoc(doc(db, ...P.expense(tripId, expenseId)), {
+    deletedAt: serverTimestamp(),
+    ...auditUpdate(uid, serverTimestamp()),
+  })
   void bumpTripActivity(tripId, 'expense', uid)
 }

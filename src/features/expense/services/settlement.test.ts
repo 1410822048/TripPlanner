@@ -166,7 +166,9 @@ describe('multiple settlements per pair', () => {
     expect(balances.find(b => b.memberId === 'm1')!.net).toBe(0)
     expect(balances.find(b => b.memberId === 'm2')!.net).toBe(0)
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amount: 10, settlementId: 's_m2_m1_50_b' },
+      // Second settlement was over-cap at its own recording time (applied
+      // had already consumed available debt) → OVERPAYMENT.
+      { fromUserId: 'm2', toUserId: 'm1', amount: 10, settlementId: 's_m2_m1_50_b', reason: 'OVERPAYMENT' },
     ])
   })
 })
@@ -235,7 +237,8 @@ describe('orphan settlements', () => {
     const settlements = [mkSettlement('m2', 'm1', 50)]
     const { balances, orphans } = computeBalancesFull(expenses, MEMBERS, settlements)
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amount: 20, settlementId: 's_m2_m1_50' },
+      // Gross existed at recording (30) but settlement (50) exceeded it.
+      { fromUserId: 'm2', toUserId: 'm1', amount: 20, settlementId: 's_m2_m1_50', reason: 'OVERPAYMENT' },
     ])
     // Critical: the overpayment does NOT flip m1 into a debtor position.
     // Net is at most "0 on this pair" — no reverse-debt creation.
@@ -248,10 +251,17 @@ describe('orphan settlements', () => {
     // had been recorded surfaced the settlement as reverse debt — the
     // settled-payer appeared to be owed money. Debt-edge model produces
     // all-zero balances with the settlement recorded as orphan.
+    //
+    // Empty `expenses` fixture simulates a legacy HARD-deleted expense
+    // (no soft-delete tombstone). At settlement recording time the
+    // chronological replay sees gross == 0 → classifier returns UNKNOWN
+    // (can't distinguish from genuine overpayment). The phase-2
+    // EXPENSE_DELETED reason requires the deletedAt tombstone to be
+    // present; see the soft-delete test below.
     const settlements = [mkSettlement('m2', 'm1', 50)]
     const { balances, orphans } = computeBalancesFull([], MEMBERS, settlements)
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amount: 50, settlementId: 's_m2_m1_50' },
+      { fromUserId: 'm2', toUserId: 'm1', amount: 50, settlementId: 's_m2_m1_50', reason: 'UNKNOWN' },
     ])
     for (const b of balances) {
       expect(b.net).toBe(0)
@@ -269,44 +279,48 @@ describe('orphan settlements', () => {
     const { orphans } = computeBalancesFull(expenses, MEMBERS, settlements)
     const sorted = [...orphans].sort((a, b) => a.fromUserId.localeCompare(b.fromUserId))
     expect(sorted).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amount: 10, settlementId: 's_m2_m1_30' },
-      { fromUserId: 'm3', toUserId: 'm1', amount: 15, settlementId: 's_m3_m1_15' },
+      // m2 had gross 20 at recording, paid 30 → OVERPAYMENT.
+      { fromUserId: 'm2', toUserId: 'm1', amount: 10, settlementId: 's_m2_m1_30', reason: 'OVERPAYMENT' },
+      // m3 had no gross at all on this pair → UNKNOWN (could be either
+      // overpayment-to-the-wrong-person or a legacy hard-deleted expense).
+      { fromUserId: 'm3', toUserId: 'm1', amount: 15, settlementId: 's_m3_m1_15', reason: 'UNKNOWN' },
     ])
   })
 
   it('two settlements on the same pair each with leftover → two orphan entries', () => {
     // No debt at all; both settlements are fully orphaned. The point
     // here is we get TWO entries (with their respective settlementIds),
-    // not one aggregated "from m2 to m1, amount 80".
+    // not one aggregated "from m2 to m1, amount 80". Both classify as
+    // UNKNOWN because there's never any gross to know whether they were
+    // intended against (since-deleted) expenses or just overpaid.
     const settlements = [
       mkSettlement('m2', 'm1', 30, '_a'),
       mkSettlement('m2', 'm1', 50, '_b'),
     ]
     const { orphans } = computeBalancesFull([], MEMBERS, settlements)
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amount: 30, settlementId: 's_m2_m1_30_a' },
-      { fromUserId: 'm2', toUserId: 'm1', amount: 50, settlementId: 's_m2_m1_50_b' },
+      { fromUserId: 'm2', toUserId: 'm1', amount: 30, settlementId: 's_m2_m1_30_a', reason: 'UNKNOWN' },
+      { fromUserId: 'm2', toUserId: 'm1', amount: 50, settlementId: 's_m2_m1_50_b', reason: 'UNKNOWN' },
     ])
   })
 })
 
 // ─── Chronological determinism ────────────────────────────────────
 
-describe('chronological settlement attribution', () => {
-  // Helper for tests that need distinct createdAt values. We spread the
-  // existing MOCK_TIMESTAMP and cast back to Timestamp because TS
-  // doesn't narrow the result of an object spread to the original
-  // branded type — only computeBalancesFull's `toMillis()` call is
-  // sensitive to the value, the rest of the shape is structural.
-  function tsAt(ms: number): typeof TS {
-    return {
-      ...TS,
-      toMillis: () => ms,
-      toDate:   () => new Date(ms),
-      seconds:  Math.floor(ms / 1000),
-    } as unknown as typeof TS
-  }
+// Helper for tests that need distinct createdAt values. Spreads
+// MOCK_TIMESTAMP and casts back to the branded Timestamp type —
+// computeBalancesFull only reads `toMillis()`, the rest of the shape
+// is structural.
+function tsAt(ms: number): typeof TS {
+  return {
+    ...TS,
+    toMillis: () => ms,
+    toDate:   () => new Date(ms),
+    seconds:  Math.floor(ms / 1000),
+  } as unknown as typeof TS
+}
 
+describe('chronological settlement attribution', () => {
   it('later settlement bears the orphan when total exceeds gross (chronological cap)', () => {
     // m2 owes m1 100. Two settlements: 60 (earlier) + 50 (later).
     // Earlier consumes 60 of available 100; later applies 40 (cap),
@@ -316,7 +330,7 @@ describe('chronological settlement attribution', () => {
     const later:   SettlementRecord = { ...mkSettlement('m2', 'm1', 50, '_late'),  createdAt: tsAt(2000) }
     const { orphans } = computeBalancesFull(expenses, MEMBERS, [earlier, later])
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amount: 10, settlementId: 's_m2_m1_50_late' },
+      { fromUserId: 'm2', toUserId: 'm1', amount: 10, settlementId: 's_m2_m1_50_late', reason: 'OVERPAYMENT' },
     ])
   })
 
@@ -330,8 +344,130 @@ describe('chronological settlement attribution', () => {
     const later:   SettlementRecord = { ...mkSettlement('m2', 'm1', 50, '_late'),  createdAt: tsAt(2000) }
     const { orphans } = computeBalancesFull(expenses, MEMBERS, [later, earlier])
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amount: 10, settlementId: 's_m2_m1_50_late' },
+      { fromUserId: 'm2', toUserId: 'm1', amount: 10, settlementId: 's_m2_m1_50_late', reason: 'OVERPAYMENT' },
     ])
+  })
+})
+
+// ─── Phase-2: orphan reason classification via chronological replay ─
+
+describe('orphan reason classification (phase-2)', () => {
+  it('EXPENSE_DELETED: settlement was within available debt at recording, expense soft-deleted after', () => {
+    // Timeline:
+    //   t=1000: expense created (m1 paid 100, split 50/50 → m2 owes m1 50)
+    //   t=2000: settlement m2→m1 for 50 (fully matches the debt)
+    //   t=3000: expense soft-deleted
+    // At t=2000 the settlement was valid (gross=50, amount=50 → within).
+    // At final state, gross=0 (expense deleted) and settlement still
+    // recorded → leftover 50 → EXPENSE_DELETED.
+    const expense = {
+      ...mkExpense('m1', 100, [['m1', 50], ['m2', 50]]),
+      createdAt: tsAt(1000),
+      deletedAt: tsAt(3000),
+    }
+    const settlement = { ...mkSettlement('m2', 'm1', 50), createdAt: tsAt(2000) }
+    const { orphans, balances } = computeBalancesFull([expense], MEMBERS, [settlement])
+    expect(orphans).toEqual([
+      { fromUserId: 'm2', toUserId: 'm1', amount: 50, settlementId: 's_m2_m1_50', reason: 'EXPENSE_DELETED' },
+    ])
+    // Soft-deleted expense must NOT count toward paid / owed / net.
+    expect(balances.find(b => b.memberId === 'm1')!.paid).toBe(0)
+    expect(balances.find(b => b.memberId === 'm2')!.owed).toBe(0)
+    for (const b of balances) expect(b.net).toBe(0)
+  })
+
+  it('OVERPAYMENT distinguished from EXPENSE_DELETED when expense existed at recording', () => {
+    // m2 owed m1 30 (expense gross=30). Settlement of 50 recorded while
+    // the expense was still alive — classifier sees gross>0 + over →
+    // OVERPAYMENT, NOT UNKNOWN. The pre-phase-2 test "expense fully
+    // deleted but settlement remains" hits UNKNOWN because no expense
+    // record exists at all (legacy hard-delete).
+    const expense = {
+      ...mkExpense('m1', 60, [['m1', 30], ['m2', 30]]),
+      createdAt: tsAt(1000),
+    }
+    const settlement = { ...mkSettlement('m2', 'm1', 50), createdAt: tsAt(2000) }
+    const { orphans } = computeBalancesFull([expense], MEMBERS, [settlement])
+    expect(orphans).toEqual([
+      { fromUserId: 'm2', toUserId: 'm1', amount: 20, settlementId: 's_m2_m1_50', reason: 'OVERPAYMENT' },
+    ])
+  })
+
+  it('soft-deleted expense is excluded from paid / owed / gross (matches UI display)', () => {
+    // No settlements, just two expenses one of which is soft-deleted.
+    // paid / owed / gross should reflect only the active expense.
+    const alive = mkExpense('m1', 100, [['m1', 50], ['m2', 50]], '_alive')
+    const dead  = {
+      ...mkExpense('m1', 200, [['m1', 100], ['m2', 100]], '_dead'),
+      deletedAt: tsAt(5000),
+    }
+    const { balances } = computeBalancesFull([alive, dead], MEMBERS)
+    expect(balances.find(b => b.memberId === 'm1')!.paid).toBe(100)  // only alive
+    expect(balances.find(b => b.memberId === 'm2')!.owed).toBe(50)
+    expect(balances.find(b => b.memberId === 'm2')!.net).toBe(-50)   // owes m1 50
+  })
+
+  it('MIXED: settlement was partly over at recording AND a later delete shrunk what was within', () => {
+    // The motivating scenario:
+    //   t=1000: expense gross[m2][m1] = 50
+    //   t=2000: settlement m2→m1 = 70 (over at recording by 20; 50 of it
+    //           was within available at that moment)
+    //   t=3000: expense soft-deleted, gross drops to 0
+    //   final:  leftover = 70 (50 was eaten by delete, 20 was always over)
+    // Pre-MIXED logic would tag the whole 70 as OVERPAYMENT -- wrong,
+    // because most of it became orphan only because of the later delete.
+    const expense = {
+      ...mkExpense('m1', 100, [['m1', 50], ['m2', 50]]),
+      createdAt: tsAt(1000),
+      deletedAt: tsAt(3000),
+    }
+    const settlement = { ...mkSettlement('m2', 'm1', 70), createdAt: tsAt(2000) }
+    const { orphans } = computeBalancesFull([expense], MEMBERS, [settlement])
+    expect(orphans).toEqual([
+      { fromUserId: 'm2', toUserId: 'm1', amount: 70, settlementId: 's_m2_m1_70', reason: 'MIXED' },
+    ])
+  })
+
+  it('pure OVERPAYMENT stays OVERPAYMENT (no later delete) -- regression guard for MIXED logic', () => {
+    // Same recording-time overpayment as the MIXED scenario, but NO
+    // subsequent delete: leftover equals overpayment-at-recording, so
+    // the classifier picks OVERPAYMENT, not MIXED.
+    const expense = {
+      ...mkExpense('m1', 60, [['m1', 30], ['m2', 30]]),
+      createdAt: tsAt(1000),
+    }
+    const settlement = { ...mkSettlement('m2', 'm1', 50), createdAt: tsAt(2000) }
+    const { orphans } = computeBalancesFull([expense], MEMBERS, [settlement])
+    expect(orphans[0]!.reason).toBe('OVERPAYMENT')
+  })
+
+  it('multiple settlements with mixed reasons in one trip', () => {
+    // Real-world mixed scenario:
+    //   - m2→m1 fits an existing expense at recording (then expense deleted) → EXPENSE_DELETED
+    //   - m3→m1 has no expense on this pair at all → UNKNOWN
+    //   - m2→m3 over-cap at recording (some expense existed but smaller) → OVERPAYMENT
+    const exp1 = {
+      ...mkExpense('m1', 100, [['m1', 50], ['m2', 50]], '_for_m2'),
+      createdAt: tsAt(1000),
+      deletedAt: tsAt(5000),
+    }
+    const exp2 = {
+      ...mkExpense('m3', 20, [['m2', 10], ['m3', 10]], '_for_m2m3'),
+      createdAt: tsAt(1500),
+    }
+    const stExpDeleted = { ...mkSettlement('m2', 'm1', 50, '_a'), createdAt: tsAt(2000) }
+    const stUnknown    = { ...mkSettlement('m3', 'm1', 30, '_b'), createdAt: tsAt(2500) }
+    const stOver       = { ...mkSettlement('m2', 'm3', 25, '_c'), createdAt: tsAt(3000) }
+    const { orphans } = computeBalancesFull(
+      [exp1, exp2],
+      MEMBERS,
+      [stExpDeleted, stUnknown, stOver],
+    )
+    // Sort for stable assertion since orphans order is by createdAt sort.
+    const byId = Object.fromEntries(orphans.map(o => [o.settlementId, o.reason]))
+    expect(byId['s_m2_m1_50_a']).toBe('EXPENSE_DELETED')
+    expect(byId['s_m3_m1_30_b']).toBe('UNKNOWN')
+    expect(byId['s_m2_m3_25_c']).toBe('OVERPAYMENT')
   })
 })
 

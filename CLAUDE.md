@@ -327,11 +327,37 @@ splitsFromItems(items) → ExpenseSplit[] → 進 Firestore
 
 核心不變式: **settlement cannot create debt**。任何刪除 expense 後 settlement 仍在的場景,orphan 補 surface,balance 不會冒出反向應付款。
 
-`paid` / `owed` 顯示**只看 expenses**(舊 algorithm 把 settlement 當 reverse expense 加進去,造成「立替/分担」被污染)。`net` 才反映 settlement 後的當下狀態。
+`paid` / `owed` 顯示**只看 active expenses**(soft-deleted 排除,跟 UI 顯示一致)。`net` 才反映 settlement 後的當下狀態。
 
-UI(`SettlementSummary`)結構: 成員淨額 → 支払い提案(只 receiver 看到 green「済み」 button,其他人 Clock + 「受取待ち」status)→ 清算済み記録(預設展開 2 筆 + 兩段刪除)→ orphan 警告 banner(amber)。
+UI(`SettlementSummary`)結構: 成員淨額 → 支払い提案(只 receiver 看到 green「済み」 button,其他人 Clock + 「受取待ち」status)→ 清算済み記録(預設展開 2 筆 + 兩段刪除)→ orphan 警告 banner(amber, **reason-aware**)。
 
-> Phase-2 (deferred): chronological replay 區分 orphan reason(`OVERPAYMENT` vs `EXPENSE_DELETED`)— 見 `~/.claude/projects/.../memory/project_settlement_phase2_temporal.md`。
+### Settlement phase-2: chronological replay + orphan reason 分類
+
+每個 orphan 帶 `reason: 'OVERPAYMENT' | 'EXPENSE_DELETED' | 'MIXED' | 'UNKNOWN'`,透過 `buildOrphanReasonMap` 對 (expense_create / expense_delete / settlement) 事件做時序回放,**先記錄 settlement recording 時的狀態 `{ atRecording, overpayment }`**,最終由 `classifyOrphan(info, leftover)` 依「recording 時的狀態 + 當下殘餘 leftover」推導 reason:
+
+- **OVERPAYMENT** — settlement 在 recording 時 amount 已超過 available debt(`atRecording = 'OVER'`),且最終 leftover 全部都是 recording 時就已超付的部分。代表使用者當下就多付了,跟後續刪不刪 expense 無關。
+- **EXPENSE_DELETED** — settlement 在 recording 時完全 fit available debt(`atRecording = 'WITHIN'`);orphan 是後續 expense 被 soft-delete 縮小 gross 才出現。需要 `deletedAt` tombstone 才能正確判斷,phase-2 deploy 後新發生的這類情況都分類得到。
+- **MIXED** — settlement 在 recording 時 amount 部分超付(`atRecording = 'OVER'`,有 `overpayment > 0`),且後續又有 expense 被刪除進一步擴大 leftover(`leftover − overpayment > EPS`)。代表兩種成因同時存在,需要使用者逐筆檢視。
+- **UNKNOWN** — settlement recording 時 gross=0(`atRecording = 'NO_EXPENSE'`,沒有任何 expense)。可能是真的 overpayment、phase-2 前的 hard-delete 殘留,或測試資料異常,演算法無從區分。
+
+Soft-delete 設計(取代原本 hard-delete):
+- `deleteExpense` 改成 `updateDoc({ deletedAt: serverTimestamp() })`,**保留 receipt**(reversible at data layer)
+- `Expense.deletedAt?: Timestamp | null` 必要 schema field
+- `useExpenses` 回傳 ALL(含 soft-deleted);ExpensePage 拆兩路:`displayExpenses = expenses.filter(!deletedAt)` for 列表/總額/件數,`expenses`(unfiltered)for `SettlementSummary` 做 chronological replay
+- 樂觀 delete 的 patch 用 `mockTimestampNow()` 而非 `MOCK_TIMESTAMP`(epoch 0),否則 chronological replay 把 delete event 排到所有 expense_create 之前
+- firestore.rules:create 不可設 deletedAt,update 可設成 Timestamp 或 null(restore 路徑中性允許,目前無 UI)
+- 沒做 restore UI(B1 決定);資料層保留,以後想加直接做
+
+**⚠️ P1 accepted risk — owner cascade window 不是 security boundary**:
+
+`firestore.rules` 的 `tripDeletionActive(tripId)` helper 讓 owner 在 `trips/{tripId}.deletionStartedAt` 設成 server timestamp 後 5 分鐘內可 hard-delete expense(供 `tripCascade.ts` 用)。**這條規則 KNOWN BROKEN**:owner 拿原始 SDK 也能寫 `deletionStartedAt`,所以可以開窗 → 單筆 hard-delete 任意 expense → 繞過 soft-delete tombstone,讓 settlement 無法用 chronological replay 正確分類 → 變 `UNKNOWN` orphan。
+
+接受這個風險的理由:
+1. Owner 本來就有 nuclear option(刪整個 trip),設計上 TripMate 依賴 owner-honesty 對其他成員
+2. Editor / viewer 仍被完整擋下(只能 soft-delete via `deletedAt`),正常使用者擋得住
+3. 修法是把 `tripCascade` 移到 Worker / Admin SDK endpoint(類似未來 10-day receipt purge 走的同一條 CF 路徑),不是 rules 層能解的
+
+**Deferred 到**: 後續 Worker 化 cascade 那波。在 rules / tests / 此處的文件,這個 gate 都明寫成 workflow gate (not security boundary)。memory: [[project_settlement_phase2_temporal]] 也記了同樣的 KNOWN HOLE 段落。
 
 ### Sign-in prompt 時機
 
