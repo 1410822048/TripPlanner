@@ -16,14 +16,28 @@
 	// the CORS allowlist needs to be readable for debugging.
 	"vars": {
 		"FIREBASE_PROJECT_ID": "tripplanner-80a4f",
+		// Firebase Storage bucket — used by trip-cascade (Storage purge)
+		// and receipt-purge cron. Single source of truth; if the project
+		// ever moves bucket, this is the only line to update.
+		"FIREBASE_STORAGE_BUCKET": "tripplanner-80a4f.firebasestorage.app",
 		"ALLOWED_ORIGINS": "https://tripplanner-80a4f.web.app,https://tripplanner-80a4f.firebaseapp.com,https://tripmate-2wg.pages.dev,*.tripmate-2wg.pages.dev,http://localhost:5173"
+	},
+	// Cron: daily UTC 03:00 receipt purge — globally low-traffic hour.
+	// Scoped to ~14min via SOFT_DEADLINE_MS in receipt-purge.ts; under
+	// the 15-min hard cap on Workers scheduled handlers.
+	"triggers": {
+		"crons": ["0 3 * * *"]
 	},
 	// Per-uid rate limiting (GA 2025-09). Counters are per Cloudflare
 	// location (eventually consistent) — fine for abuse prevention,
 	// not a hard quota. namespace_id is account-scoped and arbitrary
-	// (just unique); we use 1001/1002 to keep human-readable.
-	// /ocr is the expensive path (Gemini quota) → tighter limit.
-	// /cascade-member fires once per invite accept → very tight limit.
+	// (just unique); we use 1001-1003 to keep human-readable.
+	//   /ocr                  expensive path (Gemini quota)         → 30/min
+	//   /cascade-member       fires once per invite accept           → 5/min
+	//   /cascade-trip-delete  HEAVY (full trip cascade + storage)    → 1/min
+	//                         tighter than member cascade because
+	//                         trip-delete touches O(100) docs +
+	//                         dozens of Storage objects per call.
 	"ratelimits": [
 		{
 			"name": "OCR_RATE_LIMITER",
@@ -34,6 +48,11 @@
 			"name": "CASCADE_RATE_LIMITER",
 			"namespace_id": "1002",
 			"simple": { "limit": 5, "period": 60 }
+		},
+		{
+			"name": "TRIP_CASCADE_RATE_LIMITER",
+			"namespace_id": "1003",
+			"simple": { "limit": 1, "period": 60 }
 		}
 	],
 	// Durable Object for cross-PoP rate limiting. Each instance is

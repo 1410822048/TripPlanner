@@ -78,6 +78,16 @@ export interface Expense {
    * settlement phase-2 shipped). Absent / null on live expenses.
    */
   deletedAt?: Timestamp | null
+  /**
+   * Receipt-purge watermark. `null` on every live expense (create
+   * rule rejects missing / non-null values); set to a server
+   * Timestamp by the daily Worker cron after Storage receipt + the
+   * `receipt` field are cleared. Once stamped, the doc exits the
+   * cron's `receiptPurgedAt == null AND deletedAt < cutoff`
+   * candidate set permanently — without this watermark the cron
+   * would re-scan every soft-deleted expense forever.
+   */
+  receiptPurgedAt?: Timestamp | null
 }
 
 export type ExpenseCategory =
@@ -170,7 +180,14 @@ export const ExpenseDocSchema = z.object({
   memberIds:  z.array(z.string().min(1)).min(1),
   createdAt:  TimestampSchema,
   updatedAt:  TimestampSchema,
-  /** Soft-delete tombstone (settlement phase-2). Nullable + optional so
-   *  legacy expenses without the field still parse cleanly. */
+  /** Soft-delete tombstone (settlement phase-2). Nullable + optional
+   *  for parse tolerance — Zod sees the full server doc (always
+   *  null/Timestamp per the create rule) AND optimistic-cache rows
+   *  that may not include the field until the listener reconciles. */
   deletedAt:  TimestampSchema.nullable().optional(),
+  /** Receipt-purge watermark. Same parse-tolerance reasoning as
+   *  deletedAt: rule enforces present+null on create, so server-side
+   *  it's always shaped, but optimistic patches / partial cache rows
+   *  may omit it before reconciliation. */
+  receiptPurgedAt: TimestampSchema.nullable().optional(),
 })

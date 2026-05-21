@@ -162,6 +162,14 @@ export default defineConfig({
   },
   build: {
     rollupOptions: {
+      // Suppress rolldown's `[PLUGIN_TIMINGS] Warning: significant time
+      // in @rolldown/plugin-babel`. React Compiler does its work inside
+      // that Babel pass (presets: [reactCompilerPreset(...)]) so the
+      // "significant time" is the compiler analysing every React file
+      // -- working as designed, not a misconfiguration. The check is
+      // useful for catching accidentally-slow custom plugins; for this
+      // expected-heavy known one it's just noise on every build.
+      checks: { pluginTimings: false },
       output: {
         // Stable names for vendor chunks the modulepreload plugin above
         // can target. Splitting Sentry off keeps it out of the main bundle

@@ -1,31 +1,51 @@
 // TripMate OCR Worker — entry point.
 //
 // Endpoints:
-//   POST /ocr             — Gemini receipt OCR (original endpoint)
-//   POST /cascade-member  — server-side membership cascade for
-//                           accept-invite (admin SDK bypasses rules)
+//   POST /ocr                  — Gemini receipt OCR (original endpoint)
+//   POST /cascade-member       — server-side membership cascade for
+//                                accept-invite (admin SDK bypasses rules)
+//   POST /cascade-trip-delete  — full trip cascade (Storage + subcollections
+//                                + trip doc). Replaces client-side
+//                                cascade so firestore.rules can keep
+//                                `allow delete: if false` on the
+//                                two integrity-critical docs (trip
+//                                root + expense tombstones); closes
+//                                P1 accepted-risk. Other subcollections
+//                                still use ordinary canWrite-style
+//                                delete rules for normal editing UX.
+//
+// Scheduled:
+//   Daily UTC 03:00 — purge expense receipts that have been soft-
+//                     deleted for more than 10 days.
 //
 // All non-matching requests get a 404. CORS preflight (OPTIONS) is
-// handled inline. No router lib needed — two routes don't earn the
+// handled inline. No router lib needed — three routes don't earn the
 // bundle bloat.
 import { verifyFirebaseToken, extractBearerToken } from './auth'
 import { extractReceiptItems, GeminiError }       from './gemini'
 import { OcrRequestSchema }                       from './schema'
 import { cascadeMemberAdd, CascadeRequestSchema, CascadeError } from './cascade'
+import { cascadeTripDelete, TripDeleteRequestSchema } from './trip-cascade'
+import { purgeExpiredReceipts }                   from './receipt-purge'
 import { checkGlobalRateLimit }                   from './rate-limiter'
 
 export { GlobalRateLimiter } from './rate-limiter'
 
 interface WorkerEnv {
   FIREBASE_PROJECT_ID:      string
+  FIREBASE_STORAGE_BUCKET:  string
   ALLOWED_ORIGINS:          string  // comma-separated
   GEMINI_API_KEY:           string  // secret
   FIREBASE_SERVICE_ACCOUNT: string  // secret — JSON string of service account key
   /** Per-PoP per-uid rate limiter for the OCR endpoint. Cheap first-line
    *  filter (~0ms). Counters are local to each Cloudflare location. */
   OCR_RATE_LIMITER:         RateLimit
-  /** Per-PoP per-uid rate limiter for the cascade endpoint. */
+  /** Per-PoP per-uid rate limiter for the member-cascade endpoint. */
   CASCADE_RATE_LIMITER:     RateLimit
+  /** Per-PoP per-uid rate limiter for the trip-delete endpoint.
+   *  Tighter than member cascade because trip-delete is heavy
+   *  (O(100) docs + Storage purge per call). */
+  TRIP_CASCADE_RATE_LIMITER: RateLimit
   /** Cross-PoP global rate limiter. Durable Object — strongly
    *  consistent counter per-uid that catches multi-PoP abuse that
    *  would slip past the per-PoP binding. ~10-50ms latency cost. */
@@ -106,9 +126,10 @@ export default {
     }
 
     // ─── Routing ──────────────────────────────────────────────────────
-    const isOcr     = url.pathname === '/ocr'             && request.method === 'POST'
-    const isCascade = url.pathname === '/cascade-member'  && request.method === 'POST'
-    if (!isOcr && !isCascade) {
+    const isOcr           = url.pathname === '/ocr'                  && request.method === 'POST'
+    const isCascade       = url.pathname === '/cascade-member'       && request.method === 'POST'
+    const isTripCascade   = url.pathname === '/cascade-trip-delete'  && request.method === 'POST'
+    if (!isOcr && !isCascade && !isTripCascade) {
       return json({ error: 'Not found' }, 404, cors)
     }
 
@@ -151,15 +172,20 @@ export default {
     //     that L1 alone can't see. Cap deliberately looser than L1 —
     //     L1's tighter per-location bound is the primary defense; L2
     //     is the cluster ceiling.
-    const limiter = isOcr ? env.OCR_RATE_LIMITER : env.CASCADE_RATE_LIMITER
+    const limiter = isOcr            ? env.OCR_RATE_LIMITER
+                  : isTripCascade    ? env.TRIP_CASCADE_RATE_LIMITER
+                  : env.CASCADE_RATE_LIMITER
     const localResult = await limiter.limit({ key: uid })
     if (!localResult.success) {
       console.warn(`[rate-limit] L1 deny uid=${uidTag(uid)} route=${url.pathname}`)
       return json({ error: 'Rate limit exceeded' }, 429, cors)
     }
 
-    const scope       = isOcr ? 'ocr' : 'cascade'
-    const globalLimit = isOcr ? 60   : 10   // 2× the per-PoP cap
+    // Scope name + L2 limit. trip-delete is the strictest: 2/min global
+    // (2× the per-PoP cap) because the operation is the heaviest in the
+    // worker and 1/PoP could still amplify across PoPs.
+    const scope       = isOcr ? 'ocr' : isTripCascade ? 'trip-cascade' : 'cascade'
+    const globalLimit = isOcr ? 60    : isTripCascade ? 2              : 10
     const globalResult = await checkGlobalRateLimit(
       env.GLOBAL_LIMITER, scope, uid, globalLimit, 60_000,
     )
@@ -178,6 +204,32 @@ export default {
     } catch {
       console.warn('[body] not valid JSON')
       return json({ error: 'Invalid JSON' }, 400, cors)
+    }
+
+    // ─── /cascade-trip-delete ─────────────────────────────────────────
+    if (isTripCascade) {
+      const parsed = TripDeleteRequestSchema.safeParse(body)
+      if (!parsed.success) {
+        console.warn(`[trip-cascade] schema fail: ${parsed.error.message.slice(0, 200)}`)
+        return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
+      }
+      try {
+        const result = await cascadeTripDelete(
+          uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET,
+        )
+        console.log(
+          `[trip-cascade] uid=${uidTag(uid)} trip=${parsed.data.tripId} ` +
+          `docs=${result.deletedDocs} objects=${result.deletedObjects}`,
+        )
+        return json({ ok: true, ...result }, 200, cors)
+      } catch (e) {
+        if (e instanceof CascadeError) {
+          console.warn(`[trip-cascade] ${e.status} ${e.message}`)
+          return json({ error: e.message }, e.status, cors)
+        }
+        console.error(`[trip-cascade] internal error: ${(e as Error).message}`)
+        return json({ error: 'Internal error' }, 500, cors)
+      }
     }
 
     // ─── /cascade-member ──────────────────────────────────────────────
@@ -224,5 +276,30 @@ export default {
       console.error(`[ocr] internal error: ${(e as Error).message}`)
       return json({ error: 'Internal error' }, 500, cors)
     }
+  },
+
+  // ─── Cron: 10-day receipt purge ───────────────────────────────────
+  // Triggered daily UTC 03:00 (see wrangler.jsonc triggers.crons).
+  // Soft deadline (~14min) lives inside purgeExpiredReceipts; whatever
+  // doesn't process gets picked up tomorrow — the deletedAt < cutoff
+  // filter is naturally idempotent across runs.
+  async scheduled(_event, env, ctx): Promise<void> {
+    console.log('[cron] receipt-purge starting')
+    ctx.waitUntil(
+      purgeExpiredReceipts(env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)
+        .then(report => {
+          console.log(
+            `[cron] receipt-purge done scanned=${report.scanned} ` +
+            `receiptsDeleted=${report.receiptsDeleted} docsPatched=${report.docsPatched} ` +
+            `deadlineHit=${report.deadlineHit}`,
+          )
+        })
+        .catch(err => {
+          // Don't throw — cron runs are best-effort; tomorrow's pass
+          // re-converges on whatever this run missed. We still log the
+          // error so observability picks up the failure mode.
+          console.error(`[cron] receipt-purge failed: ${(err as Error).message}`)
+        }),
+    )
   },
 } satisfies ExportedHandler<WorkerEnv>

@@ -338,26 +338,17 @@ UI(`SettlementSummary`)結構: 成員淨額 → 支払い提案(只 receiver 看
 - **OVERPAYMENT** — settlement 在 recording 時 amount 已超過 available debt(`atRecording = 'OVER'`),且最終 leftover 全部都是 recording 時就已超付的部分。代表使用者當下就多付了,跟後續刪不刪 expense 無關。
 - **EXPENSE_DELETED** — settlement 在 recording 時完全 fit available debt(`atRecording = 'WITHIN'`);orphan 是後續 expense 被 soft-delete 縮小 gross 才出現。需要 `deletedAt` tombstone 才能正確判斷,phase-2 deploy 後新發生的這類情況都分類得到。
 - **MIXED** — settlement 在 recording 時 amount 部分超付(`atRecording = 'OVER'`,有 `overpayment > 0`),且後續又有 expense 被刪除進一步擴大 leftover(`leftover − overpayment > EPS`)。代表兩種成因同時存在,需要使用者逐筆檢視。
-- **UNKNOWN** — settlement recording 時 gross=0(`atRecording = 'NO_EXPENSE'`,沒有任何 expense)。可能是真的 overpayment、phase-2 前的 hard-delete 殘留,或測試資料異常,演算法無從區分。
+- **UNKNOWN** — defensive guard:`atRecording = 'NO_EXPENSE'`(settlement 找不到對應 pair 的 expense gross)。`allow delete: if false` + Worker trip-cascade 一次刪 expense+settlement 後,data-at-rest 不會再產生這狀態;留著當 catch-all,讓未來異常 admin 寫入或資料毀損可見化,不會 silently 被歸到其他 reason。
 
-Soft-delete 設計(取代原本 hard-delete):
-- `deleteExpense` 改成 `updateDoc({ deletedAt: serverTimestamp() })`,**保留 receipt**(reversible at data layer)
-- `Expense.deletedAt?: Timestamp | null` 必要 schema field
+Soft-delete + Receipt-purge 設計:
+- `deleteExpense` 改成 `updateDoc({ deletedAt: serverTimestamp() })`,**保留 receipt**(reversible at data layer 10 天內)
+- `Expense.deletedAt?: Timestamp | null` 必要 schema field;`receiptPurgedAt?: Timestamp | null` 也是必要(create 階段 rule 鎖死 present + null)
 - `useExpenses` 回傳 ALL(含 soft-deleted);ExpensePage 拆兩路:`displayExpenses = expenses.filter(!deletedAt)` for 列表/總額/件數,`expenses`(unfiltered)for `SettlementSummary` 做 chronological replay
 - 樂觀 delete 的 patch 用 `mockTimestampNow()` 而非 `MOCK_TIMESTAMP`(epoch 0),否則 chronological replay 把 delete event 排到所有 expense_create 之前
-- firestore.rules:create 不可設 deletedAt,update 可設成 Timestamp 或 null(restore 路徑中性允許,目前無 UI)
-- 沒做 restore UI(B1 決定);資料層保留,以後想加直接做
+- firestore.rules:create 鎖 `deletedAt == null` + `receiptPurgedAt == null`;update 的 deletedAt 可 null↔Timestamp 但有 10 天 restore window;receiptPurgedAt 強制 `unchanged`(只有 Worker admin 寫得到)
+- 沒做 restore UI(B1 決定);資料層保留 10 天
 
-**⚠️ P1 accepted risk — owner cascade window 不是 security boundary**:
-
-`firestore.rules` 的 `tripDeletionActive(tripId)` helper 讓 owner 在 `trips/{tripId}.deletionStartedAt` 設成 server timestamp 後 5 分鐘內可 hard-delete expense(供 `tripCascade.ts` 用)。**這條規則 KNOWN BROKEN**:owner 拿原始 SDK 也能寫 `deletionStartedAt`,所以可以開窗 → 單筆 hard-delete 任意 expense → 繞過 soft-delete tombstone,讓 settlement 無法用 chronological replay 正確分類 → 變 `UNKNOWN` orphan。
-
-接受這個風險的理由:
-1. Owner 本來就有 nuclear option(刪整個 trip),設計上 TripMate 依賴 owner-honesty 對其他成員
-2. Editor / viewer 仍被完整擋下(只能 soft-delete via `deletedAt`),正常使用者擋得住
-3. 修法是把 `tripCascade` 移到 Worker / Admin SDK endpoint(類似未來 10-day receipt purge 走的同一條 CF 路徑),不是 rules 層能解的
-
-**Deferred 到**: 後續 Worker 化 cascade 那波。在 rules / tests / 此處的文件,這個 gate 都明寫成 workflow gate (not security boundary)。memory: [[project_settlement_phase2_temporal]] 也記了同樣的 KNOWN HOLE 段落。
+**P1 closed 2026-05-20** — 之前的 `tripDeletionActive` cascade-window 是 KNOWN BROKEN(owner 可 raw SDK 開窗繞過 tombstone)。透過把 tripCascade 搬到 Worker `/cascade-trip-delete`(admin SDK bypass rules)+ `trips/{id}` 根 doc 與 `expenses/{id}` 子集合 doc 各上 `allow delete: if false` 封死兩條 integrity-critical hard-delete 路徑。**只有這兩種 doc 必走 Worker**;其他 subcollections(schedules / bookings / wishes / planning / settlements / invites / members)維持原本的 `canWrite` / `isTripOwner` / `memberOfDoc` client-side delete rules — 正常編輯 UX,沒有 replay-style invariant 要保護。`deletionStartedAt` 欄位 + helper 全數移除。10-day receipt-purge cron 同批 ship,跑 daily UTC 03:00。
 
 ### Sign-in prompt 時機
 

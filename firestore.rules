@@ -41,6 +41,9 @@ service cloud.firestore {
     function memberPath(tripId) {
       return /databases/$(database)/documents/trips/$(tripId)/members/$(uid());
     }
+    function tripPath(tripId) {
+      return /databases/$(database)/documents/trips/$(tripId);
+    }
     // Cross-doc canWrite kept for WRITE rules — writes are rare and
     // user-initiated (they tolerate the rare 1-shot 403 from rules-lag
     // far better than silent listener deaths). Switching writes to
@@ -78,7 +81,7 @@ service cloud.firestore {
     // side (returns true when neither doc has the field). The naive
     // `request.resource.data[field] == resource.data[field]` throws
     // "Property is undefined on object" if the field never existed --
-    // problematic for optional fields like trip.deletionStartedAt.
+    // problematic for optional fields (e.g. coverImage, icon).
     function unchanged(field) {
       return !(field in request.resource.data.diff(resource.data).affectedKeys());
     }
@@ -100,42 +103,21 @@ service cloud.firestore {
       return 'deletedAt' in d && d.deletedAt is timestamp;
     }
 
-    // KNOWN BROKEN -- NOT A SECURITY BOUNDARY. Accepted risk pending
-    // migration of tripCascade to a Worker / Admin SDK endpoint.
+    // ─── Cascade write-quiesce gate ──────────────────────────────
+    // The Worker /cascade-trip-delete writes `deletingAt` on the
+    // trip doc BEFORE draining subcollections. CREATE rules on every
+    // subcollection AND with this helper so that an in-flight editor
+    // on another device can't slip a new doc in between the Worker's
+    // subcollection-drain and trip-doc-delete steps -- that would
+    // leave an orphan that the next cascade retry no-ops past.
     //
-    // What this gate ACTUALLY achieves: it disarms "owner accidentally
-    // forgets to clean up" failure modes (5-minute self-expire) and
-    // prevents flag forgery via the `request.time` constraint on the
-    // trip update path.
-    //
-    // What it does NOT achieve: blocking a malicious / curious owner
-    // from using raw SDK to (a) open the window themselves via
-    // `updateDoc(trip, deletionStartedAt: serverTimestamp())`, then
-    // (b) `deleteDoc(expense)` for any chosen expense within those 5
-    // minutes -- erasing that expense's tombstone and demoting any
-    // associated settlement reason to UNKNOWN. Client-side rules
-    // CANNOT distinguish "legitimate cascade in progress" from "owner
-    // opening a window to selectively delete"; both write shapes are
-    // identical from a rules perspective.
-    //
-    // This is accepted risk for now because:
-    //   1. The trip owner already has the nuclear option (cascade the
-    //      entire trip, taking all tombstones with it). Selective-
-    //      delete is strictly weaker than nuclear delete and operates
-    //      within the owner's existing authority.
-    //   2. TripMate's data-integrity story between trip members already
-    //      relies on owner-honesty (an owner could lie about expenses
-    //      or recreate trips outside the system).
-    //   3. The proper fix -- moving tripCascade to a Worker endpoint
-    //      that uses Admin SDK + reverting `allow delete: if false`
-    //      for clients -- is deferred to the same CF/Worker
-    //      infrastructure batch as the 10-day receipt purge (see
-    //      project_settlement_phase2_temporal memory).
-    function tripDeletionActive(tripId) {
-      let tripDoc = get(/databases/$(database)/documents/trips/$(tripId));
-      return tripDoc.data.deletionStartedAt is timestamp
-          && tripDoc.data.deletionStartedAt <= request.time
-          && request.time - tripDoc.data.deletionStartedAt < duration.value(5, 'm');
+    // Cost: 1 cross-doc get() per subcollection CREATE eval. Creates
+    // are infrequent compared to reads/updates so the overhead is
+    // bounded. Updates / deletes do NOT need the gate -- the docs
+    // they target are being wiped by the same cascade anyway, so
+    // any write that lands during the window is benign.
+    function tripNotDeleting(tripId) {
+      return !('deletingAt' in get(/databases/$(database)/documents/trips/$(tripId)).data);
     }
 
     // ─── memberIds anti-injection guard ──────────────────────────
@@ -316,19 +298,35 @@ service cloud.firestore {
     // are cascaded by the OCR worker's /cascade-member endpoint
     // (service-account, bypasses rules) — see workers/ocr/src/cascade.ts.
     function memberSyncSelfAdd(tripId) {
+      // Set-shape constraint (the size-delta-only version was a P1 BOLA):
+      // new memberIds MUST be old ∪ {uid()}. Without `hasAll(old)` an
+      // invitee could rotate the roster in one write -- e.g. old=[A,B,C],
+      // new=[A,B,D,attacker]: size delta +1, uid in new, uid not in old
+      // -- all the old shape-only gates pass, but B is silently dropped
+      // and attacker gets in. The hasAll clause locks the new roster to
+      // be a superset of old, so the ONLY legal change is appending
+      // the caller's uid.
       return isSignedIn()
         && exists(memberPath(tripId))
         && changedOnly(['memberIds'])
         && uid() in request.resource.data.memberIds
         && !(uid() in resource.data.memberIds)
+        && request.resource.data.memberIds.hasAll(resource.data.memberIds)
         && request.resource.data.memberIds.size() == resource.data.memberIds.size() + 1;
     }
     // ownerSyncRemove: only the trip owner can strip a uid from memberIds.
     // memberIds is the only field allowed to change — content edits
     // route through the canWrite branch above.
+    //
+    // Same-class fix as memberSyncSelfAdd: size delta -1 alone was a
+    // BOLA -- owner raw SDK could `new=[ownerUid, attacker]` against
+    // `old=[ownerUid, B, C]` (size 3→2, delta -1 passes), removing
+    // B+C and inserting attacker in one write. hasAll pins new ⊆ old
+    // so the only legal change is dropping one uid, no swaps.
     function ownerSyncRemove(tripId) {
       return isTripOwner(tripId)
         && changedOnly(['memberIds'])
+        && resource.data.memberIds.hasAll(request.resource.data.memberIds)
         && request.resource.data.memberIds.size() == resource.data.memberIds.size() - 1;
     }
 
@@ -396,17 +394,17 @@ service cloud.firestore {
       //      validated server-side: forging it only causes the forger's
       //      own badge to fire incorrectly — no security impact, so
       //      the rule stays lenient.
-      //   5. Owner sets / clears `deletionStartedAt` (cascade-delete
-      //      window marker). MUST equal request.time on set so the
-      //      5-minute window check in `tripDeletionActive()` operates
-      //      on a server-stamped value, not a client-forged Timestamp.
-      //      Clearing to null is allowed (cancel cascade).
       allow update: if (
         isTripOwner(tripId)
         && unchanged('ownerId')
         && unchanged('createdAt')
         && unchanged('memberIds')
-        && unchanged('deletionStartedAt')
+        // deletingAt is the cascade write-quiesce marker -- only the
+        // Worker (admin SDK) is allowed to set it. memberSync/
+        // ownerSyncRemove/lastActivity paths already pin their change
+        // sets via changedOnly so they can't touch this field
+        // either; only the owner-edit path needs the explicit guard.
+        && unchanged('deletingAt')
         && request.resource.data.title is string
         && request.resource.data.title.size() > 0
         && request.resource.data.title.size() <= 100
@@ -419,15 +417,15 @@ service cloud.firestore {
         && request.resource.data.lastActivityByFeature.keys().hasOnly(
              ['schedule', 'bookings', 'expense', 'wish', 'planning']
            )
-      ) || (
-        isTripOwner(tripId)
-        && changedOnly(['deletionStartedAt', 'updatedAt'])
-        && (
-          request.resource.data.deletionStartedAt == null
-          || request.resource.data.deletionStartedAt == request.time
-        )
       );
-      allow delete: if isTripOwner(tripId);
+      // Trip doc hard-delete is forbidden for ALL clients. The only
+      // legitimate path is `/cascade-trip-delete` on the Worker, which
+      // uses Admin SDK and bypasses rules. Keeping `if isTripOwner`
+      // here would let an owner raw-SDK `deleteDoc(trip)` and orphan
+      // every subcollection + Storage object under it -- a strictly
+      // worse outcome than going through the Worker. `if false` forces
+      // the only-path-is-Worker invariant at the rules layer.
+      allow delete: if false;
 
       match /members/{memberId} {
         // get: anyone can fetch their OWN member doc, even when they're
@@ -458,16 +456,44 @@ service cloud.firestore {
           (memberId == uid()
             && request.resource.data.userId == uid()
             && request.resource.data.role == 'owner'
-            && request.resource.data.memberIds == [uid()])
+            && request.resource.data.memberIds == [uid()]
+            // BOLA fix: bind this owner-bootstrap member doc to the
+            // SAME-BATCH trip create. Without these two gates a
+            // stranger who knows any existing tripId can `setDoc`
+            // a member doc claiming role='owner' (the previous
+            // version of this branch checked nothing trip-side),
+            // and canWrite() would then trust the forged member
+            // doc → full read/write across the victim's trip.
+            // `!exists(tripPath)` rejects writes against trips
+            // that already exist; `getAfter(tripPath).data.ownerId
+            // == uid()` confirms the in-batch trip doc names the
+            // caller as owner (the trip-create rule independently
+            // enforces ownerId == uid(), so this is anchored to
+            // the trip rule's own truth source). memberIds check
+            // pins the bootstrap solo-roster shape, matching the
+            // trip create rule's `memberIds == [uid()]`.
+            && !exists(tripPath(tripId))
+            && getAfter(tripPath(tripId)).data.ownerId == uid()
+            && getAfter(tripPath(tripId)).data.memberIds == [uid()])
           || (
               // Owner manually adds a member (Phase 3 feature, not yet
               // wired in client). Lock userId / role so the owner can't
               // bypass the role allowlist or write mismatched identity.
+              // tripNotDeleting blocks mid-cascade additions that would
+              // leave a stray member doc surviving the cascade window.
               isTripOwner(tripId)
+              && tripNotDeleting(tripId)
               && request.resource.data.userId == memberId
               && request.resource.data.role in ['editor', 'viewer']
             )
           || (memberId == uid()
+              // Invite redeem. tripNotDeleting blocks a friend
+              // redeeming an invite during the owner's cascade --
+              // they'd otherwise see "joined" UX briefly, then
+              // their member doc would get wiped along with
+              // everyone else's. Reject upfront so they get a
+              // clean error instead of confusing state churn.
+              && tripNotDeleting(tripId)
               && request.resource.data.userId == uid()
               && request.resource.data.role in ['editor', 'viewer']
               && exists(invitePath(tripId, request.resource.data.inviteToken))
@@ -497,6 +523,7 @@ service cloud.firestore {
         // Owner creates invites. Required fields shape + role allowlist; the
         // invite must not be backdated past expiry.
         allow create: if isTripOwner(tripId)
+                      && tripNotDeleting(tripId)
                       && request.resource.data.tripId == tripId
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.role in ['editor', 'viewer']
@@ -522,6 +549,7 @@ service cloud.firestore {
         // Type / size / enum checks mirror the client Zod schema as
         // defense-in-depth against REST-API misuse.
         allow create: if canWrite(tripId)
+                      && tripNotDeleting(tripId)
                       && request.resource.data.tripId == tripId
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()
@@ -550,6 +578,7 @@ service cloud.firestore {
       match /expenses/{expenseId} {
         allow read:   if memberOfDoc();
         allow create: if canWrite(tripId)
+                      && tripNotDeleting(tripId)
                       && request.resource.data.tripId == tripId
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()
@@ -563,12 +592,43 @@ service cloud.firestore {
                       && request.resource.data.splits.size() <= 50
                       && request.resource.data.category in
                            ['food','transport','accommodation','activity','shopping','other']
+                      // Settlement-engine inputs need type discipline.
+                      // paidBy / currency reach computeBalancesFull
+                      // directly; raw-SDK writes with the wrong type
+                      // would crash the chronological replay or produce
+                      // garbage attribution. Note has no engine impact
+                      // but caps DoS / storage cost.
+                      && request.resource.data.paidBy is string
+                      && request.resource.data.paidBy in request.resource.data.memberIds
+                      && request.resource.data.currency is string
+                      && request.resource.data.currency.size() == 3
+                      && (!('note' in request.resource.data)
+                            || (request.resource.data.note is string
+                                && request.resource.data.note.size() <= 1000))
+                      // createdAt pinned to request.time -- without
+                      // this, a raw-SDK editor could backdate an
+                      // expense before any settlement and shift
+                      // chronological-replay attribution (e.g. flip
+                      // an OVERPAYMENT classification to
+                      // EXPENSE_DELETED). updatedAt likewise pinned
+                      // so activity-badge ordering stays honest.
+                      && request.resource.data.createdAt == request.time
+                      && request.resource.data.updatedAt == request.time
                       // deletedAt MUST be present AND null on create.
                       // Forcing the field at create-time makes future
                       // `where('deletedAt', '==', null)` server-side
                       // filtering work without missing-field exclusions.
                       && 'deletedAt' in request.resource.data
                       && request.resource.data.deletedAt == null
+                      // receiptPurgedAt MUST be present + null on
+                      // create. The Worker cron filters purge
+                      // candidates by `receiptPurgedAt == null AND
+                      // deletedAt < cutoff`; docs missing the field
+                      // would never be visited (Firestore equality
+                      // doesn't match missing values). Set + queryable
+                      // from day one of the expense's life.
+                      && 'receiptPurgedAt' in request.resource.data
+                      && request.resource.data.receiptPurgedAt == null
                       && validExpenseReceipt(tripId, expenseId);
         allow update: if (
           canWrite(tripId)
@@ -576,6 +636,12 @@ service cloud.firestore {
           && unchanged('createdBy')
           && unchanged('createdAt')
           && unchanged('memberIds')
+          // receiptPurgedAt is Worker-controlled (cron stamps it via
+          // Admin SDK, bypassing rules). Clients MUST NOT touch it --
+          // forging it to a Timestamp would make the doc invisible to
+          // the cron filter and leak the receipt. Create rule ensures
+          // the field is always seeded null, so unchanged() is enough.
+          && unchanged('receiptPurgedAt')
           && request.resource.data.updatedBy == uid()
           && request.resource.data.title is string
           && request.resource.data.title.size() > 0
@@ -586,6 +652,19 @@ service cloud.firestore {
           && request.resource.data.splits.size() <= 50
           && request.resource.data.category in
                ['food','transport','accommodation','activity','shopping','other']
+          // Mirror the create-rule type discipline on settlement-engine
+          // inputs. Same rationale as create.
+          && request.resource.data.paidBy is string
+          && request.resource.data.paidBy in request.resource.data.memberIds
+          && request.resource.data.currency is string
+          && request.resource.data.currency.size() == 3
+          && (!('note' in request.resource.data)
+                || (request.resource.data.note is string
+                    && request.resource.data.note.size() <= 1000))
+          // updatedAt pinned to request.time so activity-badge ordering
+          // stays honest (forging it would let a raw-SDK writer make
+          // their edit "older" / "newer" than it actually was).
+          && request.resource.data.updatedAt == request.time
           // Soft-delete invariants (settlement phase-2). See
           // expenseAlive / expenseTombstoned helpers at rules root.
           //
@@ -596,18 +675,29 @@ service cloud.firestore {
             'deletedAt' in resource.data
             && !('deletedAt' in request.resource.data)
           )
-          // 2. deletedAt transitions:
-          //    - alive → alive: deletedAt stays null/absent
+          // 2. deletedAt transitions (four explicit branches; the
+          //    original collapsed "alive→alive" and "restore" into a
+          //    single `expenseAlive(target)` predicate which let raw-
+          //    SDK editors restore tombstones with no time limit —
+          //    after the cron purged the receipt at 10d, restore
+          //    would resurrect the expense pointing at a deleted
+          //    Storage object):
+          //    - alive → alive: content edit, no deletedAt change
           //    - alive → tombstoned: target must equal request.time
           //      (no backdate / forward-date tampering)
-          //    - tombstoned → null: restore. CURRENTLY unbounded at
-          //      the rules layer; planned 10-day window + receipt
-          //      retention lands when Cloud Function purge ships
-          //      (see project_settlement_phase2_temporal memory)
+          //    - tombstoned → null (restore): ONLY within 10 days
+          //      of the tombstone. Same window as the receipt-purge
+          //      cron, so receipt presence ↔ restorable expense
+          //      stays an invariant.
           //    - tombstoned → same Timestamp: no-op tombstone update
           && (
-            expenseAlive(request.resource.data)
-            || (expenseAlive(resource.data) && request.resource.data.deletedAt == request.time)
+            (expenseAlive(resource.data)
+              && expenseAlive(request.resource.data))
+            || (expenseAlive(resource.data)
+                && request.resource.data.deletedAt == request.time)
+            || (expenseTombstoned(resource.data)
+                && expenseAlive(request.resource.data)
+                && request.time < resource.data.deletedAt + duration.value(10, 'd'))
             || (expenseTombstoned(resource.data)
                 && request.resource.data.deletedAt == resource.data.deletedAt)
           )
@@ -622,18 +712,20 @@ service cloud.firestore {
           )
           && validExpenseReceipt(tripId, expenseId)
         ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
-        // Hard delete: owner-only AND only inside the trip's active
-        // cascade-delete window. ACCEPTED RISK: owner can open the
-        // window via raw SDK and selectively delete a single expense
-        // (see `tripDeletionActive` doc -- KNOWN BROKEN, not a security
-        // boundary). This rule is the WORKFLOW GATE for `tripCascade`,
-        // not enforcement against a malicious owner. Proper closure
-        // moves cascade to a Worker / Admin SDK endpoint and reverts
-        // this clause back to `allow delete: if false`.
+        // Hard delete from clients is forbidden -- soft-delete via
+        // `deletedAt` is the only path. This was previously a "workflow
+        // gate" tied to a deletionStartedAt window so the client-side
+        // trip cascade could batch-delete expenses, but the gate was
+        // KNOWN BROKEN (owner could open the window themselves and
+        // selectively erase one expense, corrupting settlement
+        // chronological replay). With trip cascade moved to the
+        // Worker (`/cascade-trip-delete` uses Admin SDK, bypasses
+        // rules), no legitimate client path needs hard-delete.
         //
-        // Future hard-purge of aged tombstones runs through Admin SDK
-        // (scheduled CF) which bypasses rules entirely.
-        allow delete: if isTripOwner(tripId) && tripDeletionActive(tripId);
+        // Receipt purge (10-day post-soft-delete) also runs through
+        // Admin SDK (scheduled cron in workers/ocr) and clears the
+        // receipt fields via update; it doesn't hard-delete the doc.
+        allow delete: if false;
       }
 
       match /wishes/{wishId} {
@@ -649,6 +741,7 @@ service cloud.firestore {
         // trip.memberIds, no other doc would have them, and they'd be
         // blocked everywhere else.
         allow create: if exists(memberPath(tripId))
+                      && tripNotDeleting(tripId)
                       && request.resource.data.tripId == tripId
                       && request.resource.data.proposedBy == uid()
                       && request.resource.data.updatedBy == uid()
@@ -724,6 +817,7 @@ service cloud.firestore {
       match /bookings/{bookingId} {
         allow read:   if memberOfDoc();
         allow create: if canWrite(tripId)
+                      && tripNotDeleting(tripId)
                       && request.resource.data.tripId == tripId
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()
@@ -792,19 +886,29 @@ service cloud.firestore {
         // resolved by then.
         allow read:   if exists(memberPath(tripId));
         allow create: if exists(memberPath(tripId))
+                      && tripNotDeleting(tripId)
                       && request.resource.data.tripId == tripId
                       && request.resource.data.settledBy == uid()
                       && request.resource.data.toUid == uid()
                       && request.resource.data.amount is int
                       && request.resource.data.amount > 0
                       && request.resource.data.currency is string
+                      && request.resource.data.currency.size() == 3
                       // fromUid must be a real, distinct trip member —
                       // otherwise a receiver could fabricate
                       // "Charlie 還我 ¥100" records that pollute the
                       // settlement audit log without Charlie's input.
                       && request.resource.data.fromUid is string
                       && request.resource.data.fromUid != uid()
-                      && exists(/databases/$(database)/documents/trips/$(tripId)/members/$(request.resource.data.fromUid));
+                      && exists(/databases/$(database)/documents/trips/$(tripId)/members/$(request.resource.data.fromUid))
+                      // createdAt pinned to request.time. The settlement
+                      // engine sorts settlements by createdAt for the
+                      // chronological replay (see `buildOrphanReasonMap`
+                      // in services/settlement.ts) -- a raw-SDK writer
+                      // could otherwise backdate a settlement to before
+                      // any expense and silently flip orphan reasons
+                      // from OVERPAYMENT to EXPENSE_DELETED.
+                      && request.resource.data.createdAt == request.time;
         // Either the recorder undoing, or the trip owner moderating.
         allow delete: if exists(memberPath(tripId))
                       && (resource.data.settledBy == uid() || isTripOwner(tripId));
@@ -818,6 +922,7 @@ service cloud.firestore {
       match /planning/{itemId} {
         allow read:   if memberOfDoc();
         allow create: if exists(memberPath(tripId))
+                      && tripNotDeleting(tripId)
                       && request.resource.data.tripId == tripId
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()

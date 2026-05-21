@@ -51,10 +51,20 @@ export async function getAdminToken(serviceAccountJson: string): Promise<string>
   const exp = iat + 3600  // 1h is the max Google accepts
 
   // Service-account self-signed JWT → exchanged for an access token.
-  // Scope = datastore (Firestore REST API admin scope).
+  // Scopes:
+  //   - datastore             (Firestore REST: cascade member/trip-delete)
+  //   - devstorage.read_write (GCS REST: list/delete trip Storage assets
+  //                            for trip-cascade + 10-day receipt purge)
+  // Both scopes go on the SAME access token so we keep one cache slot —
+  // splitting per-scope would double JWT-sign + token-exchange overhead
+  // for no real isolation benefit (the underlying service account already
+  // has full IAM on both APIs).
   const key = await importPKCS8(sa.private_key, 'RS256')
   const jwt = await new SignJWT({
-    scope: 'https://www.googleapis.com/auth/datastore',
+    scope: [
+      'https://www.googleapis.com/auth/datastore',
+      'https://www.googleapis.com/auth/devstorage.read_write',
+    ].join(' '),
   })
     .setProtectedHeader({ alg: 'RS256', typ: 'JWT' })
     .setIssuer(sa.client_email)

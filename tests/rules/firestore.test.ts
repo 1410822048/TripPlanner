@@ -105,8 +105,114 @@ describe('/trips/{tripId} write', () => {
     )
   })
 
-  test('owner can delete their trip', async () => {
-    await assertSucceeds(deleteDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID)))
+  test('client cannot set deletingAt on trip update (Worker-only field)', async () => {
+    // The quiesce flag is the cascade write-lock. If owners could
+    // set it themselves via raw SDK they'd freeze their own trip
+    // from any new creates -- and could selectively unfreeze too,
+    // which would be a new form of the old `deletionStartedAt`
+    // KNOWN BROKEN race. Rule pins unchanged('deletingAt') on the
+    // owner-edit path so only the Worker (admin SDK) writes it.
+    await assertFails(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'trips', TRIP_ID),
+        { deletingAt: serverTimestamp() },
+      ),
+    )
+  })
+
+  test('subcollection CREATE is rejected when trip.deletingAt is set', async () => {
+    // The bug we're regression-guarding: an editor on device B
+    // creates a new expense AFTER device A triggered cascade, in
+    // the window between Worker's expense-drain and trip-doc-delete.
+    // Without this gate the new doc survives the cascade and
+    // becomes an orphan. With the gate every subcollection CREATE
+    // checks `tripNotDeleting(tripId)` and rejects mid-cascade
+    // writes at the rules layer.
+    await env.withSecurityRulesDisabled(async ctx => {
+      await updateDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID),
+        { deletingAt: serverTimestamp() },
+      )
+    })
+    const expensePayload = {
+      tripId: TRIP_ID,
+      title:  'mid-cascade race',
+      amount: 100,
+      currency: 'JPY',
+      category: 'food',
+      paidBy: EDITOR_UID,
+      splits: [{ memberId: EDITOR_UID, amount: 100 }],
+      date: '2026-05-21',
+      memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+      createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+      deletedAt: null,
+      receiptPurgedAt: null,
+    }
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-race'),
+        expensePayload,
+      ),
+    )
+    // Restore the trip to non-deleting state so subsequent tests
+    // in this file aren't accidentally gated (env reuses the seed).
+    await env.withSecurityRulesDisabled(async ctx => {
+      await updateDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID),
+        { deletingAt: deleteField() },
+      )
+    })
+  })
+
+  test('invite redeem CREATE is rejected when trip.deletingAt is set', async () => {
+    // Members create has three paths; the bootstrap path (owner
+    // self-add at trip creation) intentionally skips tripNotDeleting
+    // because the trip doc is created in the same batch and the
+    // gate's cross-doc get would not yet see the staged write.
+    // Paths 2 (owner manual-add) and 3 (invite redeem) DO get the
+    // gate -- otherwise a friend redeeming an invite during the
+    // owner's cascade would see "joined" then immediately get
+    // wiped, plus the stray member doc could survive timing edges.
+    const INVITE_TOKEN = 'invite-during-cascade'
+    await env.withSecurityRulesDisabled(async ctx => {
+      // Seed a valid invite and pin the trip to deleting state.
+      const now = Timestamp.now()
+      const future = Timestamp.fromMillis(now.toMillis() + 24 * 3600 * 1000)
+      await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'invites', INVITE_TOKEN), {
+        tripId: TRIP_ID, tripTitle: 'Test', tripIcon: '✈️',
+        role: 'editor', createdBy: OWNER_UID,
+        createdAt: now, expiresAt: future,
+      })
+      await updateDoc(doc(ctx.firestore(), 'trips', TRIP_ID), { deletingAt: serverTimestamp() })
+    })
+    await assertFails(
+      setDoc(
+        doc(asStranger(env).firestore(), 'trips', TRIP_ID, 'members', STRANGER_UID),
+        {
+          tripId:      TRIP_ID,
+          userId:      STRANGER_UID,
+          displayName: 'Stranger',
+          role:        'editor',
+          inviteToken: INVITE_TOKEN,
+          joinedAt:    serverTimestamp(),
+          memberIds:   [STRANGER_UID],
+        },
+      ),
+    )
+    // Restore trip state for subsequent tests.
+    await env.withSecurityRulesDisabled(async ctx => {
+      await updateDoc(doc(ctx.firestore(), 'trips', TRIP_ID), { deletingAt: deleteField() })
+    })
+  })
+
+  test('owner cannot raw-SDK delete the trip doc (trip-root delete is Worker-exclusive)', async () => {
+    // Post-P1-close, the only legitimate trip-delete path is
+    // /cascade-trip-delete on the Worker (admin SDK, bypasses rules).
+    // Allowing client-side `deleteDoc(trip)` would let an owner
+    // delete just the trip doc and orphan every subcollection +
+    // Storage object — strictly worse than the Worker cascade.
+    await assertFails(deleteDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID)))
   })
 
   test('editor cannot delete the trip', async () => {
@@ -456,6 +562,11 @@ describe('/trips/{tripId}/expenses receipt shape', () => {
       updatedAt: serverTimestamp(),
       // phase-2: create rule requires deletedAt present + null.
       deletedAt: null,
+      // receipt-purge watermark: cron filter requires this be present
+      // on every doc so the equality `receiptPurgedAt == null` query
+      // can match. New expenses always seed it null; cron stamps a
+      // Timestamp post-purge.
+      receiptPurgedAt: null,
       receipt,
     }
   }
@@ -503,6 +614,8 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
       updatedAt: serverTimestamp(),
       // Default to alive-on-create (deletedAt MUST be present + null).
       deletedAt: null,
+      // receipt-purge marker also required by create rule.
+      receiptPurgedAt: null,
       ...overrides,
     }
   }
@@ -535,6 +648,36 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
     )
   })
 
+  test('create WITHOUT receiptPurgedAt is rejected (field is required)', async () => {
+    // The cron's purge candidate filter is
+    // `receiptPurgedAt == null AND deletedAt < cutoff`. Firestore
+    // equality on null does NOT match missing-field docs, so an
+    // expense created without this field would NEVER be visited
+    // by the cron -- its receipt would leak. Schema contract
+    // enforces presence on create.
+    const { receiptPurgedAt: _drop, ...withoutMarker } = expenseBase()
+    void _drop
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-no-marker'),
+        withoutMarker,
+      ),
+    )
+  })
+
+  test('create with receiptPurgedAt forged to a Timestamp is rejected', async () => {
+    // Only the Worker cron (Admin SDK, bypasses rules) is allowed
+    // to write a Timestamp into receiptPurgedAt. A client doing so
+    // on create would skip the candidate set forever -- receipt
+    // bytes leak. Only null is acceptable from clients.
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-forge-1'),
+        expenseBase({ receiptPurgedAt: serverTimestamp() }),
+      ),
+    )
+  })
+
   test('editor can soft-delete (update with deletedAt=serverTimestamp)', async () => {
     const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-3')
     await setDoc(ref, expenseBase())
@@ -560,11 +703,75 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
     )
   })
 
-  test('editor can clear deletedAt to null (restore path neutrally allowed)', async () => {
+  test('editor can clear deletedAt to null (alive→alive no-op restore path neutrally allowed)', async () => {
     const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-4')
     await setDoc(ref, expenseBase({ deletedAt: null }))
+    // The interesting branches (true restore from tombstone) are
+    // covered by the two backdated-tombstone tests further down; this
+    // one only pins the trivial alive→alive case (writing deletedAt:
+    // null over an already-null value, e.g. a `restore` UI no-op on
+    // a not-yet-tombstoned doc).
     await assertSucceeds(
       updateDoc(ref, { deletedAt: null, updatedBy: EDITOR_UID, updatedAt: serverTimestamp() }),
+    )
+  })
+
+  test('editor can restore a tombstoned expense INSIDE the 10-day window', async () => {
+    // Seed a doc whose tombstone is 5 days old. We bypass rules for the
+    // seed because the rule-respecting path would force deletedAt ==
+    // request.time, defeating the backdate test.
+    const FIVE_DAYS_AGO = Timestamp.fromMillis(Date.now() - 5 * 24 * 3600 * 1000)
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'expenses', 'e-restore-fresh'),
+        expenseBase({ deletedAt: FIVE_DAYS_AGO }),
+      )
+    })
+    // 5 days < 10 days → restore allowed. The receipt-purge cron only
+    // touches docs older than 10 days, so the restored expense is
+    // guaranteed to still have its receipt intact.
+    await assertSucceeds(
+      updateDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-restore-fresh'),
+        { deletedAt: null, updatedBy: EDITOR_UID, updatedAt: serverTimestamp() },
+      ),
+    )
+  })
+
+  test('client CANNOT forge receiptPurgedAt to a Timestamp on update (would hide doc from cron)', async () => {
+    // The whole point of the marker: only the admin-SDK cron should
+    // be able to write a real Timestamp into receiptPurgedAt. A
+    // client forging a Timestamp here would make the doc invisible
+    // to the cron's `receiptPurgedAt == null` filter -> receipt
+    // bytes leak. Rule pins `unchanged('receiptPurgedAt')` on the
+    // expense update path so clients can't touch it at all.
+    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-legacy-2')
+    await setDoc(ref, expenseBase())
+    await assertFails(
+      updateDoc(ref, {
+        receiptPurgedAt: serverTimestamp(),
+        updatedBy:       EDITOR_UID,
+        updatedAt:       serverTimestamp(),
+      }),
+    )
+  })
+
+  test('editor CANNOT restore a tombstoned expense AFTER the 10-day window', async () => {
+    // Seed a tombstone 11 days old. By that point the cron has purged
+    // the receipt; allowing restore would resurrect an expense pointing
+    // at a deleted Storage object → broken invariant + 404s in UI.
+    const ELEVEN_DAYS_AGO = Timestamp.fromMillis(Date.now() - 11 * 24 * 3600 * 1000)
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'expenses', 'e-restore-stale'),
+        expenseBase({ deletedAt: ELEVEN_DAYS_AGO }),
+      )
+    })
+    await assertFails(
+      updateDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-restore-stale'),
+        { deletedAt: null, updatedBy: EDITOR_UID, updatedAt: serverTimestamp() },
+      ),
     )
   })
 
@@ -585,65 +792,92 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
   })
 
   // ─────────────────────────────────────────────────────────────
-  // The next three tests describe the CASCADE WINDOW workflow gate,
-  // NOT a security boundary. The trip owner can open the window
-  // themselves via raw SDK and selectively hard-delete individual
-  // expenses inside the 5-minute window -- this is accepted risk
-  // until tripCascade moves to a Worker / Admin SDK endpoint (see
-  // KNOWN BROKEN note in firestore.rules `tripDeletionActive`
-  // helper). Tests below cover the workflow contract:
+  // P1 closure (cascade Worker migration shipped 2026-05-20):
+  // hard-delete is rejected for ALL clients including the owner.
+  // The trip cascade workflow now goes through the Worker's
+  // /cascade-trip-delete endpoint which uses Admin SDK to bypass
+  // rules entirely. The result is that the chronological-replay
+  // tombstone invariant is no longer bypassable by any client
+  // path; settlement orphan classification is sound for every
+  // soft-deleted expense.
   //
-  //   - default-closed window blocks accidental hard-delete
-  //   - explicitly opened window allows tripCascade to run
-  //   - forged Timestamps don't open the window (raw `request.time`
-  //     binding survives -- but doesn't matter when owner can just
-  //     pass `serverTimestamp()` anyway)
-  //
-  // The actual security-relevant test -- "owner can or cannot
-  // bypass tombstone via raw SDK" -- will return when the Worker
-  // migration ships and the rule reverts to `allow delete: if false`.
+  // Tests below cover:
+  //   - owner cannot hard-delete via raw SDK (closed P1)
+  //   - editor vandalism via update is permitted (collaboration
+  //     model), but tombstone freeze still blocks vandalism on
+  //     already-tombstoned docs (settlement replay integrity)
   // ─────────────────────────────────────────────────────────────
 
-  test('owner hard-delete WITHOUT cascade window is rejected (workflow gate, not security)', async () => {
+  test('owner hard-delete is rejected (P1 closed; all clients must go through Worker cascade)', async () => {
     const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-6b')
     await setDoc(ref, expenseBase())
-    // Without the cascade window open, even the owner can't hard-delete.
-    // This is the default-safe state that prevents "owner did
-    // updateDoc/deleteDoc by accident outside tripCascade".
+    // Pre-P1-fix this was conditionally allowed via a deletionStartedAt
+    // window on the trip doc. Post-fix the rule is `allow delete: if
+    // false` -- no client (including owner) can hard-delete from
+    // Firestore directly. Cascade workflow runs through the Worker
+    // (/cascade-trip-delete) which uses Admin SDK and bypasses rules.
     await assertFails(
       deleteDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-6b')),
     )
   })
 
-  test('owner hard-delete INSIDE cascade window is allowed (supports tripCascade workflow)', async () => {
-    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-6c')
+  test('editor vandalism via update is permitted but content fields must still validate', async () => {
+    // Collaboration model: editors CAN edit each other's expenses.
+    // What they can't do is effectively erase the doc by clearing
+    // required fields -- amount/title/splits validation rejects the
+    // "set everything to zero" attack. This codifies the existing
+    // type/value guards as a positive invariant in case anyone ever
+    // relaxes them.
+    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-vandal-1')
     await setDoc(ref, expenseBase())
-    // Open the cascade-delete window on the parent trip doc -- this is
-    // the path tripCascade.ts walks before deleting the trip doc.
-    // ACCEPTED RISK: nothing here prevents an owner who is NOT actually
-    // running tripCascade from doing the same `updateDoc` + selective
-    // `deleteDoc`. The Worker migration is the proper closure.
-    await updateDoc(
-      doc(asOwner(env).firestore(), 'trips', TRIP_ID),
-      { deletionStartedAt: serverTimestamp() },
-    )
+    // Plausible vandalism: rename title to '.', set amount to 1, point
+    // splits at self. All fields still satisfy the schema, so the rule
+    // accepts it. This is "vandalism not erasure" -- recoverable via
+    // edit history, owner-can-kick-editor, etc.
     await assertSucceeds(
-      deleteDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-6c')),
+      updateDoc(ref, {
+        title:     '.',
+        amount:    1,
+        splits:    [{ memberId: EDITOR_UID, amount: 1 }],
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+    // Erasure attempt: zero amount, empty title. Rejected by the
+    // amount > 0 / title.size() > 0 validators -- closes the
+    // "update-as-hard-delete" backdoor that #4 reviewer flagged.
+    await assertFails(
+      updateDoc(ref, {
+        title:     '',
+        amount:    0,
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
     )
   })
 
-  test('client-forged deletionStartedAt Timestamp is rejected (request.time binding)', async () => {
-    // Rule requires `deletionStartedAt == request.time` on set. A
-    // backdated / future-dated Timestamp via Timestamp.fromMillis()
-    // fails this check. NOTE: this only closes the "set the flag to a
-    // bogus value" attack -- an owner who supplies serverTimestamp()
-    // still successfully opens the window, which the threat model
-    // already accepts.
+  test('content mutation on a tombstoned expense is rejected even if values look valid', async () => {
+    // Once tombstoned, the doc is frozen at audit + deletedAt fields.
+    // Bundling a "valid-looking" content edit with the soft-delete
+    // would otherwise let an attacker do: soft-delete + rewrite
+    // splits/amount, then later restore -> settlement replay sees
+    // fabricated history. The tombstone-freeze clause
+    // (changedOnly(['deletedAt','updatedBy','updatedAt']))
+    // blocks this.
+    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-vandal-2')
+    await setDoc(ref, expenseBase())
+    await updateDoc(ref, {
+      deletedAt: serverTimestamp(),
+      updatedBy: EDITOR_UID,
+      updatedAt: serverTimestamp(),
+    })
     await assertFails(
-      updateDoc(
-        doc(asOwner(env).firestore(), 'trips', TRIP_ID),
-        { deletionStartedAt: Timestamp.fromMillis(1_000_000) },
-      ),
+      updateDoc(ref, {
+        amount:    99999,
+        splits:    [{ memberId: EDITOR_UID, amount: 99999 }],
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
     )
   })
 
@@ -864,6 +1098,76 @@ describe('fresh trip — immediate listener attach (post-batch-commit)', () => {
     await assertSucceeds(getDocs(filtered('planning')))                                          // usePlanning
     await assertSucceeds(getDocs(filtered('members')))                                           // useMembers
   })
+
+  test('stranger CANNOT bootstrap an owner-role member doc against an existing trip (BOLA)', async () => {
+    // The vulnerability we're guarding: pre-fix, the bootstrap
+    // branch only checked the new member doc's shape (memberId ==
+    // uid, role == owner, memberIds == [uid]) without binding it
+    // to a same-batch trip create. Anyone who knew a victim's
+    // tripId could `setDoc(/trips/{tripId}/members/{attackerUid},
+    // { role: 'owner', ... })` standalone — that would pass the
+    // shape-only check, and canWrite()/canWriteFiles() would then
+    // trust the forged member doc → cross-trip data access.
+    //
+    // Fix: bootstrap branch now requires
+    //   !exists(tripPath(tripId))                      ← trip not yet committed
+    //   && getAfter(tripPath(tripId)).data.ownerId == uid()
+    //   && getAfter(tripPath(tripId)).data.memberIds == [uid()]
+    // The first clause rejects writes against existing trips; the
+    // last two anchor to the trip-create rule's own ownerId
+    // enforcement, so an attacker can't fake their way through
+    // even with a same-batch trip rewrite (trip create requires
+    // ownerId == uid()).
+    await assertFails(
+      setDoc(
+        doc(asStranger(env).firestore(), 'trips', TRIP_ID, 'members', STRANGER_UID),
+        {
+          tripId:      TRIP_ID,
+          userId:      STRANGER_UID,
+          displayName: 'attacker',
+          role:        'owner',
+          memberIds:   [STRANGER_UID],
+          joinedAt:    serverTimestamp(),
+        },
+      ),
+    )
+  })
+
+  test('attacker CANNOT batch.commit(victim-tripId + own-owner-member) to forge ownership', async () => {
+    // Defence-in-depth: even with a batch that tries to ALSO write
+    // the trip doc, the trip-create rule independently rejects
+    // because the target tripId already exists (existing-doc
+    // writes go through update rule, which doesn't allow path-1
+    // for non-owner) AND because trip-create's
+    // `ownerId == uid()` check would force ownerId to attacker.
+    // The combined effect of bootstrap !exists + trip create rule
+    // makes the BOLA unreachable via any write shape.
+    // Bind to a single Firestore instance so writeBatch + doc refs
+    // share the same context (each asStranger() call mints a fresh
+    // context; rules-unit-testing rejects cross-instance refs).
+    const strangerDb = asStranger(env).firestore()
+    const batch = writeBatch(strangerDb)
+    batch.set(doc(strangerDb, 'trips', TRIP_ID), {
+      title:       'pwn',
+      destination: 'X',
+      ownerId:     STRANGER_UID,
+      memberIds:   [STRANGER_UID],
+      currency:    'JPY',
+      startDate:   serverTimestamp(),
+      endDate:     serverTimestamp(),
+      createdAt:   serverTimestamp(),
+      updatedAt:   serverTimestamp(),
+    })
+    batch.set(doc(strangerDb, 'trips', TRIP_ID, 'members', STRANGER_UID), {
+      tripId:      TRIP_ID,
+      userId:      STRANGER_UID,
+      displayName: 'attacker',
+      role:        'owner',
+      memberIds:   [STRANGER_UID],
+      joinedAt:    serverTimestamp(),
+    })
+    await assertFails(batch.commit())
+  })
 })
 
 // ─── Members collection-group LIST gate ────────────────────────────
@@ -1012,6 +1316,136 @@ describe('/trips/{tripId}/bookings memberSync (self-add path)', () => {
       updateDoc(
         doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_ID),
         { memberIds: [OWNER_UID, EDITOR_UID] },  // owner removes VIEWER
+      ),
+    )
+  })
+
+  test('memberSyncSelfAdd CANNOT swap roster while adding self (P1 BOLA regression)', async () => {
+    // Attack the size-delta-only version permitted: viewer (not yet
+    // in BOOKING_NO_VIEWER's memberIds) writes a "new" roster that
+    // adds themselves PLUS a stranger, dropping one existing member.
+    // Old check: size +1, uid in new, uid not in old → all pass.
+    // Fix: hasAll(old) forces new ⊇ old, so dropping an existing
+    // uid AND adding a stranger in the same write is rejected.
+    //
+    // BOOKING_NO_VIEWER_ID seeded with memberIds=[OWNER_UID,EDITOR_UID].
+    // Attack write: [OWNER_UID, VIEWER_UID, STRANGER_UID] -- size +1
+    // but drops EDITOR_UID and inserts STRANGER_UID.
+    await assertFails(
+      updateDoc(
+        doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_NO_VIEWER_ID),
+        { memberIds: [OWNER_UID, VIEWER_UID, STRANGER_UID] },
+      ),
+    )
+  })
+
+  test('ownerSyncRemove CANNOT swap roster while removing one (same-class fix)', async () => {
+    // Same family as the memberSyncSelfAdd BOLA: size delta -1
+    // alone would let an owner remove one member AND add a
+    // stranger in one write. hasAll(new) forces new ⊆ old.
+    //
+    // BOOKING_ID seeded with [OWNER_UID, EDITOR_UID, VIEWER_UID].
+    // Attack: [OWNER_UID, EDITOR_UID, STRANGER_UID] -- size 3→3
+    // actually fails size check; try size 3→2: [OWNER_UID, STRANGER_UID]
+    // drops EDITOR + VIEWER and adds STRANGER (size delta -1 ish).
+    // Simpler: same size, different shape would fail size check
+    // alone, so test the "drop one + add stranger" both at -1.
+    await assertFails(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_ID),
+        // size 3 → 2, dropping EDITOR + VIEWER, adding STRANGER.
+        { memberIds: [OWNER_UID, STRANGER_UID] },
+      ),
+    )
+  })
+})
+
+// ─── Settlement / expense financial integrity (engine input gates) ─
+describe('expense + settlement create: settlement-engine input validation', () => {
+  test('expense create with paidBy NOT in memberIds is rejected', async () => {
+    // computeBalancesFull reads paidBy directly into gross[from][to]
+    // tables. A raw-SDK writer pointing paidBy at a non-member uid
+    // would create dangling debt edges -- the rule now requires
+    // paidBy be in the doc's own memberIds.
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-bad-paidby'),
+        {
+          tripId: TRIP_ID, title: 'x',
+          amount: 100, currency: 'JPY', category: 'food',
+          paidBy: STRANGER_UID,            // <-- not in memberIds
+          splits: [{ memberId: EDITOR_UID, amount: 100 }],
+          date: '2026-05-21',
+          memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+          createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+          createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+          deletedAt: null, receiptPurgedAt: null,
+        },
+      ),
+    )
+  })
+
+  test('expense create with non-3-char currency is rejected', async () => {
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-bad-ccy'),
+        {
+          tripId: TRIP_ID, title: 'x',
+          amount: 100, currency: 'JapaneseYen',   // <-- not 3 chars
+          category: 'food',
+          paidBy: EDITOR_UID,
+          splits: [{ memberId: EDITOR_UID, amount: 100 }],
+          date: '2026-05-21',
+          memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+          createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+          createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+          deletedAt: null, receiptPurgedAt: null,
+        },
+      ),
+    )
+  })
+
+  test('expense create with backdated createdAt is rejected', async () => {
+    // Settlement chronological replay sorts expenses by createdAt.
+    // A raw-SDK writer backdating an expense before an existing
+    // settlement would silently re-classify orphans (e.g.
+    // OVERPAYMENT → EXPENSE_DELETED), corrupting the audit log.
+    // Rule pins createdAt == request.time on create.
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-backdate'),
+        {
+          tripId: TRIP_ID, title: 'x',
+          amount: 100, currency: 'JPY', category: 'food',
+          paidBy: EDITOR_UID,
+          splits: [{ memberId: EDITOR_UID, amount: 100 }],
+          date: '2026-05-21',
+          memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+          createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+          createdAt: Timestamp.fromMillis(1_000_000),  // <-- 1970
+          updatedAt: serverTimestamp(),
+          deletedAt: null, receiptPurgedAt: null,
+        },
+      ),
+    )
+  })
+
+  test('settlement create with backdated createdAt is rejected', async () => {
+    // Same chronological-replay attack vector but on settlements:
+    // backdating a settlement before an expense would flip the
+    // orphan reason classification.
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-backdate'),
+        {
+          tripId:    TRIP_ID,
+          settledBy: EDITOR_UID,
+          toUid:     EDITOR_UID,
+          fromUid:   VIEWER_UID,
+          amount:    100,
+          currency:  'JPY',
+          createdAt: Timestamp.fromMillis(1_000_000),  // <-- backdate
+        },
       ),
     )
   })

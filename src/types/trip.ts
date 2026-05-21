@@ -59,17 +59,22 @@ export interface Trip {
    */
   lastActivityByFeature?: Partial<Record<ActivityFeature, ActivityStamp>>
   /**
-   * Cascade-delete window marker. Set to serverTimestamp() by
-   * `tripCascade` BEFORE batch-deleting subcollections, then the trip
-   * doc itself is deleted (flag goes with it). Inside a ~5 minute
-   * window from this stamp, firestore.rules permits the trip owner
-   * to hard-delete expenses (necessary because soft-delete tombstones
-   * make per-doc deletes otherwise forbidden -- see expense delete
-   * rule). Outside the window, rules reject hard-deletes again.
+   * Cascade write-quiesce marker. The Worker `/cascade-trip-delete`
+   * endpoint stamps this with a server Timestamp BEFORE it starts
+   * deleting subcollections, so any in-flight editor on another
+   * device sees their `setDoc(.../subcollection/NEW)` reject at the
+   * rules layer (rules add `tripNotDeleting(tripId)` to every
+   * subcollection CREATE). Without this flag, an editor could
+   * create a new expense between the Worker's expense-drain and
+   * trip-doc-delete steps, producing an orphan that subsequent
+   * cascade retries skip (idempotent no-op on missing trip doc).
    *
-   * Absent / null on every trip not currently being torn down.
+   * Write-only by admin SDK (the Worker). Client rules enforce
+   * `unchanged('deletingAt')` on every trip update path so editors
+   * can't either set or clear the flag themselves. The field dies
+   * with the trip doc at end of cascade.
    */
-  deletionStartedAt?: Timestamp | null
+  deletingAt?: Timestamp | null
   createdAt: Timestamp
   updatedAt: Timestamp
 }
@@ -110,7 +115,8 @@ export const TripDocSchema = z.object({
     wish:     ActivityStampSchema.optional(),
     planning: ActivityStampSchema.optional(),
   }).optional(),
-  deletionStartedAt: TimestampSchema.nullable().optional(),
+  /** Cascade write-quiesce marker. Worker-controlled (admin SDK). */
+  deletingAt: TimestampSchema.nullable().optional(),
   createdAt:   TimestampSchema,
   updatedAt:   TimestampSchema,
 })

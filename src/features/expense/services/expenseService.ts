@@ -12,15 +12,19 @@ import { ExpenseDocSchema, UpdateExpenseSchema, type Expense, type ExpenseReceip
 import { uploadReceipt, purgeReceipt } from './expenseStorage'
 
 /**
- * Limit on the realtime expense listener. Pre-phase-2 the cap was 200,
- * sized for ~14-day group trips. Soft-delete leaves tombstones in the
- * same collection so the cap now has to cover (active + deleted) until
- * the planned hard-purge Cloud Function (10-day retention) is in place.
- * 500 buys headroom for ~5×/day delete rate × 30 days of tombstones on
- * top of an active set the original 200 was sized for; switching to a
- * server-side `where('deletedAt','==',null)` filter is the proper fix
- * but needs a composite index + legacy-data backfill (deferred -- see
- * project_settlement_phase2_temporal memory).
+ * Limit on the realtime expense listener. Sized to cover (active +
+ * tombstoned) docs because soft-delete keeps the doc in the same
+ * collection -- SettlementSummary's chronological replay needs to see
+ * tombstones to classify orphan reasons, so we can't just filter them
+ * out at the server. 500 buys headroom for ~5×/day delete rate × 30
+ * days of tombstones on top of an active set the original 200 was
+ * sized for.
+ *
+ * Tombstones are not auto-pruned at the doc level (only the receipt
+ * bytes get purged after 10 days). Long-running trips that exceed
+ * 500 total entries would lose the oldest from the listener; if that
+ * becomes real we'd add a separate active-only listener for the UI
+ * list and keep the unfiltered one scoped to SettlementSummary.
  */
 const LIST_LIMIT = 500
 
@@ -72,6 +76,13 @@ export async function createExpense(
     // where('deletedAt', '==', null). Required by firestore.rules
     // create gate; future server-side active-only filter relies on it.
     deletedAt: null,
+    // Explicit null marks this doc as a future receipt-purge candidate.
+    // The Worker cron filters on `receiptPurgedAt == null AND deletedAt
+    // < cutoff` — without the field present it can't be queried, and
+    // omitting it would cause the cron to drift back to "re-scan every
+    // historical tombstone forever". Cron stamps a Timestamp here once
+    // the receipt bytes + receipt field are cleared.
+    receiptPurgedAt: null,
     ...auditCreate(createdBy, serverTimestamp()),
   }
   if (receipt) payload.receipt = receipt
@@ -123,7 +134,10 @@ export async function updateExpense(
  * Soft-delete: set deletedAt instead of hard-deleting the doc. UI
  * filters tombstones out of the list (ExpensePage.displayExpenses);
  * settlement chronological replay still sees them to classify orphan
- * reasons. Receipt preserved -- planned 10-day CF purge will clear it.
+ * reasons. Receipt bytes are cleared by the Worker cron 10 days after
+ * deletedAt (see workers/ocr/src/receipt-purge.ts) -- `receiptPurgedAt`
+ * is seeded `null` at create time, so the cron filter picks it up
+ * automatically when deletedAt < cutoff.
  */
 export async function deleteExpense(
   tripId: string,

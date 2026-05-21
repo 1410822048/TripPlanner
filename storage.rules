@@ -27,12 +27,62 @@ service firebase.storage {
     function memberDoc(tripId) {
       return /databases/(default)/documents/trips/$(tripId)/members/$(request.auth.uid);
     }
+    function tripDoc(tripId) {
+      return /databases/(default)/documents/trips/$(tripId);
+    }
     function isMember(tripId) {
       return isSignedIn() && firestore.exists(memberDoc(tripId));
     }
     function canWriteFiles(tripId) {
       return isSignedIn()
         && firestore.get(memberDoc(tripId)).data.role in ['owner', 'editor'];
+    }
+    // Cross-service mirror of firestore.rules' tripNotDeleting helper.
+    // The Worker's /cascade-trip-delete sets `trip.deletingAt` BEFORE
+    // anything else; this gate ensures any in-flight Storage upload on
+    // another device is rejected the same way Firestore creates are.
+    // Without this, an upload that lands between the Worker's Storage
+    // purge and trip-doc delete steps would survive the cascade and
+    // become an orphan blob (Firestore create blocked → no
+    // expense/booking/wish doc referencing it → no path back to it
+    // from the UI, but bytes keep billing).
+    function tripNotDeleting(tripId) {
+      return !('deletingAt' in firestore.get(tripDoc(tripId)).data);
+    }
+
+    // Wish cover Storage ownership: only the wish proposer can
+    // write / replace / delete cover bytes. firestore.rules already
+    // restricts wish doc content edits to the proposer, but Storage
+    // was previously open to any member -- letting member B silently
+    // replace member A's cover with offensive content. Firestore
+    // would still attribute the wish to A, but the rendered cover
+    // would be B's swap.
+    //
+    // First-upload exception: the wish create flow (wishService.ts
+    // createWish) mints the wishId client-side, uploads the cover,
+    // THEN setDoc's the Firestore doc. At upload time the doc
+    // doesn't exist yet, so we allow !exists. Once the doc lands,
+    // the proposer check becomes load-bearing for all subsequent
+    // writes / deletes. Attackers can't exploit the !exists branch
+    // because wishIds are 20-char random strings (Firestore
+    // auto-IDs) -- guessing a yet-to-be-used ID has effectively
+    // zero success rate.
+    function wishPath(tripId, wishId) {
+      return /databases/(default)/documents/trips/$(tripId)/wishes/$(wishId);
+    }
+    function isWishProposerOrFirstUpload(tripId, wishId) {
+      return !firestore.exists(wishPath(tripId, wishId))
+          || firestore.get(wishPath(tripId, wishId)).data.proposedBy == request.auth.uid;
+    }
+    // Cross-service trip-owner check. Mirrors firestore.rules
+    // `isTripOwner` so the wish delete rule can match firestore.rules'
+    // moderation disjunction (proposer OR trip owner). Without this
+    // Storage stays proposer-only and the owner-moderation path on
+    // Firestore orphans cover blobs (Firestore doc deletes, Storage
+    // returns 403, frontend swallows the Storage error → bytes leak).
+    function isTripOwnerStorage(tripId) {
+      return isSignedIn()
+          && firestore.get(tripDoc(tripId)).data.ownerId == request.auth.uid;
     }
 
     // Wildcard read for ANY object under a trip's namespace. Two reasons:
@@ -53,29 +103,51 @@ service firebase.storage {
       allow read: if isMember(tripId);
       // create + update enforce size + content-type. Defense-in-depth:
       // the form already gates this client-side, but the rule blocks raw
-      // API misuse.
+      // API misuse. tripNotDeleting blocks uploads mid-cascade.
       allow create, update: if canWriteFiles(tripId)
+                            && tripNotDeleting(tripId)
                             && request.resource.size < 5 * 1024 * 1024
                             && (request.resource.contentType.matches('image/.*')
                                 || request.resource.contentType == 'application/pdf');
       // delete is its own clause — `request.resource` is null for delete
       // operations, so a write rule referencing size / contentType would
       // deny removals (the original bug behind "image removed but save
-      // fails"). Role gate still applies.
+      // fails"). Role gate still applies. NOTE no tripNotDeleting here:
+      // delete during cascade is the same outcome as cascade itself
+      // doing the delete, just a few ms earlier -- benign.
       allow delete: if canWriteFiles(tripId);
     }
 
-    // Wish cover images. Looser than bookings: ANY member can upload /
-    // replace / delete (matches the firestore.rules /wishes/ policy
-    // where viewers can also propose). Image-only with the 5MB cap.
-    // The actual "who owns this wish" gate lives in firestore.rules —
-    // here we only enforce membership + content shape.
+    // Wish cover images. Any member can READ (gallery), but write /
+    // replace / delete is restricted to the wish proposer (or
+    // first-upload before the wish doc exists -- see
+    // isWishProposerOrFirstUpload). Image-only with the 5MB cap.
     match /trips/{tripId}/wishes/{wishId}/{fileName} {
       allow read: if isMember(tripId);
       allow create, update: if isMember(tripId)
+                            && tripNotDeleting(tripId)
+                            && isWishProposerOrFirstUpload(tripId, wishId)
                             && request.resource.size < 5 * 1024 * 1024
                             && request.resource.contentType.matches('image/.*');
-      allow delete: if isMember(tripId);
+      // Delete: proposer cleans up their own; OR trip owner
+      // moderates (mirrors firestore.rules wish delete which allows
+      // `proposedBy == uid() || isTripOwner(tripId)`). The owner
+      // branch deliberately skips the firestore.exists(wishPath)
+      // guard -- if a wish doc was already deleted but its cover
+      // blob orphaned (e.g. earlier mismatch left bytes behind),
+      // the owner can still clean up. The trip-owner check is
+      // anchored to the trip doc's own ownerId, so a wish doc
+      // missing or not doesn't matter.
+      //
+      // Non-owner members without proposer match still get
+      // rejected -- no first-upload exception on delete (an
+      // attacker racing the proposer's initial upload window is
+      // a non-issue at sub-millisecond scale but cleaner to forbid).
+      allow delete: if isMember(tripId) && (
+                      (firestore.exists(wishPath(tripId, wishId))
+                       && firestore.get(wishPath(tripId, wishId)).data.proposedBy == request.auth.uid)
+                      || isTripOwnerStorage(tripId)
+                    );
     }
 
     // Expense receipts. Same canWrite gate as bookings (only owner /
@@ -84,6 +156,7 @@ service firebase.storage {
     match /trips/{tripId}/expenses/{expenseId}/{fileName} {
       allow read: if isMember(tripId);
       allow create, update: if canWriteFiles(tripId)
+                            && tripNotDeleting(tripId)
                             && request.resource.size < 5 * 1024 * 1024
                             && (request.resource.contentType.matches('image/.*')
                                 || request.resource.contentType == 'application/pdf');

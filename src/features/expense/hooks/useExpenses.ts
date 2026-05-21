@@ -40,8 +40,11 @@ export function useCreateExpense(tripId: string) {
     // (server-sorted by date desc + createdAt desc; today's new row goes first).
     // `deletedAt: null` matches the schema invariant enforced by the
     // create rule and keeps optimistic cache shape consistent with server.
+    // `receiptPurgedAt: null` mirrors the same invariant for the
+    // receipt-purge marker — listener-reconciled rows always carry it,
+    // so the optimistic row should too.
     patch:      (prev, { input, createdBy }) => [
-      { id: tempId(), tripId, memberIds: [createdBy], deletedAt: null, ...auditCreateMock(createdBy), ...input },
+      { id: tempId(), tripId, memberIds: [createdBy], deletedAt: null, receiptPurgedAt: null, ...auditCreateMock(createdBy), ...input },
       ...prev,
     ],
     action:     MUTATION_ACTION.CREATE_EXPENSE,

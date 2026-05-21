@@ -242,9 +242,11 @@ export function useDeleteTrip(uid: string | undefined) {
     mutationFn: (tripId: string) => {
       // Pages gate on signed-in state before calling; throwing here
       // turns a missed gate into a loud Sentry event instead of a
-      // silent no-op or `uid!` assertion.
+      // silent no-op. uid isn't passed to deleteTrip -- the Worker
+      // reads caller identity from the Firebase ID token -- but we
+      // still gate on its presence as a signed-in check.
       if (!uid) throw new Error('useDeleteTrip: uid is undefined')
-      return deleteTrip(tripId, uid)
+      return deleteTrip(tripId)
     },
     meta: { action: MUTATION_ACTION.DELETE } satisfies MutationMeta,
     onMutate: (tripId) => {
@@ -268,7 +270,18 @@ export function useDeleteTrip(uid: string | undefined) {
         if (ctx?.prevIds   !== undefined) qc.setQueryData(tripKeys.myIds(uid), ctx.prevIds)
       }
     },
-    // No onSettled invalidate: the realtime listeners on tripKeys.mine
-    // and tripKeys.myIds reconcile with server state on their own.
+    // Race: Worker cascade can complete server-side, but the HTTP
+    // response can be lost (network blip, Worker timeout, iOS
+    // background tab kill). The Firestore listener pushes the
+    // deletion to the cache, but then onError rolls back to the
+    // pre-mutation snapshot — reviving the already-deleted trip in
+    // the UI as a ghost row. Invalidating on settled forces a fresh
+    // query that re-syncs with server truth regardless of which path
+    // (success / error / lost response) the mutation took.
+    onSettled: () => {
+      if (!uid) return
+      qc.invalidateQueries({ queryKey: tripKeys.mine(uid) })
+      qc.invalidateQueries({ queryKey: tripKeys.myIds(uid) })
+    },
   })
 }

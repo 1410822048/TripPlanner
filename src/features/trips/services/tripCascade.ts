@@ -1,127 +1,79 @@
 // src/features/trips/services/tripCascade.ts
-// Trip cascade-delete — Firestore doesn't auto-cascade subcollections,
-// so we fan out by hand. Lives in its own file because the logic is
-// substantial (~80 LOC), the failure-mode handling is intricate (each
-// step's error message tells the caller exactly where the cascade
-// stopped so retries can resume), and it pulls in Storage cleanup
-// which the rest of tripService.ts doesn't touch.
+// Trip cascade-delete — delegates to the Cloudflare Worker's
+// /cascade-trip-delete endpoint.
 //
-// Order of operations matters:
-//   1. Storage objects under `trips/{tripId}/` — must run while caller
-//      is still a member, because storage.rules dereference Firestore
-//      `members/{uid}` on every write.
-//   2. Firestore subcollections in TRIP_SUBCOLLECTIONS order, with
-//      `members` last (canWrite() rules dereference members/{uid};
-//      deleting it earlier would revoke perms for the remaining steps).
-//   3. The trip doc itself.
+// History: this used to walk Storage + every subcollection from the
+// client. That worked but had a fundamental gap — to delete each
+// expense doc, firestore.rules had to allow owner hard-delete inside
+// a 5-minute "cascade window" marker (`deletionStartedAt`). The
+// marker itself was owner-writable, so a malicious owner could open
+// the window via raw SDK and selectively hard-delete a single
+// expense, bypassing the phase-2 soft-delete tombstone that
+// settlement chronological replay relies on. KNOWN BROKEN, accepted
+// risk until this Worker migration shipped — see CLAUDE.md "P1
+// accepted risk".
 //
-// Each step throws with the location it failed at, so the caller / UI
-// can show a precise message and a retry resumes naturally —
-// purgeStorageFolder is idempotent (already-deleted files don't appear
-// in listAll), and the Firestore subcollection loops are convergent.
-import { getFirebase, getFirebaseStorage } from '@/services/firebase'
-import { P, TRIP_SUBCOLLECTIONS, type TripSubcollection } from '@/services/paths'
+// With the Worker doing the cascade via admin SDK:
+//   - firestore.rules has `allow delete: if false` specifically on
+//     the docs whose hard-delete would corrupt invariants -- the
+//     trip root (cascade integrity) and expenses (settlement
+//     chronological replay needs tombstones). Other subcollections
+//     keep their normal client-side delete permissions for ordinary
+//     editing UX; the Worker still owns the bulk cascade because
+//     it's atomic at the trust boundary.
+//   - `deletionStartedAt` field is gone (no longer needed)
+//   - Client side shrinks from ~80 LOC to a single HTTP call
+import { getFirebaseAuth } from '@/services/firebase'
 
-/** Subcollections whose list rule is gated by same-doc memberIds —
- *  i.e. the query MUST include `where('memberIds', 'array-contains', uid)`
- *  to be accepted. `invites` (gated by isTripOwner, no memberIds field)
- *  and `settlements` (gated by exists(memberPath), no memberIds field)
- *  fall through to unfiltered listing. */
-const MEMBER_IDS_GATED: ReadonlySet<TripSubcollection> = new Set([
-  'schedules', 'expenses', 'wishes', 'bookings', 'planning', 'members',
-])
+/** OCR worker base URL — same Worker that hosts /cascade-member and
+ *  /ocr. Hard-coded because Cloudflare Pages doesn't expose runtime
+ *  env vars and we don't want a build-time-only constant scattered
+ *  across the codebase. */
+const WORKER_BASE = 'https://tripmate-ocr.tripmate.workers.dev'
 
 /**
- * Recursively delete every Storage object under a prefix. Used during
- * the trip cascade to purge booking attachments before Firestore is
- * touched.
+ * Cascade-delete a trip and every subcollection doc that lives under
+ * it. Idempotent: re-running after a partial failure (network blip,
+ * Worker timeout) converges — every step the Worker takes is
+ * idempotent on its own.
  *
- * `listAll()` is fine for the app's depth (trip → bookings → file):
- * each level has O(20) entries at most. If a trip ever grows past
- * Firebase's listAll cap (1000 items), this needs pagination via
- * list({maxResults}).
+ * Throws a single `Error` whose message names the failing layer so the
+ * caller's toast can surface "where it stopped". The Worker reads the
+ * caller's uid from the Firebase ID token, so we don't pass it here.
  */
-async function purgeStorageFolder(prefix: string): Promise<void> {
-  const { storage, ref, listAll, deleteObject } = await getFirebaseStorage()
-  const dir = ref(storage, prefix)
-  const result = await listAll(dir)
-  await Promise.all([
-    ...result.items.map(item => deleteObject(item)),
-    ...result.prefixes.map(p => purgeStorageFolder(p.fullPath)),
-  ])
-}
-
-/**
- * Cascade-delete a trip and every subcollection doc that lives under it.
- * See module header for ordering rationale and retry semantics.
- *
- * `uid` is the caller's uid — required to satisfy the same-doc list
- * rules on memberIds-gated subcollections. The caller must be the trip
- * owner (rule-enforced); owners are always in memberIds, so the filter
- * is a no-op on results but mandatory for Firestore query validation.
- */
-export async function deleteTrip(tripId: string, uid: string): Promise<void> {
-  const { db, collection, doc, query, where, getDocs, writeBatch, deleteDoc, updateDoc, serverTimestamp } = await getFirebase()
-
-  try {
-    await purgeStorageFolder(`trips/${tripId}`)
-  } catch (e) {
-    const reason = e instanceof Error ? e.message : String(e)
-    throw new Error(
-      `Trip ${tripId} cascade stopped during Storage cleanup: ${reason}. ` +
-      `No Firestore data was deleted; retry the operation.`,
-    )
+export async function deleteTrip(tripId: string): Promise<void> {
+  const { auth } = await getFirebaseAuth()
+  const idToken = await auth.currentUser?.getIdToken()
+  if (!idToken) {
+    throw new Error('Trip cascade failed: no Firebase ID token (not signed in?)')
   }
 
-  // Open the cascade-delete window on the trip doc. firestore.rules
-  // `tripDeletionActive()` checks for this flag (within 5 minutes) when
-  // allowing per-expense hard-delete; without it, the soft-delete-only
-  // rule would block the expense subcollection batch. The flag goes
-  // away with the trip doc itself at the final step. Owner-only and
-  // server-stamped per the rule contract -- request.time is forced.
+  let res: Response
   try {
-    await updateDoc(doc(db, ...P.trip(tripId)), {
-      deletionStartedAt: serverTimestamp(),
+    res = await fetch(`${WORKER_BASE}/cascade-trip-delete`, {
+      method:  'POST',
+      headers: {
+        Authorization:  `Bearer ${idToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ tripId }),
     })
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e)
     throw new Error(
-      `Trip ${tripId} cascade could not open the deletion window: ${reason}. ` +
-      `No Firestore data was deleted; retry the operation.`,
+      `Trip cascade could not reach the cleanup service: ${reason}. ` +
+      `Check your connection and retry.`,
     )
   }
 
-  for (const name of TRIP_SUBCOLLECTIONS) {
-    try {
-      for (;;) {
-        const colRef = collection(db, ...P.subcollection(tripId, name))
-        const listQuery = MEMBER_IDS_GATED.has(name)
-          ? query(colRef, where('memberIds', 'array-contains', uid))
-          : colRef
-        const snap = await getDocs(listQuery)
-        if (snap.empty) break
-        const chunk = snap.docs.slice(0, 500)
-        const batch = writeBatch(db)
-        chunk.forEach(d => batch.delete(d.ref))
-        await batch.commit()
-        if (snap.docs.length <= 500) break
-      }
-    } catch (e) {
-      const reason = e instanceof Error ? e.message : String(e)
-      throw new Error(
-        `Trip ${tripId} cascade stopped at subcollection '${name}': ${reason}. ` +
-        `The trip doc itself was not deleted; retry the operation to continue cleanup.`,
-      )
-    }
-  }
-
-  try {
-    await deleteDoc(doc(db, ...P.trip(tripId)))
-  } catch (e) {
-    const reason = e instanceof Error ? e.message : String(e)
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '<unreadable>')
+    // 403 / 404 / 429 / 500 all surface as a single error to the caller;
+    // the message includes status + body so devs / Sentry can see what
+    // tripped. The hook layer turns this into a toast.
     throw new Error(
-      `Trip ${tripId} subcollections were cleared but the trip doc delete failed: ${reason}. ` +
-      `Retry to finalise deletion.`,
+      `Trip cascade rejected: ${res.status} ${detail.slice(0, 200)}. ` +
+      `Retry to continue cleanup (operation is idempotent).`,
     )
   }
 }

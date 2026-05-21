@@ -204,3 +204,332 @@ export async function batchArrayUnionMemberIds(
 export function buildDocName(projectId: string, path: string): string {
   return docPath(projectId, path)
 }
+
+// ─── Cascade trip-delete + receipt purge additions ──────────────────
+
+/** Fetch raw `fields` map for a doc. Returns null on 404 (caller decides
+ *  whether absent-doc is success or error). Used by trip-cascade to
+ *  read `ownerId` and `currency`; by receipt-purge to read receipt paths
+ *  off the listing page (which already includes fields). */
+export async function getDocFields(
+  accessToken: string,
+  projectId:   string,
+  path:        string,
+): Promise<Record<string, FsValue> | null> {
+  const res = await fetch(fullName(projectId, path), {
+    ...NO_CACHE,
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (res.status === 404) return null
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`getDocFields ${path} → ${res.status}: ${detail.slice(0, 200)}`)
+  }
+  const data = await res.json() as { fields?: Record<string, FsValue> }
+  return data.fields ?? {}
+}
+
+/**
+ * Hard-delete docs in 500-doc commit chunks. Each chunk is a single
+ * Firestore commit so it's atomic at chunk granularity; commits across
+ * chunks aren't atomic, but the cascade is convergent anyway (re-run
+ * picks up remaining docs).
+ *
+ * `docNames` are FULL Firestore document resource names as returned by
+ * `listDocNames` / `buildDocName` — `projects/.../documents/trips/abc/xyz/...`.
+ */
+export async function batchDeleteDocs(
+  accessToken: string,
+  projectId:   string,
+  docNames:    string[],
+): Promise<void> {
+  if (docNames.length === 0) return
+  for (let i = 0; i < docNames.length; i += 500) {
+    const chunk = docNames.slice(i, i + 500)
+    const writes = chunk.map(name => ({ delete: name }))
+    const res = await fetch(
+      `${BASE}/projects/${projectId}/databases/(default)/documents:commit`,
+      {
+        method:  'POST',
+        headers: {
+          Authorization:  `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ writes }),
+      },
+    )
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '')
+      throw new Error(`batchDeleteDocs → ${res.status}: ${detail.slice(0, 200)}`)
+    }
+  }
+}
+
+/**
+ * Delete the single doc at `path`. 404 returns silently (caller's
+ * idempotent re-run scenario). All other non-2xx throw.
+ */
+export async function deleteDoc(
+  accessToken: string,
+  projectId:   string,
+  path:        string,
+): Promise<void> {
+  const res = await fetch(fullName(projectId, path), {
+    ...NO_CACHE,
+    method:  'DELETE',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (res.ok || res.status === 404) return
+  const detail = await res.text().catch(() => '')
+  throw new Error(`deleteDoc ${path} → ${res.status}: ${detail.slice(0, 200)}`)
+}
+
+/** Firestore REST `Value` shape — partial; only the variants we read. */
+export interface FsValue {
+  stringValue?:    string
+  integerValue?:   string | number
+  doubleValue?:    number
+  booleanValue?:   boolean
+  nullValue?:      null
+  timestampValue?: string  // ISO 8601, e.g. '2026-05-20T10:00:00Z'
+  arrayValue?:     { values?: FsValue[] }
+  mapValue?:       { fields?: Record<string, FsValue> }
+}
+
+/** Decode a string field. Returns undefined when missing OR not a string. */
+export function readString(fields: Record<string, FsValue> | null | undefined, key: string): string | undefined {
+  return fields?.[key]?.stringValue
+}
+
+// ─── Receipt-purge: collection-group query + per-doc patch ─────────
+
+export interface QueryPage {
+  /** Each doc carries its full Firestore resource name (`name`) and the
+   *  `fields` map exactly as REST returned them. Caller decodes fields
+   *  via the readString / readTimestampMs helpers. */
+  docs: { name: string; fields: Record<string, FsValue> }[]
+  nextPageToken?: string
+}
+
+/**
+ * Page through expense docs that are purge candidates:
+ *   receiptPurgedAt == null  AND  deletedAt < cutoff
+ *
+ * Equality first (matches the index `(receiptPurgedAt ASC, deletedAt
+ * ASC)` declared in firestore.indexes.json) so we don't re-scan docs
+ * that the cron has already cleaned up — the receiptPurgedAt watermark
+ * is set by the cron after Storage + field removal, and that's how a
+ * doc exits the candidate set permanently.
+ *
+ * Cursor uses `startAt(deletedAt, __name__)`: receiptPurgedAt is
+ * pinned to null by the equality filter so it doesn't need to appear
+ * in the cursor tuple.
+ */
+export async function queryReceiptPurgeCandidates(
+  accessToken:             string,
+  projectId:               string,
+  deletedAtBeforeMs:       number,
+  pageSize:                number,
+  cursorAfterDocName?:      string,
+  cursorAfterDeletedAtMs?:  number,
+): Promise<QueryPage> {
+  // /documents:runQuery scopes by parent — for collection-group we set
+  // parent to the database root and allDescendants: true on `from`.
+  const parent = `projects/${projectId}/databases/(default)/documents`
+  const cutoffIso = new Date(deletedAtBeforeMs).toISOString()
+
+  const structuredQuery: Record<string, unknown> = {
+    from: [{ collectionId: 'expenses', allDescendants: true }],
+    where: {
+      compositeFilter: {
+        op: 'AND',
+        filters: [
+          // Null check on receiptPurgedAt. MUST be unaryFilter +
+          // IS_NULL, NOT fieldFilter + EQUAL + {nullValue}: the
+          // latter silently returns ZERO matches against every
+          // null-valued doc in the wire protocol (Admin SDK
+          // explicitly translates `.where('x','==',null)` to this
+          // unary shape for the same reason -- see
+          // @google-cloud/firestore/build/src/reference/field-filter-
+          // internal.js translation logic). With the create rule
+          // forcing presence+null on every new expense, IS_NULL
+          // matches every live doc until the cron itself stamps a
+          // Timestamp after cleanup -- that's how a doc exits the
+          // candidate set permanently.
+          {
+            unaryFilter: {
+              field: { fieldPath: 'receiptPurgedAt' },
+              op:    'IS_NULL',
+            },
+          },
+          {
+            fieldFilter: {
+              field: { fieldPath: 'deletedAt' },
+              op:    'LESS_THAN',
+              value: { timestampValue: cutoffIso },
+            },
+          },
+        ],
+      },
+    },
+    orderBy: [
+      { field: { fieldPath: 'deletedAt' },  direction: 'ASCENDING' },
+      { field: { fieldPath: '__name__' },   direction: 'ASCENDING' },
+    ],
+    limit: pageSize,
+  }
+  if (cursorAfterDocName && cursorAfterDeletedAtMs != null) {
+    structuredQuery.startAt = {
+      before: false,
+      values: [
+        { timestampValue: new Date(cursorAfterDeletedAtMs).toISOString() },
+        { referenceValue: cursorAfterDocName },
+      ],
+    }
+  }
+
+  const res = await fetch(`${BASE}/${parent}:runQuery`, {
+    ...NO_CACHE,
+    method:  'POST',
+    headers: {
+      Authorization:  `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ structuredQuery }),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`queryReceiptPurgeCandidates → ${res.status}: ${detail.slice(0, 200)}`)
+  }
+  // runQuery streams an array of { document, readTime, skippedResults }.
+  // Empty result still returns [{}], so we filter to docs that actually
+  // have a document field.
+  const rows = await res.json() as { document?: { name: string; fields?: Record<string, FsValue> } }[]
+  const docs = rows
+    .filter(r => r.document)
+    .map(r => ({
+      name:   r.document!.name,
+      fields: r.document!.fields ?? {},
+    }))
+  return { docs }
+}
+
+/** Patch a doc with the given fields. updateMask scopes the write to
+ *  only the listed fields so unrelated fields aren't touched. Pass
+ *  `{ nullValue: null }` in the patch to explicitly set a field to
+ *  null (keeps the field present, matching the soft-delete /
+ *  receiptPurgedAt convention where queries depend on the field
+ *  existing). To DELETE a field instead, use `deleteDocFields`.
+ *
+ *  Returns `true` when the doc existed and the patch landed,
+ *  `false` when the doc was already gone (404 / 412 FAILED_
+ *  PRECONDITION). The `currentDocument.exists=true` query param
+ *  is LOAD-BEARING: without it Firestore PATCH is upsert
+ *  semantics, which means a race between this caller and a
+ *  concurrent delete (e.g. trip cascade) would silently resurrect
+ *  the doc as a zombie carrying only the patched fields. Callers
+ *  treat the `false` return as idempotent no-op. */
+export async function updateDocFields(
+  accessToken: string,
+  projectId:   string,
+  path:        string,
+  patch:       Record<string, FsValue>,
+): Promise<boolean> {
+  const fieldPaths = Object.keys(patch)
+  if (fieldPaths.length === 0) return true
+  const url = new URL(fullName(projectId, path))
+  for (const fp of fieldPaths) url.searchParams.append('updateMask.fieldPaths', fp)
+  // Disable upsert semantics. See JSDoc above.
+  url.searchParams.set('currentDocument.exists', 'true')
+
+  const res = await fetch(url, {
+    ...NO_CACHE,
+    method:  'PATCH',
+    headers: {
+      Authorization:  `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ fields: patch }),
+  })
+  if (res.ok) return true
+  // Firestore returns 404 when the doc is absent and we had asked
+  // it to exist; some surfaces return 400 with FAILED_PRECONDITION
+  // payload. Treat either as "doc gone, idempotent skip".
+  if (res.status === 404 || res.status === 412) return false
+  if (res.status === 400) {
+    const detail = await res.text().catch(() => '')
+    if (detail.includes('FAILED_PRECONDITION')) return false
+    throw new Error(`updateDocFields ${path} → 400: ${detail.slice(0, 200)}`)
+  }
+  const detail = await res.text().catch(() => '')
+  throw new Error(`updateDocFields ${path} → ${res.status}: ${detail.slice(0, 200)}`)
+}
+
+/** Delete one or more top-level fields from a doc. Equivalent to the
+ *  SDK's `deleteField()` sentinel — under REST, the trick is to list
+ *  the field in `updateMask.fieldPaths` but OMIT it from the request
+ *  body's `fields` map. Server interprets "mentioned in mask but absent
+ *  from body" as a deletion.
+ *
+ *  Used by receipt-purge to drop the entire `receipt` object map after
+ *  the Storage bytes are gone — setting it to nullValue would clash
+ *  with the schema (`receipt: ExpenseReceiptSchema.optional()` accepts
+ *  undefined but not null), so the field-deletion path is the only
+ *  schema-compatible cleanup.
+ *
+ *  Returns `true` on successful field deletion, `false` when the doc
+ *  was already gone. `currentDocument.exists=true` is critical here
+ *  too: an empty-body PATCH on a missing doc would otherwise upsert
+ *  an empty zombie doc. */
+export async function deleteDocFields(
+  accessToken: string,
+  projectId:   string,
+  path:        string,
+  fieldPaths:  string[],
+): Promise<boolean> {
+  if (fieldPaths.length === 0) return true
+  const url = new URL(fullName(projectId, path))
+  for (const fp of fieldPaths) url.searchParams.append('updateMask.fieldPaths', fp)
+  url.searchParams.set('currentDocument.exists', 'true')
+  const res = await fetch(url, {
+    ...NO_CACHE,
+    method:  'PATCH',
+    headers: {
+      Authorization:  `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  })
+  if (res.ok) return true
+  if (res.status === 404 || res.status === 412) return false
+  if (res.status === 400) {
+    const detail = await res.text().catch(() => '')
+    if (detail.includes('FAILED_PRECONDITION')) return false
+    throw new Error(`deleteDocFields ${path} → 400: ${detail.slice(0, 200)}`)
+  }
+  const detail = await res.text().catch(() => '')
+  throw new Error(`deleteDocFields ${path} → ${res.status}: ${detail.slice(0, 200)}`)
+}
+
+/** Decode a string field nested inside a map field. Receipt path /
+ *  thumbPath live as `receipt.path` / `receipt.thumbPath` (nested map),
+ *  not as top-level scalars — this helper walks one level into the
+ *  mapValue so the purge cron can reach them. */
+export function readNestedString(
+  fields:   Record<string, FsValue> | null | undefined,
+  mapKey:   string,
+  innerKey: string,
+): string | undefined {
+  const inner = fields?.[mapKey]?.mapValue?.fields
+  return inner?.[innerKey]?.stringValue
+}
+
+/** Decode a timestamp field to epoch ms. Returns undefined when missing
+ *  OR not a timestamp. Firestore REST returns timestampValue as
+ *  ISO 8601 string with optional fractional seconds + 'Z'. */
+export function readTimestampMs(fields: Record<string, FsValue> | null | undefined, key: string): number | undefined {
+  const iso = fields?.[key]?.timestampValue
+  if (typeof iso !== 'string') return undefined
+  const ms = Date.parse(iso)
+  return Number.isFinite(ms) ? ms : undefined
+}

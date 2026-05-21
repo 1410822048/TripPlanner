@@ -61,9 +61,15 @@ export interface Settlement {
  *                     causes contribute to the leftover; the per-row
  *                     amount can't be cleanly attributed to one.
  *   UNKNOWN         — at settlement.createdAt, no expense was recorded
- *                     on this pair (gross == 0). Could be true
- *                     overpayment OR a legacy hard-deleted expense
- *                     pre-phase-2. We can't distinguish.
+ *                     on this pair (gross == 0). Defensive should-
+ *                     never-happen guard: with `allow delete: if false`
+ *                     on expenses and the Worker trip-cascade deleting
+ *                     settlements alongside their expenses, there's
+ *                     no remaining path that produces this state for
+ *                     data-at-rest. Kept as a catch-all so future
+ *                     unexpected admin writes / data corruption surface
+ *                     visibly instead of silently masquerading as a
+ *                     different reason.
  */
 export type OrphanReason = 'OVERPAYMENT' | 'EXPENSE_DELETED' | 'MIXED' | 'UNKNOWN'
 
@@ -329,7 +335,8 @@ export function computeBalancesFull(
  *
  *   atRecording      'NO_EXPENSE' | 'WITHIN' | 'OVER'
  *                    NO_EXPENSE — no expense on this pair at recording
- *                                 (legacy hard-delete OR true never-existed)
+ *                                 (defensive should-never-happen guard;
+ *                                 see OrphanReason: UNKNOWN doc)
  *                    WITHIN     — settlement fit available debt at recording
  *                    OVER       — settlement exceeded available debt
  *   overpayment      amount that exceeded available at recording (≥0).

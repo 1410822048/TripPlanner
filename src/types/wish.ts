@@ -11,9 +11,9 @@ import { TimestampSchema } from './_shared'
 // Two-category model: 景點 vs 餐廳. Earlier versions had four
 // (place / food / activity / other); the simpler split matches how
 // users actually plan trips ("things to see" vs "things to eat") and
-// removes the ambiguous "other" bucket. Legacy docs with `activity`
-// or `other` need to run scripts/migrate-wish-categories.mjs once
-// before this stricter enum is deployed.
+// removes the ambiguous "other" bucket. Firestore has since been
+// cleared, so no legacy migration is needed — fresh wishes only ever
+// see `place | food`.
 export type WishCategory = 'place' | 'food'
 
 export interface WishImage {
