@@ -414,6 +414,94 @@ export async function queryReceiptPurgeCandidates(
   return { docs }
 }
 
+// ─── Scan cursor: cross-run pagination state for long-running scans ──
+
+/** Single-doc state held under `/_scanState/{scanKey}` so a budget-
+ *  /deadline-bounded scan can resume across cron runs without re-
+ *  reading the same head pages every day. Used by the Level 4 storage
+ *  reconciliation cron (`storage-scan.ts`) but generic enough that
+ *  future bucket-spanning crons can reuse the same shape -- pass a
+ *  distinct `scanKey`.
+ *
+ *  Why a Firestore doc and not Cloudflare KV / Durable Object: every
+ *  Worker scan already authenticates to Firestore for the entity
+ *  recheck step; reusing that channel means one less binding to
+ *  manage in wrangler.toml and one less infrastructure surface to
+ *  reason about. The doc is admin-only (no rules `match` block →
+ *  default deny on the client), Worker writes via the admin OAuth
+ *  token like everything else in this module. */
+export interface ScanCursor {
+  pageToken: string
+  savedAtMs: number
+}
+
+/** Read the saved cursor for `scanKey`. Returns null when:
+ *   - The doc doesn't exist (first run / freshly cleared).
+ *   - Required fields missing (defensive against manual / corrupted writes).
+ *  Callers apply a staleness check on `savedAtMs` themselves; this
+ *  function only reports what's stored. */
+export async function getScanCursor(
+  accessToken: string,
+  projectId:   string,
+  scanKey:     string,
+): Promise<ScanCursor | null> {
+  const fields = await getDocFields(accessToken, projectId, `_scanState/${scanKey}`)
+  if (!fields) return null
+  const pageToken = fields.pageToken?.stringValue
+  const savedAtMs = readTimestampMs(fields, 'savedAt')
+  if (!pageToken || savedAtMs === undefined) return null
+  return { pageToken, savedAtMs }
+}
+
+/** Upsert the cursor. Direct PATCH without `currentDocument.exists`
+ *  guard -- this is upsert semantics by design (no doc on first save,
+ *  doc present on subsequent saves; we don't care which). */
+export async function setScanCursor(
+  accessToken: string,
+  projectId:   string,
+  scanKey:     string,
+  pageToken:   string,
+): Promise<void> {
+  const path    = `_scanState/${scanKey}`
+  const docName = buildDocName(projectId, path)
+  const url     = new URL(`${BASE}/${docName}`)
+  // Both fields in the mask so the PATCH writes them both; the doc
+  // either gets created with these two fields or has its existing
+  // pageToken + savedAt overwritten.
+  url.searchParams.append('updateMask.fieldPaths', 'pageToken')
+  url.searchParams.append('updateMask.fieldPaths', 'savedAt')
+  const body = {
+    fields: {
+      pageToken: { stringValue: pageToken },
+      savedAt:   { timestampValue: new Date().toISOString() },
+    },
+  }
+  const res = await fetch(url, {
+    ...NO_CACHE,
+    method: 'PATCH',
+    headers: {
+      Authorization:  `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`setScanCursor ${path} → ${res.status}: ${detail.slice(0, 200)}`)
+  }
+}
+
+/** Delete the cursor. Called when a scan completes naturally (drained
+ *  to last page) so the next run starts fresh from the top. Idempotent
+ *  -- 404 swallowed by deleteDoc. */
+export async function clearScanCursor(
+  accessToken: string,
+  projectId:   string,
+  scanKey:     string,
+): Promise<void> {
+  await deleteDoc(accessToken, projectId, `_scanState/${scanKey}`)
+}
+
 // ─── Orphan-purge: collection-group query over `_purges` ──────────
 
 /**

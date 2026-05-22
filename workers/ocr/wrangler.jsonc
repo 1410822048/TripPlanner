@@ -20,7 +20,15 @@
 		// and receipt-purge cron. Single source of truth; if the project
 		// ever moves bucket, this is the only line to update.
 		"FIREBASE_STORAGE_BUCKET": "tripplanner-80a4f.firebasestorage.app",
-		"ALLOWED_ORIGINS": "https://tripplanner-80a4f.web.app,https://tripplanner-80a4f.firebaseapp.com,https://tripmate-2wg.pages.dev,*.tripmate-2wg.pages.dev,http://localhost:5173"
+		"ALLOWED_ORIGINS": "https://tripplanner-80a4f.web.app,https://tripplanner-80a4f.firebaseapp.com,https://tripmate-2wg.pages.dev,*.tripmate-2wg.pages.dev,http://localhost:5173",
+		// Sentry DSN — same project as the frontend (VITE_SENTRY_DSN in
+		// the SPA bundle). Public key in a DSN is not a secret (frontend
+		// ships it in plaintext); ingest endpoint accepts events from
+		// any source matching the project. `server_name: 'tripmate-ocr'`
+		// inside the envelope (see sentry.ts) lets us filter Worker
+		// events from frontend events in the Sentry UI. Empty string
+		// disables telemetry cleanly (sentry.ts parseDsn returns null).
+		"SENTRY_DSN": ""
 	},
 	// Cron: daily UTC 03:00 receipt purge — globally low-traffic hour.
 	// Scoped to ~14min via SOFT_DEADLINE_MS in receipt-purge.ts; under

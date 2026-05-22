@@ -24,6 +24,13 @@ export interface StorageObject {
    *  receipt-purge) don't read it -- only the orphan storage-scan
    *  cron needs the age for its 24h grace window check. */
   timeCreated?: string
+  /** Custom metadata attached at upload time. The storage-scan cron
+   *  reads `metadata.uploaderUid` to attribute orphan blobs back to
+   *  the uploading user (Phase 2 abuse detection). Populated by GCS
+   *  when our partial-response fields include `metadata` -- a flat
+   *  string-string map matches GCS REST shape (`object.metadata` is
+   *  always `Record<string, string>`). */
+  metadata?: Record<string, string>
 }
 
 export interface ListObjectsPage {
@@ -49,11 +56,12 @@ export async function listObjects(
   const url = new URL(`${BASE}/b/${encodeURIComponent(bucket)}/o`)
   url.searchParams.set('prefix', prefix)
   url.searchParams.set('maxResults', String(pageSize))
-  // `timeCreated` added to the partial response so the orphan storage-
-  // scan can apply its grace window without a second per-object metadata
-  // fetch. Trip-cascade + receipt-purge ignore it -- cheap extra ~30
-  // bytes per item, well under the 1000-item page budget.
-  url.searchParams.set('fields', 'items(name,timeCreated),nextPageToken')
+  // `timeCreated` added so the orphan storage-scan can apply its grace
+  // window without a per-object metadata fetch. `metadata` carries the
+  // customMetadata.uploaderUid that the abuse-detection step attributes
+  // orphan counts to. Trip-cascade + receipt-purge ignore both -- ~70
+  // bytes per item extra, well under the 1000-item page budget.
+  url.searchParams.set('fields', 'items(name,timeCreated,metadata),nextPageToken')
   if (pageToken) url.searchParams.set('pageToken', pageToken)
 
   const res = await fetch(url, {
@@ -65,11 +73,15 @@ export async function listObjects(
     throw new Error(`listObjects ${prefix} → ${res.status}: ${detail.slice(0, 200)}`)
   }
   const data = await res.json() as {
-    items?: { name: string; timeCreated?: string }[]
+    items?: { name: string; timeCreated?: string; metadata?: Record<string, string> }[]
     nextPageToken?: string
   }
   return {
-    items: (data.items ?? []).map(i => ({ name: i.name, timeCreated: i.timeCreated })),
+    items: (data.items ?? []).map(i => ({
+      name:        i.name,
+      timeCreated: i.timeCreated,
+      metadata:    i.metadata,
+    })),
     nextPageToken: data.nextPageToken,
   }
 }

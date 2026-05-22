@@ -42,9 +42,10 @@
 // Storage delete failures bubble up to the per-candidate try/catch and
 // log; no retry budget (this is a daily cron, tomorrow tries again).
 import { listObjects, deleteObject } from './storage'
-import { getDocFields }              from './firestore'
+import { getDocFields, getScanCursor, setScanCursor, clearScanCursor } from './firestore'
 import { referencedPaths, type ValidCollection } from './orphan-purge'
 import { getAdminToken, getProjectId } from './admin'
+import { captureMessage } from './sentry'
 
 /** 24-hour grace window from object creation. Covers every realistic
  *  in-flight scenario (multi-second upload retries, OCR pipelines that
@@ -62,14 +63,49 @@ const SOFT_DEADLINE_MS = 14 * 60 * 1000
  *  count vs the default 500 used by trip-cascade / receipt-purge. */
 const PAGE_SIZE = 1000
 
-/** In-flight entity rechecks per page batch. Each candidate does at
- *  most 2 subrequests (Firestore read + optional Storage delete). With
- *  Cloudflare's cron-trigger 1000-subrequest budget, even a worst-case
- *  all-orphan page (1000 candidates × 2 = 2000) would blow the limit;
- *  bounded concurrency lets the cron drain incrementally across multiple
- *  daily runs without blowing the budget in any single one. 5 keeps room
- *  for the next list page's call in the same pool. */
+/** In-flight entity rechecks per page batch. Tunes parallelism, NOT
+ *  total subrequest count -- the budget gate below is the hard ceiling.
+ *  5 is a balance between draining latency and leaving the subrequest
+ *  pool free for the next list page. */
 const CONCURRENCY = 5
+
+/** Hard cap on this scan's subrequest usage per cron invocation.
+ *  Cloudflare cron triggers share a 1000-subrequest budget across all
+ *  `ctx.waitUntil` parallel tasks in the same scheduled handler;
+ *  receipt-purge and orphan-purge run alongside us, so 300 is the
+ *  conservative third-share with 100 left as buffer. CONCURRENCY=5
+ *  alone wouldn't help: an all-orphan 1000-item page would issue up to
+ *  2000 subrequests (read + delete each) regardless of how many were
+ *  in flight at once.
+ *
+ *  Budget hit alone would starve later pages: a bucket where page 1
+ *  is mostly live-referenced (no deletes) would re-read the same head
+ *  items every run, never reaching later pages with actual orphans.
+ *  Paired with cross-run cursor persistence (`_scanState/storageScan`),
+ *  budget exhaustion saves `page.nextPageToken` so tomorrow advances. */
+const SUBREQUEST_BUDGET = 300
+
+/** Cross-run cursor staleness: if a saved cursor is older than this,
+ *  ignore it and restart from the top. Mostly defensive -- a stale
+ *  pageToken from > 1 week ago likely points at a position deep into
+ *  a now-much-larger bucket, so resuming from there means head-of-bucket
+ *  orphans accumulate unseen. Fresh start is the safer default. */
+const CURSOR_STALENESS_MS = 7 * 24 * 60 * 60 * 1000
+
+/** Firestore doc key under `_scanState/{key}` for THIS scan's cursor.
+ *  Future scans can reuse the same helpers with different keys. */
+const SCAN_KEY = 'storageScan'
+
+/** Abuse-detection threshold: a single uploaderUid producing more than
+ *  this many confirmed orphan blobs in one scan run fires a Sentry
+ *  warning. Tuned to absorb the realistic "user replaced their receipt
+ *  several times" pattern (legitimate, 1-3 orphans) while still
+ *  catching raw-SDK loop abuse (typically 10s-100s of orphans in a
+ *  short window). Starts at 10/run; adjust after observing real
+ *  baselines. Note: per RUN, not per day -- a single daily cron
+ *  invocation -- so a slow drip across multiple days wouldn't trigger
+ *  here (caught by future cumulative analysis if needed). */
+const ABUSE_THRESHOLD = 10
 
 /** Storage path under `trips/` that the scan recognizes. Matches the
  *  3 collections that actually hold attachments; anything else (e.g.
@@ -111,6 +147,18 @@ export interface StorageScanReport {
   deleteErrors:  number
   /** True if SOFT_DEADLINE_MS hit before exhausting pages. */
   deadlineHit:   boolean
+  /** True if SUBREQUEST_BUDGET was hit before exhausting pages.
+   *  Distinct from deadlineHit so operators can tell apart "cron took
+   *  too long" from "cron used too many fetches" -- different root
+   *  causes, different mitigations. */
+  budgetHit:     boolean
+  /** Orphan blob count attributed to each uploaderUid (read from the
+   *  blob's customMetadata.uploaderUid at upload time). Used for abuse
+   *  detection: any uid exceeding ABUSE_THRESHOLD fires a Sentry
+   *  warning before the cron returns. `'<unknown>'` bucket covers
+   *  blobs uploaded before the Phase 2 customMetadata change shipped
+   *  (legacy data) or by clients that bypassed metadata somehow. */
+  orphansByUid:  Record<string, number>
 }
 
 /**
@@ -120,34 +168,77 @@ export interface StorageScanReport {
  * Throws on the entry-level listObjects call failing (run-aborting --
  * no way to enumerate any objects). Per-candidate failures are caught
  * and counted in the report; the cron caller logs the report normally.
+ *
+ * `opts.subrequestBudget` overrides the default budget cap; tests use
+ * this to drive the budget-hit path with small synthetic pages instead
+ * of having to stage 300+ items in a fixture.
  */
 export async function scanOrphanStorage(
   serviceAccountJson: string,
   bucket:             string,
+  opts: {
+    subrequestBudget?: number
+    /** Sentry env object passed through to captureMessage for abuse
+     *  alerts. Optional so the cron can also run from contexts without
+     *  a configured DSN (local testing, dev) -- in that case the
+     *  threshold-hit branch still fires console.warn but skips Sentry. */
+    sentryEnv?:        { SENTRY_DSN?: string }
+  } = {},
 ): Promise<StorageScanReport> {
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
 
   const startedAt   = Date.now()
   const ageCutoffMs = startedAt - MIN_AGE_MS
+  const budget      = opts.subrequestBudget ?? SUBREQUEST_BUDGET
+  // Shared mutable counter; the pMap workers all see the same object,
+  // so race-overshoot is bounded by CONCURRENCY (≤5) -- harmless given
+  // the 100-subrequest buffer we leave from the 1000-cron-total.
+  const subreq      = { used: 0 }
   const report: StorageScanReport = {
     scanned: 0, deleted: 0, referenced: 0,
     freshSkipped: 0, unparseable: 0,
     readErrors: 0, deleteErrors: 0,
-    deadlineHit: false,
+    deadlineHit: false, budgetHit: false,
+    orphansByUid: {},
   }
 
+  // Resume from saved cursor when fresh; otherwise start from the top.
+  // Cursor read failure is non-fatal -- worst case we restart this
+  // run from the head, which is exactly what would happen on a first
+  // ever run anyway.
   let pageToken: string | undefined
+  try {
+    const cursor = await getScanCursor(accessToken, projectId, SCAN_KEY)
+    if (cursor && Date.now() - cursor.savedAtMs < CURSOR_STALENESS_MS) {
+      pageToken = cursor.pageToken
+    }
+  } catch (e) {
+    console.warn(`[storage-scan] cursor load failed; starting from top: ${(e as Error).message}`)
+  }
+
+  // Track the most recent page so the post-loop cursor save can read
+  // its nextPageToken without having to know which branch ended the
+  // loop. Reset on each successful list, examined on the way out.
+  let lastPage: { nextPageToken?: string } | null = null
 
   while (true) {
     if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
       report.deadlineHit = true
       break
     }
+    // Pre-check before consuming a subrequest. Leave 1 for the list
+    // call itself; if even that doesn't fit we're done.
+    if (subreq.used + 1 > budget) {
+      report.budgetHit = true
+      break
+    }
 
     let page
     try {
+      subreq.used += 1
       page = await listObjects(accessToken, bucket, 'trips/', pageToken, PAGE_SIZE)
+      lastPage = page
     } catch (e) {
       // List failure is run-aborting (no way to discover any further
       // objects). Re-throw with partial counts in the message so the
@@ -193,13 +284,23 @@ export async function scanOrphanStorage(
         report.deadlineHit = true
         return
       }
+      // Each candidate uses at most 2 subrequests (Firestore read +
+      // optional Storage delete). Reserve both upfront so a still-
+      // referenced doc and a delete-needed doc gate identically -- we
+      // don't want to start a read we can't finish-and-delete on.
+      if (subreq.used + 2 > budget) {
+        report.budgetHit = true
+        return
+      }
       try {
         const entityPath = `trips/${parsed.tripId}/${parsed.collection}/${parsed.entityId}`
+        subreq.used += 1
         const fields = await getDocFields(accessToken, projectId, entityPath)
         if (fields === null) {
           // Entity doc gone (or never existed -- e.g. editor abuse
           // upload to random entityId). Confirmed orphan, delete.
-          await tryDelete(accessToken, bucket, obj.name, report)
+          subreq.used += 1
+          await tryDelete(accessToken, bucket, obj, report)
           return
         }
         // Entity exists -- check exact-match against its current
@@ -215,7 +316,8 @@ export async function scanOrphanStorage(
         // Entity exists but doesn't reference this blob -- the doc was
         // updated to point at a different path (e.g. user replaced the
         // attachment) and the old blob is stranded. Confirmed orphan.
-        await tryDelete(accessToken, bucket, obj.name, report)
+        subreq.used += 1
+        await tryDelete(accessToken, bucket, obj, report)
       } catch (e) {
         // Firestore read failure -- treat as transient, fail-closed.
         // Tomorrow's run retries; the blob is still discoverable.
@@ -227,29 +329,96 @@ export async function scanOrphanStorage(
     }, CONCURRENCY)
 
     if (report.deadlineHit) break
+    if (report.budgetHit) break
     if (!page.nextPageToken) break
     pageToken = page.nextPageToken
+  }
+
+  // Phase 2 abuse detection: any uploaderUid that produced more than
+  // ABUSE_THRESHOLD confirmed orphans in this run fires a Sentry
+  // `warning`-level event. `'<unknown>'` is excluded -- legacy blobs
+  // without metadata accumulate naturally during Phase 2 rollout, and
+  // a high <unknown> count is noise, not attributable abuse.
+  for (const [uid, count] of Object.entries(report.orphansByUid)) {
+    if (uid === '<unknown>') continue
+    if (count <= ABUSE_THRESHOLD) continue
+    console.error(
+      `[storage-scan] abuse pattern: uid=${uid} produced ${count} orphans (threshold ${ABUSE_THRESHOLD})`,
+    )
+    if (opts.sentryEnv) {
+      // Best-effort; sentry.ts swallows its own failures so the cron's
+      // success status isn't affected by telemetry hiccups.
+      await captureMessage(
+        opts.sentryEnv,
+        `Storage abuse pattern: uid ${uid} produced ${count} orphan blobs in one scan`,
+        'warning',
+        { component: 'storage-scan', uid },
+        { orphanCount: count, threshold: ABUSE_THRESHOLD, scanRun: new Date(startedAt).toISOString() },
+      )
+    }
+  }
+
+  // Cursor maintenance: budget / deadline hit mid-scan saves NEXT
+  // page's token so tomorrow advances past this page's possibly-
+  // unprocessed candidates -- the load-bearing fix for the otherwise-
+  // starvation case where page 1 is mostly live-referenced blobs and
+  // re-reading them each day eats the budget before later pages get
+  // a chance. Skipped candidates from a budget-hit page resurface on
+  // the next full cycle once we wrap. Natural drain (no break)
+  // clears the cursor so the next run starts fresh from the top.
+  // Cursor write failures are non-fatal: tomorrow's run still works,
+  // just from a less optimal starting point.
+  try {
+    if (report.budgetHit || report.deadlineHit) {
+      if (lastPage?.nextPageToken) {
+        await setScanCursor(accessToken, projectId, SCAN_KEY, lastPage.nextPageToken)
+      } else {
+        // No next page to advance to -- we stopped on the last page
+        // anyway. Clear so tomorrow restarts from the top.
+        await clearScanCursor(accessToken, projectId, SCAN_KEY)
+      }
+    } else {
+      // Natural drain: all pages exhausted, clear the cursor.
+      await clearScanCursor(accessToken, projectId, SCAN_KEY)
+    }
+  } catch (e) {
+    console.warn(`[storage-scan] cursor maintenance failed: ${(e as Error).message}`)
   }
 
   return report
 }
 
-/** Delete one confirmed-orphan blob. deleteObject throws on non-404
- *  failures; we count + log but don't re-throw (cron continues with
- *  remaining candidates; tomorrow retries failed deletes). */
+/** Delete one confirmed-orphan blob + attribute the orphan back to its
+ *  uploader. deleteObject throws on non-404 failures; we count + log
+ *  but don't re-throw (cron continues with remaining candidates;
+ *  tomorrow retries failed deletes).
+ *
+ *  Honors deleteObject's boolean return: `false` means 404 (the blob
+ *  was already gone, e.g. trip-cascade or another cron raced us between
+ *  list and delete). Don't credit ourselves for those -- it would
+ *  inflate the `deleted` stat in a way that misleads "did our scan
+ *  actually find orphans?" observability.
+ *
+ *  Phase 2 uploaderUid attribution: when the blob's customMetadata
+ *  carries an uploaderUid, count this orphan against that uid. Blobs
+ *  without metadata (legacy / pre-Phase-2 uploads) bucket as
+ *  `'<unknown>'` so they don't get attributed to nobody-in-particular. */
 async function tryDelete(
   accessToken: string,
   bucket:      string,
-  name:        string,
+  obj:         { name: string; metadata?: Record<string, string> },
   report:      StorageScanReport,
 ): Promise<void> {
   try {
-    await deleteObject(accessToken, bucket, name)
-    report.deleted += 1
+    if (await deleteObject(accessToken, bucket, obj.name)) {
+      report.deleted += 1
+      const uploaderUid = obj.metadata?.uploaderUid ?? '<unknown>'
+      report.orphansByUid[uploaderUid] = (report.orphansByUid[uploaderUid] ?? 0) + 1
+    }
   } catch (e) {
     report.deleteErrors += 1
     console.warn(
-      `[storage-scan] delete failed obj=${name}: ${(e as Error).message}`,
+      `[storage-scan] delete failed obj=${obj.name}: ${(e as Error).message}`,
     )
   }
 }

@@ -44,6 +44,12 @@ interface WorkerEnv {
   ALLOWED_ORIGINS:          string  // comma-separated
   GEMINI_API_KEY:           string  // secret
   FIREBASE_SERVICE_ACCOUNT: string  // secret — JSON string of service account key
+  /** Sentry DSN for Worker-side telemetry (abuse alerts, future error
+   *  reporting). Same DSN as the frontend's VITE_SENTRY_DSN -- events
+   *  land in the same project, filterable by `server_name: 'tripmate-ocr'`.
+   *  Empty string disables telemetry cleanly; override via `wrangler
+   *  secret put SENTRY_DSN` for production. */
+  SENTRY_DSN:               string
   /** Per-PoP per-uid rate limiter for the OCR endpoint. Cheap first-line
    *  filter (~0ms). Counters are local to each Cloudflare location. */
   OCR_RATE_LIMITER:         RateLimit
@@ -400,14 +406,30 @@ export default {
     // failure here doesn't starve them (or vice versa).
     console.log('[cron] storage-scan starting')
     ctx.waitUntil(
-      scanOrphanStorage(env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)
+      scanOrphanStorage(
+        env.FIREBASE_SERVICE_ACCOUNT,
+        env.FIREBASE_STORAGE_BUCKET,
+        // sentryEnv passed in so the scan's abuse-detection branch can
+        // fire captureMessage; sentry.ts no-ops when SENTRY_DSN is
+        // empty / unset, so this is safe to always wire up.
+        { sentryEnv: env },
+      )
         .then(report => {
+          // Top-3 uids in the log line so operators can see attribution
+          // at a glance without digging into Sentry. JSON.stringify of
+          // the full map would balloon the log on a busy scan.
+          const topUids = Object.entries(report.orphansByUid)
+            .sort(([, a], [, b]) => b - a)
+            .slice(0, 3)
+            .map(([uid, n]) => `${uid}=${n}`)
+            .join(',') || 'none'
           console.log(
             `[cron] storage-scan done scanned=${report.scanned} ` +
             `deleted=${report.deleted} referenced=${report.referenced} ` +
             `freshSkipped=${report.freshSkipped} unparseable=${report.unparseable} ` +
             `readErrors=${report.readErrors} deleteErrors=${report.deleteErrors} ` +
-            `deadlineHit=${report.deadlineHit}`,
+            `deadlineHit=${report.deadlineHit} budgetHit=${report.budgetHit} ` +
+            `topOrphanUids=${topUids}`,
           )
         })
         .catch(err => {
