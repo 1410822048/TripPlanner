@@ -34,6 +34,10 @@ import {
   ExpenseCreateRequestSchema, ExpenseUpdateRequestSchema,
 }                                                 from './expense-write'
 import { ExpenseValidationError }                 from './expense-validate'
+import {
+  createUploadIntents,
+  UploadIntentsRequestSchema,
+}                                                 from './upload-intent'
 import { checkGlobalRateLimit }                   from './rate-limiter'
 
 export { GlobalRateLimiter } from './rate-limiter'
@@ -149,7 +153,8 @@ export default {
     const isTripCascade   = url.pathname === '/cascade-trip-delete'  && request.method === 'POST'
     const isExpenseCreate = url.pathname === '/expense-create'       && request.method === 'POST'
     const isExpenseUpdate = url.pathname === '/expense-update'       && request.method === 'POST'
-    if (!isOcr && !isCascade && !isTripCascade && !isExpenseCreate && !isExpenseUpdate) {
+    const isUploadIntents = url.pathname === '/upload-intents'       && request.method === 'POST'
+    if (!isOcr && !isCascade && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents) {
       return json({ error: 'Not found' }, 404, cors)
     }
 
@@ -193,9 +198,16 @@ export default {
     //     L1's tighter per-location bound is the primary defense; L2
     //     is the cluster ceiling.
     const isExpenseWrite = isExpenseCreate || isExpenseUpdate
+    // /upload-intents reuses EXPENSE_RATE_LIMITER for this commit --
+    // the realistic workload (intent request before each upload)
+    // matches expense create/update cadence (30/min). Adding a
+    // dedicated UPLOAD_INTENT_RATE_LIMITER binding was deferred so
+    // this commit doesn't grow its deploy-failure surface area;
+    // future tuning can split if observed metrics justify.
     const limiter = isOcr            ? env.OCR_RATE_LIMITER
                   : isTripCascade    ? env.TRIP_CASCADE_RATE_LIMITER
                   : isExpenseWrite   ? env.EXPENSE_RATE_LIMITER
+                  : isUploadIntents  ? env.EXPENSE_RATE_LIMITER
                   : env.CASCADE_RATE_LIMITER
     const localResult = await limiter.limit({ key: uid })
     if (!localResult.success) {
@@ -206,12 +218,14 @@ export default {
     // Scope name + L2 limit. trip-delete is the strictest. expense
     // matches OCR (60/min L2) -- both are user-facing rapid actions.
     const scope       = isOcr ? 'ocr'
-                      : isTripCascade  ? 'trip-cascade'
-                      : isExpenseWrite ? 'expense'
+                      : isTripCascade   ? 'trip-cascade'
+                      : isExpenseWrite  ? 'expense'
+                      : isUploadIntents ? 'upload-intent'
                       : 'cascade'
     const globalLimit = isOcr ? 60
-                      : isTripCascade  ? 2
-                      : isExpenseWrite ? 60
+                      : isTripCascade   ? 2
+                      : isExpenseWrite  ? 60
+                      : isUploadIntents ? 60
                       : 10
     const globalResult = await checkGlobalRateLimit(
       env.GLOBAL_LIMITER, scope, uid, globalLimit, 60_000,
@@ -279,6 +293,31 @@ export default {
           return json({ error: e.message }, e.status, cors)
         }
         console.error(`[expense-update] internal error: ${(e as Error).message}`)
+        return json({ error: 'Internal error' }, 500, cors)
+      }
+    }
+
+    // ─── /upload-intents ─────────────────────────────────────────────
+    if (isUploadIntents) {
+      const parsed = UploadIntentsRequestSchema.safeParse(body)
+      if (!parsed.success) {
+        console.warn(`[upload-intents] schema fail: ${parsed.error.message.slice(0, 200)}`)
+        return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
+      }
+      try {
+        const result = await createUploadIntents(uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT)
+        console.log(
+          `[upload-intents] uid=${uidTag(uid)} trip=${parsed.data.tripId} ` +
+          `entity=${parsed.data.entityType}/${parsed.data.entityId} ` +
+          `count=${result.intents.length}`,
+        )
+        return json(result, 200, cors)
+      } catch (e) {
+        if (e instanceof CascadeError) {
+          console.warn(`[upload-intents] ${e.status} ${e.message}`)
+          return json({ error: e.message }, e.status, cors)
+        }
+        console.error(`[upload-intents] internal error: ${(e as Error).message}`)
         return json({ error: 'Internal error' }, 500, cors)
       }
     }

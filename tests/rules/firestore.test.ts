@@ -1690,3 +1690,110 @@ describe('/trips/{tripId}/_purges enqueue', () => {
     )
   })
 })
+
+// ─── Phase 3.5: uploadIntents collection is admin-only ────────────
+describe('/uploadIntents/{intentId} client deny-all (Phase 3.5)', () => {
+  // Worker admin SDK writes intent docs (which bypass rules); clients
+  // NEVER read or write them directly. storage.rules will later use
+  // cross-service firestore.get() to verify intent on each upload,
+  // but that's server-credentialled access — distinct from client
+  // SDK access tested here. Locks in the contract at the rules layer.
+  const validIntent = {
+    uid:        EDITOR_UID,
+    tripId:     TRIP_ID,
+    entityType: 'expense',
+    entityId:   'exp-1',
+    kind:       'full',
+    path:       `trips/${TRIP_ID}/expenses/exp-1/abcdef12.webp`,
+    allowedContentTypes: ['image/webp'],
+    maxBytes:   5 * 1024 * 1024,
+    customMetadata: {
+      uploadIntentId: 'i1',
+      uploaderUid:    EDITOR_UID,
+      tripId:         TRIP_ID,
+      entityType:     'expense',
+      entityId:       'exp-1',
+      kind:           'full',
+      schemaVersion:  'v1',
+    },
+    status:    'pending',
+    expiresAt: Timestamp.fromMillis(Date.now() + 30 * 60_000),
+    createdAt: serverTimestamp(),
+  }
+
+  test('owner cannot create intent directly', async () => {
+    await assertFails(
+      setDoc(doc(asOwner(env).firestore(), 'uploadIntents', 'i-own-c'), validIntent),
+    )
+  })
+
+  test('editor cannot create intent directly', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'uploadIntents', 'i-edt-c'), validIntent),
+    )
+  })
+
+  test('viewer cannot create intent directly', async () => {
+    await assertFails(
+      setDoc(doc(asViewer(env).firestore(), 'uploadIntents', 'i-vw-c'), validIntent),
+    )
+  })
+
+  test('stranger cannot create intent directly', async () => {
+    await assertFails(
+      setDoc(doc(asStranger(env).firestore(), 'uploadIntents', 'i-str-c'), validIntent),
+    )
+  })
+
+  test('anonymous cannot create intent directly', async () => {
+    await assertFails(
+      setDoc(doc(asAnon(env).firestore(), 'uploadIntents', 'i-anon-c'), validIntent),
+    )
+  })
+
+  test('any client role cannot READ intent doc directly', async () => {
+    // Seed via admin context (rules disabled) so the doc exists.
+    // Then assert NO client identity can read it -- even the uid
+    // recorded in the doc's `uid` field. Storage rules access via
+    // server credentials when verifying; clients have zero reason
+    // to ever look at this doc directly.
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'uploadIntents', 'i-read'), validIntent)
+    })
+    await assertFails(getDoc(doc(asOwner(env).firestore(),    'uploadIntents', 'i-read')))
+    await assertFails(getDoc(doc(asEditor(env).firestore(),   'uploadIntents', 'i-read')))
+    await assertFails(getDoc(doc(asViewer(env).firestore(),   'uploadIntents', 'i-read')))
+    await assertFails(getDoc(doc(asStranger(env).firestore(), 'uploadIntents', 'i-read')))
+    await assertFails(getDoc(doc(asAnon(env).firestore(),     'uploadIntents', 'i-read')))
+  })
+
+  test('clients cannot update intent (e.g. flip status to used)', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'uploadIntents', 'i-upd'), validIntent)
+    })
+    // The most plausible attack: flip status='used' to free the
+    // intent for replay, or extend expiresAt. Both rejected.
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'uploadIntents', 'i-upd'), { status: 'used' }),
+    )
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'uploadIntents', 'i-upd'),
+        { expiresAt: Timestamp.fromMillis(Date.now() + 24 * 60 * 60_000) }),
+    )
+  })
+
+  test('clients cannot delete intent (would let attacker free path for replay)', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'uploadIntents', 'i-del'), validIntent)
+    })
+    await assertFails(
+      deleteDoc(doc(asEditor(env).firestore(), 'uploadIntents', 'i-del')),
+    )
+  })
+
+  test('list query on uploadIntents is rejected (no enumeration)', async () => {
+    await assertFails(
+      getDocs(query(collection(asEditor(env).firestore(), 'uploadIntents'))),
+    )
+  })
+})

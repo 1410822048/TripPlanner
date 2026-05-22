@@ -1158,6 +1158,18 @@ service cloud.firestore {
       }
     }
 
+    // Phase 3.5 upload intents. Worker mints these via admin SDK
+    // (which bypasses rules); clients NEVER read or write them
+    // directly. The intent doc carries authoritative path /
+    // customMetadata that storage.rules will verify against when
+    // intent-verified upload enforcement ships (Commit 4 of Phase 3.5).
+    // Default-deny below would catch this implicitly, but the
+    // explicit rule documents intent + gives the rules-test suite a
+    // concrete target to lock in.
+    match /uploadIntents/{intentId} {
+      allow read, write: if false;
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }
