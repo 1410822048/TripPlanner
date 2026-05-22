@@ -4,6 +4,13 @@
 // retry budget; this cron is the durable next layer that closes the
 // "PII orphan blob lives until trip delete" gap.
 //
+// Scan strategy: single Firestore collection-group `runQuery` over the
+// `_purges` group, paginated by (createdAt, __name__) ASC. Replaces an
+// earlier O(trips) approach that listed every trip doc then per-trip
+// listed _purges -- empty trips paid 1 round-trip each, so cron cost
+// grew linearly with trip count regardless of actual queue depth. Now
+// cost is O(pending queue entries) and unrelated to total trip count.
+//
 // Per queue entry:
 //   1. Read the entity doc named by `entityRef`. If it still references
 //      the purge.path (e.g. expense.receipt.path === purge.path), this
@@ -16,9 +23,19 @@
 //      docs forever for a permanently-bad path).
 //
 // The 1-hour age gate (`createdAt < now - 1h`) gives in-flight retries
-// time to complete naturally before the cron starts racing them.
+// time to complete naturally before the cron starts racing them. The
+// gate is enforced at the query level (the runQuery's `where`) AND
+// re-checked per-entry as defense-in-depth against clock skew between
+// query and process time.
+//
+// Cross-trip parse safeguard: the tripId used to validate entityRef is
+// derived from where the queue doc LIVES (its parent path in the
+// resource name), not from a field. A manually-edited queue entry
+// under trip-A claiming entityRef points at trip-B will be rejected
+// at parsePurgeEntry instead of accidentally letting the cron read
+// trip-B's entity to decide trip-A's blob fate.
 import {
-  listDocNames,
+  queryOrphanPurgeCandidates,
   getDocFields,
   deleteDoc,
   updateDocFields,
@@ -109,6 +126,24 @@ interface ParsedPurgeEntry {
 
 const ENTITY_REF_RE = /^trips\/([^/]+)\/(expenses|bookings|wishes)\/([A-Za-z0-9_-]+)$/
 
+/** Extract the trip id from a `_purges` queue doc's full resource name.
+ *  Queue docs live at `trips/{tripId}/_purges/{auto}`; we need the
+ *  tripId for parsePurgeEntry's cross-trip safeguard (entityRef's
+ *  declared tripId must match the trip the queue doc actually lives
+ *  under). Returns null when the regex doesn't match -- caller must
+ *  drop the entry without touching Storage. */
+const PURGE_DOC_NAME_RE = /\/trips\/([^/]+)\/_purges\/[^/]+$/
+function tripIdFromPurgeDocName(docName: string): string | null {
+  const m = PURGE_DOC_NAME_RE.exec(docName)
+  return m ? m[1]! : null
+}
+
+/** Per-batch fetch size for the orphan-purge collection-group query.
+ *  Generous enough that current scale (10s of pending entries per
+ *  day) drains in one round-trip; pagination kicks in only on the
+ *  cron-overflow path (failed runs accumulating queue depth). */
+const PAGE_SIZE = 500
+
 /**
  * Validate + extract everything the cron needs from a `_purges` doc.
  * Returns null when the entry is malformed in any way the cron can
@@ -179,9 +214,19 @@ function parsePurgeEntry(
 }
 
 /**
- * Drain the orphan-purge queue. Iterates `/trips/{tripId}/_purges` per
- * trip (no collection-group needed at this scale; a future trip count
- * > 1000 would justify switching to runQuery on the collection group).
+ * Drain the orphan-purge queue via a single collection-group runQuery
+ * over `_purges` (replacing the previous O(trips) list-then-iterate
+ * scan). Trip count no longer factors in -- cost is O(actual queue
+ * entries pending). Pagination is cursor-based on (createdAt, __name__)
+ * with retry-bumped entries naturally landing past the cursor (their
+ * createdAt doesn't advance, but the cursor does, so they re-surface
+ * in tomorrow's run rather than re-processing in this one's pages).
+ *
+ * Index requirement: COLLECTION_GROUP-scope index on `_purges.createdAt`
+ * in firestore.indexes.json. **Deploy ordering matters**: ship the
+ * index, wait for it to build (Firestore console / firebase deploy
+ * --only firestore:indexes), THEN ship the Worker. Calling this
+ * function against an unbuilt index returns FAILED_PRECONDITION.
  */
 export async function drainOrphanPurges(
   serviceAccountJson: string,
@@ -196,33 +241,51 @@ export async function drainOrphanPurges(
     scanned: 0, blobsDeleted: 0, falseOrphans: 0, giveUps: 0, deadlineHit: false,
   }
 
-  // List all trips, then iterate their _purges. Trip count is small.
-  const tripDocNames = await listDocNames(accessToken, projectId, 'trips')
+  let cursorDocName:    string | undefined
+  let cursorCreatedAtMs: number | undefined
 
-  for (const tripDocName of tripDocNames) {
+  // Outer loop: paginate the runQuery. Each batch processes up to
+  // PAGE_SIZE entries; we advance the cursor past the last batch's
+  // tail and re-query. Terminates on: empty page, short page (no
+  // more data), or soft deadline. Retry-bumped entries from THIS
+  // run aren't re-encountered because the cursor advances past them
+  // -- they wait for tomorrow's run, same as before.
+  while (true) {
     if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
       report.deadlineHit = true
       break
     }
-    // tripDocName is `projects/{pid}/databases/(default)/documents/trips/{tripId}`
-    // We need just the relative path for listDocNames below.
-    const tripIdMatch = tripDocName.match(/\/trips\/([^/]+)$/)
-    if (!tripIdMatch) continue
-    const tripId = tripIdMatch[1]
 
-    let purgeDocNames: string[]
+    let page
     try {
-      purgeDocNames = await listDocNames(accessToken, projectId, `trips/${tripId}/_purges`)
+      page = await queryOrphanPurgeCandidates(
+        accessToken, projectId, ageCutoffMs, PAGE_SIZE,
+        cursorDocName, cursorCreatedAtMs,
+      )
     } catch (e) {
-      // Subcollection may not exist (no purges enqueued for this
-      // trip) -- listDocNames returns [] in that case; an actual
-      // error (network / auth) gets propagated to per-trip log
-      // and continues with the next trip.
-      console.warn(`[orphan-purge] list _purges failed for trip=${tripId}: ${(e as Error).message}`)
-      continue
+      // Query failure (missing index pre-build, auth blip, 5xx) is
+      // run-aborting: without the query we can't enumerate ANY entries,
+      // so swallowing here would mask the entire queue going stale as a
+      // phantom "scanned=0" success line in the cron log. Re-throw to
+      // the Worker scheduled handler's `.catch` (index.ts) so the run
+      // surfaces as `[cron] orphan-purge failed: ...` instead.
+      //
+      // Encode the partial report into the message so a mid-drain
+      // failure (e.g. page 5 of N fails after pages 1-4 cleaned blobs)
+      // doesn't lose the per-run accounting -- Cloudflare Workers
+      // observability is line-based, so packing the counts here is the
+      // cleanest way to keep them visible alongside the failure reason.
+      throw new Error(
+        `queryOrphanPurgeCandidates failed mid-drain ` +
+        `(scanned=${report.scanned} blobsDeleted=${report.blobsDeleted} ` +
+        `falseOrphans=${report.falseOrphans} giveUps=${report.giveUps}): ` +
+        `${(e as Error).message}`,
+      )
     }
 
-    for (const purgeDocName of purgeDocNames) {
+    if (page.docs.length === 0) break
+
+    for (const doc of page.docs) {
       if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
         report.deadlineHit = true
         break
@@ -234,56 +297,63 @@ export async function drainOrphanPurges(
       // queue and a future deploy can clean it up manually.
       try {
         await processPurgeEntry(
-          accessToken, projectId, bucket, tripId, purgeDocName, ageCutoffMs, report,
+          accessToken, projectId, bucket,
+          doc.name, doc.fields, ageCutoffMs, report,
         )
       } catch (e) {
         console.error(
-          `[orphan-purge] unrecoverable error processing ${purgeDocName}: ${(e as Error).message}`,
+          `[orphan-purge] unrecoverable error processing ${doc.name}: ${(e as Error).message}`,
         )
       }
     }
+    if (report.deadlineHit) break
+
+    // Advance cursor past the last processed doc's (createdAt, name).
+    // If the last doc had no usable createdAt, we have no valid cursor
+    // -- the parsePurgeEntry path inside processPurgeEntry already
+    // dropped it as malformed, but we still need to advance to avoid
+    // refetching the same page. Fall back to name-only cursor; the
+    // ORDER BY tiebreaker keeps it monotonic.
+    const last = page.docs[page.docs.length - 1]!
+    cursorCreatedAtMs = readTimestampMs(last.fields, 'createdAt') ?? cursorCreatedAtMs
+    cursorDocName     = last.name
+
+    // Short page = no more data. Saves one round-trip on the final
+    // empty query.
+    if (page.docs.length < PAGE_SIZE) break
   }
 
   return report
 }
 
 async function processPurgeEntry(
-  accessToken:   string,
-  projectId:     string,
-  bucket:        string,
-  tripId:        string,
-  purgeDocName:  string,   // full resource name
-  ageCutoffMs:   number,
-  report:        OrphanPurgeReport,
+  accessToken:    string,
+  projectId:      string,
+  bucket:         string,
+  purgeDocName:   string,                              // full resource name from runQuery
+  purgeFields:    Record<string, FsValue>,             // inline from runQuery, no extra read
+  ageCutoffMs:    number,
+  report:         OrphanPurgeReport,
 ): Promise<void> {
-  // Step 0: read the queue doc itself. A transient read failure here
-  // is non-fatal -- we just skip this entry and try again tomorrow;
-  // the queue entry stays in place.
-  let purgeFields: Record<string, FsValue> | null
-  try {
-    purgeFields = await getDocFields(accessToken, projectId, stripDocPrefix(purgeDocName, projectId))
-  } catch (e) {
-    console.warn(`[orphan-purge] read purge doc failed name=${purgeDocName}: ${(e as Error).message}`)
+  // Source of truth for the cross-trip parse safeguard: extract tripId
+  // from where the queue doc actually LIVES (its parent path), NOT from
+  // the entityRef field. parsePurgeEntry then asserts entityRef's
+  // declared tripId matches. A null here means the queue doc's resource
+  // name doesn't fit the expected pattern -- almost certainly a manual /
+  // corrupted write that we can't reason about; drop it.
+  const tripId = tripIdFromPurgeDocName(purgeDocName)
+  if (!tripId) {
+    console.warn(`[orphan-purge] queue doc name doesn't match trips/X/_purges/Y pattern: ${purgeDocName}`)
+    await tryDeletePurgeDoc(accessToken, projectId, purgeDocName)
     return
   }
-  if (!purgeFields) return  // doc was deleted between list and read
 
-  // Step 1: validate the queue doc shape. parsePurgeEntry returns null
-  // for ANY malformed condition (missing fields, bad entityRef pattern,
-  // schedule entityRef, path outside entityRef folder, age below
-  // cutoff). Null → drop without touching Storage. The "drop on
-  // malformed" decision is safe because the rules layer prevents
-  // these shapes from being enqueued today; an existing malformed
-  // entry must be legacy / manual / corrupted, and we have no safe
-  // way to interpret its intent.
-  //
-  // Skip age-not-yet-old-enough silently (no drop, no log) by
-  // distinguishing it from "truly malformed" -- both currently
-  // return null from parsePurgeEntry; the createdAtMs-undefined vs
-  // createdAtMs-too-recent disambiguation lives inline below.
+  // Age gate is enforced at the query level (createdAt < ageCutoff in
+  // the runQuery), but defense-in-depth: if a clock skew between query
+  // time and process time pulled a fresh doc into the page, skip it.
+  // No drop -- it'll re-appear in a future run when actually aged.
   const createdAtMs = readTimestampMs(purgeFields, 'createdAt')
   if (createdAtMs !== undefined && createdAtMs > ageCutoffMs) {
-    // Fresh entry -- let in-flight retries finish naturally.
     return
   }
   const parsed = parsePurgeEntry(purgeFields, ageCutoffMs, tripId)

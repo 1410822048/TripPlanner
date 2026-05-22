@@ -414,6 +414,86 @@ export async function queryReceiptPurgeCandidates(
   return { docs }
 }
 
+// ─── Orphan-purge: collection-group query over `_purges` ──────────
+
+/**
+ * Page through `_purges` queue entries that are due for processing:
+ *   createdAt < ageCutoff
+ *
+ * Replaces the previous O(trips) list-then-iterate scan in
+ * orphan-purge.ts. Collection-group runs over all `_purges` subcollections
+ * in one query, so empty trips cost nothing — drain cost is now O(actual
+ * queue entries) instead of O(trip count).
+ *
+ * Ordering by createdAt ASC drains oldest-first (fair scheduling) and
+ * gives a natural cursor for pagination: bumped-attempts entries keep
+ * their original createdAt so they re-surface tomorrow without
+ * starving newer entries. Cursor tuple `(createdAt, __name__)` matches
+ * the orderBy, identical pattern to queryReceiptPurgeCandidates.
+ *
+ * Requires the COLLECTION_GROUP-scope index on `_purges.createdAt`
+ * declared in firestore.indexes.json fieldOverrides. Without it
+ * Firestore returns FAILED_PRECONDITION on first call.
+ */
+export async function queryOrphanPurgeCandidates(
+  accessToken:              string,
+  projectId:                string,
+  ageCutoffMs:              number,
+  pageSize:                 number,
+  cursorAfterDocName?:      string,
+  cursorAfterCreatedAtMs?:  number,
+): Promise<QueryPage> {
+  const parent = `projects/${projectId}/databases/(default)/documents`
+  const cutoffIso = new Date(ageCutoffMs).toISOString()
+
+  const structuredQuery: Record<string, unknown> = {
+    from: [{ collectionId: '_purges', allDescendants: true }],
+    where: {
+      fieldFilter: {
+        field: { fieldPath: 'createdAt' },
+        op:    'LESS_THAN',
+        value: { timestampValue: cutoffIso },
+      },
+    },
+    orderBy: [
+      { field: { fieldPath: 'createdAt' }, direction: 'ASCENDING' },
+      { field: { fieldPath: '__name__'  }, direction: 'ASCENDING' },
+    ],
+    limit: pageSize,
+  }
+  if (cursorAfterDocName && cursorAfterCreatedAtMs != null) {
+    structuredQuery.startAt = {
+      before: false,
+      values: [
+        { timestampValue: new Date(cursorAfterCreatedAtMs).toISOString() },
+        { referenceValue: cursorAfterDocName },
+      ],
+    }
+  }
+
+  const res = await fetch(`${BASE}/${parent}:runQuery`, {
+    ...NO_CACHE,
+    method:  'POST',
+    headers: {
+      Authorization:  `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ structuredQuery }),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`queryOrphanPurgeCandidates → ${res.status}: ${detail.slice(0, 200)}`)
+  }
+  const rows = await res.json() as { document?: { name: string; fields?: Record<string, FsValue> } }[]
+  const docs = rows
+    .filter(r => r.document)
+    .map(r => ({
+      name:   r.document!.name,
+      fields: r.document!.fields ?? {},
+    }))
+  return { docs }
+}
+
 /** Patch a doc with the given fields. updateMask scopes the write to
  *  only the listed fields so unrelated fields aren't touched. Pass
  *  `{ nullValue: null }` in the patch to explicitly set a field to

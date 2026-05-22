@@ -23,12 +23,15 @@ vi.mock('../src/storage', () => ({
 vi.mock('../src/firestore', async () => {
 	const actual = await vi.importActual<typeof import('../src/firestore')>('../src/firestore')
 	return {
-		listDocNames:     vi.fn(),
-		getDocFields:     vi.fn(),
-		deleteDoc:        vi.fn(async (..._args: unknown[]) => undefined),
-		updateDocFields:  vi.fn(async (..._args: unknown[]) => true),
-		readNestedString: actual.readNestedString,
-		readTimestampMs:  actual.readTimestampMs,
+		// queryOrphanPurgeCandidates replaces the previous trips-list +
+		// per-trip listDocNames sequence. Each test stubs it with the
+		// page(s) of queue docs the run should observe.
+		queryOrphanPurgeCandidates: vi.fn(async () => ({ docs: [] })),
+		getDocFields:               vi.fn(),
+		deleteDoc:                  vi.fn(async (..._args: unknown[]) => undefined),
+		updateDocFields:            vi.fn(async (..._args: unknown[]) => true),
+		readNestedString:           actual.readNestedString,
+		readTimestampMs:            actual.readTimestampMs,
 	}
 })
 vi.mock('../src/admin', () => ({
@@ -62,13 +65,13 @@ function purgeDoc(overrides: Record<string, unknown> = {}) {
 	}
 }
 
-/** Tell the mocked listDocNames to return a sequence of values across
- *  successive calls — first the trips collection, then each trip's
- *  _purges subcollection. */
-function mockListDocNamesSequence(sequence: string[][]) {
-	let i = 0
-	vi.mocked(firestore.listDocNames).mockImplementation(async () => {
-		return sequence[i++] ?? []
+/** Stub the collection-group runQuery to return a single page of queue
+ *  docs (each with full resource name + inline fields). drainOrphanPurges
+ *  pages until short page → one call returning N < PAGE_SIZE docs is
+ *  treated as "all done", which is what every test below wants. */
+function mockOrphanPurgePage(docs: { name: string; fields: Record<string, unknown> }[]) {
+	vi.mocked(firestore.queryOrphanPurgeCandidates).mockResolvedValueOnce({
+		docs: docs as { name: string; fields: Record<string, import('../src/firestore').FsValue> }[],
 	})
 }
 
@@ -79,20 +82,16 @@ beforeEach(() => {
 describe('drainOrphanPurges', () => {
 	it('confirmed orphan: entity does not reference path → delete blob + queue entry', async () => {
 		const purgeDocName = `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/_purges/p1`
-		mockListDocNamesSequence([
-			[`projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}`],
-			[purgeDocName],
-		])
-		vi.mocked(firestore.getDocFields)
-			// First call: read the purge doc.
-			.mockResolvedValueOnce(purgeDoc())
-			// Second call: read the entity. Has receipt but at a DIFFERENT path.
-			.mockResolvedValueOnce({
-				receipt: { mapValue: { fields: {
-					path:      { stringValue: `trips/${TRIP_ID}/expenses/exp-1/different.webp` },
-					thumbPath: { stringValue: `trips/${TRIP_ID}/expenses/exp-1/different.thumb.webp` },
-				} } },
-			})
+		mockOrphanPurgePage([{ name: purgeDocName, fields: purgeDoc() }])
+		// Only ONE getDocFields call now: the entity read (purge fields
+		// come inline from the runQuery). Has receipt but at a DIFFERENT
+		// path → confirmed orphan.
+		vi.mocked(firestore.getDocFields).mockResolvedValueOnce({
+			receipt: { mapValue: { fields: {
+				path:      { stringValue: `trips/${TRIP_ID}/expenses/exp-1/different.webp` },
+				thumbPath: { stringValue: `trips/${TRIP_ID}/expenses/exp-1/different.thumb.webp` },
+			} } },
+		})
 
 		const report = await drainOrphanPurges('{}', BUCKET)
 
@@ -108,19 +107,14 @@ describe('drainOrphanPurges', () => {
 
 	it('false orphan: entity STILL references path → no blob delete, drop queue entry', async () => {
 		const purgeDocName = `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/_purges/p2`
-		mockListDocNamesSequence([
-			[`projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}`],
-			[purgeDocName],
-		])
+		mockOrphanPurgePage([{ name: purgeDocName, fields: purgeDoc() }])
 		const orphanPath = `trips/${TRIP_ID}/expenses/exp-1/abc.webp`
-		vi.mocked(firestore.getDocFields)
-			.mockResolvedValueOnce(purgeDoc())
-			// Entity has the SAME path → false orphan.
-			.mockResolvedValueOnce({
-				receipt: { mapValue: { fields: {
-					path: { stringValue: orphanPath },
-				} } },
-			})
+		// Entity has the SAME path → false orphan.
+		vi.mocked(firestore.getDocFields).mockResolvedValueOnce({
+			receipt: { mapValue: { fields: {
+				path: { stringValue: orphanPath },
+			} } },
+		})
 
 		const report = await drainOrphanPurges('{}', BUCKET)
 
@@ -137,16 +131,13 @@ describe('drainOrphanPurges', () => {
 		// to process it -- otherwise it would read trip-B's entity
 		// to decide whether to delete what looks like trip-B's blob.
 		const purgeDocName = `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/_purges/p-crosstrip`
-		mockListDocNamesSequence([
-			[`projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}`],
-			[purgeDocName],
-		])
-		vi.mocked(firestore.getDocFields).mockResolvedValueOnce(purgeDoc({
+		mockOrphanPurgePage([{ name: purgeDocName, fields: purgeDoc({
 			// entityRef under a DIFFERENT trip (trip-B).
 			entityRef: { stringValue: `trips/trip-B/expenses/exp-1` },
 			// path under trip-A (the scanning trip).
 			path:      { stringValue: `trips/${TRIP_ID}/expenses/exp-1/orphan.webp` },
-		}))
+		}) }])
+		// No entity read expected -- parse rejects before that step.
 
 		await drainOrphanPurges('{}', BUCKET)
 
@@ -163,15 +154,13 @@ describe('drainOrphanPurges', () => {
 		// doc's blob as orphan and delete it. Fail-closed semantics:
 		// throw → leave queue entry intact, retry next run.
 		const purgeDocName = `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/_purges/p-transient`
-		mockListDocNamesSequence([
-			[`projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}`],
-			[purgeDocName],
-		])
-		vi.mocked(firestore.getDocFields)
-			// First call: read the purge doc (succeeds).
-			.mockResolvedValueOnce(purgeDoc())
-			// Second call: read the entity (transient 5xx).
-			.mockRejectedValueOnce(new Error('getDocFields trips/trip-1/expenses/exp-1 -> 503: backend overload'))
+		mockOrphanPurgePage([{ name: purgeDocName, fields: purgeDoc() }])
+		// Only entity read is mocked now; runQuery delivered purge fields
+		// inline. Transient 5xx on entity verification → leave queue
+		// entry intact for tomorrow's run.
+		vi.mocked(firestore.getDocFields).mockRejectedValueOnce(
+			new Error('getDocFields trips/trip-1/expenses/exp-1 -> 503: backend overload'),
+		)
 
 		await drainOrphanPurges('{}', BUCKET)
 
@@ -195,14 +184,10 @@ describe('drainOrphanPurges', () => {
 		// as orphan because schedule has no attachment field) is closed
 		// before the cron even gets to the verification step.
 		const purgeDocName = `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/_purges/p-sched`
-		mockListDocNamesSequence([
-			[`projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}`],
-			[purgeDocName],
-		])
-		vi.mocked(firestore.getDocFields).mockResolvedValueOnce(purgeDoc({
+		mockOrphanPurgePage([{ name: purgeDocName, fields: purgeDoc({
 			entityRef: { stringValue: `trips/${TRIP_ID}/schedules/sched-1` },
 			path:      { stringValue: `trips/${TRIP_ID}/schedules/sched-1/orphan.webp` },
-		}))
+		}) }])
 
 		await drainOrphanPurges('{}', BUCKET)
 
@@ -216,14 +201,10 @@ describe('drainOrphanPurges', () => {
 		// rules layer blocks this on enqueue, but parsePurgeEntry has
 		// to defend against legacy / corrupted entries that bypassed.
 		const purgeDocName = `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/_purges/p-cross`
-		mockListDocNamesSequence([
-			[`projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}`],
-			[purgeDocName],
-		])
-		vi.mocked(firestore.getDocFields).mockResolvedValueOnce(purgeDoc({
+		mockOrphanPurgePage([{ name: purgeDocName, fields: purgeDoc({
 			entityRef: { stringValue: `trips/${TRIP_ID}/expenses/exp-1` },
 			path:      { stringValue: `trips/${TRIP_ID}/bookings/b-victim/legit.webp` },
-		}))
+		}) }])
 
 		await drainOrphanPurges('{}', BUCKET)
 
@@ -233,14 +214,9 @@ describe('drainOrphanPurges', () => {
 
 	it('entity doc deleted entirely → confirmed orphan, delete blob', async () => {
 		const purgeDocName = `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/_purges/p3`
-		mockListDocNamesSequence([
-			[`projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}`],
-			[purgeDocName],
-		])
-		vi.mocked(firestore.getDocFields)
-			.mockResolvedValueOnce(purgeDoc())
-			// Entity 404 → null → confirmed orphan.
-			.mockResolvedValueOnce(null)
+		mockOrphanPurgePage([{ name: purgeDocName, fields: purgeDoc() }])
+		// Entity 404 → null → confirmed orphan.
+		vi.mocked(firestore.getDocFields).mockResolvedValueOnce(null)
 
 		const report = await drainOrphanPurges('{}', BUCKET)
 
@@ -250,13 +226,12 @@ describe('drainOrphanPurges', () => {
 
 	it('storage delete fails: bump attempts, keep queue entry', async () => {
 		const purgeDocName = `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/_purges/p4`
-		mockListDocNamesSequence([
-			[`projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}`],
-			[purgeDocName],
-		])
-		vi.mocked(firestore.getDocFields)
-			.mockResolvedValueOnce(purgeDoc({ attempts: { integerValue: '2' } }))
-			.mockResolvedValueOnce(null)  // entity deleted → confirmed orphan
+		mockOrphanPurgePage([{
+			name: purgeDocName,
+			fields: purgeDoc({ attempts: { integerValue: '2' } }),
+		}])
+		// Entity deleted → confirmed orphan path.
+		vi.mocked(firestore.getDocFields).mockResolvedValueOnce(null)
 		vi.mocked(storage.deleteObject).mockRejectedValueOnce(new Error('5xx blip'))
 
 		await drainOrphanPurges('{}', BUCKET)
@@ -272,14 +247,12 @@ describe('drainOrphanPurges', () => {
 
 	it('storage delete fails at MAX_ATTEMPTS: give up + drop queue entry', async () => {
 		const purgeDocName = `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/_purges/p5`
-		mockListDocNamesSequence([
-			[`projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}`],
-			[purgeDocName],
-		])
-		vi.mocked(firestore.getDocFields)
-			// attempts 9 → next bump would hit MAX_ATTEMPTS (10).
-			.mockResolvedValueOnce(purgeDoc({ attempts: { integerValue: '9' } }))
-			.mockResolvedValueOnce(null)
+		// attempts 9 → next bump would hit MAX_ATTEMPTS (10) → give up.
+		mockOrphanPurgePage([{
+			name: purgeDocName,
+			fields: purgeDoc({ attempts: { integerValue: '9' } }),
+		}])
+		vi.mocked(firestore.getDocFields).mockResolvedValueOnce(null)
 		vi.mocked(storage.deleteObject).mockRejectedValueOnce(new Error('still failing'))
 
 		const report = await drainOrphanPurges('{}', BUCKET)
@@ -294,13 +267,16 @@ describe('drainOrphanPurges', () => {
 	})
 
 	it('age gate: fresh queue entry is skipped (in-flight retries get grace window)', async () => {
+		// In production the runQuery's `where createdAt < cutoff` filter
+		// would prevent a fresh entry from ever reaching processPurgeEntry.
+		// This test simulates the defense-in-depth check inside
+		// processPurgeEntry that still re-validates the age (covers clock
+		// skew between query time and process time).
 		const purgeDocName = `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/_purges/p6`
-		mockListDocNamesSequence([
-			[`projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}`],
-			[purgeDocName],
-		])
-		vi.mocked(firestore.getDocFields)
-			.mockResolvedValueOnce(purgeDoc({ createdAt: { timestampValue: FRESH_ISO } }))
+		mockOrphanPurgePage([{
+			name: purgeDocName,
+			fields: purgeDoc({ createdAt: { timestampValue: FRESH_ISO } }),
+		}])
 
 		const report = await drainOrphanPurges('{}', BUCKET)
 
@@ -315,21 +291,19 @@ describe('drainOrphanPurges', () => {
 	it('booking entityRef: check attachment.filePath / thumbPath', async () => {
 		const purgeDocName = `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/_purges/p7`
 		const orphanPath = `trips/${TRIP_ID}/bookings/b-1/abc.webp`
-		mockListDocNamesSequence([
-			[`projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}`],
-			[purgeDocName],
-		])
-		vi.mocked(firestore.getDocFields)
-			.mockResolvedValueOnce(purgeDoc({
+		mockOrphanPurgePage([{
+			name: purgeDocName,
+			fields: purgeDoc({
 				entityRef: { stringValue: `trips/${TRIP_ID}/bookings/b-1` },
 				path:      { stringValue: orphanPath },
-			}))
-			.mockResolvedValueOnce({
-				// Booking entity references a DIFFERENT path under attachment.
-				attachment: { mapValue: { fields: {
-					filePath: { stringValue: `trips/${TRIP_ID}/bookings/b-1/different.webp` },
-				} } },
-			})
+			}),
+		}])
+		// Booking entity references a DIFFERENT path under attachment.
+		vi.mocked(firestore.getDocFields).mockResolvedValueOnce({
+			attachment: { mapValue: { fields: {
+				filePath: { stringValue: `trips/${TRIP_ID}/bookings/b-1/different.webp` },
+			} } },
+		})
 
 		await drainOrphanPurges('{}', BUCKET)
 
@@ -347,13 +321,10 @@ describe('drainOrphanPurges', () => {
 		// the rules layer fixes for live writes but the cron has to
 		// defend against on legacy / corrupted data.
 		const purgeDocName = `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/_purges/p-malformed`
-		mockListDocNamesSequence([
-			[`projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}`],
-			[purgeDocName],
-		])
-		vi.mocked(firestore.getDocFields).mockResolvedValueOnce(
-			purgeDoc({ entityRef: undefined as unknown as { stringValue: string } }),
-		)
+		mockOrphanPurgePage([{
+			name: purgeDocName,
+			fields: purgeDoc({ entityRef: undefined as unknown as { stringValue: string } }),
+		}])
 
 		await drainOrphanPurges('{}', BUCKET)
 
@@ -370,13 +341,10 @@ describe('drainOrphanPurges', () => {
 
 	it('malformed queue doc (missing path): same fail-closed drop', async () => {
 		const purgeDocName = `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/_purges/p-malformed2`
-		mockListDocNamesSequence([
-			[`projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}`],
-			[purgeDocName],
-		])
-		vi.mocked(firestore.getDocFields).mockResolvedValueOnce(
-			purgeDoc({ path: undefined as unknown as { stringValue: string } }),
-		)
+		mockOrphanPurgePage([{
+			name: purgeDocName,
+			fields: purgeDoc({ path: undefined as unknown as { stringValue: string } }),
+		}])
 
 		await drainOrphanPurges('{}', BUCKET)
 
@@ -388,25 +356,70 @@ describe('drainOrphanPurges', () => {
 	it('wish entityRef: check image.path / thumbPath', async () => {
 		const purgeDocName = `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/_purges/p8`
 		const orphanPath = `trips/${TRIP_ID}/wishes/w-1/abc.webp`
-		mockListDocNamesSequence([
-			[`projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}`],
-			[purgeDocName],
-		])
-		vi.mocked(firestore.getDocFields)
-			.mockResolvedValueOnce(purgeDoc({
+		mockOrphanPurgePage([{
+			name: purgeDocName,
+			fields: purgeDoc({
 				entityRef: { stringValue: `trips/${TRIP_ID}/wishes/w-1` },
 				path:      { stringValue: orphanPath },
-			}))
-			.mockResolvedValueOnce({
-				// Wish references SAME path → false orphan.
-				image: { mapValue: { fields: {
-					path: { stringValue: orphanPath },
-				} } },
-			})
+			}),
+		}])
+		// Wish references SAME path → false orphan.
+		vi.mocked(firestore.getDocFields).mockResolvedValueOnce({
+			image: { mapValue: { fields: {
+				path: { stringValue: orphanPath },
+			} } },
+		})
 
 		const report = await drainOrphanPurges('{}', BUCKET)
 
 		expect(storage.deleteObject).not.toHaveBeenCalled()
 		expect(report.falseOrphans).toBe(1)
+	})
+
+	it('P2: first-page query failure → drainOrphanPurges rejects (cron log routes to failure path)', async () => {
+		// Regression: a previous version caught queryOrphanPurgeCandidates
+		// rejections and `break`d the pagination loop, returning a clean
+		// `{ scanned: 0, ... }` report. That meant a missing collection-
+		// group index, auth blip, or Firestore 5xx silently turned into
+		// the cron's `[cron] orphan-purge done scanned=0` success line --
+		// the entire queue would go stale with no observable signal.
+		// Fix: re-throw so the Worker scheduled handler's .catch fires
+		// `[cron] orphan-purge failed: ...` instead.
+		vi.mocked(firestore.queryOrphanPurgeCandidates).mockRejectedValueOnce(
+			new Error('FAILED_PRECONDITION: query requires an index'),
+		)
+
+		await expect(drainOrphanPurges('{}', BUCKET)).rejects.toThrow(
+			/queryOrphanPurgeCandidates failed mid-drain.*FAILED_PRECONDITION/,
+		)
+	})
+
+	it('P2: mid-drain query failure preserves partial counts in the error message', async () => {
+		// Mid-drain failure case: first page succeeds (processes one
+		// confirmed orphan -- blobsDeleted=1), second page rejects.
+		// The thrown error must encode the partial accounting so cron
+		// logs aren't only "failed" with no per-run breakdown.
+		const purgeDocName = `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/_purges/p-page1`
+		vi.mocked(firestore.queryOrphanPurgeCandidates)
+			// Page 1: PAGE_SIZE=500 → returning a short page (1 doc)
+			// would terminate pagination cleanly. So we return PAGE_SIZE
+			// (500) of the SAME doc to force a second-page query, then
+			// reject on page 2. The deduped doc IDs don't matter for this
+			// test -- we're only checking the error path, not state.
+			.mockResolvedValueOnce({
+				docs: Array.from({ length: 500 }, (_, i) => ({
+					name: purgeDocName.replace('p-page1', `p-page1-${i}`),
+					fields: purgeDoc(),
+				})),
+			})
+			.mockRejectedValueOnce(new Error('503 backend overload'))
+
+		// Every doc on page 1 hits the entity-read path; mock 500 nulls
+		// so each is a confirmed orphan that gets deleted.
+		vi.mocked(firestore.getDocFields).mockResolvedValue(null)
+
+		await expect(drainOrphanPurges('{}', BUCKET)).rejects.toThrow(
+			/queryOrphanPurgeCandidates failed mid-drain.*scanned=500.*blobsDeleted=500.*503/,
+		)
 	})
 })
