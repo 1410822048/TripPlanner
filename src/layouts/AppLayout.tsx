@@ -80,9 +80,12 @@ export default function AppLayout() {
   // visible "header showing but list still loading" gap on cold load.
   usePrefetchBookings()
 
-  // Always-on listeners for all 5 feature collections so unread dots in
-  // the bottom nav reflect others' changes without requiring the user to
-  // open each tab. See useFeatureBadges for the trade-off discussion.
+  // Per-tab unread dots read from the trip doc's `lastActivityByFeature`
+  // denormalisation. No extra listeners — piggybacks on the existing
+  // trip-doc subscription mounted by useCurrentTripSync above. Each
+  // service mutation calls bumpTripActivity() so reads are O(1) regardless
+  // of how many entities a member edits. See useFeatureBadges for the
+  // history (previously 5 always-on collection listeners).
   const { badges, activity } = useFeatureBadges()
 
   // Mark the active tab's feature as viewed, watermarking lastViewed to

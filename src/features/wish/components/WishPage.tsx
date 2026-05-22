@@ -218,7 +218,7 @@ export default function WishPage() {
         ) : (
           <>
             <div className="flex flex-col gap-3">
-              {filteredWishes.map(w => {
+              {filteredWishes.map((w, index) => {
                 // Resolve uid → TripMember in `votes[]` order (= first-
                 // voted first, since arrayUnion appends). Unknown uids
                 // (kicked / former members) are silently dropped — the
@@ -240,6 +240,12 @@ export default function WishPage() {
                     onEdit={() => modal.openEdit(w)}
                     onDelete={() => handleDeleteFromMenu(w)}
                     onToggleVote={() => handleToggleVote(w)}
+                    // Layout is a single-column flex stack (above), so
+                    // index 0 = literal top card = LCP target on /wish
+                    // cold load. Eager loading skips the lazy round-trip
+                    // for that one image only; everything below stays
+                    // lazy so a long wish list doesn't fan-out network.
+                    eager={index === 0}
                   />
                 )
               })}

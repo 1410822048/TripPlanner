@@ -63,12 +63,34 @@ export default defineConfig({
     // optimizeDeps bundling picks up `react/compiler-runtime` for free.
     babel({ presets: [reactCompilerPreset({ target: '19' })] }),
     tailwindcss(),
-    // Inject <link rel="modulepreload"> for the Firebase SDK chunks
-    // into index.html at build time. Without this, the browser only
-    // discovers these chunks after main.js parses and executes
-    // initAuth() — adding ~1.5s of serial wait on first cold launch.
-    // With modulepreload the chunks download in parallel with main.js
-    // so by the time React calls initAuth() the bundle is hot.
+    // Conditional modulepreload for Firestore. An inline script runs
+    // synchronously during HTML parse, reads the `tripmate.auth.hint`
+    // localStorage marker (set by useAuth on sign-in / cleared on
+    // sign-out), and only then appends <link rel="modulepreload"> for
+    // the firestore chunk. Two layers must agree with main.tsx's
+    // `if (readAuthHint())` gate around `void getFirebase()`:
+    //
+    //   - Hinted (returning signed-in user): preload fires during HTML
+    //     parse → chunk downloads in parallel with main.js → first
+    //     useMyTrips()'s firestore needs land hot. Matches the original
+    //     unconditional-preload speed for the common case.
+    //   - Unhinted (first visit / demo / signed-out): nothing is
+    //     preloaded AND main.tsx skips `void getFirebase()`, so the
+    //     104 KB gz vendor-firebase-firestore chunk doesn't even get
+    //     downloaded until the user explicitly signs in. Closes the
+    //     "demo browser pays signed-in bandwidth" gap.
+    //
+    // Why an inline script instead of a static <link>:
+    //   - Static <link> fires unconditionally; the browser pays full
+    //     bandwidth cost even when main.tsx never imports the chunk
+    //     (modulepreload reserves and warms the parse cache).
+    //   - <link rel="prefetch"> downgrades to "low-priority idle" which
+    //     hurts hinted users' first-paint.
+    //   - SSR / per-user HTML would be cleanest but we're a pure SPA.
+    //
+    // Auth SDK and Sentry are intentionally NOT preloaded here for
+    // separate reasons (see the previous version of this comment block
+    // — preserved in git history).
     {
       name: 'preload-firebase-chunks',
       transformIndexHtml: {
@@ -78,24 +100,18 @@ export default defineConfig({
           const targets: string[] = []
           for (const [fileName, chunk] of Object.entries(ctx.bundle)) {
             if (chunk.type !== 'chunk') continue
-            // Note: vendor-firebase-auth deliberately NOT preloaded.
-            // Auth SDK is ~45 KB gz, only needed when a user actually
-            // taps sign-in. Preloading would steal bandwidth from the
-            // main critical-path bundle for never-signed-in visitors
-            // who only browse demo data. Returning users pay a small
-            // chunk-fetch cost (~50-200ms) on first useAuth() call,
-            // which falls inside the existing auth-hint loading window.
-            //
-            // vendor-sentry is also NOT preloaded -- it's dynamically
-            // imported in requestIdleCallback (services/sentry.ts), so
-            // preloading would defeat the deferred-load optimisation.
             if (/vendor-firebase-firestore/.test(fileName)) targets.push(fileName)
           }
           if (targets.length === 0) return html
-          const tags = targets
-            .map(f => `    <link rel="modulepreload" href="/${f}" crossorigin>`)
-            .join('\n')
-          return html.replace('</head>', `${tags}\n  </head>`)
+          // JSON.stringify each path so the inline JS sees properly
+          // quoted string literals (and we escape any odd chars Vite
+          // might mint into the chunk filename).
+          const hrefs = JSON.stringify(targets.map(f => `/${f}`))
+          // Inline script — minified by hand because vite's HTML pass
+          // doesn't run our terser config over transformIndexHtml output.
+          // try/catch guards against private-mode / SSR localStorage throws.
+          const script = `<script>(function(){try{if(localStorage.getItem('tripmate.auth.hint')==='1'){var hs=${hrefs};for(var i=0;i<hs.length;i++){var l=document.createElement('link');l.rel='modulepreload';l.href=hs[i];l.crossOrigin='';document.head.appendChild(l);}}}catch(e){}})();</script>`
+          return html.replace('</head>', `    ${script}\n  </head>`)
         },
       },
     },
@@ -151,14 +167,29 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
-        // vendor-sentry chunk is excluded from precache so the SW
-        // install phase doesn't eager-fetch it -- defeating the
-        // services/sentry.ts dynamic import + requestIdleCallback
-        // optimization. Combined with the runtimeCaching rule below,
-        // the first visit truly defers the chunk to idle, and the
-        // SW caches it on first runtime fetch so subsequent visits
-        // load instantly.
-        globIgnores: ['**/vendor-sentry-*.js'],
+        // Chunks excluded from the SW install-time precache. Each one
+        // has a runtimeCaching rule below so signed-in users still get
+        // a populated cache after first use; demo / first-visit /
+        // signed-out users pay zero bandwidth for the chunks they
+        // never actually import.
+        //
+        // - vendor-sentry-*: dynamically imported via
+        //   requestIdleCallback in services/sentry.ts. Precaching would
+        //   defeat the idle deferral.
+        // - vendor-firebase-firestore-* / vendor-firebase-auth-*:
+        //   loaded on demand by getFirebase() / getFirebaseAuth(),
+        //   gated in main.tsx by readAuthHint() (firestore) and by
+        //   useAuth's lazy init (auth). Without exclusion the SW
+        //   install would background-fetch these for EVERY first
+        //   visitor including demo users, defeating the conditional
+        //   modulepreload + the runtime auth-hint gate. Found in
+        //   2026-05-22 review: HTML preload was correctly skipped but
+        //   precache silently re-introduced the 150KB+gz download.
+        globIgnores: [
+          '**/vendor-sentry-*.js',
+          '**/vendor-firebase-firestore-*.js',
+          '**/vendor-firebase-auth-*.js',
+        ],
         // Intentionally no Firestore runtime cache: Firestore uses WebChannel /
         // long-polling that Workbox can't meaningfully cache at the HTTP layer.
         // Offline support is delegated to the Firestore SDK's own IndexedDB
@@ -167,7 +198,15 @@ export default defineConfig({
           {
             urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
             handler: 'StaleWhileRevalidate',
-            options: { cacheName: 'google-fonts-cache' },
+            options: {
+              cacheName: 'google-fonts-cache',
+              // Bounded growth — Google Fonts CSS evolves rarely; 30
+              // entries covers every font family / weight we'd realistically
+              // request. maxAgeSeconds gives a 1y ceiling so an unused
+              // entry eventually evicts on its own (Workbox runs the
+              // expiration sweep on each cache hit).
+              expiration: { maxEntries: 30, maxAgeSeconds: 365 * 24 * 60 * 60 },
+            },
           },
           {
             // Cache vendor-sentry chunk on first runtime fetch (the
@@ -178,7 +217,36 @@ export default defineConfig({
             // chunk URL and the old cache entry becomes garbage.
             urlPattern: /\/assets\/vendor-sentry-.*\.js$/,
             handler: 'CacheFirst',
-            options: { cacheName: 'vendor-sentry-cache' },
+            options: {
+              cacheName: 'vendor-sentry-cache',
+              // Without expiration, every prior content-hashed chunk
+              // accumulates indefinitely after each deploy -- the
+              // CacheFirst handler never reaches the old URL again
+              // (filename changed), but the entry stays in IndexedDB
+              // forever. maxEntries=3 keeps the previous handful (in
+              // case the SW rollback path serves an old chunk briefly);
+              // 90 days is a generous floor for entries that DO get
+              // re-served via revisited URLs.
+              expiration: { maxEntries: 3, maxAgeSeconds: 90 * 24 * 60 * 60 },
+            },
+          },
+          {
+            // Runtime cache for the Firebase SDK chunks that are
+            // excluded from precache (see globIgnores above). First
+            // import after install / after deploy fetches from the
+            // network; subsequent navigations are SW-served. Pattern
+            // intentionally matches both firestore + auth (one cache
+            // bucket for Firebase, easier eviction story than per-chunk).
+            //
+            // maxEntries=4: 2 current chunks × 2 deploys of headroom
+            // (in case the SW briefly serves the previous deploy's
+            // assets during rollover).
+            urlPattern: /\/assets\/vendor-firebase-(firestore|auth)-.*\.js$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'vendor-firebase-cache',
+              expiration: { maxEntries: 4, maxAgeSeconds: 90 * 24 * 60 * 60 },
+            },
           },
         ],
       },

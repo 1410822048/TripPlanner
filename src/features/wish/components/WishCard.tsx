@@ -97,11 +97,19 @@ interface Props {
   onEdit:        () => void
   onDelete:      () => void
   onToggleVote:  () => void
+  /** Caller-asserted "this card's image is a likely LCP candidate"
+   *  (typically the first visible card on /wish). Suppresses the
+   *  default `loading="lazy"` on the hero <img> so the browser
+   *  discovers the request during initial parse instead of after
+   *  layout — lazy loading the first card image was measurably
+   *  delaying LCP. Defaults to false → all subsequent cards stay
+   *  lazy. */
+  eager?:        boolean
 }
 
 function WishCard({
   wish, isVoted, voters, isPreviewOnly,
-  canEdit, canDelete, onEdit, onDelete, onToggleVote,
+  canEdit, canDelete, onEdit, onDelete, onToggleVote, eager,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false)
   const hasMenu = canEdit || canDelete
@@ -113,7 +121,7 @@ function WishCard({
 
   const heroBody = (
     <>
-      <WishHero wish={wish} />
+      <WishHero wish={wish} eager={eager} />
       <WishBody wish={wish} />
     </>
   )
@@ -174,7 +182,7 @@ function WishCard({
 
 // ─── Hero + body sub-components ──────────────────────────────────
 
-function WishHero({ wish }: { wish: Wish }) {
+function WishHero({ wish, eager }: { wish: Wish; eager?: boolean }) {
   // 16:9 ratio keeps the card from getting too tall on phones while
   // leaving plenty of room for a meaningful image.
   if (wish.image) {
@@ -184,6 +192,13 @@ function WishHero({ wish }: { wish: Wish }) {
           src={wish.image.thumbUrl}
           alt=""
           decoding="async"
+          // eager === true ONLY for the first card on /wish — that's
+          // the LCP candidate, blanket-lazy was delaying paint by 1
+          // round-trip. fetchPriority="high" tells the browser to
+          // hoist this image above other lazy candidates competing
+          // for bandwidth on cold load.
+          loading={eager ? 'eager' : 'lazy'}
+          fetchPriority={eager ? 'high' : undefined}
           draggable={false}
           className="absolute inset-0 w-full h-full object-cover"
         />
