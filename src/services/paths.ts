@@ -30,6 +30,7 @@ export const TRIP_SUBCOLLECTIONS = [
   'bookings',
   'planning',
   'settlements',
+  '_purges',
   'invites',
   'members',
 ] as const
@@ -79,4 +80,13 @@ export const P = {
   settlements: (tripId: string): ['trips', string, 'settlements'] => [TRIPS, tripId, 'settlements'],
   settlement:  (tripId: string, id: string): ['trips', string, 'settlements', string] =>
     [TRIPS, tripId, 'settlements', id],
+
+  // Internal orphan-blob cleanup queue. Auto-id docs written when a
+  // best-effort Storage purge gave up; the Worker cron drains them.
+  // Underscore prefix marks "infra, not user content" -- the rules
+  // block lists, the listener hooks ignore it, the trip-cascade
+  // Worker cleans it like any other subcollection.
+  purges:      (tripId: string): ['trips', string, '_purges'] => [TRIPS, tripId, '_purges'],
+  purge:       (tripId: string, id: string): ['trips', string, '_purges', string] =>
+    [TRIPS, tripId, '_purges', id],
 } as const

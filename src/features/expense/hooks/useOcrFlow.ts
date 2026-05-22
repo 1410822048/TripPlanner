@@ -64,7 +64,6 @@ function ocrErrorCopy(e: OcrError): string {
     case 'rate-limit': return '読み取りの回数制限に達しました。少し時間を置いてから再試行してください'
     case 'parse':      return 'レシートを読み取れませんでした。明るい場所で撮り直してみてください'
     case 'network':    return 'ネットワークエラー。接続を確認してください'
-    case 'config':     return 'OCR サービスが設定されていません'
     default:           return e.message || '読み取りに失敗しました'
   }
 }

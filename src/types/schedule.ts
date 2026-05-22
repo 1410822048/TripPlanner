@@ -59,7 +59,9 @@ export const CreateScheduleSchema = z.object({
   endTime:       z.string().optional(),
   category:      z.enum(['transport','accommodation','food','activity','shopping','other']),
   description:   z.string().optional(),
-  estimatedCost: z.coerce.number().min(0).optional(),
+  // 1B major-units sanity cap (mirrors expense.amount). Above this is
+  // corruption / typo, not a real cost estimate; rules layer also gates.
+  estimatedCost: z.coerce.number().finite().min(0).max(1_000_000_000).optional(),
   location:      z.object({
     name:    z.string().min(1),
     address: z.string().optional(),
@@ -84,7 +86,7 @@ export const ScheduleDocSchema = z.object({
   startTime:     z.string().optional(),
   endTime:       z.string().optional(),
   category:      z.enum(['transport','accommodation','food','activity','shopping','other']),
-  estimatedCost: z.number().optional(),
+  estimatedCost: z.number().finite().min(0).max(1_000_000_000).optional(),
   createdBy:     z.string(),
   updatedBy:     z.string(),
   memberIds:     z.array(z.string().min(1)).min(1),

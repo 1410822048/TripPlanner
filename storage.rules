@@ -52,27 +52,18 @@ service firebase.storage {
 
     // Wish cover Storage ownership: only the wish proposer can
     // write / replace / delete cover bytes. firestore.rules already
-    // restricts wish doc content edits to the proposer, but Storage
-    // was previously open to any member -- letting member B silently
-    // replace member A's cover with offensive content. Firestore
-    // would still attribute the wish to A, but the rendered cover
-    // would be B's swap.
-    //
-    // First-upload exception: the wish create flow (wishService.ts
-    // createWish) mints the wishId client-side, uploads the cover,
-    // THEN setDoc's the Firestore doc. At upload time the doc
-    // doesn't exist yet, so we allow !exists. Once the doc lands,
-    // the proposer check becomes load-bearing for all subsequent
-    // writes / deletes. Attackers can't exploit the !exists branch
-    // because wishIds are 20-char random strings (Firestore
-    // auto-IDs) -- guessing a yet-to-be-used ID has effectively
-    // zero success rate.
+    // restricts wish doc content edits to the proposer; Storage now
+    // mirrors that. wishService.createWish is doc-first: setDoc the
+    // wish (without image), then upload, then updateDoc to patch
+    // the image field. By the time Storage write fires, the wish
+    // doc exists and its proposedBy is queryable -- no first-upload
+    // exception needed, no race window.
     function wishPath(tripId, wishId) {
       return /databases/(default)/documents/trips/$(tripId)/wishes/$(wishId);
     }
-    function isWishProposerOrFirstUpload(tripId, wishId) {
-      return !firestore.exists(wishPath(tripId, wishId))
-          || firestore.get(wishPath(tripId, wishId)).data.proposedBy == request.auth.uid;
+    function isWishProposer(tripId, wishId) {
+      return firestore.exists(wishPath(tripId, wishId))
+          && firestore.get(wishPath(tripId, wishId)).data.proposedBy == request.auth.uid;
     }
     // Cross-service trip-owner check. Mirrors firestore.rules
     // `isTripOwner` so the wish delete rule can match firestore.rules'
@@ -119,34 +110,32 @@ service firebase.storage {
     }
 
     // Wish cover images. Any member can READ (gallery), but write /
-    // replace / delete is restricted to the wish proposer (or
-    // first-upload before the wish doc exists -- see
-    // isWishProposerOrFirstUpload). Image-only with the 5MB cap.
+    // replace / delete is restricted to the wish proposer. The
+    // wishService.createWish flow is doc-first so the wish doc
+    // exists by the time Storage write fires. Image-only with the
+    // 5MB cap.
     match /trips/{tripId}/wishes/{wishId}/{fileName} {
       allow read: if isMember(tripId);
       allow create, update: if isMember(tripId)
                             && tripNotDeleting(tripId)
-                            && isWishProposerOrFirstUpload(tripId, wishId)
+                            && isWishProposer(tripId, wishId)
                             && request.resource.size < 5 * 1024 * 1024
                             && request.resource.contentType.matches('image/.*');
       // Delete: proposer cleans up their own; OR trip owner
       // moderates (mirrors firestore.rules wish delete which allows
-      // `proposedBy == uid() || isTripOwner(tripId)`). The owner
-      // branch deliberately skips the firestore.exists(wishPath)
-      // guard -- if a wish doc was already deleted but its cover
-      // blob orphaned (e.g. earlier mismatch left bytes behind),
-      // the owner can still clean up. The trip-owner check is
-      // anchored to the trip doc's own ownerId, so a wish doc
-      // missing or not doesn't matter.
-      //
-      // Non-owner members without proposer match still get
-      // rejected -- no first-upload exception on delete (an
-      // attacker racing the proposer's initial upload window is
-      // a non-issue at sub-millisecond scale but cleaner to forbid).
+      // `proposedBy == uid() || isTripOwner(tripId)`). BOTH branches
+      // require the wish doc to still exist -- the proposer check
+      // does this implicitly via `isWishProposer`, and the owner
+      // branch requires it explicitly. Orphan blobs (rare: process
+      // crash between createWish setDoc and uploadWishImage) are
+      // cleaned by the orphan-purge cron's verify-before-delete via
+      // the `_purges` queue, NOT via a wide-open owner-delete rule
+      // here. Emergency manual cleanup still works via Firebase
+      // Console (admin auth bypasses rules entirely).
       allow delete: if isMember(tripId) && (
-                      (firestore.exists(wishPath(tripId, wishId))
-                       && firestore.get(wishPath(tripId, wishId)).data.proposedBy == request.auth.uid)
-                      || isTripOwnerStorage(tripId)
+                      isWishProposer(tripId, wishId)
+                      || (isTripOwnerStorage(tripId)
+                          && firestore.exists(wishPath(tripId, wishId)))
                     );
     }
 

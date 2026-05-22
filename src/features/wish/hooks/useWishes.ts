@@ -12,9 +12,12 @@ import {
   updateWish,
   deleteWish,
   toggleWishVote,
+  WishCreatePartialError,
 } from '../services/wishService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
 import { useTripListMutation } from '@/hooks/useTripListMutation'
+import { useUid } from '@/hooks/useAuth'
+import { useQueryClient } from '@tanstack/react-query'
 import { tempId } from '@/utils/tempId'
 import { auditUpdateMock } from '@/utils/audit'
 import type { CreateWishInput, Wish, WishImage } from '@/types'
@@ -34,6 +37,8 @@ export const useWishes = createRealtimeListHook<Wish>({
 })
 
 export function useCreateWish(tripId: string, options?: MutationOptions) {
+  const qc  = useQueryClient()
+  const uid = useUid()
   return useTripListMutation<Wish, {
     input:      CreateWishInput
     file:       File | null
@@ -57,6 +62,19 @@ export function useCreateWish(tripId: string, options?: MutationOptions) {
     ],
     action:     MUTATION_ACTION.CREATE_WISH,
     silent:     options?.silent,
+    onError:    (err) => {
+      // Partial-create recovery: the wish doc persists in Firestore
+      // but the image step failed AND the rollback couldn't clean
+      // it up. The factory's optimistic rollback removed the temp
+      // row from cache, but the realtime listener already pushed
+      // the real wish in. Without an invalidate the user sees
+      // "save failed" + a wish in the list -- a re-press of save
+      // would land a duplicate. Invalidate forces a fresh fetch
+      // so cache reconciles to whatever Firestore actually has.
+      if (err instanceof WishCreatePartialError) {
+        qc.invalidateQueries({ queryKey: wishKeys.all(tripId, uid) })
+      }
+    },
   })
 }
 

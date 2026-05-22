@@ -27,6 +27,12 @@ import { OcrRequestSchema }                       from './schema'
 import { cascadeMemberAdd, CascadeRequestSchema, CascadeError } from './cascade'
 import { cascadeTripDelete, TripDeleteRequestSchema } from './trip-cascade'
 import { purgeExpiredReceipts }                   from './receipt-purge'
+import { drainOrphanPurges }                      from './orphan-purge'
+import {
+  expenseCreate, expenseUpdate,
+  ExpenseCreateRequestSchema, ExpenseUpdateRequestSchema,
+}                                                 from './expense-write'
+import { ExpenseValidationError }                 from './expense-validate'
 import { checkGlobalRateLimit }                   from './rate-limiter'
 
 export { GlobalRateLimiter } from './rate-limiter'
@@ -46,6 +52,11 @@ interface WorkerEnv {
    *  Tighter than member cascade because trip-delete is heavy
    *  (O(100) docs + Storage purge per call). */
   TRIP_CASCADE_RATE_LIMITER: RateLimit
+  /** Per-PoP per-uid rate limiter for expense create/update. Same
+   *  cap as OCR (30/min) -- one expense per ~2s sustained covers
+   *  rapid form retries without blowing through Firestore admin
+   *  write quotas. */
+  EXPENSE_RATE_LIMITER:     RateLimit
   /** Cross-PoP global rate limiter. Durable Object — strongly
    *  consistent counter per-uid that catches multi-PoP abuse that
    *  would slip past the per-PoP binding. ~10-50ms latency cost. */
@@ -129,7 +140,9 @@ export default {
     const isOcr           = url.pathname === '/ocr'                  && request.method === 'POST'
     const isCascade       = url.pathname === '/cascade-member'       && request.method === 'POST'
     const isTripCascade   = url.pathname === '/cascade-trip-delete'  && request.method === 'POST'
-    if (!isOcr && !isCascade && !isTripCascade) {
+    const isExpenseCreate = url.pathname === '/expense-create'       && request.method === 'POST'
+    const isExpenseUpdate = url.pathname === '/expense-update'       && request.method === 'POST'
+    if (!isOcr && !isCascade && !isTripCascade && !isExpenseCreate && !isExpenseUpdate) {
       return json({ error: 'Not found' }, 404, cors)
     }
 
@@ -172,8 +185,10 @@ export default {
     //     that L1 alone can't see. Cap deliberately looser than L1 —
     //     L1's tighter per-location bound is the primary defense; L2
     //     is the cluster ceiling.
+    const isExpenseWrite = isExpenseCreate || isExpenseUpdate
     const limiter = isOcr            ? env.OCR_RATE_LIMITER
                   : isTripCascade    ? env.TRIP_CASCADE_RATE_LIMITER
+                  : isExpenseWrite   ? env.EXPENSE_RATE_LIMITER
                   : env.CASCADE_RATE_LIMITER
     const localResult = await limiter.limit({ key: uid })
     if (!localResult.success) {
@@ -181,11 +196,16 @@ export default {
       return json({ error: 'Rate limit exceeded' }, 429, cors)
     }
 
-    // Scope name + L2 limit. trip-delete is the strictest: 2/min global
-    // (2× the per-PoP cap) because the operation is the heaviest in the
-    // worker and 1/PoP could still amplify across PoPs.
-    const scope       = isOcr ? 'ocr' : isTripCascade ? 'trip-cascade' : 'cascade'
-    const globalLimit = isOcr ? 60    : isTripCascade ? 2              : 10
+    // Scope name + L2 limit. trip-delete is the strictest. expense
+    // matches OCR (60/min L2) -- both are user-facing rapid actions.
+    const scope       = isOcr ? 'ocr'
+                      : isTripCascade  ? 'trip-cascade'
+                      : isExpenseWrite ? 'expense'
+                      : 'cascade'
+    const globalLimit = isOcr ? 60
+                      : isTripCascade  ? 2
+                      : isExpenseWrite ? 60
+                      : 10
     const globalResult = await checkGlobalRateLimit(
       env.GLOBAL_LIMITER, scope, uid, globalLimit, 60_000,
     )
@@ -204,6 +224,56 @@ export default {
     } catch {
       console.warn('[body] not valid JSON')
       return json({ error: 'Invalid JSON' }, 400, cors)
+    }
+
+    // ─── /expense-create ─────────────────────────────────────────────
+    if (isExpenseCreate) {
+      const parsed = ExpenseCreateRequestSchema.safeParse(body)
+      if (!parsed.success) {
+        console.warn(`[expense-create] schema fail: ${parsed.error.message.slice(0, 200)}`)
+        return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
+      }
+      try {
+        const result = await expenseCreate(uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)
+        console.log(`[expense-create] uid=${uidTag(uid)} trip=${parsed.data.tripId} exp=${result.expenseId}`)
+        return json({ ok: true, ...result }, 200, cors)
+      } catch (e) {
+        if (e instanceof ExpenseValidationError) {
+          console.warn(`[expense-create] validation: ${e.field} ${e.message}`)
+          return json({ error: e.message, field: e.field }, 400, cors)
+        }
+        if (e instanceof CascadeError) {
+          console.warn(`[expense-create] ${e.status} ${e.message}`)
+          return json({ error: e.message }, e.status, cors)
+        }
+        console.error(`[expense-create] internal error: ${(e as Error).message}`)
+        return json({ error: 'Internal error' }, 500, cors)
+      }
+    }
+
+    // ─── /expense-update ─────────────────────────────────────────────
+    if (isExpenseUpdate) {
+      const parsed = ExpenseUpdateRequestSchema.safeParse(body)
+      if (!parsed.success) {
+        console.warn(`[expense-update] schema fail: ${parsed.error.message.slice(0, 200)}`)
+        return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
+      }
+      try {
+        const result = await expenseUpdate(uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)
+        console.log(`[expense-update] uid=${uidTag(uid)} trip=${parsed.data.tripId} exp=${parsed.data.expenseId}`)
+        return json(result, 200, cors)
+      } catch (e) {
+        if (e instanceof ExpenseValidationError) {
+          console.warn(`[expense-update] validation: ${e.field} ${e.message}`)
+          return json({ error: e.message, field: e.field }, 400, cors)
+        }
+        if (e instanceof CascadeError) {
+          console.warn(`[expense-update] ${e.status} ${e.message}`)
+          return json({ error: e.message }, e.status, cors)
+        }
+        console.error(`[expense-update] internal error: ${(e as Error).message}`)
+        return json({ error: 'Internal error' }, 500, cors)
+      }
     }
 
     // ─── /cascade-trip-delete ─────────────────────────────────────────
@@ -299,6 +369,26 @@ export default {
           // re-converges on whatever this run missed. We still log the
           // error so observability picks up the failure mode.
           console.error(`[cron] receipt-purge failed: ${(err as Error).message}`)
+        }),
+    )
+    // Orphan-blob queue drain. Independent from receipt-purge (different
+    // invariant): receipt-purge sweeps soft-deleted-expense receipts
+    // after the 10-day window; orphan-purge drains the _purges queue
+    // written by best-effort cleanup paths that gave up. Runs in
+    // parallel via separate waitUntil so a failure in one doesn't
+    // starve the other.
+    console.log('[cron] orphan-purge starting')
+    ctx.waitUntil(
+      drainOrphanPurges(env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)
+        .then(report => {
+          console.log(
+            `[cron] orphan-purge done scanned=${report.scanned} ` +
+            `blobsDeleted=${report.blobsDeleted} falseOrphans=${report.falseOrphans} ` +
+            `giveUps=${report.giveUps} deadlineHit=${report.deadlineHit}`,
+          )
+        })
+        .catch(err => {
+          console.error(`[cron] orphan-purge failed: ${(err as Error).message}`)
         }),
     )
   },

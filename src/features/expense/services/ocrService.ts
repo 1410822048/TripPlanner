@@ -42,9 +42,9 @@ export interface OcrResult {
   category?: OcrCategory
 }
 
-const API_URL = import.meta.env.VITE_OCR_API_URL as string | undefined
+import { WORKER_BASE_URL } from '@/services/workerBase'
 
-export type OcrErrorKind = 'auth' | 'rate-limit' | 'parse' | 'network' | 'config' | 'unknown'
+export type OcrErrorKind = 'auth' | 'rate-limit' | 'parse' | 'network' | 'unknown'
 
 // Field declared explicitly (not via constructor-param syntax) because the
 // project's tsconfig sets `erasableSyntaxOnly`, which forbids parameter
@@ -87,10 +87,6 @@ function fileToBase64(file: File): Promise<string> {
  * ambiguous receipts (e.g. a "$" that could be USD/TWD/CAD).
  */
 export async function ocrReceipt(file: File, currency?: string): Promise<OcrResult> {
-  if (!API_URL) {
-    throw new OcrError('OCR service not configured', 'config')
-  }
-
   // Auth — fail early before doing the (potentially slow) base64 encode.
   const { auth } = await getFirebaseAuth()
   const user = auth.currentUser
@@ -107,7 +103,7 @@ export async function ocrReceipt(file: File, currency?: string): Promise<OcrResu
     // polyfill needed (Safari 16.4+, Chrome 103+). Without it a hung
     // worker / DNS blackhole leaves the UI's "解析中…" spinner up
     // indefinitely. Worker p99 latency is ~5s, so 60s is generous.
-    res = await fetch(`${API_URL}/ocr`, {
+    res = await fetch(`${WORKER_BASE_URL}/ocr`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,

@@ -7,9 +7,10 @@
 // url/path/type/thumb*). A future consolidation could thread a
 // "shape mapper" through, but two callers don't justify the indirection.
 
-import type { UploadTask, StorageReference, UploadMetadata, StorageError } from 'firebase/storage'
+import type { UploadMetadata } from 'firebase/storage'
 import { getFirebaseStorage } from '@/services/firebase'
 import { deleteStorageObject } from '@/services/storageDelete'
+import { uploadFile, withUploadTimeout, UPLOAD_TIMEOUT_MS } from '@/services/storageUpload'
 import { compressImage } from '@/utils/image'
 import { retry, isTransientStorageError } from '@/utils/retry'
 import type { ExpenseReceipt } from '@/types'
@@ -25,72 +26,24 @@ function extForMime(mime: string): string {
   return 'bin'
 }
 
-/** Race a promise against a timeout. Throws after `ms` if the underlying
- *  operation hasn't resolved — used to escape Firebase Storage's 2-minute
- *  internal retry loop when something has actually gone wrong (CORS,
- *  network blackhole, etc.) instead of stranding the user on "保存中". */
-async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms)
-  })
-  try {
-    return await Promise.race([p, timeout])
-  } finally {
-    if (timer) clearTimeout(timer)
-  }
-}
-
-const UPLOAD_TIMEOUT_MS = 30_000
-
-/**
- * Wrap an UploadTask in a Promise<StorageReference> that resolves on
- * upload completion and rejects on timeout.
- *
- * Why uploadBytesResumable over uploadBytes:
- *   uploadBytes uses a single multipart POST. iOS Safari + Firebase
- *   Storage have a recurring issue where this POST stalls partway and
- *   the SDK's internal retry loop fails to detect the stall, leaving
- *   the upload promise hanging for the full 2-minute maxOperationRetryTime.
- *   uploadBytesResumable uses chunked PUT requests with explicit
- *   completion/error events — we can subscribe and time out reliably.
- *
- * Errors propagate to the mutation's onError handler (toast + rollback)
- * + Sentry via captureError upstream. No console logging needed.
- */
-function uploadFile(
-  task:    UploadTask,
-  label:   string,
-  timeoutMs: number,
-): Promise<StorageReference> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      // task.cancel() is synchronous and returns a bool indicating whether
-      // a running task was actually cancelled. We don't care about the
-      // return — the reject below propagates regardless.
-      try { task.cancel() } catch { /* best-effort */ }
-      reject(new Error(`${label} timed out after ${timeoutMs / 1000}s`))
-    }, timeoutMs)
-
-    task.on(
-      'state_changed',
-      undefined,
-      (err: StorageError) => {
-        clearTimeout(timer)
-        reject(err)
-      },
-      () => {
-        clearTimeout(timer)
-        resolve(task.snapshot.ref)
-      },
-    )
-  })
+/** 8-char random id to keep each upload at a unique path. Without
+ *  this, a same-mime replace (webp → webp) would collide on the
+ *  fixed `receipt.webp` filename: Storage upload silently
+ *  overwrites the old blob, then the post-Worker `purgeReceipt`
+ *  of the OLD paths (also `receipt.webp`) wipes the just-uploaded
+ *  NEW blob, leaving the Firestore doc referencing a deleted file.
+ *  Random suffix means new path ≠ old path always, so the purge
+ *  step targets only the genuinely-old blob. */
+function shortId(): string {
+  return Math.random().toString(36).slice(2, 10)
 }
 
 /**
  * Upload a receipt + (when image) its thumbnail. Returns the
  * ExpenseReceipt doc shape ready to write on the expense.
- * Storage layout: `trips/{tripId}/expenses/{expenseId}/{receipt,thumb}.ext`
+ * Storage layout: `trips/{tripId}/expenses/{expenseId}/{id}.{ext}`
+ * and `{id}.thumb.{ext}` -- the per-upload random `id` prevents
+ * same-mime-replace collisions (see comment on shortId above).
  */
 export async function uploadReceipt(
   tripId: string,
@@ -100,8 +53,9 @@ export async function uploadReceipt(
   const { full, thumb } = await compressImage(file)
 
   const folder    = `trips/${tripId}/expenses/${expenseId}`
-  const path      = `${folder}/receipt.${extForMime(full.type)}`
-  const thumbPath = thumb ? `${folder}/thumb.${extForMime(thumb.type)}` : undefined
+  const id        = shortId()
+  const path      = `${folder}/${id}.${extForMime(full.type)}`
+  const thumbPath = thumb ? `${folder}/${id}.thumb.${extForMime(thumb.type)}` : undefined
 
   const { storage, ref, uploadBytesResumable, getDownloadURL } = await getFirebaseStorage()
 
@@ -134,9 +88,9 @@ export async function uploadReceipt(
   ])
 
   const [url, thumbUrl] = await Promise.all([
-    withTimeout(getDownloadURL(fullRef), UPLOAD_TIMEOUT_MS, 'getDownloadURL(full)'),
+    withUploadTimeout(getDownloadURL(fullRef), UPLOAD_TIMEOUT_MS, 'getDownloadURL(full)'),
     thumbRef
-      ? withTimeout(getDownloadURL(thumbRef), UPLOAD_TIMEOUT_MS, 'getDownloadURL(thumb)')
+      ? withUploadTimeout(getDownloadURL(thumbRef), UPLOAD_TIMEOUT_MS, 'getDownloadURL(thumb)')
       : Promise.resolve(undefined),
   ])
 

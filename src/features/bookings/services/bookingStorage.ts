@@ -3,8 +3,10 @@
 // bookingService.ts so the read/write CRUD module isn't 400+ LOC of
 // mixed concerns. Service-layer logic stays in bookingService; the
 // "talk to Firebase Storage" code lives here.
+import type { UploadMetadata } from 'firebase/storage'
 import { getFirebaseStorage } from '@/services/firebase'
 import { deleteStorageObject } from '@/services/storageDelete'
+import { uploadFile, withUploadTimeout, UPLOAD_TIMEOUT_MS } from '@/services/storageUpload'
 import type { BookingAttachment } from '@/types'
 import { compressImage } from '@/utils/image'
 import { retry, isTransientStorageError } from '@/utils/retry'
@@ -18,6 +20,18 @@ function extForMime(mime: string): string {
   if (mime === 'image/heif')   return 'heif'
   if (mime === 'application/pdf') return 'pdf'
   return 'bin'
+}
+
+/** 8-char random id to keep each upload at a unique path. Without
+ *  this, a same-mime replace (jpg → jpg) would collide on the fixed
+ *  `file.jpg` filename: Storage upload silently overwrites the old
+ *  blob, then the post-doc `purgeAttachments` of the OLD paths (also
+ *  `file.jpg`) wipes the just-uploaded NEW blob, leaving the booking
+ *  doc referencing a deleted file. Random suffix means new path ≠
+ *  old path always, so the purge step only targets the genuinely-old
+ *  blob. Mirrors the same fix in expenseStorage. */
+function shortId(): string {
+  return Math.random().toString(36).slice(2, 10)
 }
 
 /**
@@ -40,25 +54,42 @@ export async function uploadAttachment(
 ): Promise<BookingAttachment> {
   const { full, thumb } = await compressImage(file)
   const folder = `trips/${tripId}/bookings/${bookingId}`
-  const filePath  = `${folder}/file.${extForMime(full.type)}`
-  const thumbPath = thumb ? `${folder}/thumb.${extForMime(thumb.type)}` : undefined
+  const id        = shortId()
+  const filePath  = `${folder}/${id}.${extForMime(full.type)}`
+  const thumbPath = thumb ? `${folder}/${id}.thumb.${extForMime(thumb.type)}` : undefined
 
-  const { storage, ref, uploadBytes, getDownloadURL } = await getFirebaseStorage()
-  const [fullSnap, thumbSnap] = await Promise.all([
+  const { storage, ref, uploadBytesResumable, getDownloadURL } = await getFirebaseStorage()
+  // Mirror expenseStorage: uploadBytesResumable + explicit timeout
+  // avoids the iOS Safari single-multipart-POST stall that hangs
+  // uploadBytes for the full 2-minute internal retry window.
+  const fullMetadata: UploadMetadata = { contentType: full.type }
+  const thumbMetadata: UploadMetadata | undefined = thumb ? { contentType: thumb.type } : undefined
+
+  const [fullRef, thumbRef] = await Promise.all([
     retry(
-      () => uploadBytes(ref(storage, filePath), full, { contentType: full.type }),
+      () => uploadFile(
+        uploadBytesResumable(ref(storage, filePath), full, fullMetadata),
+        'booking-full',
+        UPLOAD_TIMEOUT_MS,
+      ),
       { shouldRetry: isTransientStorageError },
     ),
-    thumb
+    thumb && thumbPath && thumbMetadata
       ? retry(
-          () => uploadBytes(ref(storage, thumbPath!), thumb, { contentType: thumb.type }),
+          () => uploadFile(
+            uploadBytesResumable(ref(storage, thumbPath), thumb, thumbMetadata),
+            'booking-thumb',
+            UPLOAD_TIMEOUT_MS,
+          ),
           { shouldRetry: isTransientStorageError },
         )
       : Promise.resolve(null),
   ])
   const [fileUrl, thumbUrl] = await Promise.all([
-    getDownloadURL(fullSnap.ref),
-    thumbSnap ? getDownloadURL(thumbSnap.ref) : Promise.resolve(undefined),
+    withUploadTimeout(getDownloadURL(fullRef), UPLOAD_TIMEOUT_MS, 'getDownloadURL(booking-full)'),
+    thumbRef
+      ? withUploadTimeout(getDownloadURL(thumbRef), UPLOAD_TIMEOUT_MS, 'getDownloadURL(booking-thumb)')
+      : Promise.resolve(undefined),
   ])
   return { fileUrl, filePath, thumbUrl, thumbPath, fileType: full.type }
 }

@@ -25,6 +25,7 @@
 // state-persistence architecture to do safely (lost scroll / activeDate
 // / mid-OCR uploads / mid-invite-flow). Banner-driven reload puts the
 // user in control — they pick the moment, and we never yank their work.
+import { useEffect, useRef } from 'react'
 import { RefreshCw, X } from 'lucide-react'
 import { useRegisterSW } from 'virtual:pwa-register/react'
 import { captureError } from '@/services/sentry'
@@ -32,6 +33,15 @@ import { captureError } from '@/services/sentry'
 const PERIODIC_CHECK_MS = 3 * 60_000   // 3 min
 
 export default function PwaUpdatePrompt() {
+  // Listeners + interval registered inside `onRegistered` need a
+  // cleanup hook. In production the component is a top-level mount
+  // that never unmounts, but HMR / test harnesses re-mount on every
+  // hot reload and would otherwise accumulate intervals and
+  // visibilitychange listeners (one set per HMR cycle). Hold the
+  // teardown thunk in a ref and fire it from the unmount-cleanup
+  // useEffect below.
+  const teardownRef = useRef<() => void>(() => undefined)
+
   const {
     needRefresh: [needRefresh, setNeedRefresh],
     updateServiceWorker,
@@ -44,26 +54,34 @@ export default function PwaUpdatePrompt() {
       // this is a single HEAD request that gets short-circuited.
       void r.update()
       // Periodic fallback check — gated by visibility so background
-      // tabs don't keep waking the network. Listeners live for the
-      // page's lifetime (matching the SW's own lifetime); useRegisterSW
-      // shares state via module singleton so multiple mounts won't
-      // multiply intervals in practice.
-      setInterval(() => {
+      // tabs don't keep waking the network.
+      const intervalId = window.setInterval(() => {
         if (document.visibilityState === 'visible') void r.update()
       }, PERIODIC_CHECK_MS)
       // Re-check whenever the tab becomes visible — covers the common
       // "user switched apps, deploy happened, user comes back" case
       // with near-zero latency.
-      document.addEventListener('visibilitychange', () => {
+      const onVisibility = () => {
         if (document.visibilityState === 'visible') void r.update()
-      })
+      }
+      document.addEventListener('visibilitychange', onVisibility)
       // bfcache restore (iOS Safari back/forward) — doesn't trigger
       // visibilitychange but the page state is effectively fresh from
       // the user's perspective. `persisted=true` filters out the
       // first-load case where pageshow fires alongside DOMContentLoaded.
-      window.addEventListener('pageshow', e => {
+      const onPageShow = (e: PageTransitionEvent) => {
         if (e.persisted) void r.update()
-      })
+      }
+      window.addEventListener('pageshow', onPageShow)
+
+      // Single composite teardown. Picked up by the useEffect cleanup
+      // below; safe to call multiple times (clearInterval / remove
+      // event listener are no-ops on already-cleared / unregistered).
+      teardownRef.current = () => {
+        clearInterval(intervalId)
+        document.removeEventListener('visibilitychange', onVisibility)
+        window.removeEventListener('pageshow', onPageShow)
+      }
     },
     onRegisterError(error) {
       // Non-fatal: if SW registration fails (first visit without SW
@@ -74,6 +92,10 @@ export default function PwaUpdatePrompt() {
       captureError(error, { source: 'pwa-sw-register' })
     },
   })
+
+  // Run teardown on unmount. Empty dep array because teardownRef
+  // value is stable across renders (set once inside onRegistered).
+  useEffect(() => () => teardownRef.current(), [])
 
   if (!needRefresh) return null
 

@@ -56,6 +56,16 @@ pubsub-debug.log*
 # ─── Claude Code workspace state (agent memory, session cache) ─
 .claude/
 
+# ─── Agent skill installs (modern-web-guidance et al.) ────────
+# `.agents/skills/` is the universal source dir written by
+# installers like modern-web-guidance@latest install -- the per-
+# agent symlinks (e.g. .claude/skills/) point at this directory.
+# `skills-lock.json` is the installer's per-machine lockfile.
+# All three are local install artefacts; contributors run the
+# installer themselves.
+.agents/
+skills-lock.json
+
 # ─── Test coverage (if added later) ────────────────────────────
 /coverage/
 /.nyc_output/

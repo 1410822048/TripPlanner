@@ -12,18 +12,13 @@
 // the new one). No client ever writes to an invite doc — only create+delete.
 import type { User } from 'firebase/auth'
 import type { Timestamp } from 'firebase/firestore'
-import { getFirebase, getFirebaseAuth } from '@/services/firebase'
+import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'
 import { subscribeToCollection } from '@/services/realtimeQuery'
 import { InviteDocSchema, type Invite, type Trip } from '@/types'
 import { getTripsByIds } from '@/features/trips/services/tripService'
-
-/** OCR worker base URL — also hosts the /cascade-member endpoint that
- *  finishes the accept-invite membership cascade server-side (the
- *  invitee can't list pre-existing entity docs under the same-doc
- *  memberIds rule, so client-side cascade alone misses them). */
-const WORKER_BASE = 'https://tripmate-ocr.tripmate.workers.dev'
+import { requireWorkerWriteBase, preflightIdToken, workerFetch } from '@/services/workerBase'
 
 export type InviteErrorCode = 'not-found' | 'expired'
 
@@ -247,6 +242,20 @@ export async function acceptInvite(
   token: string,
   user: User,
 ): Promise<AcceptResult> {
+  // Resolve config + auth FIRST, BEFORE any Firestore write. Step 2b's
+  // `try/catch` swallows the cascade-member failure by design (the
+  // cascade is idempotent on next reload), so a missing
+  // VITE_WORKER_BASE_URL or no-token would otherwise allow Step 1 +
+  // Step 2a to land (member doc created, trip.memberIds updated)
+  // while Step 2b's throw gets eaten -- the invitee enters a half-
+  // joined state with no UI signal, and the next acceptInvite retry
+  // would skip Step 1 because isNewMember is now false. Hoisting
+  // both gates fails the whole flow loudly before any Firestore
+  // side effect, so a config / auth error surfaces as an InvitePage
+  // toast and Step 1 retries cleanly once fixed.
+  const workerBase = requireWorkerWriteBase()
+  const idToken    = await preflightIdToken()
+
   const { db, doc, getDoc, setDoc, updateDoc, arrayUnion, serverTimestamp } = await getFirebase()
 
   const invite = await getInvite(tripId, token)  // throws on not-found/expired
@@ -310,21 +319,16 @@ export async function acceptInvite(
   // by 2a; (ii) subsequent reloads re-run this step idempotently
   // to fill in entity-doc access if the first attempt was cut short.
   try {
-    const { auth } = await getFirebaseAuth()
-    const idToken = await auth.currentUser?.getIdToken()
-    if (!idToken) throw new Error('No ID token available for cascade')
-    const res = await fetch(`${WORKER_BASE}/cascade-member`, {
-      method:  'POST',
-      headers: {
-        Authorization:  `Bearer ${idToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ tripId, memberUid: user.uid }),
+    // workerFetch handles: AbortSignal.timeout, WorkerRejected vs
+    // WorkerAmbiguous discrimination. We don't branch on the error
+    // type here because the entire cascade-member call is non-fatal
+    // by design (idempotent retry on next reload). But routing
+    // through workerFetch means a hung Worker / DNS blackhole no
+    // longer stalls acceptInvite for ~minutes; it surfaces as
+    // WorkerAmbiguous after 30s and the caller continues to Step 3.
+    await workerFetch(workerBase, idToken, '/cascade-member', {
+      tripId, memberUid: user.uid,
     })
-    if (!res.ok) {
-      const detail = await res.text().catch(() => '<unreadable>')
-      throw new Error(`cascade-member ${res.status}: ${detail.slice(0, 200)}`)
-    }
   } catch (e) {
     captureError(e, { source: 'acceptInvite/cascade', tripId, uid: user.uid })
   }

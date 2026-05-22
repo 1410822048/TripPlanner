@@ -46,6 +46,12 @@ export interface UseTripListMutationOpts<T, Vars> {
   /** When true, the global MutationCache.onError skips its toast — modal
    *  flows surface errors via inline banner instead. See queryClient.ts. */
   silent?:    boolean
+  /** Optional callback that runs AFTER the factory's rollback. Use
+   *  when a typed error needs to trigger extra side effects -- e.g.
+   *  invalidating queries when a `WishCreatePartialError` signals
+   *  that the optimistic rollback couldn't fully clean server state
+   *  and the cache must reconcile from a fresh fetch. */
+  onError?:   (err: unknown) => void
 }
 
 export function useTripListMutation<T extends { id: string }, Vars>(
@@ -73,8 +79,9 @@ export function useTripListMutation<T extends { id: string }, Vars>(
     onMutate: opts.patch
       ? vars => patchListCache<T>(qc, key, prev => opts.patch!(prev, vars))
       : undefined,
-    onError: (_err, _vars, ctx) => {
+    onError: (err, _vars, ctx) => {
       rollbackListCache<T>(qc, key, ctx as PatchCacheContext<T> | undefined)
+      opts.onError?.(err)
     },
   })
 }

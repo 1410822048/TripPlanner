@@ -163,6 +163,38 @@ export function expandWithGhosts(
   return ghosts.length === 0 ? members : [...members, ...ghosts]
 }
 
+// ─── Input self-defense ─────────────────────────────────────────────
+
+/**
+ * Sanity check: an expense is safe to feed into the debt-edge math
+ * iff every numeric input is finite + non-negative, and every uid is
+ * a non-empty string. The Worker validation layer enforces all this
+ * on write, but the settlement engine is downstream of a separate
+ * trust boundary -- a future Worker bug, a manual Firestore Console
+ * edit, or a doc that predates the Worker chokepoint could otherwise
+ * inject NaN/Infinity into the gross[][] tables and propagate
+ * "NaN ¥" through the entire settlement UI. Filter dirty expenses
+ * out + console.warn so we notice in dev.
+ */
+function isExpenseSettlementSafe(e: Expense): boolean {
+  if (!Number.isFinite(e.amount) || e.amount < 0) return false
+  if (typeof e.paidBy !== 'string' || e.paidBy === '') return false
+  if (!Array.isArray(e.splits)) return false
+  for (const s of e.splits) {
+    if (typeof s.memberId !== 'string' || s.memberId === '') return false
+    if (!Number.isFinite(s.amount) || s.amount < 0) return false
+  }
+  return true
+}
+
+function isSettlementSafe(s: SettlementRecord): boolean {
+  if (!Number.isFinite(s.amount) || s.amount <= 0) return false
+  if (typeof s.fromUid !== 'string' || s.fromUid === '') return false
+  if (typeof s.toUid   !== 'string' || s.toUid   === '') return false
+  if (s.fromUid === s.toUid) return false
+  return true
+}
+
 // ─── Debt-edge model: 主算法 ───────────────────────────────────────
 
 /**
@@ -178,10 +210,29 @@ export function expandWithGhosts(
  * 數、N = 成員數。對 trip-scale (E ≤ 200, S ≤ 6, N ≤ 8) 完全無感。
  */
 export function computeBalancesFull(
-  expenses:    Expense[],
+  expensesRaw: Expense[],
   members:     TripMember[],
-  settlements: SettlementRecord[] = [],
+  settlementsRaw: SettlementRecord[] = [],
 ): BalanceResult {
+  // Filter out malformed docs at the trust boundary. Worker write-path
+  // validation prevents these in normal flow, but a doc from before
+  // the Worker chokepoint, a manual Console edit, or a future Worker
+  // bug could otherwise inject NaN/Infinity that would propagate
+  // "NaN ¥" through every settlement card. Skipping them keeps the
+  // UI honest about active expenses; the dirty docs are visible in
+  // the list (with their own validation messaging) but stay out of
+  // the math.
+  const expenses    = expensesRaw.filter(e => {
+    if (isExpenseSettlementSafe(e)) return true
+    console.warn(`[settlement] excluding malformed expense ${e.id}`, e)
+    return false
+  })
+  const settlements = settlementsRaw.filter(s => {
+    if (isSettlementSafe(s)) return true
+    console.warn(`[settlement] excluding malformed settlement ${s.id}`, s)
+    return false
+  })
+
   // order 維護全參與者 ID(active 先、ghost 按首見順序在後);ghosts 同
   // 步累積 TripMember 物件,讓回傳的 participants 一次走完免重複 walk。
   const order: string[] = members.map(m => m.id)

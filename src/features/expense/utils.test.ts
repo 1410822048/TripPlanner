@@ -134,3 +134,70 @@ describe('splitSummary', () => {
     expect(splitSummary(e, 2)).toBe('—')
   })
 })
+
+// ─── Client ↔ Worker parity ────────────────────────────────────────
+// The Worker's expense validation has its own copy of splitsFromItems
+// (workers/ocr/src/expense-validate.ts: splitsFromItemsMirror) used to
+// detect items↔splits attribution corruption on raw POSTs. The two
+// implementations MUST agree bit-for-bit — drift would either let
+// real attacks through (Worker too lenient) or reject legit client
+// payloads (Worker too strict).
+//
+// This test imports both and feeds them the same corpus. If a future
+// change to one isn't mirrored in the other, this test fails loudly
+// + cites the divergent input. The corpus covers the edge cases that
+// matter for the algorithm:
+//   - exact division (no remainder)
+//   - integer remainder distribution
+//   - negative line (discount)
+//   - multiple items aggregating per-member
+//   - zero-amount item (no-op)
+//   - zero assignees on an item (no-op)
+
+import { splitsFromItemsMirror } from '../../../workers/ocr/src/expense-validate'
+
+describe('client/worker splitsFromItems parity', () => {
+  const fixtures: { name: string; items: { name?: string; amount: number; assignees: string[] }[] }[] = [
+    { name: 'exact division (300/300/300)', items: [
+      { amount: 900, assignees: ['a', 'b', 'c'] },
+    ]},
+    { name: 'integer remainder (¥1 / 3 → [1,0,0])', items: [
+      { amount: 1, assignees: ['a', 'b', 'c'] },
+    ]},
+    { name: 'USD $10 / 3 → [4, 3, 3] (app integer convention)', items: [
+      { amount: 10, assignees: ['a', 'b', 'c'] },
+    ]},
+    { name: 'multi-item aggregating across members', items: [
+      { amount: 600, assignees: ['a', 'b'] },
+      { amount: 300, assignees: ['b', 'c'] },
+    ]},
+    { name: 'negative discount line', items: [
+      { amount:  1500, assignees: ['a', 'b'] },
+      { amount: -600,  assignees: ['a', 'b'] },
+    ]},
+    { name: 'zero-amount item (no-op)', items: [
+      { amount: 0,   assignees: ['a', 'b', 'c'] },
+      { amount: 100, assignees: ['a', 'b'] },
+    ]},
+    { name: 'empty assignees on an item (skipped)', items: [
+      { amount: 100, assignees: [] },
+      { amount: 200, assignees: ['a', 'b'] },
+    ]},
+    { name: 'single assignee gets full amount', items: [
+      { amount: 1000, assignees: ['solo'] },
+    ]},
+    { name: 'fractional input is rounded (app integer convention)', items: [
+      { amount: 100.7, assignees: ['a', 'b', 'c'] },  // Math.round → 101 → [34, 34, 33]? actually [34, 34, 33] for 101/3
+    ]},
+  ]
+
+  for (const fx of fixtures) {
+    it(`agrees on: ${fx.name}`, () => {
+      // Client: array of {memberId, amount}. Convert to Map for comparison.
+      const clientArr = splitsFromItems(fx.items as unknown as Parameters<typeof splitsFromItems>[0])
+      const clientMap = new Map(clientArr.map(s => [s.memberId, s.amount]))
+      const workerMap = splitsFromItemsMirror(fx.items)
+      expect(workerMap).toEqual(clientMap)
+    })
+  }
+})

@@ -37,6 +37,19 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(gitHash),
     __BUILD_DATE__:  JSON.stringify(buildDate),
+    // Sentry tree-shake flags. The SDK gates its replay + debug code
+    // behind these globals at build time -- substituting `false` here
+    // lets Rollup eliminate the unreachable branches. Belt-and-
+    // suspenders with services/sentry.ts not even importing the
+    // replay/tracing integrations: this flag is a defensive guard in
+    // case a future Sentry version adds replay code paths that bypass
+    // the integrations array. Tracing is ALSO stripped (no integration
+    // imported); the SDK exposes no __SENTRY_TRACING__ build flag, but
+    // the destructured dynamic import in sentry.ts excludes its
+    // exports from the chunk.
+    // See: https://docs.sentry.io/platforms/javascript/configuration/tree-shaking/
+    __SENTRY_REPLAY__: 'false',
+    __SENTRY_DEBUG__:  'false',
   },
   plugins: [
     react(),
@@ -72,7 +85,11 @@ export default defineConfig({
             // who only browse demo data. Returning users pay a small
             // chunk-fetch cost (~50-200ms) on first useAuth() call,
             // which falls inside the existing auth-hint loading window.
-            if (/vendor-(firebase-firestore|sentry)/.test(fileName)) targets.push(fileName)
+            //
+            // vendor-sentry is also NOT preloaded -- it's dynamically
+            // imported in requestIdleCallback (services/sentry.ts), so
+            // preloading would defeat the deferred-load optimisation.
+            if (/vendor-firebase-firestore/.test(fileName)) targets.push(fileName)
           }
           if (targets.length === 0) return html
           const tags = targets
@@ -134,6 +151,14 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        // vendor-sentry chunk is excluded from precache so the SW
+        // install phase doesn't eager-fetch it -- defeating the
+        // services/sentry.ts dynamic import + requestIdleCallback
+        // optimization. Combined with the runtimeCaching rule below,
+        // the first visit truly defers the chunk to idle, and the
+        // SW caches it on first runtime fetch so subsequent visits
+        // load instantly.
+        globIgnores: ['**/vendor-sentry-*.js'],
         // Intentionally no Firestore runtime cache: Firestore uses WebChannel /
         // long-polling that Workbox can't meaningfully cache at the HTTP layer.
         // Offline support is delegated to the Firestore SDK's own IndexedDB
@@ -143,6 +168,17 @@ export default defineConfig({
             urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
             handler: 'StaleWhileRevalidate',
             options: { cacheName: 'google-fonts-cache' },
+          },
+          {
+            // Cache vendor-sentry chunk on first runtime fetch (the
+            // dynamic import inside services/sentry.ts). After that
+            // subsequent loads come from SW cache without network.
+            // CacheFirst is safe because the filename is content-
+            // hashed -- a new Sentry version ships under a different
+            // chunk URL and the old cache entry becomes garbage.
+            urlPattern: /\/assets\/vendor-sentry-.*\.js$/,
+            handler: 'CacheFirst',
+            options: { cacheName: 'vendor-sentry-cache' },
           },
         ],
       },
@@ -161,6 +197,15 @@ export default defineConfig({
     include: ['lucide-react'],
   },
   build: {
+    // Vite preloads dynamic-import dependencies by default -- the chunk
+    // is still fetched on initial page load via <link modulepreload>,
+    // defeating sentry.ts's requestIdleCallback deferral. Filter the
+    // vendor-sentry chunk out of every entry's preload list so it
+    // actually waits for idle.
+    modulePreload: {
+      resolveDependencies: (_filename, deps) =>
+        deps.filter(d => !/vendor-sentry/.test(d)),
+    },
     rollupOptions: {
       // Suppress rolldown's `[PLUGIN_TIMINGS] Warning: significant time
       // in @rolldown/plugin-babel`. React Compiler does its work inside
@@ -172,9 +217,13 @@ export default defineConfig({
       checks: { pluginTimings: false },
       output: {
         // Stable names for vendor chunks the modulepreload plugin above
-        // can target. Splitting Sentry off keeps it out of the main bundle
-        // (~60 KB gz) so the main critical-path chunk parses faster — the
-        // chunk still downloads in parallel via modulepreload.
+        // can target. Splitting Sentry off keeps it out of the main
+        // bundle (~26 KB gz post-replay+tracing strip) AND lets it be
+        // excluded from the SW precache so it actually defers to idle.
+        // The chunk does NOT download in parallel via modulepreload --
+        // the resolveDependencies hook below explicitly filters it out
+        // so the dynamic import in services/sentry.ts is the only
+        // trigger.
         manualChunks: id => {
           if (id.includes('@firebase/firestore') || id.includes('firebase/firestore'))
             return 'vendor-firebase-firestore'

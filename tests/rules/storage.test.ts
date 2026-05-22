@@ -201,16 +201,19 @@ describe('Wish cover Storage ownership', () => {
     )
   })
 
-  test('first upload on yet-to-be-created wish doc is allowed (mint-id-first flow)', async () => {
-    // wishService.createWish mints the wishId client-side and uploads
-    // the cover BEFORE setDoc-ing the Firestore doc. At that point
-    // the proposer check has no doc to read; the rule allows the
-    // upload via the !exists branch. Once the doc lands, subsequent
-    // writes are gated by proposer match.
-    await assertSucceeds(
+  test('upload against yet-to-be-created wish doc is REJECTED (doc-first contract)', async () => {
+    // Post-refactor (2026-05-21), wishService.createWish is
+    // doc-first: setDoc the wish (without image), THEN upload,
+    // THEN updateDoc to patch the image field in. By the time
+    // Storage write fires, the wish doc exists and the rule's
+    // isWishProposer check has a real doc to read. The earlier
+    // upload-before-setDoc flow needed a `!exists` exception
+    // here; removing that closes the race where any member
+    // could pre-write bytes against a not-yet-created wishId.
+    await assertFails(
       uploadString(
         ref(asEditor(env).storage(), `trips/${TRIP_ID}/wishes/never-existed-yet/first.png`),
-        'first upload of new wish', 'raw', PNG_META,
+        'pre-doc upload attempt', 'raw', PNG_META,
       ),
     )
   })
@@ -237,20 +240,23 @@ describe('Wish cover Storage ownership', () => {
     )
   })
 
-  test('trip owner CAN clean up orphan blob even when wish doc no longer exists', async () => {
-    // Recovery scenario: previous version of the rules left orphan
-    // blobs when owner moderation triggered Firestore-deletes but
-    // Storage 403'd. The owner branch deliberately skips the
-    // firestore.exists(wishPath) guard so those legacy orphans
-    // can be cleaned up manually via raw SDK.
+  test('trip owner CANNOT delete wish blob when wish doc is missing (strict)', async () => {
+    // Inverse of the legacy "owner can clean orphans" branch. With
+    // an empty pre-launch DB there are no legacy orphans; the
+    // orphan-purge cron + trip-cascade Worker handle any future
+    // orphan via `_purges` queue. The owner branch now requires
+    // the wish doc to still exist, matching the firestore.rules
+    // wish delete invariant.
     await env.withSecurityRulesDisabled(async ctx => {
       await uploadString(
         ref(ctx.storage(), `trips/${TRIP_ID}/wishes/wish-gone/orphan.png`),
         'orphan blob', 'raw', PNG_META,
       )
     })
-    // wish-gone has no Firestore doc, but owner can still delete the blob.
-    await assertSucceeds(
+    // wish-gone has no Firestore doc → owner delete now rejected.
+    // Emergency manual cleanup still possible via Firebase Console
+    // (admin auth bypasses rules entirely).
+    await assertFails(
       deleteObject(ref(asOwner(env).storage(), `trips/${TRIP_ID}/wishes/wish-gone/orphan.png`)),
     )
   })

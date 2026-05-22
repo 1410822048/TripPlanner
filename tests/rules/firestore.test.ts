@@ -122,37 +122,35 @@ describe('/trips/{tripId} write', () => {
 
   test('subcollection CREATE is rejected when trip.deletingAt is set', async () => {
     // The bug we're regression-guarding: an editor on device B
-    // creates a new expense AFTER device A triggered cascade, in
-    // the window between Worker's expense-drain and trip-doc-delete.
-    // Without this gate the new doc survives the cascade and
-    // becomes an orphan. With the gate every subcollection CREATE
-    // checks `tripNotDeleting(tripId)` and rejects mid-cascade
-    // writes at the rules layer.
+    // creates a new doc AFTER device A triggered cascade, in
+    // the window between Worker's subcollection-drain and trip-
+    // doc-delete. Without the tripNotDeleting gate the new doc
+    // survives the cascade and becomes an orphan.
+    //
+    // Use BOOKING (not expense) here because expense create is
+    // now Worker-only (`allow create: if false`) for splits
+    // validation -- it would assertFails for the WRONG reason.
+    // Booking still uses canWrite + tripNotDeleting client-side
+    // so this isolates the deletingAt gate.
     await env.withSecurityRulesDisabled(async ctx => {
       await updateDoc(
         doc(ctx.firestore(), 'trips', TRIP_ID),
         { deletingAt: serverTimestamp() },
       )
     })
-    const expensePayload = {
+    const bookingPayload = {
       tripId: TRIP_ID,
+      type:   'hotel',
       title:  'mid-cascade race',
-      amount: 100,
-      currency: 'JPY',
-      category: 'food',
-      paidBy: EDITOR_UID,
-      splits: [{ memberId: EDITOR_UID, amount: 100 }],
-      date: '2026-05-21',
       memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
       createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
       createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
-      deletedAt: null,
-      receiptPurgedAt: null,
+      sortDate: serverTimestamp(),
     }
     await assertFails(
       setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-race'),
-        expensePayload,
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-race'),
+        bookingPayload,
       ),
     )
     // Restore the trip to non-deleting state so subsequent tests
@@ -416,6 +414,56 @@ describe('/trips/{tripId}/bookings', () => {
     )
     await assertSucceeds(getDocs(filtered))
   })
+
+  // ─── hasOnly() allowlist + is-string type guards ──────────────────
+  // Defense in depth: raw-SDK writers shouldn't be able to stuff
+  // arbitrary extra fields ("evilField") or smuggle non-string payloads
+  // into a `.size()`-capped slot (e.g. an array that satisfies size but
+  // corrupts the doc shape).
+
+  test('booking create with extra unrecognized field is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-extra'), {
+        tripId: TRIP_ID, type: 'hotel', title: 'X',
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        sortDate:  serverTimestamp(),
+        evilField: 'arbitrary data that should not pass',
+      }),
+    )
+  })
+
+  test('booking create with non-string note (array) is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-typ'), {
+        tripId: TRIP_ID, type: 'hotel', title: 'X',
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        sortDate:  serverTimestamp(),
+        // .size() works on lists too; without `is string` this would
+        // pass the cap while corrupting the shape.
+        note: ['a', 'b', 'c'],
+      }),
+    )
+  })
+
+  test('booking create with non-string provider (map) is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-typ2'), {
+        tripId: TRIP_ID, type: 'hotel', title: 'X',
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        sortDate:  serverTimestamp(),
+        provider: { key: 'value' },
+      }),
+    )
+  })
 })
 
 // ─── Wishes (the trickiest rule) ───────────────────────────────────
@@ -538,17 +586,47 @@ describe('/trips/{tripId}/wishes vote toggle', () => {
       ),
     )
   })
+
+  // ─── hasOnly() allowlist + is-string type guards ──────────────────
+
+  test('wish create with extra unrecognized field is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-extra'), {
+        tripId: TRIP_ID, category: 'place', title: 'X',
+        proposedBy: VIEWER_UID, updatedBy: VIEWER_UID, votes: [VIEWER_UID],
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        rogueField: 'should be rejected by hasOnly()',
+      }),
+    )
+  })
+
+  test('wish create with non-string description (array) is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-typ'), {
+        tripId: TRIP_ID, category: 'place', title: 'X',
+        proposedBy: VIEWER_UID, updatedBy: VIEWER_UID, votes: [VIEWER_UID],
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        description: ['x', 'y'],
+      }),
+    )
+  })
 })
 
-// ─── Expense receipt shape validation ──────────────────────────────
-describe('/trips/{tripId}/expenses receipt shape', () => {
-  const VALID_RECEIPT = {
-    url:  'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fexpenses%2Fe-rcpt%2Ffile.webp?alt=media&token=abc',
-    path: 'trips/trip-1/expenses/e-rcpt/file.webp',
-    type: 'image/webp',
-  }
-
-  function expenseWithReceipt(receipt: object) {
+// ─── Expense create is Worker-only (allow create: if false) ────────
+//
+// All expense create + content-update flows go through the Worker's
+// /expense-create and /expense-update endpoints. firestore.rules has
+// `allow create: if false` on expense; client setDoc is REJECTED
+// regardless of payload shape. Receipt-shape / paidBy-in-roster /
+// splits-sum / URL-binding / DoS-cap validations live in
+// workers/ocr/src/expense-validate.ts and are tested in
+// workers/ocr/test/expense-validate.spec.ts.
+describe('/trips/{tripId}/expenses create (Worker-only)', () => {
+  function expenseShape() {
     return {
       tripId: TRIP_ID, title: 'X',
       amount: 1000, currency: 'JPY',
@@ -560,46 +638,41 @@ describe('/trips/{tripId}/expenses receipt shape', () => {
       createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      // phase-2: create rule requires deletedAt present + null.
       deletedAt: null,
-      // receipt-purge watermark: cron filter requires this be present
-      // on every doc so the equality `receiptPurgedAt == null` query
-      // can match. New expenses always seed it null; cron stamps a
-      // Timestamp post-purge.
       receiptPurgedAt: null,
-      receipt,
     }
   }
 
-  test('editor can create expense with valid receipt', async () => {
-    await assertSucceeds(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-rcpt'),
-        expenseWithReceipt(VALID_RECEIPT),
-      ),
-    )
-  })
-
-  test('expense with external receipt.url is rejected', async () => {
+  test('client setDoc create is rejected (any role, any shape) -- Worker owns this path', async () => {
+    // Even a perfectly-valid payload is rejected: rules can't
+    // express splits[i] shape / member-in-roster / Σsplits=amount,
+    // so the safe answer is "no client write at all". Worker
+    // /expense-create owns admin SDK write after validating the
+    // full payload.
     await assertFails(
       setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-rcpt'),
-        expenseWithReceipt({ ...VALID_RECEIPT, url: 'https://evil.example.com/track.png' }),
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-client-create'),
+        expenseShape(),
       ),
     )
-  })
-
-  test('expense with non-allowlisted receipt.type is rejected', async () => {
     await assertFails(
       setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-rcpt'),
-        expenseWithReceipt({ ...VALID_RECEIPT, type: 'text/html' }),
+        doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-client-create-owner'),
+        expenseShape(),
       ),
     )
   })
 })
 
 describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
+  // Seed shape mirrors what the Worker /expense-create would write
+  // (including memberIds + createdAt/updatedAt = serverTimestamp).
+  // The CREATE shape tests that used to live in this describe block
+  // (deletedAt/receiptPurgedAt presence, forge rejection, etc.) all
+  // moved to the Worker validation layer when client setDoc became
+  // `allow create: if false`. Soft-delete + restore + tombstone-
+  // freeze tests stay here because those go through client SDK
+  // (rules-gated changedOnly([deletedAt,updatedBy,updatedAt])).
   function expenseBase(overrides: Record<string, unknown> = {}) {
     return {
       tripId: TRIP_ID, title: 'X',
@@ -612,75 +685,27 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
       createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      // Default to alive-on-create (deletedAt MUST be present + null).
       deletedAt: null,
-      // receipt-purge marker also required by create rule.
       receiptPurgedAt: null,
       ...overrides,
     }
   }
 
-  test('create with deletedAt=null succeeds (alive expense)', async () => {
-    await assertSucceeds(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-1'),
-        expenseBase(),
-      ),
-    )
-  })
-
-  test('create WITHOUT deletedAt field is rejected (field is required)', async () => {
-    const { deletedAt: _omit, ...withoutField } = expenseBase()
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-1b'),
-        withoutField,
-      ),
-    )
-  })
-
-  test('create with deletedAt set to a Timestamp is rejected (no pre-deleted)', async () => {
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-2'),
-        expenseBase({ deletedAt: serverTimestamp() }),
-      ),
-    )
-  })
-
-  test('create WITHOUT receiptPurgedAt is rejected (field is required)', async () => {
-    // The cron's purge candidate filter is
-    // `receiptPurgedAt == null AND deletedAt < cutoff`. Firestore
-    // equality on null does NOT match missing-field docs, so an
-    // expense created without this field would NEVER be visited
-    // by the cron -- its receipt would leak. Schema contract
-    // enforces presence on create.
-    const { receiptPurgedAt: _drop, ...withoutMarker } = expenseBase()
-    void _drop
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-no-marker'),
-        withoutMarker,
-      ),
-    )
-  })
-
-  test('create with receiptPurgedAt forged to a Timestamp is rejected', async () => {
-    // Only the Worker cron (Admin SDK, bypasses rules) is allowed
-    // to write a Timestamp into receiptPurgedAt. A client doing so
-    // on create would skip the candidate set forever -- receipt
-    // bytes leak. Only null is acceptable from clients.
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-forge-1'),
-        expenseBase({ receiptPurgedAt: serverTimestamp() }),
-      ),
-    )
-  })
+  /** Admin-SDK seed (bypasses rules) -- expense client setDoc is
+   *  blocked under the Worker-only contract, so tests that want a
+   *  pre-existing expense to update/delete have to use this. */
+  async function seedExpense(expenseId: string, overrides: Record<string, unknown> = {}) {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'expenses', expenseId),
+        expenseBase(overrides),
+      )
+    })
+  }
 
   test('editor can soft-delete (update with deletedAt=serverTimestamp)', async () => {
+    await seedExpense('e-soft-3')
     const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-3')
-    await setDoc(ref, expenseBase())
     // serverTimestamp resolves to request.time inside the rule -- the
     // transition check accepts it (null -> request.time path).
     await assertSucceeds(
@@ -689,8 +714,8 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
   })
 
   test('soft-delete with a backdated Timestamp is rejected (no client backdate)', async () => {
+    await seedExpense('e-soft-3b')
     const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-3b')
-    await setDoc(ref, expenseBase())
     // Client supplies a constant Timestamp instead of serverTimestamp().
     // The rule requires deletedAt == request.time on the null -> Timestamp
     // transition, so this backdated value fails.
@@ -704,8 +729,8 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
   })
 
   test('editor can clear deletedAt to null (alive→alive no-op restore path neutrally allowed)', async () => {
+    await seedExpense('e-soft-4', { deletedAt: null })
     const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-4')
-    await setDoc(ref, expenseBase({ deletedAt: null }))
     // The interesting branches (true restore from tombstone) are
     // covered by the two backdated-tombstone tests further down; this
     // one only pins the trivial alive→alive case (writing deletedAt:
@@ -745,8 +770,8 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
     // to the cron's `receiptPurgedAt == null` filter -> receipt
     // bytes leak. Rule pins `unchanged('receiptPurgedAt')` on the
     // expense update path so clients can't touch it at all.
+    await seedExpense('e-legacy-2')
     const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-legacy-2')
-    await setDoc(ref, expenseBase())
     await assertFails(
       updateDoc(ref, {
         receiptPurgedAt: serverTimestamp(),
@@ -776,16 +801,16 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
   })
 
   test('non-timestamp deletedAt is rejected on update', async () => {
+    await seedExpense('e-soft-5')
     const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-5')
-    await setDoc(ref, expenseBase())
     await assertFails(
       updateDoc(ref, { deletedAt: 'maybe-later', updatedBy: EDITOR_UID, updatedAt: serverTimestamp() }),
     )
   })
 
   test('editor hard-delete (deleteDoc) is rejected -- soft-delete only', async () => {
+    await seedExpense('e-soft-6')
     const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-6')
-    await setDoc(ref, expenseBase())
     // Non-owner editors must go through soft-delete (deletedAt update).
     // Direct deleteDoc bypasses the tombstone -- blocked.
     await assertFails(deleteDoc(ref))
@@ -809,8 +834,7 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
   // ─────────────────────────────────────────────────────────────
 
   test('owner hard-delete is rejected (P1 closed; all clients must go through Worker cascade)', async () => {
-    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-6b')
-    await setDoc(ref, expenseBase())
+    await seedExpense('e-soft-6b')
     // Pre-P1-fix this was conditionally allowed via a deletionStartedAt
     // window on the trip doc. Post-fix the rule is `allow delete: if
     // false` -- no client (including owner) can hard-delete from
@@ -821,35 +845,25 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
     )
   })
 
-  test('editor vandalism via update is permitted but content fields must still validate', async () => {
-    // Collaboration model: editors CAN edit each other's expenses.
-    // What they can't do is effectively erase the doc by clearing
-    // required fields -- amount/title/splits validation rejects the
-    // "set everything to zero" attack. This codifies the existing
-    // type/value guards as a positive invariant in case anyone ever
-    // relaxes them.
+  test('editor cannot mutate content fields via raw SDK (Worker-only path)', async () => {
+    // Pre-Worker-migration the rule's content-field type checks
+    // (title.size > 0, amount > 0, etc.) were the only defense
+    // against "update-as-hard-delete" vandalism. Now ALL content
+    // edits are blocked at the rule layer via changedOnly([
+    // deletedAt, updatedBy, updatedAt]); the Worker /expense-update
+    // is the only path that can change title / amount / splits /
+    // category / paidBy / note / receipt. raw-SDK content writes
+    // fail regardless of the values supplied.
+    await seedExpense('e-vandal-1')
     const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-vandal-1')
-    await setDoc(ref, expenseBase())
-    // Plausible vandalism: rename title to '.', set amount to 1, point
-    // splits at self. All fields still satisfy the schema, so the rule
-    // accepts it. This is "vandalism not erasure" -- recoverable via
-    // edit history, owner-can-kick-editor, etc.
-    await assertSucceeds(
-      updateDoc(ref, {
-        title:     '.',
-        amount:    1,
-        splits:    [{ memberId: EDITOR_UID, amount: 1 }],
-        updatedBy: EDITOR_UID,
-        updatedAt: serverTimestamp(),
-      }),
-    )
-    // Erasure attempt: zero amount, empty title. Rejected by the
-    // amount > 0 / title.size() > 0 validators -- closes the
-    // "update-as-hard-delete" backdoor that #4 reviewer flagged.
+    // Even a "well-formed" content edit (title='X', amount=1,
+    // valid splits) is rejected -- the field isn't in the
+    // changedOnly allowlist.
     await assertFails(
       updateDoc(ref, {
-        title:     '',
-        amount:    0,
+        title:     'X',
+        amount:    1,
+        splits:    [{ memberId: EDITOR_UID, amount: 1 }],
         updatedBy: EDITOR_UID,
         updatedAt: serverTimestamp(),
       }),
@@ -864,8 +878,8 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
     // fabricated history. The tombstone-freeze clause
     // (changedOnly(['deletedAt','updatedBy','updatedAt']))
     // blocks this.
+    await seedExpense('e-vandal-2')
     const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-vandal-2')
-    await setDoc(ref, expenseBase())
     await updateDoc(ref, {
       deletedAt: serverTimestamp(),
       updatedBy: EDITOR_UID,
@@ -888,8 +902,8 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
     // permit a malicious sequence: soft-delete -> edit splits to a
     // different shape -> restore -> classifier now sees fabricated
     // numbers. Rules limit post-tombstone edits to audit + deletedAt.
+    await seedExpense('e-soft-7')
     const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-7')
-    await setDoc(ref, expenseBase())
     // Step 1: soft-delete (this should succeed via the null -> request.time path)
     await updateDoc(ref, {
       deletedAt: serverTimestamp(),
@@ -919,8 +933,8 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
     // transition AND a fabricated amount. The earlier freeze only
     // covered AFTER-tombstoned edits; this case slips through if the
     // freeze isn't widened to "either end-state tombstoned".
+    await seedExpense('e-soft-9')
     const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-9')
-    await setDoc(ref, expenseBase())
     await assertFails(
       updateDoc(ref, {
         deletedAt: serverTimestamp(),
@@ -935,8 +949,8 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
     // Same as above but with splits -- the mutation field that most
     // directly biases settlement chronological replay (gross gets
     // computed from split.memberId / amount).
+    await seedExpense('e-soft-10')
     const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-10')
-    await setDoc(ref, expenseBase())
     await assertFails(
       updateDoc(ref, {
         deletedAt: serverTimestamp(),
@@ -958,8 +972,8 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
     // future where('deletedAt','==',null) server-side filter -- breaking
     // the query contract. Block at the rule level regardless of whether
     // the doc is currently alive or tombstoned.
+    await seedExpense('e-soft-11')
     const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-11')
-    await setDoc(ref, expenseBase())
     // Try on alive doc.
     await assertFails(
       updateDoc(ref, {
@@ -987,8 +1001,8 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
     // The freeze allows mutating ONLY the audit + deletedAt fields. A
     // pure restore (set deletedAt=null + bump updatedBy/updatedAt) must
     // still succeed even with the new diff-hasOnly clause in place.
+    await seedExpense('e-soft-8')
     const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-8')
-    await setDoc(ref, expenseBase())
     await updateDoc(ref, {
       deletedAt: serverTimestamp(),
       updatedBy: EDITOR_UID,
@@ -1360,80 +1374,20 @@ describe('/trips/{tripId}/bookings memberSync (self-add path)', () => {
   })
 })
 
-// ─── Settlement / expense financial integrity (engine input gates) ─
-describe('expense + settlement create: settlement-engine input validation', () => {
-  test('expense create with paidBy NOT in memberIds is rejected', async () => {
-    // computeBalancesFull reads paidBy directly into gross[from][to]
-    // tables. A raw-SDK writer pointing paidBy at a non-member uid
-    // would create dangling debt edges -- the rule now requires
-    // paidBy be in the doc's own memberIds.
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-bad-paidby'),
-        {
-          tripId: TRIP_ID, title: 'x',
-          amount: 100, currency: 'JPY', category: 'food',
-          paidBy: STRANGER_UID,            // <-- not in memberIds
-          splits: [{ memberId: EDITOR_UID, amount: 100 }],
-          date: '2026-05-21',
-          memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
-          createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
-          createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
-          deletedAt: null, receiptPurgedAt: null,
-        },
-      ),
-    )
-  })
-
-  test('expense create with non-3-char currency is rejected', async () => {
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-bad-ccy'),
-        {
-          tripId: TRIP_ID, title: 'x',
-          amount: 100, currency: 'JapaneseYen',   // <-- not 3 chars
-          category: 'food',
-          paidBy: EDITOR_UID,
-          splits: [{ memberId: EDITOR_UID, amount: 100 }],
-          date: '2026-05-21',
-          memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
-          createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
-          createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
-          deletedAt: null, receiptPurgedAt: null,
-        },
-      ),
-    )
-  })
-
-  test('expense create with backdated createdAt is rejected', async () => {
-    // Settlement chronological replay sorts expenses by createdAt.
-    // A raw-SDK writer backdating an expense before an existing
-    // settlement would silently re-classify orphans (e.g.
-    // OVERPAYMENT → EXPENSE_DELETED), corrupting the audit log.
-    // Rule pins createdAt == request.time on create.
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-backdate'),
-        {
-          tripId: TRIP_ID, title: 'x',
-          amount: 100, currency: 'JPY', category: 'food',
-          paidBy: EDITOR_UID,
-          splits: [{ memberId: EDITOR_UID, amount: 100 }],
-          date: '2026-05-21',
-          memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
-          createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
-          createdAt: Timestamp.fromMillis(1_000_000),  // <-- 1970
-          updatedAt: serverTimestamp(),
-          deletedAt: null, receiptPurgedAt: null,
-        },
-      ),
-    )
-  })
-
+// ─── Settlement financial integrity ───────────────────────────────
+// Expense-create gates (paidBy / currency / splits / createdAt) used
+// to live here but moved to the Worker /expense-create endpoint when
+// splits-sum + member-in-roster validation forced Worker-only writes
+// (rules can't iterate arrays of maps). See
+// workers/ocr/test/expense-validate.spec.ts for those tests.
+//
+// Settlement still uses client-side setDoc with rules-only validation
+// because it has no array-iteration needs.
+describe('settlement create: chronological-replay integrity', () => {
   test('settlement create with backdated createdAt is rejected', async () => {
-    // Same chronological-replay attack vector but on settlements:
-    // backdating a settlement before an expense would flip the
-    // orphan reason classification.
+    // Settlement chronological replay sorts settlements by createdAt.
+    // Backdating one before an expense would flip the orphan reason
+    // classification (e.g. EXPENSE_DELETED → OVERPAYMENT).
     await assertFails(
       setDoc(
         doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-backdate'),
@@ -1444,9 +1398,295 @@ describe('expense + settlement create: settlement-engine input validation', () =
           fromUid:   VIEWER_UID,
           amount:    100,
           currency:  'JPY',
-          createdAt: Timestamp.fromMillis(1_000_000),  // <-- backdate
+          createdAt: Timestamp.fromMillis(1_000_000),  // <-- 1970 backdate
         },
       ),
+    )
+  })
+})
+
+// ─── Planning: hasOnly() allowlist + is-string type guards ─────────
+describe('/trips/{tripId}/planning shape guards', () => {
+  test('planning create with extra unrecognized field is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-extra'), {
+        tripId: TRIP_ID, category: 'essentials', title: 'X',
+        done: false,
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        unwantedField: 'should be rejected by hasOnly()',
+      }),
+    )
+  })
+
+  test('planning create with non-string note (number) is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-typ'), {
+        tripId: TRIP_ID, category: 'essentials', title: 'X',
+        done: false,
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        note: 999,  // size() doesn't exist on number → predicate evaluates falsy
+      }),
+    )
+  })
+
+  test('planning create with valid optional note succeeds', async () => {
+    await assertSucceeds(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-ok'), {
+        tripId: TRIP_ID, category: 'essentials', title: 'X',
+        done: false,
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        note: 'remember the charger',
+      }),
+    )
+  })
+
+  // ─── Nested value-type guards (done/doneBy/doneAt) ──────────────
+
+  test('planning create without `done` field is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-nodone'), {
+        tripId: TRIP_ID, category: 'essentials', title: 'X',
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('planning create with non-bool `done` is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-strdone'), {
+        tripId: TRIP_ID, category: 'essentials', title: 'X',
+        done: 'yes',  // string, not bool
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('planning create with non-timestamp `doneAt` is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-strdoneat'), {
+        tripId: TRIP_ID, category: 'essentials', title: 'X',
+        done: true,
+        doneAt: 'tomorrow',  // string, not Timestamp
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+})
+
+// ─── Schedule nested shape guards (order + location.*) ─────────────
+describe('/trips/{tripId}/schedules shape guards', () => {
+  const baseSchedule = (overrides: Record<string, unknown> = {}) => ({
+    tripId: TRIP_ID,
+    date: '2026-05-22',
+    order: 0,
+    title: 'Tokyo Tower',
+    category: 'activity' as const,
+    memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+    createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    ...overrides,
+  })
+
+  test('schedule create without `order` is rejected', async () => {
+    const { order: _, ...rest } = baseSchedule()
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-noorder'), rest),
+    )
+  })
+
+  test('schedule create with non-number `order` is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-strorder'),
+        baseSchedule({ order: 'first' })),
+    )
+  })
+
+  test('schedule create with non-string `location.name` is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-loc1'),
+        baseSchedule({ location: { name: ['evil', 'array'] } })),
+    )
+  })
+
+  test('schedule create with non-number `location.lat` is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-loc2'),
+        baseSchedule({ location: { name: 'OK', lat: 'thirty-five' } })),
+    )
+  })
+
+  test('schedule create with valid location shape succeeds', async () => {
+    await assertSucceeds(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-locok'),
+        baseSchedule({
+          location: { name: 'Tokyo Tower', lat: 35.6586, lng: 139.7454 },
+        })),
+    )
+  })
+})
+
+// ─── Orphan blob purge queue (_purges) ─────────────────────────────
+// Members enqueue purges when in-process Storage cleanup gave up.
+// Worker cron drains. Trust boundary: members can ONLY enqueue paths
+// + entityRefs that live under their own trip; rules block client
+// updates/deletes so a malicious member can't rapid-delete to defeat
+// cleanup.
+describe('/trips/{tripId}/_purges enqueue', () => {
+  const validPurge = (overrides: Record<string, unknown> = {}) => ({
+    tripId:    TRIP_ID,
+    entityRef: `trips/${TRIP_ID}/expenses/exp-1`,
+    path:      `trips/${TRIP_ID}/expenses/exp-1/abc.webp`,
+    source:    'updateExpense/purge-old-receipt',
+    attempts:  0,
+    createdAt: serverTimestamp(),
+    ...overrides,
+  })
+
+  test('member can enqueue a purge for their own trip', async () => {
+    await assertSucceeds(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, '_purges', 'p1'),
+        validPurge()),
+    )
+  })
+
+  test('viewer can also enqueue (read-only role still triggers cleanup paths)', async () => {
+    await assertSucceeds(
+      setDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, '_purges', 'p2'),
+        validPurge()),
+    )
+  })
+
+  test('rejects path outside this trip', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, '_purges', 'p3'),
+        validPurge({ path: 'trips/OTHER-TRIP/expenses/exp-1/abc.webp' })),
+    )
+  })
+
+  test('rejects entityRef outside this trip', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, '_purges', 'p4'),
+        validPurge({ entityRef: `trips/OTHER-TRIP/expenses/exp-1` })),
+    )
+  })
+
+  test('rejects entityRef with bogus collection name', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, '_purges', 'p5'),
+        validPurge({ entityRef: `trips/${TRIP_ID}/evil/exp-1` })),
+    )
+  })
+
+  test('rejects schedule entityRef (no attachment fields -- borrow-the-blade vector)', async () => {
+    // Schedule entities don't store Storage paths, so a cron processing
+    // them would treat ANY path as orphan. Enqueueing schedule
+    // entityRef + an arbitrary booking attachment path would mass-delete
+    // legit blobs. Rules block schedule entityRef outright.
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, '_purges', 'p5b'),
+        validPurge({ entityRef: `trips/${TRIP_ID}/schedules/sched-1` })),
+    )
+  })
+
+  test('rejects path/entityRef cross-collection mismatch', async () => {
+    // entityRef points at an expense, path points at a real booking
+    // attachment folder. Without the path.matches(entityRef + ...)
+    // gate, the cron would read the expense (no booking path in its
+    // receipt field), confirm "orphan", and delete the booking blob.
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, '_purges', 'p5c'),
+        validPurge({
+          entityRef: `trips/${TRIP_ID}/expenses/exp-1`,
+          path:      `trips/${TRIP_ID}/bookings/b-victim/legit-attachment.webp`,
+        })),
+    )
+  })
+
+  test('rejects path outside entityRef folder even within same collection', async () => {
+    // entityRef: expense A, path: expense B's receipt → also rejected.
+    // Same class of borrow-the-blade vector but across siblings.
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, '_purges', 'p5d'),
+        validPurge({
+          entityRef: `trips/${TRIP_ID}/expenses/exp-1`,
+          path:      `trips/${TRIP_ID}/expenses/exp-victim/legit.webp`,
+        })),
+    )
+  })
+
+  test('rejects attempts != 0 on create (Worker-only state)', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, '_purges', 'p6'),
+        validPurge({ attempts: 1 })),
+    )
+  })
+
+  test('rejects extra unrecognized field (hasOnly allowlist)', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, '_purges', 'p7'),
+        validPurge({ rogueField: 'data' })),
+    )
+  })
+
+  test('rejects client update (Worker-only via admin SDK)', async () => {
+    // First enqueue a purge as a baseline...
+    await setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, '_purges', 'p8'),
+      validPurge())
+    // ...then a client attempt to bump attempts must be rejected.
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, '_purges', 'p8'),
+        { attempts: 1 }),
+    )
+  })
+
+  test('rejects client delete (Worker-only via admin SDK)', async () => {
+    await setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, '_purges', 'p9'),
+      validPurge())
+    await assertFails(
+      deleteDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, '_purges', 'p9')),
+    )
+  })
+
+  test('non-member cannot enqueue', async () => {
+    await assertFails(
+      setDoc(doc(asStranger(env).firestore(), 'trips', TRIP_ID, '_purges', 'p10'),
+        validPurge()),
+    )
+  })
+
+  test('even trip members cannot read _purges (write-only enqueue surface)', async () => {
+    // Seed an entry via the create path (still allowed), then assert
+    // no client role can read it. Ops introspection goes via Firebase
+    // Console (admin auth bypasses rules), not via the client.
+    await setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, '_purges', 'p-readtest'),
+      validPurge())
+    await assertFails(
+      getDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID, '_purges', 'p-readtest')),
+    )
+    await assertFails(
+      getDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, '_purges', 'p-readtest')),
+    )
+    await assertFails(
+      getDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, '_purges', 'p-readtest')),
     )
   })
 })

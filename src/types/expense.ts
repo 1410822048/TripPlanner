@@ -146,10 +146,12 @@ export type CreateExpenseInput = z.infer<typeof CreateExpenseSchema>
 export const UpdateExpenseSchema = ExpenseShape.partial()
 export type UpdateExpenseInput = z.infer<typeof UpdateExpenseSchema>
 
-/** Accepted receipt mime types. Mirrors `firestore.rules`
- *  `validExpenseReceipt()` `type in [...]` allowlist. Same set as
- *  bookings — receipts and booking attachments share the upload
- *  pipeline (compressImage → WebP for images, pass-through for PDFs). */
+/** Accepted receipt mime types. Mirrors the Worker-side
+ *  `makeReceiptSchema()` `type` enum in expense-validate.ts (the
+ *  validation moved from firestore.rules to the Worker once expense
+ *  create became Worker-only). Same set as bookings -- receipts and
+ *  booking attachments share the upload pipeline (compressImage →
+ *  WebP for images, pass-through for PDFs). */
 export const EXPENSE_RECEIPT_MIME_TYPES = [
   'image/webp', 'image/jpeg', 'image/png', 'image/heic', 'image/heif',
   'application/pdf',

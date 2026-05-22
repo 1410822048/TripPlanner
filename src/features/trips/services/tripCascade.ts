@@ -23,13 +23,10 @@
 //     it's atomic at the trust boundary.
 //   - `deletionStartedAt` field is gone (no longer needed)
 //   - Client side shrinks from ~80 LOC to a single HTTP call
-import { getFirebaseAuth } from '@/services/firebase'
-
-/** OCR worker base URL — same Worker that hosts /cascade-member and
- *  /ocr. Hard-coded because Cloudflare Pages doesn't expose runtime
- *  env vars and we don't want a build-time-only constant scattered
- *  across the codebase. */
-const WORKER_BASE = 'https://tripmate-ocr.tripmate.workers.dev'
+import {
+  requireWorkerWriteBase, preflightIdToken, workerFetch,
+  WorkerRejected,
+} from '@/services/workerBase'
 
 /**
  * Cascade-delete a trip and every subcollection doc that lives under
@@ -40,39 +37,36 @@ const WORKER_BASE = 'https://tripmate-ocr.tripmate.workers.dev'
  * Throws a single `Error` whose message names the failing layer so the
  * caller's toast can surface "where it stopped". The Worker reads the
  * caller's uid from the Firebase ID token, so we don't pass it here.
+ *
+ * Preflight ordering (env → auth → call) matches the expense write
+ * path so a misconfigured deploy / signed-out user fails closed BEFORE
+ * the destructive Worker call. workerFetch then wraps the actual HTTP
+ * with AbortSignal.timeout + WorkerRejected/Ambiguous discrimination
+ * -- 5xx mid-cascade is now distinguishable from 4xx pre-cascade,
+ * which matters because the former may have partially deleted
+ * subcollections and the user retry is the ONLY path to convergence.
  */
 export async function deleteTrip(tripId: string): Promise<void> {
-  const { auth } = await getFirebaseAuth()
-  const idToken = await auth.currentUser?.getIdToken()
-  if (!idToken) {
-    throw new Error('Trip cascade failed: no Firebase ID token (not signed in?)')
-  }
+  const workerBase = requireWorkerWriteBase()
+  const idToken    = await preflightIdToken()
 
-  let res: Response
   try {
-    res = await fetch(`${WORKER_BASE}/cascade-trip-delete`, {
-      method:  'POST',
-      headers: {
-        Authorization:  `Bearer ${idToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ tripId }),
-    })
+    await workerFetch(workerBase, idToken, '/cascade-trip-delete', { tripId })
   } catch (e) {
+    if (e instanceof WorkerRejected) {
+      // 4xx -- Worker definitively refused. Nothing was deleted.
+      // Caller's toast can surface the status for the user to fix.
+      throw new Error(
+        `Trip cascade rejected (${e.status}): ${e.message}. ` +
+        `Fix the issue and retry.`,
+      )
+    }
+    // WorkerAmbiguous (timeout / network / 5xx) OR unrecognised.
+    // Cascade may be partially applied; the operation is idempotent
+    // so the user should retry until success.
     const reason = e instanceof Error ? e.message : String(e)
     throw new Error(
-      `Trip cascade could not reach the cleanup service: ${reason}. ` +
-      `Check your connection and retry.`,
-    )
-  }
-
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '<unreadable>')
-    // 403 / 404 / 429 / 500 all surface as a single error to the caller;
-    // the message includes status + body so devs / Sentry can see what
-    // tripped. The hook layer turns this into a toast.
-    throw new Error(
-      `Trip cascade rejected: ${res.status} ${detail.slice(0, 200)}. ` +
+      `Trip cascade did not complete: ${reason}. ` +
       `Retry to continue cleanup (operation is idempotent).`,
     )
   }

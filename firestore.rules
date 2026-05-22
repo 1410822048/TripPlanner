@@ -94,10 +94,16 @@ service cloud.firestore {
 
     // ─── Soft-delete helpers (settlement phase-2) ────────────────
     // `d` is either resource.data (current) or request.resource.data
-    // (target). "alive" means deletedAt is missing OR explicitly null;
-    // "tombstoned" means deletedAt is present and a real Timestamp.
+    // (target). Schema invariant: every expense doc has a `deletedAt`
+    // field, either explicitly null (alive) or a Timestamp
+    // (tombstoned). The Worker `encodeExpense` seeds null on create
+    // and the update rule below requires presence on both sides --
+    // so a doc missing the field is data-at-rest from before the
+    // soft-delete migration, which the DB no longer contains.
+    // "Alive" = field present and explicitly null; "tombstoned" =
+    // field present and a real Timestamp.
     function expenseAlive(d) {
-      return !('deletedAt' in d) || d.deletedAt == null;
+      return 'deletedAt' in d && d.deletedAt == null;
     }
     function expenseTombstoned(d) {
       return 'deletedAt' in d && d.deletedAt is timestamp;
@@ -175,6 +181,24 @@ service cloud.firestore {
              'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/'
              + expectedPath.replace('/', '%2F');
     }
+    // Per-key shape gate for schedule.location. hasOnly() restricts the
+    // KEY set; this helper additionally enforces the VALUE types so a
+    // raw-SDK write can't slip `lat: "evil"` or `name: [...]` past the
+    // allowlist. Mirrors how Zod's ScheduleLocationSchema would reject
+    // these client-side, kept at the rules layer too as defense-in-depth.
+    function validScheduleLocation(loc) {
+      return loc is map
+        && loc.keys().hasOnly(['name', 'address', 'lat', 'lng', 'placeId'])
+        && loc.name is string
+        && loc.name.size() > 0
+        && loc.name.size() <= 200
+        && (!('address' in loc)
+              || (loc.address is string && loc.address.size() <= 400))
+        && (!('lat' in loc) || loc.lat is number)
+        && (!('lng' in loc) || loc.lng is number)
+        && (!('placeId' in loc)
+              || (loc.placeId is string && loc.placeId.size() <= 200));
+    }
     function validWishImage(tripId, wishId) {
       return !('image' in request.resource.data) || (
         request.resource.data.image is map
@@ -208,44 +232,14 @@ service cloud.firestore {
            )
       );
     }
-    function validExpenseReceipt(tripId, expenseId) {
-      return !('receipt' in request.resource.data) || (
-        request.resource.data.receipt is map
-        && request.resource.data.receipt.keys().hasOnly(
-             ['url', 'path', 'type', 'thumbUrl', 'thumbPath']
-           )
-        && request.resource.data.receipt.keys().hasAll(
-             ['url', 'path', 'type']
-           )
-        // thumbUrl and thumbPath are paired — both present or both absent.
-        // Without this, raw SDK could set thumbUrl alone, UI displays the
-        // (unbacked) thumbUrl, but delete sees no thumbPath to purge.
-        && ('thumbUrl' in request.resource.data.receipt) ==
-             ('thumbPath' in request.resource.data.receipt)
-        && request.resource.data.receipt.type in
-             ['image/webp', 'image/jpeg', 'image/png', 'image/heic', 'image/heif', 'application/pdf']
-        && request.resource.data.receipt.path is string
-        && request.resource.data.receipt.path.size() <= 500
-        && request.resource.data.receipt.path.matches(
-             '^trips/' + tripId + '/expenses/' + expenseId + '/.+'
-           )
-        && validStorageUrlFor(
-             request.resource.data.receipt.url,
-             request.resource.data.receipt.path
-           )
-        && (!('thumbUrl' in request.resource.data.receipt) || (
-              request.resource.data.receipt.thumbPath is string
-              && request.resource.data.receipt.thumbPath.size() <= 500
-              && request.resource.data.receipt.thumbPath.matches(
-                   '^trips/' + tripId + '/expenses/' + expenseId + '/.+'
-                 )
-              && validStorageUrlFor(
-                   request.resource.data.receipt.thumbUrl,
-                   request.resource.data.receipt.thumbPath
-                 )
-           ))
-      );
-    }
+    // Note: validExpenseReceipt USED to live here. Removed once expense
+    // CREATE moved entirely to the Worker (`allow create: if false`
+    // + Worker `expense-validate.ts` enforces the same path-binding +
+    // URL-origin invariants the helper used to cover). Helper sat
+    // unused after the rules-layer expense-create became blocked, and
+    // every deploy emitted spurious "Invalid variable name: request"
+    // lint warnings against its body. Receipt validation now lives
+    // at `workers/ocr/src/expense-validate.ts` (`makeReceiptSchema`).
     function validBookingAttachment(tripId, bookingId) {
       return !('attachment' in request.resource.data) || (
         request.resource.data.attachment is map
@@ -255,7 +249,11 @@ service cloud.firestore {
         && request.resource.data.attachment.keys().hasAll(
              ['fileUrl', 'filePath', 'fileType']
            )
-        // thumbUrl and thumbPath are paired — see validExpenseReceipt above.
+        // thumbUrl and thumbPath are paired -- both present or both
+        // absent. Same shape contract as the Worker-side
+        // makeReceiptSchema in expense-validate.ts: without this
+        // pairing a raw SDK could set thumbUrl alone, UI renders the
+        // unbacked thumbUrl, and delete sees no thumbPath to purge.
         && ('thumbUrl' in request.resource.data.attachment) ==
              ('thumbPath' in request.resource.data.attachment)
         && request.resource.data.attachment.fileType in
@@ -374,13 +372,28 @@ service cloud.firestore {
       // initial roster matches the owner-only state — memberSync
       // extends it as invitees redeem.
       allow create: if isSignedIn()
+                    && request.resource.data.keys().hasOnly([
+                         'ownerId','title','destination','startDate','endDate',
+                         'currency','icon','memberIds','lastActivityByFeature',
+                         'createdAt','updatedAt'
+                       ])
                     && request.resource.data.ownerId == uid()
                     && request.resource.data.title is string
                     && request.resource.data.title.size() > 0
                     && request.resource.data.title.size() <= 100
                     && request.resource.data.destination is string
                     && request.resource.data.destination.size() <= 200
-                    && request.resource.data.memberIds == [uid()];
+                    && request.resource.data.memberIds == [uid()]
+                    && (!('startDate' in request.resource.data)
+                          || request.resource.data.startDate is timestamp)
+                    && (!('endDate' in request.resource.data)
+                          || request.resource.data.endDate is timestamp)
+                    && (!('currency' in request.resource.data)
+                          || (request.resource.data.currency is string
+                              && request.resource.data.currency.size() == 3))
+                    && (!('icon' in request.resource.data)
+                          || (request.resource.data.icon is string
+                              && request.resource.data.icon.size() <= 8));
       // Five update paths:
       //   1. Owner edits trip metadata (title/dates/icon/currency).
       //      ownerId + createdAt pinned to prevent transfer / forgery.
@@ -396,6 +409,11 @@ service cloud.firestore {
       //      the rule stays lenient.
       allow update: if (
         isTripOwner(tripId)
+        && request.resource.data.keys().hasOnly([
+             'ownerId','title','destination','startDate','endDate',
+             'currency','icon','memberIds','lastActivityByFeature',
+             'deletingAt','createdAt','updatedAt'
+           ])
         && unchanged('ownerId')
         && unchanged('createdAt')
         && unchanged('memberIds')
@@ -410,6 +428,17 @@ service cloud.firestore {
         && request.resource.data.title.size() <= 100
         && request.resource.data.destination is string
         && request.resource.data.destination.size() <= 200
+        && (!('startDate' in request.resource.data)
+              || request.resource.data.startDate is timestamp)
+        && (!('endDate' in request.resource.data)
+              || request.resource.data.endDate is timestamp)
+        && unchanged('lastActivityByFeature')
+        && (!('currency' in request.resource.data)
+              || (request.resource.data.currency is string
+                  && request.resource.data.currency.size() == 3))
+        && (!('icon' in request.resource.data)
+              || (request.resource.data.icon is string
+                  && request.resource.data.icon.size() <= 8))
       ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId) || (
         memberOfDoc()
         && changedOnly(['lastActivityByFeature', 'updatedAt'])
@@ -547,9 +576,16 @@ service cloud.firestore {
         // updates; powers the tab unread-dot filter (own writes don't badge).
         // memberIdsMatchTrip blocks editor-side injection of stranger uids.
         // Type / size / enum checks mirror the client Zod schema as
-        // defense-in-depth against REST-API misuse.
+        // defense-in-depth against REST-API misuse. hasOnly allowlist +
+        // is-string guards parity with wish/booking/planning.
         allow create: if canWrite(tripId)
                       && tripNotDeleting(tripId)
+                      && request.resource.data.keys().hasOnly([
+                           'tripId','date','order','title','description',
+                           'location','startTime','endTime','category',
+                           'estimatedCost','memberIds','createdBy','updatedBy',
+                           'createdAt','updatedAt'
+                         ])
                       && request.resource.data.tripId == tripId
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()
@@ -557,10 +593,35 @@ service cloud.firestore {
                       && request.resource.data.title is string
                       && request.resource.data.title.size() > 0
                       && request.resource.data.title.size() <= 200
+                      && request.resource.data.order is number
+                      && request.resource.data.order >= 0
                       && request.resource.data.category in
-                           ['transport','accommodation','food','activity','shopping','other'];
+                           ['transport','accommodation','food','activity','shopping','other']
+                      && request.resource.data.date is string
+                      && request.resource.data.date.size() <= 32
+                      && (!('description' in request.resource.data)
+                            || (request.resource.data.description is string
+                                && request.resource.data.description.size() <= 2000))
+                      && (!('startTime' in request.resource.data)
+                            || (request.resource.data.startTime is string
+                                && request.resource.data.startTime.size() <= 16))
+                      && (!('endTime' in request.resource.data)
+                            || (request.resource.data.endTime is string
+                                && request.resource.data.endTime.size() <= 16))
+                      && (!('estimatedCost' in request.resource.data)
+                            || (request.resource.data.estimatedCost is number
+                                && request.resource.data.estimatedCost >= 0
+                                && request.resource.data.estimatedCost <= 1000000000))
+                      && (!('location' in request.resource.data)
+                            || validScheduleLocation(request.resource.data.location));
         allow update: if (
           canWrite(tripId)
+          && request.resource.data.keys().hasOnly([
+               'tripId','date','order','title','description',
+               'location','startTime','endTime','category',
+               'estimatedCost','memberIds','createdBy','updatedBy',
+               'createdAt','updatedAt'
+             ])
           && unchanged('tripId')
           && unchanged('createdBy')
           && unchanged('createdAt')
@@ -569,67 +630,53 @@ service cloud.firestore {
           && request.resource.data.title is string
           && request.resource.data.title.size() > 0
           && request.resource.data.title.size() <= 200
+          && request.resource.data.order is number
+          && request.resource.data.order >= 0
           && request.resource.data.category in
                ['transport','accommodation','food','activity','shopping','other']
+          && request.resource.data.date is string
+          && request.resource.data.date.size() <= 32
+          && (!('description' in request.resource.data)
+                || (request.resource.data.description is string
+                    && request.resource.data.description.size() <= 2000))
+          && (!('startTime' in request.resource.data)
+                || (request.resource.data.startTime is string
+                    && request.resource.data.startTime.size() <= 16))
+          && (!('endTime' in request.resource.data)
+                || (request.resource.data.endTime is string
+                    && request.resource.data.endTime.size() <= 16))
+          && (!('estimatedCost' in request.resource.data)
+                || (request.resource.data.estimatedCost is number
+                    && request.resource.data.estimatedCost >= 0
+                    && request.resource.data.estimatedCost <= 1000000000))
+          && (!('location' in request.resource.data)
+                || validScheduleLocation(request.resource.data.location))
         ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
         allow delete: if canWrite(tripId);
       }
 
       match /expenses/{expenseId} {
         allow read:   if memberOfDoc();
-        allow create: if canWrite(tripId)
-                      && tripNotDeleting(tripId)
-                      && request.resource.data.tripId == tripId
-                      && request.resource.data.createdBy == uid()
-                      && request.resource.data.updatedBy == uid()
-                      && memberIdsMatchTrip(tripId)
-                      && request.resource.data.title is string
-                      && request.resource.data.title.size() > 0
-                      && request.resource.data.title.size() <= 200
-                      && request.resource.data.amount is number
-                      && request.resource.data.amount > 0
-                      && request.resource.data.splits is list
-                      && request.resource.data.splits.size() <= 50
-                      && request.resource.data.category in
-                           ['food','transport','accommodation','activity','shopping','other']
-                      // Settlement-engine inputs need type discipline.
-                      // paidBy / currency reach computeBalancesFull
-                      // directly; raw-SDK writes with the wrong type
-                      // would crash the chronological replay or produce
-                      // garbage attribution. Note has no engine impact
-                      // but caps DoS / storage cost.
-                      && request.resource.data.paidBy is string
-                      && request.resource.data.paidBy in request.resource.data.memberIds
-                      && request.resource.data.currency is string
-                      && request.resource.data.currency.size() == 3
-                      && (!('note' in request.resource.data)
-                            || (request.resource.data.note is string
-                                && request.resource.data.note.size() <= 1000))
-                      // createdAt pinned to request.time -- without
-                      // this, a raw-SDK editor could backdate an
-                      // expense before any settlement and shift
-                      // chronological-replay attribution (e.g. flip
-                      // an OVERPAYMENT classification to
-                      // EXPENSE_DELETED). updatedAt likewise pinned
-                      // so activity-badge ordering stays honest.
-                      && request.resource.data.createdAt == request.time
-                      && request.resource.data.updatedAt == request.time
-                      // deletedAt MUST be present AND null on create.
-                      // Forcing the field at create-time makes future
-                      // `where('deletedAt', '==', null)` server-side
-                      // filtering work without missing-field exclusions.
-                      && 'deletedAt' in request.resource.data
-                      && request.resource.data.deletedAt == null
-                      // receiptPurgedAt MUST be present + null on
-                      // create. The Worker cron filters purge
-                      // candidates by `receiptPurgedAt == null AND
-                      // deletedAt < cutoff`; docs missing the field
-                      // would never be visited (Firestore equality
-                      // doesn't match missing values). Set + queryable
-                      // from day one of the expense's life.
-                      && 'receiptPurgedAt' in request.resource.data
-                      && request.resource.data.receiptPurgedAt == null
-                      && validExpenseReceipt(tripId, expenseId);
+        // Expense CREATE is Worker-only. The Worker endpoint
+        // /expense-create validates the full payload (including
+        // splits.items shape + memberId-in-roster + Σsplits == amount,
+        // which rules-language can't express -- no array iterate /
+        // map-extract / reduce). Admin SDK on Worker bypasses this
+        // rule; clients calling setDoc directly are rejected.
+        allow create: if false;
+        // Expense UPDATE has two client-allowed paths:
+        //   1. Soft-delete / restore + audit bump only. Content edits
+        //      (title/amount/splits/etc.) are Worker-only via
+        //      /expense-update -- same rationale as create above.
+        //   2. memberSync paths (invitee self-add + owner cascade
+        //      remove) -- already scoped to memberIds via their
+        //      respective helpers.
+        //
+        // The deletedAt transition rules are unchanged (4 explicit
+        // branches + 10-day restore window + tombstone freeze) since
+        // those don't need array iteration / cross-doc roster checks
+        // and rules-layer enforcement keeps low-latency client UX
+        // for the soft-delete flow.
         allow update: if (
           canWrite(tripId)
           && unchanged('tripId')
@@ -639,28 +686,24 @@ service cloud.firestore {
           // receiptPurgedAt is Worker-controlled (cron stamps it via
           // Admin SDK, bypassing rules). Clients MUST NOT touch it --
           // forging it to a Timestamp would make the doc invisible to
-          // the cron filter and leak the receipt. Create rule ensures
-          // the field is always seeded null, so unchanged() is enough.
+          // the cron filter and leak the receipt. The Worker create
+          // rule seeds receiptPurgedAt: null; we require it to be
+          // present on BOTH old and new doc state because `unchanged`
+          // alone returns true for "both sides missing" -- the
+          // explicit presence check makes the schema invariant
+          // (every expense has receiptPurgedAt) enforceable from
+          // the rules layer.
+          && 'receiptPurgedAt' in resource.data
+          && 'receiptPurgedAt' in request.resource.data
           && unchanged('receiptPurgedAt')
           && request.resource.data.updatedBy == uid()
-          && request.resource.data.title is string
-          && request.resource.data.title.size() > 0
-          && request.resource.data.title.size() <= 200
-          && request.resource.data.amount is number
-          && request.resource.data.amount > 0
-          && request.resource.data.splits is list
-          && request.resource.data.splits.size() <= 50
-          && request.resource.data.category in
-               ['food','transport','accommodation','activity','shopping','other']
-          // Mirror the create-rule type discipline on settlement-engine
-          // inputs. Same rationale as create.
-          && request.resource.data.paidBy is string
-          && request.resource.data.paidBy in request.resource.data.memberIds
-          && request.resource.data.currency is string
-          && request.resource.data.currency.size() == 3
-          && (!('note' in request.resource.data)
-                || (request.resource.data.note is string
-                    && request.resource.data.note.size() <= 1000))
+          // Content fields are Worker-owned. Client can only change
+          // [deletedAt, updatedBy, updatedAt] -- the soft-delete /
+          // restore path. Any title/amount/splits/etc. mutation
+          // forces the change set out of this allowlist, rejecting
+          // the write. Worker /expense-update uses Admin SDK and
+          // bypasses this whole rule.
+          && changedOnly(['deletedAt', 'updatedBy', 'updatedAt'])
           // updatedAt pinned to request.time so activity-badge ordering
           // stays honest (forging it would let a raw-SDK writer make
           // their edit "older" / "newer" than it actually was).
@@ -668,21 +711,15 @@ service cloud.firestore {
           // Soft-delete invariants (settlement phase-2). See
           // expenseAlive / expenseTombstoned helpers at rules root.
           //
-          // 1. Field never disappears once present (blocks deleteField()
-          //    which would make the doc invisible to a future
-          //    `where deletedAt == null` server-side query).
-          && !(
-            'deletedAt' in resource.data
-            && !('deletedAt' in request.resource.data)
-          )
-          // 2. deletedAt transitions (four explicit branches; the
-          //    original collapsed "alive→alive" and "restore" into a
-          //    single `expenseAlive(target)` predicate which let raw-
-          //    SDK editors restore tombstones with no time limit —
-          //    after the cron purged the receipt at 10d, restore
-          //    would resurrect the expense pointing at a deleted
-          //    Storage object):
-          //    - alive → alive: content edit, no deletedAt change
+          // Schema invariant: deletedAt is ALWAYS present on every
+          // expense doc (Worker create seeds it null; this rule
+          // requires it stay present through every client update).
+          // Replaces the previous "field never disappears once
+          // present" half-check that tolerated pre-soft-delete docs.
+          && 'deletedAt' in resource.data
+          && 'deletedAt' in request.resource.data
+          // 2. deletedAt transitions (four explicit branches):
+          //    - alive → alive: audit-only update, no deletedAt change
           //    - alive → tombstoned: target must equal request.time
           //      (no backdate / forward-date tampering)
           //    - tombstoned → null (restore): ONLY within 10 days
@@ -701,16 +738,6 @@ service cloud.firestore {
             || (expenseTombstoned(resource.data)
                 && request.resource.data.deletedAt == resource.data.deletedAt)
           )
-          // 3. Tombstone freeze: when EITHER end-state is tombstoned,
-          //    only audit + deletedAt may change. Blocks splits/amount
-          //    mutation on tombstoned docs AND prevents bundling such
-          //    mutation into the same write that soft-deletes (both
-          //    attack vectors against settlement replay integrity).
-          && (
-            (expenseAlive(resource.data) && expenseAlive(request.resource.data))
-            || changedOnly(['deletedAt', 'updatedBy', 'updatedAt'])
-          )
-          && validExpenseReceipt(tripId, expenseId)
         ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
         // Hard delete from clients is forbidden -- soft-delete via
         // `deletedAt` is the only path. This was previously a "workflow
@@ -742,6 +769,14 @@ service cloud.firestore {
         // blocked everywhere else.
         allow create: if exists(memberPath(tripId))
                       && tripNotDeleting(tripId)
+                      // Allowlist closes the raw-SDK "stuff arbitrary extra
+                      // fields" hole. Optional fields can be absent; this
+                      // only rejects keys NOT in the list.
+                      && request.resource.data.keys().hasOnly([
+                           'tripId','category','title','description','link',
+                           'address','image','proposedBy','updatedBy','memberIds',
+                           'votes','createdAt','updatedAt'
+                         ])
                       && request.resource.data.tripId == tripId
                       && request.resource.data.proposedBy == uid()
                       && request.resource.data.updatedBy == uid()
@@ -751,12 +786,19 @@ service cloud.firestore {
                       && request.resource.data.title.size() > 0
                       && request.resource.data.title.size() <= 200
                       && request.resource.data.category in ['place', 'food']
+                      // `is string` guards before `.size()` because .size()
+                      // also works on lists/maps -- without the type check
+                      // a payload like `description: [1..1000]` would pass
+                      // the size cap while corrupting the doc shape.
                       && (!('description' in request.resource.data)
-                            || request.resource.data.description.size() <= 1000)
+                            || (request.resource.data.description is string
+                                && request.resource.data.description.size() <= 1000))
                       && (!('address' in request.resource.data)
-                            || request.resource.data.address.size() <= 400)
+                            || (request.resource.data.address is string
+                                && request.resource.data.address.size() <= 400))
                       && (!('link' in request.resource.data)
-                            || request.resource.data.link.size() <= 1000)
+                            || (request.resource.data.link is string
+                                && request.resource.data.link.size() <= 1000))
                       && validWishImage(tripId, wishId);
         // Two update paths:
         //   1. Proposer edits any field (title/category/etc.)
@@ -770,6 +812,11 @@ service cloud.firestore {
             // 1. Proposer path: edit any field EXCEPT ownership / identity.
             (
               resource.data.proposedBy == uid()
+              && request.resource.data.keys().hasOnly([
+                   'tripId','category','title','description','link',
+                   'address','image','proposedBy','updatedBy','memberIds',
+                   'votes','createdAt','updatedAt'
+                 ])
               && unchanged('tripId')
               && unchanged('proposedBy')
               && unchanged('createdAt')
@@ -780,11 +827,14 @@ service cloud.firestore {
               && request.resource.data.title.size() <= 200
               && request.resource.data.category in ['place', 'food']
               && (!('description' in request.resource.data)
-                    || request.resource.data.description.size() <= 1000)
+                    || (request.resource.data.description is string
+                        && request.resource.data.description.size() <= 1000))
               && (!('address' in request.resource.data)
-                    || request.resource.data.address.size() <= 400)
+                    || (request.resource.data.address is string
+                        && request.resource.data.address.size() <= 400))
               && (!('link' in request.resource.data)
-                    || request.resource.data.link.size() <= 1000)
+                    || (request.resource.data.link is string
+                        && request.resource.data.link.size() <= 1000))
               && validWishImage(tripId, wishId)
             )
             ||
@@ -818,23 +868,48 @@ service cloud.firestore {
         allow read:   if memberOfDoc();
         allow create: if canWrite(tripId)
                       && tripNotDeleting(tripId)
+                      && request.resource.data.keys().hasOnly([
+                           'tripId','type','title','origin','destination',
+                           'confirmationCode','provider','checkIn','checkOut',
+                           'address','note','attachment','sortDate','memberIds',
+                           'createdBy','updatedBy','createdAt','updatedAt'
+                         ])
                       && request.resource.data.tripId == tripId
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()
                       && memberIdsMatchTrip(tripId)
                       && request.resource.data.type in ['flight','hotel','train','bus','other']
+                      // `is string` precedes `.size()` because size() also
+                      // works on lists/maps -- without it a raw-SDK writer
+                      // could pass an array (e.g. `note: [...]`) that
+                      // satisfies the size cap while corrupting the doc.
                       && (!('title' in request.resource.data)
-                            || request.resource.data.title.size() <= 200)
+                            || (request.resource.data.title is string
+                                && request.resource.data.title.size() <= 200))
                       && (!('origin' in request.resource.data)
-                            || request.resource.data.origin.size() <= 100)
+                            || (request.resource.data.origin is string
+                                && request.resource.data.origin.size() <= 100))
                       && (!('destination' in request.resource.data)
-                            || request.resource.data.destination.size() <= 100)
+                            || (request.resource.data.destination is string
+                                && request.resource.data.destination.size() <= 100))
                       && (!('confirmationCode' in request.resource.data)
-                            || request.resource.data.confirmationCode.size() <= 100)
+                            || (request.resource.data.confirmationCode is string
+                                && request.resource.data.confirmationCode.size() <= 100))
                       && (!('provider' in request.resource.data)
-                            || request.resource.data.provider.size() <= 100)
+                            || (request.resource.data.provider is string
+                                && request.resource.data.provider.size() <= 100))
                       && (!('address' in request.resource.data)
-                            || request.resource.data.address.size() <= 400)
+                            || (request.resource.data.address is string
+                                && request.resource.data.address.size() <= 400))
+                      && (!('checkIn' in request.resource.data)
+                            || (request.resource.data.checkIn is string
+                                && request.resource.data.checkIn.size() <= 32))
+                      && (!('checkOut' in request.resource.data)
+                            || (request.resource.data.checkOut is string
+                                && request.resource.data.checkOut.size() <= 32))
+                      && (!('note' in request.resource.data)
+                            || (request.resource.data.note is string
+                                && request.resource.data.note.size() <= 2000))
                       && validBookingAttachment(tripId, bookingId);
         // Three update paths:
         //   1. Editor / owner edits booking content. tripId / createdBy /
@@ -847,6 +922,12 @@ service cloud.firestore {
         //   3. Owner remove-member cascade.
         allow update: if (
           canWrite(tripId)
+          && request.resource.data.keys().hasOnly([
+               'tripId','type','title','origin','destination',
+               'confirmationCode','provider','checkIn','checkOut',
+               'address','note','attachment','sortDate','memberIds',
+               'createdBy','updatedBy','createdAt','updatedAt'
+             ])
           && unchanged('tripId')
           && unchanged('createdBy')
           && unchanged('createdAt')
@@ -854,17 +935,32 @@ service cloud.firestore {
           && request.resource.data.updatedBy == uid()
           && request.resource.data.type in ['flight','hotel','train','bus','other']
           && (!('title' in request.resource.data)
-                || request.resource.data.title.size() <= 200)
+                || (request.resource.data.title is string
+                    && request.resource.data.title.size() <= 200))
           && (!('origin' in request.resource.data)
-                || request.resource.data.origin.size() <= 100)
+                || (request.resource.data.origin is string
+                    && request.resource.data.origin.size() <= 100))
           && (!('destination' in request.resource.data)
-                || request.resource.data.destination.size() <= 100)
+                || (request.resource.data.destination is string
+                    && request.resource.data.destination.size() <= 100))
           && (!('confirmationCode' in request.resource.data)
-                || request.resource.data.confirmationCode.size() <= 100)
+                || (request.resource.data.confirmationCode is string
+                    && request.resource.data.confirmationCode.size() <= 100))
           && (!('provider' in request.resource.data)
-                || request.resource.data.provider.size() <= 100)
+                || (request.resource.data.provider is string
+                    && request.resource.data.provider.size() <= 100))
           && (!('address' in request.resource.data)
-                || request.resource.data.address.size() <= 400)
+                || (request.resource.data.address is string
+                    && request.resource.data.address.size() <= 400))
+          && (!('checkIn' in request.resource.data)
+                || (request.resource.data.checkIn is string
+                    && request.resource.data.checkIn.size() <= 32))
+          && (!('checkOut' in request.resource.data)
+                || (request.resource.data.checkOut is string
+                    && request.resource.data.checkOut.size() <= 32))
+          && (!('note' in request.resource.data)
+                || (request.resource.data.note is string
+                    && request.resource.data.note.size() <= 2000))
           && validBookingAttachment(tripId, bookingId)
         ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
         allow delete: if canWrite(tripId);
@@ -923,6 +1019,10 @@ service cloud.firestore {
         allow read:   if memberOfDoc();
         allow create: if exists(memberPath(tripId))
                       && tripNotDeleting(tripId)
+                      && request.resource.data.keys().hasOnly([
+                           'tripId','category','title','note','done','doneBy','doneAt',
+                           'memberIds','createdBy','updatedBy','createdAt','updatedAt'
+                         ])
                       && request.resource.data.tripId == tripId
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()
@@ -932,12 +1032,24 @@ service cloud.firestore {
                       && request.resource.data.title.size() <= 200
                       && request.resource.data.category in
                            ['essentials','documents','packing','todo','other']
+                      && request.resource.data.done is bool
+                      && (!('doneBy' in request.resource.data)
+                            || (request.resource.data.doneBy is string
+                                && request.resource.data.doneBy.size() > 0
+                                && request.resource.data.doneBy.size() <= 128))
+                      && (!('doneAt' in request.resource.data)
+                            || request.resource.data.doneAt is timestamp)
                       && (!('note' in request.resource.data)
-                            || request.resource.data.note.size() <= 1000);
+                            || (request.resource.data.note is string
+                                && request.resource.data.note.size() <= 1000));
         // Three update paths: content edit (any member), invitee
         // self-add cascade, owner remove-member cascade.
         allow update: if (
           memberOfDoc()
+          && request.resource.data.keys().hasOnly([
+               'tripId','category','title','note','done','doneBy','doneAt',
+               'memberIds','createdBy','updatedBy','createdAt','updatedAt'
+             ])
           && unchanged('tripId')
           && unchanged('createdBy')
           && unchanged('createdAt')
@@ -948,10 +1060,101 @@ service cloud.firestore {
           && request.resource.data.title.size() <= 200
           && request.resource.data.category in
                ['essentials','documents','packing','todo','other']
+          && request.resource.data.done is bool
+          && (!('doneBy' in request.resource.data)
+                || (request.resource.data.doneBy is string
+                    && request.resource.data.doneBy.size() > 0
+                    && request.resource.data.doneBy.size() <= 128))
+          && (!('doneAt' in request.resource.data)
+                || request.resource.data.doneAt is timestamp)
           && (!('note' in request.resource.data)
-                || request.resource.data.note.size() <= 1000)
+                || (request.resource.data.note is string
+                    && request.resource.data.note.size() <= 1000))
         ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
         allow delete: if memberOfDoc();
+      }
+
+      // Orphan-blob cleanup queue. Write-only enqueue surface for
+      // members; the Worker is the only reader / mutator / deleter.
+      // The underscore prefix is a documentation cue ("infra not user
+      // content"); the security boundary is the rules below:
+      //
+      //   read   = false      (no client UI surface ever reads this;
+      //                        admin SDK and the Firebase Console
+      //                        signed-in as a project member both
+      //                        bypass rules, so ops introspection
+      //                        still works)
+      //   create = trip member (scoped to its own trip + entityRef)
+      //   update = false      (only Worker cron bumps attempts)
+      //   delete = false      (only Worker cron deletes after drain)
+      //
+      // Trip-cascade Worker also sweeps this subcollection like any
+      // other on trip delete.
+      match /_purges/{purgeId} {
+        // No client reader surface. Setting `read: false` makes the
+        // intent unmistakable and removes the temptation to wire a
+        // "see your trip's purge backlog" UI that would couple
+        // user-facing code to internal cleanup infra. _purges docs
+        // intentionally don't carry memberIds[] either (further
+        // signalling "not user content").
+        allow read: if false;
+        // Member-side enqueue. Three layers of binding gate what a
+        // member can stage:
+        //   1. tripId pinned to URL var via doc key + payload tripId.
+        //   2. entityRef regex restricts to the three collections that
+        //      actually carry attachment paths (expenses/bookings/
+        //      wishes). schedules are NOT included because they don't
+        //      store attachment paths -- letting them through would
+        //      make the cron treat ANY path as orphan from the
+        //      schedule's POV (the entity has no attachment field to
+        //      cross-check), enabling a borrow-the-blade attack:
+        //      enqueue `entityRef: schedules/X` + `path: bookings/Y/
+        //      legit-attachment` and the cron deletes a coworker's
+        //      legit booking blob.
+        //   3. path MUST live under entityRef's own folder. Without
+        //      this gate the same attack works across the remaining
+        //      collections (entityRef: expenses/A + path: bookings/B/
+        //      legit). The matches() concatenates the user-supplied
+        //      entityRef into the regex, but every byte of entityRef
+        //      is constrained by the regex in step 2 (no regex
+        //      metacharacters possible), so the resulting pattern is
+        //      well-formed and safe.
+        // createdAt pinned to request.time so cron-side age-gating
+        // is honest (a forged old timestamp could otherwise let an
+        // attacker push their purge to the front of the queue).
+        allow create: if exists(memberPath(tripId))
+                      && request.resource.data.keys().hasOnly([
+                           'tripId','entityRef','path','source','attempts','createdAt'
+                         ])
+                      && request.resource.data.tripId == tripId
+                      // Belt-and-suspenders: pin the URL var tripId to
+                      // the auto-ID charset BEFORE concatenating it
+                      // into the regex below. Firestore doc IDs are
+                      // already URL-safe so this should always pass
+                      // for real paths, but if a doc somehow got
+                      // created under a path with regex meta-chars
+                      // (e.g. via admin SDK with a hand-rolled id),
+                      // the regex below would be malformed without
+                      // this gate.
+                      && tripId.matches('^[A-Za-z0-9_-]+$')
+                      && request.resource.data.entityRef is string
+                      && request.resource.data.entityRef.matches(
+                           '^trips/' + tripId + '/(expenses|bookings|wishes)/[A-Za-z0-9_-]+$'
+                         )
+                      && request.resource.data.path is string
+                      && request.resource.data.path.size() > 0
+                      && request.resource.data.path.size() <= 500
+                      && request.resource.data.path.matches(
+                           '^' + request.resource.data.entityRef + '/.+'
+                         )
+                      && request.resource.data.source is string
+                      && request.resource.data.source.size() <= 200
+                      && request.resource.data.attempts == 0
+                      && request.resource.data.createdAt == request.time;
+        // Only Worker (admin SDK, bypasses rules) updates attempts or
+        // deletes after drain. Closes the vector where a malicious
+        // member could rapid-delete entries to defeat cleanup.
+        allow update, delete: if false;
       }
     }
 

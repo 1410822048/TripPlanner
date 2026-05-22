@@ -53,6 +53,11 @@
 			"name": "TRIP_CASCADE_RATE_LIMITER",
 			"namespace_id": "1003",
 			"simple": { "limit": 1, "period": 60 }
+		},
+		{
+			"name": "EXPENSE_RATE_LIMITER",
+			"namespace_id": "1004",
+			"simple": { "limit": 30, "period": 60 }
 		}
 	],
 	// Durable Object for cross-PoP rate limiting. Each instance is
