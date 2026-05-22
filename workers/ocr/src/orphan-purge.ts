@@ -72,8 +72,13 @@ export interface OrphanPurgeReport {
  *  intentionally absent (see firestore.rules + parsePurgeEntry) --
  *  schedule entityRefs are rejected at queue-entry parse, so the
  *  cron never reaches the verification step with one. Narrowing the
- *  type makes referencedPaths' exhaustiveness compile-time. */
-type ValidCollection = 'expenses' | 'bookings' | 'wishes'
+ *  type makes referencedPaths' exhaustiveness compile-time.
+ *
+ *  Also consumed by `storage-scan.ts` (Level 4 reconciliation):
+ *  same exact-match contract, same 3 collections, same field-shape
+ *  knowledge -- keeping a single source of truth for "which doc
+ *  fields hold storage paths" avoids drift when schemas evolve. */
+export type ValidCollection = 'expenses' | 'bookings' | 'wishes'
 
 /** Decode the FsValue map of an entity doc into the set of paths it
  *  currently references via its attachment field. Schema-aware: each
@@ -82,8 +87,10 @@ type ValidCollection = 'expenses' | 'bookings' | 'wishes'
  *  Schedules deliberately excluded from the type union -- the
  *  parsePurgeEntry validator filters them out at the queue-entry
  *  layer, so the cron never reaches here with a schedule collection.
- *  Keeping the type narrow makes the exhaustiveness compile-time. */
-function referencedPaths(
+ *  Keeping the type narrow makes the exhaustiveness compile-time.
+ *
+ *  Exported for reuse by `storage-scan.ts`. */
+export function referencedPaths(
   collection: ValidCollection,
   fields:     Record<string, FsValue> | null | undefined,
 ): Set<string> {

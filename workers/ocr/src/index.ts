@@ -28,6 +28,7 @@ import { cascadeMemberAdd, CascadeRequestSchema, CascadeError } from './cascade'
 import { cascadeTripDelete, TripDeleteRequestSchema } from './trip-cascade'
 import { purgeExpiredReceipts }                   from './receipt-purge'
 import { drainOrphanPurges }                      from './orphan-purge'
+import { scanOrphanStorage }                      from './storage-scan'
 import {
   expenseCreate, expenseUpdate,
   ExpenseCreateRequestSchema, ExpenseUpdateRequestSchema,
@@ -389,6 +390,28 @@ export default {
         })
         .catch(err => {
           console.error(`[cron] orphan-purge failed: ${(err as Error).message}`)
+        }),
+    )
+    // Level 4 orphan-blob reconciliation. Independent from the queue-
+    // driven orphan-purge: catches blobs uploaded outside the normal
+    // service paths (editor SDK abuse, mid-upload process kills, manual
+    // console writes). 24h grace window keeps the active flow safe.
+    // Runs parallel to the other two via its own waitUntil so any
+    // failure here doesn't starve them (or vice versa).
+    console.log('[cron] storage-scan starting')
+    ctx.waitUntil(
+      scanOrphanStorage(env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)
+        .then(report => {
+          console.log(
+            `[cron] storage-scan done scanned=${report.scanned} ` +
+            `deleted=${report.deleted} referenced=${report.referenced} ` +
+            `freshSkipped=${report.freshSkipped} unparseable=${report.unparseable} ` +
+            `readErrors=${report.readErrors} deleteErrors=${report.deleteErrors} ` +
+            `deadlineHit=${report.deadlineHit}`,
+          )
+        })
+        .catch(err => {
+          console.error(`[cron] storage-scan failed: ${(err as Error).message}`)
         }),
     )
   },

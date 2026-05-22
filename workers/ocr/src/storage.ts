@@ -18,6 +18,12 @@ const NO_CACHE: RequestInit = { cache: 'no-store' }
 export interface StorageObject {
   /** Full object path within the bucket, e.g. `trips/abc/expenses/xyz/receipt.webp`. */
   name: string
+  /** RFC 3339 timestamp when the object was created. Populated by GCS
+   *  when our partial-response fields include `timeCreated`. Optional
+   *  on the interface because some call sites (trip-cascade,
+   *  receipt-purge) don't read it -- only the orphan storage-scan
+   *  cron needs the age for its 24h grace window check. */
+  timeCreated?: string
 }
 
 export interface ListObjectsPage {
@@ -29,7 +35,9 @@ export interface ListObjectsPage {
  * List a single page of objects under `prefix`. Caller paginates by
  * threading `nextPageToken` back in. pageSize is capped at 1000 by GCS;
  * we default to 500 to keep memory bounded per response (each object is
- * ~200 bytes of JSON metadata).
+ * ~240 bytes of JSON metadata with timeCreated included). The orphan
+ * storage-scan cron explicitly passes 1000 to halve its round-trip
+ * count for the large-prefix daily scan.
  */
 export async function listObjects(
   accessToken: string,
@@ -41,7 +49,11 @@ export async function listObjects(
   const url = new URL(`${BASE}/b/${encodeURIComponent(bucket)}/o`)
   url.searchParams.set('prefix', prefix)
   url.searchParams.set('maxResults', String(pageSize))
-  url.searchParams.set('fields', 'items(name),nextPageToken')
+  // `timeCreated` added to the partial response so the orphan storage-
+  // scan can apply its grace window without a second per-object metadata
+  // fetch. Trip-cascade + receipt-purge ignore it -- cheap extra ~30
+  // bytes per item, well under the 1000-item page budget.
+  url.searchParams.set('fields', 'items(name,timeCreated),nextPageToken')
   if (pageToken) url.searchParams.set('pageToken', pageToken)
 
   const res = await fetch(url, {
@@ -53,11 +65,11 @@ export async function listObjects(
     throw new Error(`listObjects ${prefix} → ${res.status}: ${detail.slice(0, 200)}`)
   }
   const data = await res.json() as {
-    items?: { name: string }[]
+    items?: { name: string; timeCreated?: string }[]
     nextPageToken?: string
   }
   return {
-    items: (data.items ?? []).map(i => ({ name: i.name })),
+    items: (data.items ?? []).map(i => ({ name: i.name, timeCreated: i.timeCreated })),
     nextPageToken: data.nextPageToken,
   }
 }
