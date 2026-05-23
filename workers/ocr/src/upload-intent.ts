@@ -29,6 +29,7 @@ import { z }                                                        from 'zod'
 import { getAdminToken, getProjectId }                              from './admin'
 import {
   readString,
+  readTimestampMs,
   type FsValue,
 }                                                                   from './firestore'
 import { withTokenRetry, CascadeError }                             from './cascade'
@@ -38,6 +39,11 @@ import {
   type TxContext,
   type TxWrite,
 }                                                                   from './firestore-tx'
+import {
+  getObjectMetadata,
+  downloadUrlFromMetadata,
+  type ObjectMetadata,
+}                                                                   from './storage'
 
 // ─── Constants ────────────────────────────────────────────────────
 
@@ -128,12 +134,25 @@ function collectionFor(entityType: EntityType): 'expenses' | 'bookings' | 'wishe
   return 'wishes'
 }
 
-/** Short random id for intent doc + filename. 8 hex chars = 32 bits
- *  of entropy; collision probability for two intents in a 30-minute
- *  TTL window with even 10k req/min is < 1e-9. crypto.randomUUID is
- *  available in Cloudflare Workers (Web Crypto). */
-function shortId(): string {
-  return crypto.randomUUID().replace(/-/g, '').slice(0, 8)
+/** Random ID for an intent document or Storage filename suffix.
+ *  Full UUID hex (32 chars = 128 bits) -- collision-resistant at any
+ *  realistic scale.
+ *
+ *  Note (earlier mistake): an 8-char truncation was used originally
+ *  (32 bits of entropy), which is unsafe for either of these:
+ *    - intentId is a globally-scoped Firestore doc ID. Birthday-
+ *      paradox collision hits 50% at sqrt(2^32) = ~65k docs. Even
+ *      with the 7-day used-retention cleanup, sustained traffic
+ *      crosses that threshold easily and `currentDocument.exists=false`
+ *      creates start rejecting.
+ *    - fileId is per-(tripId,entityId) but the same logic applies to
+ *      replace-attachment flows that rapidly cycle paths. A collision
+ *      = silent Storage overwrite or a stale path stranded in
+ *      Firestore docs that reference the now-overwritten blob.
+ *  Full UUID closes both classes. crypto.randomUUID is available in
+ *  Cloudflare Workers (Web Crypto API). */
+function newId(): string {
+  return crypto.randomUUID().replace(/-/g, '')
 }
 
 /** Per-request authorization. Runs inside the Firestore transaction
@@ -247,8 +266,8 @@ async function doCreate(
     const collection = collectionFor(req.entityType)
 
     for (const upload of req.uploads) {
-      const intentId = shortId()
-      const fileId   = shortId()
+      const intentId = newId()
+      const fileId   = newId()
       const ext      = extForContentType(upload.contentType)
       // `.thumb.` infix differentiates thumb from full when they share
       // the same extension. Mirrors the existing client-side filename
@@ -313,5 +332,402 @@ async function doCreate(
     }
 
     return { writes, result: { intents: responses } }
+  })
+}
+
+// ─── Intent consumption (shared by /upload-finalize + expense-write) ──
+
+/** Validated + consumed intent + the tx write that marks it 'used'.
+ *
+ *  Atomicity story:
+ *    - expense path: intent markUsed write + expense doc write are in
+ *      the SAME tx commit. No half-state. consumeExpenseIntents always
+ *      gets `markUsedWrite` non-null and adds it to commit writes.
+ *    - booking/wish finalize path: intent markUsed write commits, then
+ *      client writes the doc. If client crashes between, half-state
+ *      exists (intent used, doc missing, blob in storage). Mitigated
+ *      via `allowUsed=true` on finalize -- a retry can re-finalize an
+ *      already-used intent and get the same blobs response (markUsedWrite
+ *      null in that case), letting the client complete its doc write.
+ *      Orphan-storage-scan cleans the blob if the client never retries.
+ */
+export interface ConsumedIntent {
+  intentId:       string
+  tripId:         string
+  entityType:     EntityType
+  entityId:       string
+  kind:           UploadKind
+  path:           string
+  storage:        ObjectMetadata
+  downloadUrl:    string | null
+  /** True when this consume was an idempotent re-finalize of an
+   *  already-`used` intent -- caller didn't actually trigger the
+   *  status transition this round, just verified the prior consume
+   *  is still valid. False for the first-time `pending` → `used`
+   *  case. */
+  alreadyUsed:    boolean
+}
+
+interface ConsumeResult {
+  consumed:       ConsumedIntent
+  /** Null when the intent was ALREADY 'used' on entry (idempotent
+   *  replay path). Non-null when transitioning pending → used; caller
+   *  MUST include this write in their tx commit. */
+  markUsedWrite:  TxWrite | null
+}
+
+/** Read an intent doc inside a tx, validate all the consume-time
+ *  preconditions, and verify the corresponding Storage object exists.
+ *  Returns the consumed intent + the tx write to mark it used; caller
+ *  must include the write in their TxResult.writes.
+ *
+ *  Validation order is deliberate -- cheaper local checks before the
+ *  remote Storage roundtrip:
+ *    intent exists → status=pending → uid match → not expired →
+ *    storage object exists → entity scope matches (caller-supplied)
+ *
+ *  `expected` lets callers (e.g. /upload-finalize) reject intents that
+ *  belong to a different trip / entity / kind than the request claims.
+ *  When `expected` is undefined, the scope check is skipped (used by
+ *  consumers that already know the scope from intent itself).
+ */
+async function consumeIntentInTx(
+  tx:           TxContext,
+  intentId:     string,
+  callerUid:    string,
+  accessToken:  string,
+  projectId:    string,
+  bucket:       string,
+  expected?: {
+    tripId?:     string
+    entityType?: EntityType
+    entityId?:   string
+    kind?:       UploadKind
+  },
+  opts: {
+    /** When true, accept `status='used'` and return the same blobs
+     *  without re-marking. Used by /upload-finalize for booking/wish
+     *  so a client that crashed between finalize-success and doc-write
+     *  can retry without paying for a new upload. uid + storage +
+     *  customMetadata still verified -- idempotency is per-uploader,
+     *  not a general bypass. expense path leaves this default false:
+     *  expense create/update writes the doc in the SAME tx as consume,
+     *  so no half-state to recover from; second create=409. */
+    allowUsed?:  boolean
+  } = {},
+): Promise<ConsumeResult> {
+  const intent = await tx.get(`uploadIntents/${intentId}`)
+  if (!intent.exists) throw new CascadeError(404, `intent ${intentId} not found`)
+
+  const status = readString(intent.fields, 'status')
+  const isPending = status === 'pending'
+  const isReplayable = status === 'used' && opts.allowUsed === true
+  if (!isPending && !isReplayable) {
+    throw new CascadeError(409, `intent ${intentId} status=${status ?? 'unknown'} (must be pending)`)
+  }
+
+  const uid = readString(intent.fields, 'uid')
+  if (uid !== callerUid) throw new CascadeError(403, `intent ${intentId} not owned by caller`)
+
+  // expiresAt check applies only to pending intents. A 'used' intent's
+  // expiresAt is irrelevant -- it was consumed before expiry by
+  // construction (otherwise consume would have rejected it then).
+  // Used-intent retention is handled by purgeExpiredUploadIntents
+  // cron (USED_RETENTION_DAYS); within that window, replay is safe.
+  if (isPending) {
+    const expiresAtMs = readTimestampMs(intent.fields, 'expiresAt')
+    if (expiresAtMs === undefined) throw new CascadeError(500, `intent ${intentId} missing expiresAt`)
+    if (Date.now() > expiresAtMs)  throw new CascadeError(410, `intent ${intentId} expired`)
+  }
+
+  const tripId     = readString(intent.fields, 'tripId')
+  const entityType = readString(intent.fields, 'entityType') as EntityType | undefined
+  const entityId   = readString(intent.fields, 'entityId')
+  const kind       = readString(intent.fields, 'kind') as UploadKind | undefined
+  const path       = readString(intent.fields, 'path')
+  if (!tripId || !entityType || !entityId || !kind || !path) {
+    throw new CascadeError(500, `intent ${intentId} missing required fields`)
+  }
+
+  if (expected?.tripId     && expected.tripId     !== tripId)     throw new CascadeError(400, `intent ${intentId} tripId mismatch`)
+  if (expected?.entityType && expected.entityType !== entityType) throw new CascadeError(400, `intent ${intentId} entityType mismatch`)
+  if (expected?.entityId   && expected.entityId   !== entityId)   throw new CascadeError(400, `intent ${intentId} entityId mismatch`)
+  if (expected?.kind       && expected.kind       !== kind)       throw new CascadeError(400, `intent ${intentId} kind mismatch (expected ${expected.kind}, got ${kind})`)
+
+  // Extract the intent's binding fields -- the contract the Storage
+  // upload MUST match. Worker-minted at /upload-intents time; read
+  // here for defense-in-depth re-verification against the actual
+  // uploaded object metadata. storage.rules in Commit 4 will enforce
+  // the same contract at the rules layer; both layers verify so
+  // either layer's bypass (non-Firebase-SDK direct GCS, manual
+  // metadata tamper, rules misconfig) doesn't single-handedly let a
+  // non-conformant upload get consumed.
+  const intentMetadataFields = (intent.fields.customMetadata as { mapValue?: { fields?: Record<string, FsValue> } } | undefined)?.mapValue?.fields
+  const intentAllowedCtValues = (intent.fields.allowedContentTypes as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values
+  const intentMaxBytesRaw = (intent.fields.maxBytes as { integerValue?: string | number } | undefined)?.integerValue
+  if (!intentMetadataFields || !intentAllowedCtValues || intentMaxBytesRaw === undefined) {
+    throw new CascadeError(500, `intent ${intentId} missing required binding fields (allowedContentTypes / maxBytes / customMetadata)`)
+  }
+  const intentMaxBytes = Number(intentMaxBytesRaw)
+  const intentAllowedCts = intentAllowedCtValues
+    .map(v => v.stringValue)
+    .filter((s): s is string => typeof s === 'string')
+
+  // Storage object existence + metadata. Done inside the tx body so a
+  // concurrent finalize / cron-cleanup race shows up as ABORTED commit
+  // (the intent doc would change). The fetch itself doesn't participate
+  // in Firestore tx, but the intent.status='pending' read above + the
+  // commit-time write below pin the moment of consumption.
+  const storage = await getObjectMetadata(accessToken, bucket, path)
+  if (!storage) throw new CascadeError(404, `storage object missing at ${path} (upload not yet committed?)`)
+
+  // Storage object MUST match the intent's contract. Three classes
+  // of check, ordered cheapest first:
+  //   1. contentType -- intent allowedContentTypes is single-element
+  //      (locked to the requested CT), so this is exact-match.
+  //   2. size -- object bytes must fit under the intent's maxBytes.
+  //   3. customMetadata -- every key the Worker minted at intent time
+  //      (uploadIntentId, uploaderUid, tripId, entityType, entityId,
+  //      kind, schemaVersion) must be present on the object with the
+  //      exact same value. Missing OR mismatched both fail.
+  //
+  // Why all three: storage.rules (Commit 4) will perform an
+  // equivalent intent-bound check at upload time, but rule failures
+  // can be obscure (single FAILED_PRECONDITION with no field detail).
+  // Re-verifying here gives precise rejection messages + catches
+  // any pre-Commit-4 upload that landed via a path the rule
+  // doesn't yet gate. Treat this as the consume-time chokepoint.
+  if (!intentAllowedCts.includes(storage.contentType)) {
+    throw new CascadeError(400,
+      `storage contentType '${storage.contentType}' does not match intent allowedContentTypes [${intentAllowedCts.join(', ')}]`)
+  }
+  if (storage.size > intentMaxBytes) {
+    throw new CascadeError(413,
+      `storage object size ${storage.size} exceeds intent maxBytes ${intentMaxBytes}`)
+  }
+  const expectedKeys = ['uploadIntentId', 'uploaderUid', 'tripId', 'entityType', 'entityId', 'kind', 'schemaVersion'] as const
+  for (const key of expectedKeys) {
+    const expectedValue = intentMetadataFields[key]?.stringValue
+    if (!expectedValue) {
+      // Intent doc malformed at the source (shouldn't happen given
+      // /upload-intents always mints all 7). 500 because it's a
+      // server-side data integrity issue, not a client mistake.
+      throw new CascadeError(500,
+        `intent ${intentId} missing customMetadata.${key} (intent doc malformed)`)
+    }
+    const actualValue = storage.customMetadata?.[key]
+    if (actualValue !== expectedValue) {
+      throw new CascadeError(400,
+        `storage customMetadata.${key} mismatch (intent ${intentId}): expected '${expectedValue}', got '${actualValue ?? '<missing>'}'`)
+    }
+  }
+
+  const downloadUrl = downloadUrlFromMetadata(bucket, path, storage.customMetadata)
+
+  // Idempotent replay path: intent was already 'used'. Skip the
+  // mark-used write (idempotent no-op), return same blobs response
+  // built from the still-existing storage object.
+  //
+  // updateMask MUST contain only fields actually present in
+  // `fields` -- listing 'usedAt' there would be Firestore's
+  // delete-then-transform sequence, which is wasted churn AND
+  // semantically wrong (transforms handle usedAt entirely, the
+  // mask shouldn't claim it). Mirrors expense-write's pattern:
+  // updateMask = Object.keys(fields); transforms own audit timestamps.
+  const markUsedWrite: TxWrite | null = isPending ? {
+    document: docResourceName(projectId, `uploadIntents/${intentId}`),
+    fields: {
+      status: { stringValue: 'used' },
+    },
+    updateMask: ['status'],
+    currentDocument: { exists: true },
+    updateTransforms: [
+      { fieldPath: 'usedAt', setToServerValue: 'REQUEST_TIME' },
+    ],
+  } : null
+
+  return {
+    consumed: {
+      intentId,
+      tripId,
+      entityType,
+      entityId,
+      kind,
+      path,
+      storage,
+      downloadUrl,
+      alreadyUsed: !isPending,
+    },
+    markUsedWrite,
+  }
+}
+
+/** Public consume helper for expense-write: validates one or two
+ *  intents (full + optional thumb), enforces same-entity pairing,
+ *  and returns the consumed shape ready for receipt-field encoding.
+ *  Returns the tx writes to mark all intents used; caller adds them
+ *  to its tx commit writes alongside the expense doc write. */
+export async function consumeExpenseIntents(
+  tx:           TxContext,
+  intentIds:    string[],
+  callerUid:    string,
+  accessToken:  string,
+  projectId:    string,
+  bucket:       string,
+  expected: {
+    tripId:    string
+    entityId:  string
+  },
+): Promise<{ consumed: ConsumedIntent[]; markUsedWrites: TxWrite[] }> {
+  if (intentIds.length === 0) {
+    return { consumed: [], markUsedWrites: [] }
+  }
+  if (intentIds.length > MAX_UPLOADS_PER_REQUEST) {
+    throw new CascadeError(400, `too many intentIds (max ${MAX_UPLOADS_PER_REQUEST})`)
+  }
+  const consumed:        ConsumedIntent[] = []
+  const markUsedWrites:  TxWrite[]        = []
+  for (const intentId of intentIds) {
+    // No allowUsed for expense: the expense doc write is in the SAME
+    // tx as consume, so idempotency isn't needed (and a 2nd attempt
+    // would 409 on expense doc currentDocument.exists=false check
+    // anyway). Strict 409 on used keeps the error reason clean.
+    const r = await consumeIntentInTx(
+      tx, intentId, callerUid, accessToken, projectId, bucket,
+      { tripId: expected.tripId, entityType: 'expense', entityId: expected.entityId },
+    )
+    consumed.push(r.consumed)
+    // markUsedWrite is non-null for the strict (default) consume path.
+    if (r.markUsedWrite) markUsedWrites.push(r.markUsedWrite)
+  }
+  // No duplicate kinds across intents.
+  const kinds = consumed.map(c => c.kind)
+  if (new Set(kinds).size !== kinds.length) {
+    throw new CascadeError(400, 'duplicate kinds in expense intent set')
+  }
+  return { consumed, markUsedWrites }
+}
+
+// ─── /upload-finalize endpoint (booking + wish only) ───────────────
+
+/** Per-blob attachment slice returned by /upload-finalize.
+ *  Client wires these into BookingAttachment / WishImage shape. */
+export interface FinalizedBlob {
+  kind:        UploadKind
+  path:        string
+  url:         string | null   // null when Firebase Storage SDK didn't set download token
+  contentType: string
+  size:        number
+}
+
+export const FinalizeRequestSchema = z.object({
+  /** 1 or 2 intent IDs, expected to belong to the SAME entity (one
+   *  full or pdf, optionally one thumb). Worker rejects mismatched
+   *  scope across the set. */
+  intentIds: z.array(z.string().min(1).max(60)).min(1).max(MAX_UPLOADS_PER_REQUEST),
+})
+export type FinalizeRequest = z.infer<typeof FinalizeRequestSchema>
+
+export interface FinalizeResponse {
+  ok:         true
+  entityType: 'booking' | 'wish'
+  tripId:     string
+  entityId:   string
+  blobs:      FinalizedBlob[]
+}
+
+export async function finalizeUploadIntents(
+  callerUid:          string,
+  req:                FinalizeRequest,
+  serviceAccountJson: string,
+  bucket:             string,
+): Promise<FinalizeResponse> {
+  return withTokenRetry(() => doFinalize(callerUid, req, serviceAccountJson, bucket))
+}
+
+async function doFinalize(
+  callerUid:          string,
+  req:                FinalizeRequest,
+  serviceAccountJson: string,
+  bucket:             string,
+): Promise<FinalizeResponse> {
+  const accessToken = await getAdminToken(serviceAccountJson)
+  const projectId   = getProjectId(serviceAccountJson)
+
+  // Deduplicate intentIds early to fail-fast before the tx round-trip.
+  if (new Set(req.intentIds).size !== req.intentIds.length) {
+    throw new CascadeError(400, 'intentIds contains duplicates')
+  }
+
+  return runFirestoreTransaction(accessToken, projectId, async (tx) => {
+    const writes:   TxWrite[]        = []
+    const consumed: ConsumedIntent[] = []
+
+    // Consume each intent. /upload-finalize handles booking + wish ONLY;
+    // expense flows through /expense-create or /expense-update directly.
+    //
+    // `allowUsed: true` enables idempotent replay for booking/wish:
+    // if the client previously called /upload-finalize successfully but
+    // crashed BEFORE writing the booking/wish doc client-side, a retry
+    // with the same intentIds returns the same blobs response. uid +
+    // storage + customMetadata all still verified -- idempotency is
+    // scoped to the original uploader, not a general bypass.
+    for (const intentId of req.intentIds) {
+      const r = await consumeIntentInTx(
+        tx, intentId, callerUid, accessToken, projectId, bucket,
+        undefined,  // no scope expectation (cross-intent coherence checked below)
+        { allowUsed: true },
+      )
+      if (r.consumed.entityType === 'expense') {
+        throw new CascadeError(400,
+          `intent ${intentId} is for an expense -- use /expense-create or /expense-update instead`)
+      }
+      consumed.push(r.consumed)
+      // markUsedWrite may be null for already-used (idempotent) intents.
+      if (r.markUsedWrite) writes.push(r.markUsedWrite)
+    }
+
+    // Cross-intent scope coherence: all intents in this finalize must
+    // share trip + entityType + entityId. Otherwise a malicious caller
+    // could finalize two unrelated intents in a single call to confuse
+    // downstream booking/wish doc writes.
+    const first = consumed[0]!
+    for (const c of consumed) {
+      if (c.tripId     !== first.tripId)     throw new CascadeError(400, 'tripId mismatch across intentIds')
+      if (c.entityType !== first.entityType) throw new CascadeError(400, 'entityType mismatch across intentIds')
+      if (c.entityId   !== first.entityId)   throw new CascadeError(400, 'entityId mismatch across intentIds')
+    }
+    // No duplicate kinds (e.g. two `full`s).
+    const kinds = consumed.map(c => c.kind)
+    if (new Set(kinds).size !== kinds.length) {
+      throw new CascadeError(400, 'duplicate kinds in intentIds')
+    }
+    // Must include a primary blob (full or pdf). Thumb-only sets
+    // would consume + mark the thumb intent used and return blobs
+    // the caller can't assemble into a valid BookingAttachment /
+    // WishImage (both shapes require a primary path/url). Mirrors
+    // the equivalent check in expense-write's buildReceiptFromIntents.
+    if (!kinds.some(k => k === 'full' || k === 'pdf')) {
+      throw new CascadeError(400, 'intentIds must include a full or pdf intent (primary blob missing)')
+    }
+
+    const blobs: FinalizedBlob[] = consumed.map(c => ({
+      kind:        c.kind,
+      path:        c.path,
+      url:         c.downloadUrl,
+      contentType: c.storage.contentType,
+      size:        c.storage.size,
+    }))
+
+    return {
+      writes,
+      result: {
+        ok:         true as const,
+        entityType: first.entityType as 'booking' | 'wish',  // checked above
+        tripId:     first.tripId,
+        entityId:   first.entityId,
+        blobs,
+      },
+    }
   })
 }

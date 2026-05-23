@@ -87,6 +87,84 @@ export async function listObjects(
 }
 
 /**
+ * Get a single object's metadata. Returns null on 404 (lets callers
+ * distinguish "doesn't exist" from "fetch failed"). Throws on any other
+ * non-2xx so transient GCS issues bubble up as cron / endpoint errors
+ * rather than silently treating them as "missing object".
+ *
+ * Used by /upload-finalize + /expense-create-with-intent to verify the
+ * client actually uploaded to the intent's path before we mark the
+ * intent used. `customMetadata` is read so the storage.rules `intent
+ * vs upload` contract can be cross-checked at finalize time (defense
+ * in depth on top of the rules-time check).
+ *
+ * Firebase Storage SDK uploads auto-add a `firebaseStorageDownloadTokens`
+ * entry to customMetadata; the Worker reads it to construct the public
+ * download URL without holding a service-account signer key.
+ */
+export async function getObjectMetadata(
+  accessToken: string,
+  bucket:      string,
+  path:        string,
+): Promise<ObjectMetadata | null> {
+  const url = `${BASE}/b/${encodeURIComponent(bucket)}/o/${encodeURIComponent(path)}`
+  const res = await fetch(url, {
+    ...NO_CACHE,
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (res.status === 404) return null
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`getObjectMetadata ${path} → ${res.status}: ${detail.slice(0, 200)}`)
+  }
+  const data = await res.json() as {
+    name:         string
+    size:         string        // GCS REST returns size as string
+    contentType?: string
+    timeCreated?: string
+    metadata?:    Record<string, string>
+  }
+  return {
+    name:           data.name,
+    size:           Number(data.size),
+    contentType:    data.contentType ?? 'application/octet-stream',
+    timeCreated:    data.timeCreated,
+    customMetadata: data.metadata,
+  }
+}
+
+export interface ObjectMetadata {
+  name:           string
+  size:           number
+  contentType:    string
+  timeCreated?:   string
+  customMetadata?: Record<string, string>
+}
+
+/**
+ * Build a Firebase Storage public download URL for `path` given the
+ * object's customMetadata.firebaseStorageDownloadTokens. Tokens are
+ * comma-separated; we use the first one (Firebase SDK uses any valid
+ * token interchangeably).
+ *
+ * Returns null when the metadata doesn't carry a token -- caller can
+ * fall back to letting the client call `getDownloadURL` itself via
+ * Storage SDK after finalize. In practice Firebase Storage SDK uploads
+ * always set this token automatically, so null is the unhappy path.
+ */
+export function downloadUrlFromMetadata(
+  bucket:        string,
+  path:          string,
+  customMetadata: Record<string, string> | undefined,
+): string | null {
+  const tokens = customMetadata?.firebaseStorageDownloadTokens
+  if (!tokens) return null
+  const firstToken = tokens.split(',')[0]?.trim()
+  if (!firstToken) return null
+  return `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucket)}/o/${encodeURIComponent(path)}?alt=media&token=${firstToken}`
+}
+
+/**
  * Delete a single object. 404 returns `false` (idempotent already-gone),
  * 2xx returns `true`, anything else throws. Caller treats `false` as a
  * non-error — receipt-purge / trip-cascade are both meant to be safely

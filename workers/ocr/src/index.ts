@@ -36,7 +36,9 @@ import {
 import { ExpenseValidationError }                 from './expense-validate'
 import {
   createUploadIntents,
+  finalizeUploadIntents,
   UploadIntentsRequestSchema,
+  FinalizeRequestSchema,
 }                                                 from './upload-intent'
 import { checkGlobalRateLimit }                   from './rate-limiter'
 
@@ -154,7 +156,8 @@ export default {
     const isExpenseCreate = url.pathname === '/expense-create'       && request.method === 'POST'
     const isExpenseUpdate = url.pathname === '/expense-update'       && request.method === 'POST'
     const isUploadIntents = url.pathname === '/upload-intents'       && request.method === 'POST'
-    if (!isOcr && !isCascade && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents) {
+    const isUploadFinal   = url.pathname === '/upload-finalize'      && request.method === 'POST'
+    if (!isOcr && !isCascade && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents && !isUploadFinal) {
       return json({ error: 'Not found' }, 404, cors)
     }
 
@@ -208,6 +211,7 @@ export default {
                   : isTripCascade    ? env.TRIP_CASCADE_RATE_LIMITER
                   : isExpenseWrite   ? env.EXPENSE_RATE_LIMITER
                   : isUploadIntents  ? env.EXPENSE_RATE_LIMITER
+                  : isUploadFinal    ? env.EXPENSE_RATE_LIMITER
                   : env.CASCADE_RATE_LIMITER
     const localResult = await limiter.limit({ key: uid })
     if (!localResult.success) {
@@ -221,11 +225,13 @@ export default {
                       : isTripCascade   ? 'trip-cascade'
                       : isExpenseWrite  ? 'expense'
                       : isUploadIntents ? 'upload-intent'
+                      : isUploadFinal   ? 'upload-finalize'
                       : 'cascade'
     const globalLimit = isOcr ? 60
                       : isTripCascade   ? 2
                       : isExpenseWrite  ? 60
                       : isUploadIntents ? 60
+                      : isUploadFinal   ? 60
                       : 10
     const globalResult = await checkGlobalRateLimit(
       env.GLOBAL_LIMITER, scope, uid, globalLimit, 60_000,
@@ -293,6 +299,32 @@ export default {
           return json({ error: e.message }, e.status, cors)
         }
         console.error(`[expense-update] internal error: ${(e as Error).message}`)
+        return json({ error: 'Internal error' }, 500, cors)
+      }
+    }
+
+    // ─── /upload-finalize ────────────────────────────────────────────
+    if (isUploadFinal) {
+      const parsed = FinalizeRequestSchema.safeParse(body)
+      if (!parsed.success) {
+        console.warn(`[upload-finalize] schema fail: ${parsed.error.message.slice(0, 200)}`)
+        return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
+      }
+      try {
+        const result = await finalizeUploadIntents(
+          uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET,
+        )
+        console.log(
+          `[upload-finalize] uid=${uidTag(uid)} trip=${result.tripId} ` +
+          `entity=${result.entityType}/${result.entityId} blobs=${result.blobs.length}`,
+        )
+        return json(result, 200, cors)
+      } catch (e) {
+        if (e instanceof CascadeError) {
+          console.warn(`[upload-finalize] ${e.status} ${e.message}`)
+          return json({ error: e.message }, e.status, cors)
+        }
+        console.error(`[upload-finalize] internal error: ${(e as Error).message}`)
         return json({ error: 'Internal error' }, 500, cors)
       }
     }

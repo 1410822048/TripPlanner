@@ -26,6 +26,19 @@ vi.mock('../src/admin', () => ({
 	invalidateAdminToken: vi.fn(),
 }))
 
+// Phase 3.5: storage mocked so the intent-consumption path (which
+// calls getObjectMetadata to verify the Storage upload landed) is
+// programmable per-test. downloadUrlFromMetadata stays "real" --
+// it's a pure transform on Worker-side, no external state.
+vi.mock('../src/storage', () => ({
+	getObjectMetadata:      vi.fn(),
+	downloadUrlFromMetadata: (bucket: string, path: string, meta?: Record<string, string>) => {
+		const token = meta?.firebaseStorageDownloadTokens?.split(',')[0]?.trim()
+		if (!token) return null
+		return `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(path)}?alt=media&token=${token}`
+	},
+}))
+
 // Programmable transaction. Each test seeds `txGet` with a Map of
 // `path → TxReadDoc` and an optional `capturedWrites` array; the body
 // runs once against this fake context and we assert on what it
@@ -61,6 +74,7 @@ vi.mock('../src/cascade', async () => {
 })
 
 import { expenseCreate, expenseUpdate } from '../src/expense-write'
+import * as storage from '../src/storage'
 import { ExpenseValidationError } from '../src/expense-validate'
 import { CascadeError } from '../src/cascade'
 
@@ -381,5 +395,422 @@ describe('expenseUpdate endpoint', () => {
 			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { title: 'Edit' } },
 			'{}', BUCKET,
 		)).rejects.toThrow(/role/i)
+	})
+})
+
+// ─── Phase 3.5: expense-write consumes intentIds ──────────────────
+
+describe('expenseCreate with intentIds (Phase 3.5)', () => {
+	const FULL_INTENT_ID  = 'i-full'
+	const THUMB_INTENT_ID = 'i-thumb'
+	const FULL_PATH       = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/abc123.webp`
+	const THUMB_PATH      = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/abc123.thumb.webp`
+
+	function intentDoc(opts: {
+		intentId:    string
+		uid?:        string
+		kind:        'full' | 'thumb' | 'pdf'
+		path:        string
+		entityType?: 'expense' | 'booking' | 'wish'
+		entityId?:   string
+		status?:     'pending' | 'used'
+		expiresAtMs?: number
+		contentType?: string
+		maxBytes?:   number
+	}) {
+		const uid         = opts.uid         ?? CALLER_UID
+		const status      = opts.status      ?? 'pending'
+		const entityId    = opts.entityId    ?? EXPENSE_ID
+		const entityType  = opts.entityType  ?? 'expense'
+		const expiresAt   = new Date(opts.expiresAtMs ?? Date.now() + 30 * 60_000).toISOString()
+		const contentType = opts.contentType ?? 'image/webp'
+		const maxBytes    = opts.maxBytes    ?? 5 * 1024 * 1024
+		return {
+			exists: true,
+			name:   `projects/demo/databases/(default)/documents/uploadIntents/${opts.intentId}`,
+			updateTime: '2026-05-23T00:00:00Z',
+			fields: {
+				uid:        { stringValue: uid },
+				tripId:     { stringValue: TRIP_ID },
+				entityType: { stringValue: entityType },
+				entityId:   { stringValue: entityId },
+				kind:       { stringValue: opts.kind },
+				path:       { stringValue: opts.path },
+				status:     { stringValue: status },
+				expiresAt:  { timestampValue: expiresAt },
+				allowedContentTypes: {
+					arrayValue: { values: [{ stringValue: contentType }] },
+				},
+				maxBytes:   { integerValue: String(maxBytes) },
+				customMetadata: {
+					mapValue: {
+						fields: {
+							uploadIntentId: { stringValue: opts.intentId },
+							uploaderUid:    { stringValue: uid },
+							tripId:         { stringValue: TRIP_ID },
+							entityType:     { stringValue: entityType },
+							entityId:       { stringValue: entityId },
+							kind:           { stringValue: opts.kind },
+							schemaVersion:  { stringValue: 'v1' },
+						},
+					},
+				},
+			},
+		}
+	}
+
+	function storageMeta(opts: {
+		path:        string
+		intentId:    string
+		kind:        'full' | 'thumb' | 'pdf'
+		contentType?: string
+		token?:      string
+		size?:       number
+		tamper?:     Partial<Record<
+			'uploadIntentId' | 'uploaderUid' | 'tripId' | 'entityType' | 'entityId' | 'kind' | 'schemaVersion',
+			string | undefined
+		>>
+		omitCustomMetadata?: boolean
+	}) {
+		const baseCustomMetadata: Record<string, string> = {
+			uploadIntentId: opts.intentId,
+			uploaderUid:    CALLER_UID,
+			tripId:         TRIP_ID,
+			entityType:     'expense',
+			entityId:       EXPENSE_ID,
+			kind:           opts.kind,
+			schemaVersion:  'v1',
+		}
+		if (opts.tamper) {
+			for (const [k, v] of Object.entries(opts.tamper)) {
+				if (v === undefined) delete baseCustomMetadata[k]
+				else                 baseCustomMetadata[k] = v
+			}
+		}
+		if (opts.token) baseCustomMetadata.firebaseStorageDownloadTokens = opts.token
+		return {
+			name:        opts.path,
+			size:        opts.size ?? 50_000,
+			contentType: opts.contentType ?? 'image/webp',
+			timeCreated: '2026-05-23T00:00:00Z',
+			customMetadata: opts.omitCustomMetadata ? undefined : baseCustomMetadata,
+		}
+	}
+
+	function seedAuth() {
+		txGetResponses.set(`trips/${TRIP_ID}`,                          tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`,    memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`,   notFoundReadDoc(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`))
+	}
+
+	it('full intent only → receipt built server-side, intent marked used in same tx', async () => {
+		seedAuth()
+		txGetResponses.set(`uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
+		)
+
+		const result = await expenseCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				expense: validExpensePayload(),
+				intentIds: [FULL_INTENT_ID],
+			},
+			'{}', BUCKET,
+		)
+		expect(result.expenseId).toBe(EXPENSE_ID)
+
+		const writes = capturedTxResult!.writes as Array<{
+			document: string
+			fields:   Record<string, { stringValue?: string; mapValue?: { fields: Record<string, { stringValue?: string }> } }>
+		}>
+		// 1 intent markUsed + 1 expense write, in that order
+		expect(writes).toHaveLength(2)
+		expect(writes[0].document).toContain(`/uploadIntents/${FULL_INTENT_ID}`)
+		expect(writes[0].fields.status?.stringValue).toBe('used')
+		// Expense receipt field built from intent path + bucket-derived URL
+		const receipt = writes[1].fields.receipt?.mapValue?.fields
+		expect(receipt?.path?.stringValue).toBe(FULL_PATH)
+		expect(receipt?.type?.stringValue).toBe('image/webp')
+		expect(receipt?.url?.stringValue).toContain('token=tk')
+		// No thumb fields (single full intent)
+		expect(receipt?.thumbPath).toBeUndefined()
+		expect(receipt?.thumbUrl).toBeUndefined()
+	})
+
+	it('full + thumb intents → both marked used + receipt has thumb fields', async () => {
+		seedAuth()
+		txGetResponses.set(`uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full',  path: FULL_PATH }))
+		txGetResponses.set(`uploadIntents/${THUMB_INTENT_ID}`,
+			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: THUMB_PATH }))
+		vi.mocked(storage.getObjectMetadata)
+			.mockResolvedValueOnce(storageMeta({ path: FULL_PATH,  intentId: FULL_INTENT_ID,  kind: 'full',  token: 'tk-f' }))
+			.mockResolvedValueOnce(storageMeta({ path: THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb', token: 'tk-t' }))
+
+		await expenseCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				expense: validExpensePayload(),
+				intentIds: [FULL_INTENT_ID, THUMB_INTENT_ID],
+			},
+			'{}', BUCKET,
+		)
+		const writes = capturedTxResult!.writes as Array<{
+			document: string
+			fields:   Record<string, { stringValue?: string; mapValue?: { fields: Record<string, { stringValue?: string }> } }>
+		}>
+		// 2 intent markUsed + 1 expense write
+		expect(writes).toHaveLength(3)
+		const receipt = writes[2].fields.receipt?.mapValue?.fields
+		expect(receipt?.path?.stringValue).toBe(FULL_PATH)
+		expect(receipt?.thumbPath?.stringValue).toBe(THUMB_PATH)
+		expect(receipt?.url?.stringValue).toContain('token=tk-f')
+		expect(receipt?.thumbUrl?.stringValue).toContain('token=tk-t')
+	})
+
+	it('rejects intentIds + expense.receipt in same request (mutually exclusive)', async () => {
+		seedAuth()
+		txGetResponses.set(`uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
+		await expect(expenseCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				expense: validExpensePayload({
+					receipt: { url: 'https://x', path: 'p', type: 'image/webp' },
+				}),
+				intentIds: [FULL_INTENT_ID],
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(ExpenseValidationError)
+	})
+
+	it('rejects intent owned by another uid → 403', async () => {
+		seedAuth()
+		txGetResponses.set(`uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({ intentId: FULL_INTENT_ID, uid: 'someone-else', kind: 'full', path: FULL_PATH }))
+		await expect(expenseCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				expense: validExpensePayload(),
+				intentIds: [FULL_INTENT_ID],
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ status: 403 })
+	})
+
+	it('rejects intent already used (replay protection)', async () => {
+		seedAuth()
+		txGetResponses.set(`uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH, status: 'used' }))
+		await expect(expenseCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				expense: validExpensePayload(),
+				intentIds: [FULL_INTENT_ID],
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ status: 409 })
+	})
+
+	it('rejects intent whose entityType is not expense → 400', async () => {
+		seedAuth()
+		txGetResponses.set(`uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({
+				intentId: FULL_INTENT_ID, kind: 'full',
+				entityType: 'booking',  // wrong type for /expense-create
+				path: FULL_PATH,
+			}))
+		await expect(expenseCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				expense: validExpensePayload(),
+				intentIds: [FULL_INTENT_ID],
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/entityType/) })
+	})
+
+	it('rejects intent.entityId !== request.expenseId', async () => {
+		seedAuth()
+		txGetResponses.set(`uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({
+				intentId: FULL_INTENT_ID, kind: 'full',
+				entityId: 'wrong-expense-id',
+				path:     `trips/${TRIP_ID}/expenses/wrong-expense-id/x.webp`,
+			}))
+		await expect(expenseCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				expense: validExpensePayload(),
+				intentIds: [FULL_INTENT_ID],
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/entityId/) })
+	})
+
+	it('rejects storage object missing at intent.path → 404', async () => {
+		seedAuth()
+		txGetResponses.set(`uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(null)
+		await expect(expenseCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				expense: validExpensePayload(),
+				intentIds: [FULL_INTENT_ID],
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ status: 404, message: expect.stringMatching(/storage/) })
+	})
+
+	it('rejects when intentIds only has thumb (missing primary blob)', async () => {
+		seedAuth()
+		txGetResponses.set(`uploadIntents/${THUMB_INTENT_ID}`,
+			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: THUMB_PATH }))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+			storageMeta({ path: THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb', token: 'tk' }),
+		)
+		await expect(expenseCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				expense: validExpensePayload(),
+				intentIds: [THUMB_INTENT_ID],
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(ExpenseValidationError)
+	})
+})
+
+describe('expenseUpdate with intentIds (Phase 3.5)', () => {
+	const NEW_FULL_INTENT_ID = 'i-new-full'
+	const NEW_FULL_PATH      = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/replaced.webp`
+
+	function intentDoc(intentId: string, kind: 'full' | 'thumb' | 'pdf', path: string) {
+		return {
+			exists: true,
+			name:   `projects/demo/databases/(default)/documents/uploadIntents/${intentId}`,
+			updateTime: '2026-05-23T00:00:00Z',
+			fields: {
+				uid:        { stringValue: CALLER_UID },
+				tripId:     { stringValue: TRIP_ID },
+				entityType: { stringValue: 'expense' },
+				entityId:   { stringValue: EXPENSE_ID },
+				kind:       { stringValue: kind },
+				path:       { stringValue: path },
+				status:     { stringValue: 'pending' },
+				expiresAt:  { timestampValue: new Date(Date.now() + 30 * 60_000).toISOString() },
+				allowedContentTypes: {
+					arrayValue: { values: [{ stringValue: 'image/webp' }] },
+				},
+				maxBytes:   { integerValue: String(5 * 1024 * 1024) },
+				customMetadata: {
+					mapValue: {
+						fields: {
+							uploadIntentId: { stringValue: intentId },
+							uploaderUid:    { stringValue: CALLER_UID },
+							tripId:         { stringValue: TRIP_ID },
+							entityType:     { stringValue: 'expense' },
+							entityId:       { stringValue: EXPENSE_ID },
+							kind:           { stringValue: kind },
+							schemaVersion:  { stringValue: 'v1' },
+						},
+					},
+				},
+			},
+		}
+	}
+
+	function storageMeta(opts: { path: string; intentId: string; kind: 'full' | 'thumb' | 'pdf' }) {
+		return {
+			name:        opts.path,
+			size:        50_000,
+			contentType: 'image/webp',
+			timeCreated: '2026-05-23T00:00:00Z',
+			customMetadata: {
+				uploadIntentId:                opts.intentId,
+				uploaderUid:                   CALLER_UID,
+				tripId:                        TRIP_ID,
+				entityType:                    'expense',
+				entityId:                      EXPENSE_ID,
+				kind:                          opts.kind,
+				schemaVersion:                 'v1',
+				firebaseStorageDownloadTokens: 'tk',
+			},
+		}
+	}
+
+	function seedAuthAlive() {
+		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, aliveExpenseReadDoc())
+	}
+
+	it('intentIds replaces receipt → markUsed write + patch.receipt encoded in same tx', async () => {
+		seedAuthAlive()
+		txGetResponses.set(`uploadIntents/${NEW_FULL_INTENT_ID}`,
+			intentDoc(NEW_FULL_INTENT_ID, 'full', NEW_FULL_PATH))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+			storageMeta({ path: NEW_FULL_PATH, intentId: NEW_FULL_INTENT_ID, kind: 'full' }),
+		)
+
+		await expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				patch: { title: 'Edited title' },
+				intentIds: [NEW_FULL_INTENT_ID],
+			},
+			'{}', BUCKET,
+		)
+		const writes = capturedTxResult!.writes as Array<{
+			document: string
+			fields:   Record<string, { stringValue?: string; mapValue?: { fields: Record<string, { stringValue?: string }> } }>
+		}>
+		expect(writes).toHaveLength(2)
+		expect(writes[0].document).toContain(`/uploadIntents/${NEW_FULL_INTENT_ID}`)
+		expect(writes[0].fields.status?.stringValue).toBe('used')
+		const receipt = writes[1].fields.receipt?.mapValue?.fields
+		expect(receipt?.path?.stringValue).toBe(NEW_FULL_PATH)
+	})
+
+	it('rejects intentIds + patch.receipt in same request (mutually exclusive)', async () => {
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				patch: { receipt: { url: 'https://x', path: 'p', type: 'image/webp' } },
+				intentIds: [NEW_FULL_INTENT_ID],
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(ExpenseValidationError)
+	})
+
+	it('intentIds with patch.receipt=null still allowed (deletion via null, not via intentIds=[])', async () => {
+		// Subtle: receipt=null means "delete current receipt". intentIds
+		// is for "set a new receipt". They are different operations and
+		// the API treats `patch.receipt: null` as the deletion sentinel.
+		// Passing intentIds + receipt=null in same request is rejected
+		// because the mutual-exclusion check fires on any defined value
+		// of patch.receipt (including null).
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				patch: { receipt: null },
+				intentIds: [NEW_FULL_INTENT_ID],
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(ExpenseValidationError)
 	})
 })

@@ -38,6 +38,10 @@ import {
   type TxContext,
   type TxWrite,
 }                                                                   from './firestore-tx'
+import {
+  consumeExpenseIntents,
+  type ConsumedIntent,
+}                                                                   from './upload-intent'
 
 // ─── Request body schemas ─────────────────────────────────────────
 
@@ -47,6 +51,15 @@ export const ExpenseCreateRequestSchema = z.object({
   tripId:    z.string().regex(TripIdRe),
   expenseId: z.string().regex(TripIdRe),   // client mints via doc(collection(...))
   expense:   z.unknown(),                  // validated against schema after we know tripId/expenseId
+  /** Phase 3.5 intent-driven receipt. When present, Worker reads the
+   *  named intents, verifies storage objects exist, builds the receipt
+   *  field server-side from intent.path + storage metadata, and marks
+   *  the intents 'used' in the same tx as the expense doc write.
+   *  Mutually exclusive with `expense.receipt` (rejected if both
+   *  present). Optional so existing receipt-in-body callers (pre-Phase-
+   *  3.5 client) keep working until Commit 4 client refactor flips
+   *  them over. */
+  intentIds: z.array(z.string().min(1).max(60)).max(2).optional(),
 })
 export type ExpenseCreateRequest = z.infer<typeof ExpenseCreateRequestSchema>
 
@@ -54,6 +67,11 @@ export const ExpenseUpdateRequestSchema = z.object({
   tripId:    z.string().regex(TripIdRe),
   expenseId: z.string().regex(TripIdRe),
   patch:     z.unknown(),                  // validated as partial after merge
+  /** Same intent-driven receipt path as ExpenseCreateRequest. When
+   *  present, replaces `patch.receipt` server-side. Mutually
+   *  exclusive with `patch.receipt`. To DELETE the existing receipt,
+   *  use `patch.receipt: null` (not intentIds=[]). */
+  intentIds: z.array(z.string().min(1).max(60)).min(1).max(2).optional(),
 })
 export type ExpenseUpdateRequest = z.infer<typeof ExpenseUpdateRequestSchema>
 
@@ -205,9 +223,37 @@ async function doCreate(
   return runFirestoreTransaction(accessToken, projectId, async (tx) => {
     const ctx = await authorizeCanWriteTx(tx, req.tripId, callerUid)
 
+    // Phase 3.5: when intentIds present, build receipt server-side
+    // from intent.path + Storage metadata and inject into the body
+    // BEFORE schema parse. Mutually exclusive with caller-supplied
+    // expense.receipt (legacy path) -- mixing them would let a
+    // malicious caller stuff a non-intent-bound receipt into a
+    // request that also marks intents used.
+    let expenseBody = req.expense
+    const intentMarkUsedWrites: TxWrite[] = []
+    if (req.intentIds && req.intentIds.length > 0) {
+      const callerReceipt = (req.expense as { receipt?: unknown } | null)?.receipt
+      if (callerReceipt !== undefined && callerReceipt !== null) {
+        throw new ExpenseValidationError(
+          'receipt',
+          'cannot specify both intentIds and expense.receipt (use one or the other)',
+        )
+      }
+      const { consumed, markUsedWrites } = await consumeExpenseIntents(
+        tx, req.intentIds, callerUid, accessToken, projectId, bucket,
+        { tripId: req.tripId, entityId: req.expenseId },
+      )
+      const receipt = buildReceiptFromIntents(consumed)
+      expenseBody = { ...(req.expense as Record<string, unknown> | null ?? {}), receipt }
+      intentMarkUsedWrites.push(...markUsedWrites)
+    }
+
     // Schema parse with the path-bound receipt regex + URL/path
-    // binding (validStorageUrlFor equivalent) baked in.
-    const parsed = makeExpenseCreateSchema(req.tripId, req.expenseId, bucket).safeParse(req.expense)
+    // binding (validStorageUrlFor equivalent) baked in. When
+    // intent-driven, the injected receipt's url + path were minted by
+    // /upload-intents using the same path bucket / expenseId; parse
+    // remains as belt-and-suspenders that the injection is consistent.
+    const parsed = makeExpenseCreateSchema(req.tripId, req.expenseId, bucket).safeParse(expenseBody)
     if (!parsed.success) {
       const issue = parsed.error.issues[0]
       throw new ExpenseValidationError(issue.path.join('.'), issue.message)
@@ -237,8 +283,67 @@ async function doCreate(
         { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' },
       ],
     }
-    return { writes: [write], result: { expenseId: req.expenseId } }
+    return {
+      // Intent mark-used writes go FIRST so they commit alongside the
+      // expense doc atomically -- if the expense write rejects (409
+      // exists, ABORTED retry, etc.) the intents stay pending and
+      // can be retried; if both succeed, intents are used and the
+      // expense doc owns the path. No half-state.
+      writes: [...intentMarkUsedWrites, write],
+      result: { expenseId: req.expenseId },
+    }
   })
+}
+
+/** Build an ExpenseReceipt-shaped object from consumed intents.
+ *  Required: at least one intent with kind='full' or kind='pdf' (the
+ *  primary blob). Optional: a single thumb. Throws on a missing
+ *  download token (the Firebase Storage SDK adds these on every
+ *  upload, so missing means non-SDK upload path -- defense-in-depth
+ *  against malformed object metadata). */
+function buildReceiptFromIntents(consumed: ConsumedIntent[]): {
+  url:        string
+  path:       string
+  type:       string
+  thumbUrl?:  string
+  thumbPath?: string
+} {
+  const primary = consumed.find(c => c.kind === 'full' || c.kind === 'pdf')
+  if (!primary) {
+    throw new ExpenseValidationError(
+      'intentIds',
+      'must include a full or pdf intent (primary blob missing)',
+    )
+  }
+  if (!primary.downloadUrl) {
+    throw new ExpenseValidationError(
+      'intentIds',
+      `primary upload at ${primary.path} has no Firebase Storage download token`,
+    )
+  }
+  const out: {
+    url:        string
+    path:       string
+    type:       string
+    thumbUrl?:  string
+    thumbPath?: string
+  } = {
+    url:  primary.downloadUrl,
+    path: primary.path,
+    type: primary.storage.contentType,
+  }
+  const thumb = consumed.find(c => c.kind === 'thumb')
+  if (thumb) {
+    if (!thumb.downloadUrl) {
+      throw new ExpenseValidationError(
+        'intentIds',
+        `thumb upload at ${thumb.path} has no Firebase Storage download token`,
+      )
+    }
+    out.thumbUrl  = thumb.downloadUrl
+    out.thumbPath = thumb.path
+  }
+  return out
 }
 
 // ─── Endpoint: expense-update ─────────────────────────────────────
@@ -281,15 +386,42 @@ async function doUpdate(
       throw new ExpenseValidationError(k, 'field is not updatable via this endpoint')
     }
   }
-  const patchParsed = makeExpenseUpdateSchema(req.tripId, req.expenseId, bucket).safeParse(req.patch)
-  if (!patchParsed.success) {
-    const issue = patchParsed.error.issues[0]
-    throw new ExpenseValidationError(issue.path.join('.'), issue.message)
+  // Phase 3.5: intentIds + patch.receipt are mutually exclusive
+  // (same reasoning as create -- prevent stuffing a non-intent receipt
+  // into a request that also marks intents used). receipt=null
+  // (deletion) is OK with intentIds=undefined; intentIds is OK with
+  // receipt=undefined.
+  const callerPatchReceipt = (req.patch as { receipt?: unknown }).receipt
+  if (req.intentIds && req.intentIds.length > 0 && callerPatchReceipt !== undefined) {
+    throw new ExpenseValidationError(
+      'receipt',
+      'cannot specify both intentIds and patch.receipt (use one or the other; for deletion use patch.receipt=null without intentIds)',
+    )
   }
-  const receiptDeletion = patchParsed.data.receipt === null
 
   await runFirestoreTransaction(accessToken, projectId, async (tx) => {
     const ctx = await authorizeCanWriteTx(tx, req.tripId, callerUid)
+
+    // Phase 3.5: consume intents inside tx, inject built receipt into
+    // patch before schema parse. Mirror of doCreate path. Done INSIDE
+    // the tx so the consume + expense update commit atomically.
+    let patchBody = req.patch as Record<string, unknown>
+    const intentMarkUsedWrites: TxWrite[] = []
+    if (req.intentIds && req.intentIds.length > 0) {
+      const { consumed, markUsedWrites } = await consumeExpenseIntents(
+        tx, req.intentIds, callerUid, accessToken, projectId, bucket,
+        { tripId: req.tripId, entityId: req.expenseId },
+      )
+      const receipt = buildReceiptFromIntents(consumed)
+      patchBody = { ...patchBody, receipt }
+      intentMarkUsedWrites.push(...markUsedWrites)
+    }
+    const patchParsed = makeExpenseUpdateSchema(req.tripId, req.expenseId, bucket).safeParse(patchBody)
+    if (!patchParsed.success) {
+      const issue = patchParsed.error.issues[0]
+      throw new ExpenseValidationError(issue.path.join('.'), issue.message)
+    }
+    const receiptDeletion = patchParsed.data.receipt === null
 
     // Read current expense doc INSIDE the tx so commit-time
     // conflict check catches concurrent soft-delete / restore /
@@ -337,7 +469,9 @@ async function doUpdate(
         { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' },
       ],
     }
-    return { writes: [write], result: undefined }
+    // intentMarkUsedWrites first so they commit atomically with the
+    // expense patch -- mirrors the create path's invariant.
+    return { writes: [...intentMarkUsedWrites, write], result: undefined }
   })
 
   return { ok: true }
