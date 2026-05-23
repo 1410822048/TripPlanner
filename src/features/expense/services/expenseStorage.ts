@@ -1,115 +1,122 @@
 // src/features/expense/services/expenseStorage.ts
-// Storage-side helpers for expense receipts. Same shape and retry
-// pattern as bookingStorage — pulled into a sibling rather than fully
-// generalised because the path layout and result shape differ enough
-// to make a single helper hide more than it shares (booking uses
-// fileUrl/filePath/fileType keys, expense uses ExpenseReceipt's
-// url/path/type/thumb*). A future consolidation could thread a
-// "shape mapper" through, but two callers don't justify the indirection.
+// Phase 3.5: Worker-issued upload intent flow. Helper no longer
+// decides path / metadata client-side -- it requests intents, uploads
+// to the server-minted paths, and returns the intentIds + paths.
+//
+// Why this shape: the Worker's /expense-create + /expense-update
+// consume intentIds in the same Firestore transaction as the
+// expense doc write (no separate /upload-finalize round-trip), so
+// the helper hands off intentIds to the service caller. `paths` are
+// kept on the client side for `safePurgeWithEnqueueFallback` rollback
+// -- if the Worker rejects (definitive 4xx) or the post-upload
+// Worker call is ambiguous (timeout / 5xx), the service layer can
+// still address each blob for purge without re-deriving the path
+// from the (rejected) intent.
+//
+// compressImage still runs client-side -- the Worker doesn't touch
+// bytes, it only mints policy. PDF receipts skip thumbnail generation
+// (compressImage returns `{ full }` only); image receipts produce
+// both full + thumb and upload in parallel.
 
-import type { UploadMetadata } from 'firebase/storage'
-import { getFirebaseStorage } from '@/services/firebase'
-import { deleteStorageObject } from '@/services/storageDelete'
-import { uploadFile, withUploadTimeout, UPLOAD_TIMEOUT_MS } from '@/services/storageUpload'
 import { compressImage } from '@/utils/image'
-import { retry, isTransientStorageError } from '@/utils/retry'
-import type { ExpenseReceipt } from '@/types'
+import {
+  requestUploadIntents,
+  uploadToIntent,
+  type IntentKind,
+  type UploadIntent,
+  type UploadIntentsRequest,
+} from '@/services/uploadIntent'
+import { deleteStorageObject } from '@/services/storageDelete'
 
-/** Pick a sensible filename extension from the (post-compression) mime type. */
-function extForMime(mime: string): string {
-  if (mime === 'image/webp')      return 'webp'
-  if (mime === 'image/jpeg')      return 'jpg'
-  if (mime === 'image/png')       return 'png'
-  if (mime === 'image/heic')      return 'heic'
-  if (mime === 'image/heif')      return 'heif'
-  if (mime === 'application/pdf') return 'pdf'
-  return 'bin'
-}
-
-/** 8-char random id to keep each upload at a unique path. Without
- *  this, a same-mime replace (webp → webp) would collide on the
- *  fixed `receipt.webp` filename: Storage upload silently
- *  overwrites the old blob, then the post-Worker `purgeReceipt`
- *  of the OLD paths (also `receipt.webp`) wipes the just-uploaded
- *  NEW blob, leaving the Firestore doc referencing a deleted file.
- *  Random suffix means new path ≠ old path always, so the purge
- *  step targets only the genuinely-old blob. */
-function shortId(): string {
-  return Math.random().toString(36).slice(2, 10)
+/** Returned by `uploadReceipt` -- the service caller passes `intentIds`
+ *  to the Worker (`/expense-create` or `/expense-update`) and keeps
+ *  `paths` for rollback via `safePurgeWithEnqueueFallback` on Worker
+ *  rejection / timeout. */
+export interface UploadedReceiptIntents {
+  intentIds: string[]
+  paths:     string[]
 }
 
 /**
- * Upload a receipt + (when image) its thumbnail. Returns the
- * ExpenseReceipt doc shape ready to write on the expense.
- * Storage layout: `trips/{tripId}/expenses/{expenseId}/{id}.{ext}`
- * and `{id}.thumb.{ext}` -- the per-upload random `id` prevents
- * same-mime-replace collisions (see comment on shortId above).
+ * Upload a receipt + (when image) its thumbnail via the Worker-issued
+ * intent flow. Returns intentIds for the Worker call and paths for
+ * client-side rollback. No path / metadata authoring happens here --
+ * the Worker mints both at intent-request time.
  */
 export async function uploadReceipt(
-  tripId: string,
+  tripId:    string,
   expenseId: string,
-  file: File,
-): Promise<ExpenseReceipt> {
+  file:      File,
+): Promise<UploadedReceiptIntents> {
   const { full, thumb } = await compressImage(file)
 
-  const folder    = `trips/${tripId}/expenses/${expenseId}`
-  const id        = shortId()
-  const path      = `${folder}/${id}.${extForMime(full.type)}`
-  const thumbPath = thumb ? `${folder}/${id}.thumb.${extForMime(thumb.type)}` : undefined
-
-  const { storage, ref, uploadBytesResumable, getDownloadURL } = await getFirebaseStorage()
-
-  // retry wraps the entire resumable upload — if a chunk fails transiently,
-  // we retry the whole upload. uploadBytesResumable internally handles
-  // chunk-level retries too, but the outer retry catches harder failures
-  // (auth token refresh window, ephemeral DNS, etc.).
-  const fullMetadata: UploadMetadata = { contentType: full.type }
-  const thumbMetadata: UploadMetadata | undefined = thumb ? { contentType: thumb.type } : undefined
-
-  const [fullRef, thumbRef] = await Promise.all([
-    retry(
-      () => uploadFile(
-        uploadBytesResumable(ref(storage, path), full, fullMetadata),
-        'full',
-        UPLOAD_TIMEOUT_MS,
-      ),
-      { shouldRetry: isTransientStorageError },
-    ),
-    thumb && thumbPath && thumbMetadata
-      ? retry(
-          () => uploadFile(
-            uploadBytesResumable(ref(storage, thumbPath), thumb, thumbMetadata),
-            'thumb',
-            UPLOAD_TIMEOUT_MS,
-          ),
-          { shouldRetry: isTransientStorageError },
-        )
-      : Promise.resolve(null),
-  ])
-
-  const [url, thumbUrl] = await Promise.all([
-    withUploadTimeout(getDownloadURL(fullRef), UPLOAD_TIMEOUT_MS, 'getDownloadURL(full)'),
-    thumbRef
-      ? withUploadTimeout(getDownloadURL(thumbRef), UPLOAD_TIMEOUT_MS, 'getDownloadURL(thumb)')
-      : Promise.resolve(undefined),
-  ])
-
-  const receipt: ExpenseReceipt = { url, path, type: full.type }
-  if (thumbUrl && thumbPath) {
-    receipt.thumbUrl  = thumbUrl
-    receipt.thumbPath = thumbPath
+  // Build the intent batch. Primary blob's kind depends on contentType
+  // (PDF stays as PDF; everything else is treated as a "full" image).
+  // The Worker re-validates -- kind 'pdf' requires `application/pdf`,
+  // kind 'full' rejects PDFs -- so a wrong pairing here surfaces as a
+  // 400 from /upload-intents rather than a silent upload that fails
+  // later at the rules layer.
+  const primaryKind: IntentKind = full.type === 'application/pdf' ? 'pdf' : 'full'
+  const uploads: UploadIntentsRequest['uploads'] = [
+    { kind: primaryKind, contentType: full.type, size: full.size },
+  ]
+  if (thumb) {
+    uploads.push({ kind: 'thumb', contentType: thumb.type, size: thumb.size })
   }
-  return receipt
+
+  const intents = await requestUploadIntents({
+    tripId, entityType: 'expense', entityId: expenseId, uploads,
+  })
+  // Order is preserved -- Worker returns intents in the same order
+  // as the request's `uploads` array. Index 0 is the primary, index
+  // 1 is the thumb (when present).
+  const fullIntent  = intents[0]!
+  const thumbIntent = thumb ? intents[1] : undefined
+
+  // Parallel upload. Either succeeds or any failure throws; partial
+  // upload doesn't strand intents because the Worker's purge cron
+  // expires unused 'pending' intents past their 30-min TTL anyway.
+  await Promise.all([
+    uploadToIntent(fullIntent, full, 'expense-full'),
+    thumb && thumbIntent
+      ? uploadToIntent(thumbIntent, thumb, 'expense-thumb')
+      : Promise.resolve(),
+  ])
+
+  return {
+    intentIds: intents.map(i => i.intentId),
+    paths:     intents.map(i => i.path),
+  }
 }
 
-/** Delete both variants of a receipt — full + thumb. PDFs only have
- *  a full path; deleteStorageObject tolerates already-deleted paths. */
+/**
+ * Delete the receipt's full + thumb storage objects. Tolerates
+ * already-deleted paths; the underlying `deleteStorageObject` retries
+ * transient failures internally and the calling site (service-layer
+ * `safePurgeWithEnqueueFallback`) handles unrecoverable failures
+ * via the `_purges` queue.
+ *
+ * Accepts both the legacy `{ path, thumbPath }` shape (for any
+ * receipt already stored in Firestore) AND the array shape returned
+ * by `uploadReceipt` on a fresh upload. Internal call sites can use
+ * either without an adapter layer.
+ */
 export async function purgeReceipt(existing: {
   path?:      string
   thumbPath?: string
-}): Promise<void> {
+} | { paths: string[] }): Promise<void> {
   const tasks: Promise<void>[] = []
-  if (existing.path)      tasks.push(deleteStorageObject(existing.path))
-  if (existing.thumbPath) tasks.push(deleteStorageObject(existing.thumbPath))
+  if ('paths' in existing) {
+    for (const p of existing.paths) {
+      if (p) tasks.push(deleteStorageObject(p))
+    }
+  } else {
+    if (existing.path)      tasks.push(deleteStorageObject(existing.path))
+    if (existing.thumbPath) tasks.push(deleteStorageObject(existing.thumbPath))
+  }
   await Promise.all(tasks)
 }
+
+/** Re-export the UploadIntent type for service callers that want to
+ *  consume intent metadata directly (rare; mostly tests). */
+export type { UploadIntent }

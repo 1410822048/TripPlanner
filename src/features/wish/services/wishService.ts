@@ -11,14 +11,17 @@
 // atomic toggle. Firestore rules gate "only my own uid" mutations on the
 // non-proposer path.
 import type { QueryDocumentSnapshot } from 'firebase/firestore'
-import type { UploadMetadata } from 'firebase/storage'
-import { getFirebase, getFirebaseStorage } from '@/services/firebase'
+import { getFirebase } from '@/services/firebase'
 import { deleteStorageObject } from '@/services/storageDelete'
-import { uploadFile, withUploadTimeout, UPLOAD_TIMEOUT_MS } from '@/services/storageUpload'
 import { P } from '@/services/paths'
 import { compressImage } from '@/utils/image'
-import { retry, isTransientStorageError } from '@/utils/retry'
 import { stripEmpty } from '@/utils/stripEmpty'
+import {
+  requestUploadIntents,
+  uploadToIntent,
+  finalizeUploadIntents,
+  type UploadIntentsRequest,
+} from '@/services/uploadIntent'
 import { captureError } from '@/services/sentry'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
 import { createTripScopedListServices } from '@/services/tripScopedList'
@@ -88,10 +91,16 @@ export const subscribeToWishes = listServices.subscribe
 
 // ─── Storage helpers ──────────────────────────────────────────────
 
-function shortId(): string {
-  return Math.random().toString(36).slice(2, 10)
-}
-
+/**
+ * Phase 3.5: Worker-issued upload intent flow. Wish cover image is
+ * doc-first by design (createWish setDoc'd before this is called),
+ * so the Worker's intent authz pass can verify proposedBy on the
+ * existing wish doc.
+ *
+ * Returns null for non-image inputs -- wish covers are image-only.
+ * Image flow: compressImage produces full + thumb, both upload via
+ * intent + finalize, blob URLs come back from finalize.
+ */
 async function uploadWishImage(
   tripId: string,
   wishId: string,
@@ -99,52 +108,41 @@ async function uploadWishImage(
 ): Promise<WishImage | null> {
   const { full, thumb } = await compressImage(file)
   if (!full.type.startsWith('image/')) return null  // only images
-  const id = shortId()
-  const folder = `trips/${tripId}/wishes/${wishId}`
-  const path  = `${folder}/${id}.webp`
-  const tpath = thumb ? `${folder}/${id}.thumb.webp` : path
 
-  // Resumable + explicit timeout (same pattern as expenseStorage /
-  // bookingStorage). uploadBytes used to live here; with the doc-first
-  // create flow, a stalled multipart POST meant the wish doc landed
-  // in Firestore but the upload promise never rejected -- the catch
-  // that rolls the doc back never ran, leaving an orphan wish in
-  // realtime cache + no error toast to the user.
-  const { storage, ref, uploadBytesResumable, getDownloadURL } = await getFirebaseStorage()
-  const fullMetadata: UploadMetadata = { contentType: full.type }
-  const thumbMetadata: UploadMetadata | undefined = thumb ? { contentType: thumb.type } : undefined
+  const uploads: UploadIntentsRequest['uploads'] = [
+    { kind: 'full', contentType: full.type, size: full.size },
+  ]
+  if (thumb) {
+    uploads.push({ kind: 'thumb', contentType: thumb.type, size: thumb.size })
+  }
 
-  const [fullRef, thumbRef] = await Promise.all([
-    retry(
-      () => uploadFile(
-        uploadBytesResumable(ref(storage, path), full, fullMetadata),
-        'wish-full',
-        UPLOAD_TIMEOUT_MS,
-      ),
-      { shouldRetry: isTransientStorageError },
-    ),
-    thumb && thumbMetadata
-      ? retry(
-          () => uploadFile(
-            uploadBytesResumable(ref(storage, tpath), thumb, thumbMetadata),
-            'wish-thumb',
-            UPLOAD_TIMEOUT_MS,
-          ),
-          { shouldRetry: isTransientStorageError },
-        )
-      : Promise.resolve(null),
+  const intents = await requestUploadIntents({
+    tripId, entityType: 'wish', entityId: wishId, uploads,
+  })
+  const fullIntent  = intents[0]!
+  const thumbIntent = thumb ? intents[1] : undefined
+
+  await Promise.all([
+    uploadToIntent(fullIntent, full, 'wish-full'),
+    thumb && thumbIntent
+      ? uploadToIntent(thumbIntent, thumb, 'wish-thumb')
+      : Promise.resolve(),
   ])
-  const [url, thumbUrl] = await Promise.all([
-    withUploadTimeout(getDownloadURL(fullRef), UPLOAD_TIMEOUT_MS, 'getDownloadURL(wish-full)'),
-    thumbRef
-      ? withUploadTimeout(getDownloadURL(thumbRef), UPLOAD_TIMEOUT_MS, 'getDownloadURL(wish-thumb)')
-      : Promise.resolve(undefined),
-  ])
+
+  const finalize = await finalizeUploadIntents(intents.map(i => i.intentId))
+  const fullBlob  = finalize.blobs.find(b => b.kind === 'full')
+  const thumbBlob = finalize.blobs.find(b => b.kind === 'thumb')
+  if (!fullBlob || !fullBlob.url) {
+    throw new Error('finalizeUploadIntents returned no primary blob or missing URL')
+  }
+  // WishImage has the legacy convention of thumbUrl/thumbPath falling
+  // back to full when thumb absent -- preserves existing UI that
+  // always indexes into both fields.
   return {
-    url,
-    path,
-    thumbUrl:  thumbUrl ?? url,
-    thumbPath: thumb ? tpath : path,
+    url:       fullBlob.url,
+    path:      fullBlob.path,
+    thumbUrl:  thumbBlob?.url  ?? fullBlob.url,
+    thumbPath: thumbBlob?.path ?? fullBlob.path,
   }
 }
 

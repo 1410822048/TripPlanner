@@ -113,11 +113,14 @@ beforeEach(() => {
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-function mockReceipt() {
+// Phase 3.5: uploadReceipt now returns the intent-flow shape -- intentIds
+// for the Worker call, paths for client-side rollback addressing. The
+// helper's old ExpenseReceipt return is gone; Worker builds receipt
+// server-side from the intentIds.
+function mockReceipt(): { intentIds: string[]; paths: string[] } {
   return {
-    url:  'https://storage.example/receipt.webp',
-    path: 'trips/t1/expenses/exp-1/abc.webp',
-    type: 'image/webp',
+    intentIds: ['intent-full-1', 'intent-thumb-1'],
+    paths:     ['trips/t1/expenses/exp-1/abc.webp', 'trips/t1/expenses/exp-1/abc.thumb.webp'],
   }
 }
 
@@ -398,5 +401,74 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
 
     expect(safePurgeMock).toHaveBeenCalledTimes(1)  // new blob inline purge
     expect(enqueueOrphanPurgesMock).not.toHaveBeenCalled()  // old blob NOT enqueued
+  })
+
+  // ── Phase 3.5 contract: rollback addresses paths from uploadReceipt's
+  // return, not from a synthesized "receipt object". With intent flow,
+  // Worker builds the receipt server-side -- client never sees the
+  // ExpenseReceipt shape pre-commit. The `paths` array from
+  // uploadReceipt IS the canonical source for rollback addressing.
+
+  it('createExpense REJECTED → enqueue uses paths from uploadReceipt return verbatim', async () => {
+    // Pins the contract: when Worker rejects, we MUST enqueue (and
+    // purge) exactly the paths uploadReceipt returned. Any drift
+    // here would orphan the blobs against an arbitrary path string.
+    const upload = {
+      intentIds: ['intent-full-X', 'intent-thumb-X'],
+      paths:     ['trips/t1/expenses/exp-Y/p-full.webp', 'trips/t1/expenses/exp-Y/p-thumb.webp'],
+    }
+    uploadReceiptMock.mockResolvedValueOnce(upload)
+    fetchMock.mockResolvedValueOnce(new Response('rejected', { status: 400 }))
+
+    const { createExpense } = await import('./expenseService')
+    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg')))
+      .rejects.toThrow()
+
+    expect(safePurgeMock).toHaveBeenCalledTimes(1)
+    const safePurgeArgs = safePurgeMock.mock.calls[0]![0] as { enqueue: { paths: string[] } }
+    expect(safePurgeArgs.enqueue.paths).toEqual(upload.paths)
+  })
+
+  it('createExpense AMBIGUOUS → enqueueOrphanPurges uses paths from uploadReceipt return verbatim', async () => {
+    const upload = {
+      intentIds: ['intent-full-Y'],
+      paths:     ['trips/t1/expenses/exp-Z/just-full.webp'],
+    }
+    uploadReceiptMock.mockResolvedValueOnce(upload)
+    fetchMock.mockRejectedValueOnce(new DOMException('timeout', 'AbortError'))
+
+    const { createExpense } = await import('./expenseService')
+    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg')))
+      .rejects.toThrow()
+
+    expect(safePurgeMock).not.toHaveBeenCalled()
+    expect(enqueueOrphanPurgesMock).toHaveBeenCalledTimes(1)
+    const enqueueArgs = enqueueOrphanPurgesMock.mock.calls[0]![0] as { paths: string[] }
+    expect(enqueueArgs.paths).toEqual(upload.paths)
+  })
+
+  it('createExpense success → no Worker `expense.receipt` in request body, only intentIds', async () => {
+    // Pins the Phase 3.5 contract: client does NOT send receipt
+    // client-side; Worker builds it from intentIds in the same tx
+    // as the doc create. Sending receipt+intentIds together would
+    // 400 (mutual-exclusion) -- this test catches a regression where
+    // someone accidentally re-adds expense.receipt to the request.
+    const upload = {
+      intentIds: ['intent-full-A', 'intent-thumb-A'],
+      paths:     ['trips/t1/expenses/exp-1/A.webp', 'trips/t1/expenses/exp-1/A.thumb.webp'],
+    }
+    uploadReceiptMock.mockResolvedValueOnce(upload)
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }))
+
+    const { createExpense } = await import('./expenseService')
+    await createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg'))
+
+    const init = fetchMock.mock.calls[0]![1] as RequestInit
+    const body = JSON.parse(init.body as string) as {
+      expense: { receipt?: unknown }
+      intentIds?: string[]
+    }
+    expect(body.expense.receipt).toBeUndefined()
+    expect(body.intentIds).toEqual(upload.intentIds)
   })
 })

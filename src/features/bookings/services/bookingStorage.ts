@@ -1,103 +1,115 @@
 // src/features/bookings/services/bookingStorage.ts
-// Storage-side helpers for booking attachments. Split out from
-// bookingService.ts so the read/write CRUD module isn't 400+ LOC of
-// mixed concerns. Service-layer logic stays in bookingService; the
-// "talk to Firebase Storage" code lives here.
-import type { UploadMetadata } from 'firebase/storage'
-import { getFirebaseStorage } from '@/services/firebase'
-import { deleteStorageObject } from '@/services/storageDelete'
-import { uploadFile, withUploadTimeout, UPLOAD_TIMEOUT_MS } from '@/services/storageUpload'
+// Phase 3.5: Worker-issued upload intent flow. The wrapper requests
+// intents, uploads to the server-minted paths, calls /upload-finalize
+// to mark intents used + receive the download URLs, then assembles
+// the BookingAttachment shape the booking doc expects.
+//
+// Why intent flow + finalize (and not the expense pattern of "Worker
+// consumes intents inline with the doc write"): booking docs are
+// written client-side via setDoc, so the Worker chokepoint pattern
+// would require turning bookingService.createBooking into a Worker
+// endpoint -- a much larger refactor than Phase 3.5 wants. Finalize
+// gives us back the blob URLs + sizes so the client can complete
+// the booking doc write itself.
+
 import type { BookingAttachment } from '@/types'
 import { compressImage } from '@/utils/image'
-import { retry, isTransientStorageError } from '@/utils/retry'
-
-/** Pick a sensible filename extension from the (post-compression) mime type. */
-function extForMime(mime: string): string {
-  if (mime === 'image/webp')   return 'webp'
-  if (mime === 'image/jpeg')   return 'jpg'
-  if (mime === 'image/png')    return 'png'
-  if (mime === 'image/heic')   return 'heic'
-  if (mime === 'image/heif')   return 'heif'
-  if (mime === 'application/pdf') return 'pdf'
-  return 'bin'
-}
-
-/** 8-char random id to keep each upload at a unique path. Without
- *  this, a same-mime replace (jpg → jpg) would collide on the fixed
- *  `file.jpg` filename: Storage upload silently overwrites the old
- *  blob, then the post-doc `purgeAttachments` of the OLD paths (also
- *  `file.jpg`) wipes the just-uploaded NEW blob, leaving the booking
- *  doc referencing a deleted file. Random suffix means new path ≠
- *  old path always, so the purge step only targets the genuinely-old
- *  blob. Mirrors the same fix in expenseStorage. */
-function shortId(): string {
-  return Math.random().toString(36).slice(2, 10)
-}
+import {
+  requestUploadIntents,
+  uploadToIntent,
+  finalizeUploadIntents,
+  type IntentKind,
+  type UploadIntentsRequest,
+} from '@/services/uploadIntent'
+import { deleteStorageObject } from '@/services/storageDelete'
 
 /**
- * Upload an attachment + (when applicable) its thumbnail variant. Returns
- * a `BookingAttachment` ready to assign directly to the booking doc.
+ * Upload an attachment + (when applicable) its thumbnail. Returns a
+ * `BookingAttachment` ready to assign on a booking doc.
  *
- * For images: full-size (1920px) and a 192px thumb are uploaded in
- * parallel. For PDFs / HEIC pass-throughs: only the full file is uploaded
- * — the list row will fall back to the type emoji for the leading slot.
+ * For images: full-size + 192px thumb uploaded in parallel. For PDFs:
+ * only the full file; the list row falls back to the type emoji.
  *
- * Each upload is wrapped in `retry()` so transient network blips (common
- * on flaky travel Wi-Fi) don't surface as user-visible failures.
- * Non-transient errors (auth, quota, validation) bail out immediately
- * via the isTransientStorageError predicate.
+ * Failure modes:
+ *   - requestUploadIntents rejects → throws to caller, no storage
+ *     side effects, nothing to clean.
+ *   - uploadToIntent rejects → some intents may have landed in
+ *     Storage; the Worker's intent-expiry cron + orphan-storage-scan
+ *     will reclaim them on their own 24h+ grace windows.
+ *   - finalizeUploadIntents rejects → storage objects exist but
+ *     intents stay 'pending'; same cron + scan handle cleanup.
+ *
+ * All three failure paths surface as a thrown error to the calling
+ * service layer; downstream rollback (e.g. createBooking's
+ * safePurgeWithEnqueueFallback) doesn't apply here because we don't
+ * yet hold paths at the point requestUploadIntents fails, and the
+ * intent flow's own retention policies guarantee eventual cleanup.
  */
 export async function uploadAttachment(
-  tripId: string,
+  tripId:    string,
   bookingId: string,
-  file: File,
+  file:      File,
 ): Promise<BookingAttachment> {
   const { full, thumb } = await compressImage(file)
-  const folder = `trips/${tripId}/bookings/${bookingId}`
-  const id        = shortId()
-  const filePath  = `${folder}/${id}.${extForMime(full.type)}`
-  const thumbPath = thumb ? `${folder}/${id}.thumb.${extForMime(thumb.type)}` : undefined
 
-  const { storage, ref, uploadBytesResumable, getDownloadURL } = await getFirebaseStorage()
-  // Mirror expenseStorage: uploadBytesResumable + explicit timeout
-  // avoids the iOS Safari single-multipart-POST stall that hangs
-  // uploadBytes for the full 2-minute internal retry window.
-  const fullMetadata: UploadMetadata = { contentType: full.type }
-  const thumbMetadata: UploadMetadata | undefined = thumb ? { contentType: thumb.type } : undefined
+  const primaryKind: IntentKind = full.type === 'application/pdf' ? 'pdf' : 'full'
+  const uploads: UploadIntentsRequest['uploads'] = [
+    { kind: primaryKind, contentType: full.type, size: full.size },
+  ]
+  if (thumb) {
+    uploads.push({ kind: 'thumb', contentType: thumb.type, size: thumb.size })
+  }
 
-  const [fullRef, thumbRef] = await Promise.all([
-    retry(
-      () => uploadFile(
-        uploadBytesResumable(ref(storage, filePath), full, fullMetadata),
-        'booking-full',
-        UPLOAD_TIMEOUT_MS,
-      ),
-      { shouldRetry: isTransientStorageError },
-    ),
-    thumb && thumbPath && thumbMetadata
-      ? retry(
-          () => uploadFile(
-            uploadBytesResumable(ref(storage, thumbPath), thumb, thumbMetadata),
-            'booking-thumb',
-            UPLOAD_TIMEOUT_MS,
-          ),
-          { shouldRetry: isTransientStorageError },
-        )
-      : Promise.resolve(null),
+  const intents = await requestUploadIntents({
+    tripId, entityType: 'booking', entityId: bookingId, uploads,
+  })
+  const fullIntent  = intents[0]!
+  const thumbIntent = thumb ? intents[1] : undefined
+
+  await Promise.all([
+    uploadToIntent(fullIntent, full, 'booking-full'),
+    thumb && thumbIntent
+      ? uploadToIntent(thumbIntent, thumb, 'booking-thumb')
+      : Promise.resolve(),
   ])
-  const [fileUrl, thumbUrl] = await Promise.all([
-    withUploadTimeout(getDownloadURL(fullRef), UPLOAD_TIMEOUT_MS, 'getDownloadURL(booking-full)'),
-    thumbRef
-      ? withUploadTimeout(getDownloadURL(thumbRef), UPLOAD_TIMEOUT_MS, 'getDownloadURL(booking-thumb)')
-      : Promise.resolve(undefined),
-  ])
-  return { fileUrl, filePath, thumbUrl, thumbPath, fileType: full.type }
+
+  const finalize = await finalizeUploadIntents(intents.map(i => i.intentId))
+  // Worker guarantees same-order blobs as the requested intentIds;
+  // we lookup by kind for safety against any future reordering.
+  const fullBlob  = finalize.blobs.find(b => b.kind === primaryKind)
+  const thumbBlob = finalize.blobs.find(b => b.kind === 'thumb')
+  if (!fullBlob) {
+    // Worker accepted the request but returned no primary blob -- a
+    // contract violation. Worker code should reject thumb-only sets
+    // at /upload-finalize, but defense-in-depth here in case that
+    // gate ever regresses.
+    throw new Error('finalizeUploadIntents returned no primary blob')
+  }
+  if (!fullBlob.url) {
+    // Firebase Storage SDK upload should always add a download token.
+    // Missing token means the upload landed via a non-SDK path that
+    // we don't support.
+    throw new Error('finalize response missing download URL for primary blob')
+  }
+  const attachment: BookingAttachment = {
+    fileUrl:  fullBlob.url,
+    filePath: fullBlob.path,
+    fileType: fullBlob.contentType,
+  }
+  if (thumbBlob) {
+    if (!thumbBlob.url) {
+      throw new Error('finalize response missing download URL for thumb blob')
+    }
+    attachment.thumbUrl  = thumbBlob.url
+    attachment.thumbPath = thumbBlob.path
+  }
+  return attachment
 }
 
 /**
  * Delete the full + thumb storage objects for an existing attachment.
- * Thumb path may be missing on PDFs — deleteStorageObject tolerates that
- * along with already-deleted objects.
+ * Thumb path may be missing on PDFs -- deleteStorageObject tolerates
+ * that along with already-deleted objects.
  */
 export async function purgeAttachments(
   existing: BookingAttachment | undefined,

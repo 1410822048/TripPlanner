@@ -7,7 +7,7 @@ import { createTripScopedListServices } from '@/services/tripScopedList'
 import { validateUpdateOrThrow } from '@/services/validateUpdate'
 import { auditUpdate } from '@/utils/audit'
 import { bumpTripActivity } from '@/services/tripActivity'
-import { ExpenseDocSchema, UpdateExpenseSchema, type Expense, type ExpenseReceipt, type CreateExpenseInput, type UpdateExpenseInput } from '@/types'
+import { ExpenseDocSchema, UpdateExpenseSchema, type Expense, type CreateExpenseInput, type UpdateExpenseInput } from '@/types'
 import { uploadReceipt, purgeReceipt } from './expenseStorage'
 import {
   requireWorkerWriteBase, preflightIdToken, workerFetch,
@@ -100,18 +100,25 @@ export async function createExpense(
   // The Worker's `currentDocument.exists = false` on the create
   // PATCH ensures we don't accidentally overwrite an existing doc.
   const ref = doc(collection(db, ...P.expenses(tripId)))
-  let receipt: ExpenseReceipt | null = null
+  // Phase 3.5: upload via intent flow, hand off intentIds + paths.
+  // Worker /expense-create consumes the intentIds inline with the
+  // expense doc write (single tx); paths are kept here for client-
+  // side rollback if the Worker rejects / times out.
+  let uploaded: { intentIds: string[]; paths: string[] } | null = null
   if (attachment instanceof File) {
-    receipt = await uploadReceipt(tripId, ref.id, attachment)
+    uploaded = await uploadReceipt(tripId, ref.id, attachment)
   }
   const expensePayload: Record<string, unknown> = { ...input }
-  if (receipt) expensePayload.receipt = receipt
 
   try {
     await workerFetch(workerBase, idToken, '/expense-create', {
       tripId,
       expenseId: ref.id,
       expense:   expensePayload,
+      // Worker builds the receipt field server-side from these
+      // intentIds (verify intent + storage object + mark used in
+      // same Firestore transaction as the expense doc create).
+      ...(uploaded ? { intentIds: uploaded.intentIds } : {}),
     })
   } catch (e) {
     // Discriminate Worker rejection from commit-ambiguity:
@@ -129,11 +136,11 @@ export async function createExpense(
     //     because it also handles the "read-back itself fails"
     //     case -- the cron retries the verify daily until it
     //     either resolves the entry or hits MAX_ATTEMPTS.
-    if (receipt) {
-      const paths = [receipt.path, receipt.thumbPath].filter(Boolean) as string[]
+    if (uploaded) {
+      const paths = uploaded.paths
       if (e instanceof WorkerRejected) {
         await safePurgeWithEnqueueFallback({
-          purge: () => purgeReceipt(receipt),
+          purge: () => purgeReceipt({ paths }),
           enqueue: {
             tripId, collection: 'expenses', entityId: ref.id,
             paths,
@@ -196,26 +203,27 @@ export async function updateExpense(
   })
   const patch: Record<string, unknown> = { ...validated }
 
-  // Receipt order: upload the NEW blob first (to a UNIQUE path
-  // courtesy of uploadReceipt's random shortId suffix), then call
-  // the Worker, then purge the OLD blob ONLY on Worker success.
+  // Receipt order (Phase 3.5): upload the NEW blobs first via the
+  // intent flow (Worker mints unique paths server-side so there's no
+  // collision with existingPaths), then call the Worker `/expense-
+  // update`, then purge the OLD blob ONLY on Worker success.
   //
-  // Two invariants gated by the ordering + uniqueness:
+  // Two invariants gated by the ordering + Worker-server-issued path:
   //   1. Worker reject → new blob is purged, old blob untouched
   //      (user can re-attempt with same form data).
-  //   2. Same-mime replacement → old and new paths differ because
-  //      of shortId, so the post-Worker purgeReceipt(existingPaths)
-  //      only targets the genuinely-old blob. Without unique
-  //      suffixes Storage upload would overwrite then the purge
-  //      would delete the just-written blob.
-  let newReceiptBlob: ExpenseReceipt | null = null
+  //   2. Same-mime replacement → server-minted paths never collide
+  //      with existing paths (each intent generates a fresh shortId),
+  //      so the post-Worker purgeReceipt(existingPaths) only targets
+  //      the genuinely-old blob.
+  let uploadedNew: { intentIds: string[]; paths: string[] } | null = null
   if (attachment === null) {
     // Field-delete signal -- Worker drops the receipt field. Old
     // blob purge runs in the success branch below.
     patch.receipt = null
   } else if (attachment instanceof File) {
-    newReceiptBlob = await uploadReceipt(tripId, expenseId, attachment)
-    patch.receipt = newReceiptBlob
+    uploadedNew = await uploadReceipt(tripId, expenseId, attachment)
+    // patch.receipt NOT set here -- Worker builds receipt server-side
+    // from intentIds in the same transaction as the doc patch.
   }
 
   try {
@@ -223,6 +231,7 @@ export async function updateExpense(
       tripId,
       expenseId,
       patch,
+      ...(uploadedNew ? { intentIds: uploadedNew.intentIds } : {}),
     })
   } catch (e) {
     // Two blobs may need cleanup after a failed update:
@@ -246,9 +255,7 @@ export async function updateExpense(
     // a Worker timeout-after-commit would leave the OLD blob
     // stranded indefinitely (we used to only handle new-blob
     // cleanup in this catch).
-    const newPaths: string[] = newReceiptBlob
-      ? [newReceiptBlob.path, newReceiptBlob.thumbPath].filter(Boolean) as string[]
-      : []
+    const newPaths: string[] = uploadedNew ? uploadedNew.paths : []
     const oldChanged = existingPaths && (attachment === null || attachment instanceof File)
     const oldPaths: string[] = oldChanged
       ? [existingPaths.path, existingPaths.thumbPath].filter(Boolean) as string[]
@@ -257,9 +264,9 @@ export async function updateExpense(
     if (e instanceof WorkerRejected) {
       // Definite no-commit. New blob is orphan; old blob is still
       // referenced by doc -- leave it.
-      if (newReceiptBlob && newPaths.length > 0) {
+      if (newPaths.length > 0) {
         await safePurgeWithEnqueueFallback({
-          purge: () => purgeReceipt(newReceiptBlob),
+          purge: () => purgeReceipt({ paths: newPaths }),
           enqueue: {
             tripId, collection: 'expenses', entityId: expenseId,
             paths: newPaths,
@@ -278,7 +285,7 @@ export async function updateExpense(
           original: String((e as Error)?.message ?? e),
         })
       }
-      if (newReceiptBlob && newPaths.length > 0) {
+      if (newPaths.length > 0) {
         await enqueueOrphanPurges({
           tripId, collection: 'expenses', entityId: expenseId,
           paths: newPaths,
