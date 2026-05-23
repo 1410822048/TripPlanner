@@ -414,6 +414,100 @@ export async function queryReceiptPurgeCandidates(
   return { docs }
 }
 
+// ─── Upload intent purge: status + age query ──────────────────────
+
+/**
+ * Page through uploadIntents that match `status` AND `field < beforeMs`.
+ *
+ * Used by `purgeExpiredUploadIntents` cron for two passes:
+ *   1. expired pending intents (status='pending', expiresAt < cutoff)
+ *   2. stale used intents (status='used', usedAt < retention cutoff)
+ *
+ * Each pass needs its own composite index, declared in
+ * firestore.indexes.json:
+ *   - uploadIntents (status ASC, expiresAt ASC)
+ *   - uploadIntents (status ASC, usedAt ASC)
+ *
+ * Cursor uses (field, __name__) -- matching the orderBy. Mirrors
+ * `queryOrphanPurgeCandidates` + `queryReceiptPurgeCandidates`
+ * structurally; one parameterized helper for the two passes keeps
+ * the structuredQuery shape in one place.
+ */
+export async function queryUploadIntents(
+  accessToken:              string,
+  projectId:                string,
+  status:                   'pending' | 'used',
+  field:                    'expiresAt' | 'usedAt',
+  beforeMs:                 number,
+  pageSize:                 number,
+  cursorAfterDocName?:      string,
+  cursorAfterFieldMs?:      number,
+): Promise<QueryPage> {
+  const parent     = `projects/${projectId}/databases/(default)/documents`
+  const beforeIso  = new Date(beforeMs).toISOString()
+
+  const structuredQuery: Record<string, unknown> = {
+    from: [{ collectionId: 'uploadIntents' }],
+    where: {
+      compositeFilter: {
+        op: 'AND',
+        filters: [
+          {
+            fieldFilter: {
+              field: { fieldPath: 'status' },
+              op:    'EQUAL',
+              value: { stringValue: status },
+            },
+          },
+          {
+            fieldFilter: {
+              field: { fieldPath: field },
+              op:    'LESS_THAN',
+              value: { timestampValue: beforeIso },
+            },
+          },
+        ],
+      },
+    },
+    orderBy: [
+      { field: { fieldPath: field },       direction: 'ASCENDING' },
+      { field: { fieldPath: '__name__' },  direction: 'ASCENDING' },
+    ],
+    limit: pageSize,
+  }
+  if (cursorAfterDocName && cursorAfterFieldMs != null) {
+    structuredQuery.startAt = {
+      before: false,
+      values: [
+        { timestampValue: new Date(cursorAfterFieldMs).toISOString() },
+        { referenceValue: cursorAfterDocName },
+      ],
+    }
+  }
+
+  const res = await fetch(`${BASE}/${parent}:runQuery`, {
+    ...NO_CACHE,
+    method:  'POST',
+    headers: {
+      Authorization:  `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ structuredQuery }),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`queryUploadIntents → ${res.status}: ${detail.slice(0, 200)}`)
+  }
+  const rows = await res.json() as { document?: { name: string; fields?: Record<string, FsValue> } }[]
+  const docs = rows
+    .filter(r => r.document)
+    .map(r => ({
+      name:   r.document!.name,
+      fields: r.document!.fields ?? {},
+    }))
+  return { docs }
+}
+
 // ─── Scan cursor: cross-run pagination state for long-running scans ──
 
 /** Single-doc state held under `/_scanState/{scanKey}` so a budget-

@@ -29,6 +29,7 @@ import { cascadeTripDelete, TripDeleteRequestSchema } from './trip-cascade'
 import { purgeExpiredReceipts }                   from './receipt-purge'
 import { drainOrphanPurges }                      from './orphan-purge'
 import { scanOrphanStorage }                      from './storage-scan'
+import { purgeExpiredUploadIntents }              from './upload-intent-purge'
 import {
   expenseCreate, expenseUpdate,
   ExpenseCreateRequestSchema, ExpenseUpdateRequestSchema,
@@ -505,6 +506,27 @@ export default {
         })
         .catch(err => {
           console.error(`[cron] storage-scan failed: ${(err as Error).message}`)
+        }),
+    )
+    // Phase 3.5 uploadIntents cleanup. Two-pass purge: expired pending
+    // (TTL'd intents that never finalized) + stale used (retention
+    // cleanup at 7d). Independent waitUntil so any failure here doesn't
+    // starve the other three crons. See upload-intent-purge.ts for the
+    // pass logic + the project-phase35-upload-intent memory for the
+    // "why cron not Firestore TTL" rationale.
+    console.log('[cron] upload-intent-purge starting')
+    ctx.waitUntil(
+      purgeExpiredUploadIntents(env.FIREBASE_SERVICE_ACCOUNT)
+        .then(report => {
+          console.log(
+            `[cron] upload-intent-purge done scanned=${report.scanned} ` +
+            `deletedPending=${report.deletedPending} deletedUsed=${report.deletedUsed} ` +
+            `deleteErrors=${report.deleteErrors} ` +
+            `deadlineHit=${report.deadlineHit} budgetHit=${report.budgetHit}`,
+          )
+        })
+        .catch(err => {
+          console.error(`[cron] upload-intent-purge failed: ${(err as Error).message}`)
         }),
     )
   },
