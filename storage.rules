@@ -76,6 +76,69 @@ service firebase.storage {
           && firestore.get(tripDoc(tripId)).data.ownerId == request.auth.uid;
     }
 
+    // Phase 3.5 intent verification. Every entity upload must carry a
+    // valid uploadIntent that the Worker minted via /upload-intents.
+    // The intent encodes: path the upload MUST land at, allowed
+    // contentTypes, maxBytes, expiresAt, status, and the 7-field
+    // customMetadata schema that the upload must echo back.
+    //
+    // Why intent + immediate-permission BOTH: the intent was minted
+    // up to 30 min ago. During that window the user could be
+    // demoted, removed from the trip, or the trip could enter
+    // deletingAt cascade. The rules layer's role / membership /
+    // tripNotDeleting checks run at upload time, so a stale-permission
+    // capability token can't slip through. Intent narrows what they
+    // can do; role check confirms they still can.
+    function uploadIntentPath(id) {
+      return /databases/(default)/documents/uploadIntents/$(id);
+    }
+    // Build the expected Storage object path from match variables so
+    // we never have to trust request.resource.name's exact string
+    // format. The intent doc's `path` field was set by the Worker via
+    // the same components, so equality here is the binding check.
+    // 'wish' pluralises irregularly to 'wishes' -- everything else just
+    // appends 's'. Path segment must match the match-block path that
+    // wraps the rule (`/trips/{tripId}/wishes/{wishId}/...`).
+    function entitySegment(entityType) {
+      return entityType == 'wish' ? 'wishes' : entityType + 's';
+    }
+    function expectedPath(tripId, entityType, entityId, fileName) {
+      return 'trips/' + tripId + '/' + entitySegment(entityType) + '/' + entityId + '/' + fileName;
+    }
+    function intentMatches(tripId, entityType, entityId, fileName) {
+      // Guards before firestore.get: missing / non-string intentId is
+      // an explicit deny, not a "happens to fail validation" silent
+      // path. The `'uploadIntentId' in metadata` key check fronts the
+      // `is string` test so an upload with no customMetadata at all
+      // (the common accidental case) denies cleanly instead of
+      // triggering a "Property uploadIntentId is undefined on object"
+      // rules evaluation warning -- keeps CI / emulator logs quiet.
+      return isSignedIn()
+        && 'uploadIntentId' in request.resource.metadata
+        && request.resource.metadata.uploadIntentId is string
+        && firestore.exists(uploadIntentPath(request.resource.metadata.uploadIntentId))
+        && intentBindingsOk(tripId, entityType, entityId, fileName);
+    }
+    function intentBindingsOk(tripId, entityType, entityId, fileName) {
+      let id = request.resource.metadata.uploadIntentId;
+      let intent = firestore.get(uploadIntentPath(id)).data;
+      return intent.uid == request.auth.uid
+          && intent.tripId == tripId
+          && intent.entityType == entityType
+          && intent.entityId == entityId
+          && intent.path == expectedPath(tripId, entityType, entityId, fileName)
+          && intent.status == 'pending'
+          && request.time < intent.expiresAt
+          && request.resource.size <= intent.maxBytes
+          && request.resource.contentType in intent.allowedContentTypes
+          && request.resource.metadata.uploaderUid == request.auth.uid
+          && request.resource.metadata.tripId == intent.tripId
+          && request.resource.metadata.entityType == intent.entityType
+          && request.resource.metadata.entityId == intent.entityId
+          && request.resource.metadata.kind == intent.kind
+          && request.resource.metadata.schemaVersion == intent.customMetadata.schemaVersion;
+    }
+
     // Wildcard read for ANY object under a trip's namespace. Two reasons:
     //   1. listAll(prefix) needs a matching `read` rule on the prefix — the
     //      cascade-delete in tripService.purgeStorageFolder recursively
@@ -92,20 +155,26 @@ service firebase.storage {
 
     match /trips/{tripId}/bookings/{bookingId}/{fileName} {
       allow read: if isMember(tripId);
-      // create + update enforce size + content-type. Defense-in-depth:
-      // the form already gates this client-side, but the rule blocks raw
-      // API misuse. tripNotDeleting blocks uploads mid-cascade.
-      allow create, update: if canWriteFiles(tripId)
-                            && tripNotDeleting(tripId)
-                            && request.resource.size < 5 * 1024 * 1024
-                            && (request.resource.contentType.matches('image/.*')
-                                || request.resource.contentType == 'application/pdf');
-      // delete is its own clause — `request.resource` is null for delete
-      // operations, so a write rule referencing size / contentType would
-      // deny removals (the original bug behind "image removed but save
-      // fails"). Role gate still applies. NOTE no tripNotDeleting here:
-      // delete during cascade is the same outcome as cascade itself
-      // doing the delete, just a few ms earlier -- benign.
+      // create flows through Worker-issued intents. intentMatches
+      // verifies size, contentType, customMetadata schema, AND that
+      // the upload is landing at the path the Worker minted -- so
+      // the inline size / mime checks the old rule had are now
+      // expressed once, at intent-mint time, with the per-entity
+      // allowlist that lives in upload-intent.ts. canWriteFiles +
+      // tripNotDeleting still gate at upload time so a stale 30-min
+      // intent can't be replayed by a since-demoted / removed member
+      // or against a trip that's mid-cascade. update is rejected --
+      // intents are one-shot; replace flows via a new intent.
+      allow create: if canWriteFiles(tripId)
+                    && tripNotDeleting(tripId)
+                    && intentMatches(tripId, 'booking', bookingId, fileName);
+      allow update: if false;
+      // delete unchanged. `request.resource` is null for delete
+      // operations, so a write rule referencing size / contentType
+      // would deny removals (the original "image removed but save
+      // fails" bug). Role gate still applies. NOTE no tripNotDeleting
+      // here: delete during cascade is the same outcome as cascade
+      // itself doing the delete, just a few ms earlier -- benign.
       allow delete: if canWriteFiles(tripId);
     }
 
@@ -116,11 +185,17 @@ service firebase.storage {
     // 5MB cap.
     match /trips/{tripId}/wishes/{wishId}/{fileName} {
       allow read: if isMember(tripId);
-      allow create, update: if isMember(tripId)
-                            && tripNotDeleting(tripId)
-                            && isWishProposer(tripId, wishId)
-                            && request.resource.size < 5 * 1024 * 1024
-                            && request.resource.contentType.matches('image/.*');
+      // create via intent. isMember + tripNotDeleting + isWishProposer
+      // are the upload-time permission checks (the intent was minted
+      // earlier so a since-changed proposer or membership status must
+      // still pass here). intentMatches handles size / mime / metadata
+      // schema. Wish intents always require image content type, but
+      // that's enforced upstream by upload-intent.ts's WISH allowlist.
+      allow create: if isMember(tripId)
+                    && tripNotDeleting(tripId)
+                    && isWishProposer(tripId, wishId)
+                    && intentMatches(tripId, 'wish', wishId, fileName);
+      allow update: if false;
       // Delete: proposer cleans up their own; OR trip owner
       // moderates (mirrors firestore.rules wish delete which allows
       // `proposedBy == uid() || isTripOwner(tripId)`). BOTH branches
@@ -144,11 +219,13 @@ service firebase.storage {
     // as PDFs and we want OCR to be able to ingest either.
     match /trips/{tripId}/expenses/{expenseId}/{fileName} {
       allow read: if isMember(tripId);
-      allow create, update: if canWriteFiles(tripId)
-                            && tripNotDeleting(tripId)
-                            && request.resource.size < 5 * 1024 * 1024
-                            && (request.resource.contentType.matches('image/.*')
-                                || request.resource.contentType == 'application/pdf');
+      // create via intent. canWriteFiles + tripNotDeleting are the
+      // upload-time permission checks; intentMatches handles size /
+      // mime / metadata schema / path binding.
+      allow create: if canWriteFiles(tripId)
+                    && tripNotDeleting(tripId)
+                    && intentMatches(tripId, 'expense', expenseId, fileName);
+      allow update: if false;
       allow delete: if canWriteFiles(tripId);
     }
 

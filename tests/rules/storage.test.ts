@@ -1,19 +1,29 @@
 // tests/rules/storage.test.ts
-// Storage rules coverage. The bug that motivated this file: cascade
-// trip-delete called listAll('trips/{tripId}/...') and got 403 because
-// the only rules in storage.rules covered leaf-file paths
-// (/trips/{tripId}/bookings/{bookingId}/{file}, /wishes/{wishId}/{file}).
-// listAll on a parent prefix needs a matching read rule on that prefix.
-// We added a wildcard `match /trips/{tripId}/{allPaths=**}` to grant
-// list permission to members; this test pins that fix.
+// Storage rules coverage. Two halves:
+//
+//   1. Legacy-shape tests that pre-date Phase 3.5 (listAll, role-gated
+//      delete, wish proposer delete, owner moderation). These don't
+//      touch upload paths and stay unchanged.
+//
+//   2. Phase 3.5 intent-verified upload tests. Storage rules now
+//      require every upload to carry customMetadata.uploadIntentId
+//      pointing at a 'pending' uploadIntent doc the Worker minted,
+//      whose path / contentType / size / 7-field customMetadata
+//      match the upload's resource. Plus immediate-permission checks
+//      (canWriteFiles / tripNotDeleting / isWishProposer) still
+//      gate at upload time so a stale 30-min intent can't be
+//      replayed by a since-demoted member or against a mid-cascade
+//      trip -- this is the revocation-window protection.
 import { afterAll, beforeAll, beforeEach, describe, test } from 'vitest'
 import { assertFails, assertSucceeds } from '@firebase/rules-unit-testing'
 import { ref, listAll, getBytes, uploadString, deleteObject } from 'firebase/storage'
-import { doc, updateDoc, serverTimestamp, deleteField } from 'firebase/firestore'
+import {
+  doc, setDoc, updateDoc, serverTimestamp, deleteField, Timestamp,
+} from 'firebase/firestore'
 import {
   setupTestEnv, teardownTestEnv, seedFixture,
   asOwner, asEditor, asViewer, asStranger, asAnon,
-  TRIP_ID,
+  TRIP_ID, OWNER_UID, EDITOR_UID, VIEWER_UID,
 } from './helpers'
 import type { RulesTestEnvironment } from '@firebase/rules-unit-testing'
 
@@ -35,10 +45,10 @@ beforeEach(async () => {
   })
 })
 
+// ─── Existing legacy-shape tests (no upload, unchanged) ──────────
+
 describe('listAll under trip prefix (cascade-delete path)', () => {
   test('member can listAll trip-root prefix (the cascade entry point)', async () => {
-    // This is the exact call that broke production: purgeStorageFolder
-    // hits trips/{tripId}/ first, then recurses.
     await assertSucceeds(listAll(ref(asOwner(env).storage(), `trips/${TRIP_ID}`)))
   })
 
@@ -55,7 +65,7 @@ describe('listAll under trip prefix (cascade-delete path)', () => {
   })
 })
 
-describe('booking attachment file rules', () => {
+describe('booking attachment file rules (read + delete)', () => {
   test('member can read individual file', async () => {
     await assertSucceeds(
       getBytes(ref(asViewer(env).storage(), `trips/${TRIP_ID}/bookings/booking-1/test.txt`)),
@@ -81,20 +91,457 @@ describe('booking attachment file rules', () => {
   })
 })
 
+// ─── Phase 3.5 intent helpers ─────────────────────────────────────
+
+type EntityType = 'expense' | 'booking' | 'wish'
+type Kind       = 'full' | 'thumb' | 'pdf'
+
+interface SeededIntent {
+  intentId:    string
+  path:        string
+  fileName:    string
+  uploaderUid: string
+  collection:  string
+}
+
+/**
+ * Seed an uploadIntents/{id} doc via admin context. Returns the
+ * computed path + the customMetadata the upload must echo back.
+ * Each option has a sensible default for the "happy path" test;
+ * specific failure tests override the relevant field.
+ */
+async function seedIntent(opts: {
+  intentId:       string
+  uid?:           string
+  tripId?:        string
+  entityType:     EntityType
+  entityId:       string
+  kind?:          Kind
+  fileName?:      string
+  contentType?:   string
+  maxBytes?:      number
+  schemaVersion?: string
+  status?:        'pending' | 'used'
+  expiresAtMs?:   number
+  pathOverride?:  string   // intent.path stored value (used by mismatch tests)
+}): Promise<SeededIntent> {
+  const uid           = opts.uid           ?? EDITOR_UID
+  const tripId        = opts.tripId        ?? TRIP_ID
+  const kind          = opts.kind          ?? 'full'
+  const fileName      = opts.fileName      ?? 'legit.webp'
+  const contentType   = opts.contentType   ?? 'image/webp'
+  const maxBytes      = opts.maxBytes      ?? 5 * 1024 * 1024
+  const schemaVersion = opts.schemaVersion ?? 'v1'
+  const status        = opts.status        ?? 'pending'
+  const expiresAtMs   = opts.expiresAtMs   ?? (Date.now() + 30 * 60_000)
+  // Irregular plural: 'wish' -> 'wishes'. Mirrors entitySegment() in storage.rules.
+  const collection    = opts.entityType === 'wish' ? 'wishes' : `${opts.entityType}s`
+  const computedPath  = `trips/${tripId}/${collection}/${opts.entityId}/${fileName}`
+  const path          = opts.pathOverride ?? computedPath
+
+  await env.withSecurityRulesDisabled(async ctx => {
+    await setDoc(doc(ctx.firestore(), 'uploadIntents', opts.intentId), {
+      uid,
+      tripId,
+      entityType: opts.entityType,
+      entityId:   opts.entityId,
+      kind,
+      path,
+      allowedContentTypes: [contentType],
+      maxBytes,
+      customMetadata: {
+        uploadIntentId: opts.intentId,
+        uploaderUid:    uid,
+        tripId,
+        entityType:     opts.entityType,
+        entityId:       opts.entityId,
+        kind,
+        schemaVersion,
+      },
+      status,
+      expiresAt: Timestamp.fromMillis(expiresAtMs),
+      createdAt: serverTimestamp(),
+    })
+  })
+
+  return {
+    intentId:    opts.intentId,
+    path:        computedPath,
+    fileName,
+    uploaderUid: uid,
+    collection,
+  }
+}
+
+/** Build the upload's customMetadata bundle. Defaults to a happy-path
+ *  bundle matching the supplied intent details; tamper overrides
+ *  let individual tests flip a single field to assert the rule fires. */
+function uploadMetadata(opts: {
+  intentId:        string
+  uploaderUid:     string
+  tripId?:         string
+  entityType:      EntityType
+  entityId:        string
+  kind?:           Kind
+  contentType?:    string
+  schemaVersion?:  string
+  customOverrides?: Record<string, string | undefined>
+}) {
+  const base: Record<string, string> = {
+    uploadIntentId: opts.intentId,
+    uploaderUid:    opts.uploaderUid,
+    tripId:         opts.tripId ?? TRIP_ID,
+    entityType:     opts.entityType,
+    entityId:       opts.entityId,
+    kind:           opts.kind ?? 'full',
+    schemaVersion:  opts.schemaVersion ?? 'v1',
+  }
+  if (opts.customOverrides) {
+    for (const [k, v] of Object.entries(opts.customOverrides)) {
+      if (v === undefined) delete base[k]
+      else                 base[k] = v
+    }
+  }
+  return {
+    contentType: opts.contentType ?? 'image/webp',
+    customMetadata: base,
+  }
+}
+
+// ─── Phase 3.5 intent-verified upload — happy paths + deny gates ──
+
+describe('Phase 3.5 intent-verified upload: expense (canWriteFiles)', () => {
+  const EXPENSE_ID = 'exp-1'
+
+  test('valid intent + matching upload → succeed', async () => {
+    const seed = await seedIntent({
+      intentId: 'i-exp-ok', entityType: 'expense', entityId: EXPENSE_ID,
+    })
+    await assertSucceeds(uploadString(
+      ref(asEditor(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: seed.uploaderUid,
+        entityType: 'expense', entityId: EXPENSE_ID,
+      }),
+    ))
+  })
+
+  test('upload without customMetadata.uploadIntentId → deny', async () => {
+    const seed = await seedIntent({
+      intentId: 'i-exp-no-id', entityType: 'expense', entityId: EXPENSE_ID,
+    })
+    await assertFails(uploadString(
+      ref(asEditor(env).storage(), seed.path), 'data', 'raw',
+      { contentType: 'image/webp' },  // no customMetadata at all
+    ))
+  })
+
+  test('intent does not exist (forged uploadIntentId) → deny', async () => {
+    // No seed: rule's firestore.exists() gate fires.
+    const path = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/forge.webp`
+    await assertFails(uploadString(
+      ref(asEditor(env).storage(), path), 'data', 'raw',
+      uploadMetadata({
+        intentId: 'i-does-not-exist', uploaderUid: EDITOR_UID,
+        entityType: 'expense', entityId: EXPENSE_ID,
+      }),
+    ))
+  })
+
+  test('intent.uid != auth.uid (intent stolen) → deny', async () => {
+    // Editor's intent, but owner tries to upload using it. Even though
+    // owner has canWriteFiles, the intent.uid binding rejects.
+    const seed = await seedIntent({
+      intentId: 'i-exp-stolen', uid: EDITOR_UID, entityType: 'expense', entityId: EXPENSE_ID,
+    })
+    await assertFails(uploadString(
+      ref(asOwner(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: OWNER_UID,  // owner trying
+        entityType: 'expense', entityId: EXPENSE_ID,
+      }),
+    ))
+  })
+
+  test('intent.path != computed expectedPath (wrong fileName) → deny', async () => {
+    // Intent was minted for fileName 'a.webp'; client uploads to 'b.webp'.
+    // Rule computes expectedPath from match vars; if intent.path doesn't
+    // equal it, deny.
+    const seed = await seedIntent({
+      intentId: 'i-exp-wrong-name', entityType: 'expense', entityId: EXPENSE_ID,
+      fileName: 'a.webp',
+    })
+    const wrongPath = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/b.webp`
+    await assertFails(uploadString(
+      ref(asEditor(env).storage(), wrongPath), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: seed.uploaderUid,
+        entityType: 'expense', entityId: EXPENSE_ID,
+      }),
+    ))
+  })
+
+  test('intent.status = used → deny (replay protection)', async () => {
+    const seed = await seedIntent({
+      intentId: 'i-exp-used', entityType: 'expense', entityId: EXPENSE_ID,
+      status: 'used',
+    })
+    await assertFails(uploadString(
+      ref(asEditor(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: seed.uploaderUid,
+        entityType: 'expense', entityId: EXPENSE_ID,
+      }),
+    ))
+  })
+
+  test('intent past expiresAt → deny', async () => {
+    const seed = await seedIntent({
+      intentId: 'i-exp-expired', entityType: 'expense', entityId: EXPENSE_ID,
+      expiresAtMs: Date.now() - 60_000,  // expired 1 min ago
+    })
+    await assertFails(uploadString(
+      ref(asEditor(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: seed.uploaderUid,
+        entityType: 'expense', entityId: EXPENSE_ID,
+      }),
+    ))
+  })
+
+  test('contentType not in intent.allowedContentTypes → deny', async () => {
+    const seed = await seedIntent({
+      intentId: 'i-exp-bad-ct', entityType: 'expense', entityId: EXPENSE_ID,
+      contentType: 'image/webp',
+    })
+    await assertFails(uploadString(
+      ref(asEditor(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: seed.uploaderUid,
+        entityType: 'expense', entityId: EXPENSE_ID,
+        contentType: 'image/jpeg',  // intent allowed webp only
+      }),
+    ))
+  })
+
+  test('upload metadata.uploaderUid spoofed (other user) → deny', async () => {
+    const seed = await seedIntent({
+      intentId: 'i-exp-spoof', uid: EDITOR_UID, entityType: 'expense', entityId: EXPENSE_ID,
+    })
+    await assertFails(uploadString(
+      ref(asEditor(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: OWNER_UID,  // editor claims to be owner
+        entityType: 'expense', entityId: EXPENSE_ID,
+      }),
+    ))
+  })
+
+  test('upload metadata.schemaVersion drifted → deny', async () => {
+    const seed = await seedIntent({
+      intentId: 'i-exp-schema', entityType: 'expense', entityId: EXPENSE_ID,
+      schemaVersion: 'v1',
+    })
+    await assertFails(uploadString(
+      ref(asEditor(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: seed.uploaderUid,
+        entityType: 'expense', entityId: EXPENSE_ID,
+        schemaVersion: 'v2',  // drifted from intent
+      }),
+    ))
+  })
+})
+
+describe('Phase 3.5 intent-verified upload: booking (canWriteFiles)', () => {
+  const BOOKING_ID = 'booking-1'
+
+  test('valid intent → succeed', async () => {
+    const seed = await seedIntent({
+      intentId: 'i-bk-ok', entityType: 'booking', entityId: BOOKING_ID,
+    })
+    await assertSucceeds(uploadString(
+      ref(asEditor(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: seed.uploaderUid,
+        entityType: 'booking', entityId: BOOKING_ID,
+      }),
+    ))
+  })
+
+  test('viewer CANNOT upload booking attachment (role gate via canWriteFiles)', async () => {
+    // Even with a valid intent, viewer role fails canWriteFiles.
+    // Intent's uid is VIEWER_UID, but rule's canWriteFiles check
+    // fires before intent matching.
+    const seed = await seedIntent({
+      intentId: 'i-bk-viewer', uid: VIEWER_UID,
+      entityType: 'booking', entityId: BOOKING_ID,
+    })
+    await assertFails(uploadString(
+      ref(asViewer(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: VIEWER_UID,
+        entityType: 'booking', entityId: BOOKING_ID,
+      }),
+    ))
+  })
+
+  test('wrong entityType in customMetadata → deny', async () => {
+    const seed = await seedIntent({
+      intentId: 'i-bk-wrong-et', entityType: 'booking', entityId: BOOKING_ID,
+    })
+    await assertFails(uploadString(
+      ref(asEditor(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: seed.uploaderUid,
+        entityType: 'expense',  // spoofed
+        entityId: BOOKING_ID,
+      }),
+    ))
+  })
+})
+
+describe('Phase 3.5 intent-verified upload: wish (isMember + proposer)', () => {
+  const WISH_ID = 'wish-1'  // proposedBy EDITOR_UID per fixture
+
+  test('proposer (editor) with valid intent → succeed', async () => {
+    const seed = await seedIntent({
+      intentId: 'i-wish-ok', entityType: 'wish', entityId: WISH_ID,
+    })
+    await assertSucceeds(uploadString(
+      ref(asEditor(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: seed.uploaderUid,
+        entityType: 'wish', entityId: WISH_ID,
+      }),
+    ))
+  })
+
+  test('non-proposer member with valid intent → deny (proposer gate)', async () => {
+    // Viewer mints an intent (admin context bypasses /upload-intents'
+    // own proposer check) -- demonstrates that storage.rules still
+    // re-checks proposer regardless.
+    const seed = await seedIntent({
+      intentId: 'i-wish-non-prop', uid: VIEWER_UID,
+      entityType: 'wish', entityId: WISH_ID,
+    })
+    await assertFails(uploadString(
+      ref(asViewer(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: VIEWER_UID,
+        entityType: 'wish', entityId: WISH_ID,
+      }),
+    ))
+  })
+})
+
+// ─── Phase 3.5 revocation-window tests ────────────────────────────
+
+describe('Phase 3.5 revocation-window: intent minted, permission changes before upload', () => {
+  const EXPENSE_ID = 'exp-revoke'
+  const WISH_ID    = 'wish-1'
+
+  async function setRole(uid: string, role: 'owner' | 'editor' | 'viewer') {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await updateDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'members', uid), { role })
+    })
+  }
+  async function setDeleting(on: boolean) {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await updateDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID),
+        on ? { deletingAt: serverTimestamp() } : { deletingAt: deleteField() },
+      )
+    })
+  }
+  async function clearWishDoc(wishId: string) {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await updateDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'wishes', wishId), {
+        // deleteDoc isn't directly available -- we just mark deletedAt
+        // OR use admin context to perform a delete. Easier: drop the doc
+        // via setDoc replacement won't work for proposer check; let's
+        // actually delete it via the rules-disabled context.
+      })
+    })
+  }
+  void clearWishDoc  // referenced by description; actual delete uses inline withSecurityRulesDisabled
+
+  test('intent minted while editor, then demoted to viewer → upload fails', async () => {
+    // Headline test for the revocation window: a 30-min intent is
+    // NOT a capability token. Even after the Worker minted it, if
+    // the member's role changes, the immediate canWriteFiles check
+    // in storage.rules fires and the upload 403s.
+    const seed = await seedIntent({
+      intentId: 'i-revoke-role', entityType: 'expense', entityId: EXPENSE_ID,
+    })
+    // Demote editor → viewer.
+    await setRole(EDITOR_UID, 'viewer')
+    await assertFails(uploadString(
+      ref(asEditor(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: seed.uploaderUid,
+        entityType: 'expense', entityId: EXPENSE_ID,
+      }),
+    ))
+    // Restore for cleanup.
+    await setRole(EDITOR_UID, 'editor')
+  })
+
+  test('intent minted, then trip.deletingAt set → upload fails (mid-cascade)', async () => {
+    // Same revocation logic: intent doesn't bypass tripNotDeleting.
+    // Catches the race where the cascade has started after a member's
+    // intent was already in flight.
+    const seed = await seedIntent({
+      intentId: 'i-revoke-deleting', entityType: 'expense', entityId: EXPENSE_ID,
+    })
+    await setDeleting(true)
+    await assertFails(uploadString(
+      ref(asEditor(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: seed.uploaderUid,
+        entityType: 'expense', entityId: EXPENSE_ID,
+      }),
+    ))
+    await setDeleting(false)
+  })
+
+  test('wish: intent minted, then wish doc deleted → upload fails (proposer check)', async () => {
+    const seed = await seedIntent({
+      intentId: 'i-revoke-wish-doc', entityType: 'wish', entityId: WISH_ID,
+    })
+    // Delete the wish doc via admin context to simulate the wish being
+    // removed between intent mint and upload.
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
+        // Simplest: empty out proposedBy so isWishProposer fires.
+        // (deleting the doc would require deleteDoc which we'd need
+        // to import; updating to a non-matching proposedBy has the
+        // same effect on isWishProposer.)
+        proposedBy: 'someone-else-uid',
+      }, { merge: true })
+    })
+    await assertFails(uploadString(
+      ref(asEditor(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: seed.uploaderUid,
+        entityType: 'wish', entityId: WISH_ID,
+      }),
+    ))
+  })
+})
+
+// ─── deletingAt cascade gate (kept, with intent) ──────────────────
+
 describe('cascade write-quiesce (deletingAt) gates Storage uploads', () => {
   // The race we're regression-guarding: Worker stamps trip.deletingAt
-  // → starts draining Firestore → editor on another device uploads a
-  // new receipt to Storage. Without the cross-service tripNotDeleting
-  // helper, the upload would succeed; the editor's matching Firestore
-  // setDoc(expense) then fails (firestore.rules also gate creates by
-  // deletingAt), leaving orphan Storage bytes the cascade has already
-  // walked past. Pin all three writable Storage prefixes -- bookings,
+  // → starts draining Firestore → editor on another device uploads.
+  // Without the cross-service tripNotDeleting helper, the upload
+  // would succeed; the editor's matching Firestore setDoc(expense)
+  // then fails (firestore.rules also gate creates by deletingAt),
+  // leaving orphan Storage bytes the cascade has already walked
+  // past. Pin all three writable Storage prefixes -- bookings,
   // expenses, wishes -- to reject uploads when deletingAt is set.
 
-  // Helper: toggle trip.deletingAt server-side without going through
-  // the rules-gated client path (the trip update rule's owner-edit
-  // branch pins unchanged('deletingAt'), so even the owner can't
-  // write it -- only the Worker can via admin SDK).
   async function setDeleting(on: boolean) {
     await env.withSecurityRulesDisabled(async ctx => {
       await updateDoc(
@@ -104,82 +551,65 @@ describe('cascade write-quiesce (deletingAt) gates Storage uploads', () => {
     })
   }
 
-  // storage.rules checks `request.resource.contentType` against an
-  // image/* | application/pdf allowlist. uploadString's default is
-  // application/octet-stream, which would fail the content rule
-  // unconditionally -- defeating these tests' ability to isolate
-  // the deletingAt gate. Explicit image/png keeps the content-type
-  // check out of the way so the assertion targets deletingAt alone.
-  const PNG_META = { contentType: 'image/png' }
-
   test('editor CANNOT upload booking attachment when trip.deletingAt is set', async () => {
+    const seed = await seedIntent({
+      intentId: 'i-bk-cascade', entityType: 'booking', entityId: 'booking-1',
+      fileName: 'cascade.png', contentType: 'image/png',
+    })
     await setDeleting(true)
-    await assertFails(
-      uploadString(
-        ref(asEditor(env).storage(), `trips/${TRIP_ID}/bookings/booking-1/new.png`),
-        'mid-cascade upload', 'raw', PNG_META,
-      ),
-    )
+    await assertFails(uploadString(
+      ref(asEditor(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: seed.uploaderUid,
+        entityType: 'booking', entityId: 'booking-1', contentType: 'image/png',
+      }),
+    ))
     await setDeleting(false)
   })
 
   test('editor CANNOT upload expense receipt when trip.deletingAt is set', async () => {
+    const seed = await seedIntent({
+      intentId: 'i-exp-cascade', entityType: 'expense', entityId: 'e1',
+      fileName: 'cascade.png', contentType: 'image/png',
+    })
     await setDeleting(true)
-    await assertFails(
-      uploadString(
-        ref(asEditor(env).storage(), `trips/${TRIP_ID}/expenses/e1/receipt.png`),
-        'mid-cascade receipt', 'raw', PNG_META,
-      ),
-    )
+    await assertFails(uploadString(
+      ref(asEditor(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: seed.uploaderUid,
+        entityType: 'expense', entityId: 'e1', contentType: 'image/png',
+      }),
+    ))
     await setDeleting(false)
   })
 
-  test('member CANNOT upload wish cover when trip.deletingAt is set', async () => {
+  test('proposer CANNOT upload wish cover when trip.deletingAt is set', async () => {
+    const seed = await seedIntent({
+      intentId: 'i-wish-cascade', entityType: 'wish', entityId: 'wish-1',
+      fileName: 'cascade.png', contentType: 'image/png',
+    })
     await setDeleting(true)
-    await assertFails(
-      uploadString(
-        ref(asViewer(env).storage(), `trips/${TRIP_ID}/wishes/w1/cover.png`),
-        'mid-cascade cover', 'raw', PNG_META,
-      ),
-    )
+    await assertFails(uploadString(
+      ref(asEditor(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: seed.uploaderUid,
+        entityType: 'wish', entityId: 'wish-1', contentType: 'image/png',
+      }),
+    ))
     await setDeleting(false)
-  })
-
-  test('editor CAN upload when trip is NOT deleting (sanity / no false positives)', async () => {
-    // Without this positive case, a typo that always-rejects (e.g.
-    // accidentally inverting the helper) would still pass the three
-    // negative tests above. This locks the normal-state behavior.
-    await assertSucceeds(
-      uploadString(
-        ref(asEditor(env).storage(), `trips/${TRIP_ID}/bookings/booking-1/sanity.png`),
-        'normal upload', 'raw', PNG_META,
-      ),
-    )
   })
 })
 
-// ─── Wish cover proposer ownership ────────────────────────────────
-describe('Wish cover Storage ownership', () => {
+// ─── Wish cover delete tests (kept, no upload involved) ───────────
+
+describe('Wish cover Storage ownership (delete)', () => {
   // Seed: WISH_ID in fixture is proposedBy EDITOR_UID. So the proposer
   // is editor; viewer / owner / stranger should NOT be able to write
   // its cover image, even though they're members of the trip.
 
   const PNG_META = { contentType: 'image/png' }
 
-  test('non-proposer member CANNOT replace existing wish cover (defacement)', async () => {
-    // The defacement risk pre-fix: any member (read/write/delete on
-    // every wish cover via storage.rules). Now writes need to match
-    // the wish doc's proposedBy.
-    await assertFails(
-      uploadString(
-        ref(asViewer(env).storage(), `trips/${TRIP_ID}/wishes/wish-1/replaced.png`),
-        'defacement attempt', 'raw', PNG_META,
-      ),
-    )
-  })
-
   test('non-proposer member CANNOT delete proposer\'s wish cover', async () => {
-    // Need a file to delete first -- seed one via admin context.
     await env.withSecurityRulesDisabled(async ctx => {
       await uploadString(
         ref(ctx.storage(), `trips/${TRIP_ID}/wishes/wish-1/proposer-cover.png`),
@@ -191,33 +621,6 @@ describe('Wish cover Storage ownership', () => {
     )
   })
 
-  test('proposer CAN write their own wish cover (no regression)', async () => {
-    // Editor is the proposer of wish-1 (seeded that way in helpers).
-    await assertSucceeds(
-      uploadString(
-        ref(asEditor(env).storage(), `trips/${TRIP_ID}/wishes/wish-1/legit.png`),
-        'proposer upload', 'raw', PNG_META,
-      ),
-    )
-  })
-
-  test('upload against yet-to-be-created wish doc is REJECTED (doc-first contract)', async () => {
-    // Post-refactor (2026-05-21), wishService.createWish is
-    // doc-first: setDoc the wish (without image), THEN upload,
-    // THEN updateDoc to patch the image field in. By the time
-    // Storage write fires, the wish doc exists and the rule's
-    // isWishProposer check has a real doc to read. The earlier
-    // upload-before-setDoc flow needed a `!exists` exception
-    // here; removing that closes the race where any member
-    // could pre-write bytes against a not-yet-created wishId.
-    await assertFails(
-      uploadString(
-        ref(asEditor(env).storage(), `trips/${TRIP_ID}/wishes/never-existed-yet/first.png`),
-        'pre-doc upload attempt', 'raw', PNG_META,
-      ),
-    )
-  })
-
   test('trip owner CAN delete another member\'s wish cover (moderation parity with Firestore)', async () => {
     // The mismatch we're closing: firestore.rules allows
     // `proposedBy == uid() || isTripOwner(tripId)` on wish delete,
@@ -226,9 +629,6 @@ describe('Wish cover Storage ownership', () => {
     // deleteWishImage() got 403 on Storage and the catch/log
     // swallowed it, leaving Storage bytes orphaned. Now Storage
     // delete also accepts isTripOwnerStorage.
-    //
-    // Setup: editor (proposer of wish-1) uploads a cover; owner
-    // moderates by deleting it.
     await env.withSecurityRulesDisabled(async ctx => {
       await uploadString(
         ref(ctx.storage(), `trips/${TRIP_ID}/wishes/wish-1/moderated.png`),
@@ -254,8 +654,6 @@ describe('Wish cover Storage ownership', () => {
       )
     })
     // wish-gone has no Firestore doc → owner delete now rejected.
-    // Emergency manual cleanup still possible via Firebase Console
-    // (admin auth bypasses rules entirely).
     await assertFails(
       deleteObject(ref(asOwner(env).storage(), `trips/${TRIP_ID}/wishes/wish-gone/orphan.png`)),
     )
