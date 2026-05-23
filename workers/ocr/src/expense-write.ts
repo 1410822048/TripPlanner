@@ -29,7 +29,9 @@ import {
   ExpenseValidationError,
   makeExpenseCreateSchema,
   makeExpenseUpdateSchema,
+  makeReceiptSchema,
   validateExpenseCrossField,
+  type ExpenseReceiptOut,
 }                                                                   from './expense-validate'
 import { withTokenRetry, CascadeError }                             from './cascade'
 import {
@@ -54,11 +56,9 @@ export const ExpenseCreateRequestSchema = z.object({
   /** Phase 3.5 intent-driven receipt. When present, Worker reads the
    *  named intents, verifies storage objects exist, builds the receipt
    *  field server-side from intent.path + storage metadata, and marks
-   *  the intents 'used' in the same tx as the expense doc write.
-   *  Mutually exclusive with `expense.receipt` (rejected if both
-   *  present). Optional so existing receipt-in-body callers (pre-Phase-
-   *  3.5 client) keep working until Commit 4 client refactor flips
-   *  them over. */
+   *  the intents 'used' in the same tx as the expense doc write. This
+   *  is the ONLY way to set a receipt -- client-supplied `expense.
+   *  receipt` is rejected outright (was a legacy Phase 1-2 path). */
   intentIds: z.array(z.string().min(1).max(60)).max(2).optional(),
 })
 export type ExpenseCreateRequest = z.infer<typeof ExpenseCreateRequestSchema>
@@ -67,10 +67,10 @@ export const ExpenseUpdateRequestSchema = z.object({
   tripId:    z.string().regex(TripIdRe),
   expenseId: z.string().regex(TripIdRe),
   patch:     z.unknown(),                  // validated as partial after merge
-  /** Same intent-driven receipt path as ExpenseCreateRequest. When
-   *  present, replaces `patch.receipt` server-side. Mutually
-   *  exclusive with `patch.receipt`. To DELETE the existing receipt,
-   *  use `patch.receipt: null` (not intentIds=[]). */
+  /** Same intent-driven receipt path as ExpenseCreateRequest. The ONLY
+   *  way to attach / replace a receipt; `patch.receipt: <object>` is
+   *  rejected. `patch.receipt: null` (deletion sentinel) remains valid
+   *  but is mutually exclusive with intentIds. */
   intentIds: z.array(z.string().min(1).max(60)).min(1).max(2).optional(),
 })
 export type ExpenseUpdateRequest = z.infer<typeof ExpenseUpdateRequestSchema>
@@ -126,6 +126,7 @@ function encodeExpense(
   tripId:  string,
   memberIds: string[],
   createdBy: string,
+  receipt?: ExpenseReceiptOut,
 ): Record<string, FsValue> {
   // createdAt / updatedAt are written via `updateTransforms` with
   // setToServerValue: REQUEST_TIME -- NOT here in the fields map.
@@ -187,14 +188,14 @@ function encodeExpense(
       },
     }
   }
-  if (payload.receipt) {
+  if (receipt) {
     const rfields: Record<string, FsValue> = {
-      url:  { stringValue: payload.receipt.url },
-      path: { stringValue: payload.receipt.path },
-      type: { stringValue: payload.receipt.type },
+      url:  { stringValue: receipt.url },
+      path: { stringValue: receipt.path },
+      type: { stringValue: receipt.type },
     }
-    if (payload.receipt.thumbUrl != null)  rfields.thumbUrl  = { stringValue: payload.receipt.thumbUrl }
-    if (payload.receipt.thumbPath != null) rfields.thumbPath = { stringValue: payload.receipt.thumbPath }
+    if (receipt.thumbUrl != null)  rfields.thumbUrl  = { stringValue: receipt.thumbUrl }
+    if (receipt.thumbPath != null) rfields.thumbPath = { stringValue: receipt.thumbPath }
     fields.receipt = { mapValue: { fields: rfields } }
   }
   return fields
@@ -223,37 +224,36 @@ async function doCreate(
   return runFirestoreTransaction(accessToken, projectId, async (tx) => {
     const ctx = await authorizeCanWriteTx(tx, req.tripId, callerUid)
 
-    // Phase 3.5: when intentIds present, build receipt server-side
-    // from intent.path + Storage metadata and inject into the body
-    // BEFORE schema parse. Mutually exclusive with caller-supplied
-    // expense.receipt (legacy path) -- mixing them would let a
-    // malicious caller stuff a non-intent-bound receipt into a
-    // request that also marks intents used.
-    let expenseBody = req.expense
+    // Phase 3.5 legacy-cleanup: client-supplied `expense.receipt` is
+    // unconditionally rejected. Receipts now flow exclusively through
+    // the intent path (Worker mints the path, the client uploads via
+    // SDK to that path, then the Worker reads Storage metadata and
+    // builds the receipt field server-side here). The receipt is NOT
+    // part of the body validation schema (`makeExpenseCreateSchema`)
+    // anymore -- it's threaded into encodeExpense as a separate
+    // parameter and validated via `makeReceiptSchema` as defense-in-
+    // depth against a malformed intent producing a bad URL/path.
+    const callerReceipt = (req.expense as { receipt?: unknown } | null)?.receipt
+    if (callerReceipt !== undefined && callerReceipt !== null) {
+      throw new ExpenseValidationError(
+        'receipt',
+        'expense.receipt cannot be set directly; upload via /upload-intents and pass intentIds',
+      )
+    }
+    let receipt: ExpenseReceiptOut | undefined
     const intentMarkUsedWrites: TxWrite[] = []
     if (req.intentIds && req.intentIds.length > 0) {
-      const callerReceipt = (req.expense as { receipt?: unknown } | null)?.receipt
-      if (callerReceipt !== undefined && callerReceipt !== null) {
-        throw new ExpenseValidationError(
-          'receipt',
-          'cannot specify both intentIds and expense.receipt (use one or the other)',
-        )
-      }
       const { consumed, markUsedWrites } = await consumeExpenseIntents(
         tx, req.intentIds, callerUid, accessToken, projectId, bucket,
         { tripId: req.tripId, entityId: req.expenseId },
       )
-      const receipt = buildReceiptFromIntents(consumed)
-      expenseBody = { ...(req.expense as Record<string, unknown> | null ?? {}), receipt }
+      receipt = validateBuiltReceipt(
+        buildReceiptFromIntents(consumed), req.tripId, req.expenseId, bucket,
+      )
       intentMarkUsedWrites.push(...markUsedWrites)
     }
 
-    // Schema parse with the path-bound receipt regex + URL/path
-    // binding (validStorageUrlFor equivalent) baked in. When
-    // intent-driven, the injected receipt's url + path were minted by
-    // /upload-intents using the same path bucket / expenseId; parse
-    // remains as belt-and-suspenders that the injection is consistent.
-    const parsed = makeExpenseCreateSchema(req.tripId, req.expenseId, bucket).safeParse(expenseBody)
+    const parsed = makeExpenseCreateSchema().safeParse(req.expense)
     if (!parsed.success) {
       const issue = parsed.error.issues[0]
       throw new ExpenseValidationError(issue.path.join('.'), issue.message)
@@ -269,7 +269,7 @@ async function doCreate(
       throw new CascadeError(409, 'expense already exists at this id')
     }
 
-    const fields = encodeExpense(parsed.data, req.tripId, ctx.memberIds, callerUid)
+    const fields = encodeExpense(parsed.data, req.tripId, ctx.memberIds, callerUid, receipt)
 
     const write: TxWrite = {
       document:        docResourceName(projectId, `trips/${req.tripId}/expenses/${req.expenseId}`),
@@ -293,6 +293,30 @@ async function doCreate(
       result: { expenseId: req.expenseId },
     }
   })
+}
+
+/** Run the Worker-built receipt through `makeReceiptSchema` so the
+ *  same URL/path-binding + mime invariants that used to gate the
+ *  legacy direct-from-client path still apply to intent-derived
+ *  receipts. Defense-in-depth: if Storage metadata ever returns an
+ *  unexpected shape (token missing, mime drift, etc.) we want a clear
+ *  ExpenseValidationError at write time rather than a corrupt
+ *  `receipt` field landing in Firestore. */
+function validateBuiltReceipt(
+  built:     ReturnType<typeof buildReceiptFromIntents>,
+  tripId:    string,
+  expenseId: string,
+  bucket:    string,
+): ExpenseReceiptOut {
+  const result = makeReceiptSchema(tripId, expenseId, bucket).safeParse(built)
+  if (!result.success) {
+    const issue = result.error.issues[0]
+    throw new ExpenseValidationError(
+      `receipt.${issue.path.join('.')}`,
+      `intent-built receipt failed validation: ${issue.message}`,
+    )
+  }
+  return result.data
 }
 
 /** Build an ExpenseReceipt-shaped object from consumed intents.
@@ -386,42 +410,60 @@ async function doUpdate(
       throw new ExpenseValidationError(k, 'field is not updatable via this endpoint')
     }
   }
-  // Phase 3.5: intentIds + patch.receipt are mutually exclusive
-  // (same reasoning as create -- prevent stuffing a non-intent receipt
-  // into a request that also marks intents used). receipt=null
-  // (deletion) is OK with intentIds=undefined; intentIds is OK with
-  // receipt=undefined.
+  // Phase 3.5 legacy-cleanup: only two patch.receipt values are
+  // accepted from the client -- `undefined` (no change) or `null`
+  // (deletion sentinel). Any object value is rejected; new receipts
+  // must come through intentIds. The deletion-vs-intentIds case is
+  // still mutually exclusive because they're contradictory operations
+  // (delete current vs. set new); the client picks one.
   const callerPatchReceipt = (req.patch as { receipt?: unknown }).receipt
-  if (req.intentIds && req.intentIds.length > 0 && callerPatchReceipt !== undefined) {
+  if (callerPatchReceipt !== undefined && callerPatchReceipt !== null) {
     throw new ExpenseValidationError(
       'receipt',
-      'cannot specify both intentIds and patch.receipt (use one or the other; for deletion use patch.receipt=null without intentIds)',
+      'patch.receipt cannot be set directly; upload via /upload-intents and pass intentIds (or set patch.receipt=null to delete)',
     )
   }
+  if (req.intentIds && req.intentIds.length > 0 && callerPatchReceipt === null) {
+    throw new ExpenseValidationError(
+      'receipt',
+      'cannot combine intentIds (set new receipt) with patch.receipt=null (delete current receipt)',
+    )
+  }
+
+  // patch.receipt is no longer part of the parse schema -- handle the
+  // deletion sentinel out-of-band so the receipt object can never
+  // reach the parser by accident.
+  const receiptDeletion = (req.patch as { receipt?: unknown }).receipt === null
+  // Strip `receipt` from the parseable body so a stray key from
+  // future client-side bugs can't sneak in via Zod's default strip()
+  // behavior (it would silently drop the field, but explicit removal
+  // makes the contract obvious to readers).
+  const patchForSchema = { ...(req.patch as Record<string, unknown>) }
+  delete patchForSchema.receipt
 
   await runFirestoreTransaction(accessToken, projectId, async (tx) => {
     const ctx = await authorizeCanWriteTx(tx, req.tripId, callerUid)
 
-    // Phase 3.5: consume intents inside tx, inject built receipt into
-    // patch before schema parse. Mirror of doCreate path. Done INSIDE
-    // the tx so the consume + expense update commit atomically.
-    let patchBody = req.patch as Record<string, unknown>
+    // Phase 3.5: consume intents inside tx and validate the built
+    // receipt separately. Mirror of doCreate path. Done INSIDE the tx
+    // so the consume + expense update commit atomically.
+    let receipt: ExpenseReceiptOut | undefined
     const intentMarkUsedWrites: TxWrite[] = []
     if (req.intentIds && req.intentIds.length > 0) {
       const { consumed, markUsedWrites } = await consumeExpenseIntents(
         tx, req.intentIds, callerUid, accessToken, projectId, bucket,
         { tripId: req.tripId, entityId: req.expenseId },
       )
-      const receipt = buildReceiptFromIntents(consumed)
-      patchBody = { ...patchBody, receipt }
+      receipt = validateBuiltReceipt(
+        buildReceiptFromIntents(consumed), req.tripId, req.expenseId, bucket,
+      )
       intentMarkUsedWrites.push(...markUsedWrites)
     }
-    const patchParsed = makeExpenseUpdateSchema(req.tripId, req.expenseId, bucket).safeParse(patchBody)
+    const patchParsed = makeExpenseUpdateSchema().safeParse(patchForSchema)
     if (!patchParsed.success) {
       const issue = patchParsed.error.issues[0]
       throw new ExpenseValidationError(issue.path.join('.'), issue.message)
     }
-    const receiptDeletion = patchParsed.data.receipt === null
 
     // Read current expense doc INSIDE the tx so commit-time
     // conflict check catches concurrent soft-delete / restore /
@@ -440,14 +482,16 @@ async function doUpdate(
     const merged = mergeExpense(current.fields, patchParsed.data)
     validateExpenseCrossField(merged, ctx.memberIds)
 
-    // Build the update mask + field map. Receipt deletion is
-    // expressed by listing 'receipt' in the updateMask WITHOUT a
-    // corresponding entry in `fields` -- Firestore REST commit
-    // treats mask-but-no-field as field-delete, atomically, inside
-    // the same commit as the content patch. This closes the race
-    // where a 2nd PATCH (the old deleteDocFields path) could wipe
-    // a concurrent worker's just-written new receipt.
-    const patchFields = encodePatch(patchParsed.data, req.tripId, req.expenseId)
+    // Build the update mask + field map. Receipt write happens via
+    // the separate `receipt` arg (intent-built) or via deletion
+    // sentinel (`receiptDeletion`). For deletion we list 'receipt'
+    // in the updateMask WITHOUT a corresponding entry in `fields`
+    // -- Firestore REST commit treats mask-but-no-field as field-
+    // delete, atomically inside the same commit as the content
+    // patch. This closes the race where a 2nd PATCH (the old
+    // deleteDocFields path) could wipe a concurrent worker's just-
+    // written new receipt.
+    const patchFields = encodePatch(patchParsed.data, receipt)
     patchFields.updatedBy = { stringValue: callerUid }
     // updatedAt is set via updateTransforms (REQUEST_TIME) below --
     // NOT in patchFields. Using CF Workers' Date.now() would
@@ -478,8 +522,10 @@ async function doUpdate(
 }
 
 /** Merge Firestore-stored fields with the validated patch into a
- *  flat object suitable for validateExpenseCrossField. `patch.receipt`
- *  may be null (deletion sentinel) -- we don't look at it here. */
+ *  flat object suitable for validateExpenseCrossField. Receipt is
+ *  handled out-of-band (deletion sentinel + intent-built receipt are
+ *  not part of the patch schema after 4c) so this function never
+ *  sees a receipt field. */
 function mergeExpense(
   current: Record<string, FsValue>,
   patch:   ReturnType<ReturnType<typeof makeExpenseUpdateSchema>['parse']>,
@@ -533,14 +579,16 @@ function decodeExpense(fields: Record<string, FsValue>): {
 }
 
 /** Encode the validated patch fields back into Firestore REST shape.
- *  Only encodes fields PRESENT in the patch (partial update). A null
- *  `receipt` is treated as "skip" -- the caller expresses field-
- *  deletion by listing 'receipt' in the commit's updateMask without
- *  a corresponding entry in the fields map (Firestore REST semantics). */
+ *  Only encodes fields PRESENT in the patch (partial update). Receipt
+ *  is no longer part of the patch schema; the optional `receipt` arg
+ *  (intent-built + validated) is encoded here so the field lands in
+ *  the same commit as the rest of the patch. Receipt DELETION is
+ *  expressed by the caller adding 'receipt' to the updateMask without
+ *  a corresponding fields entry -- this function never receives the
+ *  deletion sentinel. */
 function encodePatch(
-  patch:     ReturnType<ReturnType<typeof makeExpenseUpdateSchema>['parse']>,
-  _tripId:   string,
-  _expenseId: string,
+  patch:   ReturnType<ReturnType<typeof makeExpenseUpdateSchema>['parse']>,
+  receipt?: ExpenseReceiptOut,
 ): Record<string, FsValue> {
   const out: Record<string, FsValue> = {}
   if (patch.title    !== undefined) out.title    = { stringValue: patch.title }
@@ -581,14 +629,14 @@ function encodePatch(
       },
     }
   }
-  if (patch.receipt) {
+  if (receipt) {
     const rfields: Record<string, FsValue> = {
-      url:  { stringValue: patch.receipt.url },
-      path: { stringValue: patch.receipt.path },
-      type: { stringValue: patch.receipt.type },
+      url:  { stringValue: receipt.url },
+      path: { stringValue: receipt.path },
+      type: { stringValue: receipt.type },
     }
-    if (patch.receipt.thumbUrl != null)  rfields.thumbUrl  = { stringValue: patch.receipt.thumbUrl }
-    if (patch.receipt.thumbPath != null) rfields.thumbPath = { stringValue: patch.receipt.thumbPath }
+    if (receipt.thumbUrl != null)  rfields.thumbUrl  = { stringValue: receipt.thumbUrl }
+    if (receipt.thumbPath != null) rfields.thumbPath = { stringValue: receipt.thumbPath }
     out.receipt = { mapValue: { fields: rfields } }
   }
   return out

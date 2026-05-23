@@ -572,10 +572,17 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 		expect(receipt?.thumbUrl?.stringValue).toContain('token=tk-t')
 	})
 
-	it('rejects intentIds + expense.receipt in same request (mutually exclusive)', async () => {
+	it('rejects client-supplied expense.receipt (legacy direct path closed)', async () => {
+		// Phase 3.5 legacy cleanup: client may NEVER supply expense.receipt
+		// directly, regardless of whether intentIds is also present.
+		// Pinning this with two variants (with intentIds + without) so a
+		// future weakening of the gate that re-introduces the "only check
+		// when intentIds present" branch fails both assertions.
 		seedAuth()
 		txGetResponses.set(`uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
+		// Variant 1: receipt + intentIds (would have been the old
+		// "mutually exclusive" branch).
 		await expect(expenseCreate(
 			CALLER_UID,
 			{
@@ -584,6 +591,18 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 					receipt: { url: 'https://x', path: 'p', type: 'image/webp' },
 				}),
 				intentIds: [FULL_INTENT_ID],
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(ExpenseValidationError)
+		// Variant 2: receipt alone, no intentIds (the legacy "happy
+		// path" Phase 3.5 closes). Auth seed already in place.
+		await expect(expenseCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				expense: validExpensePayload({
+					receipt: { url: 'https://x', path: 'p', type: 'image/webp' },
+				}),
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(ExpenseValidationError)
@@ -784,7 +803,13 @@ describe('expenseUpdate with intentIds (Phase 3.5)', () => {
 		expect(receipt?.path?.stringValue).toBe(NEW_FULL_PATH)
 	})
 
-	it('rejects intentIds + patch.receipt in same request (mutually exclusive)', async () => {
+	it('rejects client-supplied patch.receipt object (legacy direct path closed)', async () => {
+		// Phase 3.5 legacy cleanup: patch.receipt may NEVER be a non-null
+		// object. Two variants pin both removed paths (with-intentIds
+		// + without-intentIds) -- a single-branch gate that only
+		// fired when intentIds were also present would let the
+		// "no intentIds, just object receipt" variant slip through.
+		// Variant 1: receipt object + intentIds (was the old mutex case).
 		await expect(expenseUpdate(
 			CALLER_UID,
 			{
@@ -794,15 +819,24 @@ describe('expenseUpdate with intentIds (Phase 3.5)', () => {
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(ExpenseValidationError)
+		// Variant 2: receipt object alone, no intentIds (legacy direct
+		// update path Phase 3.5 closes).
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				patch: { receipt: { url: 'https://x', path: 'p', type: 'image/webp' } },
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(ExpenseValidationError)
 	})
 
-	it('intentIds with patch.receipt=null still allowed (deletion via null, not via intentIds=[])', async () => {
-		// Subtle: receipt=null means "delete current receipt". intentIds
-		// is for "set a new receipt". They are different operations and
-		// the API treats `patch.receipt: null` as the deletion sentinel.
-		// Passing intentIds + receipt=null in same request is rejected
-		// because the mutual-exclusion check fires on any defined value
-		// of patch.receipt (including null).
+	it('rejects intentIds + patch.receipt=null in same request (contradictory ops)', async () => {
+		// patch.receipt=null is the deletion sentinel; intentIds means
+		// "set new receipt". These are contradictory and the gate still
+		// rejects the combo. Distinct from the legacy "any non-null
+		// receipt rejected" branch because null is still a legitimate
+		// patch value when it's the ONLY receipt-related field.
 		await expect(expenseUpdate(
 			CALLER_UID,
 			{

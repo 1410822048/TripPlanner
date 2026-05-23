@@ -12,6 +12,7 @@ import { describe, it, expect } from 'vitest'
 import {
 	ExpenseValidationError,
 	makeExpenseCreateSchema,
+	makeReceiptSchema,
 	validateExpenseCrossField,
 } from '../src/expense-validate'
 
@@ -39,7 +40,7 @@ function basePayload(overrides: Record<string, unknown> = {}) {
 }
 
 describe('expense schema (per-field) - makeExpenseCreateSchema', () => {
-	const schema = makeExpenseCreateSchema(TRIP_ID, EXPENSE_ID, BUCKET)
+	const schema = makeExpenseCreateSchema()
 
 	it('accepts a minimal valid payload', () => {
 		expect(schema.safeParse(basePayload()).success).toBe(true)
@@ -97,87 +98,21 @@ describe('expense schema (per-field) - makeExpenseCreateSchema', () => {
 		expect(schema.safeParse(basePayload({ splits: huge, amount: 51 })).success).toBe(false)
 	})
 
-	it('rejects receipt.path that doesn\'t match trips/<tripId>/expenses/<expenseId>/...', () => {
-		const wrongPath = 'trips/OTHER-TRIP/expenses/exp123/r.webp'
-		const res = schema.safeParse(basePayload({
-			receipt: {
-				url:  legitReceiptUrl(wrongPath),
-				path: wrongPath,
-				type: 'image/webp',
-			},
-		}))
-		expect(res.success).toBe(false)
-	})
-
-	it('accepts receipt with matching tripId+expenseId path AND matching URL origin', () => {
+	it('silently strips client-supplied receipt key (legacy direct-path closed in 4c)', () => {
+		// Sanity-check the post-4c contract: receipt is NOT a field on
+		// makeExpenseCreateSchema. Zod's default strip() behavior makes
+		// the unknown key disappear from parsed output. Combined with
+		// the gate-level rejection in doCreate / doUpdate, this means a
+		// client-supplied receipt can never reach Firestore via this
+		// path. Receipt validation (URL/path binding, mime allowlist)
+		// is covered by the separate `makeReceiptSchema` block below,
+		// applied to Worker-built receipts via validateBuiltReceipt.
 		const path = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/r.webp`
 		const res = schema.safeParse(basePayload({
-			receipt: {
-				url:  legitReceiptUrl(path),
-				path,
-				type: 'image/webp',
-			},
+			receipt: { url: legitReceiptUrl(path), path, type: 'image/webp' },
 		}))
 		expect(res.success).toBe(true)
-	})
-
-	// ── P1 regression: receipt URL must be bound to receipt path ──
-	//
-	// Pre-fix the Worker only checked the path regex; the URL was
-	// accepted as any string passing z.string().url(). An attacker
-	// could submit a legit-looking path but a hostile URL pointing
-	// at an external server -- the Firestore doc gets written,
-	// then the UI later renders an evil image from off-platform.
-	// Worker now mirrors firestore.rules' validStorageUrlFor.
-
-	it('rejects receipt.url pointing at an off-Firebase origin (URL origin binding)', () => {
-		const path = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/r.webp`
-		const res = schema.safeParse(basePayload({
-			receipt: {
-				url:  'https://evil.example.com/track.png',   // <-- external host
-				path,
-				type: 'image/webp',
-			},
-		}))
-		expect(res.success).toBe(false)
-	})
-
-	it('rejects receipt.url whose Storage path doesn\'t match receipt.path (binding mismatch)', () => {
-		const path = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/r.webp`
-		const wrongPath = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/something-else.webp`
-		const res = schema.safeParse(basePayload({
-			receipt: {
-				url:  legitReceiptUrl(wrongPath),  // URL encodes wrongPath, not path
-				path,
-				type: 'image/webp',
-			},
-		}))
-		expect(res.success).toBe(false)
-	})
-
-	it('rejects thumbUrl whose Storage path doesn\'t match thumbPath', () => {
-		const path = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/r.webp`
-		const thumbPath = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/r.thumb.webp`
-		const res = schema.safeParse(basePayload({
-			receipt: {
-				url:       legitReceiptUrl(path),
-				path,
-				type:      'image/webp',
-				thumbUrl:  legitReceiptUrl(path),  // <-- main path, not thumb path
-				thumbPath,
-			},
-		}))
-		expect(res.success).toBe(false)
-	})
-
-	it('accepts URL with arbitrary query string (token/alt=media) on top of correct base', () => {
-		const path = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/r.webp`
-		const enc = path.replace(/\//g, '%2F')
-		const url = `https://firebasestorage.googleapis.com/v0/b/${BUCKET}/o/${enc}?alt=media&token=ffffffff-ffff-ffff-ffff-ffffffffffff&extra=ignored`
-		const res = schema.safeParse(basePayload({
-			receipt: { url, path, type: 'image/webp' },
-		}))
-		expect(res.success).toBe(true)
+		expect((res as { data: Record<string, unknown> }).data.receipt).toBeUndefined()
 	})
 
 	it('rejects items[] exceeding the DoS cap (100)', () => {
@@ -623,5 +558,102 @@ describe('validateExpenseCrossField - settlement-engine integrity', () => {
 			return
 		}
 		expect.fail('should have thrown')
+	})
+})
+
+// ── makeReceiptSchema ────────────────────────────────────────────────
+//
+// After Phase 3.5 commit 4c the client can no longer supply a receipt
+// shape; the Worker builds it from consumed upload intents and validates
+// the built object through this schema as defense-in-depth. The tests
+// that used to live under makeExpenseCreateSchema (URL origin binding,
+// path mismatch, thumbUrl pairing) moved here -- the receipt-shape
+// invariants are the same, just exercised directly on the receipt
+// schema rather than via an outer create body.
+
+describe('makeReceiptSchema (Worker-built receipt validation)', () => {
+	const schema = makeReceiptSchema(TRIP_ID, EXPENSE_ID, BUCKET)
+	const okPath = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/r.webp`
+
+	it('accepts a minimal valid receipt', () => {
+		const res = schema.safeParse({
+			url:  legitReceiptUrl(okPath),
+			path: okPath,
+			type: 'image/webp',
+		})
+		expect(res.success).toBe(true)
+	})
+
+	it('rejects receipt.path that doesn\'t match trips/<tripId>/expenses/<expenseId>/...', () => {
+		const wrongPath = 'trips/OTHER-TRIP/expenses/exp123/r.webp'
+		const res = schema.safeParse({
+			url:  legitReceiptUrl(wrongPath),
+			path: wrongPath,
+			type: 'image/webp',
+		})
+		expect(res.success).toBe(false)
+	})
+
+	// P1 regression: receipt URL must be bound to receipt path. Pre-fix
+	// the schema only checked the path regex; URL was any z.string().url().
+	// An attacker could submit a legit-looking path but a hostile URL
+	// pointing at an external server -- the Firestore doc gets written,
+	// then the UI renders an evil image from off-platform.
+
+	it('rejects receipt.url pointing at an off-Firebase origin (URL origin binding)', () => {
+		const res = schema.safeParse({
+			url:  'https://evil.example.com/track.png',
+			path: okPath,
+			type: 'image/webp',
+		})
+		expect(res.success).toBe(false)
+	})
+
+	it('rejects receipt.url whose Storage path doesn\'t match receipt.path (binding mismatch)', () => {
+		const wrongPath = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/something-else.webp`
+		const res = schema.safeParse({
+			url:  legitReceiptUrl(wrongPath),  // URL encodes wrongPath, not okPath
+			path: okPath,
+			type: 'image/webp',
+		})
+		expect(res.success).toBe(false)
+	})
+
+	it('rejects thumbUrl whose Storage path doesn\'t match thumbPath', () => {
+		const thumbPath = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/r.thumb.webp`
+		const res = schema.safeParse({
+			url:       legitReceiptUrl(okPath),
+			path:      okPath,
+			type:      'image/webp',
+			thumbUrl:  legitReceiptUrl(okPath),  // main path, not thumb path
+			thumbPath,
+		})
+		expect(res.success).toBe(false)
+	})
+
+	it('rejects thumbUrl without paired thumbPath (and vice versa)', () => {
+		const thumbOnly = schema.safeParse({
+			url:      legitReceiptUrl(okPath),
+			path:     okPath,
+			type:     'image/webp',
+			thumbUrl: legitReceiptUrl(okPath),
+		})
+		expect(thumbOnly.success).toBe(false)
+	})
+
+	it('rejects type outside the RECEIPT_MIME allowlist', () => {
+		const res = schema.safeParse({
+			url:  legitReceiptUrl(okPath),
+			path: okPath,
+			type: 'application/zip' as unknown as 'image/webp',
+		})
+		expect(res.success).toBe(false)
+	})
+
+	it('accepts URL with arbitrary query string (token/alt=media) on top of correct base', () => {
+		const enc = okPath.replace(/\//g, '%2F')
+		const url = `https://firebasestorage.googleapis.com/v0/b/${BUCKET}/o/${enc}?alt=media&token=ffffffff-ffff-ffff-ffff-ffffffffffff&extra=ignored`
+		const res = schema.safeParse({ url, path: okPath, type: 'image/webp' })
+		expect(res.success).toBe(true)
 	})
 })

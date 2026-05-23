@@ -66,7 +66,22 @@ function urlMatchesPath(url: string, path: string, bucket: string): boolean {
   return actualBase === expectedBase
 }
 
-function makeReceiptSchema(tripId: string, expenseId: string, bucket: string) {
+/**
+ * Validates the Worker-built receipt object before it gets written to
+ * the expense doc. After Phase 3.5 commit 4c the client can never
+ * supply this shape directly -- it's always constructed server-side
+ * from consumed upload intents (`buildReceiptFromIntents` in
+ * expense-write.ts). Validation here is defense-in-depth: if an intent
+ * ever produced a malformed URL / path mismatch, we want a clear error
+ * at write time rather than a corrupt receipt landing in Firestore.
+ *
+ * Exported so expense-write.ts can call it directly on the built
+ * receipt -- previously this was reached indirectly via the inner
+ * `receipt:` field of makeExpenseCreate/UpdateSchema. That field was
+ * removed in 4c so the body validation schemas only carry client-
+ * supplied fields.
+ */
+export function makeReceiptSchema(tripId: string, expenseId: string, bucket: string) {
   const pathRe = new RegExp(`^trips/${tripId}/expenses/${expenseId}/.+`)
   return z.object({
     url:       z.string().url().max(2048),
@@ -116,18 +131,17 @@ const ExpenseItemSchema = z.object({
   assignees: z.array(z.string().min(1).max(UID_MAX)).min(1),
 })
 
-/** Full create payload — the FULL expense doc state the Worker will
- *  setDoc. createdBy/updatedBy/audit timestamps are filled by the
- *  Worker (not trusted from client). memberIds also Worker-supplied.
- *  `bucket` threads through so the receipt URL/path binding check
- *  knows which Firebase Storage bucket to expect.
+/** Full create payload — the FULL client-supplied expense body the
+ *  Worker will validate before write. createdBy/updatedBy/audit
+ *  timestamps, memberIds, and (post-4c) `receipt` are server-supplied
+ *  and NOT in this schema.
  *
  *  Items + items[].assignees carry DoS caps -- items array <=100,
  *  each item's assignees <= MEMBERS roster size (enforced in the
  *  cross-field pass), and the per-assignee uid is the standard
  *  Firebase uid length cap of 128 chars (via z.string().min(1)
  *  with implicit upper bound from memberIds.includes check). */
-export function makeExpenseCreateSchema(tripId: string, expenseId: string, bucket: string) {
+export function makeExpenseCreateSchema() {
   return z.object({
     title:    z.string().min(1).max(200),
     // 1B major units is a defensive sanity cap: ¥1B / $1B is far above
@@ -151,20 +165,23 @@ export function makeExpenseCreateSchema(tripId: string, expenseId: string, bucke
     items:    z.array(ExpenseItemSchema.extend({
       assignees: z.array(z.string().min(1).max(UID_MAX)).min(1).max(50),
     })).max(100).optional(),
-    receipt:  makeReceiptSchema(tripId, expenseId, bucket).optional(),
   })
 }
 export type ExpenseCreateInput = z.infer<ReturnType<typeof makeExpenseCreateSchema>>
 
-/** Update payload — partial. `receipt` can additionally be `null`
- *  meaning "drop the receipt field" (deleteField semantic). Worker
- *  reads current doc, merges, then re-validates the merged state. */
-export function makeExpenseUpdateSchema(tripId: string, expenseId: string, bucket: string) {
-  return makeExpenseCreateSchema(tripId, expenseId, bucket).partial().extend({
-    receipt: makeReceiptSchema(tripId, expenseId, bucket).nullable().optional(),
-  })
+/** Update payload — partial of the create body. `receipt` is handled
+ *  out-of-band by the Worker (deletion sentinel `null` or new intent-
+ *  driven attachment) and is not part of this schema. */
+export function makeExpenseUpdateSchema() {
+  return makeExpenseCreateSchema().partial()
 }
 export type ExpenseUpdateInput = z.infer<ReturnType<typeof makeExpenseUpdateSchema>>
+
+/** Output shape of `buildReceiptFromIntents` + the Worker-stored
+ *  receipt field in Firestore. Defined here next to `makeReceiptSchema`
+ *  so the schema, the validated output, and the encoder all reference
+ *  the same single source of truth. */
+export type ExpenseReceiptOut = z.infer<ReturnType<typeof makeReceiptSchema>>
 
 // ─── Cross-field validation (needs trip member roster) ────────────
 
