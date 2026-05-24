@@ -1405,6 +1405,193 @@ describe('settlement create: chronological-replay integrity', () => {
   })
 })
 
+// ─── Settlement rule guards (full coverage) ────────────────────────
+// Receiver-only invariant + distinct-payer + amount/currency shape +
+// append-only (no update) + recorder-or-owner delete. Each predicate
+// in the create rule has its own deny test so a rule regression that
+// loosens any one of them surfaces here, not in prod.
+describe('/trips/{tripId}/settlements rule guards', () => {
+  const validSettlement = (overrides: Record<string, unknown> = {}) => ({
+    tripId:    TRIP_ID,
+    settledBy: EDITOR_UID,
+    toUid:     EDITOR_UID,    // receiver = caller
+    fromUid:   VIEWER_UID,    // payer = distinct, real member
+    amount:    100,
+    currency:  'JPY',
+    createdAt: serverTimestamp(),
+    ...overrides,
+  })
+
+  test('editor (receiver) can create a settlement against a real distinct payer', async () => {
+    // Sanity anchor — every deny test below is meaningful only relative
+    // to this baseline succeeding.
+    await assertSucceeds(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-ok'),
+        validSettlement(),
+      ),
+    )
+  })
+
+  test('settlement with settledBy != uid is rejected (uid-forge guard)', async () => {
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-forge'),
+        validSettlement({ settledBy: OWNER_UID }),
+      ),
+    )
+  })
+
+  test('settlement with toUid != uid is rejected (receiver-only invariant)', async () => {
+    // The payer must NOT be able to record "I paid X"; only the
+    // receiver can ack receipt. Without this, a debtor could mark
+    // their own debt cleared without the creditor's confirmation —
+    // settlement audit log loses its single-source-of-truth property.
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-payer'),
+        validSettlement({ toUid: VIEWER_UID, fromUid: OWNER_UID }),
+      ),
+    )
+  })
+
+  test('settlement with fromUid == uid (self-settle) is rejected', async () => {
+    // toUid == uid (required) and fromUid != uid (required) together
+    // ensure recorder ≠ payer; a "Charlie 還我 ¥100" record fabricated
+    // with toUid == fromUid would not represent any real transfer.
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-self'),
+        validSettlement({ fromUid: EDITOR_UID }),
+      ),
+    )
+  })
+
+  test('settlement with fromUid not in trip members is rejected', async () => {
+    // exists(members/{fromUid}) blocks fabricating a settlement against
+    // a stranger uid — would pollute the audit log with a name the
+    // trip never had.
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-stranger-payer'),
+        validSettlement({ fromUid: STRANGER_UID }),
+      ),
+    )
+  })
+
+  test('settlement with amount == 0 is rejected', async () => {
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-zero'),
+        validSettlement({ amount: 0 }),
+      ),
+    )
+  })
+
+  test('settlement with negative amount is rejected', async () => {
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-neg'),
+        validSettlement({ amount: -100 }),
+      ),
+    )
+  })
+
+  test('settlement with non-integer amount is rejected', async () => {
+    // amount is locked to `int` — float amounts come from a buggy or
+    // forged client. Pinning at rules avoids the settlement engine
+    // having to deal with floating-point edge cases.
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-float'),
+        validSettlement({ amount: 100.5 }),
+      ),
+    )
+  })
+
+  test('settlement with currency != 3-char ISO code is rejected', async () => {
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-cur'),
+        validSettlement({ currency: 'JPYE' }),
+      ),
+    )
+  })
+
+  test('settlement update is rejected (no update rule = default deny)', async () => {
+    // Settlements are append-only. Edits go through delete+create.
+    // A regression that adds `allow update` would let an editor edit
+    // their own recorded amount without producing a new chronological
+    // event, silently corrupting the replay.
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'settlements', 's-imm'),
+        {
+          tripId: TRIP_ID, settledBy: EDITOR_UID, toUid: EDITOR_UID,
+          fromUid: VIEWER_UID, amount: 100, currency: 'JPY',
+          createdAt: serverTimestamp(),
+        },
+      )
+    })
+    await assertFails(
+      updateDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-imm'),
+        { amount: 1 },
+      ),
+    )
+  })
+
+  test('settlement delete by non-recorder non-owner is rejected', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'settlements', 's-del'),
+        {
+          tripId: TRIP_ID, settledBy: EDITOR_UID, toUid: EDITOR_UID,
+          fromUid: VIEWER_UID, amount: 100, currency: 'JPY',
+          createdAt: serverTimestamp(),
+        },
+      )
+    })
+    // Viewer is a trip member but neither the recorder nor the owner —
+    // can read but not delete someone else's settlement.
+    await assertFails(
+      deleteDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-del')),
+    )
+  })
+
+  test('settlement delete by recorder succeeds (recorder undoing)', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'settlements', 's-self-del'),
+        {
+          tripId: TRIP_ID, settledBy: EDITOR_UID, toUid: EDITOR_UID,
+          fromUid: VIEWER_UID, amount: 100, currency: 'JPY',
+          createdAt: serverTimestamp(),
+        },
+      )
+    })
+    await assertSucceeds(
+      deleteDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-self-del')),
+    )
+  })
+
+  test('settlement delete by trip owner succeeds (moderation path)', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'settlements', 's-mod'),
+        {
+          tripId: TRIP_ID, settledBy: EDITOR_UID, toUid: EDITOR_UID,
+          fromUid: VIEWER_UID, amount: 100, currency: 'JPY',
+          createdAt: serverTimestamp(),
+        },
+      )
+    })
+    await assertSucceeds(
+      deleteDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-mod')),
+    )
+  })
+})
+
 // ─── Planning: hasOnly() allowlist + is-string type guards ─────────
 describe('/trips/{tripId}/planning shape guards', () => {
   test('planning create with extra unrecognized field is rejected', async () => {
@@ -1540,6 +1727,71 @@ describe('/trips/{tripId}/schedules shape guards', () => {
         baseSchedule({
           location: { name: 'Tokyo Tower', lat: 35.6586, lng: 139.7454 },
         })),
+    )
+  })
+})
+
+// ─── memberIdsMatchTrip create-time injection guards ───────────────
+// Every collaborative entity (booking/schedule/wish/planning) uses
+// `memberIdsMatchTrip(tripId)` on create to block a raw-SDK editor
+// from injecting stranger uids into the new doc's memberIds[]. The
+// per-entity describe blocks above test happy-path with the correct
+// roster; here we pin the rejection path: a superset including any
+// uid not in the trip's memberIds must fail across ALL four entities.
+// Without this guard, a malicious editor could fake "stranger is on
+// this trip" and surface the doc on the stranger's UI (via the
+// memberIds array-contains list filter every page uses).
+describe('memberIdsMatchTrip create-time injection guards', () => {
+  const withStranger = [OWNER_UID, EDITOR_UID, VIEWER_UID, STRANGER_UID]
+
+  test('booking create with stranger uid injected into memberIds is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-inj'), {
+        tripId: TRIP_ID, type: 'hotel', title: 'Injection attempt',
+        memberIds: withStranger,
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        sortDate:  serverTimestamp(),
+      }),
+    )
+  })
+
+  test('schedule create with stranger uid injected into memberIds is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-inj'), {
+        tripId: TRIP_ID, date: '2026-05-22', order: 0,
+        title: 'Injection attempt', category: 'activity',
+        memberIds: withStranger,
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('wish create with stranger uid injected into memberIds is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-inj'), {
+        tripId: TRIP_ID, category: 'place', title: 'Injection attempt',
+        proposedBy: EDITOR_UID, updatedBy: EDITOR_UID, votes: [EDITOR_UID],
+        memberIds: withStranger,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('planning create with stranger uid injected into memberIds is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-inj'), {
+        tripId: TRIP_ID, category: 'essentials', title: 'Injection attempt',
+        done: false,
+        memberIds: withStranger,
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }),
     )
   })
 })
@@ -1794,6 +2046,195 @@ describe('/uploadIntents/{intentId} client deny-all (Phase 3.5)', () => {
   test('list query on uploadIntents is rejected (no enumeration)', async () => {
     await assertFails(
       getDocs(query(collection(asEditor(env).firestore(), 'uploadIntents'))),
+    )
+  })
+})
+
+// ─── Invites rule guards ───────────────────────────────────────────
+// /trips/{tripId}/invites/{token} — owner mints reusable invite docs
+// (token is the 256-bit URL fragment, doc presence == valid). Critical
+// invariants:
+//   - Only owner can create (mint new tokens)
+//   - expiresAt must be in the future (no backdated / pre-expired)
+//   - No update path (rotation is delete+create batch)
+//   - Only owner can delete (revoke)
+//   - List is owner-only (management UI); get is open so any signed-in
+//     user can redeem a known token
+describe('/trips/{tripId}/invites rule guards', () => {
+  const TOKEN = 'invite-token-1'
+  const validInvite = (overrides: Record<string, unknown> = {}) => ({
+    tripId:    TRIP_ID,
+    createdBy: OWNER_UID,
+    role:      'editor' as const,
+    tripTitle: 'Test Trip',
+    tripIcon:  'plane',
+    expiresAt: Timestamp.fromMillis(Date.now() + 24 * 60 * 60_000),
+    ...overrides,
+  })
+
+  test('owner can create an invite', async () => {
+    await assertSucceeds(
+      setDoc(
+        doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'invites', TOKEN),
+        validInvite(),
+      ),
+    )
+  })
+
+  test('editor cannot create an invite (owner-only mint)', async () => {
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'invites', 'inv-edt'),
+        validInvite({ createdBy: EDITOR_UID }),
+      ),
+    )
+  })
+
+  test('viewer cannot create an invite', async () => {
+    await assertFails(
+      setDoc(
+        doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'invites', 'inv-vw'),
+        validInvite({ createdBy: VIEWER_UID }),
+      ),
+    )
+  })
+
+  test('invite with role="owner" is rejected (privilege escalation guard)', async () => {
+    // Role allowlist `['editor', 'viewer']` prevents an invite from
+    // minting a co-owner. A redeemer accepting such an invite would
+    // gain owner-only powers (trip delete, member moderation) — strict
+    // deny at rules layer matters because the redeem flow on the
+    // accept side trusts invite.role.
+    await assertFails(
+      setDoc(
+        doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'invites', 'inv-owner'),
+        validInvite({ role: 'owner' as never }),
+      ),
+    )
+  })
+
+  test('invite with backdated (already-expired) expiresAt is rejected', async () => {
+    // expiresAt > request.time enforces forward-dating. A backdated
+    // invite would be either useless (already expired) or evidence of
+    // a client trying something unsupported — rules-layer rejection
+    // catches it before the doc lands.
+    await assertFails(
+      setDoc(
+        doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'invites', 'inv-bd'),
+        validInvite({ expiresAt: Timestamp.fromMillis(Date.now() - 60_000) }),
+      ),
+    )
+  })
+
+  test('invite update is rejected (no update rule = immutable, rotate via delete+create)', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'invites', 'inv-imm'),
+        {
+          tripId: TRIP_ID, createdBy: OWNER_UID, role: 'editor',
+          tripTitle: 'Test Trip', tripIcon: 'plane',
+          expiresAt: Timestamp.fromMillis(Date.now() + 24 * 60 * 60_000),
+        },
+      )
+    })
+    // Owner attempts to extend expiry in-place — should fail; rotation
+    // goes through delete+create writeBatch in createInvite.
+    await assertFails(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'invites', 'inv-imm'),
+        { expiresAt: Timestamp.fromMillis(Date.now() + 72 * 60 * 60_000) },
+      ),
+    )
+  })
+
+  test('signed-in non-member can getDoc an invite by known token (redeem happy path)', async () => {
+    // The redeem flow at /invite/:tripId#token loads the invite doc
+    // to render preview (tripTitle / tripIcon / role) before the user
+    // accepts. The token in the URL fragment IS the auth — anyone who
+    // knows it should be able to read the doc and decide whether to
+    // accept. `allow get: if isSignedIn()` is the rule under test;
+    // a regression to `if isTripOwner(tripId)` would break every
+    // invite redeem from outside the trip.
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'invites', 'inv-redeem'),
+        {
+          tripId: TRIP_ID, createdBy: OWNER_UID, role: 'editor',
+          tripTitle: 'Test Trip', tripIcon: 'plane',
+          expiresAt: Timestamp.fromMillis(Date.now() + 24 * 60 * 60_000),
+        },
+      )
+    })
+    await assertSucceeds(
+      getDoc(doc(asStranger(env).firestore(), 'trips', TRIP_ID, 'invites', 'inv-redeem')),
+    )
+  })
+
+  test('anonymous user cannot getDoc an invite (signed-in gate)', async () => {
+    // Pairs with the above — get is open to signed-in users, NOT
+    // anonymous. Keeps spam / unauthenticated enumeration off the
+    // surface even if someone guesses a token.
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'invites', 'inv-anon'),
+        {
+          tripId: TRIP_ID, createdBy: OWNER_UID, role: 'editor',
+          tripTitle: 'Test Trip', tripIcon: 'plane',
+          expiresAt: Timestamp.fromMillis(Date.now() + 24 * 60 * 60_000),
+        },
+      )
+    })
+    await assertFails(
+      getDoc(doc(asAnon(env).firestore(), 'trips', TRIP_ID, 'invites', 'inv-anon')),
+    )
+  })
+
+  test('owner can delete an invite (revoke happy path)', async () => {
+    // Owner revoke is the second declared write surface. Without a
+    // happy-path test, a regression tightening `allow delete` to
+    // `false` would still pass the non-owner deny test below — both
+    // would assertFails — and we'd only catch it when an owner tries
+    // to rotate / revoke in prod.
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'invites', 'inv-revoke'),
+        {
+          tripId: TRIP_ID, createdBy: OWNER_UID, role: 'editor',
+          tripTitle: 'Test Trip', tripIcon: 'plane',
+          expiresAt: Timestamp.fromMillis(Date.now() + 24 * 60 * 60_000),
+        },
+      )
+    })
+    await assertSucceeds(
+      deleteDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'invites', 'inv-revoke')),
+    )
+  })
+
+  test('non-owner cannot delete an invite (revoke is owner-only)', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'invites', 'inv-del'),
+        {
+          tripId: TRIP_ID, createdBy: OWNER_UID, role: 'editor',
+          tripTitle: 'Test Trip', tripIcon: 'plane',
+          expiresAt: Timestamp.fromMillis(Date.now() + 24 * 60 * 60_000),
+        },
+      )
+    })
+    await assertFails(
+      deleteDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'invites', 'inv-del')),
+    )
+  })
+
+  test('non-owner cannot list invites (management UI is owner-only)', async () => {
+    await assertFails(
+      getDocs(query(collection(asEditor(env).firestore(), 'trips', TRIP_ID, 'invites'))),
+    )
+  })
+
+  test('owner can list invites (management UI happy path)', async () => {
+    await assertSucceeds(
+      getDocs(query(collection(asOwner(env).firestore(), 'trips', TRIP_ID, 'invites'))),
     )
   })
 })
