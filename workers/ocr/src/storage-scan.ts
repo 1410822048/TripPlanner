@@ -117,6 +117,22 @@ const ABUSE_THRESHOLD = 50
  *  it against, so fail-closed: don't delete what we can't reason about. */
 const PATH_RE = /^trips\/([^/]+)\/(expenses|bookings|wishes)\/([^/]+)\//
 
+/** Strict shape gate for `customMetadata.uploadIntentId`. Worker mints
+ *  IDs via `crypto.randomUUID().replace(/-/g, '')` -- a 32-char
+ *  lowercase-hex string. A loose `length === 32` check would let an
+ *  attacker embed `/` (or any other char) in the metadata via raw SDK
+ *  upload, producing a malformed Firestore path `trips/X/uploadIntents/aa.../bb...`
+ *  that the cross-service read rejects with 400. The catch below would
+ *  count that as `readErrors` and skip delete -- a fail-closed leak
+ *  that lets the orphan persist indefinitely.
+ *
+ *  Tightening here (not in storage.rules) on purpose: the rules layer
+ *  is intentionally a "stable gate" of size + path bindings; this
+ *  scanner is the defence-in-depth catch-all. Anything that doesn't
+ *  match this regex falls through to the entity recheck unchanged --
+ *  including the legitimate "pre-Phase-3.5 blob has no intentId" case. */
+const VALID_INTENT_ID = /^[0-9a-f]{32}$/
+
 interface ParsedPath {
   tripId:     string
   collection: ValidCollection
@@ -138,14 +154,19 @@ export interface StorageScanReport {
   referenced:    number
   /** Skipped: an unexpired pending uploadIntent still claims this blob.
    *  Worker consume hasn't run yet (client crashed mid-finalize / slow
-   *  network); blob is temporarily reserved. Treated as defense-in-
+   *  network); blob is temporarily reserved. Treated as defence-in-
    *  depth on top of the 24h grace window: the grace already covers
-   *  realistic upload timings, but this gate also covers the rare case
-   *  where a blob older than 24h still has a pending intent (e.g.
-   *  scheduled cron and upload-intent-purge ran out of order, intent
-   *  doc still present despite expiresAt in the past). Worker consume
-   *  is the authoritative validator -- this scanner just declines to
-   *  delete while consume's input is still discoverable. */
+   *  realistic upload timings, but this gate is what holds the line if
+   *  intent TTL ever lengthens past the 24h grace, or if clock skew
+   *  between cron and Firestore put the blob age past grace while the
+   *  intent itself still reads as unexpired.
+   *
+   *  Note: only `status='pending' && expiresAt > now` counts here.
+   *  Expired-but-not-yet-purged intent docs fall through to the entity
+   *  recheck (Worker would reject consume on them anyway, so the blob
+   *  is genuinely abandoned). Worker consume is the authoritative
+   *  validator -- this scanner just declines to delete while consume's
+   *  input is still live. */
   pendingIntent: number
   /** Skipped: object timeCreated is within the 24h grace window. */
   freshSkipped:  number
@@ -298,29 +319,43 @@ export async function scanOrphanStorage(
         report.deadlineHit = true
         return
       }
-      // Each candidate uses at most 3 subrequests: pending-intent
-      // recheck (optional) + entity recheck + optional Storage delete.
-      // Reserve all three upfront so we don't start a read we can't
-      // finish-and-delete on -- gate identically for still-referenced
-      // and delete-needed paths.
-      if (subreq.used + 3 > budget) {
+      // Decide upfront whether we'll do the intent recheck. Only blobs
+      // with a well-formed (lowercase-hex, length-32) intentId trigger
+      // the extra Firestore read; everything else falls through to the
+      // entity check unchanged. VALID_INTENT_ID rejection includes the
+      // malformed-but-32-chars case (e.g. attacker stuffing `/` into
+      // metadata) -- those skip the intent path entirely so we don't
+      // burn a subrequest on a request the Firestore REST API would
+      // reject with 400 anyway.
+      const intentId = obj.metadata?.uploadIntentId
+      const hasValidIntent = typeof intentId === 'string' && VALID_INTENT_ID.test(intentId)
+
+      // Per-candidate subrequest reservation: 1 entity read + 1
+      // optional Storage delete, plus 1 intent recheck when applicable.
+      // Reserving precisely (2 or 3) keeps the budget gate accurate for
+      // pre-Phase-3.5 blobs without metadata -- a flat reservation of 3
+      // would prematurely trip budgetHit on a page dominated by legacy
+      // blobs that only need 2 subrequests each.
+      const reservation = hasValidIntent ? 3 : 2
+      if (subreq.used + reservation > budget) {
         report.budgetHit = true
         return
       }
       try {
         // Pending-intent safety net (Phase 3.5 Final Design section
-        // 3B). If the blob carries an intentId and that intent doc
-        // still says `status='pending'` with `expiresAt > now`, Worker
-        // consume hasn't yet finalised this upload. Skip deletion --
-        // either consume will land momentarily, or upload-intent-purge
-        // will move it out of pending and the next scan cycle catches
-        // it as orphan. Defense-in-depth on top of the 24h grace.
+        // 3B). If the blob carries a valid intentId and that intent
+        // doc still says `status='pending'` with `expiresAt > now`,
+        // Worker consume hasn't yet finalised this upload. Skip
+        // deletion -- either consume will land momentarily, or
+        // upload-intent-purge will move it out of pending and the next
+        // scan cycle catches it as orphan. Defence-in-depth on top of
+        // the 24h grace.
         //
         // Blobs without `metadata.uploadIntentId` (legacy / pre-Phase-
-        // 3.5 uploads) fall straight through to the entity check; the
-        // entity-recheck contract is unchanged for them.
-        const intentId = obj.metadata?.uploadIntentId
-        if (intentId && intentId.length === 32) {
+        // 3.5 uploads) or with a malformed value fall straight through
+        // to the entity check; the entity-recheck contract is unchanged
+        // for them.
+        if (hasValidIntent) {
           subreq.used += 1
           const intentPath = `trips/${parsed.tripId}/uploadIntents/${intentId}`
           const intentFields = await getDocFields(accessToken, projectId, intentPath)

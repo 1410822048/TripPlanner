@@ -615,6 +615,37 @@ describe('scanOrphanStorage', () => {
 		expect(report.deleted).toBe(1)
 	})
 
+	it('Phase 3.5: malformed 32-char intentId (contains "/") → skip intent recheck, fall through to entity', async () => {
+		// Regression: a length-only check would let an attacker stuff
+		// path separators into metadata via raw SDK upload, producing a
+		// malformed Firestore path that the cross-service read rejects
+		// with 400 → catch → readErrors+1 → blob NEVER deleted. With the
+		// hex-shape gate the intent recheck is skipped entirely and the
+		// candidate goes straight to the entity check (which correctly
+		// identifies it as orphan and deletes).
+		const malformed  = 'aaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbb'  // 32 chars, contains '/'
+		expect(malformed).toHaveLength(32)
+		const orphanPath = `trips/${TRIP_ID}/expenses/exp-mal/r.webp`
+		mockSinglePage([{
+			name:        orphanPath,
+			timeCreated: OLD_ISO,
+			metadata:    { uploaderUid: 'attacker', uploadIntentId: malformed },
+		}])
+		vi.mocked(firestore.getDocFields).mockResolvedValueOnce(null)  // entity missing
+
+		const report = await scanOrphanStorage('{}', BUCKET)
+
+		// Only ONE Firestore call: the entity recheck. Intent path was
+		// never attempted (would have been the 400-failing call).
+		expect(firestore.getDocFields).toHaveBeenCalledTimes(1)
+		expect(vi.mocked(firestore.getDocFields).mock.calls[0]?.[2])
+			.toBe(`trips/${TRIP_ID}/expenses/exp-mal`)
+		expect(storage.deleteObject).toHaveBeenCalled()
+		expect(report.deleted).toBe(1)
+		expect(report.readErrors).toBe(0)
+		expect(report.pendingIntent).toBe(0)
+	})
+
 	it('Phase 3.5: intent recheck Firestore failure → fail-closed, blob NOT deleted', async () => {
 		// Mirrors the entity-recheck fail-closed contract. A transient
 		// 5xx on the intent doc read MUST NOT let the scan misclassify
