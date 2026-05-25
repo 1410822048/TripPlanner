@@ -35,6 +35,12 @@ vi.mock('../src/firestore', async () => {
 		getScanCursor:    vi.fn(async () => null),
 		setScanCursor:    vi.fn(async () => undefined),
 		clearScanCursor:  vi.fn(async () => undefined),
+		// Pure-decode helpers stay REAL: pending-intent recheck (Phase
+		// 3.5) calls readString + readTimestampMs on the intent doc;
+		// referencedPaths in orphan-purge.ts uses readNestedString.
+		// Mocking these would force every intent's status to undefined
+		// and break the pending-intent skip path.
+		readString:       actual.readString,
 		readNestedString: actual.readNestedString,
 		readTimestampMs:  actual.readTimestampMs,
 	}
@@ -437,10 +443,11 @@ describe('scanOrphanStorage', () => {
 	})
 
 	it('Phase 2: abuse threshold exceeded → captureMessage fires (warning)', async () => {
-		// ABUSE_THRESHOLD is 10; stage 12 orphans from same uid to trip it.
-		// Goal of the test: confirm the alert path is wired up + carries
-		// uid + count in tags/extra so Sentry rendering shows the abuser.
-		const ABUSE_COUNT = 12
+		// ABUSE_THRESHOLD is 50 (Phase 3.5 Final Design bump from initial
+		// 10); stage 52 orphans from same uid to trip it. Goal of the
+		// test: confirm the alert path is wired up + carries uid + count
+		// in tags/extra so Sentry rendering shows the abuser.
+		const ABUSE_COUNT = 52
 		const items = Array.from({ length: ABUSE_COUNT }, (_, i) => ({
 			name:        `trips/${TRIP_ID}/expenses/exp-${i}/p.webp`,
 			timeCreated: OLD_ISO,
@@ -456,10 +463,10 @@ describe('scanOrphanStorage', () => {
 		expect(sentry.captureMessage).toHaveBeenCalledTimes(1)
 		const call = vi.mocked(sentry.captureMessage).mock.calls[0]!
 		expect(call[0]).toBe(fakeEnv)                                          // env threaded
-		expect(call[1]).toMatch(/editor-abusive.*12/)                          // message has uid + count
+		expect(call[1]).toMatch(/editor-abusive.*52/)                          // message has uid + count
 		expect(call[2]).toBe('warning')                                        // severity level
 		expect(call[3]).toMatchObject({ uid: 'editor-abusive' })               // tags
-		expect(call[4]).toMatchObject({ orphanCount: ABUSE_COUNT, threshold: 10 })  // extra
+		expect(call[4]).toMatchObject({ orphanCount: ABUSE_COUNT, threshold: 50 })  // extra
 	})
 
 	it('Phase 2: under threshold → no Sentry; <unknown> uid never counted', async () => {
@@ -489,6 +496,145 @@ describe('scanOrphanStorage', () => {
 		expect(sentry.captureMessage).not.toHaveBeenCalled()
 		expect(report.orphansByUid['user-normal']).toBe(5)
 		expect(report.orphansByUid['<unknown>']).toBe(50)
+	})
+
+	it('Phase 3.5: blob with pending+unexpired intent → skip (pendingIntent), never delete', async () => {
+		// Phase 3.5 Final Design section 3B: defense-in-depth on top of
+		// the 24h grace. If the blob carries an intentId whose doc still
+		// says status='pending' with expiresAt in the future, Worker
+		// consume hasn't run yet. Skip deletion -- consume will either
+		// land momentarily or upload-intent-purge will move the intent
+		// out of 'pending' and the next scan catches the real orphan.
+		const intentId   = 'a'.repeat(32)
+		const orphanPath = `trips/${TRIP_ID}/expenses/exp-1/r.webp`
+		mockSinglePage([{
+			name:        orphanPath,
+			timeCreated: OLD_ISO,
+			metadata:    { uploaderUid: 'user-A', uploadIntentId: intentId },
+		}])
+		// Intent doc still pending + unexpired -- 5 min into the future.
+		vi.mocked(firestore.getDocFields).mockResolvedValueOnce({
+			status:    { stringValue: 'pending' },
+			expiresAt: { timestampValue: new Date(Date.now() + 5 * 60_000).toISOString() },
+		})
+
+		const report = await scanOrphanStorage('{}', BUCKET)
+
+		// Only the intent doc was fetched -- entity recheck short-circuited.
+		expect(firestore.getDocFields).toHaveBeenCalledTimes(1)
+		expect(vi.mocked(firestore.getDocFields).mock.calls[0]![2])
+			.toBe(`trips/${TRIP_ID}/uploadIntents/${intentId}`)
+		expect(storage.deleteObject).not.toHaveBeenCalled()
+		expect(report.pendingIntent).toBe(1)
+		expect(report.deleted).toBe(0)
+		expect(report.referenced).toBe(0)
+	})
+
+	it('Phase 3.5: blob with used intent → fall through to entity check', async () => {
+		// Once an intent is marked 'used' the Worker has consumed it.
+		// From that point the entity doc is the source of truth: if it
+		// references the blob we keep it (referenced), if not it's a
+		// real orphan (delete). This test exercises the orphan branch
+		// (entity gone after Worker consumed but before client patched).
+		const intentId   = 'b'.repeat(32)
+		const orphanPath = `trips/${TRIP_ID}/expenses/exp-2/r.webp`
+		mockSinglePage([{
+			name:        orphanPath,
+			timeCreated: OLD_ISO,
+			metadata:    { uploaderUid: 'user-A', uploadIntentId: intentId },
+		}])
+		// Intent doc is used (status='used' OR expired -- either path falls
+		// through). Sequenced mock: first call (intent) returns used,
+		// second call (entity) returns null → orphan.
+		vi.mocked(firestore.getDocFields)
+			.mockResolvedValueOnce({
+				status: { stringValue: 'used' },
+				usedAt: { timestampValue: new Date(Date.now() - 60_000).toISOString() },
+			})
+			.mockResolvedValueOnce(null)
+
+		const report = await scanOrphanStorage('{}', BUCKET)
+
+		// Two reads: intent (used) + entity (missing) → confirmed orphan.
+		expect(firestore.getDocFields).toHaveBeenCalledTimes(2)
+		expect(storage.deleteObject).toHaveBeenCalledWith(
+			'fake-admin-token', BUCKET, orphanPath,
+		)
+		expect(report.deleted).toBe(1)
+		expect(report.pendingIntent).toBe(0)
+	})
+
+	it('Phase 3.5: blob with expired pending intent → fall through (not pendingIntent)', async () => {
+		// An intent whose expiresAt is past is no longer a legitimate
+		// reference. Either the Worker missed its consume window or the
+		// client crashed mid-upload; upload-intent-purge will sweep the
+		// doc on its next run and the entity check determines fate now.
+		const intentId   = 'c'.repeat(32)
+		const orphanPath = `trips/${TRIP_ID}/expenses/exp-3/r.webp`
+		mockSinglePage([{
+			name:        orphanPath,
+			timeCreated: OLD_ISO,
+			metadata:    { uploaderUid: 'user-A', uploadIntentId: intentId },
+		}])
+		vi.mocked(firestore.getDocFields)
+			.mockResolvedValueOnce({
+				status:    { stringValue: 'pending' },
+				expiresAt: { timestampValue: new Date(Date.now() - 60_000).toISOString() },
+			})
+			.mockResolvedValueOnce(null)  // entity missing → orphan
+
+		const report = await scanOrphanStorage('{}', BUCKET)
+
+		expect(firestore.getDocFields).toHaveBeenCalledTimes(2)
+		expect(storage.deleteObject).toHaveBeenCalled()
+		expect(report.pendingIntent).toBe(0)
+		expect(report.deleted).toBe(1)
+	})
+
+	it('Phase 3.5: blob with intentId metadata but no intent doc → fall through', async () => {
+		// upload-intent-purge already swept the intent doc (expired pending
+		// past grace, or used past 7d retention). Blob still references a
+		// dead intent ID. Behaviour: fall through to entity recheck. If the
+		// entity references the blob we keep it (legitimate consumed
+		// upload); if not it's orphan.
+		const intentId   = 'd'.repeat(32)
+		const orphanPath = `trips/${TRIP_ID}/expenses/exp-4/r.webp`
+		mockSinglePage([{
+			name:        orphanPath,
+			timeCreated: OLD_ISO,
+			metadata:    { uploaderUid: 'user-A', uploadIntentId: intentId },
+		}])
+		vi.mocked(firestore.getDocFields)
+			.mockResolvedValueOnce(null)   // intent doc gone
+			.mockResolvedValueOnce(null)   // entity missing → orphan
+
+		const report = await scanOrphanStorage('{}', BUCKET)
+
+		expect(firestore.getDocFields).toHaveBeenCalledTimes(2)
+		expect(storage.deleteObject).toHaveBeenCalled()
+		expect(report.deleted).toBe(1)
+	})
+
+	it('Phase 3.5: intent recheck Firestore failure → fail-closed, blob NOT deleted', async () => {
+		// Mirrors the entity-recheck fail-closed contract. A transient
+		// 5xx on the intent doc read MUST NOT let the scan misclassify
+		// a possibly-still-pending upload as orphan and delete it.
+		const intentId   = 'e'.repeat(32)
+		const orphanPath = `trips/${TRIP_ID}/expenses/exp-5/r.webp`
+		mockSinglePage([{
+			name:        orphanPath,
+			timeCreated: OLD_ISO,
+			metadata:    { uploaderUid: 'user-A', uploadIntentId: intentId },
+		}])
+		vi.mocked(firestore.getDocFields).mockRejectedValueOnce(
+			new Error('getDocFields -> 503 backend overload'),
+		)
+
+		const report = await scanOrphanStorage('{}', BUCKET)
+
+		expect(storage.deleteObject).not.toHaveBeenCalled()
+		expect(report.readErrors).toBe(1)
+		expect(report.deleted).toBe(0)
 	})
 
 	it('deleteObject returns false (404, already gone) → NOT counted as deleted', async () => {

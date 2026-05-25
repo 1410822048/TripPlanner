@@ -42,7 +42,7 @@
 // Storage delete failures bubble up to the per-candidate try/catch and
 // log; no retry budget (this is a daily cron, tomorrow tries again).
 import { listObjects, deleteObject } from './storage'
-import { getDocFields, getScanCursor, setScanCursor, clearScanCursor } from './firestore'
+import { getDocFields, getScanCursor, setScanCursor, clearScanCursor, readString, readTimestampMs } from './firestore'
 import { referencedPaths, type ValidCollection } from './orphan-purge'
 import { getAdminToken, getProjectId } from './admin'
 import { captureMessage } from './sentry'
@@ -100,12 +100,15 @@ const SCAN_KEY = 'storageScan'
  *  this many confirmed orphan blobs in one scan run fires a Sentry
  *  warning. Tuned to absorb the realistic "user replaced their receipt
  *  several times" pattern (legitimate, 1-3 orphans) while still
- *  catching raw-SDK loop abuse (typically 10s-100s of orphans in a
- *  short window). Starts at 10/run; adjust after observing real
- *  baselines. Note: per RUN, not per day -- a single daily cron
- *  invocation -- so a slow drip across multiple days wouldn't trigger
- *  here (caught by future cumulative analysis if needed). */
-const ABUSE_THRESHOLD = 10
+ *  catching raw-SDK loop abuse (typically 100s of orphans in a short
+ *  window). Phase 3.5 Final Design pins this at 50/run -- bumped from
+ *  the initial 10/run baseline now that we have intent-bound metadata
+ *  attribution (legitimate replace-receipt flows hit ~3-5 orphans per
+ *  user-week, well below 50). Adjust after observing real baselines.
+ *  Note: per RUN, not per day -- a single daily cron invocation -- so
+ *  a slow drip across multiple days wouldn't trigger here (caught by
+ *  future cumulative analysis if needed). */
+const ABUSE_THRESHOLD = 50
 
 /** Storage path under `trips/` that the scan recognizes. Matches the
  *  3 collections that actually hold attachments; anything else (e.g.
@@ -133,6 +136,17 @@ export interface StorageScanReport {
   deleted:       number
   /** Skipped: entity doc still references this path -- false alarm. */
   referenced:    number
+  /** Skipped: an unexpired pending uploadIntent still claims this blob.
+   *  Worker consume hasn't run yet (client crashed mid-finalize / slow
+   *  network); blob is temporarily reserved. Treated as defense-in-
+   *  depth on top of the 24h grace window: the grace already covers
+   *  realistic upload timings, but this gate also covers the rare case
+   *  where a blob older than 24h still has a pending intent (e.g.
+   *  scheduled cron and upload-intent-purge ran out of order, intent
+   *  doc still present despite expiresAt in the past). Worker consume
+   *  is the authoritative validator -- this scanner just declines to
+   *  delete while consume's input is still discoverable. */
+  pendingIntent: number
   /** Skipped: object timeCreated is within the 24h grace window. */
   freshSkipped:  number
   /** Skipped: path doesn't match `trips/X/(expenses|bookings|wishes)/Y/...`
@@ -197,7 +211,7 @@ export async function scanOrphanStorage(
   const subreq      = { used: 0 }
   const report: StorageScanReport = {
     scanned: 0, deleted: 0, referenced: 0,
-    freshSkipped: 0, unparseable: 0,
+    pendingIntent: 0, freshSkipped: 0, unparseable: 0,
     readErrors: 0, deleteErrors: 0,
     deadlineHit: false, budgetHit: false,
     orphansByUid: {},
@@ -255,7 +269,7 @@ export async function scanOrphanStorage(
     // First-pass filter inside the page: parse + grace window. Anything
     // that survives goes into the candidates list for the bounded-
     // concurrency entity recheck below.
-    const candidates: { obj: { name: string; timeCreated?: string }; parsed: ParsedPath }[] = []
+    const candidates: { obj: { name: string; timeCreated?: string; metadata?: Record<string, string> }; parsed: ParsedPath }[] = []
     for (const obj of page.items) {
       report.scanned += 1
       const parsed = parsePath(obj.name)
@@ -284,15 +298,46 @@ export async function scanOrphanStorage(
         report.deadlineHit = true
         return
       }
-      // Each candidate uses at most 2 subrequests (Firestore read +
-      // optional Storage delete). Reserve both upfront so a still-
-      // referenced doc and a delete-needed doc gate identically -- we
-      // don't want to start a read we can't finish-and-delete on.
-      if (subreq.used + 2 > budget) {
+      // Each candidate uses at most 3 subrequests: pending-intent
+      // recheck (optional) + entity recheck + optional Storage delete.
+      // Reserve all three upfront so we don't start a read we can't
+      // finish-and-delete on -- gate identically for still-referenced
+      // and delete-needed paths.
+      if (subreq.used + 3 > budget) {
         report.budgetHit = true
         return
       }
       try {
+        // Pending-intent safety net (Phase 3.5 Final Design section
+        // 3B). If the blob carries an intentId and that intent doc
+        // still says `status='pending'` with `expiresAt > now`, Worker
+        // consume hasn't yet finalised this upload. Skip deletion --
+        // either consume will land momentarily, or upload-intent-purge
+        // will move it out of pending and the next scan cycle catches
+        // it as orphan. Defense-in-depth on top of the 24h grace.
+        //
+        // Blobs without `metadata.uploadIntentId` (legacy / pre-Phase-
+        // 3.5 uploads) fall straight through to the entity check; the
+        // entity-recheck contract is unchanged for them.
+        const intentId = obj.metadata?.uploadIntentId
+        if (intentId && intentId.length === 32) {
+          subreq.used += 1
+          const intentPath = `trips/${parsed.tripId}/uploadIntents/${intentId}`
+          const intentFields = await getDocFields(accessToken, projectId, intentPath)
+          if (intentFields !== null) {
+            const status      = readString(intentFields, 'status')
+            const expiresAtMs = readTimestampMs(intentFields, 'expiresAt')
+            if (status === 'pending' && expiresAtMs !== undefined && expiresAtMs > Date.now()) {
+              report.pendingIntent += 1
+              return
+            }
+          }
+          // intent doc missing / used / expired → fall through to the
+          // entity recheck below. Either Worker already consumed it
+          // (entity doc should reference the blob) or it's truly
+          // abandoned (entity doc absent → real orphan).
+        }
+
         const entityPath = `trips/${parsed.tripId}/${parsed.collection}/${parsed.entityId}`
         subreq.used += 1
         const fields = await getDocFields(accessToken, projectId, entityPath)
@@ -321,9 +366,12 @@ export async function scanOrphanStorage(
       } catch (e) {
         // Firestore read failure -- treat as transient, fail-closed.
         // Tomorrow's run retries; the blob is still discoverable.
+        // Covers both the pending-intent recheck and the entity
+        // recheck; either failing means we can't confidently classify
+        // this blob, so we leave it.
         report.readErrors += 1
         console.warn(
-          `[storage-scan] entity recheck failed obj=${obj.name}: ${(e as Error).message}`,
+          `[storage-scan] candidate recheck failed obj=${obj.name}: ${(e as Error).message}`,
         )
       }
     }, CONCURRENCY)
