@@ -203,8 +203,8 @@ async function drainPass(
       }
       report.scanned += 1
       // Trim the resource-name prefix to the relative path that
-      // deleteDoc expects. Format:
-      // projects/{pid}/databases/(default)/documents/uploadIntents/{id}
+      // deleteDoc expects. Format (Phase 3.5-bis subcollection):
+      // projects/{pid}/databases/(default)/documents/trips/{tripId}/uploadIntents/{id}
       const prefix = `projects/${projectId}/databases/(default)/documents/`
       const path   = doc.name.startsWith(prefix) ? doc.name.slice(prefix.length) : doc.name
       try {
