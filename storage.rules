@@ -112,11 +112,19 @@ service firebase.storage {
           && firestore.get(tripDoc(tripId)).data.ownerId == request.auth.uid;
     }
 
-    // Phase 3.5 intent verification. Every entity upload must carry a
-    // valid uploadIntent that the Worker minted via /upload-intents.
-    // The intent encodes: path the upload MUST land at, allowed
-    // contentTypes, maxBytes, expiresAt, status, and the 7-field
-    // customMetadata schema that the upload must echo back.
+    // Phase 3.5 upload metadata verification. Every entity upload must
+    // carry an uploadIntentId + the Worker-owned metadata shape minted
+    // by /upload-intents. Storage rules validate stable properties only:
+    // current auth, trip write access, path-bound metadata, size, and
+    // coarse content-type allowlists.
+    //
+    // Do NOT read the just-created uploadIntent doc here. In production,
+    // the client immediately uploads after /upload-intents returns, and
+    // Storage rules' cross-service firestore.exists/get can fail that
+    // read-after-write window even though the doc is already visible via
+    // Firestore REST. Intent existence/status/expires/path exactness is
+    // instead enforced when the Worker consumes the intent in
+    // /upload-finalize, /expense-create, or /expense-update.
     //
     // Why intent + immediate-permission BOTH: the intent was minted
     // up to 30 min ago. During that window the user could be
@@ -125,60 +133,37 @@ service firebase.storage {
     // tripNotDeleting checks run at upload time, so a stale-permission
     // capability token can't slip through. Intent narrows what they
     // can do; role check confirms they still can.
-    // Phase-3.5-bis: intents are now stored as a subcollection under
-    // their trip (`trips/{tripId}/uploadIntents/{id}`). This places the
-    // cross-service read path inside the `trips/*` prefix that the auto-
-    // provisioned cross-service IAM Condition (on the Storage P4SA;
-    // see header) already covers, so the grant scope doesn't need
-    // widening every time intents change shape.
-    function uploadIntentPath(tripId, id) {
-      return /databases/(default)/documents/trips/$(tripId)/uploadIntents/$(id);
+    function imageContentType() {
+      return request.resource.contentType in [
+        'image/webp',
+        'image/jpeg',
+        'image/png',
+        'image/heic',
+        'image/heif',
+      ];
     }
-    // Build the expected Storage object path from match variables so
-    // we never have to trust request.resource.name's exact string
-    // format. The intent doc's `path` field was set by the Worker via
-    // the same components, so equality here is the binding check.
-    // 'wish' pluralises irregularly to 'wishes' -- everything else just
-    // appends 's'. Path segment must match the match-block path that
-    // wraps the rule (`/trips/{tripId}/wishes/{wishId}/...`).
-    function entitySegment(entityType) {
-      return entityType == 'wish' ? 'wishes' : entityType + 's';
+    function uploadContentTypeOk(entityType) {
+      return (
+          request.resource.metadata.kind == 'pdf'
+          && entityType != 'wish'
+          && request.resource.contentType == 'application/pdf'
+        ) || (
+          request.resource.metadata.kind in ['full', 'thumb']
+          && imageContentType()
+        );
     }
-    function expectedPath(tripId, entityType, entityId, fileName) {
-      return 'trips/' + tripId + '/' + entitySegment(entityType) + '/' + entityId + '/' + fileName;
-    }
-    function intentMatches(tripId, entityType, entityId, fileName) {
-      // Guards before firestore.get: missing / non-string intentId is
-      // an explicit deny, not a "happens to fail validation" silent
-      // path. The `'uploadIntentId' in metadata` key check fronts the
-      // `is string` test so an upload with no customMetadata at all
-      // (the common accidental case) denies cleanly instead of
-      // triggering a "Property uploadIntentId is undefined on object"
-      // rules evaluation warning -- keeps CI / emulator logs quiet.
+    function intentMatches(tripId, entityType, entityId) {
       return isSignedIn()
         && 'uploadIntentId' in request.resource.metadata
         && request.resource.metadata.uploadIntentId is string
-        && firestore.exists(uploadIntentPath(tripId, request.resource.metadata.uploadIntentId))
-        && intentBindingsOk(tripId, entityType, entityId, fileName);
-    }
-    function intentBindingsOk(tripId, entityType, entityId, fileName) {
-      let id = request.resource.metadata.uploadIntentId;
-      let intent = firestore.get(uploadIntentPath(tripId, id)).data;
-      return intent.uid == request.auth.uid
-          && intent.tripId == tripId
-          && intent.entityType == entityType
-          && intent.entityId == entityId
-          && intent.path == expectedPath(tripId, entityType, entityId, fileName)
-          && intent.status == 'pending'
-          && request.time < intent.expiresAt
-          && request.resource.size <= intent.maxBytes
-          && request.resource.contentType in intent.allowedContentTypes
-          && request.resource.metadata.uploaderUid == request.auth.uid
-          && request.resource.metadata.tripId == intent.tripId
-          && request.resource.metadata.entityType == intent.entityType
-          && request.resource.metadata.entityId == intent.entityId
-          && request.resource.metadata.kind == intent.kind
-          && request.resource.metadata.schemaVersion == intent.customMetadata.schemaVersion;
+        && request.resource.metadata.uploadIntentId.size() == 32
+        && request.resource.size <= 5 * 1024 * 1024
+        && uploadContentTypeOk(entityType)
+        && request.resource.metadata.uploaderUid == request.auth.uid
+        && request.resource.metadata.tripId == tripId
+        && request.resource.metadata.entityType == entityType
+        && request.resource.metadata.entityId == entityId
+        && request.resource.metadata.schemaVersion == 'v1';
     }
 
     // Wildcard read for ANY object under a trip's namespace. Two reasons:
@@ -209,7 +194,7 @@ service firebase.storage {
       // intents are one-shot; replace flows via a new intent.
       allow create: if canWriteFiles(tripId)
                     && tripNotDeleting(tripId)
-                    && intentMatches(tripId, 'booking', bookingId, fileName);
+                    && intentMatches(tripId, 'booking', bookingId);
       allow update: if false;
       // delete unchanged. `request.resource` is null for delete
       // operations, so a write rule referencing size / contentType
@@ -236,7 +221,7 @@ service firebase.storage {
       allow create: if isMember(tripId)
                     && tripNotDeleting(tripId)
                     && isWishProposer(tripId, wishId)
-                    && intentMatches(tripId, 'wish', wishId, fileName);
+                    && intentMatches(tripId, 'wish', wishId);
       allow update: if false;
       // Delete: proposer cleans up their own; OR trip owner
       // moderates (mirrors firestore.rules wish delete which allows
@@ -266,7 +251,7 @@ service firebase.storage {
       // mime / metadata schema / path binding.
       allow create: if canWriteFiles(tripId)
                     && tripNotDeleting(tripId)
-                    && intentMatches(tripId, 'expense', expenseId, fileName);
+                    && intentMatches(tripId, 'expense', expenseId);
       allow update: if false;
       allow delete: if canWriteFiles(tripId);
     }

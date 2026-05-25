@@ -5,15 +5,13 @@
 //      delete, wish proposer delete, owner moderation). These don't
 //      touch upload paths and stay unchanged.
 //
-//   2. Phase 3.5 intent-verified upload tests. Storage rules now
-//      require every upload to carry customMetadata.uploadIntentId
-//      pointing at a 'pending' uploadIntent doc the Worker minted,
-//      whose path / contentType / size / 7-field customMetadata
-//      match the upload's resource. Plus immediate-permission checks
-//      (canWriteFiles / tripNotDeleting / isWishProposer) still
-//      gate at upload time so a stale 30-min intent can't be
-//      replayed by a since-demoted member or against a mid-cascade
-//      trip -- this is the revocation-window protection.
+//   2. Phase 3.5 upload-metadata tests. Storage rules require every
+//      upload to carry customMetadata.uploadIntentId plus the Worker-
+//      minted metadata shape. Storage rules intentionally do NOT read
+//      the just-created uploadIntent doc: that immediate cross-service
+//      read races in production. Intent existence/status/expires/path
+//      are verified when the Worker consumes the intent in finalize /
+//      expense-create; Storage keeps only stable gates here.
 import { afterAll, beforeAll, beforeEach, describe, test } from 'vitest'
 import { assertFails, assertSucceeds } from '@firebase/rules-unit-testing'
 import { ref, listAll, getBytes, uploadString, deleteObject } from 'firebase/storage'
@@ -104,6 +102,11 @@ interface SeededIntent {
   collection:  string
 }
 
+function intentId(id: string): string {
+  const compact = id.replace(/[^A-Za-z0-9]/g, '')
+  return (compact + '0'.repeat(32)).slice(0, 32)
+}
+
 /**
  * Seed an uploadIntents/{id} doc via admin context. Returns the
  * computed path + the customMetadata the upload must echo back.
@@ -125,6 +128,7 @@ async function seedIntent(opts: {
   expiresAtMs?:   number
   pathOverride?:  string   // intent.path stored value (used by mismatch tests)
 }): Promise<SeededIntent> {
+  const id            = intentId(opts.intentId)
   const uid           = opts.uid           ?? EDITOR_UID
   const tripId        = opts.tripId        ?? TRIP_ID
   const kind          = opts.kind          ?? 'full'
@@ -143,7 +147,7 @@ async function seedIntent(opts: {
     // Phase-3.5-bis: intents live under `trips/{tripId}/uploadIntents/{id}`.
     // storage.rules' uploadIntentPath(tripId, id) reads from the same
     // subcollection, so the seed must match.
-    await setDoc(doc(ctx.firestore(), 'trips', tripId, 'uploadIntents', opts.intentId), {
+    await setDoc(doc(ctx.firestore(), 'trips', tripId, 'uploadIntents', id), {
       uid,
       tripId,
       entityType: opts.entityType,
@@ -153,7 +157,7 @@ async function seedIntent(opts: {
       allowedContentTypes: [contentType],
       maxBytes,
       customMetadata: {
-        uploadIntentId: opts.intentId,
+        uploadIntentId: id,
         uploaderUid:    uid,
         tripId,
         entityType:     opts.entityType,
@@ -168,7 +172,7 @@ async function seedIntent(opts: {
   })
 
   return {
-    intentId:    opts.intentId,
+    intentId:    id,
     path:        computedPath,
     fileName,
     uploaderUid: uid,
@@ -191,7 +195,7 @@ function uploadMetadata(opts: {
   customOverrides?: Record<string, string | undefined>
 }) {
   const base: Record<string, string> = {
-    uploadIntentId: opts.intentId,
+    uploadIntentId: intentId(opts.intentId),
     uploaderUid:    opts.uploaderUid,
     tripId:         opts.tripId ?? TRIP_ID,
     entityType:     opts.entityType,
@@ -239,10 +243,12 @@ describe('Phase 3.5 intent-verified upload: expense (canWriteFiles)', () => {
     ))
   })
 
-  test('intent does not exist (forged uploadIntentId) → deny', async () => {
-    // No seed: rule's firestore.exists() gate fires.
+  test('well-shaped uploadIntentId without intent doc succeeds at Storage layer', async () => {
+    // Storage does not read freshly-created intent docs because that
+    // cross-service read races in production. The Worker consume step
+    // rejects unknown IDs later; orphan cleanup handles unused bytes.
     const path = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/forge.webp`
-    await assertFails(uploadString(
+    await assertSucceeds(uploadString(
       ref(asEditor(env).storage(), path), 'data', 'raw',
       uploadMetadata({
         intentId: 'i-does-not-exist', uploaderUid: EDITOR_UID,
@@ -251,13 +257,13 @@ describe('Phase 3.5 intent-verified upload: expense (canWriteFiles)', () => {
     ))
   })
 
-  test('intent.uid != auth.uid (intent stolen) → deny', async () => {
-    // Editor's intent, but owner tries to upload using it. Even though
-    // owner has canWriteFiles, the intent.uid binding rejects.
+  test('intent.uid is enforced at Worker consume, not Storage upload', async () => {
+    // Storage only verifies current auth + metadata self-consistency.
+    // The Worker consume transaction is the authority for intent.uid.
     const seed = await seedIntent({
       intentId: 'i-exp-stolen', uid: EDITOR_UID, entityType: 'expense', entityId: EXPENSE_ID,
     })
-    await assertFails(uploadString(
+    await assertSucceeds(uploadString(
       ref(asOwner(env).storage(), seed.path), 'data', 'raw',
       uploadMetadata({
         intentId: seed.intentId, uploaderUid: OWNER_UID,  // owner trying
@@ -266,16 +272,15 @@ describe('Phase 3.5 intent-verified upload: expense (canWriteFiles)', () => {
     ))
   })
 
-  test('intent.path != computed expectedPath (wrong fileName) → deny', async () => {
-    // Intent was minted for fileName 'a.webp'; client uploads to 'b.webp'.
-    // Rule computes expectedPath from match vars; if intent.path doesn't
-    // equal it, deny.
+  test('intent.path is enforced at Worker consume, not Storage upload', async () => {
+    // Storage does not read intent.path. Worker consume checks the
+    // object metadata and stored intent before writing Firestore refs.
     const seed = await seedIntent({
       intentId: 'i-exp-wrong-name', entityType: 'expense', entityId: EXPENSE_ID,
       fileName: 'a.webp',
     })
     const wrongPath = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/b.webp`
-    await assertFails(uploadString(
+    await assertSucceeds(uploadString(
       ref(asEditor(env).storage(), wrongPath), 'data', 'raw',
       uploadMetadata({
         intentId: seed.intentId, uploaderUid: seed.uploaderUid,
@@ -284,12 +289,12 @@ describe('Phase 3.5 intent-verified upload: expense (canWriteFiles)', () => {
     ))
   })
 
-  test('intent.status = used → deny (replay protection)', async () => {
+  test('intent.status replay is enforced at Worker consume, not Storage upload', async () => {
     const seed = await seedIntent({
       intentId: 'i-exp-used', entityType: 'expense', entityId: EXPENSE_ID,
       status: 'used',
     })
-    await assertFails(uploadString(
+    await assertSucceeds(uploadString(
       ref(asEditor(env).storage(), seed.path), 'data', 'raw',
       uploadMetadata({
         intentId: seed.intentId, uploaderUid: seed.uploaderUid,
@@ -298,12 +303,12 @@ describe('Phase 3.5 intent-verified upload: expense (canWriteFiles)', () => {
     ))
   })
 
-  test('intent past expiresAt → deny', async () => {
+  test('intent expiry is enforced at Worker consume, not Storage upload', async () => {
     const seed = await seedIntent({
       intentId: 'i-exp-expired', entityType: 'expense', entityId: EXPENSE_ID,
       expiresAtMs: Date.now() - 60_000,  // expired 1 min ago
     })
-    await assertFails(uploadString(
+    await assertSucceeds(uploadString(
       ref(asEditor(env).storage(), seed.path), 'data', 'raw',
       uploadMetadata({
         intentId: seed.intentId, uploaderUid: seed.uploaderUid,
@@ -312,12 +317,12 @@ describe('Phase 3.5 intent-verified upload: expense (canWriteFiles)', () => {
     ))
   })
 
-  test('contentType not in intent.allowedContentTypes → deny', async () => {
+  test('image contentType uses coarse Storage allowlist; exact match is Worker-enforced', async () => {
     const seed = await seedIntent({
       intentId: 'i-exp-bad-ct', entityType: 'expense', entityId: EXPENSE_ID,
       contentType: 'image/webp',
     })
-    await assertFails(uploadString(
+    await assertSucceeds(uploadString(
       ref(asEditor(env).storage(), seed.path), 'data', 'raw',
       uploadMetadata({
         intentId: seed.intentId, uploaderUid: seed.uploaderUid,
