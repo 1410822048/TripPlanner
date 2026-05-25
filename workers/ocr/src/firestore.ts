@@ -447,7 +447,12 @@ export async function queryUploadIntents(
   const beforeIso  = new Date(beforeMs).toISOString()
 
   const structuredQuery: Record<string, unknown> = {
-    from: [{ collectionId: 'uploadIntents' }],
+    // Phase-3.5-bis: intents live under
+    // `trips/{tripId}/uploadIntents/{intentId}`. `allDescendants: true`
+    // makes this a collection-group query across every trip's intents
+    // subcollection in one pass -- backed by the COLLECTION_GROUP
+    // composite indexes declared in firestore.indexes.json.
+    from: [{ collectionId: 'uploadIntents', allDescendants: true }],
     where: {
       compositeFilter: {
         op: 'AND',

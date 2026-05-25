@@ -10,6 +10,42 @@ rules_version = '2';
 //     https://firebase.google.com/docs/rules/cross-service
 //   - Each upload is capped at 5MB and restricted to image/* or PDF.
 //   - Default deny at the bottom catches anything outside /trips/.
+//
+// IAM DEPENDENCY (cross-service Firestore reads):
+//   `firestore.exists` / `firestore.get` from this ruleset are executed
+//   under the **Cloud Storage for Firebase service agent**
+//   `service-{projectNumber}@gcp-sa-firebasestorage.iam.gserviceaccount.com`
+//   (NOT the end-user, NOT the firebase-rules agent). Firebase auto-
+//   provisions the required role on first Console save -- but **only
+//   with a CEL Condition scoped to the path prefixes the rule referenced
+//   at that moment**, and `firebase deploy --only storage` from CLI does
+//   NOT re-trigger the grant flow.
+//
+//   That means: any time we add a NEW TOP-LEVEL collection to a
+//   cross-service read here, the existing Condition does not cover it
+//   and reads silently return false -> rule denies -> 403 with no useful
+//   log.
+//
+//   Phase 3.5 (2026-05-24) hit this hard: `uploadIntents/` was added as
+//   a top-level collection and the auto-grant Condition (scoped to
+//   `trips/*` from Phase 1) never widened. All expense / booking / wish
+//   uploads 403'd in prod despite Worker + client + rules being correct.
+//
+//   Fix: intents now live UNDER `trips/{tripId}/uploadIntents/{id}` so
+//   the cross-service read path falls inside the existing `trips/*`
+//   Condition scope. No new IAM grant needed when adding intent-style
+//   subcollections under `trips/*` going forward.
+//
+//   If a NET-NEW top-level collection is ever added and a subcollection
+//   refactor is not feasible: in Cloud Console IAM, grant the Cloud
+//   Storage for Firebase service agent
+//   (`service-{projectNumber}@gcp-sa-firebasestorage.iam.gserviceaccount.com`)
+//   the role `roles/firebaserules.firestoreServiceAgent` ("Firebase
+//   Rules Firestore Service Agent") WITHOUT a path Condition. That role
+//   is the narrower / preferred option -- its single permission
+//   `datastore.entities.get` is exactly what Storage rules need;
+//   `roles/datastore.viewer` is a broader fallback.
+//   Ref: https://firebase.google.com/docs/storage/security/rules-conditions
 
 service firebase.storage {
   match /b/{bucket}/o {
@@ -89,8 +125,14 @@ service firebase.storage {
     // tripNotDeleting checks run at upload time, so a stale-permission
     // capability token can't slip through. Intent narrows what they
     // can do; role check confirms they still can.
-    function uploadIntentPath(id) {
-      return /databases/(default)/documents/uploadIntents/$(id);
+    // Phase-3.5-bis: intents are now stored as a subcollection under
+    // their trip (`trips/{tripId}/uploadIntents/{id}`). This places the
+    // cross-service read path inside the `trips/*` prefix that the auto-
+    // provisioned cross-service IAM Condition (on the Storage P4SA;
+    // see header) already covers, so the grant scope doesn't need
+    // widening every time intents change shape.
+    function uploadIntentPath(tripId, id) {
+      return /databases/(default)/documents/trips/$(tripId)/uploadIntents/$(id);
     }
     // Build the expected Storage object path from match variables so
     // we never have to trust request.resource.name's exact string
@@ -116,12 +158,12 @@ service firebase.storage {
       return isSignedIn()
         && 'uploadIntentId' in request.resource.metadata
         && request.resource.metadata.uploadIntentId is string
-        && firestore.exists(uploadIntentPath(request.resource.metadata.uploadIntentId))
+        && firestore.exists(uploadIntentPath(tripId, request.resource.metadata.uploadIntentId))
         && intentBindingsOk(tripId, entityType, entityId, fileName);
     }
     function intentBindingsOk(tripId, entityType, entityId, fileName) {
       let id = request.resource.metadata.uploadIntentId;
-      let intent = firestore.get(uploadIntentPath(id)).data;
+      let intent = firestore.get(uploadIntentPath(tripId, id)).data;
       return intent.uid == request.auth.uid
           && intent.tripId == tripId
           && intent.entityType == entityType

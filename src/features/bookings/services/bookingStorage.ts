@@ -73,7 +73,7 @@ export async function uploadAttachment(
       : Promise.resolve(),
   ])
 
-  const finalize = await finalizeUploadIntents(intents.map(i => i.intentId))
+  const finalize = await finalizeUploadIntents(tripId, intents.map(i => i.intentId))
   // Worker guarantees same-order blobs as the requested intentIds;
   // we lookup by kind for safety against any future reordering.
   const fullBlob  = finalize.blobs.find(b => b.kind === primaryKind)

@@ -29,6 +29,12 @@ import { purgeExpiredUploadIntents }   from '../src/upload-intent-purge'
 import * as firestore                  from '../src/firestore'
 
 const PROJECT_ID = 'demo-project'
+// Phase-3.5-bis: intents live under trips/{tripId}/uploadIntents/{id}.
+// The collection-group query (`allDescendants: true`) returns docs whose
+// resource name embeds the parent tripId; the cron's prefix-strip then
+// forwards `trips/{tripId}/uploadIntents/{id}` to deleteDoc. Tests run
+// with a fixed trip to keep assertions readable.
+const TRIP_ID    = 'trip-1'
 
 /** Build a Firestore-shape intent doc (just the fields the cron reads).
  *  The cron only touches `expiresAt` / `usedAt` via readTimestampMs for
@@ -46,7 +52,7 @@ function intentDoc(opts: {
 		fields.usedAt = { timestampValue: new Date(opts.usedAtMs).toISOString() }
 	}
 	return {
-		name:   `projects/${PROJECT_ID}/databases/(default)/documents/uploadIntents/${opts.id}`,
+		name:   `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/uploadIntents/${opts.id}`,
 		fields,
 	}
 }
@@ -79,7 +85,7 @@ describe('purgeExpiredUploadIntents', () => {
 		expect(report.deletedPending).toBe(1)
 		expect(report.deletedUsed).toBe(0)
 		expect(firestore.deleteDoc).toHaveBeenCalledWith(
-			'fake-admin-token', PROJECT_ID, 'uploadIntents/p-old',
+			'fake-admin-token', PROJECT_ID, `trips/${TRIP_ID}/uploadIntents/p-old`,
 		)
 	})
 
@@ -94,7 +100,7 @@ describe('purgeExpiredUploadIntents', () => {
 		expect(report.deletedPending).toBe(0)
 		expect(report.deletedUsed).toBe(1)
 		expect(firestore.deleteDoc).toHaveBeenCalledWith(
-			'fake-admin-token', PROJECT_ID, 'uploadIntents/u-old',
+			'fake-admin-token', PROJECT_ID, `trips/${TRIP_ID}/uploadIntents/u-old`,
 		)
 	})
 
@@ -221,7 +227,7 @@ describe('purgeExpiredUploadIntents', () => {
 		// corruption or schema drift.
 		const baseMs  = Date.now() - 10 * 60_000
 		const valid   = intentDoc({ id: 'v', expiresAtMs: baseMs })
-		const noField = { name: `projects/${PROJECT_ID}/databases/(default)/documents/uploadIntents/no-field`, fields: {} }
+		const noField = { name: `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/uploadIntents/no-field`, fields: {} }
 		vi.mocked(firestore.queryUploadIntents)
 			.mockResolvedValueOnce({ docs: [valid, noField] })
 			.mockResolvedValueOnce({ docs: [] })   // deleted docs gone now

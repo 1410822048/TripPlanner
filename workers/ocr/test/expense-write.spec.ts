@@ -427,7 +427,8 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 		const maxBytes    = opts.maxBytes    ?? 5 * 1024 * 1024
 		return {
 			exists: true,
-			name:   `projects/demo/databases/(default)/documents/uploadIntents/${opts.intentId}`,
+			// Phase-3.5-bis: intents live under trips/{tripId}/uploadIntents/{id}.
+			name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/uploadIntents/${opts.intentId}`,
 			updateTime: '2026-05-23T00:00:00Z',
 			fields: {
 				uid:        { stringValue: uid },
@@ -505,7 +506,7 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 
 	it('full intent only → receipt built server-side, intent marked used in same tx', async () => {
 		seedAuth()
-		txGetResponses.set(`uploadIntents/${FULL_INTENT_ID}`,
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
 			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
@@ -528,7 +529,7 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 		}>
 		// 1 intent markUsed + 1 expense write, in that order
 		expect(writes).toHaveLength(2)
-		expect(writes[0].document).toContain(`/uploadIntents/${FULL_INTENT_ID}`)
+		expect(writes[0].document).toContain(`/trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`)
 		expect(writes[0].fields.status?.stringValue).toBe('used')
 		// Expense receipt field built from intent path + bucket-derived URL
 		const receipt = writes[1].fields.receipt?.mapValue?.fields
@@ -542,9 +543,9 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 
 	it('full + thumb intents → both marked used + receipt has thumb fields', async () => {
 		seedAuth()
-		txGetResponses.set(`uploadIntents/${FULL_INTENT_ID}`,
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full',  path: FULL_PATH }))
-		txGetResponses.set(`uploadIntents/${THUMB_INTENT_ID}`,
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${THUMB_INTENT_ID}`,
 			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: THUMB_PATH }))
 		vi.mocked(storage.getObjectMetadata)
 			.mockResolvedValueOnce(storageMeta({ path: FULL_PATH,  intentId: FULL_INTENT_ID,  kind: 'full',  token: 'tk-f' }))
@@ -579,7 +580,7 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 		// future weakening of the gate that re-introduces the "only check
 		// when intentIds present" branch fails both assertions.
 		seedAuth()
-		txGetResponses.set(`uploadIntents/${FULL_INTENT_ID}`,
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
 		// Variant 1: receipt + intentIds (would have been the old
 		// "mutually exclusive" branch).
@@ -610,7 +611,7 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 
 	it('rejects intent owned by another uid → 403', async () => {
 		seedAuth()
-		txGetResponses.set(`uploadIntents/${FULL_INTENT_ID}`,
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, uid: 'someone-else', kind: 'full', path: FULL_PATH }))
 		await expect(expenseCreate(
 			CALLER_UID,
@@ -625,7 +626,7 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 
 	it('rejects intent already used (replay protection)', async () => {
 		seedAuth()
-		txGetResponses.set(`uploadIntents/${FULL_INTENT_ID}`,
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH, status: 'used' }))
 		await expect(expenseCreate(
 			CALLER_UID,
@@ -640,7 +641,7 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 
 	it('rejects intent whose entityType is not expense → 400', async () => {
 		seedAuth()
-		txGetResponses.set(`uploadIntents/${FULL_INTENT_ID}`,
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({
 				intentId: FULL_INTENT_ID, kind: 'full',
 				entityType: 'booking',  // wrong type for /expense-create
@@ -659,7 +660,7 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 
 	it('rejects intent.entityId !== request.expenseId', async () => {
 		seedAuth()
-		txGetResponses.set(`uploadIntents/${FULL_INTENT_ID}`,
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({
 				intentId: FULL_INTENT_ID, kind: 'full',
 				entityId: 'wrong-expense-id',
@@ -678,7 +679,7 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 
 	it('rejects storage object missing at intent.path → 404', async () => {
 		seedAuth()
-		txGetResponses.set(`uploadIntents/${FULL_INTENT_ID}`,
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(null)
 		await expect(expenseCreate(
@@ -694,7 +695,7 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 
 	it('rejects when intentIds only has thumb (missing primary blob)', async () => {
 		seedAuth()
-		txGetResponses.set(`uploadIntents/${THUMB_INTENT_ID}`,
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${THUMB_INTENT_ID}`,
 			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: THUMB_PATH }))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
 			storageMeta({ path: THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb', token: 'tk' }),
@@ -718,7 +719,8 @@ describe('expenseUpdate with intentIds (Phase 3.5)', () => {
 	function intentDoc(intentId: string, kind: 'full' | 'thumb' | 'pdf', path: string) {
 		return {
 			exists: true,
-			name:   `projects/demo/databases/(default)/documents/uploadIntents/${intentId}`,
+			// Phase-3.5-bis: intents live under trips/{tripId}/uploadIntents/{id}.
+			name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/uploadIntents/${intentId}`,
 			updateTime: '2026-05-23T00:00:00Z',
 			fields: {
 				uid:        { stringValue: CALLER_UID },
@@ -777,7 +779,7 @@ describe('expenseUpdate with intentIds (Phase 3.5)', () => {
 
 	it('intentIds replaces receipt → markUsed write + patch.receipt encoded in same tx', async () => {
 		seedAuthAlive()
-		txGetResponses.set(`uploadIntents/${NEW_FULL_INTENT_ID}`,
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${NEW_FULL_INTENT_ID}`,
 			intentDoc(NEW_FULL_INTENT_ID, 'full', NEW_FULL_PATH))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
 			storageMeta({ path: NEW_FULL_PATH, intentId: NEW_FULL_INTENT_ID, kind: 'full' }),
@@ -797,7 +799,7 @@ describe('expenseUpdate with intentIds (Phase 3.5)', () => {
 			fields:   Record<string, { stringValue?: string; mapValue?: { fields: Record<string, { stringValue?: string }> } }>
 		}>
 		expect(writes).toHaveLength(2)
-		expect(writes[0].document).toContain(`/uploadIntents/${NEW_FULL_INTENT_ID}`)
+		expect(writes[0].document).toContain(`/trips/${TRIP_ID}/uploadIntents/${NEW_FULL_INTENT_ID}`)
 		expect(writes[0].fields.status?.stringValue).toBe('used')
 		const receipt = writes[1].fields.receipt?.mapValue?.fields
 		expect(receipt?.path?.stringValue).toBe(NEW_FULL_PATH)

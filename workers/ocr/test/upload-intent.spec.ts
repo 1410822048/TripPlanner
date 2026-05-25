@@ -429,7 +429,8 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 		const schemaVersion = opts.schemaVersion ?? 'v1'
 		return {
 			exists: true,
-			name:   `projects/demo/databases/(default)/documents/uploadIntents/${opts.intentId}`,
+			// Phase-3.5-bis: intents live under trips/{tripId}/uploadIntents/{id}.
+			name:   `projects/demo/databases/(default)/documents/trips/${tripId}/uploadIntents/${opts.intentId}`,
 			updateTime: '2026-05-23T00:00:00Z',
 			fields: {
 				uid:        { stringValue: uid },
@@ -527,7 +528,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 		// `fields`; transforms own audit timestamps separately.
 		const intentId = 'i-mask-shape'
 		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/mask.webp`
-		txGetResponses.set(`uploadIntents/${intentId}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
 			intentId, entityType: 'booking', kind: 'full', path,
 		}))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
@@ -537,7 +538,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			}),
 		)
 		await finalizeUploadIntents(
-			CALLER_UID, { intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
+			CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
 		)
 		const writes = capturedTxResult!.writes as Array<{
 			updateMask?:       string[]
@@ -558,7 +559,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 	it('booking full intent → finalized; storage url built from token', async () => {
 		const intentId = 'b-full-1'
 		const path     = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/abc123.webp`
-		txGetResponses.set(`uploadIntents/${intentId}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
 			intentId, entityType: 'booking', kind: 'full', path,
 		}))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
@@ -569,7 +570,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 		)
 
 		const result = await finalizeUploadIntents(
-			CALLER_UID, { intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
+			CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
 		)
 		expect(result.ok).toBe(true)
 		expect(result.entityType).toBe('booking')
@@ -590,8 +591,8 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 		const thumbId = 'w-thumb-1'
 		const fullPath  = `trips/${TRIP_ID}/wishes/${ENTITY_ID}/aaa.webp`
 		const thumbPath = `trips/${TRIP_ID}/wishes/${ENTITY_ID}/aaa.thumb.webp`
-		txGetResponses.set(`uploadIntents/${fullId}`,  intentDoc({ intentId: fullId,  entityType: 'wish', kind: 'full',  path: fullPath  }))
-		txGetResponses.set(`uploadIntents/${thumbId}`, intentDoc({ intentId: thumbId, entityType: 'wish', kind: 'thumb', path: thumbPath }))
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${fullId}`,  intentDoc({ intentId: fullId,  entityType: 'wish', kind: 'full',  path: fullPath  }))
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${thumbId}`, intentDoc({ intentId: thumbId, entityType: 'wish', kind: 'thumb', path: thumbPath }))
 		vi.mocked(storage.getObjectMetadata)
 			.mockResolvedValueOnce(storageObjectMeta({
 				name: fullPath,  intentId: fullId,  entityType: 'wish', entityId: ENTITY_ID, kind: 'full',
@@ -603,7 +604,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			}))
 
 		const result = await finalizeUploadIntents(
-			CALLER_UID, { intentIds: [fullId, thumbId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
+			CALLER_UID, { tripId: TRIP_ID, intentIds: [fullId, thumbId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
 		)
 		expect(result.blobs).toHaveLength(2)
 		expect(result.blobs.map(b => b.kind).sort()).toEqual(['full', 'thumb'])
@@ -611,26 +612,26 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 		const writes = capturedTxResult!.writes as Array<{ document: string; fields: Record<string, { stringValue?: string }> }>
 		expect(writes).toHaveLength(2)
 		const docs = writes.map(w => w.document)
-		expect(docs.some(d => d.endsWith(`/uploadIntents/${fullId}`))).toBe(true)
-		expect(docs.some(d => d.endsWith(`/uploadIntents/${thumbId}`))).toBe(true)
+		expect(docs.some(d => d.endsWith(`/trips/${TRIP_ID}/uploadIntents/${fullId}`))).toBe(true)
+		expect(docs.some(d => d.endsWith(`/trips/${TRIP_ID}/uploadIntents/${thumbId}`))).toBe(true)
 		writes.forEach(w => expect(w.fields.status?.stringValue).toBe('used'))
 	})
 
 	it('intent not found → 404', async () => {
-		txGetResponses.set('uploadIntents/missing', notFoundDoc('uploadIntents/missing'))
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/missing`, notFoundDoc(`trips/${TRIP_ID}/uploadIntents/missing`))
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { intentIds: ['missing'] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: ['missing'] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({ status: 404 })
 	})
 
 	it('intent owned by another uid → 403', async () => {
 		const intentId = 'i-otheruid'
-		txGetResponses.set(`uploadIntents/${intentId}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
 			intentId, uid: OTHER_UID, entityType: 'booking', kind: 'full',
 			path: `trips/${TRIP_ID}/bookings/${ENTITY_ID}/x.webp`,
 		}))
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({ status: 403 })
 	})
 
@@ -645,7 +646,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 		// to the original uploader, not a general replay bypass.
 		const intentId = 'i-used-replay'
 		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/replay.webp`
-		txGetResponses.set(`uploadIntents/${intentId}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
 			intentId, entityType: 'booking', kind: 'full', path,
 			status: 'used',
 		}))
@@ -657,7 +658,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 		)
 
 		const result = await finalizeUploadIntents(
-			CALLER_UID, { intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
+			CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
 		)
 		expect(result.ok).toBe(true)
 		expect(result.blobs).toHaveLength(1)
@@ -675,12 +676,12 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 		// original uploader.
 		const intentId = 'i-used-other'
 		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/other.webp`
-		txGetResponses.set(`uploadIntents/${intentId}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
 			intentId, uid: OTHER_UID, entityType: 'booking', kind: 'full', path,
 			status: 'used',
 		}))
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({ status: 403 })
 	})
 
@@ -692,10 +693,10 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 		const pendingId = 'mix-pending'
 		const usedPath    = `trips/${TRIP_ID}/wishes/${ENTITY_ID}/used.webp`
 		const pendingPath = `trips/${TRIP_ID}/wishes/${ENTITY_ID}/pending.thumb.webp`
-		txGetResponses.set(`uploadIntents/${usedId}`,    intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${usedId}`,    intentDoc({
 			intentId: usedId,    entityType: 'wish', kind: 'full',  path: usedPath,    status: 'used',
 		}))
-		txGetResponses.set(`uploadIntents/${pendingId}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${pendingId}`, intentDoc({
 			intentId: pendingId, entityType: 'wish', kind: 'thumb', path: pendingPath, status: 'pending',
 		}))
 		vi.mocked(storage.getObjectMetadata)
@@ -709,42 +710,42 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			}))
 
 		const result = await finalizeUploadIntents(
-			CALLER_UID, { intentIds: [usedId, pendingId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
+			CALLER_UID, { tripId: TRIP_ID, intentIds: [usedId, pendingId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
 		)
 		expect(result.blobs).toHaveLength(2)
 		// Only ONE markUsed write -- the previously-pending intent.
 		const writes = capturedTxResult!.writes as Array<{ document: string }>
 		expect(writes).toHaveLength(1)
-		expect(writes[0]!.document).toContain(`/uploadIntents/${pendingId}`)
+		expect(writes[0]!.document).toContain(`/trips/${TRIP_ID}/uploadIntents/${pendingId}`)
 	})
 
 	it('intent expired → 410', async () => {
 		const intentId = 'i-expired'
-		txGetResponses.set(`uploadIntents/${intentId}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
 			intentId, entityType: 'booking', kind: 'full',
 			path: `trips/${TRIP_ID}/bookings/${ENTITY_ID}/x.webp`,
 			expiresAtMs: Date.now() - 1000,  // already expired
 		}))
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({ status: 410 })
 	})
 
 	it('storage object missing at intent.path → 404', async () => {
 		const intentId = 'i-storage-missing'
 		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/missing.webp`
-		txGetResponses.set(`uploadIntents/${intentId}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
 			intentId, entityType: 'booking', kind: 'full', path,
 		}))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(null)
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({ status: 404, message: expect.stringMatching(/storage/) })
 	})
 
 	it('rejects expense intent — must use /expense-create instead', async () => {
 		const intentId = 'i-expense'
-		txGetResponses.set(`uploadIntents/${intentId}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
 			intentId, entityType: 'expense', kind: 'full',
 			path: `trips/${TRIP_ID}/expenses/${ENTITY_ID}/x.webp`,
 		}))
@@ -756,18 +757,18 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			}),
 		)
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/expense.*expense-create/) })
 	})
 
 	it('rejects intentIds spanning different entities → 400', async () => {
 		const fullId  = 'f-1'
 		const thumbId = 't-1'
-		txGetResponses.set(`uploadIntents/${fullId}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${fullId}`, intentDoc({
 			intentId: fullId, entityType: 'booking', entityId: 'booking-A', kind: 'full',
 			path: `trips/${TRIP_ID}/bookings/booking-A/a.webp`,
 		}))
-		txGetResponses.set(`uploadIntents/${thumbId}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${thumbId}`, intentDoc({
 			intentId: thumbId, entityType: 'booking', entityId: 'booking-B', kind: 'thumb',
 			path: `trips/${TRIP_ID}/bookings/booking-B/b.webp`,
 		}))
@@ -783,14 +784,14 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 				downloadToken: 'tk-b',
 			}))
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { intentIds: [fullId, thumbId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [fullId, thumbId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/entityId/) })
 	})
 
 	it('rejects duplicate intentIds in request', async () => {
 		// Pre-tx duplicate check; never enters the runFirestoreTransaction body.
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { intentIds: ['x', 'x'] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: ['x', 'x'] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/duplicate/) })
 	})
 
@@ -803,7 +804,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 		// "primary blob missing" check; mirrors it at the finalize layer.
 		const thumbId = 'i-thumb-only'
 		const thumbPath = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/thumb-only.thumb.webp`
-		txGetResponses.set(`uploadIntents/${thumbId}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${thumbId}`, intentDoc({
 			intentId: thumbId, entityType: 'booking', kind: 'thumb', path: thumbPath,
 		}))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
@@ -813,7 +814,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			}),
 		)
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { intentIds: [thumbId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [thumbId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({
 			status: 400,
 			message: expect.stringMatching(/primary blob|full or pdf/),
@@ -823,11 +824,11 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 	it('rejects duplicate kinds across set (two fulls for same entity)', async () => {
 		const a = 'f-A'
 		const b = 'f-B'
-		txGetResponses.set(`uploadIntents/${a}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${a}`, intentDoc({
 			intentId: a, entityType: 'booking', kind: 'full',
 			path: `trips/${TRIP_ID}/bookings/${ENTITY_ID}/a.webp`,
 		}))
-		txGetResponses.set(`uploadIntents/${b}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${b}`, intentDoc({
 			intentId: b, entityType: 'booking', kind: 'full',
 			path: `trips/${TRIP_ID}/bookings/${ENTITY_ID}/b.webp`,
 		}))
@@ -843,7 +844,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 				downloadToken: 't2',
 			}))
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { intentIds: [a, b] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [a, b] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/duplicate kinds/) })
 	})
 
@@ -859,7 +860,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 	it('rejects upload with missing customMetadata (e.g. raw GCS upload, no Firebase SDK)', async () => {
 		const intentId = 'i-no-meta'
 		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/no-meta.webp`
-		txGetResponses.set(`uploadIntents/${intentId}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
 			intentId, entityType: 'booking', kind: 'full', path,
 		}))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
@@ -869,7 +870,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			}),
 		)
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({
 			status: 400,
 			message: expect.stringMatching(/customMetadata.*mismatch/),
@@ -879,7 +880,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 	it('rejects upload with tampered customMetadata.uploaderUid (forged attribution)', async () => {
 		const intentId = 'i-spoof-uid'
 		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/spoof.webp`
-		txGetResponses.set(`uploadIntents/${intentId}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
 			intentId, entityType: 'booking', kind: 'full', path,
 		}))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
@@ -890,7 +891,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			}),
 		)
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({
 			status: 400,
 			message: expect.stringMatching(/uploaderUid/),
@@ -900,7 +901,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 	it('rejects upload with mismatched customMetadata.uploadIntentId (cross-intent path hijack)', async () => {
 		const intentId = 'i-mismatched'
 		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/mis.webp`
-		txGetResponses.set(`uploadIntents/${intentId}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
 			intentId, entityType: 'booking', kind: 'full', path,
 		}))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
@@ -911,7 +912,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			}),
 		)
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({
 			status: 400,
 			message: expect.stringMatching(/uploadIntentId/),
@@ -921,7 +922,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 	it('rejects upload with wrong contentType (intent allowed webp, storage shows pdf)', async () => {
 		const intentId = 'i-wrong-ct'
 		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/ct.webp`
-		txGetResponses.set(`uploadIntents/${intentId}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
 			intentId, entityType: 'booking', kind: 'full', path,
 		}))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
@@ -932,7 +933,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			}),
 		)
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({
 			status: 400,
 			message: expect.stringMatching(/contentType/),
@@ -942,7 +943,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 	it('rejects upload exceeding intent maxBytes', async () => {
 		const intentId = 'i-too-big'
 		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/big.webp`
-		txGetResponses.set(`uploadIntents/${intentId}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
 			intentId, entityType: 'booking', kind: 'full', path,
 		}))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
@@ -953,7 +954,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			}),
 		)
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({
 			status: 413,
 			message: expect.stringMatching(/size.*maxBytes/),
@@ -966,7 +967,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 		// call Storage SDK getDownloadURL itself. Doesn't fail finalize.
 		const intentId = 'i-no-token'
 		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/no-token.webp`
-		txGetResponses.set(`uploadIntents/${intentId}`, intentDoc({
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
 			intentId, entityType: 'booking', kind: 'full', path,
 		}))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
@@ -976,7 +977,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			}),
 		)
 		const result = await finalizeUploadIntents(
-			CALLER_UID, { intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
+			CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
 		)
 		expect(result.blobs[0]!.url).toBeNull()
 	})

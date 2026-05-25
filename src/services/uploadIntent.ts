@@ -151,9 +151,10 @@ export async function uploadToIntent(
  * with the same intentIds returns the same blobs without re-marking.
  */
 export async function finalizeUploadIntents(
+  tripId:    string,
   intentIds: string[],
 ): Promise<FinalizeResponse> {
   const workerBase = requireWorkerWriteBase()
   const idToken    = await preflightIdToken()
-  return await workerFetch(workerBase, idToken, '/upload-finalize', { intentIds }) as FinalizeResponse
+  return await workerFetch(workerBase, idToken, '/upload-finalize', { tripId, intentIds }) as FinalizeResponse
 }

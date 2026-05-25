@@ -1156,18 +1156,31 @@ service cloud.firestore {
         // member could rapid-delete entries to defeat cleanup.
         allow update, delete: if false;
       }
-    }
 
-    // Phase 3.5 upload intents. Worker mints these via admin SDK
-    // (which bypasses rules); clients NEVER read or write them
-    // directly. The intent doc carries authoritative path /
-    // customMetadata that storage.rules will verify against when
-    // intent-verified upload enforcement ships (Commit 4 of Phase 3.5).
-    // Default-deny below would catch this implicitly, but the
-    // explicit rule documents intent + gives the rules-test suite a
-    // concrete target to lock in.
-    match /uploadIntents/{intentId} {
-      allow read, write: if false;
+      // Phase 3.5 upload intents. Worker mints these via admin SDK
+      // (which bypasses rules); clients NEVER read or write them
+      // directly. The intent doc carries authoritative path /
+      // customMetadata that storage.rules verifies against during
+      // intent-bound upload enforcement.
+      //
+      // Why trip-scoped (Phase-3.5-bis, shipped 2026-05-25): the
+      // original top-level `/uploadIntents/{id}` collection was
+      // unreachable by the cross-service read from storage.rules
+      // because the auto-provisioned IAM Condition was scoped to
+      // `trips/*` from Phase 1 and CLI re-deploys don't re-trigger
+      // the grant flow. Moving the collection under
+      // `trips/{tripId}/` puts the read path inside the existing
+      // Condition scope -- no IAM widening needed. Default-deny
+      // below would catch this implicitly, but the explicit rule
+      // documents intent + gives the rules-test suite a concrete
+      // target to lock in.
+      //
+      // See storage.rules header for the full IAM principal /
+      // role explanation (it's a Storage Rules concern; duplicating
+      // it here would drift).
+      match /uploadIntents/{intentId} {
+        allow read, write: if false;
+      }
     }
 
     match /{document=**} {

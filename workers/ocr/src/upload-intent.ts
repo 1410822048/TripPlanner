@@ -315,7 +315,7 @@ async function doCreate(
       }
 
       writes.push({
-        document:        docResourceName(projectId, `uploadIntents/${intentId}`),
+        document:        docResourceName(projectId, `trips/${req.tripId}/uploadIntents/${intentId}`),
         fields,
         currentDocument: { exists: false },  // create-only; shortId collision astronomically unlikely
         updateTransforms: [
@@ -398,6 +398,16 @@ async function consumeIntentInTx(
   accessToken:  string,
   projectId:    string,
   bucket:       string,
+  /** Tripe-scoped lookup: intents live under
+   *  `trips/{lookupTripId}/uploadIntents/{intentId}`. Caller MUST
+   *  supply the tripId it expects the intent to belong to -- this
+   *  IS the storage-path scope check (intent.tripId field is then
+   *  cross-verified below). For booking/wish /upload-finalize this
+   *  comes from the request body; for expense-write it comes from
+   *  the expense's own tripId. A wrong lookupTripId returns 404
+   *  (intent doc not found at that subcollection path) -- which is
+   *  the correct outcome (caller has no business with that intent). */
+  lookupTripId: string,
   expected?: {
     tripId?:     string
     entityType?: EntityType
@@ -416,7 +426,7 @@ async function consumeIntentInTx(
     allowUsed?:  boolean
   } = {},
 ): Promise<ConsumeResult> {
-  const intent = await tx.get(`uploadIntents/${intentId}`)
+  const intent = await tx.get(`trips/${lookupTripId}/uploadIntents/${intentId}`)
   if (!intent.exists) throw new CascadeError(404, `intent ${intentId} not found`)
 
   const status = readString(intent.fields, 'status')
@@ -535,7 +545,7 @@ async function consumeIntentInTx(
   // mask shouldn't claim it). Mirrors expense-write's pattern:
   // updateMask = Object.keys(fields); transforms own audit timestamps.
   const markUsedWrite: TxWrite | null = isPending ? {
-    document: docResourceName(projectId, `uploadIntents/${intentId}`),
+    document: docResourceName(projectId, `trips/${lookupTripId}/uploadIntents/${intentId}`),
     fields: {
       status: { stringValue: 'used' },
     },
@@ -594,6 +604,7 @@ export async function consumeExpenseIntents(
     // anyway). Strict 409 on used keeps the error reason clean.
     const r = await consumeIntentInTx(
       tx, intentId, callerUid, accessToken, projectId, bucket,
+      expected.tripId,
       { tripId: expected.tripId, entityType: 'expense', entityId: expected.entityId },
     )
     consumed.push(r.consumed)
@@ -621,6 +632,13 @@ export interface FinalizedBlob {
 }
 
 export const FinalizeRequestSchema = z.object({
+  /** Trip scope for the intent lookup. Intents live under
+   *  `trips/{tripId}/uploadIntents/{intentId}` (Phase-3.5-bis), so the
+   *  caller MUST declare which trip they expect the intents to belong
+   *  to. Worker re-verifies each intent's `tripId` field matches; a
+   *  forged tripId either lands at a non-existent subcollection path
+   *  (404 intent not found) or hits the intent field mismatch check. */
+  tripId:    z.string().regex(TripIdRe),
   /** 1 or 2 intent IDs, expected to belong to the SAME entity (one
    *  full or pdf, optionally one thumb). Worker rejects mismatched
    *  scope across the set. */
@@ -675,7 +693,11 @@ async function doFinalize(
     for (const intentId of req.intentIds) {
       const r = await consumeIntentInTx(
         tx, intentId, callerUid, accessToken, projectId, bucket,
-        undefined,  // no scope expectation (cross-intent coherence checked below)
+        req.tripId,
+        // tripId scope already pinned via lookupTripId (the subcollection
+        // path); intent.tripId field is re-verified inside consume so a
+        // forged client tripId can't pull a wrong-trip intent.
+        { tripId: req.tripId },
         { allowUsed: true },
       )
       if (r.consumed.entityType === 'expense') {

@@ -129,7 +129,7 @@ async function uploadWishImage(
       : Promise.resolve(),
   ])
 
-  const finalize = await finalizeUploadIntents(intents.map(i => i.intentId))
+  const finalize = await finalizeUploadIntents(tripId, intents.map(i => i.intentId))
   const fullBlob  = finalize.blobs.find(b => b.kind === 'full')
   const thumbBlob = finalize.blobs.find(b => b.kind === 'thumb')
   if (!fullBlob || !fullBlob.url) {

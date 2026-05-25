@@ -176,18 +176,22 @@ describe('uploadToIntent', () => {
 // ─── finalizeUploadIntents ────────────────────────────────────────
 
 describe('finalizeUploadIntents', () => {
-	it('POSTs to /upload-finalize with { intentIds }', async () => {
+	it('POSTs to /upload-finalize with { tripId, intentIds }', async () => {
 		workerFetchMock.mockResolvedValueOnce({
 			ok: true, entityType: 'booking', tripId: 'T', entityId: 'B', blobs: [],
 		})
-		await finalizeUploadIntents(['i1', 'i2'])
+		await finalizeUploadIntents('T', ['i1', 'i2'])
 
 		expect(workerFetchMock).toHaveBeenCalledTimes(1)
 		const [base, token, endpoint, body] = workerFetchMock.mock.calls[0]!
 		expect(base).toBe('https://worker.example.com')
 		expect(token).toBe('fake-id-token')
 		expect(endpoint).toBe('/upload-finalize')
-		expect(body).toEqual({ intentIds: ['i1', 'i2'] })
+		// Phase-3.5-bis: tripId is required so the Worker can look intents
+		// up under trips/{tripId}/uploadIntents/{id}. Full-object match
+		// (not objectContaining) locks the request body shape -- a regression
+		// that drops tripId or adds spurious fields breaks here.
+		expect(body).toEqual({ tripId: 'T', intentIds: ['i1', 'i2'] })
 	})
 
 	it('returns FinalizeResponse from worker unchanged', async () => {
@@ -202,12 +206,12 @@ describe('finalizeUploadIntents', () => {
 			],
 		}
 		workerFetchMock.mockResolvedValueOnce(response)
-		const result = await finalizeUploadIntents(['a', 'b'])
+		const result = await finalizeUploadIntents('T-2', ['a', 'b'])
 		expect(result).toEqual(response)
 	})
 
 	it('propagates worker errors (e.g. 409 used)', async () => {
 		workerFetchMock.mockRejectedValueOnce(new Error('409 already used'))
-		await expect(finalizeUploadIntents(['i-x'])).rejects.toThrow(/409/)
+		await expect(finalizeUploadIntents('T', ['i-x'])).rejects.toThrow(/409/)
 	})
 })

@@ -140,7 +140,10 @@ async function seedIntent(opts: {
   const path          = opts.pathOverride ?? computedPath
 
   await env.withSecurityRulesDisabled(async ctx => {
-    await setDoc(doc(ctx.firestore(), 'uploadIntents', opts.intentId), {
+    // Phase-3.5-bis: intents live under `trips/{tripId}/uploadIntents/{id}`.
+    // storage.rules' uploadIntentPath(tripId, id) reads from the same
+    // subcollection, so the seed must match.
+    await setDoc(doc(ctx.firestore(), 'trips', tripId, 'uploadIntents', opts.intentId), {
       uid,
       tripId,
       entityType: opts.entityType,

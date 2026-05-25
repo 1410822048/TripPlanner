@@ -285,7 +285,7 @@ describe('createWish', () => {
     // finalize MUST consume BOTH intents in order — dropping the thumb
     // would leave it pending until purge cron sweeps it, which is the
     // exact bug client-side tests should catch before prod sees it.
-    expect(mocks.finalizeUploadIntentsMock).toHaveBeenCalledWith(['i-w-new-F', 'i-w-new-T'])
+    expect(mocks.finalizeUploadIntentsMock).toHaveBeenCalledWith('t1', ['i-w-new-F', 'i-w-new-T'])
     expect(mocks.updateDocMock).toHaveBeenCalledTimes(1)
     // updateDoc patch includes the image returned by finalize.
     const patch = mocks.updateDocMock.mock.calls[0]![1] as Record<string, unknown>
@@ -368,7 +368,7 @@ describe('createWish', () => {
     // finalize had to receive BOTH intentIds before updateDoc would
     // see the full image payload — pin it here too so a service-side
     // thumb-drop regression can't slip through this failure path.
-    expect(mocks.finalizeUploadIntentsMock).toHaveBeenCalledWith(['i-w-new-F', 'i-w-new-T'])
+    expect(mocks.finalizeUploadIntentsMock).toHaveBeenCalledWith('t1', ['i-w-new-F', 'i-w-new-T'])
     expect(mocks.safePurgeMock).toHaveBeenCalledTimes(1)
     const purgeArgs = mocks.safePurgeMock.mock.calls[0]![0] as { enqueue: { entityId: string; source: string; paths: string[] } }
     expect(purgeArgs.enqueue.source).toBe('createWish/rollback-blob')
@@ -480,7 +480,7 @@ describe('updateWish', () => {
     // finalize MUST consume both intents — a service-side drop of
     // the thumb intentId would 200 here but leave the thumb intent
     // pending in Firestore until purge cron sweeps it.
-    expect(mocks.finalizeUploadIntentsMock).toHaveBeenCalledWith(['i-w1-F', 'i-w1-T'])
+    expect(mocks.finalizeUploadIntentsMock).toHaveBeenCalledWith('t1', ['i-w1-F', 'i-w1-T'])
     // updateDoc patch.image carries the new (w1-bound) paths.
     const patch = mocks.updateDocMock.mock.calls[0]![1] as Record<string, unknown>
     expect(patch.image).toMatchObject({
@@ -530,7 +530,7 @@ describe('updateWish', () => {
     // finalize ran before updateDoc — pin BOTH intentIds here so a
     // service-side thumb-drop regression can't slip through the
     // failure path either (mirrors the createWish failure-path test).
-    expect(mocks.finalizeUploadIntentsMock).toHaveBeenCalledWith(['i-w1-F', 'i-w1-T'])
+    expect(mocks.finalizeUploadIntentsMock).toHaveBeenCalledWith('t1', ['i-w1-F', 'i-w1-T'])
     expect(mocks.safePurgeMock).toHaveBeenCalledTimes(1)
     const purgeArgs = mocks.safePurgeMock.mock.calls[0]![0] as { enqueue: { entityId: string; source: string; paths: string[] } }
     expect(purgeArgs.enqueue.source).toBe('updateWish/rollback-new-image')
