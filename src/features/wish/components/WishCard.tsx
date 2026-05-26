@@ -25,7 +25,7 @@
 //     as 🗺 (legacy behaviour); once `address` is set, link is always
 //     サイト so the two chips don't both claim the map role.
 import { useState } from 'react'
-import { Heart, Map, ExternalLink, MoreVertical } from 'lucide-react'
+import { Heart, Map, ExternalLink, MoreVertical, Loader2 } from 'lucide-react'
 import type { Wish } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import ActionChip from '@/components/ui/ActionChip'
@@ -112,12 +112,17 @@ function WishCard({
   canEdit, canDelete, onEdit, onDelete, onToggleVote, eager,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false)
-  const hasMenu = canEdit || canDelete
 
-  // Card body tap-to-edit only when the viewer can actually edit. Read-
-  // only viewers see no cursor / no tap feedback — the absent affordance
-  // tells them "this surface isn't interactive" without an error toast.
-  const tap = canEdit ? onEdit : undefined
+  // Optimistic-create temp row: disable tap-to-edit, hide ⋮ menu, dim
+  // the body, and show a 保存中… pill at top-right. Vote button is
+  // disabled inside WishActionRow to stop voting on a non-existent doc.
+  const isPending = wish.id.startsWith('temp-')
+
+  const hasMenu = !isPending && (canEdit || canDelete)
+  // Card body tap-to-edit only when the viewer can actually edit AND
+  // the row isn't pending. Read-only viewers / pending rows see no
+  // cursor / no tap feedback.
+  const tap = !isPending && canEdit ? onEdit : undefined
 
   const heroBody = (
     <>
@@ -128,17 +133,27 @@ function WishCard({
 
   return (
     <div className="relative bg-surface border border-border rounded-[18px] shadow-[0_2px_10px_rgba(0,0,0,0.06)] overflow-hidden">
-      {tap ? (
-        <button
-          type="button"
-          onClick={tap}
-          className="block w-full bg-transparent border-none p-0 text-left cursor-pointer"
-        >
-          {heroBody}
-        </button>
-      ) : (
-        heroBody
-      )}
+      <div className={['transition-opacity', isPending ? 'opacity-55' : ''].join(' ')}>
+        {tap ? (
+          <button
+            type="button"
+            onClick={tap}
+            className="block w-full bg-transparent border-none p-0 text-left cursor-pointer"
+          >
+            {heroBody}
+          </button>
+        ) : (
+          heroBody
+        )}
+
+        <WishActionRow
+          wish={wish}
+          isVoted={isVoted}
+          voters={voters}
+          isPreviewOnly={isPreviewOnly || isPending}
+          onToggleVote={isPending ? () => {} : onToggleVote}
+        />
+      </div>
 
       {hasMenu && (
         <button
@@ -157,13 +172,12 @@ function WishCard({
         </button>
       )}
 
-      <WishActionRow
-        wish={wish}
-        isVoted={isVoted}
-        voters={voters}
-        isPreviewOnly={isPreviewOnly}
-        onToggleVote={onToggleVote}
-      />
+      {isPending && (
+        <div className="absolute top-2 right-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/60 text-white text-[10.5px] font-semibold backdrop-blur-sm">
+          <Loader2 size={11} strokeWidth={2.4} className="animate-spin" />
+          <span>保存中…</span>
+        </div>
+      )}
 
       {menuOpen && (
         <WishActionMenu
@@ -190,7 +204,7 @@ function WishHero({ wish, eager }: { wish: Wish; eager?: boolean }) {
       <div className="relative w-full aspect-[16/9] bg-tile pointer-events-none">
         <img
           src={wish.image.thumbUrl}
-          alt=""
+          alt={wish.title}
           decoding="async"
           // eager === true ONLY for the first card on /wish — that's
           // the LCP candidate, blanket-lazy was delaying paint by 1

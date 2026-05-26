@@ -11,7 +11,6 @@ import { useState } from 'react'
 import { Plus, Heart } from 'lucide-react'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
 import { toast } from '@/shared/toast'
-import { simulateFailureMaybe } from '@/utils/devFailures'
 import WishListSkeleton from './WishListSkeleton'
 import WishPageSkeleton from './WishPageSkeleton'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
@@ -64,56 +63,48 @@ export default function WishPage() {
 
   const filteredWishes = wishes.filter(w => w.category === activeTab)
 
-  // silent — modal surfaces errors via inline banner(useFormModal.saveError),
-  // global toast would double-notify.
-  const createMut = useCreateWish(mutationTripId, { silent: true })
-  const updateMut = useUpdateWish(mutationTripId, { silent: true })
+  // Optimistic close — modal closes immediately on save; failures route
+  // to the global toast via MutationCache.onError + the hook rollback.
+  const createMut = useCreateWish(mutationTripId)
+  const updateMut = useUpdateWish(mutationTripId)
   const deleteMut = useDeleteWish(mutationTripId)
   const voteMut   = useToggleWishVote(mutationTripId)
-  const isSaving  = createMut.isPending || updateMut.isPending
 
   if (ctx.status === 'loading') return <WishPageSkeleton />
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Heart} reason="ウィッシュを投票" />
 
   const title = ctx.trip.title
 
-  async function handleSave({ input, attachment }: WishFormResult) {
+  function handleSave({ input, attachment }: WishFormResult) {
     if (isDemo) { modal.close(); signIn.open(); return }
     if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
-    modal.clearError()
-    try {
-      await simulateFailureMaybe()
-      if (modal.editTarget) {
-        await updateMut.mutateAsync({
-          wishId:        modal.editTarget.id,
-          updates:       input,
-          uid,
-          attachment,
-          existingImage: modal.editTarget.image,
-        })
-      } else {
-        await createMut.mutateAsync({
-          input,
-          file:       attachment instanceof File ? attachment : null,
-          proposedBy: uid,
-        })
-      }
-      modal.close()
-    } catch (err) {
-      modal.setError(err instanceof Error ? err.message : '保存に失敗しました')
+
+    // Optimistic close (mirrors ExpensePage). Modal closes immediately;
+    // the hook's onMutate inserts a temp row into the list cache, the
+    // real write runs in the background, and onError rolls back + the
+    // global MutationCache.onError toasts on failure.
+    const editing = modal.editTarget
+    const file = attachment instanceof File ? attachment : null
+    modal.close()
+    if (editing) {
+      updateMut.mutate({
+        wishId:        editing.id,
+        updates:       input,
+        uid,
+        attachment,
+        existingImage: editing.image,
+      })
+    } else {
+      createMut.mutate({ input, file, proposedBy: uid })
     }
   }
 
-  async function handleDelete() {
+  function handleDelete() {
     if (!modal.editTarget) return
     if (isDemo) { modal.close(); signIn.open(); return }
-    try {
-      await deleteMut.mutateAsync({
-        wishId: modal.editTarget.id,
-        image:  modal.editTarget.image,
-      })
-      modal.close()
-    } catch { /* hook onError already toasted */ }
+    const target = modal.editTarget
+    modal.close()
+    deleteMut.mutate({ wishId: target.id, image: target.image })
   }
 
   function handleToggleVote(w: Wish) {
@@ -143,9 +134,9 @@ export default function WishPage() {
     return uid != null && w.proposedBy === uid
   }
 
-  async function handleDeleteFromMenu(w: Wish) {
+  function handleDeleteFromMenu(w: Wish) {
     if (isDemo) { signIn.open(); return }
-    await deleteMut.mutateAsync({ wishId: w.id, image: w.image }).catch(() => {})
+    deleteMut.mutate({ wishId: w.id, image: w.image })
   }
 
   return (
@@ -268,7 +259,7 @@ export default function WishPage() {
           isOpen
           editTarget={modal.editTarget}
           defaultCategory={activeTab}
-          isSaving={isSaving}
+          isSaving={false}
           saveError={modal.saveError}
           onClose={modal.close}
           onSave={handleSave}
