@@ -116,8 +116,18 @@ export default function AppLayout() {
       // their layout depends on, no magic number duplication.
       style={{ '--nav-h': NAV_H } as React.CSSProperties}
     >
+      {/* Skip link — 鍵盤使用者首個 Tab focus 即可跳過 BottomNav 直達主內容。 */}
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:px-3 focus:py-2 focus:rounded focus:bg-accent focus:text-white focus:text-sm focus:font-medium focus:outline-2 focus:outline-offset-2 focus:outline-accent"
+      >
+        本文へスキップ
+      </a>
+
       <main
-        className="absolute top-0 inset-x-0 overflow-y-auto overflow-x-hidden bg-app"
+        id="main"
+        tabIndex={-1}
+        className="absolute top-0 inset-x-0 overflow-y-auto overflow-x-hidden bg-app focus:outline-none"
         style={{ bottom: 'var(--nav-h)' }}
       >
         {/* 接在 main 內最頂部 — 跟頁面一起捲動,進頁面必看到一次,

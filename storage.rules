@@ -96,17 +96,40 @@ service firebase.storage {
       return !('deletingAt' in firestore.get(tripDoc(tripId)).data);
     }
 
-    // Wish cover Storage ownership: only the wish proposer can
-    // write / replace / delete cover bytes. firestore.rules already
-    // restricts wish doc content edits to the proposer; Storage now
-    // mirrors that. wishService.createWish is doc-first: setDoc the
-    // wish (without image), then upload, then Worker /upload-finalize
-    // patches the `image` field atomically with the intent markUsed
-    // writes (Phase 3.6 -- Worker is the authoritative writer for
-    // `image`; firestore.rules forbid client direct writes to the
-    // field). By the time Storage write fires, the wish doc exists
-    // and its proposedBy is queryable -- no first-upload exception
-    // needed, no race window.
+    // Wish cover Storage ownership.
+    //
+    // proposer-gate is enforced AUTHORITATIVELY at the Worker, NOT here:
+    //   - /upload-intents reads the wish doc with Admin SDK (strong
+    //     consistency, no cross-service staleness) and refuses to mint
+    //     for non-proposer.
+    //   - /upload-finalize reads the wish doc with Admin SDK again and
+    //     refuses to patch wish.image for non-proposer, then marks the
+    //     intent used in the same transaction.
+    //
+    // Storage rules used to call isWishProposer in `allow create` as
+    // defense-in-depth. The 2026-05-26 production incident (systematic
+    // 403 on every "create wish + simultaneous cover image" flow)
+    // proved that read was racing on the freshly-written wish doc:
+    // the cross-service Storage→Firestore path has a sub-second
+    // staleness window, same class as the 2026-05-24 intent-doc race.
+    // wishService.createWish is doc-first by necessity (the wishId is
+    // needed in the intent path), so the wish doc is ALWAYS milliseconds
+    // old when Storage rules try to read it -- the race fires every
+    // time, not occasionally.
+    //
+    // Fix: storage.rules stop gating CREATE on isWishProposer. The
+    // Worker is already the authoritative proposer gate at both intent
+    // mint and finalize. Storage rules verify only stable claimed
+    // metadata (intentMatches: uploaderUid match + tripId/entityType/
+    // entityId/schemaVersion match + size/contentType allowlist +
+    // 32-char intentId shape) plus isMember + tripNotDeleting at upload
+    // time. A non-proposer cannot get an intent minted, and a stolen
+    // intent locks uploaderUid -- so the Storage-side proposer check
+    // was redundant relative to Worker enforcement.
+    //
+    // isWishProposer IS still used for `allow delete`. That read is
+    // safe: by the time anyone deletes a wish cover, the wish doc has
+    // been around for minutes-to-hours, well past any staleness window.
     function wishPath(tripId, wishId) {
       return /databases/(default)/documents/trips/$(tripId)/wishes/$(wishId);
     }
@@ -239,28 +262,37 @@ service firebase.storage {
       allow delete: if canWriteFiles(tripId);
     }
 
-    // Wish cover images. Any member can READ (gallery), but write /
-    // replace / delete is restricted to the wish proposer. The
-    // wishService.createWish flow is doc-first so the wish doc
-    // exists by the time Storage write fires. Image-only with the
-    // 5MB cap.
+    // Wish cover images. Any member can READ (gallery). CREATE goes
+    // through Worker-issued intents; the wish proposer is gated at
+    // the Worker (intent mint + finalize, both with Admin SDK reads
+    // that don't race). DELETE stays proposer-or-owner gated here
+    // because the wish doc is no longer fresh by the time anyone
+    // deletes a cover. Image-only with the 5MB cap.
     match /trips/{tripId}/wishes/{wishId}/{fileName} {
       allow read: if isMember(tripId);
-      // create via intent. isMember + tripNotDeleting + isWishProposer
-      // are the upload-time permission checks (the intent was minted
-      // earlier so a since-changed proposer or membership status must
-      // still pass here). intentMatches enforces stable claimed-
-      // metadata properties only — size / contentType allowlist /
-      // metadata shape / tripId-entityType-entityId match. Intent
-      // existence / status / expires / single-use is the Worker's job
-      // at /upload-finalize. Wish-specific image-only enforcement
-      // happens at intent-mint time in upload-intent.ts's WISH
-      // allowlist (PDF kind is rejected before the intent is even
-      // created), so by the time the upload lands here, a wish-bound
-      // intentId can only legitimately come from an image mint.
+      // create via intent. isMember + tripNotDeleting are the upload-
+      // time permission checks (the intent was minted up to 30 min
+      // ago; a since-removed member or trip mid-cascade must still
+      // be rejected here). intentMatches enforces stable claimed-
+      // metadata properties only -- size / contentType allowlist /
+      // metadata shape / tripId-entityType-entityId match + uploader
+      // uid match. Intent existence / status / expires / single-use
+      // is the Worker's job at /upload-finalize. Proposer enforcement
+      // is at the Worker: /upload-intents refuses to mint for non-
+      // proposer (Admin SDK read), and /upload-finalize refuses to
+      // patch wish.image for non-proposer. Wish-specific image-only
+      // enforcement happens at intent-mint time in upload-intent.ts's
+      // WISH allowlist (PDF kind is rejected before the intent is
+      // even created), so by the time the upload lands here, a wish-
+      // bound intentId can only legitimately come from an image mint.
+      //
+      // Storage rules used to call isWishProposer here as defense-in-
+      // depth. Production 2026-05-26: systematic 403 because the wish
+      // doc is milliseconds old at upload time and the cross-service
+      // read raced. Removed -- see the long comment on the
+      // isWishProposer helper above.
       allow create: if isMember(tripId)
                     && tripNotDeleting(tripId)
-                    && isWishProposer(tripId, wishId)
                     && intentMatches(tripId, 'wish', wishId);
       allow update: if false;
       // Delete: proposer cleans up their own; OR trip owner

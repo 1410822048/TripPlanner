@@ -409,7 +409,7 @@ describe('Phase 3.5 intent-verified upload: booking (canWriteFiles)', () => {
   })
 })
 
-describe('Phase 3.5 intent-verified upload: wish (isMember + proposer)', () => {
+describe('Phase 3.5 intent-verified upload: wish (isMember only; proposer is Worker-side)', () => {
   const WISH_ID = 'wish-1'  // proposedBy EDITOR_UID per fixture
 
   test('proposer (editor) with valid intent → succeed', async () => {
@@ -425,15 +425,26 @@ describe('Phase 3.5 intent-verified upload: wish (isMember + proposer)', () => {
     ))
   })
 
-  test('non-proposer member with valid intent → deny (proposer gate)', async () => {
-    // Viewer mints an intent (admin context bypasses /upload-intents'
-    // own proposer check) -- demonstrates that storage.rules still
-    // re-checks proposer regardless.
+  test('non-proposer member with shape-valid intent → succeed at Storage (Worker is the gate)', async () => {
+    // 2026-05-26: storage.rules used to call isWishProposer on the
+    // freshly-written wish doc and 403'd in production every time.
+    // Removed (see storage.rules comment block on isWishProposer).
+    // Now storage.rules accept any shape-valid intent metadata from
+    // any member; proposer enforcement lives at the Worker:
+    //   - /upload-intents refuses to mint for non-proposer (Admin
+    //     SDK read, no cross-service race).
+    //   - /upload-finalize refuses to patch wish.image for non-
+    //     proposer and refuses to mark the intent used.
+    // A non-proposer who somehow obtained a shape-valid intent
+    // (e.g. admin context here) can write bytes, but the intent is
+    // never consumed and the blob becomes orphan -- cleaned by the
+    // orphan-purge cron. Same tolerated tradeoff as fake-intentId
+    // (see project-phase35-final-design "Known tolerated tradeoff").
     const seed = await seedIntent({
       intentId: 'i-wish-non-prop', uid: VIEWER_UID,
       entityType: 'wish', entityId: WISH_ID,
     })
-    await assertFails(uploadString(
+    await assertSucceeds(uploadString(
       ref(asViewer(env).storage(), seed.path), 'data', 'raw',
       uploadMetadata({
         intentId: seed.intentId, uploaderUid: VIEWER_UID,
@@ -513,22 +524,24 @@ describe('Phase 3.5 revocation-window: intent minted, permission changes before 
     await setDeleting(false)
   })
 
-  test('wish: intent minted, then wish doc deleted → upload fails (proposer check)', async () => {
+  test('wish: intent minted, then proposer changed → Storage still accepts (Worker rejects at finalize)', async () => {
+    // 2026-05-26: storage.rules used to call isWishProposer on the
+    // freshly-written wish doc and 403'd in production. Removed.
+    // After the proposer-on-doc changes mid-flight, Storage rules
+    // no longer care; Worker /upload-finalize will read the wish
+    // doc again with Admin SDK, see proposedBy != callerUid, and
+    // refuse to patch wish.image -- blob becomes orphan, cleaned
+    // by cron. trip-cascade and role-revocation gates above are
+    // the actually-stable Storage-rule revocation paths.
     const seed = await seedIntent({
       intentId: 'i-revoke-wish-doc', entityType: 'wish', entityId: WISH_ID,
     })
-    // Delete the wish doc via admin context to simulate the wish being
-    // removed between intent mint and upload.
     await env.withSecurityRulesDisabled(async ctx => {
       await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
-        // Simplest: empty out proposedBy so isWishProposer fires.
-        // (deleting the doc would require deleteDoc which we'd need
-        // to import; updating to a non-matching proposedBy has the
-        // same effect on isWishProposer.)
         proposedBy: 'someone-else-uid',
       }, { merge: true })
     })
-    await assertFails(uploadString(
+    await assertSucceeds(uploadString(
       ref(asEditor(env).storage(), seed.path), 'data', 'raw',
       uploadMetadata({
         intentId: seed.intentId, uploaderUid: seed.uploaderUid,
