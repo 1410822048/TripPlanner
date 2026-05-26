@@ -94,7 +94,8 @@ service cloud.firestore {
     // Allow `field` to be either unchanged OR removed (via deleteField()),
     // but never written/changed. Used for Worker-authoritative fields
     // (booking.attachment, wish.image) where the client may detach but
-    // not write — the Worker /upload-finalize endpoint owns all writes
+    // not write — Worker endpoints (`/upload-finalize` for booking,
+    // `/wish-file-create` + `/wish-file-update` for wish) own all writes
     // via Admin SDK (rules-bypass). Note: `unchanged()` already returns
     // true when the field is missing on BOTH sides (diff-based), so this
     // helper only adds the "present-on-old, absent-on-new" detach case.
@@ -181,10 +182,11 @@ service cloud.firestore {
     //   - expense.receipt: `allow create: if false` on /expenses + Worker
     //     `expense-validate.ts` owns shape validation.
     //   - booking.attachment, wish.image: create rule forbids the field,
-    //     update rule allows only `unchangedOrRemoved`. Worker
-    //     `/upload-finalize` (Admin SDK rules-bypass) writes via
-    //     `buildAttachmentMapValue` after verifying the intent doc's
-    //     used/expires/stale guards.
+    //     update rule allows only `unchangedOrRemoved`. Booking uses
+    //     `/upload-finalize` (doc-first then patch). Wish uses
+    //     `/wish-file-create` + `/wish-file-update` (Phase 3.7: atomic
+    //     doc + image in one tx). All Admin SDK rules-bypass; all
+    //     verify the intent doc's used/expires/stale guards.
     // The old helpers checked path-binding + URL-origin invariants that
     // now live in `workers/ocr/src/expense-validate.ts` (makeReceiptSchema)
     // and `workers/ocr/src/upload-intent.ts` (intent minting + finalize).
@@ -707,10 +709,11 @@ service cloud.firestore {
                       && (!('link' in request.resource.data)
                             || (request.resource.data.link is string
                                 && request.resource.data.link.size() <= 1000))
-                      // image is Worker-authoritative: same shape as
-                      // booking.attachment above. Client setDoc creates
-                      // the wish WITHOUT image, then Worker /upload-finalize
-                      // patches it in.
+                      // image is Worker-authoritative (Phase 3.7): text-only
+                      // wishes go through this client setDoc path; wishes
+                      // with an image MUST route through Worker
+                      // /wish-file-create (Admin SDK), which writes doc +
+                      // image atomically in one Firestore tx.
                       && !('image' in request.resource.data);
         // Two update paths:
         //   1. Proposer edits any field (title/category/etc.)
@@ -747,8 +750,11 @@ service cloud.firestore {
               && (!('link' in request.resource.data)
                     || (request.resource.data.link is string
                         && request.resource.data.link.size() <= 1000))
-              // image is Worker-authoritative on update too (see booking
-              // attachment update for the full rationale).
+              // image is Worker-authoritative on update too. Client may
+              // detach via deleteField() OR leave the field as-is; any
+              // image WRITE (replace / first-attach) routes through
+              // Worker /wish-file-update (Phase 3.7 atomic tx + stale
+              // guard).
               && unchangedOrRemoved('image')
             )
             ||
@@ -1089,8 +1095,9 @@ service cloud.firestore {
       // directly. The intent doc carries authoritative path /
       // customMetadata / allowedContentTypes / maxBytes / status /
       // expiresAt -- read SOLELY by the Worker inside the
-      // /upload-finalize and /expense-create / /expense-update
-      // Firestore transactions (admin SDK, bypasses rules). The
+      // /upload-finalize, /expense-create, /expense-update,
+      // /wish-file-create, /wish-file-update Firestore transactions
+      // (admin SDK, bypasses rules). The
       // storage.rules layer does NOT cross-service-read this doc
       // (the 2026-05-24 prod 403 incident demonstrated the
       // read-after-write race on freshly-minted docs from the
