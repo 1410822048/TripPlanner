@@ -23,6 +23,7 @@
 // has check-in/out/cover; train has route/vehicle), and trying to
 // express all four in one render tree was the "single boring row for
 // everything" UX we eliminated.
+import { Loader2 } from 'lucide-react'
 import type { Booking } from '@/types'
 import SwipeableShell from '@/components/ui/SwipeableShell'
 import FlightCard  from './cards/FlightCard'
@@ -51,6 +52,12 @@ function SwipeableBookingItem({
   booking, whenLabel, onSelect, onPreview,
   isOpen, onOpen, onClose, onDelete,
 }: SwipeableBookingItemProps) {
+  // Rows added via optimistic update carry a `temp-` id until the
+  // Firestore + Storage round-trip lands. While pending, disable
+  // tap/swipe and dim the body + show a 保存中… pill so the user
+  // knows the row is still saving. Mirrors SwipeableExpenseItem.
+  const isPending = booking.id.startsWith('temp-')
+
   // Dispatch table — keeps the render tree flat and lets TypeScript
   // narrow each card's prop shape at the case site.
   function renderBody() {
@@ -70,8 +77,17 @@ function SwipeableBookingItem({
       onOpen={onOpen}
       onClose={onClose}
       onDelete={onDelete}
+      disabled={isPending}
     >
-      {renderBody()}
+      <div className={['relative transition-opacity', isPending ? 'opacity-55' : ''].join(' ')}>
+        {renderBody()}
+        {isPending && (
+          <div className="absolute top-2 right-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/60 text-white text-[10.5px] font-semibold backdrop-blur-sm">
+            <Loader2 size={11} strokeWidth={2.4} className="animate-spin" />
+            <span>保存中…</span>
+          </div>
+        )}
+      </div>
     </SwipeableShell>
   )
 }

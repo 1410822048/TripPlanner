@@ -4,7 +4,6 @@ import { Plus, Ticket } from 'lucide-react'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
 import { useSwipeOpen } from '@/hooks/useSwipeOpen'
 import { toast } from '@/shared/toast'
-import { simulateFailureMaybe } from '@/utils/devFailures'
 import BookingsPageSkeleton from './BookingsPageSkeleton'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
 import DemoBanner from '@/components/ui/DemoBanner'
@@ -62,12 +61,11 @@ export default function BookingsPage() {
   const demoBookings = ctx.status === 'demo' && ctx.trip.id === 'demo' ? MOCK_BOOKINGS : []
   const bookings = ctx.status === 'demo' ? demoBookings : (cloudBookings ?? [])
 
-  // silent — modal surfaces errors via inline banner(useFormModal.saveError),
-  // global toast would double-notify.
-  const createMut = useCreateBooking(mutationTripId, { silent: true })
-  const updateMut = useUpdateBooking(mutationTripId, { silent: true })
+  // Optimistic close — modal closes immediately on save; failures route
+  // to the global toast via MutationCache.onError + the hook rollback.
+  const createMut = useCreateBooking(mutationTripId)
+  const updateMut = useUpdateBooking(mutationTripId)
   const deleteMut = useDeleteBooking(mutationTripId)
-  const isSaving  = createMut.isPending || updateMut.isPending
 
   if (ctx.status === 'loading') return <BookingsPageSkeleton />
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Ticket} reason="予約を管理" />
@@ -93,56 +91,48 @@ export default function BookingsPage() {
   for (const b of bookings) grouped[b.type].push(b)
   const typeOrder: Booking['type'][] = ['flight', 'hotel', 'train', 'bus', 'other']
 
-  async function handleSave({ input, attachment }: BookingFormResult) {
+  function handleSave({ input, attachment }: BookingFormResult) {
     if (isDemo) { modal.close(); signIn.open(); return }
     if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
-    modal.clearError()
-    try {
-      await simulateFailureMaybe()
-      if (modal.editTarget) {
-        await updateMut.mutateAsync({
-          bookingId:        modal.editTarget.id,
-          updates:          input,
-          uid,
-          attachment,
-          existing:         modal.editTarget.attachment,
-        })
-      } else {
-        await createMut.mutateAsync({
-          input,
-          file:      attachment instanceof File ? attachment : null,
-          createdBy: uid,
-        })
-      }
-      modal.close()
-    } catch (err) {
-      modal.setError(err instanceof Error ? err.message : '保存に失敗しました')
+
+    // Optimistic close (mirrors ExpensePage). Modal closes immediately;
+    // the hook's onMutate inserts a temp row into the list cache, the
+    // real write runs in the background, and onError rolls back + the
+    // global MutationCache.onError toasts on failure.
+    const editing = modal.editTarget
+    modal.close()
+    if (editing) {
+      updateMut.mutate({
+        bookingId:  editing.id,
+        updates:    input,
+        uid,
+        attachment,
+        existing:   editing.attachment,
+      })
+    } else {
+      createMut.mutate({
+        input,
+        file:      attachment instanceof File ? attachment : null,
+        createdBy: uid,
+      })
     }
   }
 
-  async function handleSwipeDelete(b: Booking) {
+  function handleSwipeDelete(b: Booking) {
     swipe.closeAll()
     if (isDemo) { signIn.open(); return }
-    await deleteMut.mutateAsync({
-      bookingId:  b.id,
-      attachment: b.attachment,
-    }).catch(() => {})
+    deleteMut.mutate({ bookingId: b.id, attachment: b.attachment })
   }
 
-  /** Inline delete from the edit modal — closes the form on success
-   *  so the user lands back on the list. Demo mode short-circuits to
-   *  the sign-in prompt (mutation can't run without a real trip). */
-  async function handleFormDelete() {
+  /** Inline delete from the edit modal — closes the form immediately so
+   *  the user lands back on the list. Demo mode short-circuits to the
+   *  sign-in prompt (mutation can't run without a real trip). */
+  function handleFormDelete() {
     const target = modal.editTarget
     if (!target) return
     if (isDemo) { modal.close(); signIn.open(); return }
-    try {
-      await deleteMut.mutateAsync({
-        bookingId:  target.id,
-        attachment: target.attachment,
-      })
-      modal.close()
-    } catch { /* hook onError already surfaced the toast */ }
+    modal.close()
+    deleteMut.mutate({ bookingId: target.id, attachment: target.attachment })
   }
 
   return (
@@ -262,7 +252,7 @@ export default function BookingsPage() {
           editTarget={modal.editTarget}
           tripStartDate={tripStartDate}
           tripEndDate={tripEndDate}
-          isSaving={isSaving}
+          isSaving={false}
           saveError={modal.saveError}
           onClose={modal.close}
           onSave={handleSave}
