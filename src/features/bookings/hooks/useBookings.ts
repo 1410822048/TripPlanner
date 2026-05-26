@@ -19,9 +19,12 @@ import {
   createBooking,
   updateBooking,
   deleteBooking,
+  BookingCreatePartialError,
 } from '../services/bookingService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
 import { useTripListMutation } from '@/hooks/useTripListMutation'
+import { useUid } from '@/hooks/useAuth'
+import { useQueryClient } from '@tanstack/react-query'
 import { tempId } from '@/utils/tempId'
 import { auditCreateMock, auditUpdateMock } from '@/utils/audit'
 import type { Booking, BookingAttachment, CreateBookingInput } from '@/types'
@@ -53,6 +56,8 @@ export const useBookings = createRealtimeListHook<Booking>({
 })
 
 export function useCreateBooking(tripId: string, options?: MutationOptions) {
+  const qc  = useQueryClient()
+  const uid = useUid()
   return useTripListMutation<Booking, { input: CreateBookingInput; file: File | null; createdBy: string }>({
     tripId,
     keyFactory: bookingKeys.all,
@@ -63,6 +68,19 @@ export function useCreateBooking(tripId: string, options?: MutationOptions) {
     ],
     action:     MUTATION_ACTION.CREATE_BOOKING,
     silent:     options?.silent,
+    onError:    (err) => {
+      // Partial-create recovery (Phase 3.6 doc-first ordering): the
+      // booking doc persists in Firestore but the attachment step
+      // failed AND the rollback couldn't clean it up. The factory's
+      // optimistic rollback removed the temp row, but the realtime
+      // listener already pushed the real booking in. Without an
+      // invalidate the user sees "save failed" + a booking still in
+      // the list -- a re-press of save would land a duplicate.
+      // Mirrors useCreateWish's WishCreatePartialError handling.
+      if (err instanceof BookingCreatePartialError) {
+        qc.invalidateQueries({ queryKey: bookingKeys.all(tripId, uid) })
+      }
+    },
   })
 }
 

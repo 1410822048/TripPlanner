@@ -2,13 +2,30 @@
 // Phase 3.5: server-issued upload intents.
 //
 // Why this endpoint exists: under direct-client-to-Storage uploads,
-// `storage.rules` is the only contract enforcement point. Any change
+// `storage.rules` was the only contract enforcement point. Any change
 // to the metadata schema, allowed content types, or path layout
-// requires coordinating client + rules deploys with a PWA rollout
+// required coordinating client + rules deploys with a PWA rollout
 // window (old clients lag behind, get 403s). Worker-issued intents
-// move the contract from rules + client to Worker -- the rules
-// become a simple "does the upload match an intent the Worker
-// minted?" check, and future schema changes only touch the Worker.
+// move the binding contract (allowedContentTypes, maxBytes,
+// path-exactness, single-use, expiresAt) off of storage.rules and
+// onto the Worker's authoritative consume step.
+//
+// Two-gate split (post 2026-05-24 race fix -- see the long block
+// in storage.rules for the incident):
+//   - storage.rules = STABLE GATE. Checks self-contained claimed
+//     metadata (uploadIntentId shape, claimed tripId/entityType/
+//     entityId match URL params, size cap, content-type allowlist
+//     by kind, schemaVersion literal), uploader uid match, and
+//     upload-time permission (role / membership / tripNotDeleting).
+//     Does NOT read the intent doc -- the cross-service read on a
+//     freshly-minted doc races and 403s legitimate uploads.
+//   - Worker /upload-finalize + /expense-create + /expense-update
+//     = AUTHORITATIVE GATE. Reads intent doc inside a Firestore tx,
+//     verifies status='pending' (or 'used' for idempotent replay),
+//     expiresAt, path exactness, single-use markUsed, AND re-checks
+//     the uploaded object's customMetadata / contentType / size
+//     against the intent's allowedContentTypes / maxBytes /
+//     customMetadata. THIS is where the intent-bound check lives.
 //
 // Client flow:
 //   1. POST /upload-intents → Worker returns { intents: [...] }
@@ -16,8 +33,13 @@
 //   2. Client uses Firebase Storage SDK uploadBytesResumable to
 //      upload to Worker-provided path with Worker-provided metadata.
 //   3. (booking/wish) POST /upload-finalize → Worker verifies the
-//      Storage object exists, marks intent.status='used', returns
-//      attachment payload for the client to write into Firestore.
+//      Storage object exists AND patches `attachment` / `image` on
+//      the booking / wish doc atomically with the intent markUsed
+//      writes, then returns `{ ok: true }`. Phase 3.6: Worker is the
+//      authoritative writer for booking.attachment / wish.image --
+//      client no longer constructs the field shape, and firestore.
+//      rules forbid client direct edits to those fields (deleteField
+//      is the only client-allowed mutation, used for detach).
 //   4. (expense) /expense-create + /expense-update consume intent
 //      IDs directly -- no separate finalize step, saves one round-trip.
 //
@@ -25,11 +47,24 @@
 // extra Worker round-trip + one Storage rules cross-service read --
 // not the Worker raw-body proxy pattern that would burn the Free
 // plan's 10ms CPU/request budget.
+//
+// Phase 3.6 stale-finalize guard:
+//   /upload-finalize takes `applyToDoc.expectedCurrentPath` -- the
+//   primary attachment path the CLIENT believes is on the entity
+//   right now (null = "expect no attachment"). Worker reads the
+//   entity doc inside the tx and rejects with 409 if the actual
+//   path differs. This closes the race where Tab A's slow finalize
+//   would otherwise overwrite Tab B's already-committed replacement
+//   blob, leaking B's bytes as orphans. Used-intent idempotent
+//   replay applies a stricter version: the doc must already reflect
+//   THIS intent's path exactly (else the intent's blob was already
+//   superseded -- replaying would resurrect dead bytes).
 import { z }                                                        from 'zod'
 import { getAdminToken, getProjectId }                              from './admin'
 import {
   readString,
   readTimestampMs,
+  readNestedString,
   type FsValue,
 }                                                                   from './firestore'
 import { withTokenRetry, CascadeError }                             from './cascade'
@@ -59,10 +94,17 @@ const EXPIRE_MS = 30 * 60 * 1000
 const MAX_BYTES = 5 * 1024 * 1024
 
 /** Customer-controlled metadata schema version. Bump when the
- *  storage.rules ↔ intent metadata shape changes; clients pass
- *  through whatever the Worker mints (they don't know schema
- *  details), so future bumps need ONLY this constant + a Worker
- *  redeploy -- no client coordination, no PWA rollout window. */
+ *  customMetadata shape changes. Clients pass through whatever the
+ *  Worker mints (they don't know schema details), so bumps avoid
+ *  the PWA rollout window for client code -- but the literal value
+ *  IS asserted at two places, both of which must move together:
+ *    1. storage.rules' `intentMatches` (`schemaVersion == 'v1'`).
+ *    2. Worker /upload-finalize's customMetadata equality check
+ *       against the intent doc's stored customMetadata.
+ *  A bump is therefore Worker constant + storage.rules literal +
+ *  the usual two-deploy sequence (rules first to accept both old
+ *  and new, then Worker switches; or rules-only-new with a brief
+ *  in-flight upload denial window). */
 const SCHEMA_VERSION = 'v1'
 
 /** Cap per request. full + thumb is the realistic usage; PDF only
@@ -289,9 +331,14 @@ async function doCreate(
       // (the exact CT the client declared) intentionally -- locking
       // the upload to the declared CT closes the trick where a
       // client requests intent for image/webp but uploads as
-      // image/jpeg and slips past the rules check. Storage rule
-      // checks `request.resource.contentType in intent.allowedContentTypes`,
-      // so a single-element array gives exact-match semantics.
+      // image/jpeg. storage.rules CANNOT cross-service-read this
+      // freshly-minted intent doc (see the 2026-05-24 race note in
+      // storage.rules), so it can only verify that the upload's
+      // contentType is within the per-entity-kind allowlist (any
+      // image CT for kind='full'/'thumb'). The exact-CT lock fires
+      // at consume time inside consumeIntentInTx below, which
+      // re-reads the intent doc and rejects when the uploaded
+      // object's contentType is not in allowedContentTypes.
       const fields: Record<string, FsValue> = {
         uid:        { stringValue: callerUid },
         tripId:     { stringValue: req.tripId },
@@ -466,12 +513,15 @@ async function consumeIntentInTx(
 
   // Extract the intent's binding fields -- the contract the Storage
   // upload MUST match. Worker-minted at /upload-intents time; read
-  // here for defense-in-depth re-verification against the actual
-  // uploaded object metadata. storage.rules in Commit 4 will enforce
-  // the same contract at the rules layer; both layers verify so
-  // either layer's bypass (non-Firebase-SDK direct GCS, manual
-  // metadata tamper, rules misconfig) doesn't single-handedly let a
-  // non-conformant upload get consumed.
+  // here as the AUTHORITATIVE intent-bound check. storage.rules is
+  // a STABLE GATE only (claimed-metadata self-consistency, role,
+  // membership, tripNotDeleting); it does NOT read this intent doc
+  // because cross-service reads on freshly-written docs race (see
+  // the 2026-05-24 prod 403 incident note in storage.rules). The
+  // bypass cases this catches -- non-Firebase-SDK direct GCS upload,
+  // manual customMetadata tamper, contentType drift between intent
+  // request and upload -- all land here and get rejected before the
+  // intent transitions to 'used' or the entity doc is patched.
   const intentMetadataFields = (intent.fields.customMetadata as { mapValue?: { fields?: Record<string, FsValue> } } | undefined)?.mapValue?.fields
   const intentAllowedCtValues = (intent.fields.allowedContentTypes as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values
   const intentMaxBytesRaw = (intent.fields.maxBytes as { integerValue?: string | number } | undefined)?.integerValue
@@ -501,12 +551,15 @@ async function consumeIntentInTx(
   //      kind, schemaVersion) must be present on the object with the
   //      exact same value. Missing OR mismatched both fail.
   //
-  // Why all three: storage.rules (Commit 4) will perform an
-  // equivalent intent-bound check at upload time, but rule failures
-  // can be obscure (single FAILED_PRECONDITION with no field detail).
-  // Re-verifying here gives precise rejection messages + catches
-  // any pre-Commit-4 upload that landed via a path the rule
-  // doesn't yet gate. Treat this as the consume-time chokepoint.
+  // Why all three at the Worker: storage.rules is a STABLE GATE
+  // only -- it accepts any image-CT for kind='full'/'thumb', any
+  // claimed tripId/entityType/entityId that matches the URL params,
+  // and any uploadIntentId of the right shape. It does NOT read
+  // this intent doc, so it cannot enforce the exact-CT lock, the
+  // intent's maxBytes (it has a static 5MB cap instead), or the
+  // intent-vs-upload customMetadata equality. This block is the
+  // ONLY layer where the intent-bound contract is verified -- the
+  // consume-time chokepoint.
   if (!intentAllowedCts.includes(storage.contentType)) {
     throw new CascadeError(400,
       `storage contentType '${storage.contentType}' does not match intent allowedContentTypes [${intentAllowedCts.join(', ')}]`)
@@ -621,15 +674,26 @@ export async function consumeExpenseIntents(
 
 // ─── /upload-finalize endpoint (booking + wish only) ───────────────
 
-/** Per-blob attachment slice returned by /upload-finalize.
- *  Client wires these into BookingAttachment / WishImage shape. */
-export interface FinalizedBlob {
-  kind:        UploadKind
-  path:        string
-  url:         string | null   // null when Firebase Storage SDK didn't set download token
-  contentType: string
-  size:        number
-}
+/** Apply-to-doc directive. Worker patches the entity's
+ *  `attachment` (booking) or `image` (wish) field atomically with
+ *  the intent markUsed writes. `mode` is `'patch'` only -- no
+ *  no-op escape hatch, no doc-creation mode (booking/wish flows
+ *  are doc-first by the time finalize fires). */
+export const FinalizeApplyToDocSchema = z.object({
+  mode: z.literal('patch'),
+  /** The primary blob path the CLIENT believes the entity is
+   *  currently pointing at:
+   *    - `null`  → expect doc.attachment / doc.image to be absent
+   *                (first-attach flow OR detach-then-re-attach)
+   *    - string  → expect doc.attachment.filePath / doc.image.path
+   *                to equal this string exactly
+   *
+   *  Mismatch → 409. Closes the "Tab A slow finalize overwrites
+   *  Tab B's replacement" race. The intent system already pins
+   *  one-blob-per-intent; this pins one-attachment-per-doc-version. */
+  expectedCurrentPath: z.string().nullable(),
+})
+export type FinalizeApplyToDoc = z.infer<typeof FinalizeApplyToDocSchema>
 
 export const FinalizeRequestSchema = z.object({
   /** Trip scope for the intent lookup. Intents live under
@@ -643,15 +707,21 @@ export const FinalizeRequestSchema = z.object({
    *  full or pdf, optionally one thumb). Worker rejects mismatched
    *  scope across the set. */
   intentIds: z.array(z.string().min(1).max(60)).min(1).max(MAX_UPLOADS_PER_REQUEST),
+  /** Phase 3.6: Worker is now the authoritative writer for
+   *  booking.attachment / wish.image. Caller declares which doc to
+   *  patch (implied by the intents' entityType/entityId) and what
+   *  state of the doc it expects (expectedCurrentPath). */
+  applyToDoc: FinalizeApplyToDocSchema,
 })
 export type FinalizeRequest = z.infer<typeof FinalizeRequestSchema>
 
+/** Worker no longer returns the blob payload -- the entity doc IS
+ *  the source of truth, and the client will re-read it through its
+ *  realtime listener. Keeping the response narrow also avoids the
+ *  "client wrote stale attachment from finalize response" failure
+ *  mode that the doc-authoritative pattern is designed to prevent. */
 export interface FinalizeResponse {
-  ok:         true
-  entityType: 'booking' | 'wish'
-  tripId:     string
-  entityId:   string
-  blobs:      FinalizedBlob[]
+  ok: true
 }
 
 export async function finalizeUploadIntents(
@@ -661,6 +731,75 @@ export async function finalizeUploadIntents(
   bucket:             string,
 ): Promise<FinalizeResponse> {
   return withTokenRetry(() => doFinalize(callerUid, req, serviceAccountJson, bucket))
+}
+
+/** Read the primary blob path currently stored on the entity doc.
+ *  Returns `null` when the attachment / image field is absent (e.g.
+ *  doc-first booking pre-attach, or post-detach via deleteField()). */
+function readCurrentPrimaryPath(
+  entityType: 'booking' | 'wish',
+  fields:     Record<string, FsValue>,
+): string | null {
+  if (entityType === 'booking') {
+    return readNestedString(fields, 'attachment', 'filePath') ?? null
+  }
+  return readNestedString(fields, 'image', 'path') ?? null
+}
+
+/** Read the thumb path currently stored. Used by the idempotent-
+ *  replay verification path (must match intent.path) when a thumb
+ *  intent is in the set. */
+function readCurrentThumbPath(
+  entityType: 'booking' | 'wish',
+  fields:     Record<string, FsValue>,
+): string | null {
+  if (entityType === 'booking') {
+    return readNestedString(fields, 'attachment', 'thumbPath') ?? null
+  }
+  return readNestedString(fields, 'image', 'thumbPath') ?? null
+}
+
+/** Build the Firestore mapValue payload for a booking/wish attachment
+ *  field from the consumed intents. Field-name asymmetry (BookingAttachment
+ *  uses fileUrl/filePath/fileType; WishImage uses url/path) is captured
+ *  here so the call site stays clean. */
+function buildAttachmentMapValue(
+  entityType: 'booking' | 'wish',
+  primary:    ConsumedIntent,
+  thumb:      ConsumedIntent | undefined,
+): FsValue {
+  if (entityType === 'booking') {
+    // BookingAttachment: fileUrl + filePath + fileType required;
+    // thumbUrl + thumbPath optional (PDFs ship without thumbs).
+    const fields: Record<string, FsValue> = {
+      fileUrl:  { stringValue: primary.downloadUrl! },  // null-checked by caller
+      filePath: { stringValue: primary.path },
+      fileType: { stringValue: primary.storage.contentType },
+    }
+    if (thumb) {
+      fields.thumbUrl  = { stringValue: thumb.downloadUrl! }  // null-checked by caller
+      fields.thumbPath = { stringValue: thumb.path }
+    }
+    return { mapValue: { fields } }
+  }
+  // WishImage: url + path + thumbUrl + thumbPath ALL required. When
+  // the upload didn't include a thumb (HEIC / HEIF pass-through or
+  // canvas decode failure -- see src/utils/image.ts PASSTHROUGH_TYPES),
+  // collapse the thumb fields to the primary blob. Matches the
+  // pre-Phase-3.6 client-side fallback so existing UI that always
+  // indexes into both fields keeps rendering; cost is a full-size
+  // image in the list thumbnail slot for these edge cases (~10x
+  // bandwidth vs WebP thumb), which is the same trade we always made.
+  return {
+    mapValue: {
+      fields: {
+        url:       { stringValue: primary.downloadUrl! },
+        path:      { stringValue: primary.path },
+        thumbUrl:  { stringValue: thumb?.downloadUrl ?? primary.downloadUrl! },
+        thumbPath: { stringValue: thumb?.path        ?? primary.path },
+      },
+    },
+  }
 }
 
 async function doFinalize(
@@ -681,22 +820,22 @@ async function doFinalize(
     const writes:   TxWrite[]        = []
     const consumed: ConsumedIntent[] = []
 
-    // Consume each intent. /upload-finalize handles booking + wish ONLY;
-    // expense flows through /expense-create or /expense-update directly.
+    // ── Step 1: Consume each intent ────────────────────────────────
+    // Validates intent doc + Storage object metadata. This IS the
+    // authoritative intent-bound check (storage.rules is a STABLE
+    // GATE that never reads the intent doc), so contentType /
+    // size / customMetadata equality against intent.allowedContentTypes
+    // / maxBytes / customMetadata happens here. markUsedWrite queued;
+    // entity-doc patch added below in Step 5 so the whole thing
+    // commits as one tx.
     //
-    // `allowUsed: true` enables idempotent replay for booking/wish:
-    // if the client previously called /upload-finalize successfully but
-    // crashed BEFORE writing the booking/wish doc client-side, a retry
-    // with the same intentIds returns the same blobs response. uid +
-    // storage + customMetadata all still verified -- idempotency is
-    // scoped to the original uploader, not a general bypass.
+    // `allowUsed: true` enables idempotent replay. uid + storage +
+    // customMetadata still re-verified -- replay is scoped to the
+    // original uploader.
     for (const intentId of req.intentIds) {
       const r = await consumeIntentInTx(
         tx, intentId, callerUid, accessToken, projectId, bucket,
         req.tripId,
-        // tripId scope already pinned via lookupTripId (the subcollection
-        // path); intent.tripId field is re-verified inside consume so a
-        // forged client tripId can't pull a wrong-trip intent.
         { tripId: req.tripId },
         { allowUsed: true },
       )
@@ -705,51 +844,182 @@ async function doFinalize(
           `intent ${intentId} is for an expense -- use /expense-create or /expense-update instead`)
       }
       consumed.push(r.consumed)
-      // markUsedWrite may be null for already-used (idempotent) intents.
       if (r.markUsedWrite) writes.push(r.markUsedWrite)
     }
 
-    // Cross-intent scope coherence: all intents in this finalize must
-    // share trip + entityType + entityId. Otherwise a malicious caller
-    // could finalize two unrelated intents in a single call to confuse
-    // downstream booking/wish doc writes.
+    // ── Step 2: Cross-intent coherence ─────────────────────────────
     const first = consumed[0]!
     for (const c of consumed) {
       if (c.tripId     !== first.tripId)     throw new CascadeError(400, 'tripId mismatch across intentIds')
       if (c.entityType !== first.entityType) throw new CascadeError(400, 'entityType mismatch across intentIds')
       if (c.entityId   !== first.entityId)   throw new CascadeError(400, 'entityId mismatch across intentIds')
     }
-    // No duplicate kinds (e.g. two `full`s).
     const kinds = consumed.map(c => c.kind)
     if (new Set(kinds).size !== kinds.length) {
       throw new CascadeError(400, 'duplicate kinds in intentIds')
     }
-    // Must include a primary blob (full or pdf). Thumb-only sets
-    // would consume + mark the thumb intent used and return blobs
-    // the caller can't assemble into a valid BookingAttachment /
-    // WishImage (both shapes require a primary path/url). Mirrors
-    // the equivalent check in expense-write's buildReceiptFromIntents.
-    if (!kinds.some(k => k === 'full' || k === 'pdf')) {
+
+    const primary = consumed.find(c => c.kind === 'full' || c.kind === 'pdf')
+    const thumb   = consumed.find(c => c.kind === 'thumb')
+    if (!primary) {
       throw new CascadeError(400, 'intentIds must include a full or pdf intent (primary blob missing)')
     }
+    const entityType = first.entityType as 'booking' | 'wish'
 
-    const blobs: FinalizedBlob[] = consumed.map(c => ({
-      kind:        c.kind,
-      path:        c.path,
-      url:         c.downloadUrl,
-      contentType: c.storage.contentType,
-      size:        c.storage.size,
-    }))
-
-    return {
-      writes,
-      result: {
-        ok:         true as const,
-        entityType: first.entityType as 'booking' | 'wish',  // checked above
-        tripId:     first.tripId,
-        entityId:   first.entityId,
-        blobs,
-      },
+    // Phase 3.6: WishImage requires url + path + thumbUrl + thumbPath
+    // ALL present, but they can collapse to the primary blob when no
+    // thumb intent landed -- HEIC / HEIF pass-throughs and decode
+    // failures (see src/utils/image.ts PASSTHROUGH_TYPES) ship as
+    // primary-only. The allowlist accepts these MIME types for wish
+    // covers, so refusing finalize here would orphan the upload and
+    // roll the wish doc back. buildAttachmentMapValue below mirrors
+    // the historical client-side fallback (thumbUrl ?? fullUrl).
+    if (entityType === 'wish' && primary.kind !== 'full') {
+      throw new CascadeError(400, 'wish primary must be kind=full (PDF not allowed for wish)')
     }
+
+    // Phase 3.6: all intents must share state (all pending or all
+    // used). Mixed -- one used, one pending -- shouldn't arise under
+    // single-tx semantics; if it does, it indicates a client double-
+    // submit retry with a NEW thumb intent on top of a previously
+    // finalized full intent. Rejecting is safer than guessing intent;
+    // client can recover by restarting from intent request.
+    const allUsed    = consumed.every(c => c.alreadyUsed)
+    const allPending = consumed.every(c => !c.alreadyUsed)
+    if (!allUsed && !allPending) {
+      throw new CascadeError(409,
+        'mixed intent states across this finalize set; re-request intents and retry from scratch')
+    }
+
+    // Phase 3.6: Worker is the authoritative writer for the entity's
+    // attachment / image field. We need a valid download URL for the
+    // primary blob (and for wish, also the thumb). Firebase Storage
+    // SDK always sets firebaseStorageDownloadTokens on uploadBytes;
+    // a null URL here implies a non-Firebase-SDK upload pathway that
+    // would produce a doc violating the entity's Zod schema downstream.
+    // Reject explicitly rather than write malformed data.
+    if (primary.downloadUrl === null) {
+      throw new CascadeError(500,
+        `primary blob at ${primary.path} has no Firebase download token (upload bypassed SDK?)`)
+    }
+    if (thumb && thumb.downloadUrl === null) {
+      throw new CascadeError(500,
+        `thumb blob at ${thumb.path} has no Firebase download token (upload bypassed SDK?)`)
+    }
+
+    // ── Step 3: Re-verify caller's CURRENT write permission ─────────
+    // Intent was minted up to 30 min ago. In the meantime the caller
+    // could have been demoted, removed from the trip, or the trip
+    // could have entered cascade-delete state. The intent system on
+    // its own can't see those changes -- re-check now, in the same
+    // tx as the doc patch, so a stale-permission capability token
+    // can't slip through.
+    const trip = await tx.get(`trips/${first.tripId}`)
+    if (!trip.exists)              throw new CascadeError(410, 'trip not found')
+    if ('deletingAt' in trip.fields) throw new CascadeError(410, 'trip is being deleted')
+
+    const member = await tx.get(`trips/${first.tripId}/members/${callerUid}`)
+    if (!member.exists) throw new CascadeError(403, 'caller is not a trip member')
+    const role = readString(member.fields, 'role')
+
+    if (entityType === 'booking') {
+      if (role !== 'owner' && role !== 'editor') {
+        throw new CascadeError(403, 'caller role is not owner/editor')
+      }
+    } else {
+      // wish: any role, but must be proposer (checked against the
+      // wish doc itself in Step 4).
+      if (role !== 'owner' && role !== 'editor' && role !== 'viewer') {
+        throw new CascadeError(403, 'caller role invalid')
+      }
+    }
+
+    // ── Step 4: Read entity doc + stale-finalize guard ──────────────
+    const entityPath = entityType === 'booking'
+      ? `trips/${first.tripId}/bookings/${first.entityId}`
+      : `trips/${first.tripId}/wishes/${first.entityId}`
+    const entityDoc = await tx.get(entityPath)
+    if (!entityDoc.exists) {
+      // Doc-first flow violated -- entity should exist by upload time
+      // for both booking (Phase 3.6 doc-first create) and wish
+      // (intent-mint already enforces wish-doc-exists). If it's gone
+      // now, either the user deleted it between upload and finalize,
+      // or someone never created it. 410 in either case.
+      throw new CascadeError(410,
+        `${entityType} ${first.entityId} not found (deleted between upload and finalize, or never created)`)
+    }
+
+    if (entityType === 'wish') {
+      const proposer = readString(entityDoc.fields, 'proposedBy')
+      if (proposer !== callerUid) {
+        throw new CascadeError(403, 'only the wish proposer can finalize its image')
+      }
+    }
+
+    const currentPrimaryPath = readCurrentPrimaryPath(entityType, entityDoc.fields)
+
+    if (allUsed) {
+      // Idempotent-replay guard: client previously finalized this
+      // intent set successfully (Worker patched the doc), and is now
+      // retrying. The doc must STILL reflect this intent exactly --
+      // if the user has since detached / replaced the attachment, the
+      // intent's blob is dead bytes (will be reaped by orphan-scan)
+      // and we MUST NOT resurrect it into the doc.
+      if (currentPrimaryPath !== primary.path) {
+        throw new CascadeError(409,
+          `idempotent-replay denied: entity primary path '${currentPrimaryPath ?? 'absent'}' ` +
+          `does not match intent '${primary.path}' (entity was detached or replaced)`)
+      }
+      if (thumb) {
+        const currentThumbPath = readCurrentThumbPath(entityType, entityDoc.fields)
+        if (currentThumbPath !== thumb.path) {
+          throw new CascadeError(409,
+            `idempotent-replay denied: entity thumb path '${currentThumbPath ?? 'absent'}' ` +
+            `does not match intent '${thumb.path}'`)
+        }
+      }
+      // All paths match → idempotent OK. No-op: writes[] is empty
+      // (no markUsed because alreadyUsed=true, and no patch because
+      // doc already reflects). Commit will be a no-op tx.
+      return { writes, result: { ok: true as const } }
+    }
+
+    // allPending path: first-time finalize. Stale-finalize guard --
+    // client must have declared the doc state it expected. If another
+    // tab already replaced or detached the attachment between upload
+    // and finalize, the client's intent is no longer current; reject
+    // so the new blob doesn't overwrite the user's intended state
+    // (and become an orphan itself).
+    if (currentPrimaryPath !== req.applyToDoc.expectedCurrentPath) {
+      throw new CascadeError(409,
+        `stale-finalize: entity primary path '${currentPrimaryPath ?? 'absent'}' ` +
+        `does not match expectedCurrentPath '${req.applyToDoc.expectedCurrentPath ?? 'null'}' ` +
+        `(another tab replaced or detached the attachment)`)
+    }
+
+    // ── Step 5: Patch entity doc ────────────────────────────────────
+    // Same tx as intent markUsed writes. updatedBy + updatedAt
+    // bumped to mirror what the client-side service layers stamp on
+    // ordinary booking/wish edits, so feature-badge unread tracking
+    // (useFeatureBadges) sees the change just like a manual edit.
+    // updateMask scoped to the three fields we're touching -- other
+    // booking/wish fields are preserved.
+    const fieldName = entityType === 'booking' ? 'attachment' : 'image'
+    const attachmentValue = buildAttachmentMapValue(entityType, primary, thumb)
+
+    writes.push({
+      document: docResourceName(projectId, entityPath),
+      fields: {
+        [fieldName]: attachmentValue,
+        updatedBy:   { stringValue: callerUid },
+      },
+      updateMask: [fieldName, 'updatedBy'],
+      currentDocument: { exists: true },
+      updateTransforms: [
+        { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' },
+      ],
+    })
+
+    return { writes, result: { ok: true as const } }
   })
 }

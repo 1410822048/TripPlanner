@@ -261,144 +261,123 @@ describe('/trips/{tripId}/bookings', () => {
     )
   })
 
-  // Attachment-shape validation. The fileUrl / filePath / fileType etc.
-  // come from the storage upload result on the honest service path, so
-  // legit clients always satisfy the rule. These tests target the raw-
-  // SDK forge attempts: external URL, wrong path, wrong mime.
-  const VALID_ATTACHMENT = {
+  // ─── booking.attachment is Worker-authoritative ──────────────────
+  // Phase 3.6 commit 3: the field is forbidden on client setDoc CREATE
+  // and locked to "unchanged or removed (deleteField)" on client UPDATE.
+  // The Worker /upload-finalize endpoint (Admin SDK, rules-bypass) is
+  // the ONLY writer of this field — it gates writes behind the upload-
+  // intent's used / expires / stale guards. These tests pin the gate
+  // so a future rule edit can't silently re-open the raw-SDK direct-
+  // write path that would bypass those guards.
+  const ATTACHMENT_VALUE = {
     fileUrl:   'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fbookings%2Fb-att%2Ffile.webp?alt=media&token=abc',
     filePath:  'trips/trip-1/bookings/b-att/file.webp',
     fileType:  'image/webp',
   }
 
-  function bookingWithAttachment(att: object) {
-    return {
-      tripId: TRIP_ID, type: 'hotel', title: 'X',
-      memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
-      createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-      sortDate:  serverTimestamp(),
-      attachment: att,
-    }
-  }
-
-  test('editor can create a booking with a valid attachment', async () => {
+  test('booking create WITHOUT attachment is allowed (happy: doc-first → Worker patches)', async () => {
     await assertSucceeds(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'),
-        bookingWithAttachment(VALID_ATTACHMENT),
-      ),
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-noatt'), {
+        tripId: TRIP_ID, type: 'hotel', title: 'X',
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        sortDate:  serverTimestamp(),
+      }),
     )
   })
 
-  test('attachment with external fileUrl is rejected', async () => {
+  test('booking create WITH attachment is denied (would bypass /upload-finalize intent guards)', async () => {
     await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'),
-        bookingWithAttachment({
-          ...VALID_ATTACHMENT,
-          fileUrl: 'https://evil.example.com/tracking.png',
-        }),
-      ),
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'), {
+        tripId: TRIP_ID, type: 'hotel', title: 'X',
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        sortDate:  serverTimestamp(),
+        attachment: ATTACHMENT_VALUE,
+      }),
     )
   })
 
-  test('attachment with filePath outside the booking folder is rejected', async () => {
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'),
-        bookingWithAttachment({
-          ...VALID_ATTACHMENT,
-          filePath: 'trips/other-trip/bookings/x/file.webp',
-        }),
-      ),
-    )
-  })
-
-  test('attachment with non-allowlisted fileType is rejected', async () => {
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'),
-        bookingWithAttachment({
-          ...VALID_ATTACHMENT,
-          fileType: 'text/html',
-        }),
-      ),
-    )
-  })
-
-  test('attachment with same-bucket cross-trip fileUrl is rejected', async () => {
-    // Same bucket, but the encoded path inside the URL points at a
-    // different trip. URL/path binding via validStorageUrlFor() catches
-    // this — without it, only the bucket prefix would be checked and the
-    // cross-trip URL would pass while filePath looks legit.
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'),
-        bookingWithAttachment({
-          ...VALID_ATTACHMENT,
-          fileUrl: 'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Fother-trip%2Fbookings%2Fb-att%2Ffile.webp?alt=media&token=xyz',
-        }),
-      ),
-    )
-  })
-
-  test('attachment with fileUrl pointing at a different filename than filePath is rejected', async () => {
-    // Same trip, same booking folder — but filename mismatch. Without
-    // filename binding, this would create an orphan: delete purges
-    // `file.webp` based on filePath, the URL'd `other.webp` stays in
-    // Storage forever.
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'),
-        bookingWithAttachment({
-          ...VALID_ATTACHMENT,
-          fileUrl: 'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fbookings%2Fb-att%2Fother.webp?alt=media&token=xyz',
-        }),
-      ),
-    )
-  })
-
-  test('attachment with thumbUrl but no thumbPath is rejected', async () => {
-    // Pair invariant — preventing the "UI fetches thumb but delete has
-    // nothing to purge" orphan surface.
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'),
-        bookingWithAttachment({
-          ...VALID_ATTACHMENT,
-          thumbUrl: 'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fbookings%2Fb-att%2Fthumb.webp?alt=media&token=t',
-          // no thumbPath
-        }),
-      ),
-    )
-  })
-
-  test('attachment with thumbPath but no thumbUrl is rejected', async () => {
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'),
-        bookingWithAttachment({
-          ...VALID_ATTACHMENT,
-          thumbPath: 'trips/trip-1/bookings/b-att/thumb.webp',
-          // no thumbUrl
-        }),
-      ),
-    )
-  })
-
-  test('attachment with valid paired thumb passes', async () => {
+  test('booking update with attachment field absent is allowed (text-only edit)', async () => {
+    // The seeded BOOKING_ID has no attachment; an updateDoc that doesn't
+    // mention `attachment` should pass — `unchangedOrRemoved` returns
+    // true when the field is absent on both sides (both via `unchanged()`
+    // diff and via `!('attachment' in request.resource.data)`).
     await assertSucceeds(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'),
-        bookingWithAttachment({
-          ...VALID_ATTACHMENT,
-          thumbUrl:  'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fbookings%2Fb-att%2Fthumb.webp?alt=media&token=t',
-          thumbPath: 'trips/trip-1/bookings/b-att/thumb.webp',
-        }),
-      ),
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_ID), {
+        title: 'Edited',
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
     )
+  })
+
+  test('booking update adding attachment (client→server forge) is denied', async () => {
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_ID), {
+        attachment: ATTACHMENT_VALUE,
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  describe('with pre-attached attachment (seeded via rules-bypass)', () => {
+    // Seed a booking that ALREADY has an attachment (simulating the post-
+    // /upload-finalize state) so we can test the "unchanged" / "removed"
+    // / "changed" branches of unchangedOrRemoved('attachment').
+    beforeEach(async () => {
+      await env.withSecurityRulesDisabled(async ctx => {
+        const db = ctx.firestore()
+        await setDoc(doc(db, 'trips', TRIP_ID, 'bookings', 'b-with-att'), {
+          tripId: TRIP_ID, type: 'hotel', title: 'With Attachment',
+          memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+          createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          sortDate:  serverTimestamp(),
+          attachment: ATTACHMENT_VALUE,
+        })
+      })
+    })
+
+    test('text edit with attachment untouched is allowed (unchanged branch)', async () => {
+      await assertSucceeds(
+        updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-with-att'), {
+          title: 'Renamed',
+          updatedBy: EDITOR_UID,
+          updatedAt: serverTimestamp(),
+        }),
+      )
+    })
+
+    test('detach via deleteField() is allowed (removed branch — Worker storage-scan reaps blob)', async () => {
+      await assertSucceeds(
+        updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-with-att'), {
+          attachment: deleteField(),
+          updatedBy: EDITOR_UID,
+          updatedAt: serverTimestamp(),
+        }),
+      )
+    })
+
+    test('changing attachment to a different value is denied (must route through Worker)', async () => {
+      await assertFails(
+        updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-with-att'), {
+          attachment: {
+            ...ATTACHMENT_VALUE,
+            filePath: 'trips/trip-1/bookings/b-with-att/different.webp',
+            fileUrl:  'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fbookings%2Fb-with-att%2Fdifferent.webp?alt=media&token=xyz',
+          },
+          updatedBy: EDITOR_UID,
+          updatedAt: serverTimestamp(),
+        }),
+      )
+    })
   })
 
   test('list query MUST include memberIds array-contains filter', async () => {
@@ -541,50 +520,113 @@ describe('/trips/{tripId}/wishes vote toggle', () => {
     )
   })
 
-  // Image-shape validation (same family as booking attachment tests).
-  const VALID_WISH_IMAGE = {
+  // ─── wish.image is Worker-authoritative ──────────────────────────
+  // Same Phase 3.6 commit 3 lock as booking.attachment above.
+  const IMAGE_VALUE = {
     url:       'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fwishes%2Fw-img%2Ffile.webp?alt=media&token=abc',
     path:      'trips/trip-1/wishes/w-img/file.webp',
     thumbUrl:  'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fwishes%2Fw-img%2Fthumb.webp?alt=media&token=def',
     thumbPath: 'trips/trip-1/wishes/w-img/thumb.webp',
   }
 
-  function wishWithImage(image: object) {
-    return {
-      tripId: TRIP_ID, category: 'place', title: 'X',
-      proposedBy: VIEWER_UID, updatedBy: VIEWER_UID, votes: [VIEWER_UID],
-      memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-      image,
-    }
-  }
-
-  test('viewer can create wish with valid image', async () => {
+  test('wish create WITHOUT image is allowed (happy: doc-first → Worker patches)', async () => {
     await assertSucceeds(
-      setDoc(
-        doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-img'),
-        wishWithImage(VALID_WISH_IMAGE),
-      ),
+      setDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-noimg'), {
+        tripId: TRIP_ID, category: 'place', title: 'X',
+        proposedBy: VIEWER_UID, updatedBy: VIEWER_UID, votes: [VIEWER_UID],
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }),
     )
   })
 
-  test('wish with external image.url is rejected', async () => {
+  test('wish create WITH image is denied (would bypass /upload-finalize intent guards)', async () => {
     await assertFails(
-      setDoc(
-        doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-img'),
-        wishWithImage({ ...VALID_WISH_IMAGE, url: 'https://evil.example.com/track.png' }),
-      ),
+      setDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-img'), {
+        tripId: TRIP_ID, category: 'place', title: 'X',
+        proposedBy: VIEWER_UID, updatedBy: VIEWER_UID, votes: [VIEWER_UID],
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        image: IMAGE_VALUE,
+      }),
     )
   })
 
-  test('wish with cross-trip image.path is rejected', async () => {
-    await assertFails(
-      setDoc(
-        doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-img'),
-        wishWithImage({ ...VALID_WISH_IMAGE, path: 'trips/other-trip/wishes/y/file.webp' }),
-      ),
+  test('proposer update with image field absent is allowed (text-only edit)', async () => {
+    // Seeded WISH_ID has no image; proposer (EDITOR) can edit text.
+    await assertSucceeds(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
+        title: 'Edited',
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
     )
+  })
+
+  test('proposer adding image (client→server forge) is denied', async () => {
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
+        image: IMAGE_VALUE,
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  describe('with pre-attached image (seeded via rules-bypass)', () => {
+    // Wish doc that ALREADY carries an image (post-/upload-finalize state).
+    // Proposer is EDITOR_UID to align with the proposer-update rule path.
+    beforeEach(async () => {
+      await env.withSecurityRulesDisabled(async ctx => {
+        const db = ctx.firestore()
+        await setDoc(doc(db, 'trips', TRIP_ID, 'wishes', 'w-with-img'), {
+          tripId: TRIP_ID, category: 'place', title: 'With Image',
+          proposedBy: EDITOR_UID, updatedBy: EDITOR_UID, votes: [EDITOR_UID],
+          memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          image: IMAGE_VALUE,
+        })
+      })
+    })
+
+    test('text edit with image untouched is allowed (unchanged branch)', async () => {
+      await assertSucceeds(
+        updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-with-img'), {
+          title: 'Renamed',
+          updatedBy: EDITOR_UID,
+          updatedAt: serverTimestamp(),
+        }),
+      )
+    })
+
+    test('detach via deleteField() is allowed (removed branch)', async () => {
+      await assertSucceeds(
+        updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-with-img'), {
+          image: deleteField(),
+          updatedBy: EDITOR_UID,
+          updatedAt: serverTimestamp(),
+        }),
+      )
+    })
+
+    test('changing image to a different value is denied (must route through Worker)', async () => {
+      await assertFails(
+        updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-with-img'), {
+          image: {
+            ...IMAGE_VALUE,
+            path:      'trips/trip-1/wishes/w-with-img/different.webp',
+            url:       'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fwishes%2Fw-with-img%2Fdifferent.webp?alt=media&token=xyz',
+            thumbPath: 'trips/trip-1/wishes/w-with-img/different-thumb.webp',
+            thumbUrl:  'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fwishes%2Fw-with-img%2Fdifferent-thumb.webp?alt=media&token=xyz',
+          },
+          updatedBy: EDITOR_UID,
+          updatedAt: serverTimestamp(),
+        }),
+      )
+    })
   })
 
   // ─── hasOnly() allowlist + is-string type guards ──────────────────
@@ -1945,14 +1987,21 @@ describe('/trips/{tripId}/_purges enqueue', () => {
 
 // ─── Phase 3.5-bis: trip-scoped uploadIntents subcollection is admin-only ─
 describe('/trips/{tripId}/uploadIntents/{intentId} client deny-all (Phase 3.5-bis)', () => {
-  // Worker admin SDK writes intent docs (which bypass rules); clients
-  // NEVER read or write them directly. storage.rules uses cross-service
-  // firestore.get() against this subcollection to verify intent on each
-  // upload, but that's server-credentialled access — distinct from
-  // client SDK access tested here. Locks in the contract at the rules
-  // layer. Subcollection placement (vs top-level) keeps the cross-
-  // service read path inside the auto-provisioned `trips/*` IAM
-  // Condition scope.
+  // Worker admin SDK writes AND reads intent docs (admin SDK bypasses
+  // rules); clients NEVER read or write them directly. storage.rules
+  // does NOT cross-service-read this subcollection -- after the
+  // 2026-05-24 race incident the storage rules layer became a STABLE
+  // GATE that verifies only self-contained claimed metadata, and the
+  // authoritative intent-bound check (status / expiresAt / path-
+  // exactness / customMetadata equality / single-use markUsed) moved
+  // to the Worker's /upload-finalize and /expense-* consume paths.
+  // The `if false` rule below is what this suite locks in: even with
+  // valid editor / owner credentials, no client SDK access path
+  // touches the intent doc. Subcollection placement keeps the doc
+  // under the `trips/{tripId}/` cascade-delete cone and inside the
+  // existing IAM Condition scope in case a future rule legitimately
+  // needs to read it (the Worker today does not need rules-layer
+  // access -- admin SDK is unscoped).
   const validIntent = {
     uid:        EDITOR_UID,
     tripId:     TRIP_ID,

@@ -46,8 +46,11 @@ const RECEIPT_MIME = [
   'application/pdf',
 ] as const
 
-/** Bucket-bound origin/path check, equivalent to firestore.rules
- *  `validStorageUrlFor`. The receipt URL MUST be a Firebase Storage
+/** Bucket-bound origin/path check. (Used to mirror a firestore.rules
+ *  `validStorageUrlFor` helper that was removed in Phase 3.6 once all
+ *  three media fields — expense.receipt, booking.attachment, wish.image
+ *  — became Worker-authoritative.) The receipt URL MUST be a Firebase
+ *  Storage
  *  download URL for the exact bucket + path in the same payload.
  *  Without this an attacker can submit a legit-looking path but an
  *  `evil.example.com/track.png` url; rules previously checked it,

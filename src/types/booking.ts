@@ -94,8 +94,10 @@ export interface Booking {
  * `type` 限制在現行支援集合，未來擴充時需同步擴表。
  */
 /** Accepted attachment mime types. Mirrors `extForMime()` in
- *  bookingStorage.ts AND the `fileType in [...]` check in firestore.rules
- *  `validBookingAttachment()` — drift would let one layer accept bytes
+ *  bookingStorage.ts AND the allowlist enforced by the Worker
+ *  /upload-finalize endpoint (Phase 3.6 made booking.attachment
+ *  Worker-authoritative; firestore.rules no longer accepts client
+ *  writes of the field). Drift would let one layer accept bytes
  *  the other rejects. */
 export const BOOKING_ATTACHMENT_MIME_TYPES = [
   'image/webp', 'image/jpeg', 'image/png', 'image/heic', 'image/heif',

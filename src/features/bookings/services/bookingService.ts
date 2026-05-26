@@ -1,8 +1,20 @@
 // src/features/bookings/services/bookingService.ts
 // Bookings = the trip's confirmation hub: flights, hotels, trains, etc.
-// Phase 2 ships full CRUD + a single file attachment per booking via
-// Firebase Storage. Each booking owns its own folder under
-// `trips/{tripId}/bookings/{bookingId}/`.
+// Phase 2 shipped full CRUD + a single file attachment per booking via
+// Firebase Storage. Phase 3.6 flips the create flow to doc-first: the
+// booking lands in Firestore WITHOUT an attachment, then the Worker
+// patches `attachment` atomically with the intent markUsed writes when
+// /upload-finalize fires. Same pattern as wish covers, which were
+// already doc-first since Phase 3.0.
+//
+// Why doc-first: Phase 3.6 makes the Worker the authoritative writer
+// for `attachment` -- firestore.rules locks the field to "unchanged
+// OR deleteField" on the client side (Commit 3, shipped). The Worker
+// reads the entity doc inside /upload-finalize's tx to verify it
+// still exists, the caller is still owner/editor, and -- crucially
+// -- that the doc's current primary path matches the caller's
+// expectedCurrentPath (stale-finalize guard). All three checks need
+// the doc to exist BEFORE finalize fires, hence doc-first.
 //
 // `getMyHotelBookings` + `subscribeToMyHotelBookings` are NOT factoried
 // through createTripScopedListServices because they run a different
@@ -28,6 +40,29 @@ import { safePurgeWithEnqueueFallback } from '@/services/orphanPurge'
 /** 100 is well above the realistic per-trip count (10-30) — truncation
  *  fires Sentry so we know when reality stretches the assumption. */
 const LIST_LIMIT = 100
+
+/**
+ * Thrown by `createBooking` when the doc-first flow can't fully unwind
+ * after the attachment step failed. The booking doc landed in Firestore
+ * (and possibly a blob too), the rollback `deleteDoc` failed (network
+ * blip, rate limit, etc.), and the caller needs to know the booking
+ * persists so it can `invalidateQueries` and reconcile the cache with
+ * reality. Without this typed signal, callers can't distinguish
+ * "fully failed -- safe to retry" from "partially failed -- retry
+ * will duplicate" and a re-press of save would land a second booking.
+ *
+ * Mirrors WishCreatePartialError; both doc-first creates need it.
+ */
+export class BookingCreatePartialError extends Error {
+  readonly bookingId: string
+  readonly cause:     unknown
+  constructor(bookingId: string, cause: unknown) {
+    super('Booking doc was created but attachment step + rollback both failed')
+    this.name      = 'BookingCreatePartialError'
+    this.bookingId = bookingId
+    this.cause     = cause
+  }
+}
 
 function bookingFromDoc(d: QueryDocumentSnapshot): Booking {
   return firestoreDocFromSchema(BookingDocSchema, d, 'bookingFromDoc') as Booking
@@ -109,15 +144,28 @@ function checkInToTimestamp(
 // ─── Write ────────────────────────────────────────────────────────
 
 /**
- * Create a booking. Mint id client-side so the Storage path is known
- * up front, upload (to a UNIQUE path courtesy of uploadAttachment's
- * shortId suffix), then setDoc. If setDoc fails we purge the orphan
- * blob — Storage rules gate on canWriteFiles(tripId) without checking
- * doc existence, so an upload-before-doc model is safe in principle,
- * but a half-finished create still leaves stranded bytes (PII!) that
- * the trip-cascade Worker only catches on full trip delete. Best-
- * effort rollback closes that gap; cleanup failures still surface to
- * Sentry so a pattern of orphan-blob leakage doesn't go unnoticed.
+ * Create a booking. Doc-first ordering (Phase 3.6): setDoc the booking
+ * WITHOUT attachment, then upload + finalize so the Worker patches
+ * `attachment` directly. All-or-nothing semantics: if the attachment
+ * step fails after setDoc succeeded, the booking doc is rolled back
+ * (deleteDoc) before throwing. Without this, the realtime listener
+ * would have already pushed the just-setDoc'd booking into TanStack
+ * cache; the mutation's onError rollback only undoes its OWN
+ * optimistic patch, not the listener-driven cache insert. Net effect
+ * was: "save failed" toast + the new booking visible in the list +
+ * the user re-pressing save creating a DUPLICATE.
+ *
+ * If BOTH the attachment step AND the rollback deleteDoc fail,
+ * throws `BookingCreatePartialError(bookingId)` so the mutation hook
+ * can invalidateQueries and reconcile cache with reality. Mirrors
+ * WishCreatePartialError -- same partial-failure shape.
+ *
+ * Orphan blob cleanup on attachment failure is handled by the
+ * Worker's intent-expiry cron + orphan-storage-scan -- no client-
+ * side purge ladder. The intents stay 'pending' on finalize failure
+ * (Worker tx rolled back) and get reaped on their 30-min expiry. On
+ * uploadToIntent failure mid-batch, any uploaded-but-orphan blobs
+ * get reaped by storage-scan when they age past the grace window.
  */
 export async function createBooking(
   tripId: string,
@@ -129,22 +177,12 @@ export async function createBooking(
   // is cached after first boot so its await is usually instant, but the
   // shape matches the other 4 entity services (expense / schedule /
   // planning / wish) — keeps the pattern uniform across the service layer.
-  const [{ db, collection, doc, setDoc, serverTimestamp, Timestamp }, memberIds] = await Promise.all([
+  const [{ db, collection, doc, setDoc, deleteDoc, serverTimestamp, Timestamp }, memberIds] = await Promise.all([
     getFirebase(),
     getTripMemberIds(tripId),
   ])
   const checkInTs = checkInToTimestamp(input.checkIn, Timestamp)
   const ref = doc(collection(db, ...P.bookings(tripId)))
-
-  let attachmentMeta: BookingAttachment | null = null
-  if (file) {
-    try {
-      attachmentMeta = await uploadAttachment(tripId, ref.id, file)
-    } catch (e) {
-      captureError(e, { source: 'createBooking/uploadAttachment', tripId, bookingId: ref.id })
-      throw e
-    }
-  }
 
   const payload: Record<string, unknown> = {
     ...stripEmpty(input),
@@ -153,24 +191,37 @@ export async function createBooking(
     sortDate:  checkInTs ?? serverTimestamp(),
     memberIds,
   }
-  if (attachmentMeta) payload.attachment = attachmentMeta
 
-  try {
-    await setDoc(ref, payload)
-  } catch (e) {
-    if (attachmentMeta) {
-      await safePurgeWithEnqueueFallback({
-        purge: () => purgeAttachments(attachmentMeta),
-        enqueue: {
-          tripId, collection: 'bookings', entityId: ref.id,
-          paths: [attachmentMeta.filePath, attachmentMeta.thumbPath].filter(Boolean) as string[],
-          source: 'createBooking/rollback-attachment',
-        },
-        sentry: { source: 'createBooking/rollback-attachment', tripId, bookingId: ref.id },
-      })
+  await setDoc(ref, payload)
+
+  if (file) {
+    try {
+      // First-attach: expectedCurrentPath = null (booking doc has no
+      // attachment field yet by virtue of doc-first). Worker patches
+      // booking.attachment atomically with the intent markUsed writes.
+      await uploadAttachment(tripId, ref.id, file, null)
+    } catch (e) {
+      captureError(e, { source: 'createBooking/uploadAttachment', tripId, bookingId: ref.id })
+      // All-or-nothing cleanup: roll the booking doc back so the
+      // caller's mutation can rollback cleanly. Orphan blob (if any
+      // landed in Storage before finalize aborted) is reclaimed by
+      // the Worker's storage-scan cron -- no client-side purge here
+      // because the Worker is the only writer for `attachment` and
+      // a finalize abort leaves nothing for us to safePurge against.
+      let docRollbackOk = true
+      try {
+        await deleteDoc(ref)
+      } catch (cleanupErr) {
+        captureError(cleanupErr, { source: 'createBooking/rollback-doc', tripId, bookingId: ref.id })
+        docRollbackOk = false
+      }
+      if (!docRollbackOk) {
+        throw new BookingCreatePartialError(ref.id, e)
+      }
+      throw e
     }
-    throw e
   }
+
   void bumpTripActivity(tripId, 'bookings', createdBy)
   return ref.id
 }
@@ -178,25 +229,34 @@ export async function createBooking(
 /**
  * Update a booking. `attachment` is tri-state:
  *   undefined → no attachment change (text-only edit)
- *   null      → clear attachment (Firestore field-delete + Storage purge)
- *   File      → replace (upload new → updateDoc → purge old)
+ *   null      → clear attachment (Firestore deleteField + Storage purge)
+ *   File      → replace (Worker uploads → patches → client purges old)
  *
- * Attachment ordering matches expenseService.updateExpense:
- *   1. Upload the NEW blob first (to a UNIQUE path courtesy of
- *      uploadAttachment's shortId suffix), then the field-delete /
- *      replace patch.
- *   2. updateDoc → on success the OLD blob is safe to purge.
- *   3. On updateDoc failure the NEW blob (if any) is rolled back; the
- *      OLD blob is untouched, so the user can re-attempt with the same
- *      form data.
+ * Phase 3.6 split-write ordering:
+ *   1. Text patch via updateDoc (sortDate / cleared optionals /
+ *      attachment: deleteField() for the null detach case).
+ *      Attachment-replace does NOT include `attachment` here -- the
+ *      Worker is the only writer for that field on replace.
+ *   2. If attachment is a File: uploadAttachment(..., existing?.filePath).
+ *      Worker patches `attachment` + updatedBy + updatedAt in its own
+ *      tx. expectedCurrentPath catches a concurrent Tab B replace
+ *      (409 stale-finalize → throw).
+ *   3. On combined success: purge the OLD blob (if any).
  *
- * Two invariants gated by ordering + uniqueness:
- *   - updateDoc reject → new blob purged, old blob intact, doc still
- *     points at old (no broken link).
- *   - Same-mime replacement → old/new paths differ because of shortId,
- *     so the post-updateDoc purge only targets the genuinely-old blob.
- *     Without the unique suffix Storage upload would overwrite then the
- *     purge would delete the just-written blob.
+ * Failure semantics:
+ *   - Step 1 rejects → throw; doc unchanged, no upload tried.
+ *   - Step 2 rejects → throw; text-only edits already saved, attachment
+ *     unchanged. User can retry; the text fields will be re-written
+ *     idempotently (same form state) and only the upload retries.
+ *   - Step 1 + 2 both succeed → purge OLD via safePurge/_purges ladder.
+ *
+ * The previous "upload NEW first → updateDoc with attachment → purge
+ * OLD or NEW depending on outcome" pattern was correct when the client
+ * owned `attachment`. Phase 3.6 makes the Worker authoritative for
+ * that field, so the client can no longer rollback NEW by purging the
+ * blob -- the doc already references it. Sequencing text → attachment
+ * sidesteps the "what to do when text save fails after attachment
+ * Worker-write" question entirely.
  */
 export async function updateBooking(
   tripId: string,
@@ -239,33 +299,23 @@ export async function updateBooking(
     }
   }
 
-  let newAttachment: BookingAttachment | null = null
+  // Detach via deleteField in the text patch -- firestore.rules
+  // (Commit 3) will still permit this because `attachment` may be
+  // either unchanged OR removed by the client. Replace is Worker-only.
   if (attachment === null) {
     patch.attachment = deleteField()
-  } else if (attachment instanceof File) {
-    newAttachment = await uploadAttachment(tripId, bookingId, attachment)
-    patch.attachment = newAttachment
   }
 
-  try {
-    await updateDoc(doc(db, ...P.booking(tripId, bookingId)), patch)
-  } catch (e) {
-    if (newAttachment) {
-      await safePurgeWithEnqueueFallback({
-        purge: () => purgeAttachments(newAttachment),
-        enqueue: {
-          tripId, collection: 'bookings', entityId: bookingId,
-          paths: [newAttachment.filePath, newAttachment.thumbPath].filter(Boolean) as string[],
-          source: 'updateBooking/rollback-new-attachment',
-        },
-        sentry: { source: 'updateBooking/rollback-new-attachment', tripId, bookingId },
-      })
-    }
-    throw e
+  await updateDoc(doc(db, ...P.booking(tripId, bookingId)), patch)
+
+  if (attachment instanceof File) {
+    // Replace flow: Worker patches `attachment` (and bumps updatedBy /
+    // updatedAt again). expectedCurrentPath catches Tab B drift.
+    await uploadAttachment(tripId, bookingId, attachment, existing?.filePath ?? null)
   }
 
   // Success path -- safe to drop the old blob now. Either we cleared
-  // the field (attachment=null) or we replaced it (File case). Full
+  // the field (attachment=null) or replaced it (File case). Full
   // durability ladder: in-process retry → enqueue to _purges →
   // Sentry only if both steps fail. See expense counterpart.
   if (existing && (attachment === null || attachment instanceof File)) {

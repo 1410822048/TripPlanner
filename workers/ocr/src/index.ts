@@ -316,8 +316,8 @@ export default {
           uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET,
         )
         console.log(
-          `[upload-finalize] uid=${uidTag(uid)} trip=${result.tripId} ` +
-          `entity=${result.entityType}/${result.entityId} blobs=${result.blobs.length}`,
+          `[upload-finalize] uid=${uidTag(uid)} trip=${parsed.data.tripId} ` +
+          `intents=${parsed.data.intentIds.length} ok`,
         )
         return json(result, 200, cors)
       } catch (e) {

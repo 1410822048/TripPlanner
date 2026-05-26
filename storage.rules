@@ -1,50 +1,60 @@
 rules_version = '2';
 
 // TripMate Storage access model:
-//   - All booking attachments live under /trips/{tripId}/bookings/{bookingId}/{filename}.
-//   - Membership is the gate: only members of the trip may read/write.
-//   - Membership lookup uses the cross-service firestore.exists() against
-//     the `(default)` Firestore database. Cloud Storage rules currently
-//     ONLY support `(default)`; named databases would silently always
-//     return false. Reference:
-//     https://firebase.google.com/docs/rules/cross-service
-//   - Each upload is capped at 5MB and restricted to image/* or PDF.
+//   - Entity attachments live under /trips/{tripId}/{collection}/{entityId}/{filename}
+//     where collection is one of: expenses, bookings, wishes.
+//   - Read is open to any trip member; write requires editor/owner role
+//     (expense/booking) or proposer (wish). Trip-deleting state blocks writes.
+//   - Storage rules are a STABLE GATE, not a complete intent gate. They
+//     enforce only self-consistent metadata + upload-time permission:
+//     uid matches caller, claimed tripId/entityType/entityId match URL
+//     params, size ≤ 5MB, content-type in per-entity allowlist,
+//     uploadIntentId is a 32-char string, current role / membership /
+//     tripNotDeleting still hold. They do NOT verify the intent doc
+//     EXISTS, is unused, has not expired, or was minted for this exact
+//     path -- those are enforced AUTHORITATIVELY by the Worker when it
+//     consumes the intent in /upload-finalize, /expense-create,
+//     /expense-update. The split is deliberate: see "DO NOT add cross-
+//     service reads on freshly-written docs" below.
 //   - Default deny at the bottom catches anything outside /trips/.
 //
-// IAM DEPENDENCY (cross-service Firestore reads):
-//   `firestore.exists` / `firestore.get` from this ruleset are executed
-//   under the **Cloud Storage for Firebase service agent**
-//   `service-{projectNumber}@gcp-sa-firebasestorage.iam.gserviceaccount.com`
-//   (NOT the end-user, NOT the firebase-rules agent). Firebase auto-
-//   provisions the required role on first Console save -- but **only
-//   with a CEL Condition scoped to the path prefixes the rule referenced
-//   at that moment**, and `firebase deploy --only storage` from CLI does
-//   NOT re-trigger the grant flow.
+// DO NOT add cross-service reads on freshly-written docs.
+//   Phase 3.5 (2026-05-24) shipped a version of `intentMatches()` that
+//   ran `firestore.exists/get` on the just-minted uploadIntent doc to
+//   verify status / expiresAt / path. The doc was readable via Firestore
+//   REST within milliseconds of the write, but the cross-service path
+//   from Storage rules has a short staleness window and returned `false`
+//   for that doc -- denying every upload with 403 despite Worker +
+//   client + metadata all being correct.
 //
-//   That means: any time we add a NEW TOP-LEVEL collection to a
-//   cross-service read here, the existing Condition does not cover it
-//   and reads silently return false -> rule denies -> 403 with no useful
-//   log.
+//   Fix: intent validity (status / expiresAt / path / contentType /
+//   single-use) is enforced when the Worker consumes the intent in
+//   /upload-finalize and /expense-* paths. Storage rules verify only
+//   self-contained metadata + a length check on uploadIntentId.
 //
-//   Phase 3.5 (2026-05-24) hit this hard: `uploadIntents/` was added as
-//   a top-level collection and the auto-grant Condition (scoped to
-//   `trips/*` from Phase 1) never widened. All expense / booking / wish
-//   uploads 403'd in prod despite Worker + client + rules being correct.
+//   When adding any new cross-service read here, ask: "is this doc
+//   fresh (client just got it from a Worker / just-wrote it itself)?"
+//   If yes, redesign to use self-contained metadata + Worker
+//   verification. If no (member docs, trip docs, wish docs -- all
+//   minutes-to-hours old by upload time), the cross-service read is
+//   fine.
 //
-//   Fix: intents now live UNDER `trips/{tripId}/uploadIntents/{id}` so
-//   the cross-service read path falls inside the existing `trips/*`
-//   Condition scope. No new IAM grant needed when adding intent-style
-//   subcollections under `trips/*` going forward.
+// IAM note:
+//   Cross-service reads run under the Cloud Storage for Firebase service
+//   agent (`service-{projectNumber}@gcp-sa-firebasestorage.iam.gserviceaccount.com`)
+//   with role `roles/firebaserules.firestoreServiceAgent` (single
+//   permission: `datastore.entities.get`). Firebase auto-provisions
+//   this on first Console save with a CEL Condition scoped to the path
+//   prefixes the rule then referenced; `firebase deploy --only storage`
+//   from CLI does NOT re-trigger that grant flow.
 //
-//   If a NET-NEW top-level collection is ever added and a subcollection
-//   refactor is not feasible: in Cloud Console IAM, grant the Cloud
-//   Storage for Firebase service agent
-//   (`service-{projectNumber}@gcp-sa-firebasestorage.iam.gserviceaccount.com`)
-//   the role `roles/firebaserules.firestoreServiceAgent` ("Firebase
-//   Rules Firestore Service Agent") WITHOUT a path Condition. That role
-//   is the narrower / preferred option -- its single permission
-//   `datastore.entities.get` is exactly what Storage rules need;
-//   `roles/datastore.viewer` is a broader fallback.
+//   In practice: cross-service reads stay under `trips/*` (the original
+//   scope), so the Condition keeps covering them. If a future feature
+//   genuinely needs a cross-service read on a NEW top-level collection
+//   (rather than a `trips/{tripId}/...` subcollection), manually widen
+//   the IAM Condition in Cloud Console before relying on it. The 2026-
+//   05-24 prod 403 was NOT this -- it was the race above -- but the
+//   note still holds for legitimately-fresh top-level reads.
 //   Ref: https://firebase.google.com/docs/storage/security/rules-conditions
 
 service firebase.storage {
@@ -90,10 +100,13 @@ service firebase.storage {
     // write / replace / delete cover bytes. firestore.rules already
     // restricts wish doc content edits to the proposer; Storage now
     // mirrors that. wishService.createWish is doc-first: setDoc the
-    // wish (without image), then upload, then updateDoc to patch
-    // the image field. By the time Storage write fires, the wish
-    // doc exists and its proposedBy is queryable -- no first-upload
-    // exception needed, no race window.
+    // wish (without image), then upload, then Worker /upload-finalize
+    // patches the `image` field atomically with the intent markUsed
+    // writes (Phase 3.6 -- Worker is the authoritative writer for
+    // `image`; firestore.rules forbid client direct writes to the
+    // field). By the time Storage write fires, the wish doc exists
+    // and its proposedBy is queryable -- no first-upload exception
+    // needed, no race window.
     function wishPath(tripId, wishId) {
       return /databases/(default)/documents/trips/$(tripId)/wishes/$(wishId);
     }
@@ -114,25 +127,43 @@ service firebase.storage {
 
     // Phase 3.5 upload metadata verification. Every entity upload must
     // carry an uploadIntentId + the Worker-owned metadata shape minted
-    // by /upload-intents. Storage rules validate stable properties only:
-    // current auth, trip write access, path-bound metadata, size, and
-    // coarse content-type allowlists.
+    // by /upload-intents. Storage rules validate stable properties ONLY:
+    //   - uploadIntentId is a 32-char string (shape, not validity)
+    //   - request.resource.size ≤ 5MB
+    //   - contentType matches the kind ('full'/'thumb' → image allowlist;
+    //     'pdf' → application/pdf, and not on wish path)
+    //   - metadata.uploaderUid == request.auth.uid
+    //   - metadata.tripId / entityType / entityId match the URL params
+    //   - schemaVersion == 'v1'
+    // Plus the upload-time permission checks at each match block:
+    // canWriteFiles / isWishProposer + tripNotDeleting.
+    //
+    // What Storage rules do NOT verify (Worker /upload-finalize owns
+    // these on intent consume, where it reads the intent doc by id):
+    //   - the intent doc exists at all
+    //   - intent.status == 'pending' (not already used)
+    //   - intent.expiresAt > now (within 30-min window)
+    //   - intent.path / contentType / size exactly match this upload
+    //     (Storage only knows what the CLIENT claimed in metadata; the
+    //     intent doc is the source of truth)
+    //   - intent is consumed at most once
     //
     // Do NOT read the just-created uploadIntent doc here. In production,
     // the client immediately uploads after /upload-intents returns, and
     // Storage rules' cross-service firestore.exists/get can fail that
     // read-after-write window even though the doc is already visible via
-    // Firestore REST. Intent existence/status/expires/path exactness is
-    // instead enforced when the Worker consumes the intent in
-    // /upload-finalize, /expense-create, or /expense-update.
+    // Firestore REST -- the 2026-05-24 prod 403 incident. Authoritative
+    // intent validity belongs at the Worker layer where the read is on
+    // a doc that's been around long enough to propagate.
     //
-    // Why intent + immediate-permission BOTH: the intent was minted
-    // up to 30 min ago. During that window the user could be
+    // Why intent metadata + immediate-permission BOTH: the intent was
+    // minted up to 30 min ago. During that window the user could be
     // demoted, removed from the trip, or the trip could enter
     // deletingAt cascade. The rules layer's role / membership /
     // tripNotDeleting checks run at upload time, so a stale-permission
-    // capability token can't slip through. Intent narrows what they
-    // can do; role check confirms they still can.
+    // capability token can't slip through. Intent metadata narrows
+    // what the upload CLAIMS to be; role check confirms the caller
+    // still has the role to write here.
     function imageContentType() {
       return request.resource.contentType in [
         'image/webp',
@@ -182,16 +213,19 @@ service firebase.storage {
 
     match /trips/{tripId}/bookings/{bookingId}/{fileName} {
       allow read: if isMember(tripId);
-      // create flows through Worker-issued intents. intentMatches
-      // verifies size, contentType, customMetadata schema, AND that
-      // the upload is landing at the path the Worker minted -- so
-      // the inline size / mime checks the old rule had are now
-      // expressed once, at intent-mint time, with the per-entity
-      // allowlist that lives in upload-intent.ts. canWriteFiles +
-      // tripNotDeleting still gate at upload time so a stale 30-min
-      // intent can't be replayed by a since-demoted / removed member
-      // or against a trip that's mid-cascade. update is rejected --
-      // intents are one-shot; replace flows via a new intent.
+      // create flows through Worker-issued intents. intentMatches is
+      // the STABLE-GATE side: it verifies CLAIMED metadata internal
+      // consistency (size ≤ 5MB, contentType in allowlist, schema
+      // shape, tripId/entityType/entityId metadata match the URL).
+      // It does NOT verify that an intent doc with this id actually
+      // exists, is unused, has not expired, or was minted for this
+      // exact path -- /upload-finalize on the Worker is the
+      // authoritative gate for those (see the long block above).
+      // canWriteFiles + tripNotDeleting still gate at upload time so
+      // a stale 30-min intent can't be replayed by a since-demoted /
+      // removed member or against a trip that's mid-cascade. update
+      // is rejected -- intents are one-shot; replace flows via a new
+      // intent.
       allow create: if canWriteFiles(tripId)
                     && tripNotDeleting(tripId)
                     && intentMatches(tripId, 'booking', bookingId);
@@ -215,9 +249,15 @@ service firebase.storage {
       // create via intent. isMember + tripNotDeleting + isWishProposer
       // are the upload-time permission checks (the intent was minted
       // earlier so a since-changed proposer or membership status must
-      // still pass here). intentMatches handles size / mime / metadata
-      // schema. Wish intents always require image content type, but
-      // that's enforced upstream by upload-intent.ts's WISH allowlist.
+      // still pass here). intentMatches enforces stable claimed-
+      // metadata properties only — size / contentType allowlist /
+      // metadata shape / tripId-entityType-entityId match. Intent
+      // existence / status / expires / single-use is the Worker's job
+      // at /upload-finalize. Wish-specific image-only enforcement
+      // happens at intent-mint time in upload-intent.ts's WISH
+      // allowlist (PDF kind is rejected before the intent is even
+      // created), so by the time the upload lands here, a wish-bound
+      // intentId can only legitimately come from an image mint.
       allow create: if isMember(tripId)
                     && tripNotDeleting(tripId)
                     && isWishProposer(tripId, wishId)
@@ -247,8 +287,13 @@ service firebase.storage {
     match /trips/{tripId}/expenses/{expenseId}/{fileName} {
       allow read: if isMember(tripId);
       // create via intent. canWriteFiles + tripNotDeleting are the
-      // upload-time permission checks; intentMatches handles size /
-      // mime / metadata schema / path binding.
+      // upload-time permission checks; intentMatches enforces stable
+      // claimed-metadata properties (size / mime / metadata shape /
+      // tripId-entityType-entityId match). Actual intent existence /
+      // status / expires / path-exact / single-use binding is enforced
+      // by the Worker when it consumes the intent in /expense-create
+      // (post-OCR) or /expense-update (manual edit) — see the long
+      // block above.
       allow create: if canWriteFiles(tripId)
                     && tripNotDeleting(tripId)
                     && intentMatches(tripId, 'expense', expenseId);

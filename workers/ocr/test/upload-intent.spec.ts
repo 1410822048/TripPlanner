@@ -342,8 +342,11 @@ describe('intent doc + response shape', () => {
 
 	it('writes Firestore doc with allowedContentTypes single-element-locked', async () => {
 		// Locks in: client uploading with a DIFFERENT contentType than
-		// declared would fail the storage.rules `in` check, because the
-		// intent doc only allows the exact requested CT.
+		// declared will fail at Worker /upload-finalize (or /expense-*)
+		// when consumeIntentInTx checks the uploaded object's contentType
+		// against intent.allowedContentTypes -- the single-element array
+		// makes that an exact-match. storage.rules can't enforce this
+		// because it doesn't read the intent doc (STABLE GATE only).
 		seedAuthorizedExpense()
 		await createUploadIntents(CALLER_UID, imageFullReq(), SERVICE_ACCOUNT_JSON)
 		expect(capturedTxResult).not.toBeNull()
@@ -399,6 +402,71 @@ describe('intent doc + response shape', () => {
 
 describe('finalizeUploadIntents (booking/wish only)', () => {
 	const FINALIZE_BUCKET = 'demo.firebasestorage.app'
+
+	/** Phase 3.6 stale-finalize guard input. `null` = expect doc has
+	 *  no attachment/image (first-attach or post-detach replace flow). */
+	function applyToDocPatch(expectedCurrentPath: string | null = null) {
+		return { mode: 'patch' as const, expectedCurrentPath }
+	}
+
+	/** Seed minimal booking-side authorization (no entity doc yet --
+	 *  see bookingDocClean / bookingDocWithAttachment to seed that). */
+	function seedFinalizeBookingAuth(role: 'owner' | 'editor' = 'editor') {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberDoc(role))
+	}
+
+	function seedFinalizeWishAuth(role: 'owner' | 'editor' | 'viewer' = 'viewer') {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberDoc(role))
+	}
+
+	function bookingDocClean() {
+		return {
+			exists: true,
+			name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/bookings/${ENTITY_ID}`,
+			updateTime: '2026-05-23T00:00:00Z',
+			fields: {},
+		}
+	}
+
+	function bookingDocWithAttachment(filePath: string, thumbPath?: string) {
+		const attachmentFields: Record<string, unknown> = {
+			fileUrl:  { stringValue: 'https://example.com/file' },
+			filePath: { stringValue: filePath },
+			fileType: { stringValue: 'image/webp' },
+		}
+		if (thumbPath) {
+			attachmentFields.thumbUrl  = { stringValue: 'https://example.com/thumb' }
+			attachmentFields.thumbPath = { stringValue: thumbPath }
+		}
+		return {
+			exists: true,
+			name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/bookings/${ENTITY_ID}`,
+			updateTime: '2026-05-23T00:00:00Z',
+			fields: { attachment: { mapValue: { fields: attachmentFields } } },
+		}
+	}
+
+	function wishDocFinalize(opts: { proposedBy?: string; imagePath?: string; thumbPath?: string } = {}) {
+		const proposedBy = opts.proposedBy ?? CALLER_UID
+		const fields: Record<string, unknown> = { proposedBy: { stringValue: proposedBy } }
+		if (opts.imagePath) {
+			const imageFields: Record<string, unknown> = {
+				url:       { stringValue: 'https://example.com/file' },
+				path:      { stringValue: opts.imagePath },
+				thumbUrl:  { stringValue: 'https://example.com/thumb' },
+				thumbPath: { stringValue: opts.thumbPath ?? opts.imagePath + '.thumb' },
+			}
+			fields.image = { mapValue: { fields: imageFields } }
+		}
+		return {
+			exists: true,
+			name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/wishes/${ENTITY_ID}`,
+			updateTime: '2026-05-23T00:00:00Z',
+			fields,
+		}
+	}
 
 	/** Build a Firestore-shape intent doc TxReadDoc with all the binding
 	 *  fields the Worker mints in /upload-intents (path, customMetadata,
@@ -537,26 +605,30 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 				downloadToken: 'tk',
 			}),
 		)
+		seedFinalizeBookingAuth()
+		txGetResponses.set(`trips/${TRIP_ID}/bookings/${ENTITY_ID}`, bookingDocClean())
 		await finalizeUploadIntents(
-			CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
+			CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
 		)
 		const writes = capturedTxResult!.writes as Array<{
+			document:          string
 			updateMask?:       string[]
 			fields:            Record<string, unknown>
 			updateTransforms?: Array<{ fieldPath: string; setToServerValue: string }>
 			currentDocument?:  { exists?: boolean }
 		}>
-		expect(writes).toHaveLength(1)
-		const w = writes[0]!
-		expect(w.updateMask).toEqual(['status'])
-		expect(Object.keys(w.fields)).toEqual(['status'])
-		expect(w.updateTransforms).toEqual([
+		// Two writes: markUsed for the intent + entity-doc patch
+		expect(writes).toHaveLength(2)
+		const markUsed = writes.find(w => w.document.includes('/uploadIntents/'))!
+		expect(markUsed.updateMask).toEqual(['status'])
+		expect(Object.keys(markUsed.fields)).toEqual(['status'])
+		expect(markUsed.updateTransforms).toEqual([
 			{ fieldPath: 'usedAt', setToServerValue: 'REQUEST_TIME' },
 		])
-		expect(w.currentDocument).toEqual({ exists: true })
+		expect(markUsed.currentDocument).toEqual({ exists: true })
 	})
 
-	it('booking full intent → finalized; storage url built from token', async () => {
+	it('booking full intent → patches booking.attachment + returns { ok: true }', async () => {
 		const intentId = 'b-full-1'
 		const path     = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/abc123.webp`
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
@@ -568,25 +640,73 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 				downloadToken: 'token-abc',
 			}),
 		)
+		seedFinalizeBookingAuth()
+		txGetResponses.set(`trips/${TRIP_ID}/bookings/${ENTITY_ID}`, bookingDocClean())
 
 		const result = await finalizeUploadIntents(
-			CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
+			CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
 		)
-		expect(result.ok).toBe(true)
-		expect(result.entityType).toBe('booking')
-		expect(result.tripId).toBe(TRIP_ID)
-		expect(result.entityId).toBe(ENTITY_ID)
-		expect(result.blobs).toHaveLength(1)
-		expect(result.blobs[0]).toMatchObject({
-			kind:        'full',
-			path,
-			contentType: 'image/webp',
-			size:        100_000,
-		})
-		expect(result.blobs[0]!.url).toContain('token=token-abc')
+		// Phase 3.6: response is narrow. Source of truth = entity doc.
+		expect(result).toEqual({ ok: true })
+
+		// Entity patch write asserts: attachment map shape + updatedBy +
+		// updatedAt transform + updateMask + currentDocument.exists.
+		const writes = capturedTxResult!.writes as Array<{
+			document:          string
+			updateMask?:       string[]
+			fields:            Record<string, unknown>
+			updateTransforms?: Array<{ fieldPath: string; setToServerValue: string }>
+			currentDocument?:  { exists?: boolean }
+		}>
+		const patch = writes.find(w => w.document.endsWith(`/trips/${TRIP_ID}/bookings/${ENTITY_ID}`))!
+		expect(patch).toBeDefined()
+		expect(patch.updateMask).toEqual(['attachment', 'updatedBy'])
+		expect(patch.currentDocument).toEqual({ exists: true })
+		expect(patch.updateTransforms).toEqual([
+			{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' },
+		])
+		const attachment = patch.fields.attachment as { mapValue: { fields: Record<string, { stringValue: string }> } }
+		expect(attachment.mapValue.fields.fileUrl.stringValue).toContain('token=token-abc')
+		expect(attachment.mapValue.fields.filePath.stringValue).toBe(path)
+		expect(attachment.mapValue.fields.fileType.stringValue).toBe('image/webp')
+		// No thumb intent in this batch → no thumbUrl/thumbPath in the map.
+		expect(attachment.mapValue.fields.thumbUrl).toBeUndefined()
+		expect(attachment.mapValue.fields.thumbPath).toBeUndefined()
+		expect((patch.fields.updatedBy as { stringValue: string }).stringValue).toBe(CALLER_UID)
 	})
 
-	it('batch full + thumb intents for same wish → both finalized', async () => {
+	it('booking full + thumb → patches attachment with both thumbUrl + thumbPath', async () => {
+		const fullId   = 'b-full-2'
+		const thumbId  = 'b-thumb-2'
+		const fullPath  = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/x.webp`
+		const thumbPath = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/x.thumb.webp`
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${fullId}`,  intentDoc({ intentId: fullId,  entityType: 'booking', kind: 'full',  path: fullPath  }))
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${thumbId}`, intentDoc({ intentId: thumbId, entityType: 'booking', kind: 'thumb', path: thumbPath }))
+		vi.mocked(storage.getObjectMetadata)
+			.mockResolvedValueOnce(storageObjectMeta({
+				name: fullPath,  intentId: fullId,  entityType: 'booking', entityId: ENTITY_ID, kind: 'full',
+				downloadToken: 'tk-f',
+			}))
+			.mockResolvedValueOnce(storageObjectMeta({
+				name: thumbPath, intentId: thumbId, entityType: 'booking', entityId: ENTITY_ID, kind: 'thumb',
+				downloadToken: 'tk-t',
+			}))
+		seedFinalizeBookingAuth()
+		txGetResponses.set(`trips/${TRIP_ID}/bookings/${ENTITY_ID}`, bookingDocClean())
+
+		await finalizeUploadIntents(
+			CALLER_UID, { tripId: TRIP_ID, intentIds: [fullId, thumbId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
+		)
+		const writes = capturedTxResult!.writes as Array<{ document: string; fields: Record<string, unknown> }>
+		// 2 markUsed + 1 entity patch
+		expect(writes).toHaveLength(3)
+		const patch = writes.find(w => w.document.endsWith(`/trips/${TRIP_ID}/bookings/${ENTITY_ID}`))!
+		const attachment = patch.fields.attachment as { mapValue: { fields: Record<string, { stringValue: string }> } }
+		expect(attachment.mapValue.fields.thumbPath.stringValue).toBe(thumbPath)
+		expect(attachment.mapValue.fields.thumbUrl.stringValue).toContain('token=tk-t')
+	})
+
+	it('batch full + thumb intents for same wish → patches wish.image (all 4 fields required)', async () => {
 		const fullId  = 'w-full-1'
 		const thumbId = 'w-thumb-1'
 		const fullPath  = `trips/${TRIP_ID}/wishes/${ENTITY_ID}/aaa.webp`
@@ -602,25 +722,31 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 				name: thumbPath, intentId: thumbId, entityType: 'wish', entityId: ENTITY_ID, kind: 'thumb',
 				downloadToken: 'tk-t',
 			}))
+		seedFinalizeWishAuth()
+		txGetResponses.set(`trips/${TRIP_ID}/wishes/${ENTITY_ID}`, wishDocFinalize())
 
 		const result = await finalizeUploadIntents(
-			CALLER_UID, { tripId: TRIP_ID, intentIds: [fullId, thumbId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
+			CALLER_UID, { tripId: TRIP_ID, intentIds: [fullId, thumbId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
 		)
-		expect(result.blobs).toHaveLength(2)
-		expect(result.blobs.map(b => b.kind).sort()).toEqual(['full', 'thumb'])
-		// markUsed write per intent
-		const writes = capturedTxResult!.writes as Array<{ document: string; fields: Record<string, { stringValue?: string }> }>
-		expect(writes).toHaveLength(2)
-		const docs = writes.map(w => w.document)
-		expect(docs.some(d => d.endsWith(`/trips/${TRIP_ID}/uploadIntents/${fullId}`))).toBe(true)
-		expect(docs.some(d => d.endsWith(`/trips/${TRIP_ID}/uploadIntents/${thumbId}`))).toBe(true)
-		writes.forEach(w => expect(w.fields.status?.stringValue).toBe('used'))
+		expect(result).toEqual({ ok: true })
+
+		const writes = capturedTxResult!.writes as Array<{ document: string; fields: Record<string, unknown>; updateMask?: string[] }>
+		// 2 markUsed + 1 wish patch
+		expect(writes).toHaveLength(3)
+		const patch = writes.find(w => w.document.endsWith(`/trips/${TRIP_ID}/wishes/${ENTITY_ID}`))!
+		expect(patch.updateMask).toEqual(['image', 'updatedBy'])
+		const image = patch.fields.image as { mapValue: { fields: Record<string, { stringValue: string }> } }
+		// WishImage schema requires ALL 4 fields (url + path + thumbUrl + thumbPath).
+		expect(image.mapValue.fields.url.stringValue).toContain('token=tk-f')
+		expect(image.mapValue.fields.path.stringValue).toBe(fullPath)
+		expect(image.mapValue.fields.thumbUrl.stringValue).toContain('token=tk-t')
+		expect(image.mapValue.fields.thumbPath.stringValue).toBe(thumbPath)
 	})
 
 	it('intent not found → 404', async () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/missing`, notFoundDoc(`trips/${TRIP_ID}/uploadIntents/missing`))
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: ['missing'] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: ['missing'], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({ status: 404 })
 	})
 
@@ -631,19 +757,19 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			path: `trips/${TRIP_ID}/bookings/${ENTITY_ID}/x.webp`,
 		}))
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({ status: 403 })
 	})
 
-	it('intent already used + same caller + storage still matches → idempotent replay (no 409)', async () => {
-		// Recovery case: client called /upload-finalize successfully but
-		// crashed BEFORE writing the booking/wish doc. Retry must succeed
-		// and return the same blobs response so the client can complete
-		// its setDoc/updateDoc -- otherwise the storage object becomes
-		// permanent orphan (intent burnt, doc never landed, user can't
-		// recover their upload). uid + storage match + customMetadata
-		// re-verification all still enforced -- idempotency is scoped
-		// to the original uploader, not a general replay bypass.
+	it('intent already used + doc still points at intent path → idempotent replay OK (no writes)', async () => {
+		// Recovery case (Phase 3.6 semantics): client called /upload-finalize
+		// successfully (Worker patched the doc + marked intent used) but
+		// crashed BEFORE getting the 200 response. Retry must succeed --
+		// otherwise the storage object becomes permanent orphan. Stricter
+		// than Phase 3.5: the entity doc MUST still reflect THIS intent's
+		// path exactly. If the user has since detached or replaced the
+		// attachment, the intent's blob is dead bytes and we MUST NOT
+		// resurrect it (separate test below pins that rejection).
 		const intentId = 'i-used-replay'
 		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/replay.webp`
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
@@ -656,17 +782,46 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 				downloadToken: 'tk-replay',
 			}),
 		)
+		seedFinalizeBookingAuth()
+		// Doc already reflects this intent's blob path → idempotent OK.
+		txGetResponses.set(`trips/${TRIP_ID}/bookings/${ENTITY_ID}`, bookingDocWithAttachment(path))
 
 		const result = await finalizeUploadIntents(
-			CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
+			CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
 		)
-		expect(result.ok).toBe(true)
-		expect(result.blobs).toHaveLength(1)
-		expect(result.blobs[0]!.path).toBe(path)
-		expect(result.blobs[0]!.url).toContain('token=tk-replay')
-		// No markUsed write fired -- intent was already 'used' on entry.
+		expect(result).toEqual({ ok: true })
+		// No writes at all -- intent already 'used' (no markUsed) and doc
+		// already reflects the intent's blob (no patch).
 		const writes = capturedTxResult!.writes as Array<unknown>
 		expect(writes).toHaveLength(0)
+	})
+
+	it('intent already used but doc points elsewhere → 409 (idempotent-replay denied)', async () => {
+		// Stale-finalize-on-used: prior finalize wrote attachment, user
+		// then replaced attachment with a different intent. Late retry
+		// of the SUPERSEDED intent must not resurrect dead bytes.
+		const intentId = 'i-used-stale'
+		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/old.webp`
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
+			intentId, entityType: 'booking', kind: 'full', path,
+			status: 'used',
+		}))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+			storageObjectMeta({
+				name: path, intentId, entityType: 'booking', entityId: ENTITY_ID, kind: 'full',
+				downloadToken: 'tk-old',
+			}),
+		)
+		seedFinalizeBookingAuth()
+		// Doc now points at a DIFFERENT (newer) blob.
+		txGetResponses.set(`trips/${TRIP_ID}/bookings/${ENTITY_ID}`,
+			bookingDocWithAttachment(`trips/${TRIP_ID}/bookings/${ENTITY_ID}/newer.webp`))
+		await expect(
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+		).rejects.toMatchObject({
+			status: 409,
+			message: expect.stringMatching(/idempotent-replay denied/),
+		})
 	})
 
 	it('intent used by ANOTHER uid → 403 (idempotency is per-uploader)', async () => {
@@ -681,14 +836,16 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			status: 'used',
 		}))
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({ status: 403 })
 	})
 
-	it('mixed batch (1 pending + 1 already-used) → both finalized, only pending gets markUsed write', async () => {
-		// Half-state recovery: prior finalize crashed AFTER marking
-		// intent-A used but BEFORE consuming intent-B. Retry needs to
-		// handle both states in one call.
+	it('mixed batch (1 pending + 1 already-used) → 409 (no atomic half-state)', async () => {
+		// Phase 3.6: rejecting mixed states is safer than the Phase 3.5
+		// behaviour ("finalize both, one markUsed"). Under single-tx
+		// semantics the only way to land mixed is a client double-submit
+		// that minted a NEW intent on top of a previously finalized one
+		// -- guessing which is "the real one" is unsafe.
 		const usedId    = 'mix-used'
 		const pendingId = 'mix-pending'
 		const usedPath    = `trips/${TRIP_ID}/wishes/${ENTITY_ID}/used.webp`
@@ -709,14 +866,9 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 				downloadToken: 't-p',
 			}))
 
-		const result = await finalizeUploadIntents(
-			CALLER_UID, { tripId: TRIP_ID, intentIds: [usedId, pendingId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
-		)
-		expect(result.blobs).toHaveLength(2)
-		// Only ONE markUsed write -- the previously-pending intent.
-		const writes = capturedTxResult!.writes as Array<{ document: string }>
-		expect(writes).toHaveLength(1)
-		expect(writes[0]!.document).toContain(`/trips/${TRIP_ID}/uploadIntents/${pendingId}`)
+		await expect(
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [usedId, pendingId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+		).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/mixed intent states/) })
 	})
 
 	it('intent expired → 410', async () => {
@@ -727,7 +879,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			expiresAtMs: Date.now() - 1000,  // already expired
 		}))
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({ status: 410 })
 	})
 
@@ -739,7 +891,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 		}))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(null)
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({ status: 404, message: expect.stringMatching(/storage/) })
 	})
 
@@ -757,7 +909,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			}),
 		)
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/expense.*expense-create/) })
 	})
 
@@ -784,24 +936,22 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 				downloadToken: 'tk-b',
 			}))
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [fullId, thumbId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [fullId, thumbId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/entityId/) })
 	})
 
 	it('rejects duplicate intentIds in request', async () => {
 		// Pre-tx duplicate check; never enters the runFirestoreTransaction body.
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: ['x', 'x'] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: ['x', 'x'], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/duplicate/) })
 	})
 
 	it('rejects thumb-only intent set (primary blob missing)', async () => {
 		// Without this guard, a caller sending only a thumb intent would
-		// have it consumed + marked used, then receive a blobs response
-		// with only a thumb -- which booking/wish doc shapes can't
-		// assemble into a valid attachment (both require a primary
-		// path + url). Equivalent to expense-write's buildReceiptFromIntents
-		// "primary blob missing" check; mirrors it at the finalize layer.
+		// have it consumed + marked used, then receive a no-primary
+		// patch -- which booking/wish doc shapes can't assemble into a
+		// valid attachment (both require a primary path + url).
 		const thumbId = 'i-thumb-only'
 		const thumbPath = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/thumb-only.thumb.webp`
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${thumbId}`, intentDoc({
@@ -814,7 +964,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			}),
 		)
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [thumbId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [thumbId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({
 			status: 400,
 			message: expect.stringMatching(/primary blob|full or pdf/),
@@ -844,19 +994,83 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 				downloadToken: 't2',
 			}))
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [a, b] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [a, b], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/duplicate kinds/) })
 	})
 
+	it('wish finalize WITHOUT thumb intent (HEIC pass-through) → thumb fields collapse to primary', async () => {
+		// HEIC / HEIF + decode-failure paths in src/utils/image.ts return
+		// primary-only (PASSTHROUGH_TYPES). The Worker allowlist accepts
+		// image/heic + image/heif for wish uploads, so refusing finalize
+		// here would orphan the upload + roll the wish doc back. Fall
+		// back to the primary blob for thumbUrl/thumbPath (matches the
+		// pre-Phase-3.6 client-side ?? fallback). WishImage schema is
+		// still satisfied (all 4 fields populated as required strings).
+		const fullId = 'w-heic-full-only'
+		const path = `trips/${TRIP_ID}/wishes/${ENTITY_ID}/heic-only.heic`
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${fullId}`, intentDoc({
+			intentId: fullId, entityType: 'wish', kind: 'full', path,
+		}))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+			storageObjectMeta({
+				name: path, intentId: fullId, entityType: 'wish', entityId: ENTITY_ID, kind: 'full',
+				downloadToken: 'tk-heic',
+			}),
+		)
+		seedFinalizeWishAuth()
+		txGetResponses.set(`trips/${TRIP_ID}/wishes/${ENTITY_ID}`, wishDocFinalize())
+
+		const result = await finalizeUploadIntents(
+			CALLER_UID, { tripId: TRIP_ID, intentIds: [fullId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
+		)
+		expect(result).toEqual({ ok: true })
+
+		const writes = capturedTxResult!.writes as Array<{ document: string; fields: Record<string, unknown>; updateMask?: string[] }>
+		const patch = writes.find(w => w.document.endsWith(`/trips/${TRIP_ID}/wishes/${ENTITY_ID}`))!
+		const image = patch.fields.image as { mapValue: { fields: Record<string, { stringValue: string }> } }
+		// All 4 fields present; thumb fields collapsed to primary.
+		expect(image.mapValue.fields.url.stringValue).toContain('token=tk-heic')
+		expect(image.mapValue.fields.path.stringValue).toBe(path)
+		expect(image.mapValue.fields.thumbUrl.stringValue).toBe(image.mapValue.fields.url.stringValue)
+		expect(image.mapValue.fields.thumbPath.stringValue).toBe(path)
+	})
+
+	it('rejects wish finalize with kind=pdf primary (PDF not allowed for wish)', async () => {
+		// The wish-only kind=full guard survives: WishImage is image-
+		// only and the form UI doesn't surface PDF uploads for wish
+		// covers. Pin the rejection so a future regression that opens
+		// the wish allowlist to PDF doesn't slip through.
+		const pdfId = 'w-pdf-only'
+		const path = `trips/${TRIP_ID}/wishes/${ENTITY_ID}/doc.pdf`
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${pdfId}`, intentDoc({
+			intentId: pdfId, entityType: 'wish', kind: 'pdf', path,
+		}))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+			storageObjectMeta({
+				name: path, intentId: pdfId, entityType: 'wish', entityId: ENTITY_ID, kind: 'pdf',
+				downloadToken: 'tk-pdf',
+			}),
+		)
+		await expect(
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [pdfId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+		).rejects.toMatchObject({
+			status: 400,
+			message: expect.stringMatching(/wish primary must be kind=full/),
+		})
+	})
+
 	// ─── Server-side re-check vs intent contract ──────────────────────
-	// Storage rules in Commit 4 will perform an equivalent intent-bound
-	// check at upload time. These tests pin the defense-in-depth
-	// chokepoint INSIDE consumeIntentInTx -- Worker refuses to consume
-	// any object whose contentType / size / customMetadata don't match
+	// storage.rules is a STABLE GATE -- it never reads the intent doc
+	// (cross-service-read race, see storage.rules incident note), so
+	// the intent-bound contract (allowedContentTypes / maxBytes /
+	// customMetadata equality) is enforced HERE, inside consumeIntentInTx,
+	// as the SOLE authoritative check. Worker refuses to consume any
+	// object whose contentType / size / customMetadata don't match
 	// the intent the path was minted for. Catches:
 	//   - non-Firebase-SDK uploads (no customMetadata at all)
 	//   - tampered customMetadata (e.g. spoofed uploaderUid)
-	//   - oversize / wrong contentType slipping past pre-Commit-4 rules
+	//   - oversize / wrong contentType slipping past the static
+	//     allowlist + 5MB cap that storage.rules enforces
 	it('rejects upload with missing customMetadata (e.g. raw GCS upload, no Firebase SDK)', async () => {
 		const intentId = 'i-no-meta'
 		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/no-meta.webp`
@@ -870,7 +1084,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			}),
 		)
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({
 			status: 400,
 			message: expect.stringMatching(/customMetadata.*mismatch/),
@@ -891,7 +1105,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			}),
 		)
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({
 			status: 400,
 			message: expect.stringMatching(/uploaderUid/),
@@ -912,7 +1126,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			}),
 		)
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({
 			status: 400,
 			message: expect.stringMatching(/uploadIntentId/),
@@ -933,7 +1147,7 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			}),
 		)
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({
 			status: 400,
 			message: expect.stringMatching(/contentType/),
@@ -954,17 +1168,19 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 			}),
 		)
 		await expect(
-			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
 		).rejects.toMatchObject({
 			status: 413,
 			message: expect.stringMatching(/size.*maxBytes/),
 		})
 	})
 
-	it('storage object exists but no download token → blob.url is null (degrade gracefully)', async () => {
-		// If a future non-Firebase-SDK upload path lands an object
-		// without a download token, blob.url is null and client can
-		// call Storage SDK getDownloadURL itself. Doesn't fail finalize.
+	it('storage object exists but no download token → 500 (refuse to write malformed doc)', async () => {
+		// Phase 3.6: Worker IS the authoritative writer of
+		// BookingAttachment.fileUrl / WishImage.url -- both required by
+		// Zod schema. A null download URL would mean writing an invalid
+		// doc that clients would reject downstream. Reject explicitly
+		// rather than degrading gracefully (previous Phase 3.5 behaviour).
 		const intentId = 'i-no-token'
 		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/no-token.webp`
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
@@ -976,9 +1192,208 @@ describe('finalizeUploadIntents (booking/wish only)', () => {
 				// no downloadToken
 			}),
 		)
-		const result = await finalizeUploadIntents(
-			CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId] }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
+		await expect(
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+		).rejects.toMatchObject({
+			status: 500,
+			message: expect.stringMatching(/download token/),
+		})
+	})
+
+	// ─── Phase 3.6: re-verify CURRENT entity write permission ──────────
+	// Intent was minted up to 30 min ago. By finalize time the caller's
+	// role / membership / the trip's deletingAt state may have changed.
+	// The intent system can't see those changes -- re-check inside the
+	// same tx as the doc patch so a stale-permission capability token
+	// can't slip through.
+
+	it('caller demoted from editor to viewer between mint and finalize → 403', async () => {
+		const intentId = 'demote-uid'
+		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/d.webp`
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
+			intentId, entityType: 'booking', kind: 'full', path,
+		}))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+			storageObjectMeta({
+				name: path, intentId, entityType: 'booking', entityId: ENTITY_ID, kind: 'full',
+				downloadToken: 'tk',
+			}),
 		)
-		expect(result.blobs[0]!.url).toBeNull()
+		// Intent was minted as editor; current state is viewer.
+		txGetResponses.set(`trips/${TRIP_ID}`, tripDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberDoc('viewer'))
+		await expect(
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+		).rejects.toMatchObject({ status: 403, message: expect.stringMatching(/owner\/editor/) })
+	})
+
+	it('trip entered cascade-delete between mint and finalize → 410', async () => {
+		const intentId = 'cascade-uid'
+		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/c.webp`
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
+			intentId, entityType: 'booking', kind: 'full', path,
+		}))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+			storageObjectMeta({
+				name: path, intentId, entityType: 'booking', entityId: ENTITY_ID, kind: 'full',
+				downloadToken: 'tk',
+			}),
+		)
+		txGetResponses.set(`trips/${TRIP_ID}`, tripDoc({ deletingAt: true }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberDoc('editor'))
+		await expect(
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+		).rejects.toMatchObject({ status: 410, message: expect.stringMatching(/being deleted/) })
+	})
+
+	it('caller removed from trip between mint and finalize → 403', async () => {
+		const intentId = 'removed-uid'
+		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/r.webp`
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
+			intentId, entityType: 'booking', kind: 'full', path,
+		}))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+			storageObjectMeta({
+				name: path, intentId, entityType: 'booking', entityId: ENTITY_ID, kind: 'full',
+				downloadToken: 'tk',
+			}),
+		)
+		txGetResponses.set(`trips/${TRIP_ID}`, tripDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`,
+			notFoundDoc(`trips/${TRIP_ID}/members/${CALLER_UID}`))
+		await expect(
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+		).rejects.toMatchObject({ status: 403, message: expect.stringMatching(/not a trip member/) })
+	})
+
+	it('booking entity doc gone between mint and finalize → 410', async () => {
+		// User deleted the booking after the upload but before finalize
+		// landed. The blob is now an orphan (will be reaped by
+		// orphan-storage-scan) but Worker shouldn't synthesise a new
+		// doc for a booking the user clearly intended to remove.
+		const intentId = 'b-gone'
+		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/g.webp`
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
+			intentId, entityType: 'booking', kind: 'full', path,
+		}))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+			storageObjectMeta({
+				name: path, intentId, entityType: 'booking', entityId: ENTITY_ID, kind: 'full',
+				downloadToken: 'tk',
+			}),
+		)
+		seedFinalizeBookingAuth()
+		txGetResponses.set(`trips/${TRIP_ID}/bookings/${ENTITY_ID}`,
+			notFoundDoc(`trips/${TRIP_ID}/bookings/${ENTITY_ID}`))
+		await expect(
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+		).rejects.toMatchObject({ status: 410, message: expect.stringMatching(/booking.*not found/) })
+	})
+
+	it('wish: caller was the proposer at mint, but wish doc now points to different proposer → 403', async () => {
+		// Defense-in-depth: even though intent-mint already enforced
+		// proposer match, the wish doc state at finalize time is the
+		// authoritative source. Theoretically the proposedBy can't
+		// change without deleting+recreating the wish, but pin the check.
+		const intentId = 'w-not-proposer'
+		const fullPath  = `trips/${TRIP_ID}/wishes/${ENTITY_ID}/np.webp`
+		const thumbPath = `trips/${TRIP_ID}/wishes/${ENTITY_ID}/np.thumb.webp`
+		const thumbId = 'w-not-proposer-thumb'
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({ intentId,  entityType: 'wish', kind: 'full',  path: fullPath  }))
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${thumbId}`,  intentDoc({ intentId: thumbId, entityType: 'wish', kind: 'thumb', path: thumbPath }))
+		vi.mocked(storage.getObjectMetadata)
+			.mockResolvedValueOnce(storageObjectMeta({ name: fullPath,  intentId,        entityType: 'wish', entityId: ENTITY_ID, kind: 'full',  downloadToken: 'tk-f' }))
+			.mockResolvedValueOnce(storageObjectMeta({ name: thumbPath, intentId: thumbId, entityType: 'wish', entityId: ENTITY_ID, kind: 'thumb', downloadToken: 'tk-t' }))
+		seedFinalizeWishAuth()
+		txGetResponses.set(`trips/${TRIP_ID}/wishes/${ENTITY_ID}`, wishDocFinalize({ proposedBy: OTHER_UID }))
+		await expect(
+			finalizeUploadIntents(CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId, thumbId], applyToDoc: applyToDocPatch(null) }, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+		).rejects.toMatchObject({ status: 403, message: expect.stringMatching(/wish proposer/) })
+	})
+
+	// ─── Phase 3.6: stale-finalize guard (allPending path) ─────────────
+	// Closes the race where Tab A's slow finalize would overwrite Tab B's
+	// already-committed replacement blob.
+
+	it('stale-finalize: expectedCurrentPath=null but doc already has an attachment → 409', async () => {
+		const intentId = 'stale-1'
+		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/late.webp`
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
+			intentId, entityType: 'booking', kind: 'full', path,
+		}))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+			storageObjectMeta({
+				name: path, intentId, entityType: 'booking', entityId: ENTITY_ID, kind: 'full',
+				downloadToken: 'tk',
+			}),
+		)
+		seedFinalizeBookingAuth()
+		// Doc has a DIFFERENT attachment (Tab B beat us to it).
+		txGetResponses.set(`trips/${TRIP_ID}/bookings/${ENTITY_ID}`,
+			bookingDocWithAttachment(`trips/${TRIP_ID}/bookings/${ENTITY_ID}/tab-b.webp`))
+		await expect(
+			finalizeUploadIntents(CALLER_UID, {
+				tripId: TRIP_ID, intentIds: [intentId],
+				applyToDoc: applyToDocPatch(null),  // client thought doc was clean
+			}, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+		).rejects.toMatchObject({
+			status: 409,
+			message: expect.stringMatching(/stale-finalize.*replaced or detached/),
+		})
+	})
+
+	it('stale-finalize: expectedCurrentPath=A but doc has path B → 409', async () => {
+		const intentId = 'stale-2'
+		const path = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/new.webp`
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
+			intentId, entityType: 'booking', kind: 'full', path,
+		}))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+			storageObjectMeta({
+				name: path, intentId, entityType: 'booking', entityId: ENTITY_ID, kind: 'full',
+				downloadToken: 'tk',
+			}),
+		)
+		seedFinalizeBookingAuth()
+		txGetResponses.set(`trips/${TRIP_ID}/bookings/${ENTITY_ID}`,
+			bookingDocWithAttachment(`trips/${TRIP_ID}/bookings/${ENTITY_ID}/path-C.webp`))
+		await expect(
+			finalizeUploadIntents(CALLER_UID, {
+				tripId: TRIP_ID, intentIds: [intentId],
+				applyToDoc: applyToDocPatch(`trips/${TRIP_ID}/bookings/${ENTITY_ID}/path-A.webp`),
+			}, SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET),
+		).rejects.toMatchObject({
+			status: 409,
+			message: expect.stringMatching(/stale-finalize/),
+		})
+	})
+
+	it('replace flow: expectedCurrentPath=A, doc has A → finalize OK, attachment replaced with new blob', async () => {
+		// Happy path of replace: client knows the doc has attachment at
+		// path A, uploads B + finalizes with expectedCurrentPath=A. Worker
+		// confirms the doc still points at A → patches in B.
+		const intentId = 'replace-ok'
+		const newPath = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/new-b.webp`
+		const oldPath = `trips/${TRIP_ID}/bookings/${ENTITY_ID}/old-a.webp`
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${intentId}`, intentDoc({
+			intentId, entityType: 'booking', kind: 'full', path: newPath,
+		}))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+			storageObjectMeta({
+				name: newPath, intentId, entityType: 'booking', entityId: ENTITY_ID, kind: 'full',
+				downloadToken: 'tk-b',
+			}),
+		)
+		seedFinalizeBookingAuth()
+		txGetResponses.set(`trips/${TRIP_ID}/bookings/${ENTITY_ID}`, bookingDocWithAttachment(oldPath))
+		const result = await finalizeUploadIntents(
+			CALLER_UID, { tripId: TRIP_ID, intentIds: [intentId], applyToDoc: applyToDocPatch(oldPath) },
+			SERVICE_ACCOUNT_JSON, FINALIZE_BUCKET,
+		)
+		expect(result).toEqual({ ok: true })
+		const writes = capturedTxResult!.writes as Array<{ document: string; fields: Record<string, unknown> }>
+		const patch = writes.find(w => w.document.endsWith(`/trips/${TRIP_ID}/bookings/${ENTITY_ID}`))!
+		const attachment = patch.fields.attachment as { mapValue: { fields: Record<string, { stringValue: string }> } }
+		expect(attachment.mapValue.fields.filePath.stringValue).toBe(newPath)
 	})
 })

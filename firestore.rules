@@ -91,6 +91,16 @@ service cloud.firestore {
     function changedOnly(allowed) {
       return affectedKeys().hasOnly(allowed);
     }
+    // Allow `field` to be either unchanged OR removed (via deleteField()),
+    // but never written/changed. Used for Worker-authoritative fields
+    // (booking.attachment, wish.image) where the client may detach but
+    // not write — the Worker /upload-finalize endpoint owns all writes
+    // via Admin SDK (rules-bypass). Note: `unchanged()` already returns
+    // true when the field is missing on BOTH sides (diff-based), so this
+    // helper only adds the "present-on-old, absent-on-new" detach case.
+    function unchangedOrRemoved(field) {
+      return unchanged(field) || !(field in request.resource.data);
+    }
 
     // ─── Soft-delete helpers (settlement phase-2) ────────────────
     // `d` is either resource.data (current) or request.resource.data
@@ -147,40 +157,6 @@ service cloud.firestore {
         get(/databases/$(database)/documents/trips/$(tripId)).data.memberIds;
     }
 
-    // ─── Attachment shape guards ─────────────────────────────────
-    // Without these, an editor with a raw-SDK client could write
-    // `attachment.fileUrl: 'https://evil.com/track.png'` and every
-    // trip member's UI would fetch that URL on render (privacy /
-    // tracking leak). Same risk for filePath pointing outside the
-    // booking's own Storage folder (subsequent delete fails to purge
-    // the orphaned object, or worse, traverses to delete a sibling).
-    //
-    // The honest service-layer path (`bookingService.createBooking`
-    // / `updateBooking` → `uploadAttachment`) always produces values
-    // matching these constraints, so legitimate writes are unaffected.
-    // BUCKET HARDCODE — production-only contract. If a staging / mirror
-    // bucket is ever introduced, every attachment write will be denied
-    // until this constant is updated (rules don't support env-var
-    // injection). A staging deploy would need a separate rules variant.
-    //
-    // Binds a Firebase Storage download URL to its exact `expectedPath`.
-    // Without binding, an editor with raw-SDK access could write
-    // `fileUrl` pointing at a different Storage object than `filePath`
-    // claims — either cross-trip (PII leak) or same-folder different-
-    // filename (delete-purge sees `filePath`'s name, leaves the URL'd
-    // file orphan in Storage forever).
-    //
-    // We avoid regex matching here: a regex like `file.webp` would
-    // accept `fileXwebp` too (RE2's literal-`.` semantics), and rules
-    // don't have a string-escape function. Instead we split off the
-    // query string and string-compare the rest — exact match required.
-    function validStorageUrlFor(url, expectedPath) {
-      return url is string
-        && url.size() <= 2048
-        && url.split('\\?')[0] ==
-             'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/'
-             + expectedPath.replace('/', '%2F');
-    }
     // Per-key shape gate for schedule.location. hasOnly() restricts the
     // KEY set; this helper additionally enforces the VALUE types so a
     // raw-SDK write can't slip `lat: "evil"` or `name: [...]` past the
@@ -199,87 +175,19 @@ service cloud.firestore {
         && (!('placeId' in loc)
               || (loc.placeId is string && loc.placeId.size() <= 200));
     }
-    function validWishImage(tripId, wishId) {
-      return !('image' in request.resource.data) || (
-        request.resource.data.image is map
-        && request.resource.data.image.keys().hasOnly(
-             ['url', 'path', 'thumbUrl', 'thumbPath']
-           )
-        && request.resource.data.image.keys().hasAll(
-             ['url', 'path', 'thumbUrl', 'thumbPath']
-           )
-        && request.resource.data.image.path is string
-        && request.resource.data.image.path.size() <= 500
-        && request.resource.data.image.path.matches(
-             '^trips/' + tripId + '/wishes/' + wishId + '/.+'
-           )
-        && request.resource.data.image.thumbPath is string
-        && request.resource.data.image.thumbPath.size() <= 500
-        && request.resource.data.image.thumbPath.matches(
-             '^trips/' + tripId + '/wishes/' + wishId + '/.+'
-           )
-        // URL bound to its own path — blocks both the same-bucket
-        // cross-trip forge (`url=https://.../o/trips%2FOTHER%2F...`)
-        // AND the same-folder filename swap that would orphan files
-        // in Storage on delete.
-        && validStorageUrlFor(
-             request.resource.data.image.url,
-             request.resource.data.image.path
-           )
-        && validStorageUrlFor(
-             request.resource.data.image.thumbUrl,
-             request.resource.data.image.thumbPath
-           )
-      );
-    }
-    // Note: validExpenseReceipt USED to live here. Removed once expense
-    // CREATE moved entirely to the Worker (`allow create: if false`
-    // + Worker `expense-validate.ts` enforces the same path-binding +
-    // URL-origin invariants the helper used to cover). Helper sat
-    // unused after the rules-layer expense-create became blocked, and
-    // every deploy emitted spurious "Invalid variable name: request"
-    // lint warnings against its body. Receipt validation now lives
-    // at `workers/ocr/src/expense-validate.ts` (`makeReceiptSchema`).
-    function validBookingAttachment(tripId, bookingId) {
-      return !('attachment' in request.resource.data) || (
-        request.resource.data.attachment is map
-        && request.resource.data.attachment.keys().hasOnly(
-             ['fileUrl', 'filePath', 'fileType', 'thumbUrl', 'thumbPath']
-           )
-        && request.resource.data.attachment.keys().hasAll(
-             ['fileUrl', 'filePath', 'fileType']
-           )
-        // thumbUrl and thumbPath are paired -- both present or both
-        // absent. Same shape contract as the Worker-side
-        // makeReceiptSchema in expense-validate.ts: without this
-        // pairing a raw SDK could set thumbUrl alone, UI renders the
-        // unbacked thumbUrl, and delete sees no thumbPath to purge.
-        && ('thumbUrl' in request.resource.data.attachment) ==
-             ('thumbPath' in request.resource.data.attachment)
-        && request.resource.data.attachment.fileType in
-             ['image/webp', 'image/jpeg', 'image/png', 'image/heic', 'image/heif', 'application/pdf']
-        && request.resource.data.attachment.filePath is string
-        && request.resource.data.attachment.filePath.size() <= 500
-        && request.resource.data.attachment.filePath.matches(
-             '^trips/' + tripId + '/bookings/' + bookingId + '/.+'
-           )
-        && validStorageUrlFor(
-             request.resource.data.attachment.fileUrl,
-             request.resource.data.attachment.filePath
-           )
-        && (!('thumbUrl' in request.resource.data.attachment) || (
-              request.resource.data.attachment.thumbPath is string
-              && request.resource.data.attachment.thumbPath.size() <= 500
-              && request.resource.data.attachment.thumbPath.matches(
-                   '^trips/' + tripId + '/bookings/' + bookingId + '/.+'
-                 )
-              && validStorageUrlFor(
-                   request.resource.data.attachment.thumbUrl,
-                   request.resource.data.attachment.thumbPath
-                 )
-           ))
-      );
-    }
+    // Note: validExpenseReceipt + validBookingAttachment + validWishImage
+    // USED to live here. Removed once each entity's media field moved to
+    // a Worker-authoritative write path:
+    //   - expense.receipt: `allow create: if false` on /expenses + Worker
+    //     `expense-validate.ts` owns shape validation.
+    //   - booking.attachment, wish.image: create rule forbids the field,
+    //     update rule allows only `unchangedOrRemoved`. Worker
+    //     `/upload-finalize` (Admin SDK rules-bypass) writes via
+    //     `buildAttachmentMapValue` after verifying the intent doc's
+    //     used/expires/stale guards.
+    // The old helpers checked path-binding + URL-origin invariants that
+    // now live in `workers/ocr/src/expense-validate.ts` (makeReceiptSchema)
+    // and `workers/ocr/src/upload-intent.ts` (intent minting + finalize).
 
     // ─── Membership-sync update predicates ────────────────────────
     // These authorise the memberSync cascade — when a user accepts an
@@ -799,7 +707,11 @@ service cloud.firestore {
                       && (!('link' in request.resource.data)
                             || (request.resource.data.link is string
                                 && request.resource.data.link.size() <= 1000))
-                      && validWishImage(tripId, wishId);
+                      // image is Worker-authoritative: same shape as
+                      // booking.attachment above. Client setDoc creates
+                      // the wish WITHOUT image, then Worker /upload-finalize
+                      // patches it in.
+                      && !('image' in request.resource.data);
         // Two update paths:
         //   1. Proposer edits any field (title/category/etc.)
         //   2. Any member toggles their own uid in the votes array. The
@@ -835,7 +747,9 @@ service cloud.firestore {
               && (!('link' in request.resource.data)
                     || (request.resource.data.link is string
                         && request.resource.data.link.size() <= 1000))
-              && validWishImage(tripId, wishId)
+              // image is Worker-authoritative on update too (see booking
+              // attachment update for the full rationale).
+              && unchangedOrRemoved('image')
             )
             ||
             // 2. Voter path: any member toggles only their own uid in `votes`.
@@ -910,7 +824,15 @@ service cloud.firestore {
                       && (!('note' in request.resource.data)
                             || (request.resource.data.note is string
                                 && request.resource.data.note.size() <= 2000))
-                      && validBookingAttachment(tripId, bookingId);
+                      // attachment is Worker-authoritative: client setDoc
+                      // creates the booking WITHOUT attachment, then the
+                      // Worker /upload-finalize patches it in via Admin SDK
+                      // (rules-bypass). Forbidding the key on create makes
+                      // the only path "doc-first → upload via intent →
+                      // Worker patch", with the Worker enforcing intent
+                      // /used/expires/stale guards. Raw-SDK direct-write
+                      // would otherwise bypass those guards.
+                      && !('attachment' in request.resource.data);
         // Three update paths:
         //   1. Editor / owner edits booking content. tripId / createdBy /
         //      createdAt locked. memberIds locked too — content edits
@@ -961,7 +883,12 @@ service cloud.firestore {
           && (!('note' in request.resource.data)
                 || (request.resource.data.note is string
                     && request.resource.data.note.size() <= 2000))
-          && validBookingAttachment(tripId, bookingId)
+          // attachment is Worker-authoritative on update too: client may
+          // detach via deleteField() (rules-bypass not needed for removal,
+          // and the Worker storage-scan cron reaps the orphan blob) OR
+          // leave the field exactly as-is. Any client-issued WRITE of a
+          // new value is denied — those go through /upload-finalize.
+          && unchangedOrRemoved('attachment')
         ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
         allow delete: if canWrite(tripId);
       }
@@ -1160,24 +1087,32 @@ service cloud.firestore {
       // Phase 3.5 upload intents. Worker mints these via admin SDK
       // (which bypasses rules); clients NEVER read or write them
       // directly. The intent doc carries authoritative path /
-      // customMetadata that storage.rules verifies against during
-      // intent-bound upload enforcement.
+      // customMetadata / allowedContentTypes / maxBytes / status /
+      // expiresAt -- read SOLELY by the Worker inside the
+      // /upload-finalize and /expense-create / /expense-update
+      // Firestore transactions (admin SDK, bypasses rules). The
+      // storage.rules layer does NOT cross-service-read this doc
+      // (the 2026-05-24 prod 403 incident demonstrated the
+      // read-after-write race on freshly-minted docs from the
+      // Storage rules service agent); storage.rules is a STABLE
+      // GATE that verifies only self-contained claimed metadata
+      // + role / membership / tripNotDeleting. See storage.rules
+      // header for the full STABLE GATE vs AUTHORITATIVE GATE
+      // split.
       //
-      // Why trip-scoped (Phase-3.5-bis, shipped 2026-05-25): the
-      // original top-level `/uploadIntents/{id}` collection was
-      // unreachable by the cross-service read from storage.rules
-      // because the auto-provisioned IAM Condition was scoped to
-      // `trips/*` from Phase 1 and CLI re-deploys don't re-trigger
-      // the grant flow. Moving the collection under
-      // `trips/{tripId}/` puts the read path inside the existing
-      // Condition scope -- no IAM widening needed. Default-deny
-      // below would catch this implicitly, but the explicit rule
+      // Why trip-scoped subcollection (Phase-3.5-bis, 2026-05-25):
+      // shipped together with the race fix to consolidate intent
+      // lifecycle under the trip root -- cascade-delete reaps
+      // expired/used intents naturally with the trip purge, and
+      // any future feature that legitimately needs to cross-
+      // service-read the intent doc (from rules layers that
+      // tolerate the staleness window) lands inside the auto-
+      // provisioned `trips/*` IAM Condition without manual
+      // widening. Worker reads continue to work either way --
+      // admin SDK is unscoped. Default-deny below would catch
+      // client access implicitly, but the explicit `if false`
       // documents intent + gives the rules-test suite a concrete
       // target to lock in.
-      //
-      // See storage.rules header for the full IAM principal /
-      // role explanation (it's a Storage Rules concern; duplicating
-      // it here would drift).
       match /uploadIntents/{intentId} {
         allow read, write: if false;
       }
