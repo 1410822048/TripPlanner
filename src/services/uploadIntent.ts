@@ -58,6 +58,13 @@ export interface UploadIntentsRequest {
   tripId:     string
   entityType: IntentEntityType
   entityId:   string
+  /** Phase 3.7 wish-only distinguisher: `'create'` skips the
+   *  wish-doc-exists + proposer check inside Worker authzUpload because
+   *  the wish doc legitimately doesn't exist yet (Worker
+   *  `/wish-file-create` is the writer). Omit (or `'update'`) for the
+   *  legacy "mint intents for an existing doc" flow. booking/expense
+   *  ignore this field. */
+  mode?:      'create' | 'update'
   uploads:    Array<{
     kind:        IntentKind
     contentType: string

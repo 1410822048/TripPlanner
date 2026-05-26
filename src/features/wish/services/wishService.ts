@@ -3,16 +3,24 @@
 // votes +1 to surface group favourites. Sorted server-side by createdAt
 // then re-ordered client-side by vote count.
 //
-// Image lifecycle: optional single cover image with full+thumb variants
-// (same compression pattern as bookings). Cover is one image only — wish
-// items aren't a photo album, just a "is this the place" reference shot.
+// Image lifecycle (Phase 3.7): the Worker is the authoritative writer for
+// `wish.image` on BOTH create and update. When the caller supplies an
+// image File:
+//   - createWish → POST /wish-file-create. Worker authzs membership,
+//     mints + consumes the upload intents, AND writes the wish doc
+//     (image populated) in a single Firestore transaction. The client
+//     never calls setDoc on this path. Eliminates the old doc-first
+//     "blank card → image lands ~200ms later" listener flicker AND
+//     removes the WishCreatePartialError half-state that the old
+//     compress-fails-after-setDoc rollback dance needed.
+//   - updateWish → POST /wish-file-update. Worker writes text patch +
+//     image in the same tx. Detach (attachment=null) and non-image
+//     fallback still go through client updateDoc with
+//     `image: deleteField()` -- rules-tightening (Commit 4) permits
+//     removing `image` client-side but blocks arbitrary writes to it.
 //
-// Phase 3.6: the Worker is the authoritative writer for `wish.image`.
-// /upload-finalize patches the field atomically with the intent markUsed
-// writes; the client never calls updateDoc({ image }) on the replace
-// path. Detach (null) and non-image fallback still go through the text
-// updateDoc as `deleteField()` -- firestore.rules (Commit 3) permits
-// removing `image` client-side but locks down arbitrary writes to it.
+// Without an image File the client setDoc / updateDoc paths are
+// unchanged -- text-only wishes are still the fast no-Worker round-trip.
 //
 // Votes use arrayUnion / arrayRemove on the `votes: string[]` field for
 // atomic toggle. Firestore rules gate "only my own uid" mutations on the
@@ -26,10 +34,11 @@ import { stripEmpty } from '@/utils/stripEmpty'
 import {
   requestUploadIntents,
   uploadToIntent,
-  finalizeUploadIntents,
   type UploadIntentsRequest,
 } from '@/services/uploadIntent'
-import { captureError } from '@/services/sentry'
+import {
+  requireWorkerWriteBase, preflightIdToken, workerFetch,
+} from '@/services/workerBase'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
 import { createTripScopedListServices } from '@/services/tripScopedList'
 import { validateUpdateOrThrow } from '@/services/validateUpdate'
@@ -47,27 +56,6 @@ import {
 } from '@/types'
 
 const LIST_LIMIT = 100
-
-/**
- * Thrown by `createWish` when the doc-first flow can't fully unwind
- * after a failed image step. The wish doc landed in Firestore (and
- * possibly a blob too), the rollback `deleteDoc` failed (network
- * blip, rate limit, etc.), and the caller needs to know the wish
- * persists so it can `invalidateQueries` and reconcile the cache
- * with reality. Without this typed signal, callers can't distinguish
- * "fully failed -- safe to retry" from "partially failed -- retry
- * will duplicate" and a re-press of save would land a second wish.
- */
-export class WishCreatePartialError extends Error {
-  readonly wishId: string
-  readonly cause:  unknown
-  constructor(wishId: string, cause: unknown) {
-    super('Wish doc was created but image step + rollback both failed')
-    this.name = 'WishCreatePartialError'
-    this.wishId = wishId
-    this.cause = cause
-  }
-}
 
 function wishFromDoc(d: QueryDocumentSnapshot): Wish {
   return firestoreDocFromSchema(WishDocSchema, d, 'wishFromDoc')
@@ -98,35 +86,21 @@ export const subscribeToWishes = listServices.subscribe
 
 // ─── Storage helpers ──────────────────────────────────────────────
 
-/**
- * Phase 3.6: upload + finalize the wish cover image. The Worker patches
- * `wish.image` (url + path + thumbUrl + thumbPath -- all four required
- * by WishImage schema) atomically with the intent markUsed writes.
+/** Mint intents + upload the compressed image variants. Returns the
+ *  intentIds in [full, thumb?] order so the Worker `/wish-file-*`
+ *  endpoints can consume them inside the same tx as the doc write.
  *
- * Caller pre-filters non-image inputs; this helper assumes `compressed`
- * is image-typed. Thumb is OPTIONAL on the intent set: HEIC / HEIF
- * pass-throughs and canvas decode failures (see src/utils/image.ts
- * PASSTHROUGH_TYPES) ship `compressed.thumb === null`, so we send only
- * a `full` intent. Worker `buildAttachmentMapValue` then collapses the
- * WishImage thumb fields to the primary blob (`thumbUrl ?? fullUrl`,
- * `thumbPath ?? fullPath`), so the schema's four-fields requirement is
- * satisfied without an actual thumb upload.
- *
- * `expectedCurrentPath`:
- *   - `null`   → first-attach (doc-first create OR detach-then-replace
- *                edge case). Worker expects `image` absent on the doc.
- *   - string   → replace flow; Worker rejects with 409 if doc's actual
- *                current path differs (Tab A vs Tab B drift).
- *
- * Returns void. The wish doc's image field surfaces via the realtime
- * listener once the Worker's tx commits.
- */
-async function uploadWishImage(
-  tripId:              string,
-  wishId:              string,
-  compressed:          CompressedImage,
-  expectedCurrentPath: string | null,
-): Promise<void> {
+ *  Thumb is OPTIONAL: HEIC / HEIF pass-through and canvas-decode
+ *  failures (see src/utils/image.ts PASSTHROUGH_TYPES) ship
+ *  `compressed.thumb === null`, so we send only a `full` intent. The
+ *  Worker's `buildAttachmentMapValue` collapses the WishImage thumb
+ *  fields to the primary blob in that case. */
+async function mintIntentsAndUpload(
+  tripId:     string,
+  wishId:     string,
+  compressed: CompressedImage,
+  mode:       'create' | 'update',
+): Promise<string[]> {
   const { full, thumb } = compressed
   const uploads: UploadIntentsRequest['uploads'] = [
     { kind: 'full', contentType: full.type, size: full.size },
@@ -134,24 +108,18 @@ async function uploadWishImage(
   if (thumb) {
     uploads.push({ kind: 'thumb', contentType: thumb.type, size: thumb.size })
   }
-
   const intents = await requestUploadIntents({
-    tripId, entityType: 'wish', entityId: wishId, uploads,
+    tripId, entityType: 'wish', entityId: wishId, uploads, mode,
   })
   const fullIntent  = intents[0]!
   const thumbIntent = thumb ? intents[1] : undefined
-
   await Promise.all([
     uploadToIntent(fullIntent, full, 'wish-full'),
     thumb && thumbIntent
       ? uploadToIntent(thumbIntent, thumb, 'wish-thumb')
       : Promise.resolve(),
   ])
-
-  await finalizeUploadIntents(tripId, intents.map(i => i.intentId), {
-    mode: 'patch',
-    expectedCurrentPath,
-  })
+  return intents.map(i => i.intentId)
 }
 
 async function deleteWishImage(image: WishImage): Promise<void> {
@@ -162,91 +130,82 @@ async function deleteWishImage(image: WishImage): Promise<void> {
 
 // ─── Write ────────────────────────────────────────────────────────
 
-/** Create a wish. Doc-first ordering: write the wish without image,
- *  THEN upload + finalize so the Worker patches `image` directly. The
- *  earlier upload-then-setDoc flow forced storage.rules to allow a
- *  `!exists(wishDoc)` first-upload exception (any member could write
- *  bytes against a yet-to-be-created wishId). Doc-first lets the
- *  Storage rule be proposer-only with no exceptions.
+/** Create a wish.
  *
- *  All-or-nothing semantics: if the image step fails after setDoc
- *  succeeded, we roll the wish doc back (deleteDoc) before throwing.
- *  Without this, the realtime listener would have already pushed the
- *  just-setDoc'd wish into the TanStack cache; the mutation's onError
- *  rollback only undoes its OWN optimistic patch, not the listener-
- *  driven cache insert. Net effect was: "save failed" toast + the new
- *  wish visible in the list + the user re-pressing save creating a
- *  DUPLICATE wish.
+ *  WITHOUT image (and on non-image fallback): client setDoc — no Worker
+ *  round-trip, text-only is the fast path. firestore.rules (Commit 4)
+ *  permits client wish-create when the `image` field is absent.
  *
- *  Orphan blob cleanup on uploadWishImage failure is handled by the
- *  Worker's intent-expiry cron + orphan-storage-scan -- no client-side
- *  purge ladder. The Worker is the only writer for `image`; a finalize
- *  abort leaves intents 'pending' (and any uploaded blobs orphaned)
- *  which the cron reaps on their 30-min / 24-hour grace windows.
+ *  WITH image: upload-first → POST /wish-file-create. The Worker mints +
+ *  consumes intents AND writes the wish doc with the image populated in
+ *  a single Firestore transaction. The realtime listener sees the wish
+ *  for the first time WITH its image, so the UX is "card materializes
+ *  with photo" instead of the old "blank card → image lands ~200ms
+ *  later" flicker.
+ *
+ *  No partial-state recovery needed: the Worker tx is atomic. If the
+ *  Worker rejects or times out, no doc was written, so the realtime
+ *  listener never fires and the optimistic-rollback in the mutation hook
+ *  cleans the temp row with no orphan to reconcile. Uploaded blobs (if
+ *  any) get reaped by the Worker's intent-expiry + storage-scan cron.
  *
  *  Initial votes = [proposedBy] because their proposal counts as their
- *  own vote — matches typical wishlist UX. */
+ *  own vote — matches typical wishlist UX (stamped Worker-side on the
+ *  WITH-image path, client-side on the no-image path). */
 export async function createWish(
-  tripId: string,
-  input: CreateWishInput,
-  file: File | null,
+  tripId:     string,
+  input:      CreateWishInput,
+  file:       File | null,
   proposedBy: string,
 ): Promise<string> {
-  const [{ db, collection, doc, setDoc, deleteDoc, serverTimestamp }, memberIds] = await Promise.all([
-    getFirebase(),
-    getTripMemberIds(tripId),
-  ])
-  // Wish uses `proposedBy` (domain naming predates createdBy convention) —
-  // auditCreate doesn't fit because of that alias, so spell it out and
-  // let auditUpdate cover the updatedBy half.
+  const { db, collection, doc } = await getFirebase()
+  // Mint the wishId client-side so the Worker can consume intents
+  // bound to a known entityId AND the optimistic-cache temp-row
+  // replacement has a stable target.
   const ref = doc(collection(db, ...P.wishes(tripId)))
-  const basePayload: Record<string, unknown> = {
-    ...stripEmpty(input),
-    tripId,
-    proposedBy,
-    memberIds,
-    votes:     [proposedBy],
-    createdAt: serverTimestamp(),
-    ...auditUpdate(proposedBy, serverTimestamp()),
-  }
-  await setDoc(ref, basePayload)
 
+  // Decide path BEFORE touching Firestore. Compress is the gate: image
+  // input → Worker; non-image fallback → client setDoc (image-only is a
+  // wish-cover contract, and the form UI prevents this case in practice
+  // — but the service degrades cleanly to "wish persists, text-only").
+  let compressed: CompressedImage | null = null
   if (file) {
-    // Whole image step (compress + upload) is rollback-protected. If
-    // compressImage rejects (canvas/encode/File-construction failure)
-    // AFTER setDoc lands, we MUST still delete the orphan doc -- a
-    // surviving doc lets the user's retry create a duplicate wish.
-    // Non-image inputs (PDFs slipping through, decode failures via
-    // PASSTHROUGH) drop silently INSIDE the try: wish covers are
-    // image-only, and on the create path there's no existing image
-    // field for us to clear, so the success path is "wish exists,
-    // text-only" -- no upload, no rollback needed.
-    try {
-      const compressed = await compressImage(file)
-      if (compressed.full.type.startsWith('image/')) {
-        await uploadWishImage(tripId, ref.id, compressed, null)
-      }
-    } catch (e) {
-      captureError(e, { source: 'createWish/imageStep', tripId, wishId: ref.id })
-      // Roll the wish doc back. If failure was during finalize, Worker
-      // tx aborted → no image field landed; if during compress / upload,
-      // nothing reached Firestore. Either way no client-side blob purge
-      // is needed (Worker storage-scan reaps any orphan bytes).
-      let docRollbackOk = true
-      try {
-        await deleteDoc(ref)
-      } catch (cleanupErr) {
-        captureError(cleanupErr, { source: 'createWish/rollback-doc', tripId, wishId: ref.id })
-        docRollbackOk = false
-      }
-      // Promote to typed error when the doc still persists -- caller
-      // hook invalidates the wish query so cache reconciles to truth
-      // state and the user's retry doesn't duplicate the wish.
-      if (!docRollbackOk) {
-        throw new WishCreatePartialError(ref.id, e)
-      }
-      throw e
+    compressed = await compressImage(file)
+    if (!compressed.full.type.startsWith('image/')) {
+      compressed = null
     }
+  }
+
+  if (compressed) {
+    // ── Upload-first + Worker-authoritative create ───────────────
+    const workerBase = requireWorkerWriteBase()
+    const idToken    = await preflightIdToken()
+    const intentIds  = await mintIntentsAndUpload(tripId, ref.id, compressed, 'create')
+    await workerFetch(workerBase, idToken, '/wish-file-create', {
+      tripId,
+      wishId: ref.id,
+      // Worker re-validates body via WishValidationError; stripEmpty
+      // matches the original setDoc payload semantics (no '' / null
+      // fields polluting the doc).
+      wish:   stripEmpty(input),
+      intentIds,
+    })
+  } else {
+    // ── Text-only client setDoc ──────────────────────────────────
+    const memberIds = await getTripMemberIds(tripId)
+    const { setDoc, serverTimestamp } = await getFirebase()
+    // Wish uses `proposedBy` (domain naming predates createdBy
+    // convention) — auditCreate doesn't fit because of that alias, so
+    // spell it out and let auditUpdate cover the updatedBy half.
+    await setDoc(ref, {
+      ...stripEmpty(input),
+      tripId,
+      proposedBy,
+      memberIds,
+      votes:     [proposedBy],
+      createdAt: serverTimestamp(),
+      ...auditUpdate(proposedBy, serverTimestamp()),
+    })
   }
 
   void bumpTripActivity(tripId, 'wish', proposedBy)
@@ -257,26 +216,20 @@ export async function createWish(
  *  Tri-state attachment matches the booking pattern. Only proposer can
  *  call this.
  *
- *  Phase 3.6 split-write ordering:
- *    1. Text patch via updateDoc. Includes `image: deleteField()` for
- *       the null detach case AND for the non-image File fallback
- *       (PDF / undecodable). Replace does NOT include `image` here --
- *       the Worker is the only writer on replace.
- *    2. If attachment is an image File: uploadWishImage(..., existing.path).
- *       Worker patches `image` + updatedBy + updatedAt in its own tx.
- *       expectedCurrentPath catches a concurrent Tab B replace (409
- *       stale-finalize → throw, doc keeps Tab B's value).
- *    3. On combined success: purge the OLD blob if there was one.
+ *  WITH NEW IMAGE (File, image content): single Worker round-trip to
+ *    /wish-file-update — text patch + image lands atomically. No
+ *    separate client updateDoc; rules-tightening (Commit 4) blocks
+ *    arbitrary `image` writes from the client SDK anyway.
  *
- *  Failure semantics:
- *    - Step 1 rejects → throw; doc unchanged, no upload tried.
- *    - Step 2 rejects → throw; text-only edits already saved, image
- *      unchanged. User can retry; the text fields will be re-written
- *      idempotently (same form state) and only the upload retries.
- *    - Step 1 + 2 both succeed → purge OLD via safePurge/_purges. */
+ *  DETACH (attachment === null) and NON-IMAGE File fallback: client
+ *    updateDoc with `image: deleteField()`. Worker not involved. Rules
+ *    permit removing the image field client-side.
+ *
+ *  TEXT-ONLY (attachment === undefined): client updateDoc with the text
+ *    patch only. Image untouched. */
 export async function updateWish(
-  tripId: string,
-  wishId: string,
+  tripId:  string,
+  wishId:  string,
   updates: UpdateWishInput,
   options: {
     uid:            string
@@ -288,6 +241,51 @@ export async function updateWish(
   const validated = validateUpdateOrThrow(UpdateWishSchema, updates, {
     source: 'updateWish', tripId, wishId,
   })
+
+  // Pre-compress to decide path. Non-image File falls back to detach
+  // semantics (clear `image` field, no Worker call).
+  let compressedForUpload: CompressedImage | null = null
+  if (attachment instanceof File) {
+    const compressed = await compressImage(attachment)
+    if (compressed.full.type.startsWith('image/')) {
+      compressedForUpload = compressed
+    }
+  }
+
+  if (compressedForUpload) {
+    // ── Worker-authoritative replace: text + image atomic ────────
+    const workerBase = requireWorkerWriteBase()
+    const idToken    = await preflightIdToken()
+    const intentIds  = await mintIntentsAndUpload(tripId, wishId, compressedForUpload, 'update')
+    await workerFetch(workerBase, idToken, '/wish-file-update', {
+      tripId,
+      wishId,
+      // Worker stamps updatedBy + updatedAt itself; client only sends
+      // validated text fields.
+      patch: validated,
+      intentIds,
+      // Stale-replace guard: tell Worker what `image.path` the editor
+      // loaded with (null = first-attach). If Tab B has already
+      // replaced/detached, Worker returns 409 instead of silently
+      // overwriting Tab B's commit + orphaning Tab B's blob.
+      expectedCurrentPath: existingImage?.path ?? null,
+    })
+    if (existingImage) {
+      await safePurgeWithEnqueueFallback({
+        purge: () => deleteWishImage(existingImage),
+        enqueue: {
+          tripId, collection: 'wishes', entityId: wishId,
+          paths: [...new Set([existingImage.path, existingImage.thumbPath])],
+          source: 'updateWish/purge-old-image',
+        },
+        sentry: { source: 'updateWish/purge-old-image', tripId, wishId },
+      })
+    }
+    void bumpTripActivity(tripId, 'wish', uid)
+    return
+  }
+
+  // ── Client text/detach path (no new image) ─────────────────────
   const { db, doc, updateDoc, deleteField, serverTimestamp } = await getFirebase()
   const patch: Record<string, unknown> = {
     ...stripEmpty(validated),
@@ -298,38 +296,19 @@ export async function updateWish(
       patch[k] = deleteField()
     }
   }
-
-  // Pre-compress when the caller is replacing so we can detect non-
-  // image inputs BEFORE the updateDoc round-trip and roll the image
-  // clear into the same text patch. (Non-image File falls back to a
-  // clear; Worker won't be called.)
-  let compressedForUpload: CompressedImage | null = null
   let imageWillChange = false
   if (attachment === null) {
     patch.image = deleteField()
     imageWillChange = true
   } else if (attachment instanceof File) {
-    const compressed = await compressImage(attachment)
-    if (compressed.full.type.startsWith('image/')) {
-      compressedForUpload = compressed
-      imageWillChange = true
-      // patch.image NOT touched -- Worker writes it
-    } else {
-      patch.image = deleteField()  // PDF / undecodable fallback
-      imageWillChange = true
-    }
+    // Non-image File (PDF / undecodable) fell through to here — treat
+    // as detach (clear image field).
+    patch.image = deleteField()
+    imageWillChange = true
   }
 
   await updateDoc(doc(db, ...P.wish(tripId, wishId)), patch)
 
-  if (compressedForUpload) {
-    // Replace flow: Worker patches `image` (and bumps updatedBy /
-    // updatedAt again). expectedCurrentPath catches Tab B drift.
-    await uploadWishImage(tripId, wishId, compressedForUpload, existingImage?.path ?? null)
-  }
-
-  // Success path -- safe to drop the old blob now if we cleared or
-  // replaced the image field.
   if (existingImage && imageWillChange) {
     await safePurgeWithEnqueueFallback({
       purge: () => deleteWishImage(existingImage),

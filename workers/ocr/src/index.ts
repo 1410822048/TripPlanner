@@ -36,6 +36,13 @@ import {
 }                                                 from './expense-write'
 import { ExpenseValidationError }                 from './expense-validate'
 import {
+  wishFileCreate,
+  wishFileUpdate,
+  WishFileCreateRequestSchema,
+  WishFileUpdateRequestSchema,
+  WishValidationError,
+}                                                 from './wish-write'
+import {
   createUploadIntents,
   finalizeUploadIntents,
   UploadIntentsRequestSchema,
@@ -158,7 +165,9 @@ export default {
     const isExpenseUpdate = url.pathname === '/expense-update'       && request.method === 'POST'
     const isUploadIntents = url.pathname === '/upload-intents'       && request.method === 'POST'
     const isUploadFinal   = url.pathname === '/upload-finalize'      && request.method === 'POST'
-    if (!isOcr && !isCascade && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents && !isUploadFinal) {
+    const isWishCreate    = url.pathname === '/wish-file-create'     && request.method === 'POST'
+    const isWishUpdate    = url.pathname === '/wish-file-update'     && request.method === 'POST'
+    if (!isOcr && !isCascade && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents && !isUploadFinal && !isWishCreate && !isWishUpdate) {
       return json({ error: 'Not found' }, 404, cors)
     }
 
@@ -213,6 +222,8 @@ export default {
                   : isExpenseWrite   ? env.EXPENSE_RATE_LIMITER
                   : isUploadIntents  ? env.EXPENSE_RATE_LIMITER
                   : isUploadFinal    ? env.EXPENSE_RATE_LIMITER
+                  : isWishCreate     ? env.EXPENSE_RATE_LIMITER
+                  : isWishUpdate     ? env.EXPENSE_RATE_LIMITER
                   : env.CASCADE_RATE_LIMITER
     const localResult = await limiter.limit({ key: uid })
     if (!localResult.success) {
@@ -227,12 +238,16 @@ export default {
                       : isExpenseWrite  ? 'expense'
                       : isUploadIntents ? 'upload-intent'
                       : isUploadFinal   ? 'upload-finalize'
+                      : isWishCreate    ? 'wish-write'
+                      : isWishUpdate    ? 'wish-write'
                       : 'cascade'
     const globalLimit = isOcr ? 60
                       : isTripCascade   ? 2
                       : isExpenseWrite  ? 60
                       : isUploadIntents ? 60
                       : isUploadFinal   ? 60
+                      : isWishCreate    ? 60
+                      : isWishUpdate    ? 60
                       : 10
     const globalResult = await checkGlobalRateLimit(
       env.GLOBAL_LIMITER, scope, uid, globalLimit, 60_000,
@@ -300,6 +315,56 @@ export default {
           return json({ error: e.message }, e.status, cors)
         }
         console.error(`[expense-update] internal error: ${(e as Error).message}`)
+        return json({ error: 'Internal error' }, 500, cors)
+      }
+    }
+
+    // ─── /wish-file-create ───────────────────────────────────────────
+    if (isWishCreate) {
+      const parsed = WishFileCreateRequestSchema.safeParse(body)
+      if (!parsed.success) {
+        console.warn(`[wish-file-create] schema fail: ${parsed.error.message.slice(0, 200)}`)
+        return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
+      }
+      try {
+        const result = await wishFileCreate(uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)
+        console.log(`[wish-file-create] uid=${uidTag(uid)} trip=${parsed.data.tripId} wish=${result.wishId}`)
+        return json({ ok: true, ...result }, 200, cors)
+      } catch (e) {
+        if (e instanceof WishValidationError) {
+          console.warn(`[wish-file-create] validation: ${e.field} ${e.message}`)
+          return json({ error: e.message, field: e.field }, 400, cors)
+        }
+        if (e instanceof CascadeError) {
+          console.warn(`[wish-file-create] ${e.status} ${e.message}`)
+          return json({ error: e.message }, e.status, cors)
+        }
+        console.error(`[wish-file-create] internal error: ${(e as Error).message}`)
+        return json({ error: 'Internal error' }, 500, cors)
+      }
+    }
+
+    // ─── /wish-file-update ───────────────────────────────────────────
+    if (isWishUpdate) {
+      const parsed = WishFileUpdateRequestSchema.safeParse(body)
+      if (!parsed.success) {
+        console.warn(`[wish-file-update] schema fail: ${parsed.error.message.slice(0, 200)}`)
+        return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
+      }
+      try {
+        const result = await wishFileUpdate(uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)
+        console.log(`[wish-file-update] uid=${uidTag(uid)} trip=${parsed.data.tripId} wish=${parsed.data.wishId}`)
+        return json(result, 200, cors)
+      } catch (e) {
+        if (e instanceof WishValidationError) {
+          console.warn(`[wish-file-update] validation: ${e.field} ${e.message}`)
+          return json({ error: e.message, field: e.field }, 400, cors)
+        }
+        if (e instanceof CascadeError) {
+          console.warn(`[wish-file-update] ${e.status} ${e.message}`)
+          return json({ error: e.message }, e.status, cors)
+        }
+        console.error(`[wish-file-update] internal error: ${(e as Error).message}`)
         return json({ error: 'Internal error' }, 500, cors)
       }
     }

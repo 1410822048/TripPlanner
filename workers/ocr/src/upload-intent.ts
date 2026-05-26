@@ -129,11 +129,23 @@ export type EntityType = 'expense' | 'booking' | 'wish'
 export type UploadKind = 'full' | 'thumb' | 'pdf'
 
 /** Batch-first request shape: trip-level fields at top (one authz
- *  read pass), per-blob fields inside `uploads[]`. */
+ *  read pass), per-blob fields inside `uploads[]`.
+ *
+ *  Phase 3.7: `mode` distinguishes "intent for a not-yet-existing
+ *  entity doc" (create) from "intent for an existing doc" (update).
+ *  Defaults to 'update' for backward compatibility with pre-3.7
+ *  clients which always called intents AFTER setDoc.
+ *
+ *  Affects wish only at this layer: mode='create' skips the
+ *  wish-doc-exists + proposer check in `authorizeUpload` because
+ *  the wish doc legitimately doesn't exist yet (Worker `/wish-file-
+ *  create` is the writer). booking/expense `authorizeUpload` is
+ *  pure trip-role authz, no doc read, so `mode` is a no-op there. */
 export const UploadIntentsRequestSchema = z.object({
   tripId:     z.string().regex(TripIdRe),
   entityType: z.enum(['expense', 'booking', 'wish']),
   entityId:   z.string().regex(TripIdRe),
+  mode:       z.enum(['create', 'update']).optional(),
   uploads:    z.array(z.object({
     kind:        z.enum(['full', 'thumb', 'pdf']),
     contentType: z.string().min(1).max(80),
@@ -208,6 +220,7 @@ async function authorizeUpload(
   entityType: EntityType,
   entityId:   string,
   callerUid:  string,
+  mode:       'create' | 'update',
 ): Promise<void> {
   // 1. Trip exists + not being cascade-deleted.
   const trip = await tx.get(`trips/${tripId}`)
@@ -220,23 +233,32 @@ async function authorizeUpload(
   const role = readString(member.fields, 'role')
 
   if (entityType === 'wish') {
-    // Wish uploads: any member CAN propose, but uploads must be by
-    // the wish's proposer (doc-first flow → wish doc must already
-    // exist by upload time). Mirrors firestore.rules + the existing
-    // storage.rules `isWishProposer` check.
+    // Wish uploads: any member role can propose.
     if (role !== 'owner' && role !== 'editor' && role !== 'viewer') {
       throw new CascadeError(403, 'caller role invalid')
     }
+    if (mode === 'create') {
+      // Phase 3.7 upload-first flow: the wish doc legitimately
+      // doesn't exist yet -- Worker `/wish-file-create` will
+      // create it in the same tx that consumes these intents.
+      // Skip the wish-doc-exists + proposer check; proposer
+      // identity is `callerUid` by construction at create time
+      // (Worker stamps proposedBy = callerUid in encodeWish).
+      return
+    }
+    // mode='update': wish must exist + caller must be proposer.
+    // Mirrors firestore.rules' proposer-only update gate.
     const wish = await tx.get(`trips/${tripId}/wishes/${entityId}`)
     if (!wish.exists) {
-      throw new CascadeError(404, 'wish doc not found (doc-first flow requires the wish to exist before upload)')
+      throw new CascadeError(404, 'wish doc not found (mode=update requires the wish to exist)')
     }
     const proposer = readString(wish.fields, 'proposedBy')
     if (proposer !== callerUid) {
-      throw new CascadeError(403, 'only the wish proposer can upload its cover')
+      throw new CascadeError(403, 'only the wish proposer can upload a replacement cover')
     }
   } else {
-    // expense / booking: editor or owner only.
+    // expense / booking: editor or owner only. No doc read needed --
+    // role is the sole authz signal regardless of create vs update.
     if (role !== 'owner' && role !== 'editor') {
       throw new CascadeError(403, 'caller role is not owner/editor')
     }
@@ -299,7 +321,11 @@ async function doCreate(
   const projectId   = getProjectId(serviceAccountJson)
 
   return runFirestoreTransaction(accessToken, projectId, async (tx) => {
-    await authorizeUpload(tx, req.tripId, req.entityType, req.entityId, callerUid)
+    // Phase 3.7 default: 'update' preserves pre-3.7 behavior for any
+    // client that doesn't yet send `mode` (existing booking/wish
+    // update flows continue to work unchanged).
+    const mode = req.mode ?? 'update'
+    await authorizeUpload(tx, req.tripId, req.entityType, req.entityId, callerUid, mode)
 
     const expiresAtMs = Date.now() + EXPIRE_MS
     const expiresAt   = new Date(expiresAtMs).toISOString()
@@ -625,11 +651,62 @@ async function consumeIntentInTx(
   }
 }
 
-/** Public consume helper for expense-write: validates one or two
- *  intents (full + optional thumb), enforces same-entity pairing,
- *  and returns the consumed shape ready for receipt-field encoding.
- *  Returns the tx writes to mark all intents used; caller adds them
- *  to its tx commit writes alongside the expense doc write. */
+/** Public consume helper for Worker-side entity write paths
+ *  (expense-create/update, wish-file-create/update, booking-file-
+ *  create/update). Validates one or two intents (full + optional thumb,
+ *  or pdf for booking/expense), enforces same-entity pairing, and
+ *  returns the consumed shape ready for entity-field encoding. Returns
+ *  the tx writes to mark all intents used; caller adds them to its tx
+ *  commit writes alongside the entity doc write.
+ *
+ *  No `allowUsed`: entity doc write is in the SAME tx as consume, so
+ *  idempotency isn't needed (a 2nd attempt would 409 on the entity's
+ *  currentDocument check anyway). Strict 409 on used keeps the error
+ *  reason clean. Idempotent-replay is only relevant on /upload-finalize
+ *  where the doc patch and intent markUsed cross a tx boundary. */
+export async function consumeEntityIntents(
+  tx:           TxContext,
+  intentIds:    string[],
+  callerUid:    string,
+  accessToken:  string,
+  projectId:    string,
+  bucket:       string,
+  expected: {
+    tripId:     string
+    entityType: EntityType
+    entityId:   string
+  },
+): Promise<{ consumed: ConsumedIntent[]; markUsedWrites: TxWrite[] }> {
+  if (intentIds.length === 0) {
+    return { consumed: [], markUsedWrites: [] }
+  }
+  if (intentIds.length > MAX_UPLOADS_PER_REQUEST) {
+    throw new CascadeError(400, `too many intentIds (max ${MAX_UPLOADS_PER_REQUEST})`)
+  }
+  const consumed:        ConsumedIntent[] = []
+  const markUsedWrites:  TxWrite[]        = []
+  for (const intentId of intentIds) {
+    const r = await consumeIntentInTx(
+      tx, intentId, callerUid, accessToken, projectId, bucket,
+      expected.tripId,
+      { tripId: expected.tripId, entityType: expected.entityType, entityId: expected.entityId },
+    )
+    consumed.push(r.consumed)
+    if (r.markUsedWrite) markUsedWrites.push(r.markUsedWrite)
+  }
+  // No duplicate kinds across intents (e.g. two `full`s in the same
+  // entity-create call would double-attach the primary blob).
+  const kinds = consumed.map(c => c.kind)
+  if (new Set(kinds).size !== kinds.length) {
+    throw new CascadeError(400, `duplicate kinds in ${expected.entityType} intent set`)
+  }
+  return { consumed, markUsedWrites }
+}
+
+/** @deprecated use `consumeEntityIntents` with `entityType: 'expense'`.
+ *  Kept as a thin wrapper so the expense-write.ts call site doesn't
+ *  need to thread the entityType through; will be inlined in a future
+ *  cleanup. */
 export async function consumeExpenseIntents(
   tx:           TxContext,
   intentIds:    string[],
@@ -642,34 +719,10 @@ export async function consumeExpenseIntents(
     entityId:  string
   },
 ): Promise<{ consumed: ConsumedIntent[]; markUsedWrites: TxWrite[] }> {
-  if (intentIds.length === 0) {
-    return { consumed: [], markUsedWrites: [] }
-  }
-  if (intentIds.length > MAX_UPLOADS_PER_REQUEST) {
-    throw new CascadeError(400, `too many intentIds (max ${MAX_UPLOADS_PER_REQUEST})`)
-  }
-  const consumed:        ConsumedIntent[] = []
-  const markUsedWrites:  TxWrite[]        = []
-  for (const intentId of intentIds) {
-    // No allowUsed for expense: the expense doc write is in the SAME
-    // tx as consume, so idempotency isn't needed (and a 2nd attempt
-    // would 409 on expense doc currentDocument.exists=false check
-    // anyway). Strict 409 on used keeps the error reason clean.
-    const r = await consumeIntentInTx(
-      tx, intentId, callerUid, accessToken, projectId, bucket,
-      expected.tripId,
-      { tripId: expected.tripId, entityType: 'expense', entityId: expected.entityId },
-    )
-    consumed.push(r.consumed)
-    // markUsedWrite is non-null for the strict (default) consume path.
-    if (r.markUsedWrite) markUsedWrites.push(r.markUsedWrite)
-  }
-  // No duplicate kinds across intents.
-  const kinds = consumed.map(c => c.kind)
-  if (new Set(kinds).size !== kinds.length) {
-    throw new CascadeError(400, 'duplicate kinds in expense intent set')
-  }
-  return { consumed, markUsedWrites }
+  return consumeEntityIntents(
+    tx, intentIds, callerUid, accessToken, projectId, bucket,
+    { tripId: expected.tripId, entityType: 'expense', entityId: expected.entityId },
+  )
 }
 
 // ─── /upload-finalize endpoint (booking + wish only) ───────────────
@@ -762,8 +815,9 @@ function readCurrentThumbPath(
 /** Build the Firestore mapValue payload for a booking/wish attachment
  *  field from the consumed intents. Field-name asymmetry (BookingAttachment
  *  uses fileUrl/filePath/fileType; WishImage uses url/path) is captured
- *  here so the call site stays clean. */
-function buildAttachmentMapValue(
+ *  here so the call site stays clean. Exported for Phase 3.7 wish-write
+ *  (and a coming booking-write) so the encoding contract has one source. */
+export function buildAttachmentMapValue(
   entityType: 'booking' | 'wish',
   primary:    ConsumedIntent,
   thumb:      ConsumedIntent | undefined,

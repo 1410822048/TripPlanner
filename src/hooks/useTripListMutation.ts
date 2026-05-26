@@ -48,7 +48,7 @@ export interface UseTripListMutationOpts<T, Vars> {
   silent?:    boolean
   /** Optional callback that runs AFTER the factory's rollback. Use
    *  when a typed error needs to trigger extra side effects -- e.g.
-   *  invalidating queries when a `WishCreatePartialError` signals
+   *  invalidating queries when a `BookingCreatePartialError` signals
    *  that the optimistic rollback couldn't fully clean server state
    *  and the cache must reconcile from a fresh fetch. */
   onError?:   (err: unknown) => void

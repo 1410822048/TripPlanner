@@ -273,6 +273,81 @@ describe('authorization (expense/booking: editor+; wish: proposer)', () => {
 		).rejects.toMatchObject({ status: 404 })
 	})
 
+	// ─── Phase 3.7 mode='create' (upload-first wish flow) ──────────
+	// The wish doc legitimately doesn't exist yet at intent-mint time;
+	// Worker /wish-file-create creates it in the same tx that consumes
+	// these intents. authorizeUpload must skip the wish-doc-exists +
+	// proposer check on mode='create' (proposer identity is callerUid
+	// by construction). Trip + membership gates still fire.
+	it("mode='create' wish: skips wish-doc-exists check (viewer member, no wish doc seeded → allowed)", async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberDoc('viewer'))
+		// Intentionally do NOT seed the wish doc — authorizeUpload must
+		// not even read it on mode='create'. If it did, the tx mock
+		// would throw "unexpected tx.get" and this test would fail.
+		const result = await createUploadIntents(
+			CALLER_UID,
+			imageFullReq({ entityType: 'wish', mode: 'create' }),
+			SERVICE_ACCOUNT_JSON,
+		)
+		expect(result.intents).toHaveLength(1)
+		// Verify the wish doc path was NOT read in the tx.
+		const wishCalls = txGetSpy!.mock.calls.filter(
+			(c) => c[0] === `trips/${TRIP_ID}/wishes/${ENTITY_ID}`,
+		)
+		expect(wishCalls).toHaveLength(0)
+	})
+
+	it("mode='create' wish: still rejects non-member → 403", async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripDoc())
+		txGetResponses.set(
+			`trips/${TRIP_ID}/members/${CALLER_UID}`,
+			notFoundDoc(`trips/${TRIP_ID}/members/${CALLER_UID}`),
+		)
+		await expect(
+			createUploadIntents(
+				CALLER_UID,
+				imageFullReq({ entityType: 'wish', mode: 'create' }),
+				SERVICE_ACCOUNT_JSON,
+			),
+		).rejects.toMatchObject({ status: 403, message: expect.stringMatching(/member/) })
+	})
+
+	it("mode='create' wish: still rejects cascade-deleting trip → 410", async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripDoc({ deletingAt: true }))
+		await expect(
+			createUploadIntents(
+				CALLER_UID,
+				imageFullReq({ entityType: 'wish', mode: 'create' }),
+				SERVICE_ACCOUNT_JSON,
+			),
+		).rejects.toMatchObject({ status: 410 })
+	})
+
+	it("mode='update' wish (explicit): behaves like default (proposer required)", async () => {
+		// Mirrors the default-mode wish proposer test above but with
+		// mode='update' explicit. Catches regressions where the
+		// explicit-vs-default branch diverges.
+		seedAuthorizedWish()
+		const result = await createUploadIntents(
+			CALLER_UID,
+			imageFullReq({ entityType: 'wish', mode: 'update' }),
+			SERVICE_ACCOUNT_JSON,
+		)
+		expect(result.intents).toHaveLength(1)
+	})
+
+	it("mode='create' expense: no behavior change (no wish-doc read regardless)", async () => {
+		// Sanity-check: mode is a no-op for expense / booking authz.
+		seedAuthorizedExpense()
+		const result = await createUploadIntents(
+			CALLER_UID,
+			imageFullReq({ mode: 'create' }),
+			SERVICE_ACCOUNT_JSON,
+		)
+		expect(result.intents).toHaveLength(1)
+	})
+
 	it('expense + owner role → allowed', async () => {
 		txGetResponses.set(`trips/${TRIP_ID}`, tripDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberDoc('owner'))
