@@ -55,9 +55,9 @@ export interface UseTripListMutationOpts<T, Vars> {
   mutationKey?: readonly unknown[]
   /** Optional callback that runs AFTER the factory's rollback. Use
    *  when a typed error needs to trigger extra side effects -- e.g.
-   *  invalidating queries when a `BookingCreatePartialError` signals
-   *  that the optimistic rollback couldn't fully clean server state
-   *  and the cache must reconcile from a fresh fetch. */
+   *  invalidating queries on a partial-failure signal so the cache
+   *  reconciles from a fresh fetch instead of trusting the optimistic
+   *  rollback alone. */
   onError?:   (err: unknown) => void
 }
 

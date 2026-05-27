@@ -1,0 +1,73 @@
+// src/services/uploadIntentEntity.ts
+// Phase 3.7 shared "mint intents → upload full + optional thumb"
+// composer. Booking, wish, and expense all repeat this exact 4-step
+// dance (decide primary kind from contentType, push optional thumb,
+// requestUploadIntents, parallel uploadToIntent with kind-scoped log
+// label). This helper consolidates the plumbing; entity-shaped concerns
+// (which Worker endpoint, body schema, rollback policy, purge ladder)
+// stay at each feature service.
+//
+// Lives in its own file (not inline in uploadIntent.ts) so feature-level
+// service tests can keep `vi.mock('@/services/uploadIntent', ...)` to
+// stub the primitives while the real helper continues to exercise the
+// "uploads array + intent pairing + label" plumbing. Co-locating the
+// helper with the primitives would short-circuit those mocks via ESM
+// intra-module bindings.
+
+import {
+  requestUploadIntents,
+  uploadToIntent,
+  type IntentEntityType,
+  type IntentKind,
+  type UploadIntentsRequest,
+} from './uploadIntent'
+import type { CompressedImage } from '@/utils/image'
+
+/**
+ * Mint upload intents + upload the compressed primary (and optional
+ * thumb). Returns intentIds for the Worker call AND paths so callers
+ * with explicit-rollback policy (expense) can address each blob; the
+ * cron-rollback callers (booking / wish) can ignore the paths.
+ *
+ * Primary kind is `'pdf'` for `application/pdf`, `'full'` otherwise.
+ * Thumb is optional -- HEIC/HEIF passthrough and PDF receipts ship
+ * `compressed.thumb === undefined`, in which case only the primary
+ * intent is minted and uploaded.
+ *
+ * The label passed to uploadToIntent is `${entityType}-${primaryKind}`
+ * for the primary (`booking-full`, `expense-pdf`, etc.) and
+ * `${entityType}-thumb` for the thumb -- only used for timeout error
+ * messages and Sentry tagging, not load-bearing.
+ */
+export async function mintAndUploadEntityIntents(args: {
+  tripId:     string
+  entityType: IntentEntityType
+  entityId:   string
+  compressed: CompressedImage
+  mode?:      'create' | 'update'
+}): Promise<{ intentIds: string[]; paths: string[] }> {
+  const { tripId, entityType, entityId, compressed, mode } = args
+  const { full, thumb } = compressed
+  const primaryKind: IntentKind = full.type === 'application/pdf' ? 'pdf' : 'full'
+  const uploads: UploadIntentsRequest['uploads'] = [
+    { kind: primaryKind, contentType: full.type, size: full.size },
+  ]
+  if (thumb) {
+    uploads.push({ kind: 'thumb', contentType: thumb.type, size: thumb.size })
+  }
+  const intents = await requestUploadIntents({
+    tripId, entityType, entityId, uploads, mode,
+  })
+  const fullIntent  = intents[0]!
+  const thumbIntent = thumb ? intents[1] : undefined
+  await Promise.all([
+    uploadToIntent(fullIntent, full, `${entityType}-${primaryKind}`),
+    thumb && thumbIntent
+      ? uploadToIntent(thumbIntent, thumb, `${entityType}-thumb`)
+      : Promise.resolve(),
+  ])
+  return {
+    intentIds: intents.map(i => i.intentId),
+    paths:     intents.map(i => i.path),
+  }
+}

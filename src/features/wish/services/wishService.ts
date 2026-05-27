@@ -11,7 +11,7 @@
 //     (image populated) in a single Firestore transaction. The client
 //     never calls setDoc on this path. Eliminates the old doc-first
 //     "blank card → image lands ~200ms later" listener flicker AND
-//     removes the WishCreatePartialError half-state that the old
+//     removes the partial-failure half-state that the old
 //     compress-fails-after-setDoc rollback dance needed.
 //   - updateWish → POST /wish-file-update. Worker writes text patch +
 //     image in the same tx. Detach (attachment=null) and non-image
@@ -31,11 +31,7 @@ import { deleteStorageObject } from '@/services/storageDelete'
 import { P } from '@/services/paths'
 import { compressImage, type CompressedImage } from '@/utils/image'
 import { stripEmpty } from '@/utils/stripEmpty'
-import {
-  requestUploadIntents,
-  uploadToIntent,
-  type UploadIntentsRequest,
-} from '@/services/uploadIntent'
+import { mintAndUploadEntityIntents } from '@/services/uploadIntentEntity'
 import {
   requireWorkerWriteBase, preflightIdToken, workerFetch,
 } from '@/services/workerBase'
@@ -85,42 +81,6 @@ export const getWishesByTrip = listServices.fetch
 export const subscribeToWishes = listServices.subscribe
 
 // ─── Storage helpers ──────────────────────────────────────────────
-
-/** Mint intents + upload the compressed image variants. Returns the
- *  intentIds in [full, thumb?] order so the Worker `/wish-file-*`
- *  endpoints can consume them inside the same tx as the doc write.
- *
- *  Thumb is OPTIONAL: HEIC / HEIF pass-through and canvas-decode
- *  failures (see src/utils/image.ts PASSTHROUGH_TYPES) ship
- *  `compressed.thumb === null`, so we send only a `full` intent. The
- *  Worker's `buildAttachmentMapValue` collapses the WishImage thumb
- *  fields to the primary blob in that case. */
-async function mintIntentsAndUpload(
-  tripId:     string,
-  wishId:     string,
-  compressed: CompressedImage,
-  mode:       'create' | 'update',
-): Promise<string[]> {
-  const { full, thumb } = compressed
-  const uploads: UploadIntentsRequest['uploads'] = [
-    { kind: 'full', contentType: full.type, size: full.size },
-  ]
-  if (thumb) {
-    uploads.push({ kind: 'thumb', contentType: thumb.type, size: thumb.size })
-  }
-  const intents = await requestUploadIntents({
-    tripId, entityType: 'wish', entityId: wishId, uploads, mode,
-  })
-  const fullIntent  = intents[0]!
-  const thumbIntent = thumb ? intents[1] : undefined
-  await Promise.all([
-    uploadToIntent(fullIntent, full, 'wish-full'),
-    thumb && thumbIntent
-      ? uploadToIntent(thumbIntent, thumb, 'wish-thumb')
-      : Promise.resolve(),
-  ])
-  return intents.map(i => i.intentId)
-}
 
 async function deleteWishImage(image: WishImage): Promise<void> {
   // Set() dedupes when fullPath == thumbPath (some shapes had fall-through).
@@ -180,7 +140,9 @@ export async function createWish(
     // ── Upload-first + Worker-authoritative create ───────────────
     const workerBase = requireWorkerWriteBase()
     const idToken    = await preflightIdToken()
-    const intentIds  = await mintIntentsAndUpload(tripId, ref.id, compressed, 'create')
+    const { intentIds } = await mintAndUploadEntityIntents({
+      tripId, entityType: 'wish', entityId: ref.id, compressed, mode: 'create',
+    })
     await workerFetch(workerBase, idToken, '/wish-file-create', {
       tripId,
       wishId: ref.id,
@@ -256,7 +218,9 @@ export async function updateWish(
     // ── Worker-authoritative replace: text + image atomic ────────
     const workerBase = requireWorkerWriteBase()
     const idToken    = await preflightIdToken()
-    const intentIds  = await mintIntentsAndUpload(tripId, wishId, compressedForUpload, 'update')
+    const { intentIds } = await mintAndUploadEntityIntents({
+      tripId, entityType: 'wish', entityId: wishId, compressed: compressedForUpload, mode: 'update',
+    })
     await workerFetch(workerBase, idToken, '/wish-file-update', {
       tripId,
       wishId,
