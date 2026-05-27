@@ -13,14 +13,26 @@
 //                                P1 accepted-risk. Other subcollections
 //                                still use ordinary canWrite-style
 //                                delete rules for normal editing UX.
+//   POST /upload-intents       — mint Worker-issued upload intents for
+//                                Firebase Storage uploads (Phase 3.5).
+//   POST /expense-create       — Worker-authoritative expense create
+//   POST /expense-update         + update, consuming intentIds atomically
+//                                with the doc write (Phase 3.5+).
+//   POST /wish-file-create     — Worker-authoritative wish create + update
+//   POST /wish-file-update       with image attachment (Phase 3.7).
+//   POST /booking-file-create  — Worker-authoritative booking create + update
+//   POST /booking-file-update    with file attachment (Phase 3.7).
 //
 // Scheduled:
 //   Daily UTC 03:00 — purge expense receipts that have been soft-
-//                     deleted for more than 10 days.
+//                     deleted for more than 10 days, drain orphan
+//                     purges, scan orphan Storage, purge expired
+//                     upload intents.
 //
 // All non-matching requests get a 404. CORS preflight (OPTIONS) is
-// handled inline. No router lib needed — three routes don't earn the
-// bundle bloat.
+// handled inline. Hand-rolled `pathname === ...` dispatch — a router
+// lib isn't worth the bundle cost for ~10 endpoints with bespoke
+// auth/rate-limit/Zod pipelines each.
 import { verifyFirebaseToken, extractBearerToken } from './auth'
 import { extractReceiptItems, GeminiError }       from './gemini'
 import { OcrRequestSchema }                       from './schema'
