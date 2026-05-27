@@ -66,6 +66,12 @@ import {
   UploadIntentsRequestSchema,
 }                                                 from './upload-intent'
 import { checkGlobalRateLimit }                   from './rate-limiter'
+import {
+  handleJsonRoute,
+  validationErrorCatcher,
+  json,
+  uidTag,
+}                                                 from './route-dispatch'
 
 export { GlobalRateLimiter } from './rate-limiter'
 
@@ -147,21 +153,6 @@ function corsHeaders(env: WorkerEnv, originHeader: string | null): Record<string
     'Access-Control-Max-Age':       '86400',
     'Vary':                          'Origin',
   }
-}
-
-function json(body: unknown, status: number, headers: Record<string, string>): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...headers, 'Content-Type': 'application/json' },
-  })
-}
-
-/** Truncated uid for logs. Full Firebase uids are 28 chars; logs end up
- *  in Workers tail / observability storage and we don't need full uids
- *  to diagnose abuse — the prefix is enough to correlate without
- *  retaining a fully-identifying token. */
-function uidTag(uid: string): string {
-  return uid.slice(0, 6) + '…'
 }
 
 export default {
@@ -290,251 +281,100 @@ export default {
       return json({ error: 'Invalid JSON' }, 400, cors)
     }
 
-    // ─── /expense-create ─────────────────────────────────────────────
-    if (isExpenseCreate) {
-      const parsed = ExpenseCreateRequestSchema.safeParse(body)
-      if (!parsed.success) {
-        console.warn(`[expense-create] schema fail: ${parsed.error.message.slice(0, 200)}`)
-        return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
-      }
-      try {
-        const result = await expenseCreate(uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)
-        console.log(`[expense-create] uid=${uidTag(uid)} trip=${parsed.data.tripId} exp=${result.expenseId}`)
-        return json({ ok: true, ...result }, 200, cors)
-      } catch (e) {
-        if (e instanceof ExpenseValidationError) {
-          console.warn(`[expense-create] validation: ${e.field} ${e.message}`)
-          return json({ error: e.message, field: e.field }, 400, cors)
-        }
-        if (e instanceof CascadeError) {
-          console.warn(`[expense-create] ${e.status} ${e.message}`)
-          return json({ error: e.message }, e.status, cors)
-        }
-        console.error(`[expense-create] internal error: ${(e as Error).message}`)
-        return json({ error: 'Internal error' }, 500, cors)
-      }
-    }
+    // ─── Per-route dispatch ──────────────────────────────────────────
+    // Each route shares the same parse → handle → catch shape; see
+    // route-dispatch.ts for the wrapper contract. Per-route variation
+    // is captured by 4 callbacks: handle, formatLog, formatResponse,
+    // catchDomain. Auth + rate-limit + body-size + CORS handled above.
 
-    // ─── /expense-update ─────────────────────────────────────────────
-    if (isExpenseUpdate) {
-      const parsed = ExpenseUpdateRequestSchema.safeParse(body)
-      if (!parsed.success) {
-        console.warn(`[expense-update] schema fail: ${parsed.error.message.slice(0, 200)}`)
-        return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
-      }
-      try {
-        const result = await expenseUpdate(uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)
-        console.log(`[expense-update] uid=${uidTag(uid)} trip=${parsed.data.tripId} exp=${parsed.data.expenseId}`)
-        return json(result, 200, cors)
-      } catch (e) {
-        if (e instanceof ExpenseValidationError) {
-          console.warn(`[expense-update] validation: ${e.field} ${e.message}`)
-          return json({ error: e.message, field: e.field }, 400, cors)
-        }
-        if (e instanceof CascadeError) {
-          console.warn(`[expense-update] ${e.status} ${e.message}`)
-          return json({ error: e.message }, e.status, cors)
-        }
-        console.error(`[expense-update] internal error: ${(e as Error).message}`)
-        return json({ error: 'Internal error' }, 500, cors)
-      }
-    }
+    if (isExpenseCreate) return handleJsonRoute({
+      endpoint:       'expense-create', body, cors, uid,
+      schema:         ExpenseCreateRequestSchema,
+      handle:         data => expenseCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
+      formatLog:      (data, result) => `trip=${data.tripId} exp=${result.expenseId}`,
+      formatResponse: result => ({ ok: true, ...result }),
+      catchDomain:    validationErrorCatcher(ExpenseValidationError),
+    })
 
-    // ─── /wish-file-create ───────────────────────────────────────────
-    if (isWishCreate) {
-      const parsed = WishFileCreateRequestSchema.safeParse(body)
-      if (!parsed.success) {
-        console.warn(`[wish-file-create] schema fail: ${parsed.error.message.slice(0, 200)}`)
-        return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
-      }
-      try {
-        const result = await wishFileCreate(uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)
-        console.log(`[wish-file-create] uid=${uidTag(uid)} trip=${parsed.data.tripId} wish=${result.wishId}`)
-        return json({ ok: true, ...result }, 200, cors)
-      } catch (e) {
-        if (e instanceof WishValidationError) {
-          console.warn(`[wish-file-create] validation: ${e.field} ${e.message}`)
-          return json({ error: e.message, field: e.field }, 400, cors)
-        }
-        if (e instanceof CascadeError) {
-          console.warn(`[wish-file-create] ${e.status} ${e.message}`)
-          return json({ error: e.message }, e.status, cors)
-        }
-        console.error(`[wish-file-create] internal error: ${(e as Error).message}`)
-        return json({ error: 'Internal error' }, 500, cors)
-      }
-    }
+    if (isExpenseUpdate) return handleJsonRoute({
+      endpoint:    'expense-update', body, cors, uid,
+      schema:      ExpenseUpdateRequestSchema,
+      handle:      data => expenseUpdate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
+      formatLog:   data => `trip=${data.tripId} exp=${data.expenseId}`,
+      catchDomain: validationErrorCatcher(ExpenseValidationError),
+    })
 
-    // ─── /wish-file-update ───────────────────────────────────────────
-    if (isWishUpdate) {
-      const parsed = WishFileUpdateRequestSchema.safeParse(body)
-      if (!parsed.success) {
-        console.warn(`[wish-file-update] schema fail: ${parsed.error.message.slice(0, 200)}`)
-        return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
-      }
-      try {
-        const result = await wishFileUpdate(uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)
-        console.log(`[wish-file-update] uid=${uidTag(uid)} trip=${parsed.data.tripId} wish=${parsed.data.wishId}`)
-        return json(result, 200, cors)
-      } catch (e) {
-        if (e instanceof WishValidationError) {
-          console.warn(`[wish-file-update] validation: ${e.field} ${e.message}`)
-          return json({ error: e.message, field: e.field }, 400, cors)
-        }
-        if (e instanceof CascadeError) {
-          console.warn(`[wish-file-update] ${e.status} ${e.message}`)
-          return json({ error: e.message }, e.status, cors)
-        }
-        console.error(`[wish-file-update] internal error: ${(e as Error).message}`)
-        return json({ error: 'Internal error' }, 500, cors)
-      }
-    }
+    if (isWishCreate) return handleJsonRoute({
+      endpoint:       'wish-file-create', body, cors, uid,
+      schema:         WishFileCreateRequestSchema,
+      handle:         data => wishFileCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
+      formatLog:      (data, result) => `trip=${data.tripId} wish=${result.wishId}`,
+      formatResponse: result => ({ ok: true, ...result }),
+      catchDomain:    validationErrorCatcher(WishValidationError),
+    })
 
-    // ─── /booking-file-create ────────────────────────────────────────
-    if (isBookingCreate) {
-      const parsed = BookingFileCreateRequestSchema.safeParse(body)
-      if (!parsed.success) {
-        console.warn(`[booking-file-create] schema fail: ${parsed.error.message.slice(0, 200)}`)
-        return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
-      }
-      try {
-        const result = await bookingFileCreate(uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)
-        console.log(`[booking-file-create] uid=${uidTag(uid)} trip=${parsed.data.tripId} booking=${result.bookingId}`)
-        return json({ ok: true, ...result }, 200, cors)
-      } catch (e) {
-        if (e instanceof BookingValidationError) {
-          console.warn(`[booking-file-create] validation: ${e.field} ${e.message}`)
-          return json({ error: e.message, field: e.field }, 400, cors)
-        }
-        if (e instanceof CascadeError) {
-          console.warn(`[booking-file-create] ${e.status} ${e.message}`)
-          return json({ error: e.message }, e.status, cors)
-        }
-        console.error(`[booking-file-create] internal error: ${(e as Error).message}`)
-        return json({ error: 'Internal error' }, 500, cors)
-      }
-    }
+    if (isWishUpdate) return handleJsonRoute({
+      endpoint:    'wish-file-update', body, cors, uid,
+      schema:      WishFileUpdateRequestSchema,
+      handle:      data => wishFileUpdate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
+      formatLog:   data => `trip=${data.tripId} wish=${data.wishId}`,
+      catchDomain: validationErrorCatcher(WishValidationError),
+    })
 
-    // ─── /booking-file-update ────────────────────────────────────────
-    if (isBookingUpdate) {
-      const parsed = BookingFileUpdateRequestSchema.safeParse(body)
-      if (!parsed.success) {
-        console.warn(`[booking-file-update] schema fail: ${parsed.error.message.slice(0, 200)}`)
-        return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
-      }
-      try {
-        const result = await bookingFileUpdate(uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)
-        console.log(`[booking-file-update] uid=${uidTag(uid)} trip=${parsed.data.tripId} booking=${parsed.data.bookingId}`)
-        return json(result, 200, cors)
-      } catch (e) {
-        if (e instanceof BookingValidationError) {
-          console.warn(`[booking-file-update] validation: ${e.field} ${e.message}`)
-          return json({ error: e.message, field: e.field }, 400, cors)
-        }
-        if (e instanceof CascadeError) {
-          console.warn(`[booking-file-update] ${e.status} ${e.message}`)
-          return json({ error: e.message }, e.status, cors)
-        }
-        console.error(`[booking-file-update] internal error: ${(e as Error).message}`)
-        return json({ error: 'Internal error' }, 500, cors)
-      }
-    }
+    if (isBookingCreate) return handleJsonRoute({
+      endpoint:       'booking-file-create', body, cors, uid,
+      schema:         BookingFileCreateRequestSchema,
+      handle:         data => bookingFileCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
+      formatLog:      (data, result) => `trip=${data.tripId} booking=${result.bookingId}`,
+      formatResponse: result => ({ ok: true, ...result }),
+      catchDomain:    validationErrorCatcher(BookingValidationError),
+    })
 
-    // ─── /upload-intents ─────────────────────────────────────────────
-    if (isUploadIntents) {
-      const parsed = UploadIntentsRequestSchema.safeParse(body)
-      if (!parsed.success) {
-        console.warn(`[upload-intents] schema fail: ${parsed.error.message.slice(0, 200)}`)
-        return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
-      }
-      try {
-        const result = await createUploadIntents(uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT)
-        console.log(
-          `[upload-intents] uid=${uidTag(uid)} trip=${parsed.data.tripId} ` +
-          `entity=${parsed.data.entityType}/${parsed.data.entityId} ` +
-          `count=${result.intents.length}`,
-        )
-        return json(result, 200, cors)
-      } catch (e) {
-        if (e instanceof CascadeError) {
-          console.warn(`[upload-intents] ${e.status} ${e.message}`)
-          return json({ error: e.message }, e.status, cors)
-        }
-        console.error(`[upload-intents] internal error: ${(e as Error).message}`)
-        return json({ error: 'Internal error' }, 500, cors)
-      }
-    }
+    if (isBookingUpdate) return handleJsonRoute({
+      endpoint:    'booking-file-update', body, cors, uid,
+      schema:      BookingFileUpdateRequestSchema,
+      handle:      data => bookingFileUpdate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
+      formatLog:   data => `trip=${data.tripId} booking=${data.bookingId}`,
+      catchDomain: validationErrorCatcher(BookingValidationError),
+    })
 
-    // ─── /cascade-trip-delete ─────────────────────────────────────────
-    if (isTripCascade) {
-      const parsed = TripDeleteRequestSchema.safeParse(body)
-      if (!parsed.success) {
-        console.warn(`[trip-cascade] schema fail: ${parsed.error.message.slice(0, 200)}`)
-        return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
-      }
-      try {
-        const result = await cascadeTripDelete(
-          uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET,
-        )
-        console.log(
-          `[trip-cascade] uid=${uidTag(uid)} trip=${parsed.data.tripId} ` +
-          `docs=${result.deletedDocs} objects=${result.deletedObjects}`,
-        )
-        return json({ ok: true, ...result }, 200, cors)
-      } catch (e) {
-        if (e instanceof CascadeError) {
-          console.warn(`[trip-cascade] ${e.status} ${e.message}`)
-          return json({ error: e.message }, e.status, cors)
-        }
-        console.error(`[trip-cascade] internal error: ${(e as Error).message}`)
-        return json({ error: 'Internal error' }, 500, cors)
-      }
-    }
+    if (isUploadIntents) return handleJsonRoute({
+      endpoint:  'upload-intents', body, cors, uid,
+      schema:    UploadIntentsRequestSchema,
+      handle:    data => createUploadIntents(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog: (data, result) =>
+        `trip=${data.tripId} entity=${data.entityType}/${data.entityId} count=${result.intents.length}`,
+    })
 
-    // ─── /cascade-member ──────────────────────────────────────────────
-    if (isCascade) {
-      const parsed = CascadeRequestSchema.safeParse(body)
-      if (!parsed.success) {
-        console.warn(`[cascade] schema fail: ${parsed.error.message.slice(0, 200)}`)
-        return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
-      }
-      try {
-        const result = await cascadeMemberAdd(uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT)
-        console.log(`[cascade] uid=${uidTag(uid)} trip=${parsed.data.tripId} updated=${result.updatedDocs}`)
-        return json({ ok: true, ...result }, 200, cors)
-      } catch (e) {
-        if (e instanceof CascadeError) {
-          console.warn(`[cascade] ${e.status} ${e.message}`)
-          return json({ error: e.message }, e.status, cors)
-        }
-        console.error(`[cascade] internal error: ${(e as Error).message}`)
-        return json({ error: 'Internal error' }, 500, cors)
-      }
-    }
+    if (isTripCascade) return handleJsonRoute({
+      endpoint:       'trip-cascade', body, cors, uid,
+      schema:         TripDeleteRequestSchema,
+      handle:         data => cascadeTripDelete(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
+      formatLog:      (data, result) => `trip=${data.tripId} docs=${result.deletedDocs} objects=${result.deletedObjects}`,
+      formatResponse: result => ({ ok: true, ...result }),
+    })
 
-    // ─── /ocr ─────────────────────────────────────────────────────────
-    const parsed = OcrRequestSchema.safeParse(body)
-    if (!parsed.success) {
-      console.warn(`[body] schema fail: ${parsed.error.message.slice(0, 200)}`)
-      return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
-    }
-    try {
-      const result = await extractReceiptItems(
-        parsed.data.image,
-        parsed.data.mimeType,
-        parsed.data.currency,
-        env.GEMINI_API_KEY,
-      )
-      console.log(`[ocr] returning ${result.items.length} items to uid=${uidTag(uid)}`)
-      return json(result, 200, cors)
-    } catch (e) {
-      if (e instanceof GeminiError) {
-        console.warn(`[ocr] GeminiError status=${e.status} msg=${e.message}`)
-        return json({ error: e.message }, e.status, cors)
-      }
-      console.error(`[ocr] internal error: ${(e as Error).message}`)
-      return json({ error: 'Internal error' }, 500, cors)
-    }
+    if (isCascade) return handleJsonRoute({
+      endpoint:       'cascade', body, cors, uid,
+      schema:         CascadeRequestSchema,
+      handle:         data => cascadeMemberAdd(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog:      (data, result) => `trip=${data.tripId} updated=${result.updatedDocs}`,
+      formatResponse: result => ({ ok: true, ...result }),
+    })
+
+    return handleJsonRoute({
+      endpoint:  'ocr', body, cors, uid,
+      schema:    OcrRequestSchema,
+      handle:    data => extractReceiptItems(data.image, data.mimeType, data.currency, env.GEMINI_API_KEY),
+      formatLog: (_data, result) => `items=${result.items.length}`,
+      catchDomain: e => e instanceof GeminiError
+        ? {
+            log:    `GeminiError status=${e.status} msg=${e.message}`,
+            body:   { error: e.message },
+            status: e.status,
+          }
+        : null,
+    })
   },
 
   // ─── Cron: 10-day receipt purge ───────────────────────────────────
