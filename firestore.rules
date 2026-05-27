@@ -695,21 +695,27 @@ service cloud.firestore {
                       && memberIdsMatchTrip(tripId)
                       && request.resource.data.title is string
                       && request.resource.data.title.size() > 0
-                      && request.resource.data.title.size() <= 200
+                      && request.resource.data.title.size() <= 100
                       && request.resource.data.category in ['place', 'food']
                       // `is string` guards before `.size()` because .size()
                       // also works on lists/maps -- without the type check
-                      // a payload like `description: [1..1000]` would pass
+                      // a payload like `description: [1..500]` would pass
                       // the size cap while corrupting the doc shape.
+                      // Caps mirror src/types/wish.ts (description 500 /
+                      // address 200 / link 500). Three-way lockstep:
+                      // even though Worker /wish-file-* paths only run
+                      // for image-bearing writes, text-only updates go
+                      // client setDoc → rules-as-only-gate. Looser rules
+                      // = raw-SDK bypasses the form cap.
                       && (!('description' in request.resource.data)
                             || (request.resource.data.description is string
-                                && request.resource.data.description.size() <= 1000))
+                                && request.resource.data.description.size() <= 500))
                       && (!('address' in request.resource.data)
                             || (request.resource.data.address is string
-                                && request.resource.data.address.size() <= 400))
+                                && request.resource.data.address.size() <= 200))
                       && (!('link' in request.resource.data)
                             || (request.resource.data.link is string
-                                && request.resource.data.link.size() <= 1000))
+                                && request.resource.data.link.size() <= 500))
                       // image is Worker-authoritative (Phase 3.7): text-only
                       // wishes go through this client setDoc path; wishes
                       // with an image MUST route through Worker
@@ -740,17 +746,17 @@ service cloud.firestore {
               && request.resource.data.updatedBy == uid()
               && request.resource.data.title is string
               && request.resource.data.title.size() > 0
-              && request.resource.data.title.size() <= 200
+              && request.resource.data.title.size() <= 100
               && request.resource.data.category in ['place', 'food']
               && (!('description' in request.resource.data)
                     || (request.resource.data.description is string
-                        && request.resource.data.description.size() <= 1000))
+                        && request.resource.data.description.size() <= 500))
               && (!('address' in request.resource.data)
                     || (request.resource.data.address is string
-                        && request.resource.data.address.size() <= 400))
+                        && request.resource.data.address.size() <= 200))
               && (!('link' in request.resource.data)
                     || (request.resource.data.link is string
-                        && request.resource.data.link.size() <= 1000))
+                        && request.resource.data.link.size() <= 500))
               // image is Worker-authoritative on update too. Client may
               // detach via deleteField() OR leave the field as-is; any
               // image WRITE (replace / first-attach) routes through

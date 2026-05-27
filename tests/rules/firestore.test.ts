@@ -705,6 +705,73 @@ describe('/trips/{tripId}/wishes vote toggle', () => {
       }),
     )
   })
+
+  // SECURITY: same three-way cap lockstep as booking — wish text-only
+  // create/update goes through this client setDoc path (only image
+  // create/update is Worker-authoritative). Rules looser than client
+  // Zod (`src/types/wish.ts`) lets a raw-SDK writer bypass the form
+  // cap. Tightened 2026-05-27 to match Zod: title 100, description
+  // 500, address 200, link 500.
+  test('wish create with title over 100 chars is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-cap-title'), {
+        tripId: TRIP_ID, category: 'place', title: 'x'.repeat(101),
+        proposedBy: VIEWER_UID, updatedBy: VIEWER_UID, votes: [VIEWER_UID],
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('wish create with address over 200 chars is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-cap-addr'), {
+        tripId: TRIP_ID, category: 'place', title: 'X',
+        proposedBy: VIEWER_UID, updatedBy: VIEWER_UID, votes: [VIEWER_UID],
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        address: 'x'.repeat(201),
+      }),
+    )
+  })
+
+  test('wish create with link over 500 chars is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-cap-link'), {
+        tripId: TRIP_ID, category: 'place', title: 'X',
+        proposedBy: VIEWER_UID, updatedBy: VIEWER_UID, votes: [VIEWER_UID],
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        link: 'x'.repeat(501),
+      }),
+    )
+  })
+
+  test('wish update with title over 100 chars is rejected (proposer path)', async () => {
+    // Seeded WISH_ID's proposer is EDITOR_UID. The proposer-path size
+    // predicate (firestore.rules lines 741-753) was tightened
+    // 2026-05-27 — this pins both create + update to the same cap.
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
+        title:     'x'.repeat(101),
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('wish update with description over 500 chars is rejected (proposer path)', async () => {
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
+        description: 'x'.repeat(501),
+        updatedBy:   EDITOR_UID,
+        updatedAt:   serverTimestamp(),
+      }),
+    )
+  })
 })
 
 // ─── Expense create is Worker-only (allow create: if false) ────────
