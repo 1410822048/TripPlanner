@@ -104,6 +104,15 @@ export interface BalanceResult {
    *  as `balances`. Returned so callers don't need a separate
    *  `expandWithGhosts` pass over the same expenses/settlements. */
   participants: TripMember[]
+  /** Step-4 normalized remaining debt edges: `pairwise[from][to] = amount`
+   *  represents real outstanding pair debt after settlement application
+   *  and opposite-direction cancellation. Consumed by `computeSettlements`
+   *  to produce suggestion list; surfaced so callers re-use the same
+   *  edges the algorithm internally derived. Worker validation reads the
+   *  same edges to gate `amount <= remaining` — passing the same shape
+   *  out (instead of recomputing pair-wise elsewhere) keeps UI suggestion
+   *  / Worker reject semantics in lockstep. */
+  pairwise: Record<string, Record<string, number>>
 }
 
 const EPS = 0.5
@@ -376,7 +385,7 @@ export function computeBalancesFull(
   }))
 
   const participants = ghosts.length === 0 ? members : [...members, ...ghosts]
-  return { balances, orphans, participants }
+  return { balances, orphans, participants, pairwise: normalized }
 }
 
 /**
@@ -502,38 +511,34 @@ export function computeBalances(
 }
 
 /**
- * 貪心算法 — 每一步把「最大應收」與「最大應付」配對。
- * 結果最多 N-1 筆(N = 有非零餘額的人數),且多數情況更少。
- * 因為走 net 不走 pairwise,自然能解 3-人 cycle 這種 normalize 解不掉
- * 的優化情況(例:A→B→C→A 各 10,net 全 0,suggestion 為空)。
+ * 把 normalized remaining debt edges 平鋪成 settlement suggestion list。
+ *
+ * 每條 `pairwise[from][to] > 0` 邊各自產生一筆建議,**不做 multi-hop
+ * 收斂**。A→B=10、B→C=10 會建議兩筆(不會合成 A→C)。
+ *
+ * `pair-based suggestions intentionally prioritize Worker-verifiable
+ * semantics over minimum-transfer optimization`:
+ *   - UI 顯示的每一筆建議,Worker 寫入時都對得到一條真實的 pair debt
+ *     edge,`amount <= remaining[from][to]` 一定成立,絕無「UI 建議的
+ *     金額被 Worker 拒」的 drift。
+ *   - 代價是某些長鏈情境會多列幾筆(例 3-人非平衡 cycle A→B=10、
+ *     B→C=10、C→A=10:這版產 3 筆,舊版 net-greedy 產 0 筆)。對使用
+ *     者來說每筆都連得到具體 expense,可審計性 > 條數最小化。
+ *
+ * 排序:by from then to,讓輸出在跨 reload / 跨 trip 之間穩定。
  */
-export function computeSettlements(balances: MemberBalance[]): Settlement[] {
-  // Single partition pass — was two `.filter().map()` chains that walked
-  // `balances` twice. N≤10 in practice so the speedup is unmeasurable,
-  // but the rewrite reads as one intent (split into +/− buckets) rather
-  // than two near-duplicate stanzas.
-  const creditors: { id: string; amt: number }[] = []
-  const debtors:   { id: string; amt: number }[] = []
-  for (const b of balances) {
-    if      (b.net >  EPS) creditors.push({ id: b.memberId, amt:  b.net })
-    else if (b.net < -EPS) debtors.push  ({ id: b.memberId, amt: -b.net })
-  }
-  creditors.sort((a, b) => b.amt - a.amt)
-  debtors.sort  ((a, b) => b.amt - a.amt)
-
+export function computeSettlements(
+  pairwise: Record<string, Record<string, number>>,
+): Settlement[] {
   const out: Settlement[] = []
-  let i = 0, j = 0
-  while (i < creditors.length && j < debtors.length) {
-    const c = creditors[i]!
-    const d = debtors[j]!
-    const transfer = Math.min(c.amt, d.amt)
-    if (transfer > EPS) {
-      out.push({ fromId: d.id, toId: c.id, amount: Math.round(transfer) })
+  for (const from of Object.keys(pairwise).sort()) {
+    const row = pairwise[from]!
+    for (const to of Object.keys(row).sort()) {
+      const amount = row[to] ?? 0
+      if (amount > EPS) {
+        out.push({ fromId: from, toId: to, amount: Math.round(amount) })
+      }
     }
-    c.amt -= transfer
-    d.amt -= transfer
-    if (c.amt < EPS) i++
-    if (d.amt < EPS) j++
   }
   return out
 }

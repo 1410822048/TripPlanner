@@ -145,11 +145,11 @@ describe('multiple settlements per pair', () => {
     // m2 owes m1 100, settled 60 → 40 outstanding
     const expenses = [mkExpense('m1', 200, [['m1', 100], ['m2', 100]])]
     const settlements = [mkSettlement('m2', 'm1', 60)]
-    const { balances } = computeBalancesFull(expenses, MEMBERS, settlements)
+    const { balances, pairwise } = computeBalancesFull(expenses, MEMBERS, settlements)
     expect(balances.find(b => b.memberId === 'm1')!.net).toBe(40)
     expect(balances.find(b => b.memberId === 'm2')!.net).toBe(-40)
 
-    const suggestions = computeSettlements(balances)
+    const suggestions = computeSettlements(pairwise)
     expect(suggestions).toEqual([{ fromId: 'm2', toId: 'm1', amount: 40 }])
   })
 
@@ -185,11 +185,11 @@ describe('cross-debt normalization', () => {
       mkExpense('m1', 100, [['m1', 50], ['m2', 50]], '_a'),
       mkExpense('m2', 80,  [['m1', 40], ['m2', 40]], '_b'),
     ]
-    const { balances } = computeBalancesFull(expenses, MEMBERS)
+    const { balances, pairwise } = computeBalancesFull(expenses, MEMBERS)
     expect(balances.find(b => b.memberId === 'm1')!.net).toBe(10)
     expect(balances.find(b => b.memberId === 'm2')!.net).toBe(-10)
 
-    const suggestions = computeSettlements(balances)
+    const suggestions = computeSettlements(pairwise)
     expect(suggestions).toEqual([{ fromId: 'm2', toId: 'm1', amount: 10 }])
   })
 
@@ -200,10 +200,10 @@ describe('cross-debt normalization', () => {
       mkExpense('m1', 100, [['m1', 50], ['m2', 50]], '_a'),
       mkExpense('m2', 100, [['m1', 50], ['m2', 50]], '_b'),
     ]
-    const { balances } = computeBalancesFull(expenses, MEMBERS)
+    const { balances, pairwise } = computeBalancesFull(expenses, MEMBERS)
     expect(balances.find(b => b.memberId === 'm1')!.net).toBe(0)
     expect(balances.find(b => b.memberId === 'm2')!.net).toBe(0)
-    expect(computeSettlements(balances)).toEqual([])
+    expect(computeSettlements(pairwise)).toEqual([])
   })
 
   it('settlement on the normalised direction settles the pair fully', () => {
@@ -505,25 +505,48 @@ describe('ghostMember', () => {
 })
 
 describe('computeSettlements', () => {
-  it('produces at most N-1 transfers for N members with non-zero balance', () => {
+  it('produces one transfer per non-zero pair edge (here all debtors point at m1)', () => {
     const expenses = [mkExpense('m1', 3000, [['m1', 1000], ['m2', 1000], ['m3', 1000]])]
-    const bal = computeBalances(expenses, MEMBERS)
-    const s = computeSettlements(bal)
-    expect(s.length).toBeLessThanOrEqual(2)
-    expect(s.every(t => t.toId === 'm1')).toBe(true)
-    expect(s.reduce((sum, t) => sum + t.amount, 0)).toBe(2000)
+    const { pairwise } = computeBalancesFull(expenses, MEMBERS)
+    const s = computeSettlements(pairwise)
+    expect(s).toEqual([
+      { fromId: 'm2', toId: 'm1', amount: 1000 },
+      { fromId: 'm3', toId: 'm1', amount: 1000 },
+    ])
   })
 
-  it('each debtor outflow matches their net owed', () => {
+  it('chain debts surface as separate pair suggestions (not collapsed via net)', () => {
+    // m1 paid 3000 (split 1000 each) → m2, m3 each owe m1 1000.
+    // m3 paid 900 (split 300 each)   → m1, m2 each owe m3 300.
+    //
+    // Pair-based output keeps each real debt edge explicit:
+    //   m2 → m1 = 1000   (untouched)
+    //   m3 → m1 =  700   (= 1000 - 300 after pair (m1,m3) normalize)
+    //   m2 → m3 =  300   (untouched — no reverse edge)
+    //
+    // Net-greedy would have collapsed m3's flow into a single m3→m1=400
+    // and m2's into m2→m1=1300, losing the m2→m3 fact entirely. Pair-
+    // based keeps Worker-verifiable semantics: every suggested transfer
+    // maps to a real (fromUid, toUid) debt edge.
     const expenses = [
       mkExpense('m1', 3000, [['m1', 1000], ['m2', 1000], ['m3', 1000]]),
       mkExpense('m3', 900,  [['m1', 300],  ['m2', 300],  ['m3', 300]]),
     ]
-    const bal = computeBalances(expenses, MEMBERS)
-    const s = computeSettlements(bal)
+    const { pairwise } = computeBalancesFull(expenses, MEMBERS)
+    const s = computeSettlements(pairwise)
+    expect(s).toEqual([
+      { fromId: 'm2', toId: 'm1', amount: 1000 },
+      { fromId: 'm2', toId: 'm3', amount: 300 },
+      { fromId: 'm3', toId: 'm1', amount: 700 },
+    ])
+    // Net-flow invariant still holds: out - in == member.net (just routed
+    // through more edges).
+    const { balances } = computeBalancesFull(expenses, MEMBERS)
     const outFor = (id: string) => s.filter(t => t.fromId === id).reduce((x, t) => x + t.amount, 0)
-    expect(outFor('m2')).toBe(1300)
-    expect(outFor('m3')).toBe(400)
+    const inFor  = (id: string) => s.filter(t => t.toId   === id).reduce((x, t) => x + t.amount, 0)
+    for (const b of balances) {
+      expect(outFor(b.memberId) - inFor(b.memberId)).toBe(-b.net)
+    }
   })
 
   it('skips pairs within the epsilon threshold (no spam 0/1 円 transfers)', () => {
@@ -532,20 +555,44 @@ describe('computeSettlements', () => {
       mkExpense('m2', 300, [['m1', 100], ['m2', 100], ['m3', 100]]),
       mkExpense('m3', 300, [['m1', 100], ['m2', 100], ['m3', 100]]),
     ]
-    const bal = computeBalances(expenses, MEMBERS)
-    expect(computeSettlements(bal)).toEqual([])
+    const { pairwise } = computeBalancesFull(expenses, MEMBERS)
+    expect(computeSettlements(pairwise)).toEqual([])
   })
 
-  it('3-person cycle (A→B→C→A each 10): net-based suggestion correctly produces zero transfers', () => {
-    // Each person paid 30, split equally — everyone's net is 0 but the
-    // pairwise edges form a cycle. greedy via net (not pairwise) gives
-    // the optimal answer: nothing needs to move.
+  it('balanced 3-person cycle: pair-normalize cancels every edge, no suggestion', () => {
+    // Each person paid 30, split equally — every pair has a matching
+    // reverse edge of equal magnitude, normalize wipes them all out.
+    // Pair-based and net-based agree here because the cycle is balanced.
     const expenses = [
       mkExpense('m1', 30, [['m1', 10], ['m2', 10], ['m3', 10]], '_a'),
       mkExpense('m2', 30, [['m1', 10], ['m2', 10], ['m3', 10]], '_b'),
       mkExpense('m3', 30, [['m1', 10], ['m2', 10], ['m3', 10]], '_c'),
     ]
-    const bal = computeBalances(expenses, MEMBERS)
-    expect(computeSettlements(bal)).toEqual([])
+    const { pairwise } = computeBalancesFull(expenses, MEMBERS)
+    expect(computeSettlements(pairwise)).toEqual([])
+  })
+
+  it('unbalanced 3-person cycle (A owes B, B owes C, C owes A): pair-based emits 3 transfers', () => {
+    // Pure directed cycle without offsetting edges — net is zero for
+    // everyone, but pair-based surfaces all three real debts. This is
+    // the deliberate tradeoff: more transfers but every suggestion
+    // maps to a verifiable pair debt that the Worker can validate.
+    // Net-based greedy would suggest zero (and miss the real obligations).
+    const expenses = [
+      // m1 paid 10, only m2 owed back → m2 → m1 = 10
+      mkExpense('m1', 10, [['m2', 10]], '_a'),
+      // m2 paid 10, only m3 owed back → m3 → m2 = 10
+      mkExpense('m2', 10, [['m3', 10]], '_b'),
+      // m3 paid 10, only m1 owed back → m1 → m3 = 10
+      mkExpense('m3', 10, [['m1', 10]], '_c'),
+    ]
+    const { balances, pairwise } = computeBalancesFull(expenses, MEMBERS)
+    // Every net is zero, yet:
+    for (const b of balances) expect(b.net).toBe(0)
+    expect(computeSettlements(pairwise)).toEqual([
+      { fromId: 'm1', toId: 'm3', amount: 10 },
+      { fromId: 'm2', toId: 'm1', amount: 10 },
+      { fromId: 'm3', toId: 'm2', amount: 10 },
+    ])
   })
 })

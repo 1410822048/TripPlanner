@@ -35,8 +35,11 @@ export default function SettlementSummary({
   // computeBalancesFull also returns `participants` (members + ghosts
   // for kicked-out uids still in expenses/settlements). Reusing that
   // list avoids walking expenses/splits/settlements a second time.
-  const { balances, orphans, participants } = computeBalancesFull(expenses, members, settlements)
-  const suggestions = computeSettlements(balances)
+  // `pairwise` is the same normalized debt-edge map the suggestion
+  // engine walks — one row per real pair debt, matching what the Worker
+  // validation reads to gate `amount <= remaining`.
+  const { balances, orphans, participants, pairwise } = computeBalancesFull(expenses, members, settlements)
+  const suggestions = computeSettlements(pairwise)
   const memberById  = new Map(participants.map(m => [m.id, m]))
 
   // `expenses` includes soft-deleted rows (passed through for chronological
