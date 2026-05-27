@@ -45,12 +45,16 @@ export interface UploadIntentsRequest {
   tripId:     string
   entityType: IntentEntityType
   entityId:   string
-  /** Phase 3.7 wish-only distinguisher: `'create'` skips the
-   *  wish-doc-exists + proposer check inside Worker authzUpload because
-   *  the wish doc legitimately doesn't exist yet (Worker
-   *  `/wish-file-create` is the writer). Omit (or `'update'`) for the
-   *  legacy "mint intents for an existing doc" flow. booking/expense
-   *  ignore this field. */
+  /** Wish-only discriminator at intent-minting time. `'create'` skips
+   *  the wish-doc-exists + proposer check in Worker `authorizeUpload`
+   *  (wish doc doesn't exist yet — `/wish-file-create` writes it in
+   *  the same tx that consumes these intents). `'update'` enforces
+   *  both checks. For expense + booking the Worker ignores this field
+   *  at intent-mint time — authz is pure trip-role; create vs update
+   *  semantics for those entities are enforced at the
+   *  /{booking,expense}-file-* / /expense-{create,update} write
+   *  endpoints. Optional + Worker defaults to `'update'` (the safer
+   *  fallback that keeps proposer + doc-exists checks on). */
   mode?:      'create' | 'update'
   uploads:    Array<{
     kind:        IntentKind

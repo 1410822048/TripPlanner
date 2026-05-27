@@ -117,16 +117,20 @@ export type UploadKind = 'full' | 'thumb' | 'pdf'
 /** Batch-first request shape: trip-level fields at top (one authz
  *  read pass), per-blob fields inside `uploads[]`.
  *
- *  Phase 3.7: `mode` distinguishes "intent for a not-yet-existing
- *  entity doc" (create) from "intent for an existing doc" (update).
- *  Defaults to 'update' for backward compatibility with pre-3.7
- *  clients which always called intents AFTER setDoc.
+ *  `mode` is a wish-only discriminator at intent-minting time:
+ *  `'create'` skips the wish-doc-exists + proposer check in
+ *  `authorizeUpload` because the wish doc legitimately doesn't exist
+ *  yet (Worker `/wish-file-create` writes it in the same tx that
+ *  consumes these intents); `'update'` enforces both checks. For
+ *  expense + booking `authorizeUpload` is pure trip-role authz with
+ *  no doc read, so `mode` is ignored at this layer — create vs
+ *  update semantics for those entities are enforced at the
+ *  /{booking,expense}-file-* / /expense-{create,update} write
+ *  endpoints, not here.
  *
- *  Affects wish only at this layer: mode='create' skips the
- *  wish-doc-exists + proposer check in `authorizeUpload` because
- *  the wish doc legitimately doesn't exist yet (Worker `/wish-file-
- *  create` is the writer). booking/expense `authorizeUpload` is
- *  pure trip-role authz, no doc read, so `mode` is a no-op there. */
+ *  Optional + defaulted to `'update'` in `doCreate` keeps the
+ *  pre-Phase-3.7 wish update path working when mode is absent
+ *  (proposer check still runs). */
 export const UploadIntentsRequestSchema = z.object({
   tripId:     z.string().regex(TripIdRe),
   entityType: z.enum(['expense', 'booking', 'wish']),
@@ -307,9 +311,10 @@ async function doCreate(
   const projectId   = getProjectId(serviceAccountJson)
 
   return runFirestoreTransaction(accessToken, projectId, async (tx) => {
-    // Phase 3.7 default: 'update' preserves pre-3.7 behavior for any
-    // client that doesn't yet send `mode` (existing booking/wish
-    // update flows continue to work unchanged).
+    // `mode` is wish-only at the authz layer (see schema doc above).
+    // Default `'update'` keeps the proposer + doc-exists checks on
+    // when the caller omits `mode` — the safer fallback, since
+    // `'create'` is the path that skips those checks.
     const mode = req.mode ?? 'update'
     await authorizeUpload(tx, req.tripId, req.entityType, req.entityId, callerUid, mode)
 
