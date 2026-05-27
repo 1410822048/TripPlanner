@@ -147,10 +147,10 @@ function primeWishUpload(entityId: string, opts: { thumb?: boolean } = {}): void
       : undefined,
   })
   const intents: Array<{ intentId: string; path: string; metadata: { contentType: string; customMetadata: Record<string, string> }; expiresAt: string }> = [
-    { intentId: `i-${entityId}-F`, path: `trips/t1/wishes/${entityId}/F.webp`, metadata: { contentType: 'image/webp', customMetadata: {} }, expiresAt: '2030-01-01T00:00:00Z' },
+    { intentId: `i-${entityId}-F`, path: `trips/t1/wishes/${entityId}/F.webp`, metadata: { contentType: 'image/webp', customMetadata: { kind: 'full' } }, expiresAt: '2030-01-01T00:00:00Z' },
   ]
   if (includeThumb) {
-    intents.push({ intentId: `i-${entityId}-T`, path: `trips/t1/wishes/${entityId}/T.webp`, metadata: { contentType: 'image/webp', customMetadata: {} }, expiresAt: '2030-01-01T00:00:00Z' })
+    intents.push({ intentId: `i-${entityId}-T`, path: `trips/t1/wishes/${entityId}/T.webp`, metadata: { contentType: 'image/webp', customMetadata: { kind: 'thumb' } }, expiresAt: '2030-01-01T00:00:00Z' })
   }
   mocks.requestUploadIntentsMock.mockResolvedValueOnce(intents)
   mocks.uploadToIntentMock.mockResolvedValue(undefined)

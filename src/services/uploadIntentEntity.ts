@@ -58,10 +58,24 @@ export async function mintAndUploadEntityIntents(args: {
   const intents = await requestUploadIntents({
     tripId, entityType, entityId, uploads, mode,
   })
-  const fullIntent  = intents[0]!
-  const thumbIntent = thumb ? intents[1] : undefined
+  // Pair intents to uploads by `customMetadata.kind`, not by array
+  // index. Worker currently preserves request order in its response,
+  // but that's not contractually pinned — a future internal refactor
+  // (e.g. Promise.all of mint-per-upload) could reorder. Index-based
+  // pairing would then silently route the full File to the thumb
+  // intent (writing the receipt body to a *.thumb.webp path) and
+  // vice versa; by-kind pairing fails fast instead.
+  const byKind = new Map(intents.map(i => [i.metadata.customMetadata.kind, i]))
+  const primaryIntent = byKind.get(primaryKind)
+  if (!primaryIntent) {
+    throw new Error(`upload-intents response missing ${primaryKind} intent`)
+  }
+  const thumbIntent = thumb ? byKind.get('thumb') : undefined
+  if (thumb && !thumbIntent) {
+    throw new Error('upload-intents response missing thumb intent')
+  }
   await Promise.all([
-    uploadToIntent(fullIntent, full, `${entityType}-${primaryKind}`),
+    uploadToIntent(primaryIntent, full, `${entityType}-${primaryKind}`),
     thumb && thumbIntent
       ? uploadToIntent(thumbIntent, thumb, `${entityType}-thumb`)
       : Promise.resolve(),

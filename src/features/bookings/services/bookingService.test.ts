@@ -154,10 +154,10 @@ function primeBookingUpload(
     })
   }
   const intents: Array<{ intentId: string; path: string; metadata: { contentType: string; customMetadata: Record<string, string> }; expiresAt: string }> = [
-    { intentId: `i-${entityId}-P`, path: `trips/t1/bookings/${entityId}/P${isPdf ? '.pdf' : '.webp'}`, metadata: { contentType: isPdf ? 'application/pdf' : 'image/webp', customMetadata: {} }, expiresAt: '2030-01-01T00:00:00Z' },
+    { intentId: `i-${entityId}-P`, path: `trips/t1/bookings/${entityId}/P${isPdf ? '.pdf' : '.webp'}`, metadata: { contentType: isPdf ? 'application/pdf' : 'image/webp', customMetadata: { kind: isPdf ? 'pdf' : 'full' } }, expiresAt: '2030-01-01T00:00:00Z' },
   ]
   if (!isPdf) {
-    intents.push({ intentId: `i-${entityId}-T`, path: `trips/t1/bookings/${entityId}/T.webp`, metadata: { contentType: 'image/webp', customMetadata: {} }, expiresAt: '2030-01-01T00:00:00Z' })
+    intents.push({ intentId: `i-${entityId}-T`, path: `trips/t1/bookings/${entityId}/T.webp`, metadata: { contentType: 'image/webp', customMetadata: { kind: 'thumb' } }, expiresAt: '2030-01-01T00:00:00Z' })
   }
   mocks.requestUploadIntentsMock.mockResolvedValueOnce(intents)
   mocks.uploadToIntentMock.mockResolvedValue(undefined)
