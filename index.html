@@ -35,6 +35,19 @@
     <link rel="preconnect" href="https://firebasestorage.googleapis.com" crossorigin />
     <!-- OCR worker: called the moment user taps 撮影 / ✨ 明細を読み取る on a receipt. -->
     <link rel="preconnect" href="https://tripmate-ocr.tripmate.workers.dev" crossorigin />
+
+    <!-- LINE Seed JP via Google Fonts. Phase-1 minimal-impl: dynamic
+         subsetting handled by Google's CSS API (only the glyphs the
+         page actually uses get downloaded), font-display=swap so text
+         is never invisible during the network hop, only 400/700 (LINE
+         Seed JP has no real 500). preconnect saves the TLS handshake
+         for fonts.gstatic.com on cold start. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=LINE+Seed+JP:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
   </head>
   <body>
     <div id="root"></div>
