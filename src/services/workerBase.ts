@@ -146,6 +146,13 @@ const DEFINITIVE_REJECT_STATUSES = new Set([400, 401, 403, 404, 409, 410, 413, 4
  *  bails out before the mutation onError UX stalls indefinitely. */
 export const WORKER_FETCH_TIMEOUT_MS = 30_000
 
+/** Header name carrying the upload-flow traceId (see
+ *  `mintAndUploadEntityIntents`). Kept out of the body so domain
+ *  schemas don't grow an observability-only field that could leak
+ *  into a Firestore patch by accident. Worker validates against
+ *  `^[A-Za-z0-9_-]{12,64}$` before echoing into log lines. */
+export const UPLOAD_TRACE_HEADER = 'X-Upload-Trace-Id'
+
 /**
  * Issue a Worker write call. Single chokepoint for every service
  * that hits a mutating Worker endpoint -- centralises auth, timeout,
@@ -162,21 +169,32 @@ export const WORKER_FETCH_TIMEOUT_MS = 30_000
  * `WorkerRejected` (safe to roll back inline). AbortError / network /
  * 5xx → throw `WorkerAmbiguous` (caller MUST verify state before
  * inline rollback; defer to `_purges` cron is the canonical pattern).
+ *
+ * `opts.traceId` (optional) is forwarded as the `X-Upload-Trace-Id`
+ * header so the Worker log + Sentry breadcrumbs share a single
+ * correlation id across mint-intents → storage uploads → entity write.
+ * Only upload-flow callers (expense/booking/wish file paths) set it;
+ * cascade-member / trip-cascade leave it unset.
  */
 export async function workerFetch(
   base:     string,
   idToken:  string,
   endpoint: string,
   body:     unknown,
+  opts?:    { traceId?: string },
 ): Promise<unknown> {
+  const headers: Record<string, string> = {
+    Authorization:  `Bearer ${idToken}`,
+    'Content-Type': 'application/json',
+  }
+  if (opts?.traceId) {
+    headers[UPLOAD_TRACE_HEADER] = opts.traceId
+  }
   let res: Response
   try {
     res = await fetch(`${base}${endpoint}`, {
       method:  'POST',
-      headers: {
-        Authorization:  `Bearer ${idToken}`,
-        'Content-Type': 'application/json',
-      },
+      headers,
       body:    JSON.stringify(body),
       signal:  AbortSignal.timeout(WORKER_FETCH_TIMEOUT_MS),
     })

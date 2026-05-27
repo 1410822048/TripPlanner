@@ -14,7 +14,7 @@ import {
   WorkerRejected, WorkerAmbiguous,
 } from '@/services/workerBase'
 import { safePurgeWithEnqueueFallback, enqueueOrphanPurges } from '@/services/orphanPurge'
-import { captureError } from '@/services/sentry'
+import { captureError, breadcrumb } from '@/services/sentry'
 
 // Re-export for tests + back-compat with callers that previously
 // imported the discriminated error types from this module.
@@ -104,12 +104,19 @@ export async function createExpense(
   // Worker /expense-create consumes the intentIds inline with the
   // expense doc write (single tx); paths are kept here for client-
   // side rollback if the Worker rejects / times out.
-  let uploaded: { intentIds: string[]; paths: string[] } | null = null
+  let uploaded: { intentIds: string[]; paths: string[]; traceId: string } | null = null
   if (attachment instanceof File) {
     uploaded = await uploadReceipt(tripId, ref.id, attachment)
   }
   const expensePayload: Record<string, unknown> = { ...input }
 
+  if (uploaded) {
+    breadcrumb({
+      category: 'upload',
+      message:  'entity-write',
+      data:     { traceId: uploaded.traceId, endpoint: '/expense-create', tripId, expenseId: ref.id },
+    })
+  }
   try {
     await workerFetch(workerBase, idToken, '/expense-create', {
       tripId,
@@ -119,7 +126,7 @@ export async function createExpense(
       // intentIds (verify intent + storage object + mark used in
       // same Firestore transaction as the expense doc create).
       ...(uploaded ? { intentIds: uploaded.intentIds } : {}),
-    })
+    }, uploaded ? { traceId: uploaded.traceId } : undefined)
   } catch (e) {
     // Discriminate Worker rejection from commit-ambiguity:
     //   - WorkerRejected: Worker explicitly said no BEFORE any
@@ -215,7 +222,7 @@ export async function updateExpense(
   //      with existing paths (each intent generates a fresh shortId),
   //      so the post-Worker purgeReceipt(existingPaths) only targets
   //      the genuinely-old blob.
-  let uploadedNew: { intentIds: string[]; paths: string[] } | null = null
+  let uploadedNew: { intentIds: string[]; paths: string[]; traceId: string } | null = null
   if (attachment === null) {
     // Field-delete signal -- Worker drops the receipt field. Old
     // blob purge runs in the success branch below.
@@ -226,13 +233,20 @@ export async function updateExpense(
     // from intentIds in the same transaction as the doc patch.
   }
 
+  if (uploadedNew) {
+    breadcrumb({
+      category: 'upload',
+      message:  'entity-write',
+      data:     { traceId: uploadedNew.traceId, endpoint: '/expense-update', tripId, expenseId },
+    })
+  }
   try {
     await workerFetch(workerBase, idToken, '/expense-update', {
       tripId,
       expenseId,
       patch,
       ...(uploadedNew ? { intentIds: uploadedNew.intentIds } : {}),
-    })
+    }, uploadedNew ? { traceId: uploadedNew.traceId } : undefined)
   } catch (e) {
     // Two blobs may need cleanup after a failed update:
     //

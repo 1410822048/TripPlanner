@@ -13,6 +13,13 @@
 // "uploads array + intent pairing + label" plumbing. Co-locating the
 // helper with the primitives would short-circuit those mocks via ESM
 // intra-module bindings.
+//
+// Observability: this composer mints a per-flow `traceId` (full UUID,
+// header-only — never enters body schemas or Storage customMetadata) and
+// returns it so the feature service can forward it to the downstream
+// entity-write workerFetch. Sentry breadcrumbs at each stage carry the
+// same traceId, and the Worker echoes it into its log lines, so an error
+// event reconstructs the full mint → upload → write chain.
 
 import {
   requestUploadIntents,
@@ -21,13 +28,16 @@ import {
   type IntentKind,
   type UploadIntentsRequest,
 } from './uploadIntent'
+import { breadcrumb } from './sentry'
 import type { CompressedImage } from '@/utils/image'
 
 /**
  * Mint upload intents + upload the compressed primary (and optional
- * thumb). Returns intentIds for the Worker call AND paths so callers
- * with explicit-rollback policy (expense) can address each blob; the
- * cron-rollback callers (booking / wish) can ignore the paths.
+ * thumb). Returns intentIds for the Worker call, paths for the
+ * explicit-rollback callers (expense), AND the per-flow traceId so the
+ * feature service can pass it to the entity-write workerFetch — that
+ * second call shares the same `X-Upload-Trace-Id` header value as the
+ * /upload-intents request and the breadcrumbs left here.
  *
  * Primary kind is `'pdf'` for `application/pdf`, `'full'` otherwise.
  * Thumb is optional -- HEIC/HEIF passthrough and PDF receipts ship
@@ -45,19 +55,34 @@ export async function mintAndUploadEntityIntents(args: {
   entityId:   string
   compressed: CompressedImage
   mode?:      'create' | 'update'
-}): Promise<{ intentIds: string[]; paths: string[] }> {
+}): Promise<{ intentIds: string[]; paths: string[]; traceId: string }> {
   const { tripId, entityType, entityId, compressed, mode } = args
   const { full, thumb } = compressed
   const primaryKind: IntentKind = full.type === 'application/pdf' ? 'pdf' : 'full'
+  // Full UUID (36 chars). Header validator accepts {12,64} so we have
+  // headroom; using the full UUID keeps collision probability negligible
+  // even across long-tail sessions, and there's no log-width pressure
+  // here (Worker echoes it as `trace=<uuid>` at the end of each log
+  // line). slice(0,8) was rejected for being too short to confidently
+  // dedupe with naked-eye scanning across concurrent uploads.
+  const traceId = crypto.randomUUID()
+
+  breadcrumb({
+    category: 'upload',
+    message:  'mint-intents',
+    data:     { traceId, entityType, entityId, tripId, primaryKind, hasThumb: !!thumb, mode },
+  })
+
   const uploads: UploadIntentsRequest['uploads'] = [
     { kind: primaryKind, contentType: full.type, size: full.size },
   ]
   if (thumb) {
     uploads.push({ kind: 'thumb', contentType: thumb.type, size: thumb.size })
   }
-  const intents = await requestUploadIntents({
-    tripId, entityType, entityId, uploads, mode,
-  })
+  const intents = await requestUploadIntents(
+    { tripId, entityType, entityId, uploads, mode },
+    { traceId },
+  )
   // Pair intents to uploads by `customMetadata.kind`, not by array
   // index. Worker currently preserves request order in its response,
   // but that's not contractually pinned — a future internal refactor
@@ -74,14 +99,34 @@ export async function mintAndUploadEntityIntents(args: {
   if (thumb && !thumbIntent) {
     throw new Error('upload-intents response missing thumb intent')
   }
+
+  // Per-kind start/done breadcrumbs so a Sentry error during the
+  // Promise.all narrows down which leg blew up. We don't try/catch
+  // per upload here -- Promise.all surfaces the first rejection and
+  // the breadcrumb timeline shows the missing `*-done` to identify it.
+  const uploadOne = async (intent: typeof primaryIntent, file: Blob, kind: IntentKind, label: string) => {
+    breadcrumb({
+      category: 'upload',
+      message:  'storage-upload-start',
+      data:     { traceId, kind, path: intent.path },
+    })
+    await uploadToIntent(intent, file, label)
+    breadcrumb({
+      category: 'upload',
+      message:  'storage-upload-done',
+      data:     { traceId, kind },
+    })
+  }
+
   await Promise.all([
-    uploadToIntent(primaryIntent, full, `${entityType}-${primaryKind}`),
+    uploadOne(primaryIntent, full, primaryKind, `${entityType}-${primaryKind}`),
     thumb && thumbIntent
-      ? uploadToIntent(thumbIntent, thumb, `${entityType}-thumb`)
+      ? uploadOne(thumbIntent, thumb, 'thumb', `${entityType}-thumb`)
       : Promise.resolve(),
   ])
   return {
     intentIds: intents.map(i => i.intentId),
     paths:     intents.map(i => i.path),
+    traceId,
   }
 }

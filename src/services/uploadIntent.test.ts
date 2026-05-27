@@ -116,6 +116,35 @@ describe('requestUploadIntents', () => {
 			uploads: [{ kind: 'full', contentType: 'image/webp', size: 1 }],
 		})).rejects.toThrow(/403/)
 	})
+
+	it('forwards opts.traceId to workerFetch (header threading for upload-flow correlation)', async () => {
+		// Phase 3.7 observability: the upload-flow traceId rides as the
+		// 5th workerFetch arg so workerBase can set X-Upload-Trace-Id.
+		// Without this hop, the mint call's Worker log line would lack
+		// the trace= suffix and `wrangler tail | grep <id>` would skip
+		// the /upload-intents leg of the chain.
+		workerFetchMock.mockResolvedValueOnce({ intents: [] })
+		await requestUploadIntents(
+			{
+				tripId:     't', entityType: 'wish', entityId: 'w',
+				uploads:    [{ kind: 'full', contentType: 'image/webp', size: 1 }],
+			},
+			{ traceId: 'fixed-trace-id-1234' },
+		)
+		const opts = workerFetchMock.mock.calls[0]![4] as { traceId: string }
+		expect(opts).toEqual({ traceId: 'fixed-trace-id-1234' })
+	})
+
+	it('omits opts when no traceId provided (back-compat for callers that never observe)', async () => {
+		workerFetchMock.mockResolvedValueOnce({ intents: [] })
+		await requestUploadIntents({
+			tripId:     't', entityType: 'expense', entityId: 'e',
+			uploads:    [{ kind: 'full', contentType: 'image/webp', size: 1 }],
+		})
+		// 5th arg is undefined when caller omits opts; pin so a refactor
+		// that always-builds an opts object (even empty) is caught here.
+		expect(workerFetchMock.mock.calls[0]![4]).toBeUndefined()
+	})
 })
 
 // ─── uploadToIntent ───────────────────────────────────────────────

@@ -35,7 +35,7 @@ type SentryBrowser = typeof import('@sentry/browser')
  *  namespace. Destructured dynamic import below makes the unused
  *  exports (replay, profiling, etc.) tree-shakeable -- a namespace
  *  import would defeat that. */
-type SentryRef = Pick<SentryBrowser, 'captureException'>
+type SentryRef = Pick<SentryBrowser, 'captureException' | 'addBreadcrumb'>
 
 const DSN = import.meta.env.VITE_SENTRY_DSN as string | undefined
 
@@ -113,7 +113,7 @@ export function initSentry(): void {
       // weight that lands on the critical path of every visitor.
       // captureException + breadcrumbs + stack traces are still
       // enough to triage every error this app actually emits.
-      const { init, captureException } = await import('@sentry/browser')
+      const { init, captureException, addBreadcrumb } = await import('@sentry/browser')
       init({
         dsn:          DSN,
         environment:  import.meta.env.MODE,
@@ -125,7 +125,7 @@ export function initSentry(): void {
           'ResizeObserver loop completed with undelivered notifications',
         ],
       })
-      sentryRef = { captureException }
+      sentryRef = { captureException, addBreadcrumb }
       window.removeEventListener('error', bufferGlobalError)
       window.removeEventListener('unhandledrejection', bufferGlobalError)
       for (const { err, context } of pending) {
@@ -179,4 +179,34 @@ export function captureError(err: unknown, context?: Record<string, unknown>): v
   } else {
     pushPending({ err, context })
   }
+}
+
+/**
+ * Record a breadcrumb that will attach to the next captured error.
+ * Used by the upload flow (mintAndUploadEntityIntents + feature
+ * services) to leave a `traceId`-tagged trail of mint → upload → write
+ * stages, so a Sentry error event lets the operator reconstruct the
+ * full chain and `wrangler tail | grep <traceId>` correlates it to
+ * Worker logs.
+ *
+ * Pre-init: no-op. Sentry's breadcrumb buffer only collects post-init
+ * events; replaying pre-init breadcrumbs would need a separate buffer
+ * + replay path that's overkill for upload observability (an error
+ * that fires before the @sentry chunk loads would have no breadcrumbs
+ * anyway -- captureError's pending buffer catches the error itself
+ * and traceId still threads through Worker logs via the header).
+ */
+export function breadcrumb(b: {
+  category: string
+  message:  string
+  level?:   'info' | 'warning' | 'error'
+  data?:    Record<string, unknown>
+}): void {
+  if (!sentryRef) return
+  sentryRef.addBreadcrumb({
+    category: b.category,
+    message:  b.message,
+    level:    b.level ?? 'info',
+    data:     b.data,
+  })
 }

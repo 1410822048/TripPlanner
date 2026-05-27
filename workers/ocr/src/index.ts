@@ -33,6 +33,16 @@
 // handled inline. Hand-rolled `pathname === ...` dispatch — a router
 // lib isn't worth the bundle cost for ~10 endpoints with bespoke
 // auth/rate-limit/Zod pipelines each.
+//
+// Observability: upload-flow callers send `X-Upload-Trace-Id: <uuid>`
+// minted client-side by `mintAndUploadEntityIntents`. Validated by
+// `extractTraceId` and appended as `trace=<id>` to every log line
+// (req / auth / rate-limit / dispatch success+warn+error) so the same
+// id correlates `/upload-intents`, the parallel storage SDK uploads
+// (visible only in Sentry breadcrumbs), and the entity-write call
+// (`/expense-{create,update}`, `/wish-file-*`, `/booking-file-*`).
+// Cascade / OCR endpoints don't set the header; their log lines omit
+// the suffix.
 import { verifyFirebaseToken, extractBearerToken } from './auth'
 import { extractReceiptItems, GeminiError }       from './gemini'
 import { OcrRequestSchema }                       from './schema'
@@ -69,6 +79,8 @@ import { checkGlobalRateLimit }                   from './rate-limiter'
 import {
   handleJsonRoute,
   validationErrorCatcher,
+  extractTraceId,
+  UPLOAD_TRACE_HEADER,
   json,
   uidTag,
 }                                                 from './route-dispatch'
@@ -149,7 +161,13 @@ function corsHeaders(env: WorkerEnv, originHeader: string | null): Record<string
   return {
     'Access-Control-Allow-Origin':  allow,
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+    // UPLOAD_TRACE_HEADER is a custom (non-CORS-safelisted) request
+    // header set by mintAndUploadEntityIntents; without it on this
+    // allow-list, browsers reject the preflight for every upload-flow
+    // endpoint (/upload-intents, /expense-*, /booking-file-*,
+    // /wish-file-*). Sourced from the same constant the server uses
+    // to read the header so the two stay in lockstep.
+    'Access-Control-Allow-Headers': `Authorization, Content-Type, ${UPLOAD_TRACE_HEADER}`,
     'Access-Control-Max-Age':       '86400',
     'Vary':                          'Origin',
   }
@@ -180,7 +198,16 @@ export default {
       return json({ error: 'Not found' }, 404, cors)
     }
 
-    console.log(`[req] ${request.method} ${url.pathname} origin=${request.headers.get('Origin') ?? '?'}`)
+    // Pre-validated upload-flow correlation id. Read once at the top
+    // so every log line in this request (pre-dispatch + handleJsonRoute
+    // success/warn/error) carries the same `trace=<id>` suffix. Missing
+    // or malformed headers fall back to `undefined` → no suffix; we don't
+    // reject the request because observability is best-effort and a
+    // stale client shouldn't be denied for it.
+    const traceId = extractTraceId(request)
+    const trace   = traceId ? ` trace=${traceId}` : ''
+
+    console.log(`[req] ${request.method} ${url.pathname} origin=${request.headers.get('Origin') ?? '?'}${trace}`)
 
     // ─── Body size guard ──────────────────────────────────────────────
     // Done before auth so 100MB unauthenticated bodies are rejected
@@ -190,23 +217,23 @@ export default {
     // streamed are still bounded by the platform's 100MB hard cap.
     const contentLength = Number(request.headers.get('content-length') ?? '0')
     if (contentLength > 9 * 1024 * 1024) {
-      console.warn(`[body] too large: contentLength=${contentLength}`)
+      console.warn(`[body] too large: contentLength=${contentLength}${trace}`)
       return json({ error: 'Body too large' }, 413, cors)
     }
 
     // ─── Auth (shared by both routes) ─────────────────────────────────
     const token = extractBearerToken(request)
     if (!token) {
-      console.warn('[auth] no bearer token')
+      console.warn(`[auth] no bearer token${trace}`)
       return json({ error: 'Missing Authorization' }, 401, cors)
     }
     let uid: string
     try {
       const claims = await verifyFirebaseToken(token, env.FIREBASE_PROJECT_ID)
       uid = claims.sub
-      console.log(`[auth] ok uid=${uidTag(uid)}`)
+      console.log(`[auth] ok uid=${uidTag(uid)}${trace}`)
     } catch (e) {
-      console.warn(`[auth] invalid token: ${(e as Error).message}`)
+      console.warn(`[auth] invalid token: ${(e as Error).message}${trace}`)
       return json({ error: `Invalid token: ${(e as Error).message}` }, 401, cors)
     }
 
@@ -237,7 +264,7 @@ export default {
                   : env.CASCADE_RATE_LIMITER
     const localResult = await limiter.limit({ key: uid })
     if (!localResult.success) {
-      console.warn(`[rate-limit] L1 deny uid=${uidTag(uid)} route=${url.pathname}`)
+      console.warn(`[rate-limit] L1 deny uid=${uidTag(uid)} route=${url.pathname}${trace}`)
       return json({ error: 'Rate limit exceeded' }, 429, cors)
     }
 
@@ -267,7 +294,7 @@ export default {
     if (!globalResult.allowed) {
       console.warn(
         `[rate-limit] L2 deny uid=${uidTag(uid)} route=${url.pathname} ` +
-        `count=${globalResult.count} resetMs=${globalResult.resetMs}`,
+        `count=${globalResult.count} resetMs=${globalResult.resetMs}${trace}`,
       )
       return json({ error: 'Global rate limit exceeded' }, 429, cors)
     }
@@ -277,7 +304,7 @@ export default {
     try {
       body = await request.json()
     } catch {
-      console.warn('[body] not valid JSON')
+      console.warn(`[body] not valid JSON${trace}`)
       return json({ error: 'Invalid JSON' }, 400, cors)
     }
 
@@ -288,7 +315,7 @@ export default {
     // catchDomain. Auth + rate-limit + body-size + CORS handled above.
 
     if (isExpenseCreate) return handleJsonRoute({
-      endpoint:       'expense-create', body, cors, uid,
+      endpoint:       'expense-create', body, cors, uid, traceId,
       schema:         ExpenseCreateRequestSchema,
       handle:         data => expenseCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
       formatLog:      (data, result) => `trip=${data.tripId} exp=${result.expenseId}`,
@@ -297,7 +324,7 @@ export default {
     })
 
     if (isExpenseUpdate) return handleJsonRoute({
-      endpoint:    'expense-update', body, cors, uid,
+      endpoint:    'expense-update', body, cors, uid, traceId,
       schema:      ExpenseUpdateRequestSchema,
       handle:      data => expenseUpdate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
       formatLog:   data => `trip=${data.tripId} exp=${data.expenseId}`,
@@ -305,7 +332,7 @@ export default {
     })
 
     if (isWishCreate) return handleJsonRoute({
-      endpoint:       'wish-file-create', body, cors, uid,
+      endpoint:       'wish-file-create', body, cors, uid, traceId,
       schema:         WishFileCreateRequestSchema,
       handle:         data => wishFileCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
       formatLog:      (data, result) => `trip=${data.tripId} wish=${result.wishId}`,
@@ -314,7 +341,7 @@ export default {
     })
 
     if (isWishUpdate) return handleJsonRoute({
-      endpoint:    'wish-file-update', body, cors, uid,
+      endpoint:    'wish-file-update', body, cors, uid, traceId,
       schema:      WishFileUpdateRequestSchema,
       handle:      data => wishFileUpdate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
       formatLog:   data => `trip=${data.tripId} wish=${data.wishId}`,
@@ -322,7 +349,7 @@ export default {
     })
 
     if (isBookingCreate) return handleJsonRoute({
-      endpoint:       'booking-file-create', body, cors, uid,
+      endpoint:       'booking-file-create', body, cors, uid, traceId,
       schema:         BookingFileCreateRequestSchema,
       handle:         data => bookingFileCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
       formatLog:      (data, result) => `trip=${data.tripId} booking=${result.bookingId}`,
@@ -331,7 +358,7 @@ export default {
     })
 
     if (isBookingUpdate) return handleJsonRoute({
-      endpoint:    'booking-file-update', body, cors, uid,
+      endpoint:    'booking-file-update', body, cors, uid, traceId,
       schema:      BookingFileUpdateRequestSchema,
       handle:      data => bookingFileUpdate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
       formatLog:   data => `trip=${data.tripId} booking=${data.bookingId}`,
@@ -339,7 +366,7 @@ export default {
     })
 
     if (isUploadIntents) return handleJsonRoute({
-      endpoint:  'upload-intents', body, cors, uid,
+      endpoint:  'upload-intents', body, cors, uid, traceId,
       schema:    UploadIntentsRequestSchema,
       handle:    data => createUploadIntents(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
       formatLog: (data, result) =>

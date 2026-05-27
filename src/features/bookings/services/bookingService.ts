@@ -28,7 +28,7 @@
 import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
-import { captureError } from '@/services/sentry'
+import { captureError, breadcrumb } from '@/services/sentry'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
 import { parseListSnapshot } from '@/services/parseListSnapshot'
 import { subscribeToCollection } from '@/services/realtimeQuery'
@@ -186,8 +186,13 @@ export async function createBooking(
     const compressed = await compressImage(file)
     const workerBase = requireWorkerWriteBase()
     const idToken    = await preflightIdToken()
-    const { intentIds } = await mintAndUploadEntityIntents({
+    const { intentIds, traceId } = await mintAndUploadEntityIntents({
       tripId, entityType: 'booking', entityId: ref.id, compressed, mode: 'create',
+    })
+    breadcrumb({
+      category: 'upload',
+      message:  'entity-write',
+      data:     { traceId, endpoint: '/booking-file-create', tripId, bookingId: ref.id },
     })
     await workerFetch(workerBase, idToken, '/booking-file-create', {
       tripId,
@@ -197,7 +202,7 @@ export async function createBooking(
       // fields polluting the doc).
       booking:   stripEmpty(input),
       intentIds,
-    })
+    }, { traceId })
   } else {
     // ── Text-only client setDoc ──────────────────────────────────
     const [{ setDoc, serverTimestamp, Timestamp }, memberIds] = await Promise.all([
@@ -262,7 +267,7 @@ export async function updateBooking(
     const compressed = await compressImage(attachment)
     const workerBase = requireWorkerWriteBase()
     const idToken    = await preflightIdToken()
-    const { intentIds } = await mintAndUploadEntityIntents({
+    const { intentIds, traceId } = await mintAndUploadEntityIntents({
       tripId, entityType: 'booking', entityId: bookingId, compressed, mode: 'update',
     })
     // Normalize cleared CLEARABLE fields from `undefined` to `''` before
@@ -280,6 +285,11 @@ export async function updateBooking(
         patchForWorker[k] = ''
       }
     }
+    breadcrumb({
+      category: 'upload',
+      message:  'entity-write',
+      data:     { traceId, endpoint: '/booking-file-update', tripId, bookingId },
+    })
     await workerFetch(workerBase, idToken, '/booking-file-update', {
       tripId,
       bookingId,
@@ -293,7 +303,7 @@ export async function updateBooking(
       // replaced/detached, Worker returns 409 instead of silently
       // overwriting Tab B's commit + orphaning Tab B's blob.
       expectedCurrentPath: existing?.filePath ?? null,
-    })
+    }, { traceId })
     if (existing) {
       await safePurgeWithEnqueueFallback({
         purge: () => purgeAttachments(existing),

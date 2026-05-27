@@ -18,10 +18,14 @@
 //      where wishes don't. Pin that the primary kind flips on contentType.
 //
 // Worker contract:
-//   - workerFetch(base, idToken, endpoint, body) is the single chokepoint
-//     for /booking-file-create and /booking-file-update. The mock asserts
-//     full body shape so a regression that drops a field or sends an
-//     unintended one is caught here, not at the Worker boundary in prod.
+//   - workerFetch(base, idToken, endpoint, body, opts?) is the single
+//     chokepoint for /booking-file-create and /booking-file-update. The
+//     mock asserts full body shape so a regression that drops a field or
+//     sends an unintended one is caught here, not at the Worker boundary
+//     in prod. `opts` carries the upload-flow traceId; assertions match
+//     it with `{ traceId: expect.any(String) }` for shape, with one
+//     dedicated correlation test pinning that the SAME traceId reaches
+//     both /upload-intents and the entity-write call.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mocks = vi.hoisted(() => {
@@ -279,6 +283,9 @@ describe('createBooking', () => {
     // requestUploadIntents body MUST carry the freshly-minted bookingId,
     // mode='create' (Worker authzUpload skips doc-exists check), and the
     // image upload pair (full + thumb, both image/webp post-compress).
+    // 2nd arg = opts.traceId (full UUID) — shape only, value is
+    // non-deterministic. Correlation across mint + entity-write is pinned
+    // in a dedicated test below.
     expect(mocks.requestUploadIntentsMock).toHaveBeenCalledWith({
       tripId: 't1', entityType: 'booking', entityId: 'b-new',
       mode:   'create',
@@ -286,7 +293,7 @@ describe('createBooking', () => {
         { kind: 'full',  contentType: 'image/webp', size: 1 },
         { kind: 'thumb', contentType: 'image/webp', size: 1 },
       ],
-    })
+    }, { traceId: expect.any(String) })
     expect(mocks.uploadToIntentMock).toHaveBeenCalledTimes(2)
     // (intent, file, label) MUST be correctly paired per call — a swap
     // (e.g., full file uploaded to thumb intent's path) would mean
@@ -304,7 +311,9 @@ describe('createBooking', () => {
 
     // workerFetch body: pin so a regression that drops intentIds /
     // swaps bookingId / lets an `attachment` field slip into the
-    // booking payload is caught here.
+    // booking payload is caught here. 5th arg = `{ traceId }` header
+    // opts forwarded by workerFetch (shape-only; same UUID also lands
+    // on the /upload-intents mint above — correlation pinned separately).
     expect(mocks.workerFetchMock).toHaveBeenCalledTimes(1)
     expect(mocks.workerFetchMock).toHaveBeenCalledWith(
       'https://worker.test',
@@ -316,6 +325,7 @@ describe('createBooking', () => {
         booking:   { type: 'flight', title: 'Flight' },
         intentIds: ['i-b-new-P', 'i-b-new-T'],
       },
+      { traceId: expect.any(String) },
     )
   })
 
@@ -342,7 +352,7 @@ describe('createBooking', () => {
       uploads: [
         { kind: 'pdf', contentType: 'application/pdf', size: 1 },
       ],
-    })
+    }, { traceId: expect.any(String) })
     expect(mocks.uploadToIntentMock).toHaveBeenCalledTimes(1)
     expect(mocks.workerFetchMock).toHaveBeenCalledWith(
       'https://worker.test',
@@ -354,6 +364,7 @@ describe('createBooking', () => {
         booking:   { type: 'hotel', title: 'Voucher' },
         intentIds: ['i-b-new-P'],
       },
+      { traceId: expect.any(String) },
     )
     expect(mocks.setDocMock).not.toHaveBeenCalled()
   })
@@ -423,9 +434,33 @@ describe('createBooking', () => {
         booking:   { type: 'flight', title: 'X' },
         intentIds: ['i-b-new-P', 'i-b-new-T'],
       },
+      { traceId: expect.any(String) },
     )
     expect(mocks.setDocMock).not.toHaveBeenCalled()
     expect(mocks.safePurgeMock).not.toHaveBeenCalled()
+  })
+
+  it('upload-trace correlation: SAME traceId reaches /upload-intents AND /booking-file-create', async () => {
+    // Phase 3.7 observability contract: mintAndUploadEntityIntents mints
+    // one traceId per flow and forwards it to BOTH the intent-mint
+    // workerFetch AND the entity-write workerFetch. A regression that
+    // generated separate UUIDs would silently break log-line correlation
+    // (operator can no longer `wrangler tail | grep <traceId>` to walk
+    // mint → upload → write for a single Sentry breadcrumb).
+    primeBookingUpload('b-new')
+    mocks.workerFetchMock.mockResolvedValueOnce({ bookingId: 'b-new' })
+
+    await createBooking(
+      't1',
+      { type: 'flight', title: 'Trace' } as unknown as Parameters<typeof createBooking>[1],
+      new File([], 'r.jpg', { type: 'image/jpeg' }),
+      'u1',
+    )
+
+    const mintOpts  = mocks.requestUploadIntentsMock.mock.calls[0]![1] as { traceId: string }
+    const writeOpts = mocks.workerFetchMock.mock.calls[0]![4] as { traceId: string }
+    expect(mintOpts.traceId).toBeTruthy()
+    expect(mintOpts.traceId).toBe(writeOpts.traceId)
   })
 })
 
@@ -459,7 +494,7 @@ describe('updateBooking', () => {
         { kind: 'full',  contentType: 'image/webp', size: 1 },
         { kind: 'thumb', contentType: 'image/webp', size: 1 },
       ],
-    })
+    }, { traceId: expect.any(String) })
     expect(mocks.uploadToIntentMock).toHaveBeenCalledTimes(2)
 
     // Worker call: patch carries validated text fields, intentIds bound
@@ -477,6 +512,7 @@ describe('updateBooking', () => {
         intentIds:           ['i-b1-P', 'i-b1-T'],
         expectedCurrentPath: ATTACHMENT.filePath,
       },
+      { traceId: expect.any(String) },
     )
 
     // OLD blob purge on success.
@@ -542,7 +578,7 @@ describe('updateBooking', () => {
       uploads: [
         { kind: 'pdf', contentType: 'application/pdf', size: 1 },
       ],
-    })
+    }, { traceId: expect.any(String) })
     expect(mocks.uploadToIntentMock).toHaveBeenCalledTimes(1)
     expect(mocks.workerFetchMock).toHaveBeenCalledWith(
       'https://worker.test',
@@ -555,6 +591,7 @@ describe('updateBooking', () => {
         intentIds:           ['i-b1-P'],
         expectedCurrentPath: ATTACHMENT.filePath,
       },
+      { traceId: expect.any(String) },
     )
     expect(mocks.updateDocMock).not.toHaveBeenCalled()
   })
@@ -628,6 +665,7 @@ describe('updateBooking', () => {
         // only when the live doc also has no attachment.
         expectedCurrentPath: null,
       },
+      { traceId: expect.any(String) },
     )
     // No OLD to purge.
     expect(mocks.safePurgeMock).not.toHaveBeenCalled()

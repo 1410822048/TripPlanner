@@ -27,6 +27,37 @@ export function uidTag(uid: string): string {
   return uid.slice(0, 6) + '…'
 }
 
+/** Header carrying the upload-flow correlation id minted client-side
+ *  by `mintAndUploadEntityIntents`. Echoed into log lines as
+ *  `trace=<id>` so an operator can `wrangler tail | grep <id>` to
+ *  reconstruct the full mint → upload → write chain from a single
+ *  Sentry breadcrumb timestamp. */
+export const UPLOAD_TRACE_HEADER = 'X-Upload-Trace-Id'
+
+/** Permissive shape: alphanumeric + dash + underscore, 12-64 chars.
+ *  Covers crypto.randomUUID() (36 chars, hex + dashes) plus future
+ *  shorter formats without rev'ing the contract. Rejects anything
+ *  that could break log-line parsing or carry CRLF injection. */
+const TRACE_ID_RE = /^[A-Za-z0-9_-]{12,64}$/
+
+/** Extract + validate the upload-flow traceId from a request. Returns
+ *  `undefined` when the header is missing OR malformed -- the route
+ *  still serves the request, the log line just omits `trace=`. We
+ *  deliberately don't reject on bad format: an upload from a stale
+ *  client shouldn't be denied just because its traceId is the wrong
+ *  shape. */
+export function extractTraceId(request: Request): string | undefined {
+  const raw = request.headers.get(UPLOAD_TRACE_HEADER)
+  if (!raw) return undefined
+  return TRACE_ID_RE.test(raw) ? raw : undefined
+}
+
+/** Format the log suffix for a traceId. Empty string when undefined
+ *  so callers can splat it into template strings without a conditional. */
+function traceSuffix(traceId: string | undefined): string {
+  return traceId ? ` trace=${traceId}` : ''
+}
+
 export function json(body: unknown, status: number, headers: Record<string, string>): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -71,6 +102,11 @@ export async function handleJsonRoute<TData, TResult>(args: {
   body:            unknown
   cors:            Record<string, string>
   uid:             string
+  /** Optional client-supplied upload-flow correlation id. Appended as
+   *  `trace=<id>` to every log line produced by this dispatch (success
+   *  + warn + error). Pre-validated by `extractTraceId` in the fetch
+   *  handler; the wrapper itself trusts the value. */
+  traceId?:        string
   schema:          z.ZodType<TData>
   handle:          (data: TData) => Promise<TResult>
   /** Free-form suffix after `[endpoint] uid=<tag> ` on success log.
@@ -86,26 +122,27 @@ export async function handleJsonRoute<TData, TResult>(args: {
    *  omit this and fall through to the shared CascadeError catch. */
   catchDomain?:    (e: unknown) => DomainErrorMapped | null
 }): Promise<Response> {
+  const trace = traceSuffix(args.traceId)
   const parsed = args.schema.safeParse(args.body)
   if (!parsed.success) {
-    console.warn(`[${args.endpoint}] schema fail: ${parsed.error.message.slice(0, 200)}`)
+    console.warn(`[${args.endpoint}] schema fail: ${parsed.error.message.slice(0, 200)}${trace}`)
     return json({ error: 'Invalid body', detail: parsed.error.message }, 400, args.cors)
   }
   try {
     const result = await args.handle(parsed.data)
-    console.log(`[${args.endpoint}] uid=${uidTag(args.uid)} ${args.formatLog(parsed.data, result)}`)
+    console.log(`[${args.endpoint}] uid=${uidTag(args.uid)} ${args.formatLog(parsed.data, result)}${trace}`)
     return json(args.formatResponse ? args.formatResponse(result) : result, 200, args.cors)
   } catch (e) {
     const domain = args.catchDomain?.(e) ?? null
     if (domain) {
-      console.warn(`[${args.endpoint}] ${domain.log}`)
+      console.warn(`[${args.endpoint}] ${domain.log}${trace}`)
       return json(domain.body, domain.status, args.cors)
     }
     if (e instanceof CascadeError) {
-      console.warn(`[${args.endpoint}] ${e.status} ${e.message}`)
+      console.warn(`[${args.endpoint}] ${e.status} ${e.message}${trace}`)
       return json({ error: e.message }, e.status, args.cors)
     }
-    console.error(`[${args.endpoint}] internal error: ${(e as Error).message}`)
+    console.error(`[${args.endpoint}] internal error: ${(e as Error).message}${trace}`)
     return json({ error: 'Internal error' }, 500, args.cors)
   }
 }

@@ -27,17 +27,22 @@ import { deleteStorageObject } from '@/services/storageDelete'
 /** Returned by `uploadReceipt` -- the service caller passes `intentIds`
  *  to the Worker (`/expense-create` or `/expense-update`) and keeps
  *  `paths` for rollback via `safePurgeWithEnqueueFallback` on Worker
- *  rejection / timeout. */
+ *  rejection / timeout. `traceId` is the upload-flow correlation id
+ *  that must be forwarded to the entity-write `workerFetch` so the
+ *  same `X-Upload-Trace-Id` value ties the two calls together in
+ *  Sentry breadcrumbs + Worker logs. */
 export interface UploadedReceiptIntents {
   intentIds: string[]
   paths:     string[]
+  traceId:   string
 }
 
 /**
  * Upload a receipt + (when image) its thumbnail via the Worker-issued
- * intent flow. Returns intentIds for the Worker call and paths for
- * client-side rollback. No `mode` -- expense doesn't carry the wish
- * proposer-check distinction (Worker authzUpload uses the
+ * intent flow. Returns intentIds for the Worker call, paths for
+ * client-side rollback, AND the per-flow traceId to forward to the
+ * entity-write workerFetch. No `mode` -- expense doesn't carry the
+ * wish proposer-check distinction (Worker authzUpload uses the
  * canWrite-only path for entityType 'expense').
  */
 export async function uploadReceipt(

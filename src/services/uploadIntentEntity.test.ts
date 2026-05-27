@@ -172,4 +172,33 @@ describe('mintAndUploadEntityIntents', () => {
 			mode:       'create',
 		})
 	})
+
+	it('mints a per-flow traceId, forwards it to requestUploadIntents, and returns it', async () => {
+		// Phase 3.7 observability contract: ONE traceId per flow, threaded
+		// through both legs (intent mint + feature-service entity-write).
+		// The composer mints with crypto.randomUUID(), forwards via the
+		// requestUploadIntents opts arg, and surfaces the same value in
+		// the return tuple so feature services can pass it to their own
+		// workerFetch entity-write call.
+		const fullFile = new File(['x'], 'full.webp', { type: 'image/webp' })
+		requestUploadIntentsMock.mockResolvedValueOnce([
+			intent('full', 'i-full', 'p-full'),
+		])
+
+		const { traceId } = await mintAndUploadEntityIntents({
+			tripId: 't', entityType: 'expense', entityId: 'e',
+			compressed: { full: fullFile },
+		})
+
+		// Return value carries the traceId (non-empty string).
+		expect(typeof traceId).toBe('string')
+		expect(traceId.length).toBeGreaterThanOrEqual(12)
+
+		// Opts forwarded to requestUploadIntents carries the SAME id.
+		// A regression that minted two separate UUIDs (one for the
+		// composer return, another for the requestUploadIntents call)
+		// would silently break correlation.
+		const opts = requestUploadIntentsMock.mock.calls[0]![1] as { traceId: string }
+		expect(opts.traceId).toBe(traceId)
+	})
 })

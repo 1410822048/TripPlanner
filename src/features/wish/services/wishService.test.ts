@@ -17,11 +17,15 @@
 //      applicable.
 //
 // Worker contract:
-//   - workerFetch(base, idToken, endpoint, body) is the single chokepoint
-//     for /wish-file-create and /wish-file-update. The mock asserts full
-//     body shape (tripId / wishId / wish | patch / intentIds) so a
-//     regression that drops a field or sends an unintended one is caught
-//     here, not at the Worker boundary in prod.
+//   - workerFetch(base, idToken, endpoint, body, opts?) is the single
+//     chokepoint for /wish-file-create and /wish-file-update. The mock
+//     asserts full body shape (tripId / wishId / wish | patch / intentIds)
+//     so a regression that drops a field or sends an unintended one is
+//     caught here, not at the Worker boundary in prod. `opts` carries the
+//     upload-flow traceId; assertions match it with `{ traceId:
+//     expect.any(String) }` for shape, with one dedicated correlation
+//     test pinning that the SAME traceId reaches both /upload-intents and
+//     the entity-write call.
 //   - finalizeUploadIntents is no longer involved on wish: doc + image
 //     write happen atomically inside /wish-file-create or
 //     /wish-file-update. Tests do NOT mock or assert finalize calls.
@@ -281,7 +285,7 @@ describe('createWish', () => {
         { kind: 'full',  contentType: 'image/webp', size: 1 },
         { kind: 'thumb', contentType: 'image/webp', size: 1 },
       ],
-    })
+    }, { traceId: expect.any(String) })
     expect(mocks.uploadToIntentMock).toHaveBeenCalledTimes(2)
     // (intent, file, label) MUST be correctly paired per call — a swap
     // (e.g., full file uploaded to thumb intent's path) would mean
@@ -299,9 +303,10 @@ describe('createWish', () => {
       'wish-thumb',
     )
 
-    // workerFetch body: (base, idToken, endpoint, body). Pin the full
-    // body so a regression that drops intentIds / swaps wishId / lets
-    // an `image` field slip into the wish payload is caught here.
+    // workerFetch body: (base, idToken, endpoint, body, opts). Pin the
+    // full body so a regression that drops intentIds / swaps wishId /
+    // lets an `image` field slip into the wish payload is caught here.
+    // 5th arg = `{ traceId }` header opts (shape-only).
     expect(mocks.workerFetchMock).toHaveBeenCalledTimes(1)
     expect(mocks.workerFetchMock).toHaveBeenCalledWith(
       'https://worker.test',
@@ -313,6 +318,7 @@ describe('createWish', () => {
         wish:      { title: 'Place' },
         intentIds: ['i-w-new-F', 'i-w-new-T'],
       },
+      { traceId: expect.any(String) },
     )
   })
 
@@ -381,7 +387,7 @@ describe('createWish', () => {
       uploads: [
         { kind: 'full', contentType: 'image/webp', size: 1 },
       ],
-    })
+    }, { traceId: expect.any(String) })
     expect(mocks.workerFetchMock).not.toHaveBeenCalled()
     expect(mocks.setDocMock).not.toHaveBeenCalled()
     // Phase 3.7: no client-side blob purge on rollback. Worker
@@ -412,7 +418,7 @@ describe('createWish', () => {
         { kind: 'full',  contentType: 'image/webp', size: 1 },
         { kind: 'thumb', contentType: 'image/webp', size: 1 },
       ],
-    })
+    }, { traceId: expect.any(String) })
     expect(mocks.uploadToIntentMock).toHaveBeenCalledTimes(2)
     // workerFetch fired with the full body shape on the failure path
     // too — pin so a regression doesn't slip past on the rejection
@@ -427,9 +433,32 @@ describe('createWish', () => {
         wish:      { title: 'X' },
         intentIds: ['i-w-new-F', 'i-w-new-T'],
       },
+      { traceId: expect.any(String) },
     )
     expect(mocks.setDocMock).not.toHaveBeenCalled()
     expect(mocks.safePurgeMock).not.toHaveBeenCalled()
+  })
+
+  it('upload-trace correlation: SAME traceId reaches /upload-intents AND /wish-file-create', async () => {
+    // Phase 3.7 observability contract: mintAndUploadEntityIntents mints
+    // one traceId per flow and forwards it to BOTH the intent-mint
+    // workerFetch AND the entity-write workerFetch. A regression that
+    // generated separate UUIDs would silently break log-line correlation
+    // across mint → upload → write for a single Sentry breadcrumb.
+    primeWishUpload('w-new')
+    mocks.workerFetchMock.mockResolvedValueOnce({ wishId: 'w-new' })
+
+    await createWish(
+      't1',
+      { title: 'Trace' } as unknown as Parameters<typeof createWish>[1],
+      new File([], 'r.jpg', { type: 'image/jpeg' }),
+      'u1',
+    )
+
+    const mintOpts  = mocks.requestUploadIntentsMock.mock.calls[0]![1] as { traceId: string }
+    const writeOpts = mocks.workerFetchMock.mock.calls[0]![4] as { traceId: string }
+    expect(mintOpts.traceId).toBeTruthy()
+    expect(mintOpts.traceId).toBe(writeOpts.traceId)
   })
 })
 
@@ -464,7 +493,7 @@ describe('updateWish', () => {
         { kind: 'full',  contentType: 'image/webp', size: 1 },
         { kind: 'thumb', contentType: 'image/webp', size: 1 },
       ],
-    })
+    }, { traceId: expect.any(String) })
     expect(mocks.uploadToIntentMock).toHaveBeenCalledTimes(2)
     expect(mocks.uploadToIntentMock).toHaveBeenNthCalledWith(1,
       expect.objectContaining({ intentId: 'i-w1-F', path: 'trips/t1/wishes/w1/F.webp' }),
@@ -494,6 +523,7 @@ describe('updateWish', () => {
         intentIds:           ['i-w1-F', 'i-w1-T'],
         expectedCurrentPath: IMAGE.path,
       },
+      { traceId: expect.any(String) },
     )
 
     // OLD blob purge on success.
@@ -530,6 +560,7 @@ describe('updateWish', () => {
         intentIds:           ['i-w1-F', 'i-w1-T'],
         expectedCurrentPath: IMAGE.path,
       },
+      { traceId: expect.any(String) },
     )
     // OLD untouched, NEW reaped by Worker scan.
     expect(mocks.safePurgeMock).not.toHaveBeenCalled()
@@ -603,6 +634,7 @@ describe('updateWish', () => {
         // when the live doc also has no image (guards Tab-B-attached race).
         expectedCurrentPath: null,
       },
+      { traceId: expect.any(String) },
     )
     // No OLD to purge.
     expect(mocks.safePurgeMock).not.toHaveBeenCalled()

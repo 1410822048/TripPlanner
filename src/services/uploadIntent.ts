@@ -76,13 +76,18 @@ export interface UploadIntentsRequest {
  * (timeout / network / 5xx) when retry might succeed -- the wrapper
  * propagates it without further action, since no storage side
  * effects have happened yet.
+ *
+ * `opts.traceId` (optional) threads through to the `X-Upload-Trace-Id`
+ * header so this call shares its trace with the downstream entity-write
+ * workerFetch in the same upload flow.
  */
 export async function requestUploadIntents(
-  req: UploadIntentsRequest,
+  req:   UploadIntentsRequest,
+  opts?: { traceId?: string },
 ): Promise<UploadIntent[]> {
   const workerBase = requireWorkerWriteBase()
   const idToken    = await preflightIdToken()
-  const result = await workerFetch(workerBase, idToken, '/upload-intents', req) as {
+  const result = await workerFetch(workerBase, idToken, '/upload-intents', req, opts) as {
     intents: UploadIntent[]
   }
   return result.intents

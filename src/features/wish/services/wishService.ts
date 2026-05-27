@@ -42,6 +42,7 @@ import { auditUpdate } from '@/utils/audit'
 import { getTripMemberIds } from '@/services/tripMemberIds'
 import { bumpTripActivity } from '@/services/tripActivity'
 import { safePurgeWithEnqueueFallback } from '@/services/orphanPurge'
+import { breadcrumb } from '@/services/sentry'
 import {
   WishDocSchema,
   UpdateWishSchema,
@@ -140,8 +141,13 @@ export async function createWish(
     // ── Upload-first + Worker-authoritative create ───────────────
     const workerBase = requireWorkerWriteBase()
     const idToken    = await preflightIdToken()
-    const { intentIds } = await mintAndUploadEntityIntents({
+    const { intentIds, traceId } = await mintAndUploadEntityIntents({
       tripId, entityType: 'wish', entityId: ref.id, compressed, mode: 'create',
+    })
+    breadcrumb({
+      category: 'upload',
+      message:  'entity-write',
+      data:     { traceId, endpoint: '/wish-file-create', tripId, wishId: ref.id },
     })
     await workerFetch(workerBase, idToken, '/wish-file-create', {
       tripId,
@@ -151,7 +157,7 @@ export async function createWish(
       // fields polluting the doc).
       wish:   stripEmpty(input),
       intentIds,
-    })
+    }, { traceId })
   } else {
     // ── Text-only client setDoc ──────────────────────────────────
     const memberIds = await getTripMemberIds(tripId)
@@ -218,8 +224,13 @@ export async function updateWish(
     // ── Worker-authoritative replace: text + image atomic ────────
     const workerBase = requireWorkerWriteBase()
     const idToken    = await preflightIdToken()
-    const { intentIds } = await mintAndUploadEntityIntents({
+    const { intentIds, traceId } = await mintAndUploadEntityIntents({
       tripId, entityType: 'wish', entityId: wishId, compressed: compressedForUpload, mode: 'update',
+    })
+    breadcrumb({
+      category: 'upload',
+      message:  'entity-write',
+      data:     { traceId, endpoint: '/wish-file-update', tripId, wishId },
     })
     await workerFetch(workerBase, idToken, '/wish-file-update', {
       tripId,
@@ -233,7 +244,7 @@ export async function updateWish(
       // replaced/detached, Worker returns 409 instead of silently
       // overwriting Tab B's commit + orphaning Tab B's blob.
       expectedCurrentPath: existingImage?.path ?? null,
-    })
+    }, { traceId })
     if (existingImage) {
       await safePurgeWithEnqueueFallback({
         purge: () => deleteWishImage(existingImage),

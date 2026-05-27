@@ -30,6 +30,29 @@ describe('OCR worker routing', () => {
 		expect(res.headers.get('Access-Control-Allow-Methods')).toContain('POST')
 	})
 
+	it('CORS preflight allows Authorization, Content-Type, and X-Upload-Trace-Id', async () => {
+		// Regression pin for the upload-flow observability header:
+		// mintAndUploadEntityIntents sends `X-Upload-Trace-Id` on every
+		// /upload-intents + /expense-* + /booking-file-* + /wish-file-*
+		// request. Custom (non-CORS-safelisted) headers trigger a
+		// preflight, and the browser aborts the actual request if the
+		// header isn't echoed in Access-Control-Allow-Headers — every
+		// upload would 0-byte-fail in prod with no Worker log to grep.
+		const res = await call('OPTIONS', '/upload-intents', {
+			headers: {
+				Origin:                          'http://localhost:5173',
+				'Access-Control-Request-Method': 'POST',
+				'Access-Control-Request-Headers':
+					'authorization, content-type, x-upload-trace-id',
+			},
+		})
+		expect(res.status).toBe(204)
+		const allow = res.headers.get('Access-Control-Allow-Headers') ?? ''
+		expect(allow).toMatch(/Authorization/i)
+		expect(allow).toMatch(/Content-Type/i)
+		expect(allow).toMatch(/X-Upload-Trace-Id/i)
+	})
+
 	it('unknown path returns 404', async () => {
 		const res = await call('POST', '/whatever')
 		expect(res.status).toBe(404)

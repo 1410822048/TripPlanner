@@ -72,8 +72,10 @@ vi.mock('@/services/workerBase', async () => {
 })
 
 const captureErrorMock = vi.fn()
+const breadcrumbMock   = vi.fn()
 vi.mock('@/services/sentry', () => ({
   captureError: captureErrorMock,
+  breadcrumb:   breadcrumbMock,
 }))
 
 vi.mock('@/services/tripActivity', () => ({
@@ -114,13 +116,16 @@ beforeEach(() => {
 // ── Helpers ────────────────────────────────────────────────────────
 
 // Phase 3.5: uploadReceipt now returns the intent-flow shape -- intentIds
-// for the Worker call, paths for client-side rollback addressing. The
-// helper's old ExpenseReceipt return is gone; Worker builds receipt
-// server-side from the intentIds.
-function mockReceipt(): { intentIds: string[]; paths: string[] } {
+// for the Worker call, paths for client-side rollback addressing. Phase
+// 3.7 added `traceId` for upload-flow log-line correlation; expenseService
+// reads it off the same return to thread into both the entity-write
+// workerFetch opts AND the Sentry breadcrumb. Helper bakes a fixed value
+// so tests that assert breadcrumb wiring can pin equality.
+function mockReceipt(): { intentIds: string[]; paths: string[]; traceId: string } {
   return {
     intentIds: ['intent-full-1', 'intent-thumb-1'],
     paths:     ['trips/t1/expenses/exp-1/abc.webp', 'trips/t1/expenses/exp-1/abc.thumb.webp'],
+    traceId:   'test-trace-id-aaaa',
   }
 }
 
