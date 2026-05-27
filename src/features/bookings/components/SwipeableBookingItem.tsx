@@ -39,6 +39,11 @@ export interface SwipeableBookingItemProps {
   onSelect?:  () => void
   /** Tap on the attachment thumbnail/PDF icon — opens the preview modal. */
   onPreview:  () => void
+  /** True when this row's UPDATE mutation is in-flight. Pages derive
+   *  the set via `usePendingMutationIds`. CREATE pending is detected
+   *  via the `temp-` id prefix; UPDATE preserves the real id and needs
+   *  this signal to surface the same 保存中… visual. */
+  isUpdating?: boolean
   /** Swipe-state controlled by parent (useSwipeOpen). Optional — when
    *  any of these are absent the row renders without swipe affordance
    *  (used for viewers without delete permission). */
@@ -50,13 +55,13 @@ export interface SwipeableBookingItemProps {
 
 function SwipeableBookingItem({
   booking, whenLabel, onSelect, onPreview,
-  isOpen, onOpen, onClose, onDelete,
+  isOpen, isUpdating, onOpen, onClose, onDelete,
 }: SwipeableBookingItemProps) {
-  // Rows added via optimistic update carry a `temp-` id until the
-  // Firestore + Storage round-trip lands. While pending, disable
-  // tap/swipe and dim the body + show a 保存中… pill so the user
-  // knows the row is still saving. Mirrors SwipeableExpenseItem.
-  const isPending = booking.id.startsWith('temp-')
+  // CREATE pending → `temp-` id prefix. UPDATE preserves the real id,
+  // so the page also passes `isUpdating` (derived from `useMutationState`).
+  // Either signal disables tap/swipe + dims the body + shows the
+  // 保存中… pill. Mirrors SwipeableExpenseItem.
+  const isPending = booking.id.startsWith('temp-') || !!isUpdating
 
   // Dispatch table — keeps the render tree flat and lets TypeScript
   // narrow each card's prop shape at the case site.

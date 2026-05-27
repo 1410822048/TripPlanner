@@ -84,6 +84,11 @@ export function useCreateBooking(tripId: string, options?: MutationOptions) {
   })
 }
 
+/** Stable mutationKey for `useMutationState`-driven 「保存中」 pill on
+ *  the booking row being updated. Pages call `usePendingMutationIds`
+ *  with this key + `'bookingId'` to derive the set of in-flight ids. */
+export const bookingUpdateMutationKey = ['bookings', 'update'] as const
+
 export function useUpdateBooking(tripId: string, options?: MutationOptions) {
   return useTripListMutation<Booking, {
     bookingId:  string
@@ -93,13 +98,14 @@ export function useUpdateBooking(tripId: string, options?: MutationOptions) {
     existing:   BookingAttachment | undefined
   }>({
     tripId,
-    keyFactory: bookingKeys.all,
-    mutate:     ({ bookingId, updates, uid, attachment, existing }) =>
+    keyFactory:  bookingKeys.all,
+    mutationKey: bookingUpdateMutationKey,
+    mutate:      ({ bookingId, updates, uid, attachment, existing }) =>
       updateBooking(tripId, bookingId, updates, { uid, attachment, existing }),
-    patch:      (prev, { bookingId, updates, uid }) =>
+    patch:       (prev, { bookingId, updates, uid }) =>
       prev.map(b => b.id === bookingId ? { ...b, ...updates, ...auditUpdateMock(uid) } : b),
-    action:     MUTATION_ACTION.UPDATE,
-    silent:     options?.silent,
+    action:      MUTATION_ACTION.UPDATE,
+    silent:      options?.silent,
   })
 }
 

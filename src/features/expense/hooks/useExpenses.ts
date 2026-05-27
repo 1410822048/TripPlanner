@@ -51,6 +51,11 @@ export function useCreateExpense(tripId: string) {
   })
 }
 
+/** Stable mutationKey for `useMutationState`-driven 「保存中」 pill on
+ *  the row being updated. Pages call `usePendingMutationIds` with this
+ *  key + `'expenseId'` to derive the set of in-flight update ids. */
+export const expenseUpdateMutationKey = ['expenses', 'update'] as const
+
 export function useUpdateExpense(tripId: string) {
   return useTripListMutation<Expense, {
     expenseId:  string
@@ -60,12 +65,13 @@ export function useUpdateExpense(tripId: string) {
     existing?:  { path?: string; thumbPath?: string }
   }>({
     tripId,
-    keyFactory: expenseKeys.all,
-    mutate:     ({ expenseId, updates, uid, attachment, existing }) =>
+    keyFactory:  expenseKeys.all,
+    mutationKey: expenseUpdateMutationKey,
+    mutate:      ({ expenseId, updates, uid, attachment, existing }) =>
       updateExpense(tripId, expenseId, updates, { uid, attachment, existingPaths: existing }),
-    patch:      (prev, { expenseId, updates, uid }) =>
+    patch:       (prev, { expenseId, updates, uid }) =>
       prev.map(e => e.id === expenseId ? { ...e, ...updates, ...auditUpdateMock(uid) } : e),
-    action:     MUTATION_ACTION.UPDATE,
+    action:      MUTATION_ACTION.UPDATE,
   })
 }
 

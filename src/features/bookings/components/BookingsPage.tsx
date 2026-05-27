@@ -10,7 +10,9 @@ import DemoBanner from '@/components/ui/DemoBanner'
 import SignInPromptModal from '@/features/auth/components/SignInPromptModal'
 import {
   useBookings, useCreateBooking, useUpdateBooking, useDeleteBooking,
+  bookingUpdateMutationKey,
 } from '../hooks/useBookings'
+import { usePendingMutationIds } from '@/hooks/usePendingMutationIds'
 import { MOCK_BOOKINGS } from '../mocks'
 import type { Booking } from '@/types'
 import BookingFormModal, { type BookingFormResult } from './BookingFormModal'
@@ -66,6 +68,13 @@ export default function BookingsPage() {
   const createMut = useCreateBooking(mutationTripId)
   const updateMut = useUpdateBooking(mutationTripId)
   const deleteMut = useDeleteBooking(mutationTripId)
+  // Set of booking ids whose UPDATE is in-flight — drives the 保存中… pill
+  // on edited cards. CREATE pending is handled inside SwipeableBookingItem
+  // via the temp- id prefix; UPDATE preserves the real id so we need this.
+  const pendingUpdateIds = usePendingMutationIds<{ bookingId: string }>(
+    bookingUpdateMutationKey,
+    'bookingId',
+  )
 
   if (ctx.status === 'loading') return <BookingsPageSkeleton />
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Ticket} reason="予約を管理" />
@@ -216,6 +225,7 @@ export default function BookingsPage() {
                           key={b.id}
                           booking={b}
                           whenLabel={formatWhen(b)}
+                          isUpdating={pendingUpdateIds.has(b.id)}
                           {...swipeProps}
                           onSelect={canWrite ? () => { swipe.closeAll(); modal.openEdit(b) } : undefined}
                           onDelete={canWrite ? () => handleSwipeDelete(b) : undefined}

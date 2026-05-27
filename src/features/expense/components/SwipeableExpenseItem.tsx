@@ -26,6 +26,11 @@ export interface SwipeableExpenseItemProps {
    *  (no write permission) omit it; the row then has no cursor / click,
    *  mirroring firestore.rules so save isn't reached. */
   onSelect?:    () => void
+  /** True when this row's UPDATE mutation is in-flight. Pages derive the
+   *  set via `usePendingMutationIds`. CREATE pending is detected here
+   *  via the `temp-` id prefix; UPDATE preserves the real server id and
+   *  needs this signal to surface the same 保存中… visual. */
+  isUpdating?:  boolean
   /** Swipe-state controlled by parent (useSwipeOpen). Optional — when
    *  any of these are absent the row renders without swipe affordance
    *  (viewers, or pending optimistic rows). */
@@ -37,14 +42,14 @@ export interface SwipeableExpenseItemProps {
 
 function SwipeableExpenseItem({
   expense, payer, summary, categoryEmoji, currency,
-  isOpen, onSelect, onOpen, onClose, onDelete,
+  isOpen, isUpdating, onSelect, onOpen, onClose, onDelete,
 }: SwipeableExpenseItemProps) {
   // Rows added via optimistic update carry a `temp-` prefixed id until
-  // the Firestore + Storage round-trip lands. While pending we disable
-  // tap-to-edit (the doc isn't on the server yet so updateDoc would
-  // fail) and swipe-to-delete, and dim the row + show a spinner so the
-  // user knows it's still saving.
-  const isPending = expense.id.startsWith('temp-')
+  // the Firestore + Storage round-trip lands. UPDATE mutations preserve
+  // the real id, so the page also passes `isUpdating` (derived from
+  // `useMutationState`). Either signal disables tap-to-edit + swipe-to-
+  // delete and dims the row + shows a spinner.
+  const isPending = expense.id.startsWith('temp-') || !!isUpdating
 
   // Receipt thumbnail (if image + thumb exists) replaces the category
   // emoji tile. PDFs without thumbnails keep the emoji — the file-type

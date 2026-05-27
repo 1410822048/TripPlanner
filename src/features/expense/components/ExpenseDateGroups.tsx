@@ -36,6 +36,10 @@ interface Props {
   currency:      string
   canWrite:      boolean
   swipe:         ReturnType<typeof useSwipeOpen>
+  /** Set of expense ids whose UPDATE mutation is in-flight. Forwarded
+   *  to each row so it can show the 保存中… pill. Page derives this
+   *  via `usePendingMutationIds(expenseUpdateMutationKey, 'expenseId')`. */
+  pendingUpdateIds: Set<string>
   /** Tap on an expense row. Optional — viewers omit it (the page gates
    *  on canWrite) so SwipeableExpenseItem renders read-only. */
   onSelect?:     (e: Expense) => void
@@ -43,7 +47,7 @@ interface Props {
 }
 
 export default function ExpenseDateGroups({
-  expenses, members, currency, canWrite, swipe, onSelect, onSwipeDelete,
+  expenses, members, currency, canWrite, swipe, pendingUpdateIds, onSelect, onSwipeDelete,
 }: Props) {
   const grouped = groupBy(expenses, e => e.date)
   const dates = Object.keys(grouped).sort((a, b) => (a < b ? 1 : -1))
@@ -119,6 +123,7 @@ export default function ExpenseDateGroups({
                       summary={splitSummary(e, members.length)}
                       categoryEmoji={CATEGORY_EMOJI[e.category]}
                       currency={currency}
+                      isUpdating={pendingUpdateIds.has(e.id)}
                       {...swipeProps}
                       onSelect={onSelect ? () => { swipe.closeAll(); onSelect(e) } : undefined}
                       onDelete={canWrite ? () => onSwipeDelete(e) : undefined}

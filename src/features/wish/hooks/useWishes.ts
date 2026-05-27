@@ -66,6 +66,11 @@ export function useCreateWish(tripId: string, options?: MutationOptions) {
   })
 }
 
+/** Stable mutationKey for `useMutationState`-driven 「保存中」 pill on
+ *  the wish card being updated. Pages call `usePendingMutationIds` with
+ *  this key + `'wishId'` to derive the set of in-flight update ids. */
+export const wishUpdateMutationKey = ['wishes', 'update'] as const
+
 export function useUpdateWish(tripId: string, options?: MutationOptions) {
   return useTripListMutation<Wish, {
     wishId:        string
@@ -75,13 +80,14 @@ export function useUpdateWish(tripId: string, options?: MutationOptions) {
     existingImage: WishImage | undefined
   }>({
     tripId,
-    keyFactory: wishKeys.all,
-    mutate:     ({ wishId, updates, uid, attachment, existingImage }) =>
+    keyFactory:  wishKeys.all,
+    mutationKey: wishUpdateMutationKey,
+    mutate:      ({ wishId, updates, uid, attachment, existingImage }) =>
       updateWish(tripId, wishId, updates, { uid, attachment, existingImage }),
-    patch:      (prev, { wishId, updates, uid }) =>
+    patch:       (prev, { wishId, updates, uid }) =>
       prev.map(w => w.id === wishId ? { ...w, ...updates, ...auditUpdateMock(uid) } : w),
-    action:     MUTATION_ACTION.UPDATE,
-    silent:     options?.silent,
+    action:      MUTATION_ACTION.UPDATE,
+    silent:      options?.silent,
   })
 }
 

@@ -18,7 +18,9 @@ import DemoBanner from '@/components/ui/DemoBanner'
 import SignInPromptModal from '@/features/auth/components/SignInPromptModal'
 import {
   useWishes, useCreateWish, useUpdateWish, useDeleteWish, useToggleWishVote,
+  wishUpdateMutationKey,
 } from '../hooks/useWishes'
+import { usePendingMutationIds } from '@/hooks/usePendingMutationIds'
 import { MOCK_WISHES } from '../mocks'
 import { useMembers } from '@/features/members/hooks/useMembers'
 import { membersToTripMembers } from '@/features/members/utils'
@@ -69,6 +71,13 @@ export default function WishPage() {
   const updateMut = useUpdateWish(mutationTripId)
   const deleteMut = useDeleteWish(mutationTripId)
   const voteMut   = useToggleWishVote(mutationTripId)
+  // Set of wish ids whose UPDATE is in-flight — drives the 保存中… pill
+  // on edited cards. CREATE pending is handled inside WishCard via the
+  // temp- id prefix; UPDATE preserves the real id so we need this signal.
+  const pendingUpdateIds = usePendingMutationIds<{ wishId: string }>(
+    wishUpdateMutationKey,
+    'wishId',
+  )
 
   if (ctx.status === 'loading') return <WishPageSkeleton />
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Heart} reason="ウィッシュを投票" />
@@ -237,6 +246,7 @@ export default function WishPage() {
                     // for that one image only; everything below stays
                     // lazy so a long wish list doesn't fan-out network.
                     eager={index === 0}
+                    isUpdating={pendingUpdateIds.has(w.id)}
                   />
                 )
               })}

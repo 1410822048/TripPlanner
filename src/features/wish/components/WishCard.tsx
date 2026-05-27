@@ -105,18 +105,25 @@ interface Props {
    *  delaying LCP. Defaults to false → all subsequent cards stay
    *  lazy. */
   eager?:        boolean
+  /** True when this wish's UPDATE mutation is in-flight. Pages derive
+   *  the set via `usePendingMutationIds`. CREATE pending is detected
+   *  via the `temp-` id prefix; UPDATE preserves the real id and needs
+   *  this signal to surface the same 保存中… visual. */
+  isUpdating?:   boolean
 }
 
 function WishCard({
   wish, isVoted, voters, isPreviewOnly,
-  canEdit, canDelete, onEdit, onDelete, onToggleVote, eager,
+  canEdit, canDelete, onEdit, onDelete, onToggleVote, eager, isUpdating,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false)
 
-  // Optimistic-create temp row: disable tap-to-edit, hide ⋮ menu, dim
-  // the body, and show a 保存中… pill at top-right. Vote button is
-  // disabled inside WishActionRow to stop voting on a non-existent doc.
-  const isPending = wish.id.startsWith('temp-')
+  // CREATE pending → temp- id prefix. UPDATE preserves the real id, so
+  // the page also passes `isUpdating` (derived from `useMutationState`).
+  // Either signal disables tap-to-edit, hides ⋮ menu, dims the body,
+  // and shows 保存中… pill. Vote button is disabled inside WishActionRow
+  // to stop voting on a half-saved doc.
+  const isPending = wish.id.startsWith('temp-') || !!isUpdating
 
   const hasMenu = !isPending && (canEdit || canDelete)
   // Card body tap-to-edit only when the viewer can actually edit AND

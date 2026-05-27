@@ -2,7 +2,9 @@
 import { Plus, Receipt } from 'lucide-react'
 import {
   useExpenses, useCreateExpense, useUpdateExpense, useDeleteExpense,
+  expenseUpdateMutationKey,
 } from '../hooks/useExpenses'
+import { usePendingMutationIds } from '@/hooks/usePendingMutationIds'
 import { useSettlements, useCreateSettlement, useDeleteSettlement } from '../hooks/useSettlements'
 import { useMembers } from '@/features/members/hooks/useMembers'
 import { membersToTripMembers } from '@/features/members/utils'
@@ -60,6 +62,13 @@ export default function ExpensePage() {
   const createMut = useCreateExpense(mutationTripId)
   const updateMut = useUpdateExpense(mutationTripId)
   const deleteMut = useDeleteExpense(mutationTripId)
+  // Set of expense ids whose UPDATE is in-flight — drives the 保存中… pill
+  // on edited rows. CREATE pending is handled inside SwipeableExpenseItem
+  // via the temp- id prefix; UPDATE preserves the real id so we need this.
+  const pendingUpdateIds = usePendingMutationIds<{ expenseId: string }>(
+    expenseUpdateMutationKey,
+    'expenseId',
+  )
   // isSaving stays `false` for the modal — handleSave closes the modal
   // synchronously before the mutation fires (optimistic close), so the
   // save button never enters a busy state. Without forcing this to false
@@ -238,6 +247,7 @@ export default function ExpensePage() {
             currency={currency}
             canWrite={canWrite}
             swipe={swipe}
+            pendingUpdateIds={pendingUpdateIds}
             onSelect={canWrite ? modal.openEdit : undefined}
             onSwipeDelete={handleSwipeDelete}
           />

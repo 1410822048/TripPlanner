@@ -46,6 +46,13 @@ export interface UseTripListMutationOpts<T, Vars> {
   /** When true, the global MutationCache.onError skips its toast — modal
    *  flows surface errors via inline banner instead. See queryClient.ts. */
   silent?:    boolean
+  /** Stable key for `useMutationState` discovery. Update mutations set
+   *  this so list pages can query in-flight mutations and surface a
+   *  「保存中」 pill on the row that's being updated (CREATE detects
+   *  pending via the temp-id prefix; UPDATE preserves the real id and
+   *  needs this signal instead). Convention: `[entity, operation]`,
+   *  e.g. `['expenses', 'update']`. */
+  mutationKey?: readonly unknown[]
   /** Optional callback that runs AFTER the factory's rollback. Use
    *  when a typed error needs to trigger extra side effects -- e.g.
    *  invalidating queries when a `BookingCreatePartialError` signals
@@ -62,6 +69,7 @@ export function useTripListMutation<T extends { id: string }, Vars>(
   const key = opts.keyFactory(opts.tripId, uid)
 
   return useMutation({
+    mutationKey: opts.mutationKey,
     mutationFn: (vars: Vars) => {
       if (!uid) {
         // Hard failure rather than a silent no-op: upstream pages gate
