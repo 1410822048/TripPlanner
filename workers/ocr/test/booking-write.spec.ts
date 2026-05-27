@@ -968,9 +968,84 @@ describe('bookingFileUpdate: body validation', () => {
 	// SECURITY: Worker uses admin SDK and bypasses firestore.rules, so any
 	// cap rules enforce but the Worker schema omits is a real exploit
 	// (caller posts megabyte payload, Worker writes via admin). These
-	// three caps were missing before 2026-05-27 — drift caught in a
-	// post-Phase-3.7 audit. Tests pin both sides of the cap to lockstep
-	// rules at note 2000 / checkIn 32 / checkOut 32.
+	// caps were missing before 2026-05-27 — drift caught in a
+	// post-Phase-3.7 audit. Tests pin Worker schema to the three-way
+	// lockstep with firestore.rules + src/types/booking.ts.
+	it('rejects when origin exceeds rules cap (60 chars)', async () => {
+		seedUpdateAuth()
+		await expect(bookingFileUpdate(
+			CALLER_UID,
+			{
+				tripId:              TRIP_ID,
+				bookingId:           BOOKING_ID,
+				patch:               { origin: 'x'.repeat(61) },
+				intentIds:           [FULL_INTENT_ID],
+				expectedCurrentPath: FULL_PATH,
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(BookingValidationError)
+	})
+
+	it('rejects when destination exceeds rules cap (60 chars)', async () => {
+		seedUpdateAuth()
+		await expect(bookingFileUpdate(
+			CALLER_UID,
+			{
+				tripId:              TRIP_ID,
+				bookingId:           BOOKING_ID,
+				patch:               { destination: 'x'.repeat(61) },
+				intentIds:           [FULL_INTENT_ID],
+				expectedCurrentPath: FULL_PATH,
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(BookingValidationError)
+	})
+
+	it('rejects when confirmationCode exceeds rules cap (64 chars)', async () => {
+		seedUpdateAuth()
+		await expect(bookingFileUpdate(
+			CALLER_UID,
+			{
+				tripId:              TRIP_ID,
+				bookingId:           BOOKING_ID,
+				patch:               { confirmationCode: 'x'.repeat(65) },
+				intentIds:           [FULL_INTENT_ID],
+				expectedCurrentPath: FULL_PATH,
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(BookingValidationError)
+	})
+
+	it('rejects when provider exceeds rules cap (60 chars)', async () => {
+		seedUpdateAuth()
+		await expect(bookingFileUpdate(
+			CALLER_UID,
+			{
+				tripId:              TRIP_ID,
+				bookingId:           BOOKING_ID,
+				patch:               { provider: 'x'.repeat(61) },
+				intentIds:           [FULL_INTENT_ID],
+				expectedCurrentPath: FULL_PATH,
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(BookingValidationError)
+	})
+
+	it('rejects when address exceeds rules cap (200 chars)', async () => {
+		seedUpdateAuth()
+		await expect(bookingFileUpdate(
+			CALLER_UID,
+			{
+				tripId:              TRIP_ID,
+				bookingId:           BOOKING_ID,
+				patch:               { address: 'x'.repeat(201) },
+				intentIds:           [FULL_INTENT_ID],
+				expectedCurrentPath: FULL_PATH,
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(BookingValidationError)
+	})
+
 	it('rejects when note exceeds rules cap (2000 chars)', async () => {
 		seedUpdateAuth()
 		await expect(bookingFileUpdate(

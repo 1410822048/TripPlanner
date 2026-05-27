@@ -806,22 +806,22 @@ service cloud.firestore {
                       // satisfies the size cap while corrupting the doc.
                       && (!('title' in request.resource.data)
                             || (request.resource.data.title is string
-                                && request.resource.data.title.size() <= 200))
+                                && request.resource.data.title.size() <= 100))
                       && (!('origin' in request.resource.data)
                             || (request.resource.data.origin is string
-                                && request.resource.data.origin.size() <= 100))
+                                && request.resource.data.origin.size() <= 60))
                       && (!('destination' in request.resource.data)
                             || (request.resource.data.destination is string
-                                && request.resource.data.destination.size() <= 100))
+                                && request.resource.data.destination.size() <= 60))
                       && (!('confirmationCode' in request.resource.data)
                             || (request.resource.data.confirmationCode is string
-                                && request.resource.data.confirmationCode.size() <= 100))
+                                && request.resource.data.confirmationCode.size() <= 64))
                       && (!('provider' in request.resource.data)
                             || (request.resource.data.provider is string
-                                && request.resource.data.provider.size() <= 100))
+                                && request.resource.data.provider.size() <= 60))
                       && (!('address' in request.resource.data)
                             || (request.resource.data.address is string
-                                && request.resource.data.address.size() <= 400))
+                                && request.resource.data.address.size() <= 200))
                       && (!('checkIn' in request.resource.data)
                             || (request.resource.data.checkIn is string
                                 && request.resource.data.checkIn.size() <= 32))
@@ -866,22 +866,22 @@ service cloud.firestore {
           && request.resource.data.type in ['flight','hotel','train','bus','other']
           && (!('title' in request.resource.data)
                 || (request.resource.data.title is string
-                    && request.resource.data.title.size() <= 200))
+                    && request.resource.data.title.size() <= 100))
           && (!('origin' in request.resource.data)
                 || (request.resource.data.origin is string
-                    && request.resource.data.origin.size() <= 100))
+                    && request.resource.data.origin.size() <= 60))
           && (!('destination' in request.resource.data)
                 || (request.resource.data.destination is string
-                    && request.resource.data.destination.size() <= 100))
+                    && request.resource.data.destination.size() <= 60))
           && (!('confirmationCode' in request.resource.data)
                 || (request.resource.data.confirmationCode is string
-                    && request.resource.data.confirmationCode.size() <= 100))
+                    && request.resource.data.confirmationCode.size() <= 64))
           && (!('provider' in request.resource.data)
                 || (request.resource.data.provider is string
-                    && request.resource.data.provider.size() <= 100))
+                    && request.resource.data.provider.size() <= 60))
           && (!('address' in request.resource.data)
                 || (request.resource.data.address is string
-                    && request.resource.data.address.size() <= 400))
+                    && request.resource.data.address.size() <= 200))
           && (!('checkIn' in request.resource.data)
                 || (request.resource.data.checkIn is string
                     && request.resource.data.checkIn.size() <= 32))

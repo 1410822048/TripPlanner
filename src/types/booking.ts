@@ -152,10 +152,14 @@ export const CreateBookingSchema = z.object({
   destination:      z.string().max(60).optional(),
   confirmationCode: z.string().max(64).optional(),
   provider:         z.string().max(60).optional(),
-  // checkIn/checkOut/note caps mirror firestore.rules booking
-  // create/update (32 / 32 / 2000). Worker schema must keep these in
-  // lockstep — Worker uses admin SDK and bypasses rules, so a missing
-  // cap on either side is a real exploit not just a UX nicety.
+  // All string caps (title 100 / origin 60 / destination 60 /
+  // confirmationCode 64 / provider 60 / address 200 / checkIn 32 /
+  // checkOut 32 / note 2000) mirror firestore.rules booking
+  // create/update AND workers/ocr/src/booking-write.ts. Three-way
+  // lockstep is mandatory: the Worker uses admin SDK and bypasses
+  // rules, so a looser cap on either side is a real exploit (a
+  // megabyte `note` written via Worker bypassing rules cap; or a
+  // no-file booking writing client-side past Worker cap).
   checkIn:          z.string().max(32).optional(),
   checkOut:         z.string().max(32).optional(),
   address:          z.string().max(200).optional(),

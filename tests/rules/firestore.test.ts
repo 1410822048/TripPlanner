@@ -443,6 +443,55 @@ describe('/trips/{tripId}/bookings', () => {
       }),
     )
   })
+
+  // SECURITY: rules string caps must stay in three-way lockstep with
+  // workers/ocr/src/booking-write.ts (Worker uses admin SDK → bypasses
+  // rules → looser-than-rules side becomes a real exploit) AND
+  // src/types/booking.ts (UX consistency: client preview vs server
+  // accept must agree). Cover the no-file path which is the ONLY
+  // client-side setDoc surface for bookings now that file-create /
+  // file-update are Worker-authoritative — these tests guard against
+  // a raw-SDK writer slipping a 101-char title past the rules cap.
+  test('booking create with title over 100 chars is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-cap-title'), {
+        tripId: TRIP_ID, type: 'hotel', title: 'x'.repeat(101),
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        sortDate:  serverTimestamp(),
+      }),
+    )
+  })
+
+  test('booking create with address over 200 chars is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-cap-addr'), {
+        tripId: TRIP_ID, type: 'hotel', title: 'X',
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        sortDate:  serverTimestamp(),
+        address: 'x'.repeat(201),
+      }),
+    )
+  })
+
+  test('booking update with title over 100 chars is rejected', async () => {
+    // The companion to "booking create with title over 100 chars" —
+    // update path has its own size predicate block in firestore.rules
+    // (lines 867-893) that previously drifted (was 200) and was tightened
+    // 2026-05-27. This test pins both create + update to the same cap.
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_ID), {
+        title:     'x'.repeat(101),
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
 })
 
 // ─── Wishes (the trickiest rule) ───────────────────────────────────
