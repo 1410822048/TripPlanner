@@ -8,10 +8,11 @@
 //   - null      → user removed the existing file (clear on save)
 //   - File      → user picked a new file (replace on save)
 import { useRef, useState } from 'react'
-import { Paperclip, FileText, X as XIcon, ArrowRight } from 'lucide-react'
+import { Paperclip, ArrowRight } from 'lucide-react'
 import type { Booking, CreateBookingInput } from '@/types'
 import FormModalShell from '@/components/ui/FormModalShell'
 import DeleteConfirm from '@/components/ui/DeleteConfirm'
+import AttachmentRow from '@/components/ui/AttachmentRow'
 import { DatePicker, type DatePickerHandle } from '@/components/ui/pickers'
 import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
@@ -317,46 +318,17 @@ export default function BookingFormModal({
           className="hidden"
         />
         {att.hasAttachment ? (
-          <div className="flex items-center gap-3 px-2.5 py-2 rounded-input bg-app border border-border">
-            <button
-              type="button"
-              onClick={() => att.previewUrl && setPreviewOpen(true)}
-              disabled={!att.previewUrl}
-              aria-label="添付を表示"
-              className="w-12 h-12 rounded-md shrink-0 flex items-center justify-center bg-tile text-muted border-none cursor-pointer hover:opacity-80 transition-opacity overflow-hidden disabled:cursor-default disabled:opacity-100"
-            >
-              {att.previewIsImage && att.previewUrl ? (
-                <img
-                  src={att.previewUrl}
-                  alt=""
-                  className="w-full h-full object-cover pointer-events-none"
-                  draggable={false}
-                />
-              ) : (
-                <FileText size={20} strokeWidth={1.6} className="pointer-events-none" />
-              )}
-            </button>
-            <div className="flex-1 min-w-0">
-              <div className="text-[12px] font-semibold text-ink truncate">
-                {att.attachmentName}
-              </div>
-              <button
-                type="button"
-                onClick={pickFile}
-                className="text-[11px] text-accent font-medium border-none bg-transparent p-0 cursor-pointer hover:underline"
-              >
-                ファイルを変更
-              </button>
-            </div>
-            <button
-              type="button"
-              onClick={att.clear}
-              aria-label="添付を削除"
-              className="w-8 h-8 rounded-full flex items-center justify-center bg-app text-muted border-none cursor-pointer hover:bg-border transition-colors shrink-0"
-            >
-              <XIcon size={14} strokeWidth={2} />
-            </button>
-          </div>
+          <AttachmentRow
+            fileName={att.attachmentName}
+            previewUrl={att.previewUrl}
+            isImage={att.previewIsImage}
+            onReplace={pickFile}
+            onClear={att.clear}
+            onPreview={() => att.previewUrl && setPreviewOpen(true)}
+            replaceAriaLabel="ファイルを変更"
+            previewAriaLabel="添付を表示"
+            clearAriaLabel="添付を削除"
+          />
         ) : (
           <button
             type="button"

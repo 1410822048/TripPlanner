@@ -4,11 +4,12 @@
 // not photo memories). Form state via useReducer; image via the same
 // tri-state pattern as bookings.
 import { useRef, useState } from 'react'
-import { Plus, X as XIcon, FileText } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import type { Wish, WishCategory, WishImage, CreateWishInput } from '@/types'
 import FormModalShell from '@/components/ui/FormModalShell'
 import FormField from '@/components/ui/FormField'
 import DeleteConfirm from '@/components/ui/DeleteConfirm'
+import AttachmentRow from '@/components/ui/AttachmentRow'
 import { inputClass } from '@/components/ui/inputStyle'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
@@ -233,31 +234,15 @@ export default function WishFormModal({
           className="hidden"
         />
         {hasImage ? (
-          <div className="flex items-center gap-3 px-2.5 py-2 rounded-input bg-app border border-border">
-            <div className="w-12 h-12 rounded-md shrink-0 overflow-hidden bg-tile">
-              {previewUrl
-                ? <img src={previewUrl} alt="" className="w-full h-full object-cover" draggable={false} />
-                : <div className="w-full h-full flex items-center justify-center text-muted"><FileText size={20} strokeWidth={1.6} /></div>}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-[12px] font-semibold text-ink truncate">{previewName}</div>
-              <button
-                type="button"
-                onClick={pickFile}
-                className="text-[11px] text-accent font-medium border-none bg-transparent p-0 cursor-pointer hover:underline"
-              >
-                画像を変更
-              </button>
-            </div>
-            <button
-              type="button"
-              onClick={clearImage}
-              aria-label="画像を削除"
-              className="w-8 h-8 rounded-full flex items-center justify-center bg-app text-muted border-none cursor-pointer hover:bg-border transition-colors shrink-0"
-            >
-              <XIcon size={14} strokeWidth={2} />
-            </button>
-          </div>
+          <AttachmentRow
+            fileName={previewName}
+            previewUrl={previewUrl}
+            isImage={true}
+            onReplace={pickFile}
+            onClear={clearImage}
+            replaceAriaLabel="画像を変更"
+            clearAriaLabel="画像を削除"
+          />
         ) : (
           <button
             type="button"

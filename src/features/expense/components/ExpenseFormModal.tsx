@@ -19,7 +19,7 @@
 //   - useExpenseItems  — by-item state + mutators
 //   - useOcrFlow       — OCR pipeline (compress + worker + error copy)
 import { useRef, useState } from 'react'
-import { Camera, FileText, Loader2, Plus, ScanLine, Trash2, Upload, X as XIcon } from 'lucide-react'
+import { Camera, Loader2, Plus, ScanLine, Trash2, Upload } from 'lucide-react'
 import type { Expense, ExpenseCategory, ExpenseSplit, CreateExpenseInput } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import FormModalShell from '@/components/ui/FormModalShell'
@@ -29,6 +29,7 @@ import { inputClass } from '@/components/ui/inputStyle'
 import CurrencyInput from '@/components/ui/CurrencyInput'
 import MemberChip from '@/components/ui/MemberChip'
 import MemberAvatar from '@/components/ui/MemberAvatar'
+import AttachmentRow from '@/components/ui/AttachmentRow'
 import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
@@ -395,37 +396,17 @@ export default function ExpenseFormModal({
 
         {att.hasAttachment ? (
           <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-3 px-2.5 py-2 rounded-input bg-app border border-border">
-              <button
-                type="button"
-                onClick={() => att.previewUrl && setPreviewOpen(true)}
-                disabled={!att.previewUrl}
-                aria-label="レシートを拡大表示"
-                className="w-12 h-12 rounded-md shrink-0 overflow-hidden bg-tile flex items-center justify-center border-none cursor-pointer hover:opacity-80 transition-opacity disabled:cursor-default disabled:opacity-100"
-              >
-                {att.previewIsImage && att.previewUrl
-                  ? <img src={att.previewUrl} alt="" className="w-full h-full object-cover pointer-events-none" draggable={false} />
-                  : <FileText size={20} strokeWidth={1.6} className="text-muted pointer-events-none" />}
-              </button>
-              <div className="flex-1 min-w-0">
-                <div className="text-[12px] font-semibold text-ink truncate">{att.attachmentName}</div>
-                <button
-                  type="button"
-                  onClick={() => uploadRef.current?.click()}
-                  className="text-[11px] text-accent font-medium border-none bg-transparent p-0 cursor-pointer hover:underline"
-                >
-                  変更
-                </button>
-              </div>
-              <button
-                type="button"
-                onClick={handleClearReceipt}
-                aria-label="レシートを削除"
-                className="w-8 h-8 rounded-full flex items-center justify-center bg-app text-muted border-none cursor-pointer hover:bg-border transition-colors shrink-0"
-              >
-                <XIcon size={14} strokeWidth={2} />
-              </button>
-            </div>
+            <AttachmentRow
+              fileName={att.attachmentName}
+              previewUrl={att.previewUrl}
+              isImage={att.previewIsImage}
+              onReplace={() => uploadRef.current?.click()}
+              onClear={handleClearReceipt}
+              onPreview={() => att.previewUrl && setPreviewOpen(true)}
+              replaceAriaLabel="レシートを変更"
+              previewAriaLabel="レシートを拡大表示"
+              clearAriaLabel="レシートを削除"
+            />
 
             {/* Manual read-items button (only when not yet OCR'd). ScanLine
                 + "読み取る" reads as scanning a receipt, not AI magic. */}
