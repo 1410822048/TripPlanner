@@ -1,11 +1,12 @@
 // src/features/expense/services/expenseStorage.ts
 // Phase 3.5: Worker-issued upload intent flow. Helper no longer
-// decides path / metadata client-side -- it requests intents, uploads
-// to the server-minted paths, and returns the intentIds + paths.
+// decides path / metadata client-side -- it delegates to the shared
+// `mintAndUploadEntityIntents` primitive and returns intentIds + paths
+// in the shape the expense service needs.
 //
 // Why this shape: the Worker's /expense-create + /expense-update
 // consume intentIds in the same Firestore transaction as the
-// expense doc write (no separate /upload-finalize round-trip), so
+// expense doc write (no separate finalize round-trip), so
 // the helper hands off intentIds to the service caller. `paths` are
 // kept on the client side for `safePurgeWithEnqueueFallback` rollback
 // -- if the Worker rejects (definitive 4xx) or the post-upload
@@ -19,13 +20,8 @@
 // both full + thumb and upload in parallel.
 
 import { compressImage } from '@/utils/image'
-import {
-  requestUploadIntents,
-  uploadToIntent,
-  type IntentKind,
-  type UploadIntent,
-  type UploadIntentsRequest,
-} from '@/services/uploadIntent'
+import { mintAndUploadEntityIntents } from '@/services/uploadIntentEntity'
+import { type UploadIntent } from '@/services/uploadIntent'
 import { deleteStorageObject } from '@/services/storageDelete'
 
 /** Returned by `uploadReceipt` -- the service caller passes `intentIds`
@@ -40,53 +36,19 @@ export interface UploadedReceiptIntents {
 /**
  * Upload a receipt + (when image) its thumbnail via the Worker-issued
  * intent flow. Returns intentIds for the Worker call and paths for
- * client-side rollback. No path / metadata authoring happens here --
- * the Worker mints both at intent-request time.
+ * client-side rollback. No `mode` -- expense doesn't carry the wish
+ * proposer-check distinction (Worker authzUpload uses the
+ * canWrite-only path for entityType 'expense').
  */
 export async function uploadReceipt(
   tripId:    string,
   expenseId: string,
   file:      File,
 ): Promise<UploadedReceiptIntents> {
-  const { full, thumb } = await compressImage(file)
-
-  // Build the intent batch. Primary blob's kind depends on contentType
-  // (PDF stays as PDF; everything else is treated as a "full" image).
-  // The Worker re-validates -- kind 'pdf' requires `application/pdf`,
-  // kind 'full' rejects PDFs -- so a wrong pairing here surfaces as a
-  // 400 from /upload-intents rather than a silent upload that fails
-  // later at the rules layer.
-  const primaryKind: IntentKind = full.type === 'application/pdf' ? 'pdf' : 'full'
-  const uploads: UploadIntentsRequest['uploads'] = [
-    { kind: primaryKind, contentType: full.type, size: full.size },
-  ]
-  if (thumb) {
-    uploads.push({ kind: 'thumb', contentType: thumb.type, size: thumb.size })
-  }
-
-  const intents = await requestUploadIntents({
-    tripId, entityType: 'expense', entityId: expenseId, uploads,
+  const compressed = await compressImage(file)
+  return await mintAndUploadEntityIntents({
+    tripId, entityType: 'expense', entityId: expenseId, compressed,
   })
-  // Order is preserved -- Worker returns intents in the same order
-  // as the request's `uploads` array. Index 0 is the primary, index
-  // 1 is the thumb (when present).
-  const fullIntent  = intents[0]!
-  const thumbIntent = thumb ? intents[1] : undefined
-
-  // Parallel upload. Either succeeds or any failure throws; partial
-  // upload doesn't strand intents because the Worker's purge cron
-  // expires unused 'pending' intents past their 30-min TTL anyway.
-  await Promise.all([
-    uploadToIntent(fullIntent, full, 'expense-full'),
-    thumb && thumbIntent
-      ? uploadToIntent(thumbIntent, thumb, 'expense-thumb')
-      : Promise.resolve(),
-  ])
-
-  return {
-    intentIds: intents.map(i => i.intentId),
-    paths:     intents.map(i => i.path),
-  }
 }
 
 /**

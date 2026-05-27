@@ -13,9 +13,9 @@ rules_version = '2';
 //     tripNotDeleting still hold. They do NOT verify the intent doc
 //     EXISTS, is unused, has not expired, or was minted for this exact
 //     path -- those are enforced AUTHORITATIVELY by the Worker when it
-//     consumes the intent in /upload-finalize, /expense-create,
-//     /expense-update. The split is deliberate: see "DO NOT add cross-
-//     service reads on freshly-written docs" below.
+//     consumes the intent in /booking-file-*, /wish-file-*,
+//     /expense-create, /expense-update. The split is deliberate: see
+//     "DO NOT add cross-service reads on freshly-written docs" below.
 //   - Default deny at the bottom catches anything outside /trips/.
 //
 // DO NOT add cross-service reads on freshly-written docs.
@@ -28,8 +28,9 @@ rules_version = '2';
 //   client + metadata all being correct.
 //
 //   Fix: intent validity (status / expiresAt / path / contentType /
-//   single-use) is enforced when the Worker consumes the intent in
-//   /upload-finalize and /expense-* paths. Storage rules verify only
+//   single-use) is enforced when the Worker consumes the intent at
+//   the entity-write endpoints (/booking-file-*, /wish-file-*,
+//   /expense-create, /expense-update). Storage rules verify only
 //   self-contained metadata + a length check on uploadIntentId.
 //
 //   When adding any new cross-service read here, ask: "is this doc
@@ -102,9 +103,9 @@ service firebase.storage {
     //   - /upload-intents reads the wish doc with Admin SDK (strong
     //     consistency, no cross-service staleness) and refuses to mint
     //     for non-proposer.
-    //   - /upload-finalize reads the wish doc with Admin SDK again and
-    //     refuses to patch wish.image for non-proposer, then marks the
-    //     intent used in the same transaction.
+    //   - /wish-file-create / /wish-file-update read the wish doc with
+    //     Admin SDK again and refuse to write wish.image for non-
+    //     proposer, then mark the intent used in the same transaction.
     //
     // Storage rules used to call isWishProposer in `allow create` as
     // defense-in-depth. The 2026-05-26 production incident (systematic
@@ -119,7 +120,7 @@ service firebase.storage {
     //
     // Fix: storage.rules stop gating CREATE on isWishProposer. The
     // Worker is already the authoritative proposer gate at both intent
-    // mint and finalize. Storage rules verify only stable claimed
+    // mint and entity-write consume. Storage rules verify only stable claimed
     // metadata (intentMatches: uploaderUid match + tripId/entityType/
     // entityId/schemaVersion match + size/contentType allowlist +
     // 32-char intentId shape) plus isMember + tripNotDeleting at upload
@@ -161,8 +162,8 @@ service firebase.storage {
     // Plus the upload-time permission checks at each match block:
     // canWriteFiles / isWishProposer + tripNotDeleting.
     //
-    // What Storage rules do NOT verify (Worker /upload-finalize owns
-    // these on intent consume, where it reads the intent doc by id):
+    // What Storage rules do NOT verify (Worker entity-write endpoints
+    // own these on intent consume, where they read the intent doc by id):
     //   - the intent doc exists at all
     //   - intent.status == 'pending' (not already used)
     //   - intent.expiresAt > now (within 30-min window)
@@ -242,8 +243,9 @@ service firebase.storage {
       // shape, tripId/entityType/entityId metadata match the URL).
       // It does NOT verify that an intent doc with this id actually
       // exists, is unused, has not expired, or was minted for this
-      // exact path -- /upload-finalize on the Worker is the
-      // authoritative gate for those (see the long block above).
+      // exact path -- /booking-file-create / /booking-file-update on
+      // the Worker are the authoritative gates for those (see the
+      // long block above).
       // canWriteFiles + tripNotDeleting still gate at upload time so
       // a stale 30-min intent can't be replayed by a since-demoted /
       // removed member or against a trip that's mid-cascade. update
@@ -277,10 +279,11 @@ service firebase.storage {
       // metadata properties only -- size / contentType allowlist /
       // metadata shape / tripId-entityType-entityId match + uploader
       // uid match. Intent existence / status / expires / single-use
-      // is the Worker's job at /upload-finalize. Proposer enforcement
-      // is at the Worker: /upload-intents refuses to mint for non-
-      // proposer (Admin SDK read), and /upload-finalize refuses to
-      // patch wish.image for non-proposer. Wish-specific image-only
+      // is the Worker's job at /wish-file-create / /wish-file-update.
+      // Proposer enforcement is at the Worker: /upload-intents refuses
+      // to mint for non-proposer (Admin SDK read), and the wish-file
+      // endpoints refuse to write wish.image for non-proposer. Wish-
+      // specific image-only
       // enforcement happens at intent-mint time in upload-intent.ts's
       // WISH allowlist (PDF kind is rejected before the intent is
       // even created), so by the time the upload lands here, a wish-

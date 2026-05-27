@@ -92,9 +92,10 @@ export async function listObjects(
  * non-2xx so transient GCS issues bubble up as cron / endpoint errors
  * rather than silently treating them as "missing object".
  *
- * Used by /upload-finalize + /expense-create-with-intent to verify the
- * client actually uploaded to the intent's path before we mark the
- * intent used. `customMetadata` is read so the Worker can enforce
+ * Used by the entity-write endpoints (/booking-file-*, /wish-file-*,
+ * /expense-create, /expense-update) to verify the client actually
+ * uploaded to the intent's path before we mark the intent used.
+ * `customMetadata` is read so the Worker can enforce
  * the intent-vs-upload contract (allowedContentTypes / maxBytes /
  * customMetadata equality) at consume time -- storage.rules is a
  * STABLE GATE only and does not cross-service-read the intent doc,
@@ -150,16 +151,16 @@ export interface ObjectMetadata {
  * comma-separated; we use the first one (Firebase SDK uses any valid
  * token interchangeably).
  *
- * Returns null when the metadata doesn't carry a token. Phase 3.6
+ * Returns null when the metadata doesn't carry a token. Phase 3.7
  * does NOT tolerate this -- the Worker is the authoritative writer
  * for booking.attachment / wish.image / expense.receipt and the
  * Firestore doc's url field cannot be left empty without violating
- * the entity's Zod schema. All consume callers (`/upload-finalize`
- * and the expense write path) explicitly reject when the URL is
- * null with a 500 / ExpenseValidationError, surfacing the bypass
- * (non-Firebase-SDK direct GCS upload). In practice Firebase
- * Storage SDK uploads always set this token automatically, so null
- * indicates the upload was not made via the Firebase Storage SDK.
+ * the entity's Zod schema. All consume callers (the entity-write
+ * endpoints) explicitly reject when the URL is null with a 500 /
+ * ExpenseValidationError, surfacing the bypass (non-Firebase-SDK
+ * direct GCS upload). In practice Firebase Storage SDK uploads
+ * always set this token automatically, so null indicates the upload
+ * was not made via the Firebase Storage SDK.
  */
 export function downloadUrlFromMetadata(
   bucket:        string,

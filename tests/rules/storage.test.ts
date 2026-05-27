@@ -433,8 +433,9 @@ describe('Phase 3.5 intent-verified upload: wish (isMember only; proposer is Wor
     // any member; proposer enforcement lives at the Worker:
     //   - /upload-intents refuses to mint for non-proposer (Admin
     //     SDK read, no cross-service race).
-    //   - /upload-finalize refuses to patch wish.image for non-
-    //     proposer and refuses to mark the intent used.
+    //   - /wish-file-create / /wish-file-update refuse to write
+    //     wish.image for non-proposer and refuse to mark the intent
+    //     used.
     // A non-proposer who somehow obtained a shape-valid intent
     // (e.g. admin context here) can write bytes, but the intent is
     // never consumed and the blob becomes orphan -- cleaned by the
@@ -524,15 +525,16 @@ describe('Phase 3.5 revocation-window: intent minted, permission changes before 
     await setDeleting(false)
   })
 
-  test('wish: intent minted, then proposer changed → Storage still accepts (Worker rejects at finalize)', async () => {
+  test('wish: intent minted, then proposer changed → Storage still accepts (Worker rejects at consume)', async () => {
     // 2026-05-26: storage.rules used to call isWishProposer on the
     // freshly-written wish doc and 403'd in production. Removed.
     // After the proposer-on-doc changes mid-flight, Storage rules
-    // no longer care; Worker /upload-finalize will read the wish
-    // doc again with Admin SDK, see proposedBy != callerUid, and
-    // refuse to patch wish.image -- blob becomes orphan, cleaned
-    // by cron. trip-cascade and role-revocation gates above are
-    // the actually-stable Storage-rule revocation paths.
+    // no longer care; Worker /wish-file-create / /wish-file-update
+    // will read the wish doc again with Admin SDK, see proposedBy
+    // != callerUid, and refuse to write wish.image -- blob becomes
+    // orphan, cleaned by cron. trip-cascade and role-revocation
+    // gates above are the actually-stable Storage-rule revocation
+    // paths.
     const seed = await seedIntent({
       intentId: 'i-revoke-wish-doc', entityType: 'wish', entityId: WISH_ID,
     })

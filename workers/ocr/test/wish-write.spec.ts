@@ -883,8 +883,8 @@ describe('wishFileUpdate: intent scope binding', () => {
 // P3 silently replaces B's P2 AND A's safePurgeWithEnqueueFallback
 // deletes the stale P1 it knows about, leaving B's P2 orphaned. With
 // the guard, A's finalize hits 409 — client surfaces the error,
-// re-loads the wish, and the editor reconciles. Mirrors the Phase 3.6
-// /upload-finalize stale-finalize contract (same shape on purpose).
+// re-loads the wish, and the editor reconciles. Mirrors the
+// /booking-file-update stale-replace contract (same shape on purpose).
 
 /** Wish doc with NO `image` field. Used to test the
  *  `expectedCurrentPath=string but doc.image absent` race (Tab B

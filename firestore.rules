@@ -94,9 +94,10 @@ service cloud.firestore {
     // Allow `field` to be either unchanged OR removed (via deleteField()),
     // but never written/changed. Used for Worker-authoritative fields
     // (booking.attachment, wish.image) where the client may detach but
-    // not write — Worker endpoints (`/upload-finalize` for booking,
-    // `/wish-file-create` + `/wish-file-update` for wish) own all writes
-    // via Admin SDK (rules-bypass). Note: `unchanged()` already returns
+    // not write — Worker endpoints (`/booking-file-create` +
+    // `/booking-file-update` for booking, `/wish-file-create` +
+    // `/wish-file-update` for wish) own all writes via Admin SDK
+    // (rules-bypass). Note: `unchanged()` already returns
     // true when the field is missing on BOTH sides (diff-based), so this
     // helper only adds the "present-on-old, absent-on-new" detach case.
     function unchangedOrRemoved(field) {
@@ -183,13 +184,13 @@ service cloud.firestore {
     //     `expense-validate.ts` owns shape validation.
     //   - booking.attachment, wish.image: create rule forbids the field,
     //     update rule allows only `unchangedOrRemoved`. Booking uses
-    //     `/upload-finalize` (doc-first then patch). Wish uses
+    //     `/booking-file-create` + `/booking-file-update`. Wish uses
     //     `/wish-file-create` + `/wish-file-update` (Phase 3.7: atomic
     //     doc + image in one tx). All Admin SDK rules-bypass; all
     //     verify the intent doc's used/expires/stale guards.
     // The old helpers checked path-binding + URL-origin invariants that
     // now live in `workers/ocr/src/expense-validate.ts` (makeReceiptSchema)
-    // and `workers/ocr/src/upload-intent.ts` (intent minting + finalize).
+    // and `workers/ocr/src/upload-intent.ts` (intent minting + consume).
 
     // ─── Membership-sync update predicates ────────────────────────
     // These authorise the memberSync cascade — when a user accepts an
@@ -832,12 +833,13 @@ service cloud.firestore {
                                 && request.resource.data.note.size() <= 2000))
                       // attachment is Worker-authoritative: client setDoc
                       // creates the booking WITHOUT attachment, then the
-                      // Worker /upload-finalize patches it in via Admin SDK
-                      // (rules-bypass). Forbidding the key on create makes
-                      // the only path "doc-first → upload via intent →
-                      // Worker patch", with the Worker enforcing intent
-                      // /used/expires/stale guards. Raw-SDK direct-write
-                      // would otherwise bypass those guards.
+                      // Worker /booking-file-create / /booking-file-update
+                      // writes the field via Admin SDK (rules-bypass).
+                      // Forbidding the key on create makes the only path
+                      // "doc-first → upload via intent → Worker write",
+                      // with the Worker enforcing intent /used/expires/
+                      // stale guards. Raw-SDK direct-write would otherwise
+                      // bypass those guards.
                       && !('attachment' in request.resource.data);
         // Three update paths:
         //   1. Editor / owner edits booking content. tripId / createdBy /
@@ -893,7 +895,8 @@ service cloud.firestore {
           // detach via deleteField() (rules-bypass not needed for removal,
           // and the Worker storage-scan cron reaps the orphan blob) OR
           // leave the field exactly as-is. Any client-issued WRITE of a
-          // new value is denied — those go through /upload-finalize.
+          // new value is denied — those go through /booking-file-create
+          // and /booking-file-update.
           && unchangedOrRemoved('attachment')
         ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
         allow delete: if canWrite(tripId);
@@ -1095,9 +1098,9 @@ service cloud.firestore {
       // directly. The intent doc carries authoritative path /
       // customMetadata / allowedContentTypes / maxBytes / status /
       // expiresAt -- read SOLELY by the Worker inside the
-      // /upload-finalize, /expense-create, /expense-update,
-      // /wish-file-create, /wish-file-update Firestore transactions
-      // (admin SDK, bypasses rules). The
+      // /booking-file-create, /booking-file-update, /wish-file-create,
+      // /wish-file-update, /expense-create, /expense-update Firestore
+      // transactions (admin SDK, bypasses rules). The
       // storage.rules layer does NOT cross-service-read this doc
       // (the 2026-05-24 prod 403 incident demonstrated the
       // read-after-write race on freshly-minted docs from the

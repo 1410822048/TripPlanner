@@ -43,10 +43,15 @@ import {
   WishValidationError,
 }                                                 from './wish-write'
 import {
+  bookingFileCreate,
+  bookingFileUpdate,
+  BookingFileCreateRequestSchema,
+  BookingFileUpdateRequestSchema,
+  BookingValidationError,
+}                                                 from './booking-write'
+import {
   createUploadIntents,
-  finalizeUploadIntents,
   UploadIntentsRequestSchema,
-  FinalizeRequestSchema,
 }                                                 from './upload-intent'
 import { checkGlobalRateLimit }                   from './rate-limiter'
 
@@ -164,10 +169,11 @@ export default {
     const isExpenseCreate = url.pathname === '/expense-create'       && request.method === 'POST'
     const isExpenseUpdate = url.pathname === '/expense-update'       && request.method === 'POST'
     const isUploadIntents = url.pathname === '/upload-intents'       && request.method === 'POST'
-    const isUploadFinal   = url.pathname === '/upload-finalize'      && request.method === 'POST'
     const isWishCreate    = url.pathname === '/wish-file-create'     && request.method === 'POST'
     const isWishUpdate    = url.pathname === '/wish-file-update'     && request.method === 'POST'
-    if (!isOcr && !isCascade && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents && !isUploadFinal && !isWishCreate && !isWishUpdate) {
+    const isBookingCreate = url.pathname === '/booking-file-create'  && request.method === 'POST'
+    const isBookingUpdate = url.pathname === '/booking-file-update'  && request.method === 'POST'
+    if (!isOcr && !isCascade && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents && !isWishCreate && !isWishUpdate && !isBookingCreate && !isBookingUpdate) {
       return json({ error: 'Not found' }, 404, cors)
     }
 
@@ -221,9 +227,10 @@ export default {
                   : isTripCascade    ? env.TRIP_CASCADE_RATE_LIMITER
                   : isExpenseWrite   ? env.EXPENSE_RATE_LIMITER
                   : isUploadIntents  ? env.EXPENSE_RATE_LIMITER
-                  : isUploadFinal    ? env.EXPENSE_RATE_LIMITER
                   : isWishCreate     ? env.EXPENSE_RATE_LIMITER
                   : isWishUpdate     ? env.EXPENSE_RATE_LIMITER
+                  : isBookingCreate  ? env.EXPENSE_RATE_LIMITER
+                  : isBookingUpdate  ? env.EXPENSE_RATE_LIMITER
                   : env.CASCADE_RATE_LIMITER
     const localResult = await limiter.limit({ key: uid })
     if (!localResult.success) {
@@ -237,17 +244,19 @@ export default {
                       : isTripCascade   ? 'trip-cascade'
                       : isExpenseWrite  ? 'expense'
                       : isUploadIntents ? 'upload-intent'
-                      : isUploadFinal   ? 'upload-finalize'
                       : isWishCreate    ? 'wish-write'
                       : isWishUpdate    ? 'wish-write'
+                      : isBookingCreate ? 'booking-write'
+                      : isBookingUpdate ? 'booking-write'
                       : 'cascade'
     const globalLimit = isOcr ? 60
                       : isTripCascade   ? 2
                       : isExpenseWrite  ? 60
                       : isUploadIntents ? 60
-                      : isUploadFinal   ? 60
                       : isWishCreate    ? 60
                       : isWishUpdate    ? 60
+                      : isBookingCreate ? 60
+                      : isBookingUpdate ? 60
                       : 10
     const globalResult = await checkGlobalRateLimit(
       env.GLOBAL_LIMITER, scope, uid, globalLimit, 60_000,
@@ -369,28 +378,52 @@ export default {
       }
     }
 
-    // ─── /upload-finalize ────────────────────────────────────────────
-    if (isUploadFinal) {
-      const parsed = FinalizeRequestSchema.safeParse(body)
+    // ─── /booking-file-create ────────────────────────────────────────
+    if (isBookingCreate) {
+      const parsed = BookingFileCreateRequestSchema.safeParse(body)
       if (!parsed.success) {
-        console.warn(`[upload-finalize] schema fail: ${parsed.error.message.slice(0, 200)}`)
+        console.warn(`[booking-file-create] schema fail: ${parsed.error.message.slice(0, 200)}`)
         return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
       }
       try {
-        const result = await finalizeUploadIntents(
-          uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET,
-        )
-        console.log(
-          `[upload-finalize] uid=${uidTag(uid)} trip=${parsed.data.tripId} ` +
-          `intents=${parsed.data.intentIds.length} ok`,
-        )
-        return json(result, 200, cors)
+        const result = await bookingFileCreate(uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)
+        console.log(`[booking-file-create] uid=${uidTag(uid)} trip=${parsed.data.tripId} booking=${result.bookingId}`)
+        return json({ ok: true, ...result }, 200, cors)
       } catch (e) {
+        if (e instanceof BookingValidationError) {
+          console.warn(`[booking-file-create] validation: ${e.field} ${e.message}`)
+          return json({ error: e.message, field: e.field }, 400, cors)
+        }
         if (e instanceof CascadeError) {
-          console.warn(`[upload-finalize] ${e.status} ${e.message}`)
+          console.warn(`[booking-file-create] ${e.status} ${e.message}`)
           return json({ error: e.message }, e.status, cors)
         }
-        console.error(`[upload-finalize] internal error: ${(e as Error).message}`)
+        console.error(`[booking-file-create] internal error: ${(e as Error).message}`)
+        return json({ error: 'Internal error' }, 500, cors)
+      }
+    }
+
+    // ─── /booking-file-update ────────────────────────────────────────
+    if (isBookingUpdate) {
+      const parsed = BookingFileUpdateRequestSchema.safeParse(body)
+      if (!parsed.success) {
+        console.warn(`[booking-file-update] schema fail: ${parsed.error.message.slice(0, 200)}`)
+        return json({ error: 'Invalid body', detail: parsed.error.message }, 400, cors)
+      }
+      try {
+        const result = await bookingFileUpdate(uid, parsed.data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)
+        console.log(`[booking-file-update] uid=${uidTag(uid)} trip=${parsed.data.tripId} booking=${parsed.data.bookingId}`)
+        return json(result, 200, cors)
+      } catch (e) {
+        if (e instanceof BookingValidationError) {
+          console.warn(`[booking-file-update] validation: ${e.field} ${e.message}`)
+          return json({ error: e.message, field: e.field }, 400, cors)
+        }
+        if (e instanceof CascadeError) {
+          console.warn(`[booking-file-update] ${e.status} ${e.message}`)
+          return json({ error: e.message }, e.status, cors)
+        }
+        console.error(`[booking-file-update] internal error: ${(e as Error).message}`)
         return json({ error: 'Internal error' }, 500, cors)
       }
     }

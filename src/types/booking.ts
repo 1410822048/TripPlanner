@@ -95,10 +95,10 @@ export interface Booking {
  */
 /** Accepted attachment mime types. Mirrors `extForMime()` in
  *  bookingStorage.ts AND the allowlist enforced by the Worker
- *  /upload-finalize endpoint (Phase 3.6 made booking.attachment
- *  Worker-authoritative; firestore.rules no longer accepts client
- *  writes of the field). Drift would let one layer accept bytes
- *  the other rejects. */
+ *  /booking-file-create + /booking-file-update endpoints (Phase 3.7
+ *  made booking.attachment Worker-authoritative; firestore.rules no
+ *  longer accepts client writes of the field). Drift would let one
+ *  layer accept bytes the other rejects. */
 export const BOOKING_ATTACHMENT_MIME_TYPES = [
   'image/webp', 'image/jpeg', 'image/png', 'image/heic', 'image/heif',
   'application/pdf',
@@ -152,10 +152,14 @@ export const CreateBookingSchema = z.object({
   destination:      z.string().max(60).optional(),
   confirmationCode: z.string().max(64).optional(),
   provider:         z.string().max(60).optional(),
-  checkIn:          z.string().optional(),
-  checkOut:         z.string().optional(),
+  // checkIn/checkOut/note caps mirror firestore.rules booking
+  // create/update (32 / 32 / 2000). Worker schema must keep these in
+  // lockstep — Worker uses admin SDK and bypasses rules, so a missing
+  // cap on either side is a real exploit not just a UX nicety.
+  checkIn:          z.string().max(32).optional(),
+  checkOut:         z.string().max(32).optional(),
   address:          z.string().max(200).optional(),
-  note:             z.string().optional(),
+  note:             z.string().max(2000).optional(),
 })
 export type CreateBookingInput = z.infer<typeof CreateBookingSchema>
 

@@ -264,11 +264,11 @@ describe('/trips/{tripId}/bookings', () => {
   // ─── booking.attachment is Worker-authoritative ──────────────────
   // Phase 3.6 commit 3: the field is forbidden on client setDoc CREATE
   // and locked to "unchanged or removed (deleteField)" on client UPDATE.
-  // The Worker /upload-finalize endpoint (Admin SDK, rules-bypass) is
-  // the ONLY writer of this field — it gates writes behind the upload-
-  // intent's used / expires / stale guards. These tests pin the gate
-  // so a future rule edit can't silently re-open the raw-SDK direct-
-  // write path that would bypass those guards.
+  // The Worker /booking-file-create + /booking-file-update endpoints
+  // (Admin SDK, rules-bypass) are the ONLY writers of this field — they
+  // gate writes behind the upload-intent's used / expires / stale guards.
+  // These tests pin the gate so a future rule edit can't silently re-
+  // open the raw-SDK direct-write path that would bypass those guards.
   const ATTACHMENT_VALUE = {
     fileUrl:   'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fbookings%2Fb-att%2Ffile.webp?alt=media&token=abc',
     filePath:  'trips/trip-1/bookings/b-att/file.webp',
@@ -288,7 +288,7 @@ describe('/trips/{tripId}/bookings', () => {
     )
   })
 
-  test('booking create WITH attachment is denied (would bypass /upload-finalize intent guards)', async () => {
+  test('booking create WITH attachment is denied (would bypass /booking-file-* intent guards)', async () => {
     await assertFails(
       setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'), {
         tripId: TRIP_ID, type: 'hotel', title: 'X',
@@ -328,7 +328,7 @@ describe('/trips/{tripId}/bookings', () => {
 
   describe('with pre-attached attachment (seeded via rules-bypass)', () => {
     // Seed a booking that ALREADY has an attachment (simulating the post-
-    // /upload-finalize state) so we can test the "unchanged" / "removed"
+    // /booking-file-* state) so we can test the "unchanged" / "removed"
     // / "changed" branches of unchangedOrRemoved('attachment').
     beforeEach(async () => {
       await env.withSecurityRulesDisabled(async ctx => {
@@ -541,7 +541,7 @@ describe('/trips/{tripId}/wishes vote toggle', () => {
     )
   })
 
-  test('wish create WITH image is denied (would bypass /upload-finalize intent guards)', async () => {
+  test('wish create WITH image is denied (would bypass /wish-file-* intent guards)', async () => {
     await assertFails(
       setDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-img'), {
         tripId: TRIP_ID, category: 'place', title: 'X',
@@ -576,7 +576,7 @@ describe('/trips/{tripId}/wishes vote toggle', () => {
   })
 
   describe('with pre-attached image (seeded via rules-bypass)', () => {
-    // Wish doc that ALREADY carries an image (post-/upload-finalize state).
+    // Wish doc that ALREADY carries an image (post-/wish-file-* state).
     // Proposer is EDITOR_UID to align with the proposer-update rule path.
     beforeEach(async () => {
       await env.withSecurityRulesDisabled(async ctx => {
@@ -1994,7 +1994,8 @@ describe('/trips/{tripId}/uploadIntents/{intentId} client deny-all (Phase 3.5-bi
   // GATE that verifies only self-contained claimed metadata, and the
   // authoritative intent-bound check (status / expiresAt / path-
   // exactness / customMetadata equality / single-use markUsed) moved
-  // to the Worker's /upload-finalize and /expense-* consume paths.
+  // to the Worker's entity-write consume paths (/booking-file-*,
+  // /wish-file-*, /expense-create, /expense-update).
   // The `if false` rule below is what this suite locks in: even with
   // valid editor / owner credentials, no client SDK access path
   // touches the intent doc. Subcollection placement keeps the doc

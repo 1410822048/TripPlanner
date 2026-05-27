@@ -10,9 +10,9 @@
 // Why these Worker endpoints exist:
 //   1. The client-managed doc-first + upload-second flow caused the
 //      realtime listener to fire at ~200ms with no image yet, then
-//      again ~600ms later once the Worker /upload-finalize patched
-//      `image`. UX was a jarring "card flashes in without image then
-//      gets one" — opposite of the optimistic ideal.
+//      again ~600ms later once the Worker patched `image` via a
+//      separate round-trip. UX was a jarring "card flashes in
+//      without image then gets one" — opposite of the optimistic ideal.
 //   2. Worker-authoritative create lets the doc + image land in a
 //      single Firestore tx, so the listener sees the wish for the
 //      first time WITH the image already populated.
@@ -306,8 +306,8 @@ export const WishFileUpdateRequestSchema = z.object({
    *  Worker reads the current wish.image.path inside the tx and rejects
    *  with 409 on mismatch — closes the Tab-A-overwrites-Tab-B race
    *  where two editors finalize different replacements concurrently.
-   *  Mirrors Phase 3.6 /upload-finalize's `expectedCurrentPath`
-   *  contract; same shape on purpose so the failure mode is uniform. */
+   *  Mirrors /booking-file-update's `expectedCurrentPath` contract;
+   *  same shape on purpose so the failure mode is uniform. */
   expectedCurrentPath: z.union([z.string(), z.null()]),
   /** REQUIRED on this endpoint. Image-replace is the reason
    *  /wish-file-update exists; text-only edits stay on the client
