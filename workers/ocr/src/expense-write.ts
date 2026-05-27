@@ -41,7 +41,7 @@ import {
   type TxWrite,
 }                                                                   from './firestore-tx'
 import {
-  consumeExpenseIntents,
+  consumeEntityIntents,
   type ConsumedIntent,
 }                                                                   from './upload-intent'
 
@@ -243,9 +243,9 @@ async function doCreate(
     let receipt: ExpenseReceiptOut | undefined
     const intentMarkUsedWrites: TxWrite[] = []
     if (req.intentIds && req.intentIds.length > 0) {
-      const { consumed, markUsedWrites } = await consumeExpenseIntents(
+      const { consumed, markUsedWrites } = await consumeEntityIntents(
         tx, req.intentIds, callerUid, accessToken, projectId, bucket,
-        { tripId: req.tripId, entityId: req.expenseId },
+        { tripId: req.tripId, entityType: 'expense', entityId: req.expenseId },
       )
       receipt = validateBuiltReceipt(
         buildReceiptFromIntents(consumed), req.tripId, req.expenseId, bucket,
@@ -450,9 +450,9 @@ async function doUpdate(
     let receipt: ExpenseReceiptOut | undefined
     const intentMarkUsedWrites: TxWrite[] = []
     if (req.intentIds && req.intentIds.length > 0) {
-      const { consumed, markUsedWrites } = await consumeExpenseIntents(
+      const { consumed, markUsedWrites } = await consumeEntityIntents(
         tx, req.intentIds, callerUid, accessToken, projectId, bucket,
-        { tripId: req.tripId, entityId: req.expenseId },
+        { tripId: req.tripId, entityType: 'expense', entityId: req.expenseId },
       )
       receipt = validateBuiltReceipt(
         buildReceiptFromIntents(consumed), req.tripId, req.expenseId, bucket,

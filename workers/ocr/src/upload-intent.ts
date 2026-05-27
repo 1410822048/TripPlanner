@@ -656,28 +656,6 @@ export async function consumeEntityIntents(
   return { consumed, markUsedWrites }
 }
 
-/** @deprecated use `consumeEntityIntents` with `entityType: 'expense'`.
- *  Kept as a thin wrapper so the expense-write.ts call site doesn't
- *  need to thread the entityType through; will be inlined in a future
- *  cleanup. */
-export async function consumeExpenseIntents(
-  tx:           TxContext,
-  intentIds:    string[],
-  callerUid:    string,
-  accessToken:  string,
-  projectId:    string,
-  bucket:       string,
-  expected: {
-    tripId:    string
-    entityId:  string
-  },
-): Promise<{ consumed: ConsumedIntent[]; markUsedWrites: TxWrite[] }> {
-  return consumeEntityIntents(
-    tx, intentIds, callerUid, accessToken, projectId, bucket,
-    { tripId: expected.tripId, entityType: 'expense', entityId: expected.entityId },
-  )
-}
-
 // ─── Attachment payload encoding (booking + wish) ──────────────────
 
 /** Build the Firestore mapValue payload for a booking/wish attachment
