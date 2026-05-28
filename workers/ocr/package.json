@@ -11,6 +11,7 @@
     "cf-typegen": "wrangler types"
   },
   "dependencies": {
+    "@tripmate/settlement-core": "file:../../packages/settlement-core",
     "jose": "^6.1.0",
     "zod": "^4.0.0"
   },

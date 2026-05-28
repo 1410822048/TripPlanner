@@ -3,11 +3,15 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "workspaces": [
+    "packages/*",
+    "workers/ocr"
+  ],
   "scripts": {
     "dev": "vite --host",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "typecheck": "tsc -b --noEmit",
+    "typecheck": "tsc -b --noEmit && npm --workspaces --if-present run typecheck",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -28,6 +32,7 @@
   },
   "dependencies": {
     "@sentry/browser": "^10.53.1",
+    "@tripmate/settlement-core": "file:./packages/settlement-core",
     "@tanstack/react-query": "^5.99.2",
     "firebase": "^12.13.0",
     "lucide-react": "^1.8.0",

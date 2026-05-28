@@ -17,6 +17,15 @@ export default defineConfig({
     // Glob covers .ts (utility tests) AND .tsx (component / hook tests).
     // The previous .ts-only glob silently dropped any future *.test.tsx
     // file, which is the scariest kind of test gap — passes by not running.
-    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    //
+    // `packages/**` picks up workspace packages (e.g. @tripmate/settlement-
+    // core) so their internal tests run as part of the root suite. The
+    // Worker still has its own vitest config (workers/ocr/vitest.config.mts)
+    // because it needs the Cloudflare Workers pool; the client + packages
+    // share this one node/jsdom config.
+    include: [
+      'src/**/*.{test,spec}.{ts,tsx}',
+      'packages/**/src/**/*.{test,spec}.{ts,tsx}',
+    ],
   },
 })
