@@ -1532,158 +1532,105 @@ describe('/trips/{tripId}/bookings memberSync (self-add path)', () => {
   })
 })
 
-// ─── Settlement financial integrity ───────────────────────────────
-// Expense-create gates (paidBy / currency / splits / createdAt) used
-// to live here but moved to the Worker /expense-create endpoint when
-// splits-sum + member-in-roster validation forced Worker-only writes
-// (rules can't iterate arrays of maps). See
-// workers/ocr/test/expense-validate.spec.ts for those tests.
+// ─── Settlement create / delete are Worker-only (M4 close) ─────────
 //
-// Settlement still uses client-side setDoc with rules-only validation
-// because it has no array-iteration needs.
-describe('settlement create: chronological-replay integrity', () => {
-  test('settlement create with backdated createdAt is rejected', async () => {
-    // Settlement chronological replay sorts settlements by createdAt.
-    // Backdating one before an expense would flip the orphan reason
-    // classification (e.g. EXPENSE_DELETED → OVERPAYMENT).
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-backdate'),
-        {
-          tripId:    TRIP_ID,
-          settledBy: EDITOR_UID,
-          toUid:     EDITOR_UID,
-          fromUid:   VIEWER_UID,
-          amount:    100,
-          currency:  'JPY',
-          createdAt: Timestamp.fromMillis(1_000_000),  // <-- 1970 backdate
-        },
-      ),
-    )
-  })
-})
+// firestore.rules has `allow create: if false` and `allow delete: if false`
+// on /trips/{tripId}/settlements; the domain invariant
+// `amount <= pairwise[fromUid][toUid]` (sum of expense.splits for that
+// uid pair minus already-applied settlements) can't be expressed in
+// CEL — no array reduce, no cross-doc sum. The Worker endpoints
+// /settlement-create and /settlement-delete own this path; per-payload
+// validation (settledBy=token, toUid=caller, fromUid distinct + real
+// member, amount int>0, currency 3-char, createdAt pinned to request
+// time, recorder-or-owner delete, idempotent retry payload-match) is
+// covered in workers/ocr/test/settlement-write.spec.ts.
+//
+// `allow read` stays open to trip members so the SettlementSummary
+// realtime listener works; the read test below guards against an
+// accidental over-close.
+describe('/trips/{tripId}/settlements client write rejection (Worker-only)', () => {
+  function settlementShape() {
+    return {
+      tripId:    TRIP_ID,
+      settledBy: EDITOR_UID,
+      toUid:     EDITOR_UID,    // receiver = caller
+      fromUid:   VIEWER_UID,    // payer = distinct, real member
+      amount:    100,
+      currency:  'JPY',
+      createdAt: serverTimestamp(),
+    }
+  }
 
-// ─── Settlement rule guards (full coverage) ────────────────────────
-// Receiver-only invariant + distinct-payer + amount/currency shape +
-// append-only (no update) + recorder-or-owner delete. Each predicate
-// in the create rule has its own deny test so a rule regression that
-// loosens any one of them surfaces here, not in prod.
-describe('/trips/{tripId}/settlements rule guards', () => {
-  const validSettlement = (overrides: Record<string, unknown> = {}) => ({
-    tripId:    TRIP_ID,
-    settledBy: EDITOR_UID,
-    toUid:     EDITOR_UID,    // receiver = caller
-    fromUid:   VIEWER_UID,    // payer = distinct, real member
-    amount:    100,
-    currency:  'JPY',
-    createdAt: serverTimestamp(),
-    ...overrides,
-  })
-
-  test('editor (receiver) can create a settlement against a real distinct payer', async () => {
-    // Sanity anchor — every deny test below is meaningful only relative
-    // to this baseline succeeding.
-    await assertSucceeds(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-ok'),
-        validSettlement(),
-      ),
-    )
-  })
-
-  test('settlement with settledBy != uid is rejected (uid-forge guard)', async () => {
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-forge'),
-        validSettlement({ settledBy: OWNER_UID }),
-      ),
-    )
-  })
-
-  test('settlement with toUid != uid is rejected (receiver-only invariant)', async () => {
-    // The payer must NOT be able to record "I paid X"; only the
-    // receiver can ack receipt. Without this, a debtor could mark
-    // their own debt cleared without the creditor's confirmation —
-    // settlement audit log loses its single-source-of-truth property.
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-payer'),
-        validSettlement({ toUid: VIEWER_UID, fromUid: OWNER_UID }),
-      ),
-    )
-  })
-
-  test('settlement with fromUid == uid (self-settle) is rejected', async () => {
-    // toUid == uid (required) and fromUid != uid (required) together
-    // ensure recorder ≠ payer; a "Charlie 還我 ¥100" record fabricated
-    // with toUid == fromUid would not represent any real transfer.
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-self'),
-        validSettlement({ fromUid: EDITOR_UID }),
-      ),
-    )
-  })
-
-  test('settlement with fromUid not in trip members is rejected', async () => {
-    // exists(members/{fromUid}) blocks fabricating a settlement against
-    // a stranger uid — would pollute the audit log with a name the
-    // trip never had.
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-stranger-payer'),
-        validSettlement({ fromUid: STRANGER_UID }),
-      ),
-    )
-  })
-
-  test('settlement with amount == 0 is rejected', async () => {
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-zero'),
-        validSettlement({ amount: 0 }),
-      ),
-    )
-  })
-
-  test('settlement with negative amount is rejected', async () => {
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-neg'),
-        validSettlement({ amount: -100 }),
-      ),
-    )
-  })
-
-  test('settlement with non-integer amount is rejected', async () => {
-    // amount is locked to `int` — float amounts come from a buggy or
-    // forged client. Pinning at rules avoids the settlement engine
-    // having to deal with floating-point edge cases.
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-float'),
-        validSettlement({ amount: 100.5 }),
-      ),
-    )
-  })
-
-  test('settlement with currency != 3-char ISO code is rejected', async () => {
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-cur'),
-        validSettlement({ currency: 'JPYE' }),
-      ),
-    )
-  })
-
-  test('settlement update is rejected (no update rule = default deny)', async () => {
-    // Settlements are append-only. Edits go through delete+create.
-    // A regression that adds `allow update` would let an editor edit
-    // their own recorded amount without producing a new chronological
-    // event, silently corrupting the replay.
+  test('trip member can read settlements (SettlementSummary listener path)', async () => {
+    // M4 closed create / delete but read stays member-gated. Guard
+    // against an accidental `allow read: if false` regression that
+    // would break the realtime listener client-side.
     await env.withSecurityRulesDisabled(async ctx => {
       await setDoc(
-        doc(ctx.firestore(), 'trips', TRIP_ID, 'settlements', 's-imm'),
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'settlements', 's-readable'),
+        {
+          tripId: TRIP_ID, settledBy: EDITOR_UID, toUid: EDITOR_UID,
+          fromUid: VIEWER_UID, amount: 100, currency: 'JPY',
+          createdAt: serverTimestamp(),
+        },
+      )
+    })
+    await assertSucceeds(
+      getDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-readable')),
+    )
+  })
+
+  test('client setDoc create is rejected (any role, any shape) -- Worker owns this path', async () => {
+    // Even a fully valid payload is rejected: the cross-doc pairwise
+    // debt check requires admin SDK reads of every expense + every
+    // prior settlement under the same tx, which client rules can't do.
+    await assertFails(
+      setDoc(
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-client-create'),
+        settlementShape(),
+      ),
+    )
+    await assertFails(
+      setDoc(
+        doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-client-create-owner'),
+        settlementShape(),
+      ),
+    )
+  })
+
+  test('client deleteDoc is rejected even by the original recorder or trip owner', async () => {
+    // Recorder-or-owner moderation USED to be a client-side delete
+    // path (rules: `settledBy == uid() || isTripOwner(tripId)`). After
+    // M4 it's Worker-only because /settlement-delete must touch the
+    // per-pair lock doc inside the same tx as create -- a client-SDK
+    // delete would bypass the lock and a concurrent Worker create
+    // could miss the deleted row in its runQuery snapshot.
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'settlements', 's-client-del'),
+        {
+          tripId: TRIP_ID, settledBy: EDITOR_UID, toUid: EDITOR_UID,
+          fromUid: VIEWER_UID, amount: 100, currency: 'JPY',
+          createdAt: serverTimestamp(),
+        },
+      )
+    })
+    await assertFails(
+      deleteDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-client-del')),
+    )
+    await assertFails(
+      deleteDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-client-del')),
+    )
+  })
+
+  test('client updateDoc is rejected (settlements are append-only)', async () => {
+    // No `allow update` ever existed on settlements — chronological
+    // replay sorts by createdAt and any in-place mutation would
+    // silently corrupt the orphan-reason classification. This test
+    // guards against a future regression that adds an allow update.
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'settlements', 's-client-upd'),
         {
           tripId: TRIP_ID, settledBy: EDITOR_UID, toUid: EDITOR_UID,
           fromUid: VIEWER_UID, amount: 100, currency: 'JPY',
@@ -1693,59 +1640,9 @@ describe('/trips/{tripId}/settlements rule guards', () => {
     })
     await assertFails(
       updateDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-imm'),
+        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-client-upd'),
         { amount: 1 },
       ),
-    )
-  })
-
-  test('settlement delete by non-recorder non-owner is rejected', async () => {
-    await env.withSecurityRulesDisabled(async ctx => {
-      await setDoc(
-        doc(ctx.firestore(), 'trips', TRIP_ID, 'settlements', 's-del'),
-        {
-          tripId: TRIP_ID, settledBy: EDITOR_UID, toUid: EDITOR_UID,
-          fromUid: VIEWER_UID, amount: 100, currency: 'JPY',
-          createdAt: serverTimestamp(),
-        },
-      )
-    })
-    // Viewer is a trip member but neither the recorder nor the owner —
-    // can read but not delete someone else's settlement.
-    await assertFails(
-      deleteDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-del')),
-    )
-  })
-
-  test('settlement delete by recorder succeeds (recorder undoing)', async () => {
-    await env.withSecurityRulesDisabled(async ctx => {
-      await setDoc(
-        doc(ctx.firestore(), 'trips', TRIP_ID, 'settlements', 's-self-del'),
-        {
-          tripId: TRIP_ID, settledBy: EDITOR_UID, toUid: EDITOR_UID,
-          fromUid: VIEWER_UID, amount: 100, currency: 'JPY',
-          createdAt: serverTimestamp(),
-        },
-      )
-    })
-    await assertSucceeds(
-      deleteDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-self-del')),
-    )
-  })
-
-  test('settlement delete by trip owner succeeds (moderation path)', async () => {
-    await env.withSecurityRulesDisabled(async ctx => {
-      await setDoc(
-        doc(ctx.firestore(), 'trips', TRIP_ID, 'settlements', 's-mod'),
-        {
-          tripId: TRIP_ID, settledBy: EDITOR_UID, toUid: EDITOR_UID,
-          fromUid: VIEWER_UID, amount: 100, currency: 'JPY',
-          createdAt: serverTimestamp(),
-        },
-      )
-    })
-    await assertSucceeds(
-      deleteDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-mod')),
     )
   })
 })

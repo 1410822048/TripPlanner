@@ -909,11 +909,7 @@ service cloud.firestore {
       }
 
       // Settlement records — bilateral "X paid Y back" entries.
-      // Only the receiver (toUid) can record it: receiver-confirms-receipt
-      // prevents the payer from unilaterally marking themselves "paid back"
-      // without the payee actually having received the money. settledBy
-      // must equal toUid (i.e. uid()). amount is positive integer in the
-      // trip currency. Immutable once recorded; revert via delete + re-create.
+      // Reads stay open to trip members; writes are Worker-authoritative.
       match /settlements/{settlementId} {
         // Settlements don't carry memberIds[] (they're a bounded set
         // per trip and writes are rare — denormalising would pay cost
@@ -923,33 +919,19 @@ service cloud.firestore {
         // long after trip create, so the rules-eval lag window has
         // resolved by then.
         allow read:   if exists(memberPath(tripId));
-        allow create: if exists(memberPath(tripId))
-                      && tripNotDeleting(tripId)
-                      && request.resource.data.tripId == tripId
-                      && request.resource.data.settledBy == uid()
-                      && request.resource.data.toUid == uid()
-                      && request.resource.data.amount is int
-                      && request.resource.data.amount > 0
-                      && request.resource.data.currency is string
-                      && request.resource.data.currency.size() == 3
-                      // fromUid must be a real, distinct trip member —
-                      // otherwise a receiver could fabricate
-                      // "Charlie 還我 ¥100" records that pollute the
-                      // settlement audit log without Charlie's input.
-                      && request.resource.data.fromUid is string
-                      && request.resource.data.fromUid != uid()
-                      && exists(/databases/$(database)/documents/trips/$(tripId)/members/$(request.resource.data.fromUid))
-                      // createdAt pinned to request.time. The settlement
-                      // engine sorts settlements by createdAt for the
-                      // chronological replay (see `buildOrphanReasonMap`
-                      // in services/settlement.ts) -- a raw-SDK writer
-                      // could otherwise backdate a settlement to before
-                      // any expense and silently flip orphan reasons
-                      // from OVERPAYMENT to EXPENSE_DELETED.
-                      && request.resource.data.createdAt == request.time;
-        // Either the recorder undoing, or the trip owner moderating.
-        allow delete: if exists(memberPath(tripId))
-                      && (resource.data.settledBy == uid() || isTripOwner(tripId));
+        // Settlement CREATE / DELETE are Worker-only. The domain
+        // invariant `amount <= pairwise[fromUid][toUid]` (sum of
+        // expense.splits for that uid pair minus already-applied
+        // settlements) can't be expressed in CEL — no array reduce,
+        // no cross-doc sum. The Worker endpoints /settlement-create
+        // and /settlement-delete re-derive gross → applied →
+        // remaining inside a single tx with a per-pair lock doc and
+        // fail-closed read-cap truncation. Admin SDK on Worker
+        // bypasses these rules; clients calling setDoc / deleteDoc
+        // directly are rejected. See settlement-write.ts in
+        // workers/ocr/src/.
+        allow create: if false;
+        allow delete: if false;
       }
 
       // Pair-lock guard docs written by Worker `settlement-create` /
