@@ -20,11 +20,29 @@
 // │   決定刪不刪。                                                   │
 // └─────────────────────────────────────────────────────────────────┘
 //
+// Algorithm ownership after Phase 4: steps 3-4 (remaining + normalize)
+// delegate to `@tripmate/settlement-core`. This file and the Worker's
+// settlement create-gate (workers/ocr/src/settlement-write.ts) both
+// import the same `computePairwiseRemaining` — no more mirrored impl,
+// no more dual-side cross-check fixture suite. The canonical 8
+// fixtures live in `packages/settlement-core/src/index.test.ts`.
+//
+// Steps 1-2 stay here because orphan extraction needs per-settlement
+// leftover (which the core function deliberately doesn't surface;
+// that's a UI concern). Step 5 + paid/owed display + ghost rows +
+// chronological orphan-reason replay are all UI-only and stay
+// client-side.
+//
 // "Ghost participant" 設計:當 expense 的 paidBy 或 splits.memberId
 // 不在當前 members 列表(被踢、自願退出、未結算離開),我們仍要把這
 // 筆 uid 納入計算,否則 sum(net) 不平衡,UI 會顯示「四個人共欠 800
 // 沒人收」這種帳對不起來的怪畫面。`isGhost: true` 旗標讓 UI 標示
 // 「退出済み」灰色 chip。
+import {
+  SETTLEMENT_EPS,
+  computePairwiseRemaining,
+  type CoreSettlement,
+} from '@tripmate/settlement-core'
 import type { Expense } from '@/types'
 import type { SettlementRecord } from '@/types/settlement'
 import type { TripMember } from '@/features/trips/types'
@@ -115,12 +133,12 @@ export interface BalanceResult {
   pairwise: Record<string, Record<string, number>>
 }
 
-const EPS = 0.5
-
 /** Lazy-create `record[key]` as an empty sub-map and return it for
  *  in-place writes. Replaces the repeated `record[k] ?? (record[k] = {})`
- *  fallback-assign idiom across the 4 pairwise maps below
- *  (gross/applied/orphanByPair/remaining/normalized). */
+ *  fallback-assign idiom across the pairwise maps (gross/applied) and
+ *  the chronological replay's intermediate state in
+ *  `buildOrphanReasonMap`. Not exported from @tripmate/settlement-core
+ *  because it's a 4-line generic helper, not a domain primitive. */
 function ensureSlot<T>(
   record: Record<string, Record<string, T>>,
   key:    string,
@@ -182,8 +200,13 @@ export function expandWithGhosts(
  * trust boundary -- a future Worker bug, a manual Firestore Console
  * edit, or a doc that predates the Worker chokepoint could otherwise
  * inject NaN/Infinity into the gross[][] tables and propagate
- * "NaN ¥" through the entire settlement UI. Filter dirty expenses
- * out + console.warn so we notice in dev.
+ * "NaN ¥" through the entire settlement UI.
+ *
+ * Mirrors the silent filter inside `computePairwiseRemaining` in
+ * @tripmate/settlement-core; kept local so we can attach a console.warn
+ * with the offending doc id, which the core can't do (Worker has no
+ * console). Identical predicates → identical accept/reject decisions
+ * on both sides of the trust boundary.
  */
 function isExpenseSettlementSafe(e: Expense): boolean {
   if (!Number.isFinite(e.amount) || e.amount < 0) return false
@@ -196,6 +219,10 @@ function isExpenseSettlementSafe(e: Expense): boolean {
   return true
 }
 
+/** Same trust-boundary check as core's `isSettlementSafe`, but bound
+ *  to the rich SettlementRecord shape so the filter callsite can
+ *  console.warn the offending `s.id`. Predicates intentionally
+ *  identical to the core; the only difference is the input type. */
 function isSettlementSafe(s: SettlementRecord): boolean {
   if (!Number.isFinite(s.amount) || s.amount <= 0) return false
   if (typeof s.fromUid !== 'string' || s.fromUid === '') return false
@@ -320,7 +347,7 @@ export function computeBalancesFull(
     const usable = Math.min(st.amount, Math.max(0, debt - already))
     appliedSlot[st.toUid] = already + usable
     const leftover = st.amount - usable
-    if (leftover > EPS) {
+    if (leftover > SETTLEMENT_EPS) {
       // Per-settlement entry instead of per-pair sum so UI can target
       // the exact unmatched record for one-tap delete. Multiple entries
       // can share a (fromUserId, toUserId) pair if several settlements
@@ -335,35 +362,23 @@ export function computeBalancesFull(
     }
   }
 
-  // Step 3: remaining = max(0, gross - applied)
-  const remaining: Record<string, Record<string, number>> = {}
-  for (const from of Object.keys(gross)) {
-    const grossRow = gross[from]!
-    for (const to of Object.keys(grossRow)) {
-      const rest = Math.max(0, (grossRow[to] ?? 0) - (applied[from]?.[to] ?? 0))
-      if (rest > EPS) ensureSlot(remaining, from)[to] = rest
-    }
-  }
-
-  // Step 4: normalize. 對每組無序 pair 把對抵的反方向邊合併成淨額。
-  // 例:A→B=30、B→A=50  →  B→A=20。對 net 沒影響(net 不看方向只看
-  // 邊權),但任何用 pairwise edge 的 UI 都會更乾淨。
-  const normalized: Record<string, Record<string, number>> = {}
-  const seenPair = new Set<string>()
-
-  for (const from of Object.keys(remaining)) {
-    for (const to of Object.keys(remaining[from]!)) {
-      const key = from < to ? `${from}|${to}` : `${to}|${from}`
-      if (seenPair.has(key)) continue
-      seenPair.add(key)
-
-      const fwd = remaining[from]?.[to] ?? 0
-      const bwd = remaining[to]?.[from] ?? 0
-      if (fwd - bwd > EPS) ensureSlot(normalized, from)[to] = fwd - bwd
-      else if (bwd - fwd > EPS) ensureSlot(normalized, to)[from] = bwd - fwd
-      // |fwd - bwd| ≤ EPS → 完全抵銷,無 edge
-    }
-  }
+  // Steps 3-4 (remaining + normalize) delegate to @tripmate/settlement-
+  // core so this file and the Worker's create-gate share one canonical
+  // pairwise impl. Core re-filters + re-sorts internally so the call is
+  // self-contained; we pass `activeExpenses` (Expense is a structural
+  // superset of CoreExpense — amount/paidBy/splits all line up) and
+  // adapt SettlementRecord → CoreSettlement by flattening createdAt to
+  // an epoch-ms number. Core does NOT return per-settlement leftover,
+  // which is why steps 1-2 above stay here for orphan extraction.
+  const normalized = computePairwiseRemaining(
+    activeExpenses,
+    settlements.map<CoreSettlement>(s => ({
+      fromUid:     s.fromUid,
+      toUid:       s.toUid,
+      amount:      s.amount,
+      createdAtMs: s.createdAt?.toMillis?.() ?? 0,
+    })),
+  )
 
   // Step 5: net[i] = Σ normalized[j][i] − Σ normalized[i][j]
   const net: Record<string, number> = {}
@@ -469,9 +484,9 @@ function buildOrphanReasonMap(
 
     let atRecording: SettlementReplayInfo['atRecording']
     let overpayment = 0
-    if (grossT < EPS) {
+    if (grossT < SETTLEMENT_EPS) {
       atRecording = 'NO_EXPENSE'
-    } else if (st.amount - availableT > EPS) {
+    } else if (st.amount - availableT > SETTLEMENT_EPS) {
       atRecording = 'OVER'
       overpayment = st.amount - availableT
     } else {
@@ -486,15 +501,15 @@ function buildOrphanReasonMap(
  * Derive the orphan reason from at-recording state + final leftover.
  * The mixed case (partly OVER at recording, partly EXPENSE_DELETED
  * later) is detected when leftover EXCEEDS the recording-time
- * overpayment by more than EPS -- the excess can only come from a
- * subsequent delete shrinking the gross that the settlement was
+ * overpayment by more than SETTLEMENT_EPS -- the excess can only come
+ * from a subsequent delete shrinking the gross that the settlement was
  * actively consuming.
  */
 function classifyOrphan(info: SettlementReplayInfo | undefined, leftover: number): OrphanReason {
-  if (!info || info.atRecording === 'NO_EXPENSE') return 'UNKNOWN'
-  if (info.atRecording === 'WITHIN')              return 'EXPENSE_DELETED'
+  if (!info || info.atRecording === 'NO_EXPENSE')        return 'UNKNOWN'
+  if (info.atRecording === 'WITHIN')                     return 'EXPENSE_DELETED'
   // atRecording === 'OVER'
-  if (leftover - info.overpayment > EPS)          return 'MIXED'
+  if (leftover - info.overpayment > SETTLEMENT_EPS)      return 'MIXED'
   return 'OVERPAYMENT'
 }
 
@@ -535,7 +550,7 @@ export function computeSettlements(
     const row = pairwise[from]!
     for (const to of Object.keys(row).sort()) {
       const amount = row[to] ?? 0
-      if (amount > EPS) {
+      if (amount > SETTLEMENT_EPS) {
         out.push({ fromId: from, toId: to, amount: Math.round(amount) })
       }
     }

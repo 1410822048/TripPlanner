@@ -1,10 +1,12 @@
 // Endpoint-level tests for settlement-write.ts.
 //
-// settlement-domain.spec.ts proves the pair math agrees with the
-// client side. This file stitches that math into the endpoint
-// boundary: authz gates, idempotency, validation rejects, REST
-// write shapes (currentDocument preconditions + REQUEST_TIME
-// transforms).
+// The pair math itself lives in `@tripmate/settlement-core` and is
+// covered by the canonical fixture suite at
+// `packages/settlement-core/src/index.test.ts` (8-fixture table
+// that both client and Worker run through). This file stitches the
+// shared math into the Worker endpoint boundary: authz gates,
+// idempotency, validation rejects, REST write shapes
+// (currentDocument preconditions + REQUEST_TIME transforms).
 //
 // Mocking strategy mirrors expense-write.spec / booking-write.spec:
 // mock `runFirestoreTransaction` so tests seed tx.get + tx.runQuery

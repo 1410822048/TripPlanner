@@ -7,8 +7,8 @@
 //      reverse debt. rules can't compute this: it requires summing
 //      across every expense's splits AND every prior settlement on
 //      the same pair, then running the 4-step normalize from
-//      `settlement-domain.ts`. CEL has no array reduce / no cross-doc
-//      sum.
+//      `@tripmate/settlement-core`. CEL has no array reduce / no
+//      cross-doc sum.
 //   2. Without the gate, a recipient could record a settlement larger
 //      than the actual debt; the leftover surfaces later as an
 //      `OVERPAYMENT` orphan, but the damage to chronological replay
@@ -61,9 +61,9 @@ import {
   computePairwiseRemaining,
   pairRemaining,
   SETTLEMENT_EPS,
-  type DomainExpense,
-  type DomainSettlement,
-}                                                           from './settlement-domain'
+  type CoreExpense,
+  type CoreSettlement,
+}                                                           from '@tripmate/settlement-core'
 
 // ─── Request body schemas ─────────────────────────────────────────
 
@@ -203,7 +203,7 @@ async function authorizeMemberTx(
 
 // ─── Decoders: REST fields → domain shapes ────────────────────────
 
-function decodeExpenseForDomain(fields: Record<string, FsValue>): DomainExpense {
+function decodeExpenseForDomain(fields: Record<string, FsValue>): CoreExpense {
   const amount = Number(fields.amount?.doubleValue ?? fields.amount?.integerValue ?? 0)
   const paidBy = readString(fields, 'paidBy') ?? ''
   const splitArr = (fields.splits as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []
@@ -217,7 +217,7 @@ function decodeExpenseForDomain(fields: Record<string, FsValue>): DomainExpense 
   return { amount, paidBy, splits }
 }
 
-function decodeSettlementForDomain(fields: Record<string, FsValue>): DomainSettlement {
+function decodeSettlementForDomain(fields: Record<string, FsValue>): CoreSettlement {
   const fromUid = readString(fields, 'fromUid') ?? ''
   const toUid   = readString(fields, 'toUid')   ?? ''
   const amount  = Number(fields.amount?.integerValue ?? fields.amount?.doubleValue ?? 0)
