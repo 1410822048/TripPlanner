@@ -82,7 +82,8 @@ export type TripDeleteRequest = z.infer<typeof TripDeleteRequestSchema>
  *  because the worker bundle stays standalone, no client-types import. */
 const TRIP_SUBCOLLECTIONS = [
   'schedules', 'expenses', 'wishes', 'bookings',
-  'planning', 'settlements', '_purges', 'invites', 'members',
+  'planning', 'settlements', 'settlementPairLocks',
+  '_purges', 'invites', 'members',
 ] as const
 
 export interface CascadeTripResult {

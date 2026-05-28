@@ -39,13 +39,19 @@
 	// Per-uid rate limiting (GA 2025-09). Counters are per Cloudflare
 	// location (eventually consistent) — fine for abuse prevention,
 	// not a hard quota. namespace_id is account-scoped and arbitrary
-	// (just unique); we use 1001-1003 to keep human-readable.
+	// (just unique); we use 1001-1005 to keep human-readable.
 	//   /ocr                  expensive path (Gemini quota)         → 30/min
 	//   /cascade-member       fires once per invite accept           → 5/min
 	//   /cascade-trip-delete  HEAVY (full trip cascade + storage)    → 1/min
 	//                         tighter than member cascade because
 	//                         trip-delete touches O(100) docs +
 	//                         dozens of Storage objects per call.
+	//   /expense-*            user-driven form writes                 → 30/min
+	//   /settlement-*         user-driven, rare event (a few/trip)    → 5/min
+	//                         settlement create runs a full pairwise
+	//                         debt computation (tx + runQuery x 2);
+	//                         tighter cap reflects "this is a clicked
+	//                         button, not a typed-keystroke flow".
 	"ratelimits": [
 		{
 			"name": "OCR_RATE_LIMITER",
@@ -66,6 +72,11 @@
 			"name": "EXPENSE_RATE_LIMITER",
 			"namespace_id": "1004",
 			"simple": { "limit": 30, "period": 60 }
+		},
+		{
+			"name": "SETTLEMENT_RATE_LIMITER",
+			"namespace_id": "1005",
+			"simple": { "limit": 5, "period": 60 }
 		}
 	],
 	// Durable Object for cross-PoP rate limiting. Each instance is

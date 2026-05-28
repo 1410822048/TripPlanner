@@ -25,8 +25,20 @@ import type { FsValue }             from './firestore'
 const BASE = 'https://firestore.googleapis.com/v1'
 
 /** A single write in a transaction commit. Mirrors the Firestore
- *  REST `Write` proto subset we actually use. */
-export interface TxWrite {
+ *  REST `Write` proto subset we actually use.
+ *
+ *  Discriminated by `op`:
+ *    - `op` absent or `'update'` → upsert-with-updateMask semantics
+ *      (the historical default; preserved so existing call-sites
+ *      that omit `op` still type-check)
+ *    - `op: 'delete'` → hard-delete the document at `document`
+ *
+ *  Both branches accept `currentDocument` for optimistic concurrency
+ *  (e.g. `{ exists: true }` to reject a delete-before-read race). */
+export type TxWrite = TxUpdateWrite | TxDeleteWrite
+
+export interface TxUpdateWrite {
+  op?:             'update'
   /** Full document resource name:
    *  `projects/<id>/databases/(default)/documents/trips/.../...` */
   document:        string
@@ -58,6 +70,24 @@ export interface TxWrite {
   }>
 }
 
+export interface TxDeleteWrite {
+  op:              'delete'
+  /** Full document resource name -- same shape as TxUpdateWrite.document.
+   *  The settlement-delete endpoint uses this to hard-delete a settlement
+   *  inside the same tx that authorized + read it, so a concurrent
+   *  cascade-trip-delete OR a competing delete-by-owner ends up as a
+   *  single Firestore conflict (412/409) the wrapper retries -- not a
+   *  silent double-delete. */
+  document:        string
+  /** Same precondition options as update. `{ exists: true }` on a
+   *  delete asserts the doc was still present at commit time; commit
+   *  fails with 412 if a concurrent writer already deleted it. */
+  currentDocument?: {
+    exists?:     boolean
+    updateTime?: string
+  }
+}
+
 /** Doc resource ready to feed back into a TxWrite, OR null if the
  *  doc didn't exist at the time of the read. */
 export interface TxReadDoc {
@@ -73,11 +103,74 @@ export interface TxReadDoc {
   updateTime: string | null
 }
 
+/** Field-level filter for runQuery. `op` mirrors Firestore REST
+ *  `FieldFilter.op` enum subset we actually need. `value` is a single
+ *  FsValue, encoded by the caller (e.g. `{ stringValue: 'JPY' }`). */
+export interface TxFieldFilter {
+  fieldPath: string
+  op:        'EQUAL' | 'LESS_THAN' | 'LESS_THAN_OR_EQUAL' | 'GREATER_THAN' | 'GREATER_THAN_OR_EQUAL'
+  value:     FsValue
+}
+
+/** Unary filter (`IS_NULL` / `IS_NOT_NULL`). MUST be used instead of
+ *  `FieldFilter EQUAL {nullValue}` because the REST API silently
+ *  returns ZERO matches for the latter against null-valued docs --
+ *  same Admin-SDK-mandated shape documented in firestore.ts's
+ *  queryReceiptPurgeCandidates comment. */
+export interface TxUnaryFilter {
+  fieldPath: string
+  op:        'IS_NULL' | 'IS_NOT_NULL'
+}
+
+export type TxFilter = TxFieldFilter | TxUnaryFilter
+
+function isUnaryFilter(f: TxFilter): f is TxUnaryFilter {
+  return f.op === 'IS_NULL' || f.op === 'IS_NOT_NULL'
+}
+
+/** Sub-collection query under a parent path. Combined with the
+ *  transaction's id at runtime so the returned docs participate in
+ *  the commit-time conflict check, same as `tx.get`. Scope kept tight
+ *  (single parent, single subcollection, AND filters only) to match
+ *  what the in-tree callers actually need -- settlement-write reads
+ *  active expenses + all settlements under a trip. Generalising to
+ *  collection-group / OR / startAt was punted; the current
+ *  /upload-intent-purge + /receipt-purge crons that do those things
+ *  don't need transactional reads. */
+export interface TxQuery {
+  /** Parent path (e.g. `trips/abc`). Empty string scopes to the
+   *  database root -- collection-group queries are NOT supported here
+   *  (no `allDescendants`); use the non-tx helpers in firestore.ts. */
+  parent:     string
+  /** Subcollection id directly under `parent` (e.g. `expenses`). */
+  collection: string
+  /** AND-combined filters. Omit for "every doc". */
+  filters?:   TxFilter[]
+  /** Default ordering is by `__name__` ascending, matching Firestore's
+   *  implicit order. Provide explicit orderBy when callers need
+   *  deterministic createdAt-based reads (settlement engine sorts by
+   *  createdAt for the replay -- but the Worker computes pair remaining
+   *  forward-cap-only and doesn't need that ordering). */
+  orderBy?:   Array<{ fieldPath: string; direction: 'ASCENDING' | 'DESCENDING' }>
+  /** Bounded read so a pathological trip can't hang a tx waiting on
+   *  10k expenses. Callers pass the same defensive cap they'd use for
+   *  the client-side getDocs equivalent (see settlement-write). */
+  limit?:     number
+}
+
 export interface TxContext {
   /** Read a doc within the transaction. Returns null when the doc
    *  doesn't exist. Reads tracked by Firestore for the commit-time
    *  conflict check. */
-  get: (path: string) => Promise<TxReadDoc>
+  get:      (path: string) => Promise<TxReadDoc>
+  /** Query a subcollection within the transaction. Returns the docs in
+   *  the order Firestore returned them (post-orderBy / post-limit).
+   *  Reads tracked for commit-time conflict check just like `get` --
+   *  if any doc in the read result set is modified before commit, the
+   *  tx aborts and retries. This is the property that lets settlement-
+   *  write read "all settlements + expenses for this trip" and trust
+   *  that no concurrent write slipped in between read and commit. */
+  runQuery: (query: TxQuery) => Promise<TxReadDoc[]>
 }
 
 export interface TxResult<T> {
@@ -161,7 +254,8 @@ export async function runFirestoreTransaction<T>(
     let bodyResult: TxResult<T>
     try {
       const ctx: TxContext = {
-        get: path => readDocInTransaction(accessToken, projectId, path, txId),
+        get:      path  => readDocInTransaction (accessToken, projectId, path,  txId),
+        runQuery: query => runQueryInTransaction(accessToken, projectId, query, txId),
       }
       bodyResult = await body(ctx)
     } catch (e) {
@@ -292,6 +386,81 @@ async function readDocInTransaction(
   }
 }
 
+async function runQueryInTransaction(
+  accessToken: string,
+  projectId:   string,
+  query:       TxQuery,
+  txId:        string,
+): Promise<TxReadDoc[]> {
+  // Firestore's :runQuery accepts an arbitrary parent prefix; the
+  // structuredQuery's `from.collectionId` selects the child collection
+  // under it. Empty parent → database root (we don't expose that to
+  // callers but keep the encoding correct).
+  const parentPath = query.parent ? `documents/${query.parent}` : 'documents'
+  const url = `${BASE}/projects/${projectId}/databases/(default)/${parentPath}:runQuery`
+
+  const filters = (query.filters ?? []).map(f => {
+    if (isUnaryFilter(f)) {
+      return { unaryFilter: { field: { fieldPath: f.fieldPath }, op: f.op } }
+    }
+    return { fieldFilter: { field: { fieldPath: f.fieldPath }, op: f.op, value: f.value } }
+  })
+
+  const structuredQuery: Record<string, unknown> = {
+    from: [{ collectionId: query.collection }],
+  }
+  if (filters.length === 1) {
+    structuredQuery.where = filters[0]
+  } else if (filters.length > 1) {
+    structuredQuery.where = { compositeFilter: { op: 'AND', filters } }
+  }
+  if (query.orderBy && query.orderBy.length > 0) {
+    structuredQuery.orderBy = query.orderBy.map(o => ({
+      field: { fieldPath: o.fieldPath }, direction: o.direction,
+    }))
+  }
+  if (query.limit != null) {
+    structuredQuery.limit = query.limit
+  }
+
+  const res = await fetch(url, {
+    cache: 'no-store',
+    method: 'POST',
+    headers: {
+      Authorization:  `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    // `transaction` at the request body's top level (NOT inside
+    // structuredQuery) tells Firestore to take these reads as part of
+    // the open tx so their snapshots feed the commit-time conflict
+    // check -- same protocol as :batchGet's `transaction` field.
+    body: JSON.stringify({ structuredQuery, transaction: txId }),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new TxRestError(
+      res.status,
+      `tx.runQuery ${query.parent}/${query.collection} → ${res.status}: ${detail.slice(0, 200)}`,
+    )
+  }
+  // :runQuery streams an array. Each row has EITHER `document` (a
+  // matching doc), or just `readTime` + `skippedResults` for the
+  // "tx-only first row" empty marker. We keep only rows with a real
+  // document field -- same filter as the cron-side helpers in
+  // firestore.ts (queryReceiptPurgeCandidates etc.).
+  const rows = await res.json() as Array<{
+    document?: { name: string; fields?: Record<string, FsValue>; updateTime?: string }
+  }>
+  return rows
+    .filter(r => r.document)
+    .map(r => ({
+      exists:     true,
+      fields:     r.document!.fields ?? {},
+      name:       r.document!.name,
+      updateTime: r.document!.updateTime ?? null,
+    }))
+}
+
 async function commitTransaction(
   accessToken: string,
   projectId:   string,
@@ -299,17 +468,28 @@ async function commitTransaction(
   writes:      TxWrite[],
 ): Promise<void> {
   const url = `${BASE}/projects/${projectId}/databases/(default)/documents:commit`
-  const restWrites = writes.map(w => ({
-    update: {
-      name:   w.document,
-      fields: w.fields,
-    },
-    ...(w.updateMask     ? { updateMask:     { fieldPaths: w.updateMask } } : {}),
-    ...(w.currentDocument ? { currentDocument: w.currentDocument } : {}),
-    ...(w.updateTransforms && w.updateTransforms.length > 0
-        ? { updateTransforms: w.updateTransforms }
-        : {}),
-  }))
+  const restWrites = writes.map(w => {
+    if (w.op === 'delete') {
+      // REST Write supports either {update}, {delete}, or {transform};
+      // we only emit one per array element. updateMask + transforms
+      // don't apply to deletes -- a hard delete drops the whole doc.
+      return {
+        delete: w.document,
+        ...(w.currentDocument ? { currentDocument: w.currentDocument } : {}),
+      }
+    }
+    return {
+      update: {
+        name:   w.document,
+        fields: w.fields,
+      },
+      ...(w.updateMask     ? { updateMask:     { fieldPaths: w.updateMask } } : {}),
+      ...(w.currentDocument ? { currentDocument: w.currentDocument } : {}),
+      ...(w.updateTransforms && w.updateTransforms.length > 0
+          ? { updateTransforms: w.updateTransforms }
+          : {}),
+    }
+  })
   const res = await fetch(url, {
     cache: 'no-store',
     method: 'POST',

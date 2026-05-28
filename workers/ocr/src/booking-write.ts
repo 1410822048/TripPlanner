@@ -56,6 +56,7 @@ import {
   docResourceName,
   type TxContext,
   type TxWrite,
+  type TxUpdateWrite,
 }                                                                   from './firestore-tx'
 import {
   consumeEntityIntents,
@@ -438,7 +439,7 @@ async function doCreate(
       body, req.tripId, ctx.memberIds, callerUid, attachmentValue,
     )
 
-    const updateTransforms: TxWrite['updateTransforms'] = [
+    const updateTransforms: NonNullable<TxUpdateWrite['updateTransforms']> = [
       { fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' },
       { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' },
     ]

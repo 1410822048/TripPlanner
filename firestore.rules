@@ -952,6 +952,18 @@ service cloud.firestore {
                       && (resource.data.settledBy == uid() || isTripOwner(tripId));
       }
 
+      // Pair-lock guard docs written by Worker `settlement-create` /
+      // `settlement-delete` to force tx contention on concurrent
+      // same-pair settlement writes (Firestore tx contention is per-
+      // document; two new settlements with different ids alone don't
+      // conflict). Direction-agnostic lock; see pairLockKey() in the
+      // Worker for the length-prefixed key encoding. Worker admin SDK
+      // bypasses these rules; no client should ever touch this
+      // collection -- closed end-to-end.
+      match /settlementPairLocks/{pairKey} {
+        allow read, write: if false;
+      }
+
       // Planning checklist — collaborative pre-trip prep. Any member
       // can add / edit / toggle / delete; the list is inherently shared
       // (one person packs the charger, another marks "currency

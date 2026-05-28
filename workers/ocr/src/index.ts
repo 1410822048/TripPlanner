@@ -22,6 +22,10 @@
 //   POST /wish-file-update       with image attachment (Phase 3.7).
 //   POST /booking-file-create  — Worker-authoritative booking create + update
 //   POST /booking-file-update    with file attachment (Phase 3.7).
+//   POST /settlement-create    — Worker-authoritative settlement create
+//   POST /settlement-delete      + delete, with full pairwise debt
+//                                computation in tx for the amount<=remaining
+//                                gate that firestore.rules cannot express.
 //
 // Scheduled:
 //   Daily UTC 03:00 — purge expense receipts that have been soft-
@@ -72,6 +76,13 @@ import {
   BookingValidationError,
 }                                                 from './booking-write'
 import {
+  settlementCreate,
+  settlementDelete,
+  SettlementCreateRequestSchema,
+  SettlementDeleteRequestSchema,
+  SettlementValidationError,
+}                                                 from './settlement-write'
+import {
   createUploadIntents,
   UploadIntentsRequestSchema,
 }                                                 from './upload-intent'
@@ -113,6 +124,11 @@ interface WorkerEnv {
    *  rapid form retries without blowing through Firestore admin
    *  write quotas. */
   EXPENSE_RATE_LIMITER:     RateLimit
+  /** Per-PoP per-uid rate limiter for settlement create/delete.
+   *  Tighter (5/min) than expense -- settlement is a clicked-button
+   *  rare event, and create runs a full pairwise debt computation
+   *  (tx + 2 runQuery reads) per request. */
+  SETTLEMENT_RATE_LIMITER:  RateLimit
   /** Cross-PoP global rate limiter. Durable Object — strongly
    *  consistent counter per-uid that catches multi-PoP abuse that
    *  would slip past the per-PoP binding. ~10-50ms latency cost. */
@@ -194,7 +210,9 @@ export default {
     const isWishUpdate    = url.pathname === '/wish-file-update'     && request.method === 'POST'
     const isBookingCreate = url.pathname === '/booking-file-create'  && request.method === 'POST'
     const isBookingUpdate = url.pathname === '/booking-file-update'  && request.method === 'POST'
-    if (!isOcr && !isCascade && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents && !isWishCreate && !isWishUpdate && !isBookingCreate && !isBookingUpdate) {
+    const isSettlementCreate = url.pathname === '/settlement-create' && request.method === 'POST'
+    const isSettlementDelete = url.pathname === '/settlement-delete' && request.method === 'POST'
+    if (!isOcr && !isCascade && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents && !isWishCreate && !isWishUpdate && !isBookingCreate && !isBookingUpdate && !isSettlementCreate && !isSettlementDelete) {
       return json({ error: 'Not found' }, 404, cors)
     }
 
@@ -246,21 +264,23 @@ export default {
     //     that L1 alone can't see. Cap deliberately looser than L1 —
     //     L1's tighter per-location bound is the primary defense; L2
     //     is the cluster ceiling.
-    const isExpenseWrite = isExpenseCreate || isExpenseUpdate
+    const isExpenseWrite    = isExpenseCreate    || isExpenseUpdate
+    const isSettlementWrite = isSettlementCreate || isSettlementDelete
     // /upload-intents reuses EXPENSE_RATE_LIMITER for this commit --
     // the realistic workload (intent request before each upload)
     // matches expense create/update cadence (30/min). Adding a
     // dedicated UPLOAD_INTENT_RATE_LIMITER binding was deferred so
     // this commit doesn't grow its deploy-failure surface area;
     // future tuning can split if observed metrics justify.
-    const limiter = isOcr            ? env.OCR_RATE_LIMITER
-                  : isTripCascade    ? env.TRIP_CASCADE_RATE_LIMITER
-                  : isExpenseWrite   ? env.EXPENSE_RATE_LIMITER
-                  : isUploadIntents  ? env.EXPENSE_RATE_LIMITER
-                  : isWishCreate     ? env.EXPENSE_RATE_LIMITER
-                  : isWishUpdate     ? env.EXPENSE_RATE_LIMITER
-                  : isBookingCreate  ? env.EXPENSE_RATE_LIMITER
-                  : isBookingUpdate  ? env.EXPENSE_RATE_LIMITER
+    const limiter = isOcr             ? env.OCR_RATE_LIMITER
+                  : isTripCascade     ? env.TRIP_CASCADE_RATE_LIMITER
+                  : isExpenseWrite    ? env.EXPENSE_RATE_LIMITER
+                  : isUploadIntents   ? env.EXPENSE_RATE_LIMITER
+                  : isWishCreate      ? env.EXPENSE_RATE_LIMITER
+                  : isWishUpdate      ? env.EXPENSE_RATE_LIMITER
+                  : isBookingCreate   ? env.EXPENSE_RATE_LIMITER
+                  : isBookingUpdate   ? env.EXPENSE_RATE_LIMITER
+                  : isSettlementWrite ? env.SETTLEMENT_RATE_LIMITER
                   : env.CASCADE_RATE_LIMITER
     const localResult = await limiter.limit({ key: uid })
     if (!localResult.success) {
@@ -270,23 +290,27 @@ export default {
 
     // Scope name + L2 limit. trip-delete is the strictest. expense
     // matches OCR (60/min L2) -- both are user-facing rapid actions.
+    // settlement L2 = 10/min (2x the per-PoP cap of 5/min) -- same
+    // ratio the other low-volume endpoints use vs their L1.
     const scope       = isOcr ? 'ocr'
-                      : isTripCascade   ? 'trip-cascade'
-                      : isExpenseWrite  ? 'expense'
-                      : isUploadIntents ? 'upload-intent'
-                      : isWishCreate    ? 'wish-write'
-                      : isWishUpdate    ? 'wish-write'
-                      : isBookingCreate ? 'booking-write'
-                      : isBookingUpdate ? 'booking-write'
+                      : isTripCascade     ? 'trip-cascade'
+                      : isExpenseWrite    ? 'expense'
+                      : isUploadIntents   ? 'upload-intent'
+                      : isWishCreate      ? 'wish-write'
+                      : isWishUpdate      ? 'wish-write'
+                      : isBookingCreate   ? 'booking-write'
+                      : isBookingUpdate   ? 'booking-write'
+                      : isSettlementWrite ? 'settlement-write'
                       : 'cascade'
     const globalLimit = isOcr ? 60
-                      : isTripCascade   ? 2
-                      : isExpenseWrite  ? 60
-                      : isUploadIntents ? 60
-                      : isWishCreate    ? 60
-                      : isWishUpdate    ? 60
-                      : isBookingCreate ? 60
-                      : isBookingUpdate ? 60
+                      : isTripCascade     ? 2
+                      : isExpenseWrite    ? 60
+                      : isUploadIntents   ? 60
+                      : isWishCreate      ? 60
+                      : isWishUpdate      ? 60
+                      : isBookingCreate   ? 60
+                      : isBookingUpdate   ? 60
+                      : isSettlementWrite ? 10
                       : 10
     const globalResult = await checkGlobalRateLimit(
       env.GLOBAL_LIMITER, scope, uid, globalLimit, 60_000,
@@ -363,6 +387,23 @@ export default {
       handle:      data => bookingFileUpdate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
       formatLog:   data => `trip=${data.tripId} booking=${data.bookingId}`,
       catchDomain: validationErrorCatcher(BookingValidationError),
+    })
+
+    if (isSettlementCreate) return handleJsonRoute({
+      endpoint:       'settlement-create', body, cors, uid,
+      schema:         SettlementCreateRequestSchema,
+      handle:         data => settlementCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog:      (data, result) => `trip=${data.tripId} settlement=${result.settlementId} from=${data.fromUid} amount=${data.amount}`,
+      formatResponse: result => ({ ok: true, ...result }),
+      catchDomain:    validationErrorCatcher(SettlementValidationError),
+    })
+
+    if (isSettlementDelete) return handleJsonRoute({
+      endpoint:    'settlement-delete', body, cors, uid,
+      schema:      SettlementDeleteRequestSchema,
+      handle:      data => settlementDelete(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog:   data => `trip=${data.tripId} settlement=${data.settlementId}`,
+      catchDomain: validationErrorCatcher(SettlementValidationError),
     })
 
     if (isUploadIntents) return handleJsonRoute({

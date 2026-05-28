@@ -30,6 +30,10 @@ export const TRIP_SUBCOLLECTIONS = [
   'bookings',
   'planning',
   'settlements',
+  // Per-unordered-pair contention guard docs written by the Worker
+  // settlement-create/-delete tx. Lives under the trip so cascade
+  // naturally drains it; rules deny all client access (Worker-only).
+  'settlementPairLocks',
   '_purges',
   'invites',
   'members',
