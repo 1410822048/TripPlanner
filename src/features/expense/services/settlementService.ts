@@ -1,7 +1,19 @@
 // src/features/expense/services/settlementService.ts
-// CRUD + realtime listener for trips/{tripId}/settlements/{id}. See
-// src/types/settlement.ts for the entity model and why this is treated
-// as a reverse-expense by computeBalances.
+// Realtime read + Worker-authoritative write for
+// trips/{tripId}/settlements/{id}. See src/types/settlement.ts for the
+// entity model and why this is treated as a reverse-expense by
+// computeBalances.
+//
+// Reads (list + onSnapshot) stay on the Firebase SDK -- persistentLocalCache
+// covers offline + cross-tab and there's no domain invariant that needs
+// admin authority on read.
+//
+// Writes (create + delete) go through the Cloudflare Worker because the
+// core invariant `amount <= pairwise[fromUid][toUid]` can't be expressed
+// in firestore.rules (no array reduce / cross-doc sum in CEL). The
+// Worker re-derives gross → applied → remaining inside a single tx,
+// guards concurrent same-pair creates with a per-pair lock doc, and
+// fail-closes on read-cap truncation. See workers/ocr/src/settlement-write.ts.
 import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
@@ -10,10 +22,25 @@ import { captureError } from '@/services/sentry'
 import { P } from '@/services/paths'
 import { subscribeToCollection } from '@/services/realtimeQuery'
 import {
+  requireWorkerWriteBase, preflightIdToken, workerFetch,
+} from '@/services/workerBase'
+import {
   type SettlementRecord,
   type CreateSettlementInput,
   SettlementDocSchema,
 } from '@/types/settlement'
+
+/**
+ * Variables required to record a settlement. `settlementId` is minted
+ * at the call site (not inside the service) so the optimistic cache
+ * row, the Worker request, and the resulting Firestore doc all share
+ * the same id. This also means a future "retry" CTA passing the same
+ * variables stays idempotent at the Worker (payload-exact match on
+ * `currentDocument.exists=false`) instead of becoming a new write.
+ */
+export type CreateSettlementVariables = CreateSettlementInput & {
+  settlementId: string
+}
 
 /** Defensive cap — long trips with many splits accumulate settlement
  *  records over time. 200 covers a 14-day group trip with margin. */
@@ -52,28 +79,56 @@ export const subscribeToSettlements = (
   limit:   LIST_LIMIT,
 }, onData, onError)
 
+/**
+ * Record a settlement (X paid Y back). The Worker enforces the
+ * receiver-only invariant (`toUid` must equal the caller's uid) so
+ * `settledBy` is derived server-side from the verified Firebase token
+ * -- not accepted from the client. amount is rounded to an integer
+ * here so the Worker's `z.number().int()` schema accepts it cleanly.
+ *
+ * `vars.settlementId` is minted at the call site (see
+ * CreateSettlementVariables) so the Worker's `currentDocument.exists
+ * = false` precondition gives genuine create-only semantics: any
+ * future replay of the same payload (e.g. a user-clicked retry CTA
+ * reusing the same mutation variables) reaches the existing-doc
+ * payload-match check inside the Worker tx and returns idempotently
+ * without a duplicate write. workerFetch itself does NOT retry —
+ * 5xx / AbortError throw WorkerAmbiguous, 4xx throw WorkerRejected.
+ *
+ * No Storage side effect to roll back, so we don't need the
+ * expense/booking-style WorkerRejected vs WorkerAmbiguous fork: any
+ * error surfaces through the global MutationCache.onError → toast.
+ */
 export async function createSettlement(
-  tripId:    string,
-  input:     CreateSettlementInput,
-  settledBy: string,
-): Promise<string> {
-  const { db, collection, addDoc, serverTimestamp } = await getFirebase()
-  const ref = await addDoc(collection(db, ...P.settlements(tripId)), {
+  tripId: string,
+  vars:   CreateSettlementVariables,
+): Promise<void> {
+  const workerBase = requireWorkerWriteBase()
+  const idToken    = await preflightIdToken()
+
+  await workerFetch(workerBase, idToken, '/settlement-create', {
     tripId,
-    fromUid:   input.fromUid,
-    toUid:     input.toUid,
-    amount:    Math.round(input.amount),
-    currency:  input.currency,
-    settledBy,
-    ...(input.note ? { note: input.note } : {}),
-    createdAt: serverTimestamp(),
+    settlementId: vars.settlementId,
+    fromUid:      vars.fromUid,
+    toUid:        vars.toUid,
+    amount:       Math.round(vars.amount),
+    currency:     vars.currency,
+    ...(vars.note ? { note: vars.note } : {}),
   })
-  return ref.id
 }
 
+/**
+ * Delete a settlement. Worker enforces recorder-or-owner gating
+ * (matches the existing rule); missing-doc is treated as success
+ * (idempotent) so a double-tap from optimistic UI doesn't surface
+ * a 404.
+ */
 export async function deleteSettlement(tripId: string, id: string): Promise<void> {
-  const { db, doc, deleteDoc } = await getFirebase()
-  await deleteDoc(doc(db, ...P.settlement(tripId, id)))
+  const workerBase = requireWorkerWriteBase()
+  const idToken    = await preflightIdToken()
+  await workerFetch(workerBase, idToken, '/settlement-delete', {
+    tripId, settlementId: id,
+  })
 }
 
 export const settlementKeys = {

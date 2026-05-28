@@ -222,15 +222,18 @@ export default function ExpensePage() {
         onMarkSettled={(fromUid, toUid, amount) => {
           if (isDemo) { signIn.open(); return }
           if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+          // Mint id here(not inside the service)so the optimistic row,
+          // the Worker request, and the Firestore doc share one id —
+          // realtime listener replaces the optimistic row atomically.
           createSettlementMut.mutate({
-            input: { fromUid, toUid, amount, currency },
-            settledBy: uid,
+            settlementId: crypto.randomUUID(),
+            fromUid, toUid, amount, currency,
           })
         }}
         onDeleteSettlement={id => {
           if (isDemo) { signIn.open(); return }
           if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
-          deleteSettlementMut.mutate(id)
+          deleteSettlementMut.mutate({ settlementId: id })
         }}
       />
 
