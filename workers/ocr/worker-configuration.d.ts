@@ -12,7 +12,7 @@ declare namespace Cloudflare {
 		TRIP_CASCADE_RATE_LIMITER: RateLimit;
 		FIREBASE_PROJECT_ID: "tripplanner-80a4f";
 		FIREBASE_STORAGE_BUCKET: "tripplanner-80a4f.firebasestorage.app";
-		ALLOWED_ORIGINS: "https://tripplanner-80a4f.web.app,https://tripplanner-80a4f.firebaseapp.com,https://tripmate-2wg.pages.dev,*.tripmate-2wg.pages.dev,http://localhost:5173";
+		ALLOWED_ORIGINS: "https://tripmate-2wg.pages.dev,*.tripmate-2wg.pages.dev,http://localhost:5173";
 		GLOBAL_LIMITER: DurableObjectNamespace<import("./src/index").GlobalRateLimiter>;
 	}
 }

@@ -20,7 +20,7 @@
 		// and receipt-purge cron. Single source of truth; if the project
 		// ever moves bucket, this is the only line to update.
 		"FIREBASE_STORAGE_BUCKET": "tripplanner-80a4f.firebasestorage.app",
-		"ALLOWED_ORIGINS": "https://tripplanner-80a4f.web.app,https://tripplanner-80a4f.firebaseapp.com,https://tripmate-2wg.pages.dev,*.tripmate-2wg.pages.dev,http://localhost:5173",
+		"ALLOWED_ORIGINS": "https://tripmate-2wg.pages.dev,*.tripmate-2wg.pages.dev,http://localhost:5173",
 		// Sentry DSN — same project as the frontend (VITE_SENTRY_DSN in
 		// the SPA bundle). Public key in a DSN is not a secret (frontend
 		// ships it in plaintext); ingest endpoint accepts events from
@@ -41,7 +41,7 @@
 	// not a hard quota. namespace_id is account-scoped and arbitrary
 	// (just unique); we use 1001-1005 to keep human-readable.
 	//   /ocr                  expensive path (Gemini quota)         → 30/min
-	//   /cascade-member       fires once per invite accept           → 5/min
+	//   membership endpoints  rare server-heavy writes               → 5/min
 	//   /cascade-trip-delete  HEAVY (full trip cascade + storage)    → 1/min
 	//                         tighter than member cascade because
 	//                         trip-delete touches O(100) docs +
@@ -99,5 +99,5 @@
 	]
 	// Secrets are set via `wrangler secret put`:
 	//   GEMINI_API_KEY            ← Google AI Studio API key
-	//   FIREBASE_SERVICE_ACCOUNT  ← service account JSON for /cascade-member
+	//   FIREBASE_SERVICE_ACCOUNT  ← service account JSON for Firestore/GCS admin REST
 }

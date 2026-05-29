@@ -31,7 +31,8 @@
 - Firebase Auth（Google OAuth）
 - Cloud Firestore（`(default)` database，asia-east1）
 - Cloud Storage（asia-east1，含 cross-service rules）
-- Firebase Hosting
+- Cloudflare Pages（`tripmate-2wg.pages.dev`，主 host）
+- Cloudflare Worker（`workers/ocr/`，OCR + Worker-authoritative writes）
 
 **工具**
 - vite-plugin-pwa（service worker + manifest）
@@ -112,13 +113,14 @@ CI 不跑 rules tests（emulator 啟動時間 + 額外服務），只在本地 +
 
 ```bash
 npm run build                          # tsc + vite build → dist/
-firebase deploy --only hosting         # 部署到 Firebase Hosting
+npm run deploy:pages                   # build + Cloudflare Pages deploy（主 host）
 ```
 
-完整部署（含 rules / indexes）：
+Rules / indexes（Firebase 那邊還在管 Firestore + Storage）：
 
 ```bash
-firebase deploy
+firebase deploy --only firestore       # firestore rules + indexes
+firebase deploy --only storage         # storage rules
 ```
 
 ## 專案結構
@@ -182,7 +184,7 @@ src/
 npm run typecheck && npm run lint && npm run test  # 本地驗證
 npm run build                                       # 確認 build 通
 firebase deploy --only firestore,storage           # rules / indexes 同步
-firebase deploy --only hosting                     # 上線
+npm run deploy:pages                                # 上線（Cloudflare Pages）
 gcloud firestore export gs://<bucket>/backups/$(date +%F)  # 手動備份基準
 ```
 
