@@ -30,13 +30,63 @@ export interface ExpenseReceipt {
  *  Lifecycle: lives or dies with the receipt photo. Removing the
  *  receipt clears items (the photo is items' ground truth). When
  *  items[].length > 0, the form switches to "by-item" split mode and
- *  splits[] is computed from item assignees at save-time. */
+ *  splits[] is computed from item assignees at save-time.
+ *
+ *  Phase A: `id` is optional + additive. Legacy items written before
+ *  the adjustment refactor have no id; new items minted by the OCR
+ *  callback or form will populate it via crypto.randomUUID. Phase B
+ *  switches the materializer wire path on and tightens callsites to
+ *  require id at the boundary; until then, splitsFromItems continues
+ *  to ignore the field. */
 export interface ExpenseItem {
+  id?:       string
   name:      string
   amount:    number
   /** memberIds — non-empty. An item shared by N people splits its
    *  amount equally across them. */
   assignees: string[]
+}
+
+/** Adjustment kind — drives the +/- sign in the materializer pure fn
+ *  (`@tripmate/expense-materialize::adjustmentSign`). Kind is also
+ *  informational (icon / label in UI). DISCOUNT/COUPON/TAX_EXEMPT/OTHER
+ *  subtract; SURCHARGE/TAX/TIP add. */
+export type ExpenseAdjustmentKind =
+  | 'DISCOUNT'
+  | 'COUPON'
+  | 'TAX_EXEMPT'
+  | 'SURCHARGE'
+  | 'TAX'
+  | 'TIP'
+  | 'OTHER'
+
+/** Persisted adjustment scope — UNKNOWN is OCR-draft-only and never
+ *  enters Firestore. Phase B Worker validation will reject UNKNOWN
+ *  explicitly; the client converts via UI selector in Phase C. */
+export type ExpenseAdjustmentScope = 'ITEM' | 'EXPENSE'
+
+/** Adjustment line for an expense — first-class replacement for the
+ *  prior "discount as negative ExpenseItem" pattern. amount is
+ *  POSITIVE minor units; the effective sign comes from `kind`.
+ *
+ *  Scope semantics:
+ *    - ITEM:    reduces the target item's subtotal before its split.
+ *               `targetItemId` is required.
+ *    - EXPENSE: distributed across all items proportional to their
+ *               post-ITEM-scope effective amounts. `targetItemId` MUST
+ *               be omitted.
+ *
+ *  Phase A: type lives here for early adopters; the materializer is
+ *  the single source of truth for the math. Wire-in happens in Phase B
+ *  via the Worker authoritative recompute + `SPLIT_PREVIEW_DRIFT`
+ *  rejection contract. See memory: expense-adjustment-design. */
+export interface ExpenseAdjustment {
+  id:            string
+  label:         string
+  kind:          ExpenseAdjustmentKind
+  scope:         ExpenseAdjustmentScope
+  amount:        number
+  targetItemId?: string
 }
 
 // trips/{tripId}/expenses/{expenseId}
@@ -104,17 +154,59 @@ export const ExpenseSplitSchema = z.object({
 })
 
 export const ExpenseItemSchema = z.object({
+  // Phase A: id is optional and additive. Phase B tightens to required
+  // at the boundary (Worker validation + new client write path).
+  id: z.string().min(1).max(64).optional(),
   name: z.string().min(1).max(200),
   // Amount may be negative — receipts often include discount / cashback
   // / promo lines that legitimately subtract from the total (e.g.
   // "キャッシュレス還元 -6"). Sum-equals-total is enforced at the form
   // layer regardless of sign.
+  //
+  // Phase B will tighten this to .positive() in lockstep with the OCR
+  // schema migration (discounts move to `adjustments[]`). Until then,
+  // do NOT add positivity here — live OCR still emits signed items.
   amount: z.number(),
   // Every item must have at least one assignee — enforced both client-
   // side (form validation) and at the schema level so any future code
   // path that tries to write a "dangling" item gets rejected.
   assignees: z.array(z.string().min(1)).min(1, '至少需要一位分攤者'),
 })
+
+/** Adjustment kind / scope literals — mirror of
+ *  `@tripmate/expense-materialize::AdjustmentKind` / `AdjustmentScope`.
+ *  Re-declared here (rather than re-exported) so the Zod parse layer
+ *  doesn't take a runtime dep on the materializer package. */
+export const EXPENSE_ADJUSTMENT_KINDS = [
+  'DISCOUNT', 'COUPON', 'TAX_EXEMPT', 'SURCHARGE', 'TAX', 'TIP', 'OTHER',
+] as const
+
+export const EXPENSE_ADJUSTMENT_SCOPES = ['ITEM', 'EXPENSE'] as const
+
+/** Persisted adjustment shape. `amount` is positive integer minor
+ *  units (JPY=¥, USD=cents); sign comes from `kind`. Draft surfaces
+ *  that temporarily hold a zero amount should use a draft-only schema,
+ *  not this persisted shape.
+ *
+ *  Phase A: schema lives here but is NOT yet wired into ExpenseDocSchema
+ *  or CreateExpenseSchema — those land in Phase B alongside Worker
+ *  authoritative recompute.
+ *
+ *  The ITEM-iff-targetItemId refine mirrors the runtime guard in
+ *  `@tripmate/expense-materialize` (ITEM_SCOPE_NO_TARGET /
+ *  EXPENSE_SCOPE_HAS_TARGET). Catching it at the Zod boundary lets
+ *  Phase B reject malformed docs before invoking the materializer. */
+export const ExpenseAdjustmentSchema = z.object({
+  id:           z.string().min(1).max(64),
+  label:        z.string().min(1).max(120),
+  kind:         z.enum(EXPENSE_ADJUSTMENT_KINDS),
+  scope:        z.enum(EXPENSE_ADJUSTMENT_SCOPES),
+  amount:       z.number().int().positive(),
+  targetItemId: z.string().min(1).max(64).optional(),
+}).refine(
+  data => (data.scope === 'ITEM') === (data.targetItemId !== undefined),
+  { message: 'targetItemId must be present iff scope === ITEM', path: ['targetItemId'] },
+)
 
 // Pulled out as a base so UpdateExpenseSchema can `.partial()` from the
 // pre-refine shape (refines don't survive .partial(), and a partial
