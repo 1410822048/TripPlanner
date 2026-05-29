@@ -82,7 +82,8 @@ service firebase.storage {
     }
     function canWriteFiles(tripId) {
       return isSignedIn()
-        && firestore.get(memberDoc(tripId)).data.role in ['owner', 'editor'];
+        && firestore.get(memberDoc(tripId)).data.role in ['owner', 'editor']
+        && !('removingAt' in firestore.get(memberDoc(tripId)).data);
     }
     // Cross-service mirror of firestore.rules' tripNotDeleting helper.
     // The Worker's /cascade-trip-delete sets `trip.deletingAt` BEFORE

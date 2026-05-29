@@ -89,10 +89,12 @@ export function useRevokeInvite(tripId: string | undefined) {
  * naturally.
  *
  * The trip object travels back through the mutation result so the
- * caller (InvitePage) can also setSelectedTripId(trip.id) before navigating
- * to /schedule. If the service couldn't fetch the trip post-redeem
- * (rare — rules race, schema mismatch), we skip the seed; the
- * listeners will fill the cache shortly anyway.
+ * caller (InvitePage) can use it to switch the active trip before
+ * navigating to /schedule. If the post-redeem fetch fails (rare —
+ * rules race, schema mismatch), `trip` is null and we skip the seed;
+ * the listeners will fill the cache shortly anyway. The caller still
+ * has the URL `tripId` to fall back on for the selection itself, so
+ * the "stay on old trip" failure mode doesn't reappear.
  */
 export function useAcceptInvite() {
   const qc = useQueryClient()

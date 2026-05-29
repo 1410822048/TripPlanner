@@ -1,34 +1,28 @@
 // workers/ocr/src/cascade.ts
-// Server-side membership cascade for the accept-invite flow.
+// Server-side membership projection cascade for invite/member flows.
 //
-// Writes are split between client and worker, but both share the
-// invariant "after accept, trip.memberIds and every entity doc's
-// memberIds[] contains the invitee uid". Roles:
+// The Worker owns the invariant "after accept, trip.memberIds and every
+// entity doc's memberIds[] contains the invitee uid". `/invite-redeem`
+// writes the member doc + trip roster, then calls this helper to update
+// every trip-scoped doc carrying memberIds[].
 //
-//   - Client (governed by rules):
-//       1. setDoc(/trips/X/members/{uid})  — invite-redeem create rule
-//       2. updateDoc(/trips/X, memberIds += uid) — memberSyncSelfAdd rule
-//      → fast path. After these two writes the invitee has trip-level
-//        access immediately, even if the worker is unreachable.
+// This file arrayUnions the uid onto every trip-scoped doc that carries
+// memberIds[] — members/*, schedules/*, expenses/*, bookings/*, wishes/*,
+// planning/*, and the trip doc itself.
 //
-//   - Worker (admin SDK, bypasses rules) — THIS FILE:
-//       arrayUnion the uid onto EVERY trip-scoped doc that carries
-//       memberIds[] — members/*, schedules/*, expenses/*, bookings/*,
-//       wishes/*, planning/*, AND the trip doc itself.
+// The trip doc is included in the batch alongside subcollections so
+// every memberIds[] projection lands in one commit. arrayUnion is
+// idempotent (re-running on a uid that's already present is a no-op).
 //
-// The trip doc is intentionally written by BOTH sides. arrayUnion is
-// idempotent (re-running on a uid that's already present is a no-op),
-// so the redundancy costs ~one extra write and gives strong
-// resilience: if the client's trip self-add silently failed (rules
-// lag, intermittent network) the worker still establishes the
-// invariant. The earlier "client-only writes trip" design exposed a
-// propagation race where worker REST read didn't yet see the client's
-// just-committed update — switching to idempotent redundancy
-// eliminates that class of bug entirely.
-import { z }                                from 'zod'
+// Projection precondition: trip.memberIds must already include memberUid.
+// `/invite-redeem` establishes that inside its transaction before calling
+// this helper. `/member-remove` strips trip.memberIds before its remove
+// cascade, so a kicked-but-not-yet-deleted member cannot re-add themselves
+// through projection repair.
 import { getAdminToken, getProjectId, invalidateAdminToken } from './admin'
 import {
   docExists,
+  getDocFields,
   getDocMemberIds,
   listDocNames,
   batchArrayUnionMemberIds,
@@ -37,17 +31,18 @@ import {
 } from './firestore'
 import { mapWithConcurrency }                from './concurrency'
 
-export const CascadeRequestSchema = z.object({
-  tripId:    z.string().min(1).max(60),
-  memberUid: z.string().min(1).max(128),
-})
-export type CascadeRequest = z.infer<typeof CascadeRequestSchema>
+export interface CascadeRequest {
+  tripId:    string
+  memberUid: string
+}
 
 /** Subcollections under /trips/{tripId} whose docs carry memberIds[]
- *  and therefore need cascading on member add. The trip doc itself
- *  is added separately in cascadeMemberAdd (it's a single doc, not
- *  a collection list). */
-const TRIP_SUBCOLLECTIONS = [
+ *  and therefore need cascading on member add/remove. The trip doc
+ *  itself is added separately (it's a single doc, not a collection
+ *  list). Exported so /member-remove can reuse the exact same set --
+ *  any future subcollection added with a memberIds projection MUST
+ *  appear here or the remove-cascade silently leaves the uid behind. */
+export const TRIP_SUBCOLLECTIONS = [
   'members', 'schedules', 'expenses', 'bookings', 'wishes', 'planning',
 ] as const
 
@@ -121,6 +116,41 @@ async function runCascade(
     throw new CascadeError(403, 'member doc does not exist — accept invite first')
   }
 
+  // tripNotDeleting re-check. /invite-redeem already gated on
+  // `deletingAt` inside its REST tx, but trip-cascade-delete can start
+  // between tx commit and the cascade kickoff below. Without this
+  // re-read, an invitee who slips through that window keeps their
+  // member doc + ACL projection on every subcollection doc, racing the
+  // delete cascade and leaving zombie reads. Re-reading the trip is
+  // one round-trip in exchange for closing a window measured in
+  // milliseconds but real-world reachable under owner-driven delete.
+  const tripFields = await getDocFields(accessToken, projectId, `trips/${req.tripId}`)
+  if (!tripFields) {
+    throw new CascadeError(404, 'trip not found')
+  }
+  if ('deletingAt' in tripFields) {
+    throw new CascadeError(410, 'trip is being deleted')
+  }
+
+  // Removal-aware refuse. /member-remove's safe-failure mode strips
+  // ACL projection FIRST (trip.memberIds and every subcollection
+  // memberIds), then deletes the member doc LAST. If the final delete
+  // fails or is delayed, the target still holds a Firebase token and
+  // could otherwise re-arrayUnion themselves into every memberIds[],
+  // silently undoing the kick. The check here closes that attack surface:
+  // if trip.memberIds doesn't include the cascade target, refuse.
+  // Symmetric on the inviteRedeem retry path -- a
+  // stale member doc from a previous tx-committed-but-cascade-failed
+  // attempt is fine to recover from (roster still includes caller),
+  // but a member doc from a partially-finished kick is not.
+  const tripRosterValues = tripFields.memberIds?.arrayValue?.values ?? []
+  const tripRoster = tripRosterValues
+    .map(v => v.stringValue)
+    .filter((v): v is string => typeof v === 'string')
+  if (!tripRoster.includes(req.memberUid)) {
+    throw new CascadeError(403, 'member is not in trip roster — cascade refused')
+  }
+
   // Collect every doc that needs memberIds += uid: each /trips/{tripId}/<sub>/*
   // doc plus the trip doc itself. The trip doc is INCLUDED even though the
   // client also writes it (idempotent arrayUnion) — if the client's write
@@ -151,14 +181,14 @@ async function runCascade(
   // above to include invitee) and arrayUnion that full roster onto
   // the invitee's member doc. Result: every member doc carries the
   // identical roster — invariant restored.
-  const tripRoster = await getDocMemberIds(
+  const freshRoster = await getDocMemberIds(
     accessToken, projectId, `trips/${req.tripId}`,
   )
   await arrayUnionMembersOnDoc(
     accessToken,
     projectId,
     buildDocName(projectId, `trips/${req.tripId}/members/${req.memberUid}`),
-    tripRoster,
+    freshRoster,
   )
 
   return { updatedDocs: docNames.length }

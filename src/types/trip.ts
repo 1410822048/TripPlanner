@@ -36,8 +36,8 @@ export interface Trip {
   ownerId: string
   /**
    * Denormalised list of all member uids. Mirrored from
-   * /trips/{id}/members/* and updated via memberSync on every
-   * membership change. Drives the read rules — `allow get / list:
+   * /trips/{id}/members/* and updated by Worker membership endpoints
+   * on every membership change. Drives the read rules — `allow get / list:
    * if request.auth.uid in resource.data.memberIds` — so rules
    * evaluate against THIS doc only, not a cross-document exists()
    * lookup. Eliminates the rules-eval propagation lag window that
@@ -141,7 +141,8 @@ export interface Member {
    * Mirror of trip.memberIds. Lets the members-list rule check
    * `request.auth.uid in resource.data.memberIds` against THIS doc
    * instead of a cross-document exists() — same-doc, no lag.
-   * Cascade-updated via memberSync alongside other entity docs.
+   * Cascade-updated by Worker membership endpoints alongside other
+   * entity docs.
    */
   memberIds: string[]
 }

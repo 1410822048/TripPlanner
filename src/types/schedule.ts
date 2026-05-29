@@ -22,7 +22,7 @@ export interface Schedule {
   updatedBy: string
   /** Denormalised member uids — drives the same-doc read rule
    *  `allow read: if request.auth.uid in resource.data.memberIds`.
-   *  Synced via memberSync on every membership change. */
+   *  Synced by Worker membership endpoints on membership changes. */
   memberIds: string[]
   createdAt: Timestamp
   updatedAt: Timestamp

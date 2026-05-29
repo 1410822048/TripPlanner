@@ -623,6 +623,58 @@ describe('cascade write-quiesce (deletingAt) gates Storage uploads', () => {
   })
 })
 
+// ─── removingAt write-quiesce (M1.8 P1) ──────────────────────────
+
+describe('member-remove write-quiesce (removingAt) gates Storage uploads', () => {
+  // Mirror the firestore-side canWrite removingAt gate at the Storage
+  // layer. Without this, a kicked editor's in-flight Storage upload
+  // (already pre-loaded with a valid uploadIntent) could land between
+  // the Worker /member-remove tx commit (which sets removingAt) and
+  // the cascade phase's deleteDoc -- the bytes survive, the matching
+  // Firestore doc create fails on canWrite, and we end up with an
+  // orphan blob. canWriteFiles() now also checks `!('removingAt' in
+  // memberDoc(tripId).data)`.
+
+  async function markEditorRemoving(): Promise<void> {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await updateDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'members', EDITOR_UID),
+        { removingAt: Timestamp.now() },
+      )
+    })
+  }
+
+  test('editor CANNOT upload booking attachment after removingAt set on their member doc', async () => {
+    const seed = await seedIntent({
+      intentId: 'i-bk-removing', entityType: 'booking', entityId: 'booking-1',
+      fileName: 'race.png', contentType: 'image/png',
+    })
+    await markEditorRemoving()
+    await assertFails(uploadString(
+      ref(asEditor(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: seed.uploaderUid,
+        entityType: 'booking', entityId: 'booking-1', contentType: 'image/png',
+      }),
+    ))
+  })
+
+  test('editor CANNOT upload expense receipt after removingAt set', async () => {
+    const seed = await seedIntent({
+      intentId: 'i-exp-removing', entityType: 'expense', entityId: 'e1',
+      fileName: 'race.png', contentType: 'image/png',
+    })
+    await markEditorRemoving()
+    await assertFails(uploadString(
+      ref(asEditor(env).storage(), seed.path), 'data', 'raw',
+      uploadMetadata({
+        intentId: seed.intentId, uploaderUid: seed.uploaderUid,
+        entityType: 'expense', entityId: 'e1', contentType: 'image/png',
+      }),
+    ))
+  })
+})
+
 // ─── Wish cover delete tests (kept, no upload involved) ───────────
 
 describe('Wish cover Storage ownership (delete)', () => {

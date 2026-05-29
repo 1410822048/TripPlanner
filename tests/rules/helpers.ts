@@ -37,9 +37,8 @@ export const STRANGER_UID = 'stranger-uid'
 export const TRIP_ID    = 'trip-1'
 export const BOOKING_ID = 'booking-1'
 // Second booking whose memberIds intentionally OMITS viewer — used to
-// verify the bookings memberSync path: a member must be able to append
-// their own uid (the legitimate accept-invite flow), but blocked from
-// piggybacking other changes / adding strangers / bulk-adding.
+// verify membership projection writes are Worker-only. A client cannot
+// append its own uid, piggyback changes, add strangers, or bulk-add.
 export const BOOKING_NO_VIEWER_ID = 'booking-no-viewer'
 export const WISH_ID    = 'wish-1'
 

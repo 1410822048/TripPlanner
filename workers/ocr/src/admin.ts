@@ -1,9 +1,9 @@
 // workers/ocr/src/admin.ts
 // Mint a Google OAuth access token from a Firebase service-account JSON,
 // then use it to call Firestore REST API at admin privilege (bypassing
-// security rules). Used by the cascade-member endpoint to arrayUnion a
-// new member's uid onto every existing doc under a trip — invitees
-// can't list those docs themselves under the same-doc memberIds rule.
+// security rules). Used by Worker-authoritative endpoints to update
+// membership projections and other server-owned data. Clients cannot
+// list or mutate those projections directly under same-doc memberIds rules.
 //
 // Cache the OAuth token in-process for its lifetime. Workers reuse the
 // same instance for many requests, so token reuse saves the ~150ms

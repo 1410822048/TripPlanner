@@ -31,7 +31,7 @@ service cloud.firestore {
     }
     // Same-doc membership predicate. The denormalised `memberIds: string[]`
     // is cascaded onto every trip-scoped doc (trip + members + 5 entity
-    // subcollections) via memberSync, so reads check membership against
+    // subcollections) by Worker membership endpoints, so reads check membership against
     // the doc being read — NO cross-document exists() / get() that
     // suffers Firestore's rules-eval propagation lag window (which used
     // to 403 listeners attaching right after a fresh batch.commit).
@@ -49,17 +49,26 @@ service cloud.firestore {
     // far better than silent listener deaths). Switching writes to
     // same-doc would need a `writerUids` denormalisation too; deferred
     // until usage proves it worth the cascade cost.
+    //
+    // `removingAt` gate: when the Worker `/member-remove` tx starts a
+    // kick, it stamps `removingAt` on the target's member doc INSIDE
+    // the same tx that authorized the owner. From that commit until
+    // the member doc is deleted by the cascade phase, this gate
+    // refuses the target's writes -- closing the race where they
+    // could create a fresh subcollection doc between the cascade's
+    // listDocNames and member-doc delete (the new doc's memberIds[]
+    // would still carry the kicked uid and bypass the strip).
+    // The two `get(memberPath(tripId))` calls are cached by the rules
+    // engine within a single rule eval, so the gate is free.
     function canWrite(tripId) {
       return isSignedIn()
-        && get(memberPath(tripId)).data.role in ['owner', 'editor'];
+        && get(memberPath(tripId)).data.role in ['owner', 'editor']
+        && !('removingAt' in get(memberPath(tripId)).data);
     }
     function isTripOwner(tripId) {
       return isSignedIn()
         && exists(/databases/$(database)/documents/trips/$(tripId))
         && get(/databases/$(database)/documents/trips/$(tripId)).data.ownerId == uid();
-    }
-    function invitePath(tripId, token) {
-      return /databases/$(database)/documents/trips/$(tripId)/invites/$(token);
     }
 
     // ─── Field-level update guards ────────────────────────────────
@@ -151,9 +160,8 @@ service cloud.firestore {
     // (`getTripMemberIds(tripId)`) reads from `trip.memberIds`, so
     // honest clients always satisfy this — only forged payloads fail.
     //
-    // memberSync cascade paths (memberSyncSelfAdd / ownerSyncRemove)
-    // operate via `update`, not `create`, so this gate doesn't conflict
-    // with the invite-accept / remove-member flows.
+    // Membership endpoints use Admin SDK and bypass rules, so this gate
+    // only applies to client-authored entity creates.
     function memberIdsMatchTrip(tripId) {
       return request.resource.data.memberIds ==
         get(/databases/$(database)/documents/trips/$(tripId)).data.memberIds;
@@ -192,52 +200,10 @@ service cloud.firestore {
     // now live in `workers/ocr/src/expense-validate.ts` (makeReceiptSchema)
     // and `workers/ocr/src/upload-intent.ts` (intent minting + consume).
 
-    // ─── Membership-sync update predicates ────────────────────────
-    // These authorise the memberSync cascade — when a user accepts an
-    // invite OR the owner removes a member, memberIds[] is bumped on
-    // every trip-scoped doc (trip, members, all 5 entity subcollections).
-    // The write rules below allow these specific diffs WITHOUT requiring
-    // canWrite (which would lock invitees out) or content-edit gates
-    // (which would lock owner cascade out).
-    //
-    // memberSyncSelfAdd: caller appends THEIR OWN uid, exactly once,
-    // to memberIds. Requires they hold a member doc at this trip so
-    // a stranger can't self-add via this path. The pre-existing
-    // entity/member docs that the invitee couldn't list themselves
-    // are cascaded by the OCR worker's /cascade-member endpoint
-    // (service-account, bypasses rules) — see workers/ocr/src/cascade.ts.
-    function memberSyncSelfAdd(tripId) {
-      // Set-shape constraint (the size-delta-only version was a P1 BOLA):
-      // new memberIds MUST be old ∪ {uid()}. Without `hasAll(old)` an
-      // invitee could rotate the roster in one write -- e.g. old=[A,B,C],
-      // new=[A,B,D,attacker]: size delta +1, uid in new, uid not in old
-      // -- all the old shape-only gates pass, but B is silently dropped
-      // and attacker gets in. The hasAll clause locks the new roster to
-      // be a superset of old, so the ONLY legal change is appending
-      // the caller's uid.
-      return isSignedIn()
-        && exists(memberPath(tripId))
-        && changedOnly(['memberIds'])
-        && uid() in request.resource.data.memberIds
-        && !(uid() in resource.data.memberIds)
-        && request.resource.data.memberIds.hasAll(resource.data.memberIds)
-        && request.resource.data.memberIds.size() == resource.data.memberIds.size() + 1;
-    }
-    // ownerSyncRemove: only the trip owner can strip a uid from memberIds.
-    // memberIds is the only field allowed to change — content edits
-    // route through the canWrite branch above.
-    //
-    // Same-class fix as memberSyncSelfAdd: size delta -1 alone was a
-    // BOLA -- owner raw SDK could `new=[ownerUid, attacker]` against
-    // `old=[ownerUid, B, C]` (size 3→2, delta -1 passes), removing
-    // B+C and inserting attacker in one write. hasAll pins new ⊆ old
-    // so the only legal change is dropping one uid, no swaps.
-    function ownerSyncRemove(tripId) {
-      return isTripOwner(tripId)
-        && changedOnly(['memberIds'])
-        && resource.data.memberIds.hasAll(request.resource.data.memberIds)
-        && request.resource.data.memberIds.size() == resource.data.memberIds.size() - 1;
-    }
+    // Membership projection changes are Worker-authoritative. The old
+    // client-side projection self-add / owner-remove predicates are gone:
+    // invite redeem, member remove, and role update now route through
+    // /invite-redeem, /member-remove, and /member-role-update.
 
     // Collection-group list gate for /members. Used by getMyTrips() to find
     // every trip the user belongs to (owner OR editor OR viewer). The rule
@@ -257,9 +223,9 @@ service cloud.firestore {
     //
     // The rule mirrors the members pattern: clients MUST filter by
     // `where('memberIds', 'array-contains', uid)` or Firestore rejects.
-    // The denormalised memberIds array is synced by inviteService (on
-    // accept) and memberService (on remove). Per-trip get/create/update/
-    // delete still go through the path-scoped rule below.
+    // The denormalised memberIds array is synced by Worker membership
+    // endpoints. Per-trip get/create/update/delete still go through the
+    // path-scoped rule below.
     match /{path=**}/bookings/{bookingId} {
       allow list: if isSignedIn() && uid() in resource.data.memberIds;
     }
@@ -280,8 +246,8 @@ service cloud.firestore {
       allow list: if isSignedIn() && resource.data.ownerId == uid();
       // Anyone signed-in may create a trip they own; ownerId is pinned
       // to their uid. memberIds must start as exactly [uid] so the
-      // initial roster matches the owner-only state — memberSync
-      // extends it as invitees redeem.
+      // initial roster matches the owner-only state; Worker membership
+      // endpoints extend it as invitees redeem.
       allow create: if isSignedIn()
                     && request.resource.data.keys().hasOnly([
                          'ownerId','title','destination','startDate','endDate',
@@ -305,14 +271,12 @@ service cloud.firestore {
                     && (!('icon' in request.resource.data)
                           || (request.resource.data.icon is string
                               && request.resource.data.icon.size() <= 8));
-      // Five update paths:
+      // Two update paths:
       //   1. Owner edits trip metadata (title/dates/icon/currency).
       //      ownerId + createdAt pinned to prevent transfer / forgery.
-      //      memberIds locked too — only memberSync paths can touch it.
-      //   2. Invitee self-add via memberSync cascade after acceptInvite
-      //      writes the new member doc.
-      //   3. Owner remove-member cascade strips uid from memberIds.
-      //   4. Any member bumps lastActivityByFeature — drives the
+      //      memberIds locked too — only Worker membership endpoints
+      //      can touch it.
+      //   2. Any member bumps lastActivityByFeature — drives the
       //      bottom-nav unread-dot badge. Called after every entity
       //      mutation (best-effort fire-and-forget). `by` field NOT
       //      validated server-side: forging it only causes the forger's
@@ -329,10 +293,9 @@ service cloud.firestore {
         && unchanged('createdAt')
         && unchanged('memberIds')
         // deletingAt is the cascade write-quiesce marker -- only the
-        // Worker (admin SDK) is allowed to set it. memberSync/
-        // ownerSyncRemove/lastActivity paths already pin their change
-        // sets via changedOnly so they can't touch this field
-        // either; only the owner-edit path needs the explicit guard.
+        // Worker (admin SDK) is allowed to set it. The owner-edit and
+        // lastActivity paths pin their change sets via changedOnly, but
+        // the owner-edit path still carries the explicit guard.
         && unchanged('deletingAt')
         && request.resource.data.title is string
         && request.resource.data.title.size() > 0
@@ -350,7 +313,7 @@ service cloud.firestore {
         && (!('icon' in request.resource.data)
               || (request.resource.data.icon is string
                   && request.resource.data.icon.size() <= 8))
-      ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId) || (
+      ) || (
         memberOfDoc()
         && changedOnly(['lastActivityByFeature', 'updatedAt'])
         && request.resource.data.lastActivityByFeature is map
@@ -379,80 +342,25 @@ service cloud.firestore {
         //       roster via memberIds[] so the check is same-doc.
         allow get:  if memberOfDoc() || isSelf(memberId);
         allow list: if memberOfDoc();
-        // Three creation paths:
-        //   1. Owner self-bootstrap at trip creation (doc-id must be own uid,
-        //      role pinned to 'owner', memberIds == [uid] to match the
-        //      trip's initial roster).
-        //   2. Owner manually adds a member (Phase 3 feature).
-        //   3. Invitee self-redeems: doc-id is own uid, role matches the
-        //      invite doc they reference via `inviteToken`. The rule
-        //      dereferences the invite to verify role + non-expired. The
-        //      invite doc is reusable — its existence is the validity gate;
-        //      multiple redeemers may succeed in parallel. memberIds on
-        //      the new doc must include the joiner so the same-doc read
-        //      rule passes.
+        // Client create is only allowed for owner self-bootstrap in the
+        // same writeBatch as trip creation. Invite redeem and manual
+        // member writes are Worker-authoritative.
         allow create: if isSignedIn()
-                      && uid() in request.resource.data.memberIds && (
-          (memberId == uid()
-            && request.resource.data.userId == uid()
-            && request.resource.data.role == 'owner'
-            && request.resource.data.memberIds == [uid()]
-            // BOLA fix: bind this owner-bootstrap member doc to the
-            // SAME-BATCH trip create. Without these two gates a
-            // stranger who knows any existing tripId can `setDoc`
-            // a member doc claiming role='owner' (the previous
-            // version of this branch checked nothing trip-side),
-            // and canWrite() would then trust the forged member
-            // doc → full read/write across the victim's trip.
-            // `!exists(tripPath)` rejects writes against trips
-            // that already exist; `getAfter(tripPath).data.ownerId
-            // == uid()` confirms the in-batch trip doc names the
-            // caller as owner (the trip-create rule independently
-            // enforces ownerId == uid(), so this is anchored to
-            // the trip rule's own truth source). memberIds check
-            // pins the bootstrap solo-roster shape, matching the
-            // trip create rule's `memberIds == [uid()]`.
-            && !exists(tripPath(tripId))
-            && getAfter(tripPath(tripId)).data.ownerId == uid()
-            && getAfter(tripPath(tripId)).data.memberIds == [uid()])
-          || (
-              // Owner manually adds a member (Phase 3 feature, not yet
-              // wired in client). Lock userId / role so the owner can't
-              // bypass the role allowlist or write mismatched identity.
-              // tripNotDeleting blocks mid-cascade additions that would
-              // leave a stray member doc surviving the cascade window.
-              isTripOwner(tripId)
-              && tripNotDeleting(tripId)
-              && request.resource.data.userId == memberId
-              && request.resource.data.role in ['editor', 'viewer']
-            )
-          || (memberId == uid()
-              // Invite redeem. tripNotDeleting blocks a friend
-              // redeeming an invite during the owner's cascade --
-              // they'd otherwise see "joined" UX briefly, then
-              // their member doc would get wiped along with
-              // everyone else's. Reject upfront so they get a
-              // clean error instead of confusing state churn.
-              && tripNotDeleting(tripId)
-              && request.resource.data.userId == uid()
-              && request.resource.data.role in ['editor', 'viewer']
-              && exists(invitePath(tripId, request.resource.data.inviteToken))
-              && get(invitePath(tripId, request.resource.data.inviteToken)).data.role == request.resource.data.role
-              && get(invitePath(tripId, request.resource.data.inviteToken)).data.expiresAt > request.time)
-        );
-        // Three update paths:
-        //   1. Owner edits roles. Identity fields locked, memberIds locked.
-        //   2. Invitee self-add cascade after acceptInvite (memberSync
-        //      touches every existing member doc's memberIds).
-        //   3. Owner remove-member cascade.
-        allow update: if (
-          isTripOwner(tripId)
-          && unchanged('userId')
-          && unchanged('tripId')
-          && unchanged('joinedAt')
-          && unchanged('memberIds')
-        ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
-        allow delete: if isTripOwner(tripId);
+          && memberId == uid()
+          && uid() in request.resource.data.memberIds
+          && request.resource.data.userId == uid()
+          && request.resource.data.role == 'owner'
+          && request.resource.data.memberIds == [uid()]
+          // BOLA fix: bind this owner-bootstrap member doc to the
+          // SAME-BATCH trip create. Without these two gates a
+          // stranger who knows any existing tripId can `setDoc`
+          // a member doc claiming role='owner', and canWrite()
+          // would then trust the forged member doc.
+          && !exists(tripPath(tripId))
+          && getAfter(tripPath(tripId)).data.ownerId == uid()
+          && getAfter(tripPath(tripId)).data.memberIds == [uid()];
+        allow update: if false;
+        allow delete: if false;
       }
 
       match /invites/{token} {
@@ -562,7 +470,7 @@ service cloud.firestore {
                     && request.resource.data.estimatedCost <= 1000000000))
           && (!('location' in request.resource.data)
                 || validScheduleLocation(request.resource.data.location))
-        ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
+        );
         allow delete: if canWrite(tripId);
       }
 
@@ -575,13 +483,10 @@ service cloud.firestore {
         // map-extract / reduce). Admin SDK on Worker bypasses this
         // rule; clients calling setDoc directly are rejected.
         allow create: if false;
-        // Expense UPDATE has two client-allowed paths:
+        // Expense UPDATE has one client-allowed path:
         //   1. Soft-delete / restore + audit bump only. Content edits
         //      (title/amount/splits/etc.) are Worker-only via
         //      /expense-update -- same rationale as create above.
-        //   2. memberSync paths (invitee self-add + owner cascade
-        //      remove) -- already scoped to memberIds via their
-        //      respective helpers.
         //
         // The deletedAt transition rules are unchanged (4 explicit
         // branches + 10-day restore window + tombstone freeze) since
@@ -649,7 +554,7 @@ service cloud.firestore {
             || (expenseTombstoned(resource.data)
                 && request.resource.data.deletedAt == resource.data.deletedAt)
           )
-        ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
+        );
         // Hard delete from clients is forbidden -- soft-delete via
         // `deletedAt` is the only path. This was previously a "workflow
         // gate" tied to a deletionStartedAt window so the client-side
@@ -780,7 +685,7 @@ service cloud.firestore {
               )
             )
           )
-        ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
+        );
         // Two deletion paths:
         //   1. Proposer cleans up their own wish.
         //   2. Trip owner moderates — can remove any wish (e.g. spam,
@@ -904,7 +809,7 @@ service cloud.firestore {
           // new value is denied — those go through /booking-file-create
           // and /booking-file-update.
           && unchangedOrRemoved('attachment')
-        ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
+        );
         allow delete: if canWrite(tripId);
       }
 
@@ -1006,7 +911,7 @@ service cloud.firestore {
           && (!('note' in request.resource.data)
                 || (request.resource.data.note is string
                     && request.resource.data.note.size() <= 1000))
-        ) || memberSyncSelfAdd(tripId) || ownerSyncRemove(tripId);
+        );
         allow delete: if memberOfDoc();
       }
 

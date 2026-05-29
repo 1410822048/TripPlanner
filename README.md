@@ -146,7 +146,7 @@ src/
 │                        useFormModal, useFeatureListPage, useSwipeOpen, ...）
 ├── layouts/            AppLayout（含 nav）
 ├── routes/             React Router 設定
-├── services/           App-level：firebase, paths, sentry, memberSync
+├── services/           App-level：firebase, paths, sentry, workerBase
 ├── shared/             toast, categoryMeta
 ├── store/              Zustand stores（trip, demoTrip）
 ├── types/              依 entity 切分（trip / schedule / expense / booking / wish / planning）
@@ -157,7 +157,7 @@ src/
 
 - **Feature 標準層次**：`{services, hooks, components, types?, utils?, mocks?}`。新增 feature 時請對齊這個骨架。
 - **Sub-domain folder（如 `trips/invites/`）**：當一個 sub-flow 有 ≥4 個檔案（service + hook + 2+ UI components）且這些檔案彼此緊耦合，但與 feature 主幹（trips 本體）只有「使用」關係時，才開 sub-folder 平鋪所有檔案。否則拆回標準層次。
-- **跨 feature 共享的 service**：放在 `src/services/`（如 `memberSync.ts`），不放在任何 feature 裡。把它放在 feature 內會讓另一個 feature 的 import 線變成「橫向依賴某 feature 的內部結構」。
+- **跨 feature 共享的 service**：放在 `src/services/`（如 `workerBase.ts` / `tripMemberIds.ts`），不放在任何 feature 裡。把它放在 feature 內會讓另一個 feature 的 import 線變成「橫向依賴某 feature 的內部結構」。
 - **跨 feature 共享的 hook**：放在 `src/hooks/`，feature 內保留只在該 feature 用得到的 hook。
 
 ## 安全模型

@@ -1389,16 +1389,13 @@ describe('/trips/{tripId}/members get with self-access', () => {
   })
 })
 
-// ─── Booking memberSync path (member self-add to memberIds) ────────
-// Defence-in-depth rule path: any member can append THEIR OWN uid to
-// memberIds, exactly once, with no piggybacking. The accept-invite
-// cascade now runs server-side (workers/ocr/src/cascade.ts, admin SDK),
-// so this rule path is rarely exercised in production — but kept as a
-// safety net should the worker be unreachable. These tests check both
-// the positive path and every escape hatch a malicious member might try.
-describe('/trips/{tripId}/bookings memberSync (self-add path)', () => {
-  test('viewer can append OWN uid to memberIds (acceptInvite sync)', async () => {
-    await assertSucceeds(
+// ─── Booking membership projection writes are Worker-only ─────────
+// Membership changes are routed through /invite-redeem, /member-remove,
+// and /member-role-update. Clients may edit booking content through the
+// normal canWrite path, but cannot directly mutate denormalized memberIds.
+describe('/trips/{tripId}/bookings membership projection writes are Worker-only', () => {
+  test('viewer CANNOT append own uid to memberIds directly', async () => {
+    await assertFails(
       updateDoc(
         doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_NO_VIEWER_ID),
         { memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID] },
@@ -1424,10 +1421,9 @@ describe('/trips/{tripId}/bookings memberSync (self-add path)', () => {
     )
   })
 
-  test('memberSync path CANNOT piggyback other field changes', async () => {
-    // The changedOnly(['memberIds']) clause must reject any extra field
-    // touched in the same update — otherwise a viewer could edit booking
-    // titles by smuggling them through the self-add path.
+  test('direct membership projection write CANNOT piggyback other field changes', async () => {
+    // Projection writes are Worker-only; this also guards against a viewer
+    // editing booking titles by smuggling them through a memberIds write.
     await assertFails(
       updateDoc(
         doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_NO_VIEWER_ID),
@@ -1436,7 +1432,7 @@ describe('/trips/{tripId}/bookings memberSync (self-add path)', () => {
     )
   })
 
-  test('non-member CANNOT use memberSync path to add themselves', async () => {
+  test('non-member CANNOT add themselves through memberIds projection', async () => {
     await assertFails(
       updateDoc(
         doc(asStranger(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_NO_VIEWER_ID),
@@ -1483,8 +1479,8 @@ describe('/trips/{tripId}/bookings memberSync (self-add path)', () => {
     )
   })
 
-  test('owner CAN remove members via memberIds-only cascade', async () => {
-    await assertSucceeds(
+  test('owner CANNOT remove members via client memberIds-only cascade', async () => {
+    await assertFails(
       updateDoc(
         doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_ID),
         { memberIds: [OWNER_UID, EDITOR_UID] },  // owner removes VIEWER
@@ -1492,13 +1488,10 @@ describe('/trips/{tripId}/bookings memberSync (self-add path)', () => {
     )
   })
 
-  test('memberSyncSelfAdd CANNOT swap roster while adding self (P1 BOLA regression)', async () => {
-    // Attack the size-delta-only version permitted: viewer (not yet
-    // in BOOKING_NO_VIEWER's memberIds) writes a "new" roster that
-    // adds themselves PLUS a stranger, dropping one existing member.
-    // Old check: size +1, uid in new, uid not in old → all pass.
-    // Fix: hasAll(old) forces new ⊇ old, so dropping an existing
-    // uid AND adding a stranger in the same write is rejected.
+  test('direct self-add CANNOT swap roster while adding self (P1 BOLA regression)', async () => {
+    // Projection writes are closed entirely. This locks the older BOLA
+    // regression shape too: viewer writes a "new" roster that adds
+    // themselves plus a stranger while dropping an existing member.
     //
     // BOOKING_NO_VIEWER_ID seeded with memberIds=[OWNER_UID,EDITOR_UID].
     // Attack write: [OWNER_UID, VIEWER_UID, STRANGER_UID] -- size +1
@@ -1511,10 +1504,9 @@ describe('/trips/{tripId}/bookings memberSync (self-add path)', () => {
     )
   })
 
-  test('ownerSyncRemove CANNOT swap roster while removing one (same-class fix)', async () => {
-    // Same family as the memberSyncSelfAdd BOLA: size delta -1
-    // alone would let an owner remove one member AND add a
-    // stranger in one write. hasAll(new) forces new ⊆ old.
+  test('direct owner remove CANNOT swap roster while removing one (same-class fix)', async () => {
+    // Same family as the self-add BOLA: size delta -1 alone would let
+    // an owner remove one member and add a stranger in one write.
     //
     // BOOKING_ID seeded with [OWNER_UID, EDITOR_UID, VIEWER_UID].
     // Attack: [OWNER_UID, EDITOR_UID, STRANGER_UID] -- size 3→3
@@ -2301,6 +2293,180 @@ describe('/trips/{tripId}/invites rule guards', () => {
   test('owner can list invites (management UI happy path)', async () => {
     await assertSucceeds(
       getDocs(query(collection(asOwner(env).firestore(), 'trips', TRIP_ID, 'invites'))),
+    )
+  })
+})
+
+// ─── canWrite removal-quiesce gate (M1.8 P1) ──────────────────────
+//
+// When the Worker /member-remove tx starts a kick, it stamps
+// `removingAt` on the target's member doc inside the authorizing tx.
+// firestore.rules' canWrite(tripId) refuses subsequent writes by
+// that uid -- closing the race where they could create a fresh
+// subcollection doc between the cascade's listDocNames and
+// deleteDoc steps that the strip list would miss. These tests
+// pin the gate behavior on the rules side so a future canWrite
+// edit can't accidentally re-open it.
+describe('canWrite removal-quiesce (removingAt gate)', () => {
+  async function markEditorRemoving(): Promise<void> {
+    await env.withSecurityRulesDisabled(async ctx => {
+      const db = ctx.firestore()
+      await updateDoc(doc(db, 'trips', TRIP_ID, 'members', EDITOR_UID), {
+        removingAt: Timestamp.now(),
+      })
+    })
+  }
+
+  test('editor can create a booking BEFORE removingAt is set (baseline)', async () => {
+    await assertSucceeds(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'new-baseline'), {
+        tripId:    TRIP_ID,
+        type:      'hotel',
+        title:     'Baseline Hotel',
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID,
+        updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        sortDate:  serverTimestamp(),
+      }),
+    )
+  })
+
+  test('editor canNOT create a booking AFTER removingAt is set on their member doc', async () => {
+    await markEditorRemoving()
+
+    // The exact race the marker defends: editor still holds their
+    // member doc + Firebase token, would otherwise pass canWrite.
+    // After marker: canWrite returns false → create rejected.
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'race-booking'), {
+        tripId:    TRIP_ID,
+        type:      'hotel',
+        title:     'Race Hotel',
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID,
+        updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        sortDate:  serverTimestamp(),
+      }),
+    )
+  })
+
+  test('editor canNOT update existing booking after removingAt is set', async () => {
+    await markEditorRemoving()
+
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_ID), {
+        title:     'Updated title',
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('editor canNOT delete existing booking after removingAt is set', async () => {
+    await markEditorRemoving()
+
+    await assertFails(
+      deleteDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_ID)),
+    )
+  })
+
+  test('removingAt gate is per-trip-member-doc: marker on EDITOR does not affect OWNER writes', async () => {
+    await markEditorRemoving()
+
+    // Owner's member doc has no removingAt → canWrite returns true.
+    await assertSucceeds(
+      setDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'bookings', 'owner-can-still-write'), {
+        tripId:    TRIP_ID,
+        type:      'hotel',
+        title:     'Owner Hotel',
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: OWNER_UID,
+        updatedBy: OWNER_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        sortDate:  serverTimestamp(),
+      }),
+    )
+  })
+
+  test('editor can still READ during removal window (marker only blocks writes)', async () => {
+    await markEditorRemoving()
+
+    // Reads are unaffected -- memberOfDoc() checks resource.data.memberIds,
+    // not the member doc's removingAt. The kicked user retains read
+    // until the cascade strip removes their uid from memberIds, which
+    // is correct: they had access pre-kick, lose it cleanly when
+    // strip completes.
+    await assertSucceeds(
+      getDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_ID)),
+    )
+  })
+
+  // ─── Direct projection rewrite coverage ─────────────────────────
+  // Membership projection writes are Worker-only. The kick race this
+  // protects against: a Worker cascade strips the kicked uid from
+  // memberIds[] on trip + subcollection docs, but the kicked member doc
+  // may still exist for a few ms before final delete. A raw client write
+  // must not be able to add that uid back into memberIds[].
+
+  async function midCascadeStrip(): Promise<void> {
+    // Mid-cascade state: editor uid has been stripped from trip +
+    // booking memberIds[], member doc still exists, removingAt set.
+    await env.withSecurityRulesDisabled(async ctx => {
+      const db = ctx.firestore()
+      await updateDoc(doc(db, 'trips', TRIP_ID), {
+        memberIds: [OWNER_UID, VIEWER_UID],
+      })
+      await updateDoc(doc(db, 'trips', TRIP_ID, 'bookings', BOOKING_ID), {
+        memberIds: [OWNER_UID, VIEWER_UID],
+      })
+      await updateDoc(doc(db, 'trips', TRIP_ID, 'members', EDITOR_UID), {
+        removingAt: Timestamp.now(),
+      })
+    })
+  }
+
+  test('direct self-add is REFUSED on trip.memberIds when removingAt is set', async () => {
+    await midCascadeStrip()
+
+    // What an attacker would try: arrayUnion themselves back into
+    // trip.memberIds during the mid-cascade window. Pre-gate this
+    // passes the size-delta and hasAll checks; gate now refuses.
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID), {
+        memberIds: [OWNER_UID, VIEWER_UID, EDITOR_UID],
+      }),
+    )
+  })
+
+  test('direct self-add is REFUSED on subcollection memberIds when removingAt is set', async () => {
+    await midCascadeStrip()
+
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_ID), {
+        memberIds: [OWNER_UID, VIEWER_UID, EDITOR_UID],
+      }),
+    )
+  })
+
+  test('direct self-add is REFUSED even when removingAt is NOT set', async () => {
+    // Strip uid from trip.memberIds but DO NOT set removingAt. The old
+    // client-side reconciliation branch would have allowed this; after
+    // membership workerization, projection writes remain closed.
+    await env.withSecurityRulesDisabled(async ctx => {
+      await updateDoc(doc(ctx.firestore(), 'trips', TRIP_ID), {
+        memberIds: [OWNER_UID, VIEWER_UID],
+      })
+    })
+
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID), {
+        memberIds: [OWNER_UID, VIEWER_UID, EDITOR_UID],
+      }),
     )
   })
 })

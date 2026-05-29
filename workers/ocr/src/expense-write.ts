@@ -17,8 +17,8 @@
 // firestore.rules has `allow create: if false` and a strict
 // `changedOnly([deletedAt, updatedBy, updatedAt, ...])` on update,
 // so this endpoint is the ONLY path that can write content fields
-// to an expense doc. Client-side soft-delete / restore / memberSync
-// stay rules-gated (no settlement-engine risk).
+// to an expense doc. Client-side soft-delete / restore stay rules-gated
+// (no settlement-engine risk); membership projection writes are Worker-owned.
 import { z }                                                        from 'zod'
 import { getAdminToken, getProjectId, invalidateAdminToken }        from './admin'
 import {
@@ -641,4 +641,3 @@ function encodePatch(
   }
   return out
 }
-

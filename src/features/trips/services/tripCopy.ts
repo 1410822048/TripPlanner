@@ -135,8 +135,9 @@ export async function copyTrip(
   // ── Phase 2a: copy schedules (date-shifted) ───────────────────
   // Filter by caller's uid to satisfy the same-doc list rule
   // (allow list: if uid in resource.data.memberIds). The caller is a
-  // member of the source trip, and memberSync keeps memberIds aligned
-  // across every entity doc, so the filter returns the full set.
+  // member of the source trip, and Worker membership endpoints keep
+  // memberIds aligned across every entity doc, so the filter returns
+  // the full set.
   let copiedSchedules   = 0
   let orphanedSchedules = 0
   if (input.copySchedules) {

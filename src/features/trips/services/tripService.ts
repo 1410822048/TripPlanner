@@ -177,8 +177,8 @@ export async function createTrip(input: CreateTripInput, user: User): Promise<Tr
   // memberIds is denormalised onto trip + every member/entity doc so
   // read rules can check `request.auth.uid in resource.data.memberIds`
   // SAME-DOC — no cross-document exists() that suffers rules-eval lag.
-  // On create the roster is just the owner; memberSync extends it on
-  // accept-invite / remove-member.
+  // On create the roster is just the owner; Worker membership endpoints
+  // extend it on invite accept / member removal.
   const memberIds = [user.uid]
 
   const tripPayload = {

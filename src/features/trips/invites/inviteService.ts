@@ -1,9 +1,14 @@
 // src/features/trips/invites/inviteService.ts
 // Invite model: an owner generates an unguessable 256-bit token → creates a
 // doc at /trips/{tripId}/invites/{token}. The invitee reaches the redeem URL
-// /invite/:tripId/:token, signs in, and writes a single member doc carrying
-// `inviteToken` so rules can verify the referenced invite still exists and
-// matches the claimed role.
+// /invite/:tripId/:token, signs in, and POSTs to the Worker's /invite-redeem
+// endpoint. The Worker (admin token, bypasses rules) atomically validates
+// the invite doc, creates the member doc, bumps trip.memberIds, then runs
+// the ACL projection cascade — see workers/ocr/src/membership-write.ts
+// `doInviteRedeem`. The client never writes invite-flow member docs
+// directly; firestore.rules `members update: if false` / `delete: if false`
+// plus a narrowly-scoped owner-self-bootstrap-only `create` (gated by
+// getAfter trip-create batch) close every non-Worker membership write.
 //
 // Reusable-link semantics: the invite doc's EXISTENCE is the validity gate.
 // Any number of users can redeem while the doc lives and `expiresAt` hasn't
@@ -38,14 +43,17 @@ export type AcceptOutcome = 'joined' | 'already-member'
  * alongside the outcome so the caller can:
  *   - seed TanStack Query's tripKeys.mine / myIds caches synchronously
  *     (no 1+ second wait for an invalidate refetch to round-trip)
- *   - call setSelectedTripId(trip.id) before navigating to /schedule,
- *     so the destination page renders pointing at the just-joined trip
+ *   - render the destination page pointing at the just-joined trip
  *     instead of whatever was selected before (useCurrentTrip on the
  *     destination resolves the Trip object from the seeded cache)
  *
  * `trip` may be null in the unlikely case that the post-redeem fetch
- * fails (rules race, schema mismatch); callers fall back to their
- * invalidate/refetch path.
+ * fails (rules race, schema mismatch). When that happens the Worker
+ * already confirmed the join, so callers should fall back to the URL
+ * `tripId` (the redemption target is the authoritative active-trip
+ * answer) — see InvitePage.handleAccept. The grace window in
+ * useCurrentTripSync keeps that selection sticky until the realtime
+ * listener catches up.
  */
 export interface AcceptResult {
   outcome: AcceptOutcome
@@ -223,122 +231,38 @@ export async function getInvite(tripId: string, token: string): Promise<Invite> 
 }
 
 /**
- * Redeem an invite. Idempotent on `already-member` — if the user is already
- * a member of this trip (any role), returns without writing.
- *
- * Writes a single member doc carrying `inviteToken` so Firestore rules can
- * verify the referenced invite exists with matching role at commit time.
- * No invite mutation: reusable-link semantics mean multiple redeemers can
- * succeed in parallel without contending for a shared row.
- *
- * Race with owner regenerating the invite: rules dereference the invite at
- * member-create time via exists()/get(). If the owner's batch (delete old +
- * create new) lands first, exists() on the old token returns false and this
- * redeem cleanly rejects. If the redeem lands first, the new member sticks;
- * the subsequent delete removes only the invite doc, not the member record.
+ * Redeem an invite through the Worker. The Worker owns the cross-document
+ * membership lifecycle: invite validation, member doc create/repair,
+ * trip.memberIds update, and ACL projection cascade are one authoritative
+ * flow instead of a client-side three-step best-effort sequence.
  */
 export async function acceptInvite(
   tripId: string,
   token: string,
   user: User,
 ): Promise<AcceptResult> {
-  // Resolve config + auth FIRST, BEFORE any Firestore write. Step 2b's
-  // `try/catch` swallows the cascade-member failure by design (the
-  // cascade is idempotent on next reload), so a missing
-  // VITE_WORKER_BASE_URL or no-token would otherwise allow Step 1 +
-  // Step 2a to land (member doc created, trip.memberIds updated)
-  // while Step 2b's throw gets eaten -- the invitee enters a half-
-  // joined state with no UI signal, and the next acceptInvite retry
-  // would skip Step 1 because isNewMember is now false. Hoisting
-  // both gates fails the whole flow loudly before any Firestore
-  // side effect, so a config / auth error surfaces as an InvitePage
-  // toast and Step 1 retries cleanly once fixed.
   const workerBase = requireWorkerWriteBase()
   const idToken    = await preflightIdToken()
 
-  const { db, doc, getDoc, setDoc, updateDoc, arrayUnion, serverTimestamp } = await getFirebase()
+  const displayName = user.displayName?.trim() || 'Member'
+  const payload: {
+    tripId:      string
+    token:       string
+    displayName: string
+    avatarUrl?:  string
+  } = { tripId, token, displayName }
+  if (user.photoURL) payload.avatarUrl = user.photoURL
 
-  const invite = await getInvite(tripId, token)  // throws on not-found/expired
-
-  const memberRef = doc(db, ...P.member(tripId, user.uid))
-  const memberSnap = await getDoc(memberRef)
-  const isNewMember = !memberSnap.exists()
-
-  // ─── Step 1: ensure member doc (skip if already a member) ─────────
-  if (isNewMember) {
-    // memberIds seeded as [self] only — the invitee can't read
-    // trip.memberIds yet to compute the full roster (trip get rule
-    // requires same-doc membership they don't have). The worker
-    // cascade in Step 2b reads trip.memberIds via admin SDK and
-    // arrayUnion's the full roster onto this doc afterward, so
-    // existing members' array-contains listeners pick up the new
-    // doc on the next snapshot.
-    const memberPayload: Record<string, unknown> = {
-      tripId,
-      userId:      user.uid,
-      displayName: user.displayName ?? 'Member',
-      role:        invite.role,
-      joinedAt:    serverTimestamp(),
-      inviteToken: token,
-      memberIds:   [user.uid],
-    }
-    // avatarUrl omitted when null — ignoreUndefinedProperties strips undefined;
-    // explicit branch matches the shape used in createTrip.
-    if (user.photoURL) memberPayload.avatarUrl = user.photoURL
-
-    await setDoc(memberRef, memberPayload)
+  const result = await workerFetch(workerBase, idToken, '/invite-redeem', payload) as {
+    ok:      true
+    outcome: AcceptOutcome
   }
 
-  // ─── Step 2: idempotent reconciliation (always runs) ──────────────
-  // Both 'joined' and 'already-member' paths fall through here so a
-  // reload after a worker failure repairs the cascade. arrayUnion is
-  // a no-op when the uid is already present, the worker pre-checks
-  // and skips already-cascaded subcollection docs the same way.
-
-  // 2a. Trip-doc self-add via memberSyncSelfAdd rule. Fast path that
-  // gives the invitee trip-level access immediately, without waiting
-  // for the worker round-trip. The worker also writes trip.memberIds
-  // (idempotent arrayUnion) so failure here is non-fatal — we log
-  // and continue; worker step recovers the invariant.
-  try {
-    await updateDoc(
-      doc(db, ...P.trip(tripId)),
-      { memberIds: arrayUnion(user.uid) },
-    )
-  } catch (e) {
-    captureError(e, { source: 'acceptInvite/tripSelfAdd', tripId, uid: user.uid })
-  }
-
-  // 2b. Worker cascade: arrayUnion the invitee's uid onto every
-  // existing /members/*, entity subcollection doc, AND the trip doc.
-  // The worker uses a service-account (admin SDK), bypassing the
-  // same-doc list rule that blocks the invitee from listing those
-  // docs client-side. arrayUnion is idempotent so the redundancy
-  // with 2a costs nothing but gives reliability. Failure here is
-  // non-fatal in two ways: (i) trip-level access already established
-  // by 2a; (ii) subsequent reloads re-run this step idempotently
-  // to fill in entity-doc access if the first attempt was cut short.
-  try {
-    // workerFetch handles: AbortSignal.timeout, WorkerRejected vs
-    // WorkerAmbiguous discrimination. We don't branch on the error
-    // type here because the entire cascade-member call is non-fatal
-    // by design (idempotent retry on next reload). But routing
-    // through workerFetch means a hung Worker / DNS blackhole no
-    // longer stalls acceptInvite for ~minutes; it surfaces as
-    // WorkerAmbiguous after 30s and the caller continues to Step 3.
-    await workerFetch(workerBase, idToken, '/cascade-member', {
-      tripId, memberUid: user.uid,
-    })
-  } catch (e) {
-    captureError(e, { source: 'acceptInvite/cascade', tripId, uid: user.uid })
-  }
-
-  // ─── Step 3: fetch trip for caller cache seeding ──────────────────
-  // Trip is now readable thanks to Step 2a. Failure here is non-fatal —
-  // caller falls back to invalidate.
+  // Fetch trip for caller cache seeding. Failure here is non-fatal; callers
+  // still invalidate/refetch through their normal path.
   const [trip] = await getTripsByIds([tripId]).catch(e => {
     captureError(e, { source: 'acceptInvite/postFetchTrip', tripId, uid: user.uid })
     return [] as Trip[]
   })
-  return { outcome: isNewMember ? 'joined' : 'already-member', trip: trip ?? null }
+  return { outcome: result.outcome, trip: trip ?? null }
 }

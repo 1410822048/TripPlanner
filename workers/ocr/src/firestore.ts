@@ -1,10 +1,8 @@
 // workers/ocr/src/firestore.ts
-// Thin Firestore REST API client for the operations the cascade-member
-// endpoint needs:
-//   - getDoc        (check member doc exists; verify caller is in trip)
-//   - listDocIds    (collect all docs in a subcollection — admin-side
-//                    so the same-doc list rule on memberIds doesn't apply)
-//   - batchArrayUnion (commit with fieldTransforms across many docs)
+// Thin Firestore REST API client for Worker-authoritative write endpoints:
+//   - getDoc/list helpers for authz and trip-scoped projections
+//   - batched array transforms for membership ACL projection repair
+//   - transactions for cross-document invariants
 //
 // All calls go through https://firestore.googleapis.com with the
 // admin OAuth bearer token from admin.ts. No client SDK — Workers
@@ -194,6 +192,59 @@ export async function batchArrayUnionMemberIds(
     if (!res.ok) {
       const detail = await res.text().catch(() => '')
       throw new Error(`batchArrayUnion → ${res.status}: ${detail.slice(0, 200)}`)
+    }
+  }
+}
+
+/** arrayRemove `memberUid` from every doc's `memberIds` field. Symmetric
+ *  to `batchArrayUnionMemberIds` -- same 500-per-commit chunking and
+ *  error shape, but uses the REST `removeAllFromArray` transform which
+ *  is the equivalent of arrayRemove in the SDKs. Idempotent: removing
+ *  a uid that isn't present is a no-op.
+ *
+ *  Used by `/member-remove` to strip the kicked uid from
+ *  `trips/{tripId}.memberIds` and from every `memberIds` array on
+ *  trip-scoped subcollection docs BEFORE the members/{uid} doc itself
+ *  is deleted. Order matters for correctness: leaving the ACL projection
+ *  behind would let collection-group reads (PastLodgingPage etc.) still
+ *  return docs to a kicked user; the only safe failure mode is
+ *  "still member, retry the kick", not "member doc gone but reads leak". */
+export async function batchArrayRemoveMemberIds(
+  accessToken: string,
+  projectId:   string,
+  docNames:    string[],
+  memberUid:   string,
+): Promise<void> {
+  if (docNames.length === 0) return
+  for (let i = 0; i < docNames.length; i += 500) {
+    const chunk = docNames.slice(i, i + 500)
+    const writes = chunk.map(name => ({
+      transform: {
+        document: name,
+        fieldTransforms: [
+          {
+            fieldPath: 'memberIds',
+            removeAllFromArray: {
+              values: [{ stringValue: memberUid }],
+            },
+          },
+        ],
+      },
+    }))
+    const res = await fetch(
+      `${BASE}/projects/${projectId}/databases/(default)/documents:commit`,
+      {
+        method:  'POST',
+        headers: {
+          Authorization:  `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ writes }),
+      },
+    )
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '')
+      throw new Error(`batchArrayRemove → ${res.status}: ${detail.slice(0, 200)}`)
     }
   }
 }

@@ -4,11 +4,12 @@
 //   1. Base URL resolution (read vs write) -- env-config preflight
 //      with separate strictness per failure-mode class.
 //   2. `workerFetch` HTTP wrapper -- single chokepoint for every
-//      Worker write call (expense create/update, cascade-trip-delete,
-//      cascade-member). Centralises: auth-token-as-explicit-param,
-//      AbortSignal.timeout, WorkerRejected vs WorkerAmbiguous error
-//      discrimination. Each caller's catch routes on these typed
-//      errors to decide rollback vs cron-deferred verify.
+//      Worker write call (expense create/update, trip cascade,
+//      membership writes, settlements). Centralises:
+//      auth-token-as-explicit-param, AbortSignal.timeout,
+//      WorkerRejected vs WorkerAmbiguous error discrimination. Each
+//      caller's catch routes on these typed errors to decide rollback
+//      vs cron-deferred verify.
 //
 // Cloudflare Worker base URL access. Split into two surfaces because
 // the failure modes differ:
@@ -17,8 +18,8 @@
 //      build is a minor cost / rate-limit pollution issue -- no data
 //      mutation. Fallback to prod is acceptable.
 //
-//   2. Mutating endpoints (expense-create / expense-update / cascade-
-//      trip-delete / cascade-member). These use the
+//   2. Mutating endpoints (expense-create / expense-update / trip-
+//      cascade / membership writes / settlements). These use the
 //      Worker's admin service-account to write Firestore directly,
 //      BYPASSING firestore.rules. If a preview deploy forgets to set
 //      VITE_WORKER_BASE_URL, falling back to the prod Worker means
@@ -174,7 +175,7 @@ export const UPLOAD_TRACE_HEADER = 'X-Upload-Trace-Id'
  * header so the Worker log + Sentry breadcrumbs share a single
  * correlation id across mint-intents → storage uploads → entity write.
  * Only upload-flow callers (expense/booking/wish file paths) set it;
- * cascade-member / trip-cascade leave it unset.
+ * membership / settlement / trip-cascade leave it unset.
  */
 export async function workerFetch(
   base:     string,

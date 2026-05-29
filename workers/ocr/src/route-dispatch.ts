@@ -118,7 +118,7 @@ export async function handleJsonRoute<TData, TResult>(args: {
    *  endpoints. */
   formatResponse?: (result: TResult) => unknown
   /** Per-route domain-error mapper. Optional — routes without a
-   *  domain error class (upload-intents / trip-cascade / cascade-member)
+   *  domain error class (upload-intents / trip-cascade)
    *  omit this and fall through to the shared CascadeError catch. */
   catchDomain?:    (e: unknown) => DomainErrorMapped | null
 }): Promise<Response> {

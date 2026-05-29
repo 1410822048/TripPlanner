@@ -2,8 +2,17 @@
 //
 // Endpoints:
 //   POST /ocr                  — Gemini receipt OCR (original endpoint)
-//   POST /cascade-member       — server-side membership cascade for
-//                                accept-invite (admin SDK bypasses rules)
+//   POST /invite-redeem        — invitee accepts a trip invite (atomic
+//                                member doc create + trip.memberIds
+//                                bump via Firestore REST tx), then
+//                                runs the ACL cascade.
+//   POST /member-remove        — owner kicks a member. ACL projection
+//                                stripped BEFORE the member doc is
+//                                deleted -- the order is load-bearing
+//                                for the "no kicked-but-still-reading"
+//                                invariant (see membership-write.ts).
+//   POST /member-role-update   — owner flips a member between
+//                                'editor' / 'viewer'.
 //   POST /cascade-trip-delete  — full trip cascade (Storage + subcollections
 //                                + trip doc). Replaces client-side
 //                                cascade so firestore.rules can keep
@@ -35,7 +44,7 @@
 //
 // All non-matching requests get a 404. CORS preflight (OPTIONS) is
 // handled inline. Hand-rolled `pathname === ...` dispatch — a router
-// lib isn't worth the bundle cost for ~10 endpoints with bespoke
+// lib isn't worth the bundle cost for these endpoints with bespoke
 // auth/rate-limit/Zod pipelines each.
 //
 // Observability: upload-flow callers send `X-Upload-Trace-Id: <uuid>`
@@ -50,7 +59,6 @@
 import { verifyFirebaseToken, extractBearerToken } from './auth'
 import { extractReceiptItems, GeminiError }       from './gemini'
 import { OcrRequestSchema }                       from './schema'
-import { cascadeMemberAdd, CascadeRequestSchema, CascadeError } from './cascade'
 import { cascadeTripDelete, TripDeleteRequestSchema } from './trip-cascade'
 import { purgeExpiredReceipts }                   from './receipt-purge'
 import { drainOrphanPurges }                      from './orphan-purge'
@@ -82,6 +90,15 @@ import {
   SettlementDeleteRequestSchema,
   SettlementValidationError,
 }                                                 from './settlement-write'
+import {
+  inviteRedeem,
+  memberRemove,
+  memberRoleUpdate,
+  InviteRedeemRequestSchema,
+  MemberRemoveRequestSchema,
+  MemberRoleUpdateRequestSchema,
+  MembershipValidationError,
+}                                                 from './membership-write'
 import {
   createUploadIntents,
   UploadIntentsRequestSchema,
@@ -201,7 +218,6 @@ export default {
 
     // ─── Routing ──────────────────────────────────────────────────────
     const isOcr           = url.pathname === '/ocr'                  && request.method === 'POST'
-    const isCascade       = url.pathname === '/cascade-member'       && request.method === 'POST'
     const isTripCascade   = url.pathname === '/cascade-trip-delete'  && request.method === 'POST'
     const isExpenseCreate = url.pathname === '/expense-create'       && request.method === 'POST'
     const isExpenseUpdate = url.pathname === '/expense-update'       && request.method === 'POST'
@@ -212,7 +228,10 @@ export default {
     const isBookingUpdate = url.pathname === '/booking-file-update'  && request.method === 'POST'
     const isSettlementCreate = url.pathname === '/settlement-create' && request.method === 'POST'
     const isSettlementDelete = url.pathname === '/settlement-delete' && request.method === 'POST'
-    if (!isOcr && !isCascade && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents && !isWishCreate && !isWishUpdate && !isBookingCreate && !isBookingUpdate && !isSettlementCreate && !isSettlementDelete) {
+    const isInviteRedeem     = url.pathname === '/invite-redeem'     && request.method === 'POST'
+    const isMemberRemove     = url.pathname === '/member-remove'     && request.method === 'POST'
+    const isMemberRoleUpdate = url.pathname === '/member-role-update' && request.method === 'POST'
+    if (!isOcr && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents && !isWishCreate && !isWishUpdate && !isBookingCreate && !isBookingUpdate && !isSettlementCreate && !isSettlementDelete && !isInviteRedeem && !isMemberRemove && !isMemberRoleUpdate) {
       return json({ error: 'Not found' }, 404, cors)
     }
 
@@ -272,6 +291,12 @@ export default {
     // dedicated UPLOAD_INTENT_RATE_LIMITER binding was deferred so
     // this commit doesn't grow its deploy-failure surface area;
     // future tuning can split if observed metrics justify.
+    // /invite-redeem, /member-remove, /member-role-update reuse
+    // CASCADE_RATE_LIMITER + scope='cascade' (the default branch below)
+    // -- they share the same "rare per-user action, server-heavy" shape
+    // and the existing 10/min L2 cap is comfortably above realistic user
+    // behavior (one invite accept per visit, owner batch-kicks measured in
+    // single digits per session).
     const limiter = isOcr             ? env.OCR_RATE_LIMITER
                   : isTripCascade     ? env.TRIP_CASCADE_RATE_LIMITER
                   : isExpenseWrite    ? env.EXPENSE_RATE_LIMITER
@@ -422,12 +447,29 @@ export default {
       formatResponse: result => ({ ok: true, ...result }),
     })
 
-    if (isCascade) return handleJsonRoute({
-      endpoint:       'cascade', body, cors, uid,
-      schema:         CascadeRequestSchema,
-      handle:         data => cascadeMemberAdd(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
-      formatLog:      (data, result) => `trip=${data.tripId} updated=${result.updatedDocs}`,
+    if (isInviteRedeem) return handleJsonRoute({
+      endpoint:       'invite-redeem', body, cors, uid,
+      schema:         InviteRedeemRequestSchema,
+      handle:         data => inviteRedeem(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog:      (data, result) => `trip=${data.tripId} outcome=${result.outcome} role=${result.role}`,
       formatResponse: result => ({ ok: true, ...result }),
+      catchDomain:    validationErrorCatcher(MembershipValidationError),
+    })
+
+    if (isMemberRemove) return handleJsonRoute({
+      endpoint:    'member-remove', body, cors, uid,
+      schema:      MemberRemoveRequestSchema,
+      handle:      data => memberRemove(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog:   data => `trip=${data.tripId} member=${uidTag(data.memberUid)}`,
+      catchDomain: validationErrorCatcher(MembershipValidationError),
+    })
+
+    if (isMemberRoleUpdate) return handleJsonRoute({
+      endpoint:    'member-role-update', body, cors, uid,
+      schema:      MemberRoleUpdateRequestSchema,
+      handle:      data => memberRoleUpdate(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog:   data => `trip=${data.tripId} member=${uidTag(data.memberUid)} role=${data.role}`,
+      catchDomain: validationErrorCatcher(MembershipValidationError),
     })
 
     return handleJsonRoute({
