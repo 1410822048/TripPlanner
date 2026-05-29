@@ -76,9 +76,17 @@ export default function InvitePage() {
       // /schedule renders pointing at the new trip (not whatever was selected
       // before). Without this, users with a pre-existing trip would land on
       // their old trip and have to manually switch via the picker.
-      // The full Trip object lives in the React Query cache (seeded by
-      // useAcceptInvite's onSuccess); useCurrentTrip will resolve it.
-      if (trip) useTripStore.getState().setSelectedTripId(trip.id)
+      //
+      // Use the URL `tripId` as the source of truth — the post-redeem
+      // getTripsByIds fetch in acceptInvite can rarely return null (rules
+      // race / schema mismatch), but the Worker already confirmed the
+      // join. Falling back to `trip.id` only would silently leave the
+      // user on the old trip in that case. The grace window in
+      // useCurrentTripSync covers the missing-from-myTrips gap while the
+      // listener catches up; useCurrentTrip resolves the Trip object
+      // once it does (or once the seeded cache lands, if `trip` was
+      // present).
+      useTripStore.getState().setSelectedTripId(trip?.id ?? tripId)
       toast.success(outcome === 'already-member' ? '既に参加中です' : '旅程に参加しました')
       navigate('/schedule', { replace: true })
     } catch (e) {

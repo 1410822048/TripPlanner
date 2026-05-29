@@ -18,6 +18,17 @@ interface TripStore {
    */
   selectedTripId: string | null
   /**
+   * Unix-ms timestamp of the last `setSelectedTripId` call; persisted
+   * so the freshness signal survives full reloads. Read by
+   * useCurrentTripSync to gate its reselect grace window: a recent
+   * change (e.g. acceptInvite just navigated) is honoured for a few
+   * seconds while the realtime listener catches up, while a stale id
+   * (kicked, then reload) reselects immediately.
+   * `0` means "never set" — used as default for old persisted state
+   * that pre-dates this field.
+   */
+  selectedTripAt: number
+  /**
    * Most-recent-first id list (cap 5). Used as a fallback ordering for
    * useCurrentTripSync when the selected id leaves the trip list.
    */
@@ -44,18 +55,20 @@ export const useTripStore = create<TripStore>()(
   persist(
     (set) => ({
       selectedTripId: null,
+      selectedTripAt: 0,
       recentTripIds:  [],
       tripOrder:      [],
 
       setSelectedTripId: (id) =>
         set((s) => ({
           selectedTripId: id,
+          selectedTripAt: id ? Date.now() : 0,
           recentTripIds:  id
             ? [id, ...s.recentTripIds.filter((x) => x !== id)].slice(0, 5)
             : s.recentTripIds,
         })),
 
-      clearTrip: () => set({ selectedTripId: null }),
+      clearTrip: () => set({ selectedTripId: null, selectedTripAt: 0 }),
 
       setTripOrder: (ids) => set({ tripOrder: ids }),
     }),
@@ -66,9 +79,15 @@ export const useTripStore = create<TripStore>()(
       // add a `migrate(persistedState, fromVersion)` handler here. Without
       // a version, future schema drifts hydrate stale data silently and
       // can corrupt the rehydration logic in useCurrentTripSync.
+      //
+      // `selectedTripAt` was added without a version bump because Zustand
+      // persist's merge falls the missing field back to the initial
+      // state (`0`), which behaves as "stale" — the desired safe default
+      // for any pre-existing persisted blob.
       version: 1,
       partialize: (s) => ({
         selectedTripId: s.selectedTripId,
+        selectedTripAt: s.selectedTripAt,
         recentTripIds:  s.recentTripIds,
         tripOrder:      s.tripOrder,
       }),
