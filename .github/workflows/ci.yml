@@ -39,6 +39,15 @@ jobs:
       - name: Test
         run: npm test
 
+      # Root `npm test` only scans src/** + packages/**; the Worker has its
+      # own vitest config (Cloudflare Workers pool) and lives outside that
+      # glob. Without this step the Worker's ~350-test suite would never run
+      # in CI, which is the exact silent-gap class the root glob comment warns
+      # against. Keep this in sync with the Worker test command in CLAUDE.md.
+      - name: Test (Worker)
+        working-directory: workers/ocr
+        run: npx vitest run
+
       - name: Build
         run: npm run build
         env:

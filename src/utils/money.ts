@@ -50,12 +50,19 @@ const MONEY_RE = /^(-?)(\d+)(?:\.(\d+))?$/
 
 /** Parse a decimal money string into integer minor units.
  *  Throws MoneyParseError on malformed input or excess fractional
- *  digits for the currency. */
+ *  digits for the currency.
+ *
+ *  Grouping separators (ASCII comma, full-width comma, inner
+ *  whitespace) are stripped before regex match so receipt-style
+ *  input like "1,234.56" or "10，276" round-trips. Mirrors the same
+ *  normalisation the OCR Zod schema does on amountText — keeping the
+ *  two boundaries symmetric prevents "OCR accepts but manual edit
+ *  rejects" surprises. */
 export function parseMoneyToMinor(text: string, code: string): number {
   if (typeof text !== 'string') {
     throw new MoneyParseError(String(text), code, 'expected string')
   }
-  const trimmed = text.trim()
+  const trimmed = text.trim().replace(/[,，\s]/g, '')
   if (trimmed === '') {
     throw new MoneyParseError(text, code, 'empty input')
   }

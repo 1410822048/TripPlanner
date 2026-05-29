@@ -118,11 +118,27 @@ describe('parseMoneyToMinor — edge cases', () => {
   test('rejects malformed forms', () => {
     expect(() => parseMoneyToMinor('12.', 'USD')).toThrow(MoneyParseError)
     expect(() => parseMoneyToMinor('.5', 'USD')).toThrow(MoneyParseError)
-    expect(() => parseMoneyToMinor('1,234.56', 'USD')).toThrow(MoneyParseError)
     expect(() => parseMoneyToMinor('1.5e3', 'USD')).toThrow(MoneyParseError)
     expect(() => parseMoneyToMinor('+12.34', 'USD')).toThrow(MoneyParseError)
     expect(() => parseMoneyToMinor('abc', 'USD')).toThrow(MoneyParseError)
     expect(() => parseMoneyToMinor('12.3.4', 'USD')).toThrow(MoneyParseError)
+  })
+
+  // Symmetry with the OCR Zod schema: receipt amounts like "¥10,276"
+  // pasted by hand should parse the same as the OCR-side amountText so
+  // we don't get "OCR accepts, manual edit rejects". Strips ASCII comma,
+  // full-width comma, and inner whitespace before validation.
+  test('normalizes grouping separators (ASCII comma, full-width comma, space)', () => {
+    expect(parseMoneyToMinor('1,234.56', 'USD')).toBe(123456)
+    expect(parseMoneyToMinor('10,276', 'JPY')).toBe(10276)
+    expect(parseMoneyToMinor('10，276', 'JPY')).toBe(10276)
+    expect(parseMoneyToMinor('10 276', 'JPY')).toBe(10276)
+    expect(parseMoneyToMinor('1,000,000', 'JPY')).toBe(1_000_000)
+  })
+
+  test('rejects grouping-only input (no digits)', () => {
+    expect(() => parseMoneyToMinor(',,', 'USD')).toThrow(MoneyParseError)
+    expect(() => parseMoneyToMinor('  ,  ', 'USD')).toThrow(MoneyParseError)
   })
 })
 
