@@ -42,10 +42,12 @@ export class MoneyParseError extends Error {
   }
 }
 
-// Strict grammar:
+// Strict grammar (applied AFTER stripping grouping separators in
+// parseMoneyToMinor):
 //   <optional sign> <one-or-more digits> ( "." <one-or-more digits> )?
 // Rejects: empty, "12." (trailing dot), ".5" (missing whole),
-// "1,234" (no separator), "1e3" (no exponent), "+12" (no plus).
+// "1e3" (no exponent), "+12" (no plus).
+// Accepts (via pre-strip): "1,234.56", "10，276", "10 276".
 const MONEY_RE = /^(-?)(\d+)(?:\.(\d+))?$/
 
 /** Parse a decimal money string into integer minor units.
