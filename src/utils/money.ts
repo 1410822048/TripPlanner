@@ -31,14 +31,46 @@ export function currencyFractionDigits(code: string | undefined): number {
   return FRACTION_DIGITS[code] ?? 2
 }
 
+// Structured reason so callers (form modals, OCR import) can show the
+// specific failure mode instead of a generic "請輸入金額". Adding a new
+// reason here is safe — UI mappers only switch on these, no string
+// matching anywhere.
+export type MoneyParseErrorReason =
+  | 'EMPTY'
+  | 'MALFORMED'
+  | 'DECIMALS_FORBIDDEN'
+  | 'TOO_MANY_DECIMALS'
+  | 'OUT_OF_RANGE'
+  | 'EXPECTED_STRING'
+
 export class MoneyParseError extends Error {
   text: string
   code: string
-  constructor(text: string, code: string, reason: string) {
+  reason: MoneyParseErrorReason
+  constructor(text: string, code: string, reason: MoneyParseErrorReason) {
     super(`parseMoneyToMinor("${text}", "${code}"): ${reason}`)
     this.name = 'MoneyParseError'
     this.text = text
     this.code = code
+    this.reason = reason
+  }
+}
+
+// Result-style wrapper for callers that need to branch on reason
+// without try/catch — typically form preview / submit-validation paths
+// that re-derive on every keystroke.
+export type MoneyParseResult =
+  | { ok: true;  value: number }
+  | { ok: false; reason: MoneyParseErrorReason }
+
+export function parseMoneyToMinorResult(text: string, code: string): MoneyParseResult {
+  try {
+    return { ok: true, value: parseMoneyToMinor(text, code) }
+  } catch (error) {
+    if (error instanceof MoneyParseError) {
+      return { ok: false, reason: error.reason }
+    }
+    throw error
   }
 }
 
@@ -62,24 +94,22 @@ const MONEY_RE = /^(-?)(\d+)(?:\.(\d+))?$/
  *  rejects" surprises. */
 export function parseMoneyToMinor(text: string, code: string): number {
   if (typeof text !== 'string') {
-    throw new MoneyParseError(String(text), code, 'expected string')
+    throw new MoneyParseError(String(text), code, 'EXPECTED_STRING')
   }
   const trimmed = text.trim().replace(/[,，\s]/g, '')
   if (trimmed === '') {
-    throw new MoneyParseError(text, code, 'empty input')
+    throw new MoneyParseError(text, code, 'EMPTY')
   }
   const m = MONEY_RE.exec(trimmed)
   if (!m) {
-    throw new MoneyParseError(text, code, 'malformed number')
+    throw new MoneyParseError(text, code, 'MALFORMED')
   }
   const [, sign, whole, fracRaw = ''] = m
   const digits = currencyFractionDigits(code)
   if (fracRaw.length > digits) {
     throw new MoneyParseError(
       text, code,
-      digits === 0
-        ? 'whole-unit currency forbids decimals'
-        : `at most ${digits} fractional digits`,
+      digits === 0 ? 'DECIMALS_FORBIDDEN' : 'TOO_MANY_DECIMALS',
     )
   }
   const fracPadded = fracRaw.padEnd(digits, '0')
@@ -88,7 +118,7 @@ export function parseMoneyToMinor(text: string, code: string): number {
   const fracMinor  = digits === 0 ? 0 : Number(fracPadded)
   const magnitude  = wholeMinor + fracMinor
   if (!Number.isFinite(magnitude) || !Number.isSafeInteger(magnitude)) {
-    throw new MoneyParseError(text, code, 'value out of safe-integer range')
+    throw new MoneyParseError(text, code, 'OUT_OF_RANGE')
   }
   return sign === '-' ? -magnitude : magnitude
 }

@@ -54,12 +54,50 @@ import { useOcrFlow } from '../hooks/useOcrFlow'
 import { splitEqually } from '../utils'
 import { useTripCurrency } from '@/hooks/useTripCurrency'
 import { currencySymbol } from '@/utils/currency'
-import { formatMinorAmount, formatMinorForInput, parseMoneyToMinor } from '@/utils/money'
+import {
+  formatMinorAmount,
+  formatMinorForInput,
+  parseMoneyToMinor,
+  parseMoneyToMinorResult,
+  currencyFractionDigits,
+  type MoneyParseErrorReason,
+} from '@/utils/money'
 import { compressImage } from '@/utils/image'
 import AttachmentPreviewModal from '@/features/bookings/components/AttachmentPreviewModal'
 
 const IMAGE_ACCEPT = 'image/*'
 const ANY_ACCEPT   = 'image/*,application/pdf'
+
+// NON_POSITIVE is UI-only: parseMoneyToMinor happily returns 0 / negative
+// (refunds are legitimate at parser level), but the expense form rejects
+// non-positive totals. Keeping it out of MoneyParseErrorReason preserves
+// the parser's "0 / -1 are valid integers" contract; lifting it into this
+// UI-facing union lets one mapper own every amount-field error message.
+type AmountErrorReason = MoneyParseErrorReason | 'NON_POSITIVE'
+
+// User-facing message for an amount-field error. Adding a new reason
+// to MoneyParseErrorReason (or AmountErrorReason) forces a switch arm
+// here — TS exhaustiveness covers the gap. DECIMALS_FORBIDDEN +
+// NON_POSITIVE were both originally collapsed into a misleading
+// "請輸入金額" (= "enter an amount").
+function moneyErrorMessage(reason: AmountErrorReason, currency: string): string {
+  switch (reason) {
+    case 'EMPTY':
+      return '金額を入力してください'
+    case 'NON_POSITIVE':
+      return '金額は0より大きく入力してください'
+    case 'DECIMALS_FORBIDDEN':
+      return `${currency} は小数を入力できません`
+    case 'TOO_MANY_DECIMALS':
+      return `${currency} は小数第${currencyFractionDigits(currency)}位まで入力できます`
+    case 'MALFORMED':
+      return '金額の形式が正しくありません'
+    case 'OUT_OF_RANGE':
+      return '金額が大きすぎます'
+    case 'EXPECTED_STRING':
+      return '金額の形式が正しくありません'
+  }
+}
 
 const ADJUSTMENT_KIND_LABEL: Record<ExpenseAdjustmentKind, string> = {
   DISCOUNT:   '割引',
@@ -500,7 +538,13 @@ export default function ExpenseFormModal({
   function validate(): ExpenseFormResult | null {
     const e: Record<string, string> = {}
     if (!state.title.trim()) e.title = '請輸入標題'
-    if (!amountMinor)        e.amount = '請輸入金額'
+    // Specific reason via the Result wrapper — the legacy `if (!amountMinor)`
+    // branch coerced parse failures (e.g. JPY 12.34) to look like empty
+    // input and surfaced a misleading "請輸入金額". moneyErrorMessage maps
+    // the structured reason so the banner matches the actual problem.
+    const amountResult = parseMoneyToMinorResult(state.amountText, currency)
+    if (!amountResult.ok)               e.amount = moneyErrorMessage(amountResult.reason, currency)
+    else if (amountResult.value <= 0)   e.amount = moneyErrorMessage('NON_POSITIVE', currency)
     if (!state.date)         e.date = '請選擇日期'
     if (!state.paidBy)       e.paidBy = '請選擇付款人'
 

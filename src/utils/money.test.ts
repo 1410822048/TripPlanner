@@ -5,6 +5,7 @@ import { describe, expect, test } from 'vitest'
 import {
   currencyFractionDigits,
   parseMoneyToMinor,
+  parseMoneyToMinorResult,
   formatMinorAmount,
   MoneyParseError,
 } from './money'
@@ -139,6 +140,68 @@ describe('parseMoneyToMinor — edge cases', () => {
   test('rejects grouping-only input (no digits)', () => {
     expect(() => parseMoneyToMinor(',,', 'USD')).toThrow(MoneyParseError)
     expect(() => parseMoneyToMinor('  ,  ', 'USD')).toThrow(MoneyParseError)
+  })
+})
+
+// Structured reason so callers (form modals, OCR import) can show the
+// specific failure mode instead of a generic "請輸入金額". UI mappers
+// switch on .reason; if these cases ever stop discriminating, the form
+// modal's error banner regresses to the wrong message.
+describe('MoneyParseError.reason discriminator', () => {
+  function reasonOf(text: string, code: string) {
+    try {
+      parseMoneyToMinor(text, code)
+      throw new Error('expected MoneyParseError, none thrown')
+    } catch (err) {
+      if (err instanceof MoneyParseError) return err.reason
+      throw err
+    }
+  }
+
+  test('JPY 12.34 -> DECIMALS_FORBIDDEN', () => {
+    expect(reasonOf('12.34', 'JPY')).toBe('DECIMALS_FORBIDDEN')
+  })
+
+  test('TWD 100.5 -> DECIMALS_FORBIDDEN', () => {
+    expect(reasonOf('100.5', 'TWD')).toBe('DECIMALS_FORBIDDEN')
+  })
+
+  test('USD 12.345 -> TOO_MANY_DECIMALS', () => {
+    expect(reasonOf('12.345', 'USD')).toBe('TOO_MANY_DECIMALS')
+  })
+
+  test('abc -> MALFORMED', () => {
+    expect(reasonOf('abc', 'USD')).toBe('MALFORMED')
+  })
+
+  test('"" -> EMPTY', () => {
+    expect(reasonOf('', 'USD')).toBe('EMPTY')
+  })
+
+  test('whitespace-only -> EMPTY', () => {
+    expect(reasonOf('   ', 'USD')).toBe('EMPTY')
+  })
+
+  // Number.MAX_SAFE_INTEGER === 2^53-1 ≈ 9.007e15. JPY (0-fraction)
+  // exceeds safe integer once the input runs past 16 digits.
+  test('over-safe-integer JPY -> OUT_OF_RANGE', () => {
+    expect(reasonOf('99999999999999999', 'JPY')).toBe('OUT_OF_RANGE')
+  })
+})
+
+describe('parseMoneyToMinorResult — Result wrapper', () => {
+  test('happy path: ok=true, value=minor units', () => {
+    expect(parseMoneyToMinorResult('12.34', 'USD')).toEqual({ ok: true, value: 1234 })
+    expect(parseMoneyToMinorResult('1200',  'JPY')).toEqual({ ok: true, value: 1200 })
+  })
+
+  test('failure path: ok=false, reason matches the throwing parse', () => {
+    expect(parseMoneyToMinorResult('12.34', 'JPY')).toEqual({ ok: false, reason: 'DECIMALS_FORBIDDEN' })
+    expect(parseMoneyToMinorResult('12.345', 'USD')).toEqual({ ok: false, reason: 'TOO_MANY_DECIMALS' })
+    expect(parseMoneyToMinorResult('', 'USD')).toEqual({ ok: false, reason: 'EMPTY' })
+    expect(parseMoneyToMinorResult('abc', 'USD')).toEqual({ ok: false, reason: 'MALFORMED' })
+    expect(parseMoneyToMinorResult('99999999999999999', 'JPY'))
+      .toEqual({ ok: false, reason: 'OUT_OF_RANGE' })
   })
 })
 
