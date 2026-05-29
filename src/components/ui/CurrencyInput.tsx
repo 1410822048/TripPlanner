@@ -24,8 +24,8 @@ interface Props extends Omit<InputHTMLAttributes<HTMLInputElement>, 'type' | 'pr
   error?: boolean
   /** Right-align the number (for split rows / tabular columns). */
   alignRight?: boolean
-  /** Shell sizing. 'default' = 42px (main form fields), 'compact' = 36px
-   *  (row inputs in item / custom-split lists). */
+  /** Shell sizing. 'default' = main form fields, 'compact' = dense row
+   *  inputs in item / custom-split lists. */
   size?: Size
   /** Optional full override of the shell's outermost classes. Used by
    *  callers needing custom corner radius (e.g. rounded-[8px] for the
@@ -37,7 +37,7 @@ export default function CurrencyInput({
   symbol, error, alignRight, size = 'default', shellClassName,
   className = '', ...rest
 }: Props) {
-  const sizeShell = size === 'compact' ? 'h-9 px-2.5' : 'h-[42px] px-3'
+  const sizeShell = size === 'compact' ? 'min-h-10 px-2.5 py-1.5' : 'min-h-12 px-3 py-2.5'
   const symbolText = size === 'compact' ? 'text-[12px] mr-1' : 'text-[13px] mr-1.5'
 
   return (
@@ -58,7 +58,7 @@ export default function CurrencyInput({
         autoCorrect="off"
         spellCheck={false}
         className={[
-          'flex-1 min-w-0 h-full bg-transparent text-[16px] text-ink outline-none',
+          'flex-1 min-w-0 bg-transparent text-[16px] leading-6 text-ink outline-none',
           alignRight ? 'text-right tabular-nums' : '',
           className,
         ].filter(Boolean).join(' ')}

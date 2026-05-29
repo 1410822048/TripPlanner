@@ -162,16 +162,16 @@ const DatePicker = forwardRef<DatePickerHandle, Props>(function DatePicker(
         onClick={() => openPicker()}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPicker() } }}
         className={[
-          'w-full h-[42px] rounded-input bg-app px-3 gap-2',
+          'w-full min-h-12 rounded-input bg-app px-3 py-2.5 gap-2',
           'flex items-center cursor-pointer',
           'border-[1.5px] transition-colors',
           triggerBorder,
         ].join(' ')}
       >
-        <span className="text-[15px] leading-none shrink-0">📅</span>
+        <span className="text-[15px] leading-6 shrink-0">📅</span>
         <span
           className={[
-            'flex-1 text-left text-[14px] min-w-0 truncate',
+            'flex-1 text-left text-[14px] leading-6 min-w-0 truncate',
             displayText ? 'text-ink tracking-[0.02em]' : 'text-muted tracking-[0.04em]',
           ].join(' ')}
         >

@@ -39,7 +39,7 @@ import {
 import FormModalShell from '@/components/ui/FormModalShell'
 import { DatePicker } from '@/components/ui/pickers'
 import FormField from '@/components/ui/FormField'
-import { inputClass } from '@/components/ui/inputStyle'
+import { compactInputClass, inputClass } from '@/components/ui/inputStyle'
 import CurrencyInput from '@/components/ui/CurrencyInput'
 import MemberChip from '@/components/ui/MemberChip'
 import MemberAvatar from '@/components/ui/MemberAvatar'
@@ -854,20 +854,20 @@ export default function ExpenseFormModal({
                       both inputs. Delete moved to row 2's trailing edge. */}
                   <div className="flex items-center gap-2">
                     {/* Font-size MUST be 16px or larger — iOS Safari auto-zooms
-                        the viewport on focus of any input below 16px. The h-9
-                        height is unchanged; only the type size grows. */}
+                        the viewport on focus of any input below 16px. Keep
+                        compact rows descender-safe with explicit leading/padding. */}
                     <input
                       value={it.name}
                       onChange={e => items.setName(i, e.target.value)}
                       placeholder="項目名"
-                      className="flex-1 min-w-0 h-9 px-2.5 rounded-[8px] border-[1.5px] border-border bg-app text-[16px] text-ink outline-none focus-visible:border-accent"
+                      className={`${compactInputClass(false)} flex-1`}
                     />
                     <div className="shrink-0 w-[120px]">
                       <CurrencyInput
                         symbol={symbol}
                         size="compact"
                         alignRight
-                        shellClassName="h-9 px-2.5 rounded-[8px]"
+                        shellClassName="min-h-10 px-2.5 py-1.5 rounded-[8px]"
                         value={it.amountText}
                         onChange={e => items.setAmount(i, e.target.value)}
                         placeholder="0"
@@ -917,14 +917,14 @@ export default function ExpenseFormModal({
                           onChange={e => setAdjustmentLabel(adj.id, e.target.value)}
                           placeholder={`調整 ${i + 1}`}
                           aria-label={`調整 ${i + 1} ラベル`}
-                          className="flex-1 min-w-0 h-9 px-2.5 rounded-[8px] border-[1.5px] border-border bg-app text-[16px] text-ink outline-none focus-visible:border-accent"
+                          className={`${compactInputClass(false)} flex-1`}
                         />
                         <div className="shrink-0 w-[120px]">
                           <CurrencyInput
                             symbol={`${sign < 0 ? '-' : '+'}${symbol}`}
                             size="compact"
                             alignRight
-                            shellClassName="h-9 px-2.5 rounded-[8px]"
+                            shellClassName="min-h-10 px-2.5 py-1.5 rounded-[8px]"
                             value={adjustmentAmountValue(adj)}
                             onChange={e => setAdjustmentAmount(adj.id, e.target.value)}
                             placeholder="0"
@@ -938,7 +938,7 @@ export default function ExpenseFormModal({
                           value={adj.kind}
                           onChange={e => setAdjustmentKind(adj.id, e.target.value as ExpenseAdjustmentKind)}
                           aria-label={`調整 ${i + 1} 種類`}
-                          className="h-9 min-w-0 px-2.5 rounded-[8px] border-[1.5px] border-border bg-app text-[16px] text-ink outline-none focus-visible:border-accent"
+                          className={compactInputClass(false)}
                         >
                           {EXPENSE_ADJUSTMENT_KINDS.map(kind => (
                             <option key={kind} value={kind}>{ADJUSTMENT_KIND_LABEL[kind]}</option>
@@ -949,7 +949,7 @@ export default function ExpenseFormModal({
                           value={adj.scope}
                           onChange={e => setAdjustmentScope(adj.id, e.target.value as ExpenseAdjustmentScope)}
                           aria-label={`調整 ${i + 1} 対象範囲`}
-                          className="h-9 min-w-0 px-2.5 rounded-[8px] border-[1.5px] border-border bg-app text-[16px] text-ink outline-none focus-visible:border-accent"
+                          className={compactInputClass(false)}
                         >
                           {ADJUSTMENT_SCOPE_OPTIONS.map(scope => (
                             <option key={scope.value} value={scope.value}>{scope.label}</option>
@@ -971,7 +971,7 @@ export default function ExpenseFormModal({
                           value={adj.targetItemId ?? ''}
                           onChange={e => setAdjustmentTarget(adj.id, e.target.value)}
                           aria-label={`調整 ${i + 1} 対象項目`}
-                          className="h-9 w-full min-w-0 px-2.5 rounded-[8px] border-[1.5px] border-border bg-app text-[16px] text-ink outline-none focus-visible:border-accent"
+                          className={compactInputClass(false)}
                         >
                           <option value="" disabled>対象項目を選択</option>
                           {items.items.map((item, itemIndex) => (
@@ -1098,7 +1098,7 @@ export default function ExpenseFormModal({
                           symbol={symbol}
                           size="compact"
                           alignRight
-                          shellClassName="h-9 px-2.5 rounded-[8px]"
+                          shellClassName="min-h-10 px-2.5 py-1.5 rounded-[8px]"
                           value={splits.state.custom[m.id] ?? ''}
                           onChange={e => splits.setCustom(m.id, e.target.value)}
                           placeholder="0"

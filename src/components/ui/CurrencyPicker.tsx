@@ -3,8 +3,9 @@
 // language: an input-shaped trigger that opens a dialog with the
 // options as a scrollable list. The grid version this replaced ate
 // ~180px of vertical space (5 rows × 3 col); this trigger is the same
-// 42px tall as the date/text inputs around it, keeping the create /
-// edit trip forms visually tight.
+// same min-height + line-height contract as the date/text inputs around
+// it, keeping the create / edit trip forms visually tight without
+// clipping CJK fallback font metrics.
 
 import { useEffect, useState } from 'react'
 import { ChevronDown, Check } from 'lucide-react'
@@ -47,16 +48,16 @@ export default function CurrencyPicker({ value, onChange }: Props) {
           if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(true) }
         }}
         className={[
-          'w-full h-[42px] rounded-input bg-app px-3 gap-2',
+          'w-full min-h-12 rounded-input bg-app px-3 py-2.5 gap-2',
           'flex items-center cursor-pointer',
           'border-[1.5px] border-border transition-colors',
           open ? 'border-accent' : 'hover:border-muted',
         ].join(' ')}
       >
-        <span className="text-[14px] font-bold leading-none text-ink min-w-[28px] tracking-tight">
+        <span className="text-[14px] font-bold leading-6 text-ink min-w-[28px] tracking-tight">
           {selected.symbol}
         </span>
-        <span className="flex-1 text-left text-[14px] text-ink tracking-[0.02em] truncate">
+        <span className="flex-1 text-left text-[14px] leading-6 text-ink tracking-[0.02em] truncate">
           {selected.label}
         </span>
         <ChevronDown
