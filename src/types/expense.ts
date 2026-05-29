@@ -1,13 +1,20 @@
 // src/types/expense.ts
 // Expense entity + per-member splits. Splits live in the same file
 // because they're a child shape of expense — never used standalone.
+//
+// Money domain: every persisted / wire-level amount in this file is
+// `amountMinor` — integer minor units (USD $12.34 = 1234, JPY ¥1200 =
+// 1200). UI / OCR string handling happens at the boundary via
+// `src/utils/money.ts`. The materializer + Worker authoritative
+// recompute both work in integer minor units and reject non-integer
+// values loudly.
 import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
 import { TimestampSchema } from './_shared'
 
 export interface ExpenseSplit {
-  memberId: string
-  amount:   number          // 該成員實際分攤金額
+  memberId:    string
+  amountMinor: number       // 該成員實際分攤金額(integer minor units)
 }
 
 /** Receipt photo / PDF attached to an expense — uploaded via
@@ -30,18 +37,19 @@ export interface ExpenseReceipt {
  *  Lifecycle: lives or dies with the receipt photo. Removing the
  *  receipt clears items (the photo is items' ground truth). When
  *  items[].length > 0, the form switches to "by-item" split mode and
- *  splits[] is computed from item assignees at save-time.
+ *  splits[] is computed via `materializeExpenseSplits` at save-time
+ *  using `items` + `adjustments` together.
  *
- *  Phase A: `id` is optional + additive. Legacy items written before
- *  the adjustment refactor have no id; new items minted by the OCR
- *  callback or form will populate it via crypto.randomUUID. Phase B
- *  switches the materializer wire path on and tightens callsites to
- *  require id at the boundary; until then, splitsFromItems continues
- *  to ignore the field. */
+ *  Phase B contract:
+ *    - `id` is required (ITEM-scope adjustments reference it).
+ *    - `amountMinor` is a POSITIVE integer minor-unit amount —
+ *      pre-discount subtotal.
+ *      Discount / surcharge / tax / tip live in the sibling
+ *      `Expense.adjustments[]` array. */
 export interface ExpenseItem {
-  id?:       string
-  name:      string
-  amount:    number
+  id:          string
+  name:        string
+  amountMinor: number
   /** memberIds — non-empty. An item shared by N people splits its
    *  amount equally across them. */
   assignees: string[]
@@ -61,13 +69,15 @@ export type ExpenseAdjustmentKind =
   | 'OTHER'
 
 /** Persisted adjustment scope — UNKNOWN is OCR-draft-only and never
- *  enters Firestore. Phase B Worker validation will reject UNKNOWN
- *  explicitly; the client converts via UI selector in Phase C. */
+ *  enters Firestore. Phase B Worker validation rejects UNKNOWN
+ *  explicitly; the client converts via the visible adjustment row
+ *  before save. */
 export type ExpenseAdjustmentScope = 'ITEM' | 'EXPENSE'
 
 /** Adjustment line for an expense — first-class replacement for the
- *  prior "discount as negative ExpenseItem" pattern. amount is
- *  POSITIVE minor units; the effective sign comes from `kind`.
+ *  prior "discount as negative ExpenseItem" pattern. amountMinor is a
+ *  POSITIVE integer minor-unit amount; the effective sign comes from
+ *  `kind`.
  *
  *  Scope semantics:
  *    - ITEM:    reduces the target item's subtotal before its split.
@@ -76,16 +86,16 @@ export type ExpenseAdjustmentScope = 'ITEM' | 'EXPENSE'
  *               post-ITEM-scope effective amounts. `targetItemId` MUST
  *               be omitted.
  *
- *  Phase A: type lives here for early adopters; the materializer is
- *  the single source of truth for the math. Wire-in happens in Phase B
- *  via the Worker authoritative recompute + `SPLIT_PREVIEW_DRIFT`
- *  rejection contract. See memory: expense-adjustment-design. */
+ *  Phase B: wired into Worker authoritative recompute + `SPLIT_PREVIEW_
+ *  DRIFT` rejection. Client computes preview via `materializeExpense
+ *  Splits`, Worker recomputes from (items, adjustments, members) and
+ *  rejects mismatches. */
 export interface ExpenseAdjustment {
   id:            string
   label:         string
   kind:          ExpenseAdjustmentKind
   scope:         ExpenseAdjustmentScope
-  amount:        number
+  amountMinor:   number
   targetItemId?: string
 }
 
@@ -94,19 +104,25 @@ export interface Expense {
   id: string
   tripId: string
   title: string
-  amount: number            // 總額
+  amountMinor: number       // 總額(integer minor units)
   currency: string
   category: ExpenseCategory
   paidBy: string            // memberId
-  splits: ExpenseSplit[]    // sum(splits.amount) === amount
+  splits: ExpenseSplit[]    // sum(splits.amountMinor) === amountMinor
   date: string              // 'YYYY-MM-DD'
   /** Optional receipt — photo or PDF the user kept for record. When
    *  OCR is run against the photo, `items` gets populated and the form
    *  switches to chip-based split mode on edit. */
   receipt?: ExpenseReceipt
   /** OCR'd line items — present only when the user ran OCR against the
-   *  receipt. Drives the "by-item" split mode in the form. */
+   *  receipt. Drives the "by-item" split mode in the form. Phase B:
+   *  positive-only line totals; discounts live in `adjustments`. */
   items?: ExpenseItem[]
+  /** Adjustments (discounts / surcharges / tax / tip). Phase B
+   *  contract: always present (empty array when none). Worker
+   *  authoritative recompute uses `materializeExpenseSplits({items,
+   *  adjustments, members})`; client preview MUST match. */
+  adjustments: ExpenseAdjustment[]
   note?: string
   createdBy: string
   /** Last-writer uid. See useFeatureBadges. */
@@ -149,24 +165,24 @@ export type ExpenseCategory =
   | 'other'
 
 export const ExpenseSplitSchema = z.object({
-  memberId: z.string().min(1),
-  amount:   z.number().nonnegative(),
+  memberId:    z.string().min(1),
+  // Integer minor units. Zero is allowed for splits that legitimately
+  // reduce to zero after materialization (an item assigned to one
+  // person with a discount covering its full price).
+  amountMinor: z.number().int().nonnegative(),
 })
 
 export const ExpenseItemSchema = z.object({
-  // Phase A: id is optional and additive. Phase B tightens to required
-  // at the boundary (Worker validation + new client write path).
-  id: z.string().min(1).max(64).optional(),
+  // Phase B: id required. ITEM-scope adjustments target items by id;
+  // optional id would let an adjustment dangle silently. Length cap of
+  // 64 accommodates UUIDs + any future short-id scheme.
+  id: z.string().min(1).max(64),
   name: z.string().min(1).max(200),
-  // Amount may be negative — receipts often include discount / cashback
-  // / promo lines that legitimately subtract from the total (e.g.
-  // "キャッシュレス還元 -6"). Sum-equals-total is enforced at the form
-  // layer regardless of sign.
-  //
-  // Phase B will tighten this to .positive() in lockstep with the OCR
-  // schema migration (discounts move to `adjustments[]`). Until then,
-  // do NOT add positivity here — live OCR still emits signed items.
-  amount: z.number(),
+  // Phase B: positive integer minor units. Discounts / surcharges / tax
+  // / tip migrated to the sibling `adjustments[]` field. The materializer
+  // (Worker authoritative split gate) rejects non-positive items with
+  // ITEM_NOT_POSITIVE_INTEGER.
+  amountMinor: z.number().int().positive(),
   // Every item must have at least one assignee — enforced both client-
   // side (form validation) and at the schema level so any future code
   // path that tries to write a "dangling" item gets rejected.
@@ -183,25 +199,26 @@ export const EXPENSE_ADJUSTMENT_KINDS = [
 
 export const EXPENSE_ADJUSTMENT_SCOPES = ['ITEM', 'EXPENSE'] as const
 
-/** Persisted adjustment shape. `amount` is positive integer minor
- *  units (JPY=¥, USD=cents); sign comes from `kind`. Draft surfaces
- *  that temporarily hold a zero amount should use a draft-only schema,
- *  not this persisted shape.
+/** Persisted adjustment shape. `amountMinor` is a positive integer
+ *  minor-unit amount; sign comes from `kind`. Draft surfaces that
+ *  temporarily hold a zero amount should use a draft-only schema, not
+ *  this persisted shape.
  *
- *  Phase A: schema lives here but is NOT yet wired into ExpenseDocSchema
- *  or CreateExpenseSchema — those land in Phase B alongside Worker
- *  authoritative recompute.
+ *  Phase B: wired into ExpenseDocSchema + ExpenseShape +
+ *  CreateExpenseSchema. The Worker authoritative recompute runs
+ *  `materializeExpenseSplits({items, adjustments, members})` and
+ *  rejects SPLIT_PREVIEW_DRIFT if the client preview disagrees.
  *
  *  The ITEM-iff-targetItemId refine mirrors the runtime guard in
  *  `@tripmate/expense-materialize` (ITEM_SCOPE_NO_TARGET /
- *  EXPENSE_SCOPE_HAS_TARGET). Catching it at the Zod boundary lets
- *  Phase B reject malformed docs before invoking the materializer. */
+ *  EXPENSE_SCOPE_HAS_TARGET). Catching it at the Zod boundary
+ *  rejects malformed docs before invoking the materializer. */
 export const ExpenseAdjustmentSchema = z.object({
   id:           z.string().min(1).max(64),
   label:        z.string().min(1).max(120),
   kind:         z.enum(EXPENSE_ADJUSTMENT_KINDS),
   scope:        z.enum(EXPENSE_ADJUSTMENT_SCOPES),
-  amount:       z.number().int().positive(),
+  amountMinor:  z.number().int().positive(),
   targetItemId: z.string().min(1).max(64).optional(),
 }).refine(
   data => (data.scope === 'ITEM') === (data.targetItemId !== undefined),
@@ -213,28 +230,35 @@ export const ExpenseAdjustmentSchema = z.object({
 // update can't fully enforce the splits-sum check without joining with
 // the persisted doc — leave that invariant to the create form).
 const ExpenseShape = z.object({
-  title:    z.string().min(1, '請輸入標題').max(100),
-  amount:   z.coerce.number().positive('金額必須大於 0'),
-  currency: z.string().default('JPY'),
-  category: z.enum(['food','transport','accommodation','activity','shopping','other']),
-  paidBy:   z.string().min(1, '請選擇付款人'),
-  splits:   z.array(ExpenseSplitSchema).min(1, '至少需選擇一位分攤人'),
-  date:     z.string().min(1, '請選擇日期'),
-  items:    z.array(ExpenseItemSchema).optional(),
-  note:     z.string().optional(),
+  title:       z.string().min(1, '請輸入標題').max(100),
+  // Persist-side: positive integer minor units. The form layer holds
+  // the user-facing decimal string in `amountText` and converts via
+  // `parseMoneyToMinor` at submit time.
+  amountMinor: z.number().int().positive('金額必須大於 0'),
+  currency:    z.string().default('JPY'),
+  category:    z.enum(['food','transport','accommodation','activity','shopping','other']),
+  paidBy:      z.string().min(1, '請選擇付款人'),
+  splits:      z.array(ExpenseSplitSchema).min(1, '至少需選擇一位分攤人'),
+  date:        z.string().min(1, '請選擇日期'),
+  items:       z.array(ExpenseItemSchema).optional(),
+  // Phase B: adjustments always present (empty array when none). The
+  // form layer constructs them; the Worker materializes splits from
+  // (items, adjustments, members) and rejects drift.
+  adjustments: z.array(ExpenseAdjustmentSchema),
+  note:        z.string().optional(),
 })
 
 export const CreateExpenseSchema = ExpenseShape.refine(
-  data => Math.abs(data.splits.reduce((s, x) => s + x.amount, 0) - data.amount) < 0.01,
+  data => data.splits.reduce((s, x) => s + x.amountMinor, 0) === data.amountMinor,
   { message: '分攤金額總和需等於總額', path: ['splits'] },
 )
 export type CreateExpenseInput = z.infer<typeof CreateExpenseSchema>
 
 /** Update payload — fields optional but per-field rules (length, enum,
  *  positivity) still enforced. The cross-field refine (splits-sum =
- *  amount) is intentionally dropped: partial updates can't validate it
- *  without joining the persisted doc, and the create path already gates
- *  the invariant at write-time. */
+ *  amountMinor) is intentionally dropped: partial updates can't validate
+ *  it without joining the persisted doc, and the create path already
+ *  gates the invariant at write-time. */
 export const UpdateExpenseSchema = ExpenseShape.partial()
 export type UpdateExpenseInput = z.infer<typeof UpdateExpenseSchema>
 
@@ -258,27 +282,33 @@ export const ExpenseReceiptSchema = z.object({
 })
 
 export const ExpenseDocSchema = z.object({
-  tripId:     z.string(),
-  title:      z.string(),
-  amount:     z.number(),
-  currency:   z.string(),
-  category:   z.enum(['food','transport','accommodation','activity','shopping','other']),
-  paidBy:     z.string(),
-  splits:     z.array(ExpenseSplitSchema),
-  date:       z.string(),
-  receipt:    ExpenseReceiptSchema.optional(),
-  items:      z.array(ExpenseItemSchema).optional(),
-  note:       z.string().optional(),
-  createdBy:  z.string(),
-  updatedBy:  z.string(),
-  memberIds:  z.array(z.string().min(1)).min(1),
-  createdAt:  TimestampSchema,
-  updatedAt:  TimestampSchema,
+  tripId:      z.string(),
+  title:       z.string(),
+  amountMinor: z.number().int().nonnegative(),
+  currency:    z.string(),
+  category:    z.enum(['food','transport','accommodation','activity','shopping','other']),
+  paidBy:      z.string(),
+  splits:      z.array(ExpenseSplitSchema),
+  date:        z.string(),
+  receipt:     ExpenseReceiptSchema.optional(),
+  items:       z.array(ExpenseItemSchema).optional(),
+  // Phase B: required on every doc, default empty array. Legacy docs
+  // written before this contract do NOT have the field — per the
+  // no-backcompat decision, those will fail parse on read. The Sentry
+  // capture in firestoreDocFromSchema surfaces it as a single noisy
+  // signal rather than a silent display regression.
+  adjustments: z.array(ExpenseAdjustmentSchema),
+  note:        z.string().optional(),
+  createdBy:   z.string(),
+  updatedBy:   z.string(),
+  memberIds:   z.array(z.string().min(1)).min(1),
+  createdAt:   TimestampSchema,
+  updatedAt:   TimestampSchema,
   /** Soft-delete tombstone (settlement phase-2). Nullable + optional
    *  for parse tolerance — Zod sees the full server doc (always
    *  null/Timestamp per the create rule) AND optimistic-cache rows
    *  that may not include the field until the listener reconciles. */
-  deletedAt:  TimestampSchema.nullable().optional(),
+  deletedAt:   TimestampSchema.nullable().optional(),
   /** Receipt-purge watermark. Same parse-tolerance reasoning as
    *  deletedAt: rule enforces present+null on create, so server-side
    *  it's always shaped, but optimistic patches / partial cache rows

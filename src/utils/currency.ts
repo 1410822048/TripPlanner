@@ -60,12 +60,3 @@ export function currencySymbol(code: string | undefined): string {
   if (!code) return REGISTRY[DEFAULT_CURRENCY]!.symbol
   return REGISTRY[code]?.symbol ?? code + ' '
 }
-
-/** Full "{symbol}{amount}" with thousands separator. Amounts are
- *  integers throughout the app (the form layer enforces it), so no
- *  fractional digits are emitted. Adding fractional support later
- *  would only require swapping `.toLocaleString()` with an Intl
- *  formatter using the currency's expected fractionDigits. */
-export function formatAmount(amount: number, code: string | undefined): string {
-  return `${currencySymbol(code)}${amount.toLocaleString()}`
-}

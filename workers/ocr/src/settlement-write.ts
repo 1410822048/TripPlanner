@@ -2,7 +2,7 @@
 // Worker-authoritative settlement create + delete.
 //
 // Why these run on the Worker instead of via firestore.rules:
-//   1. The core invariant is `amount <= pairwise[fromUid][toUid]` —
+//   1. The core invariant is `amountMinor <= pairwise[fromUid][toUid]` —
 //      i.e. a settlement can only REDUCE existing debt, never CREATE
 //      reverse debt. rules can't compute this: it requires summing
 //      across every expense's splits AND every prior settlement on
@@ -97,7 +97,7 @@ export const SettlementCreateRequestSchema = z.object({
   settlementId: z.string().regex(TripIdRe),
   fromUid:      z.string().min(1).max(UID_MAX),
   toUid:        z.string().min(1).max(UID_MAX),
-  amount:       z.number().int().positive().max(1_000_000_000),
+  amountMinor:  z.number().int().positive().max(1_000_000_000),
   currency:     z.string().length(3),
   note:         z.string().max(200).optional(),
 }).strict()
@@ -204,23 +204,23 @@ async function authorizeMemberTx(
 // ─── Decoders: REST fields → domain shapes ────────────────────────
 
 function decodeExpenseForDomain(fields: Record<string, FsValue>): CoreExpense {
-  const amount = Number(fields.amount?.doubleValue ?? fields.amount?.integerValue ?? 0)
+  const amountMinor = Number(fields.amountMinor?.integerValue ?? 0)
   const paidBy = readString(fields, 'paidBy') ?? ''
   const splitArr = (fields.splits as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []
   const splits = splitArr.map(v => {
     const inner = v.mapValue?.fields ?? {}
     return {
-      memberId: readString(inner, 'memberId') ?? '',
-      amount:   Number(inner.amount?.doubleValue ?? inner.amount?.integerValue ?? 0),
+      memberId:    readString(inner, 'memberId') ?? '',
+      amountMinor: Number(inner.amountMinor?.integerValue ?? 0),
     }
   })
-  return { amount, paidBy, splits }
+  return { amountMinor, paidBy, splits }
 }
 
 function decodeSettlementForDomain(fields: Record<string, FsValue>): CoreSettlement {
   const fromUid = readString(fields, 'fromUid') ?? ''
   const toUid   = readString(fields, 'toUid')   ?? ''
-  const amount  = Number(fields.amount?.integerValue ?? fields.amount?.doubleValue ?? 0)
+  const amountMinor = Number(fields.amountMinor?.integerValue ?? 0)
   // createdAt arrives as Firestore Timestamp -> REST timestampValue ISO 8601.
   // Convert to ms epoch for computePairwiseRemaining's sort step.
   // The rules pin createdAt == request.time on every create so every
@@ -231,7 +231,7 @@ function decodeSettlementForDomain(fields: Record<string, FsValue>): CoreSettlem
   return {
     fromUid,
     toUid,
-    amount,
+    amountMinor,
     createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : 0,
   }
 }
@@ -346,14 +346,12 @@ async function doCreate(
       // attempt with a different payload) and the right answer is 409
       // so the caller surfaces the mismatch instead of silently being
       // told "ok" for a write that never reflected the latest payload.
-      const existingFromUid   = readString(existingDoc.fields, 'fromUid')
-      const existingToUid     = readString(existingDoc.fields, 'toUid')
-      const existingCurrency  = readString(existingDoc.fields, 'currency')
-      const existingSettledBy = readString(existingDoc.fields, 'settledBy')
-      const existingAmount    = Number(
-        existingDoc.fields.amount?.integerValue
-        ?? existingDoc.fields.amount?.doubleValue
-        ?? Number.NaN,
+      const existingFromUid     = readString(existingDoc.fields, 'fromUid')
+      const existingToUid       = readString(existingDoc.fields, 'toUid')
+      const existingCurrency    = readString(existingDoc.fields, 'currency')
+      const existingSettledBy   = readString(existingDoc.fields, 'settledBy')
+      const existingAmountMinor = Number(
+        existingDoc.fields.amountMinor?.integerValue ?? Number.NaN,
       )
       // note: current write path omits the field entirely when the
       // request's note is empty/absent. Normalize both sides to '' so
@@ -361,12 +359,12 @@ async function doCreate(
       const existingNote = readString(existingDoc.fields, 'note') ?? ''
       const requestNote  = req.note ?? ''
       const matches =
-           existingFromUid   === req.fromUid
-        && existingToUid     === req.toUid
-        && existingAmount    === req.amount
-        && existingCurrency  === req.currency
-        && existingSettledBy === callerUid
-        && existingNote      === requestNote
+           existingFromUid     === req.fromUid
+        && existingToUid       === req.toUid
+        && existingAmountMinor === req.amountMinor
+        && existingCurrency    === req.currency
+        && existingSettledBy   === callerUid
+        && existingNote        === requestNote
       if (!matches) {
         throw new SettlementValidationError(
           'settlementId',
@@ -391,10 +389,10 @@ async function doCreate(
     // EPS guard mirrors `computeBalancesFull` step 3's edge threshold
     // (`rest > EPS` to produce a remaining edge); within EPS is
     // effectively zero debt.
-    if (req.amount > remaining + SETTLEMENT_EPS) {
+    if (req.amountMinor > remaining + SETTLEMENT_EPS) {
       throw new SettlementValidationError(
-        'amount',
-        `amount (${req.amount}) exceeds remaining debt (${remaining}) from ${req.fromUid} to ${req.toUid}`,
+        'amountMinor',
+        `amountMinor (${req.amountMinor}) exceeds remaining debt (${remaining}) from ${req.fromUid} to ${req.toUid}`,
       )
     }
 
@@ -402,16 +400,16 @@ async function doCreate(
     // existing client `addDoc` pattern — empty/absent note means omit
     // the field, not write '').
     const fields: Record<string, FsValue> = {
-      tripId:    { stringValue: req.tripId },
-      fromUid:   { stringValue: req.fromUid },
-      toUid:     { stringValue: req.toUid },
-      // amount goes in as integerValue -- the doc schema is
+      tripId:      { stringValue: req.tripId },
+      fromUid:     { stringValue: req.fromUid },
+      toUid:       { stringValue: req.toUid },
+      // amountMinor goes in as integerValue -- the doc schema is
       // `z.number().int().positive()` so client-side reads expect an
       // integer-shaped value (Firestore SDK decodes integerValue to
       // number). REST integerValue is a string per proto convention.
-      amount:    { integerValue: String(req.amount) },
-      currency:  { stringValue: req.currency },
-      settledBy: { stringValue: callerUid },
+      amountMinor: { integerValue: String(req.amountMinor) },
+      currency:    { stringValue: req.currency },
+      settledBy:   { stringValue: callerUid },
     }
     if (req.note != null && req.note !== '') {
       fields.note = { stringValue: req.note }

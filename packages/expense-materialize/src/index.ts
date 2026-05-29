@@ -19,15 +19,18 @@
 //   replaced) would re-introduce the drift surface this package is
 //   designed to eliminate.
 //
-// Sign convention:
-//   item.amount is POSITIVE minor units (pre-discount item subtotal).
-//   adjustment.amount is POSITIVE minor units; the sign of the effect
-//   on the expense comes from `adjustment.kind`. DISCOUNT/COUPON/
-//   TAX_EXEMPT subtract; SURCHARGE/TAX/TIP add. OTHER is treated as
-//   subtract by default — it's the "I don't know which" escape hatch
-//   and most user-typed OTHER labels are correction-like in practice.
-//   UI may gain an explicit signed `direction` field in a later phase
-//   if that default is wrong often enough.
+// Money domain:
+//   item.amountMinor is a POSITIVE integer minor-unit amount
+//   (pre-discount item subtotal). Minor units: USD $12.34 = 1234,
+//   JPY ¥1200 = 1200, TWD NT$100 = 100 (TWD treated as zero-fraction
+//   per app convention).
+//   adjustment.amountMinor is a POSITIVE integer minor-unit amount;
+//   the sign of the effect on the expense comes from `adjustment.kind`.
+//   DISCOUNT/COUPON/TAX_EXEMPT subtract; SURCHARGE/TAX/TIP add. OTHER
+//   is treated as subtract by default — it's the "I don't know which"
+//   escape hatch and most user-typed OTHER labels are correction-like
+//   in practice. UI may gain an explicit signed `direction` field in a
+//   later phase if that default is wrong often enough.
 
 // ─── Public types ─────────────────────────────────────────────────
 
@@ -47,20 +50,22 @@ export type AdjustmentKind =
 
 /** Persisted adjustment scope. `UNKNOWN` is intentionally NOT included
  *  — it only exists as `suggestedScope` on OCR drafts; resolving it to
- *  ITEM or EXPENSE is a Phase C UI responsibility. The materializer
+ *  ITEM or EXPENSE happens in the client form before save. The materializer
  *  throws if it ever sees UNKNOWN, so a forgotten downgrade in the
  *  write path surfaces loudly rather than silently materializing the
  *  wrong scope. */
 export type AdjustmentScope = 'ITEM' | 'EXPENSE'
 
 /** Minimum item shape the materializer needs. `id` is required at
- *  this layer (ITEM-scope adjustments target by id), but the client
- *  type leaves `ExpenseItem.id` optional during Phase A — the call
- *  site must mint ids before invoking the materializer. */
+ *  this layer — ITEM-scope adjustments target by id, and per-item
+ *  effective amounts (after step 2) are keyed by id. Phase B made
+ *  `ExpenseItem.id` required in the persisted schema as well, so
+ *  callers no longer need a separate id-minting pass before invoking
+ *  the materializer. */
 export interface MaterializeItem {
-  id:        string
-  amount:    number   // positive minor units
-  assignees: string[] // memberIds; ≥1
+  id:          string
+  amountMinor: number   // positive integer minor units
+  assignees:   string[] // memberIds; ≥1
 }
 
 /** Minimum adjustment shape. `targetItemId` is required iff
@@ -70,7 +75,7 @@ export interface MaterializeAdjustment {
   id:            string
   kind:          AdjustmentKind
   scope:         AdjustmentScope
-  amount:        number      // positive minor units
+  amountMinor:   number      // positive integer minor units
   targetItemId?: string      // required when scope === 'ITEM'
 }
 
@@ -86,8 +91,8 @@ export interface MaterializeInput {
 
 /** Output shape — matches client `ExpenseSplit` and Worker decode. */
 export interface MaterializeSplit {
-  memberId: string
-  amount:   number   // signed minor units; non-zero
+  memberId:    string
+  amountMinor: number   // signed integer minor units; non-zero
 }
 
 // ─── Errors ───────────────────────────────────────────────────────
@@ -113,8 +118,14 @@ export type MaterializeErrorCode =
   | 'EXPENSE_SCOPE_NO_WEIGHT'
 
 export class MaterializeError extends Error {
-  constructor(public code: MaterializeErrorCode, message: string) {
+  // Field declared explicitly (not via `public code: ...` shorthand)
+  // because the client's tsconfig enables `erasableSyntaxOnly`, which
+  // forbids constructor parameter properties (TS-only sugar that
+  // doesn't survive type erasure).
+  readonly code: MaterializeErrorCode
+  constructor(code: MaterializeErrorCode, message: string) {
     super(message)
+    this.code = code
     this.name = 'MaterializeError'
   }
 }
@@ -152,7 +163,63 @@ export function adjustmentSign(kind: AdjustmentKind): 1 | -1 {
 
 // ─── Internal helpers ─────────────────────────────────────────────
 
-/** Deterministic equal split for integer minor units. Mirrors
+/**
+ * Deterministic apportionment of an integer `total` over weighted items
+ * using largest-remainder (Hamilton method). Tie-broken by ascending
+ * index so client preview and Worker recompute land on the same byte
+ * sequence even when ideal fractions collide. Array.prototype.sort is
+ * stable since ES2019, and both runtimes are V8.
+ *
+ * When `caps` is provided, no allocation exceeds caps[i]: leftover
+ * bumps skip saturated items. Used for negative-sign EXPENSE-scope
+ * adjustments where each item's effective amount must stay non-negative
+ * — without the cap, three ¥1 items + ¥2 discount degenerate into
+ * base=[0,0,0] / remainder-on-last=[0,0,2] and rejects a legal apportion.
+ * Positive-sign (SURCHARGE/TAX/TIP) callers omit caps — items can absorb
+ * arbitrarily large additions.
+ *
+ * Precondition (enforced by caller):
+ *   - total ≥ 0; every weights[i] > 0
+ *   - When caps is provided: total ≤ Σ caps. The caller pre-checks this
+ *     and throws a domain-specific error (OVER_DISCOUNT_EXPENSE in our
+ *     case) so this helper stays algorithm-only.
+ *
+ * Returns alloc[] with alloc[i] ≥ 0; Σ alloc[i] === total when the
+ * precondition holds, and alloc[i] ≤ caps[i] (when caps given).
+ */
+function apportionByWeight(
+  total:   number,
+  weights: number[],
+  caps?:   number[],
+): number[] {
+  if (total === 0 || weights.length === 0) return weights.map(() => 0)
+  const weightTotal = weights.reduce((s, w) => s + w, 0)
+
+  const base       = new Array<number>(weights.length)
+  const remainders: Array<{ idx: number; frac: number }> = []
+  let baseSum = 0
+  for (let i = 0; i < weights.length; i++) {
+    const ideal = (total * weights[i]!) / weightTotal
+    const b     = Math.floor(ideal)
+    base[i]     = b
+    baseSum    += b
+    remainders.push({ idx: i, frac: ideal - b })
+  }
+
+  let leftover = total - baseSum
+  if (leftover === 0) return base
+
+  remainders.sort((a, b) => b.frac - a.frac || a.idx - b.idx)
+  for (const { idx } of remainders) {
+    if (leftover === 0) break
+    if (caps !== undefined && base[idx]! >= caps[idx]!) continue
+    base[idx] = base[idx]! + 1
+    leftover -= 1
+  }
+  return base
+}
+
+/** Deterministic equal split for integer minor-unit amounts. Mirrors
  *  `src/features/expense/utils.ts::splitEqually` exactly — same
  *  Math.floor + abs + sign-multiplication idiom — so Phase B can
  *  retire the client-side copy without behavioral drift.
@@ -171,8 +238,8 @@ function splitEqually(total: number, memberIds: string[]): MaterializeSplit[] {
   const base     = Math.floor(absTotal / memberIds.length)
   const rem      = absTotal - base * memberIds.length
   return memberIds.map((id, i) => ({
-    memberId: id,
-    amount:   sign * (base + (i < rem ? 1 : 0)),
+    memberId:    id,
+    amountMinor: sign * (base + (i < rem ? 1 : 0)),
   }))
 }
 
@@ -188,9 +255,12 @@ function splitEqually(total: number, memberIds: string[]): MaterializeSplit[] {
  *      Throws OVER_DISCOUNT_ITEM if any item's effective < 0.
  *   3. Compute the net EXPENSE-scope delta and apportion it across
  *      items proportional to their current effective amount (after
- *      step 2). Apportionment uses deterministic remainder so the
- *      last item in input order absorbs the rounding remainder.
- *      Throws OVER_DISCOUNT_EXPENSE if aggregate effective < 0.
+ *      step 2). Apportionment uses largest-remainder (Hamilton),
+ *      tie-broken by ascending item index. Negative deltas (discounts)
+ *      cap each per-item allocation at the item's effective amount;
+ *      a negative aggregate exceeding total weight throws
+ *      OVER_DISCOUNT_EXPENSE upfront. Positive deltas (surcharges)
+ *      have no per-item cap.
  *   4. Equal-split each item's effective amount across its assignees
  *      and aggregate per-member.
  *   5. Drop zero-amount members, return.
@@ -207,18 +277,18 @@ function splitEqually(total: number, memberIds: string[]): MaterializeSplit[] {
 export function materializeExpenseSplits(input: MaterializeInput): MaterializeSplit[] {
   const { items, adjustments, members } = input
 
-  // Step 1: validate items. Amounts are minor units (JPY=¥, USD=cents)
-  // — we require `Number.isInteger` rather than `Number.isFinite` so a
-  // payload that ships fractional minor units (a Phase-B bug, a hand-
-  // edited Firestore doc, a mis-typed currency conversion) fails loudly
-  // here instead of being silently rounded inside `splitEqually`.
+  // Step 1: validate items. amountMinor is integer minor units — we
+  // require `Number.isInteger` so a payload that ships fractional
+  // values (a Phase-B bug, a hand-edited Firestore doc, a botched
+  // currency conversion) fails loudly here instead of being silently
+  // rounded inside `splitEqually`.
   const itemById = new Map<string, MaterializeItem>()
   const memberSet = new Set(members)
   for (const item of items) {
-    if (!Number.isInteger(item.amount) || item.amount <= 0) {
+    if (!Number.isInteger(item.amountMinor) || item.amountMinor <= 0) {
       throw new MaterializeError(
         'ITEM_NOT_POSITIVE_INTEGER',
-        `item ${item.id}: amount must be a positive integer (minor units), got ${item.amount}`,
+        `item ${item.id}: amountMinor must be a positive integer minor-unit amount, got ${item.amountMinor}`,
       )
     }
     if (item.assignees.length === 0) {
@@ -229,10 +299,11 @@ export function materializeExpenseSplits(input: MaterializeInput): MaterializeSp
     }
     // Same-uid twice in one item's assignees would let `splitEqually`
     // treat the duplicate as a second seat — that member's effective
-    // share grows by `amount / assignees.length` per duplicate, biasing
-    // allocation while still passing the member-membership check. The
-    // Worker authoritative recompute makes that bias server-canonical,
-    // so the gate has to live here before split math runs.
+    // share grows by `amountMinor / assignees.length` per duplicate,
+    // biasing allocation while still passing the member-membership
+    // check. The Worker authoritative recompute makes that bias
+    // server-canonical, so the gate has to live here before split math
+    // runs.
     const seenAssignee = new Set<string>()
     for (const uid of item.assignees) {
       if (!memberSet.has(uid)) {
@@ -260,13 +331,13 @@ export function materializeExpenseSplits(input: MaterializeInput): MaterializeSp
 
   // Step 2: apply ITEM-scope adjustments to per-item effective amounts.
   const itemEffective = new Map<string, number>()
-  for (const item of items) itemEffective.set(item.id, item.amount)
+  for (const item of items) itemEffective.set(item.id, item.amountMinor)
 
   for (const adj of adjustments) {
-    if (!Number.isInteger(adj.amount) || adj.amount <= 0) {
+    if (!Number.isInteger(adj.amountMinor) || adj.amountMinor <= 0) {
       throw new MaterializeError(
         'ADJUSTMENT_NOT_POSITIVE_INTEGER',
-        `adjustment ${adj.id}: amount must be a positive integer (minor units), got ${adj.amount}`,
+        `adjustment ${adj.id}: amountMinor must be a positive integer minor-unit amount, got ${adj.amountMinor}`,
       )
     }
     // `scope` is typed as AdjustmentScope at compile time, but the
@@ -293,7 +364,7 @@ export function materializeExpenseSplits(input: MaterializeInput): MaterializeSp
           `adjustment ${adj.id}: targetItemId ${adj.targetItemId} not in items`,
         )
       }
-      const delta = adjustmentSign(adj.kind) * adj.amount
+      const delta = adjustmentSign(adj.kind) * adj.amountMinor
       const next  = (itemEffective.get(adj.targetItemId) ?? 0) + delta
       if (next < 0) {
         throw new MaterializeError(
@@ -321,7 +392,7 @@ export function materializeExpenseSplits(input: MaterializeInput): MaterializeSp
   // entire delta.
   const expenseNetDelta = adjustments
     .filter(a => a.scope === 'EXPENSE')
-    .reduce((sum, a) => sum + adjustmentSign(a.kind) * a.amount, 0)
+    .reduce((sum, a) => sum + adjustmentSign(a.kind) * a.amountMinor, 0)
 
   if (expenseNetDelta !== 0) {
     const weightedItems = items.filter(i => (itemEffective.get(i.id) ?? 0) > 0)
@@ -335,37 +406,30 @@ export function materializeExpenseSplits(input: MaterializeInput): MaterializeSp
         'EXPENSE-scope adjustment present but no item has positive effective amount to apportion across',
       )
     }
-    const sign = expenseNetDelta < 0 ? -1 : 1
-    // adj.amount validated as integer above, so expenseNetDelta is
+    const sign     = expenseNetDelta < 0 ? -1 : 1
+    // adj.amountMinor validated as integer above, so expenseNetDelta is
     // an integer sum — no Math.round normalisation needed.
     const absDelta = Math.abs(expenseNetDelta)
-    let allocated = 0
-    // Last item absorbs the rounding remainder so Σ apportioned == absDelta.
-    for (let i = 0; i < weightedItems.length - 1; i++) {
-      const item   = weightedItems[i]!
-      const weight = itemEffective.get(item.id) ?? 0
-      const portion = Math.floor((absDelta * weight) / weightTotal)
-      const cur  = itemEffective.get(item.id) ?? 0
-      const next = cur + sign * portion
-      if (next < 0) {
-        throw new MaterializeError(
-          'OVER_DISCOUNT_EXPENSE',
-          `expense-scope apportionment drives item ${item.id} below zero`,
-        )
-      }
-      itemEffective.set(item.id, next)
-      allocated += portion
-    }
-    const last = weightedItems[weightedItems.length - 1]!
-    const lastCur  = itemEffective.get(last.id) ?? 0
-    const lastNext = lastCur + sign * (absDelta - allocated)
-    if (lastNext < 0) {
+    // Negative aggregate cannot exceed total weight. Pre-checking up
+    // front (rather than discovering the violation in the middle of
+    // apportionment) keeps the helper algorithm-only and surfaces the
+    // domain error at the layer that owns it.
+    if (sign < 0 && absDelta > weightTotal) {
       throw new MaterializeError(
         'OVER_DISCOUNT_EXPENSE',
-        `expense-scope apportionment drives item ${last.id} below zero`,
+        `expense-scope discount ${absDelta} exceeds available item total ${weightTotal}`,
       )
     }
-    itemEffective.set(last.id, lastNext)
+    const weights = weightedItems.map(i => itemEffective.get(i.id) ?? 0)
+    // Caps only matter for discounts; surcharges can grow items without
+    // bound (a 100% TIP on a ¥500 item lands a +500 alloc cleanly).
+    const caps  = sign < 0 ? weights.slice() : undefined
+    const alloc = apportionByWeight(absDelta, weights, caps)
+    for (let i = 0; i < weightedItems.length; i++) {
+      const item = weightedItems[i]!
+      const cur  = itemEffective.get(item.id) ?? 0
+      itemEffective.set(item.id, cur + sign * alloc[i]!)
+    }
   }
 
   // Step 4: split each item's effective amount across its assignees,
@@ -376,8 +440,8 @@ export function materializeExpenseSplits(input: MaterializeInput): MaterializeSp
     const effective = itemEffective.get(item.id) ?? 0
     if (effective === 0) continue
     const splits = splitEqually(effective, item.assignees)
-    for (const { memberId, amount } of splits) {
-      memberTotals.set(memberId, (memberTotals.get(memberId) ?? 0) + amount)
+    for (const { memberId, amountMinor } of splits) {
+      memberTotals.set(memberId, (memberTotals.get(memberId) ?? 0) + amountMinor)
     }
   }
 
@@ -385,7 +449,7 @@ export function materializeExpenseSplits(input: MaterializeInput): MaterializeSp
   const out: MaterializeSplit[] = []
   for (const uid of members) {
     const total = memberTotals.get(uid) ?? 0
-    if (total !== 0) out.push({ memberId: uid, amount: total })
+    if (total !== 0) out.push({ memberId: uid, amountMinor: total })
   }
   return out
 }
@@ -403,8 +467,8 @@ export function materializeExpenseSplits(input: MaterializeInput): MaterializeSp
 export function canonicalizeSplits(splits: MaterializeSplit[]): string {
   return JSON.stringify(
     [...splits]
-      .filter(s => s.amount !== 0)
+      .filter(s => s.amountMinor !== 0)
       .sort((a, b) => (a.memberId < b.memberId ? -1 : a.memberId > b.memberId ? 1 : 0))
-      .map(s => ({ memberId: s.memberId, amount: s.amount })),
+      .map(s => ({ memberId: s.memberId, amountMinor: s.amountMinor })),
   )
 }

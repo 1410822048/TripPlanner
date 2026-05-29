@@ -402,7 +402,7 @@ service cloud.firestore {
                       && request.resource.data.keys().hasOnly([
                            'tripId','date','order','title','description',
                            'location','startTime','endTime','category',
-                           'estimatedCost','memberIds','createdBy','updatedBy',
+                           'estimatedCostMinor','memberIds','createdBy','updatedBy',
                            'createdAt','updatedAt'
                          ])
                       && request.resource.data.tripId == tripId
@@ -427,10 +427,10 @@ service cloud.firestore {
                       && (!('endTime' in request.resource.data)
                             || (request.resource.data.endTime is string
                                 && request.resource.data.endTime.size() <= 16))
-                      && (!('estimatedCost' in request.resource.data)
-                            || (request.resource.data.estimatedCost is number
-                                && request.resource.data.estimatedCost >= 0
-                                && request.resource.data.estimatedCost <= 1000000000))
+                      && (!('estimatedCostMinor' in request.resource.data)
+                            || (request.resource.data.estimatedCostMinor is int
+                                && request.resource.data.estimatedCostMinor >= 0
+                                && request.resource.data.estimatedCostMinor <= 1000000000))
                       && (!('location' in request.resource.data)
                             || validScheduleLocation(request.resource.data.location));
         allow update: if (
@@ -438,7 +438,7 @@ service cloud.firestore {
           && request.resource.data.keys().hasOnly([
                'tripId','date','order','title','description',
                'location','startTime','endTime','category',
-               'estimatedCost','memberIds','createdBy','updatedBy',
+               'estimatedCostMinor','memberIds','createdBy','updatedBy',
                'createdAt','updatedAt'
              ])
           && unchanged('tripId')
@@ -464,10 +464,10 @@ service cloud.firestore {
           && (!('endTime' in request.resource.data)
                 || (request.resource.data.endTime is string
                     && request.resource.data.endTime.size() <= 16))
-          && (!('estimatedCost' in request.resource.data)
-                || (request.resource.data.estimatedCost is number
-                    && request.resource.data.estimatedCost >= 0
-                    && request.resource.data.estimatedCost <= 1000000000))
+          && (!('estimatedCostMinor' in request.resource.data)
+                || (request.resource.data.estimatedCostMinor is int
+                    && request.resource.data.estimatedCostMinor >= 0
+                    && request.resource.data.estimatedCostMinor <= 1000000000))
           && (!('location' in request.resource.data)
                 || validScheduleLocation(request.resource.data.location))
         );
@@ -478,14 +478,14 @@ service cloud.firestore {
         allow read:   if memberOfDoc();
         // Expense CREATE is Worker-only. The Worker endpoint
         // /expense-create validates the full payload (including
-        // splits.items shape + memberId-in-roster + Σsplits == amount,
+        // splits.items shape + memberId-in-roster + Σsplits == amountMinor,
         // which rules-language can't express -- no array iterate /
         // map-extract / reduce). Admin SDK on Worker bypasses this
         // rule; clients calling setDoc directly are rejected.
         allow create: if false;
         // Expense UPDATE has one client-allowed path:
         //   1. Soft-delete / restore + audit bump only. Content edits
-        //      (title/amount/splits/etc.) are Worker-only via
+        //      (title/amountMinor/splits/etc.) are Worker-only via
         //      /expense-update -- same rationale as create above.
         //
         // The deletedAt transition rules are unchanged (4 explicit
@@ -515,7 +515,7 @@ service cloud.firestore {
           && request.resource.data.updatedBy == uid()
           // Content fields are Worker-owned. Client can only change
           // [deletedAt, updatedBy, updatedAt] -- the soft-delete /
-          // restore path. Any title/amount/splits/etc. mutation
+          // restore path. Any title/amountMinor/splits/etc. mutation
           // forces the change set out of this allowlist, rejecting
           // the write. Worker /expense-update uses Admin SDK and
           // bypasses this whole rule.
@@ -825,7 +825,7 @@ service cloud.firestore {
         // resolved by then.
         allow read:   if exists(memberPath(tripId));
         // Settlement CREATE / DELETE are Worker-only. The domain
-        // invariant `amount <= pairwise[fromUid][toUid]` (sum of
+        // invariant `amountMinor <= pairwise[fromUid][toUid]` (sum of
         // expense.splits for that uid pair minus already-applied
         // settlements) can't be expressed in CEL — no array reduce,
         // no cross-doc sum. The Worker endpoints /settlement-create

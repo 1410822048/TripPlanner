@@ -133,24 +133,24 @@ function seedLock(fromUid: string, toUid: string): void {
 }
 
 /** Build an expense REST-fields doc that yields the desired gross debt:
- *  payer paid `amount`, single split `payerOwed → amount`. Decoder reads
- *  `paidBy`, `amount`, `splits[].memberId`, `splits[].amount` (and
- *  ignores everything else). */
-function expenseReadDoc(opts: { id: string; paidBy: string; amount: number; splits: Array<[string, number]> }): MockReadDoc {
+ *  payer paid `amountMinor`, single split `payerOwed → amountMinor`.
+ *  Decoder reads `paidBy`, `amountMinor`, `splits[].memberId`,
+ *  `splits[].amountMinor` (and ignores everything else). */
+function expenseReadDoc(opts: { id: string; paidBy: string; amountMinor: number; splits: Array<[string, number]> }): MockReadDoc {
 	return {
 		exists:     true,
 		name:       `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/expenses/${opts.id}`,
 		updateTime: '2026-05-28T00:00:00Z',
 		fields: {
-			paidBy: { stringValue: opts.paidBy },
-			amount: { doubleValue: opts.amount },
+			paidBy:      { stringValue: opts.paidBy },
+			amountMinor: { integerValue: String(opts.amountMinor) },
 			splits: {
 				arrayValue: {
-					values: opts.splits.map(([memberId, amount]) => ({
+					values: opts.splits.map(([memberId, amountMinor]) => ({
 						mapValue: {
 							fields: {
-								memberId: { stringValue: memberId },
-								amount:   { doubleValue: amount },
+								memberId:    { stringValue: memberId },
+								amountMinor: { integerValue: String(amountMinor) },
 							},
 						},
 					})),
@@ -161,22 +161,22 @@ function expenseReadDoc(opts: { id: string; paidBy: string; amount: number; spli
 }
 
 function settlementReadDoc(opts: {
-	id:         string
-	fromUid:    string
-	toUid:      string
-	amount:     number
-	currency?:  string
-	settledBy?: string
-	createdAt?: string
-	note?:      string
+	id:           string
+	fromUid:      string
+	toUid:        string
+	amountMinor:  number
+	currency?:    string
+	settledBy?:   string
+	createdAt?:   string
+	note?:        string
 }): MockReadDoc {
 	const fields: Record<string, unknown> = {
-		fromUid:   { stringValue: opts.fromUid },
-		toUid:     { stringValue: opts.toUid },
-		amount:    { integerValue: String(opts.amount) },
-		currency:  { stringValue: opts.currency ?? 'JPY' },
-		settledBy: { stringValue: opts.settledBy ?? opts.toUid },
-		createdAt: { timestampValue: opts.createdAt ?? '2026-05-28T00:00:00Z' },
+		fromUid:     { stringValue: opts.fromUid },
+		toUid:       { stringValue: opts.toUid },
+		amountMinor: { integerValue: String(opts.amountMinor) },
+		currency:    { stringValue: opts.currency ?? 'JPY' },
+		settledBy:   { stringValue: opts.settledBy ?? opts.toUid },
+		createdAt:   { timestampValue: opts.createdAt ?? '2026-05-28T00:00:00Z' },
 	}
 	if (opts.note !== undefined) fields.note = { stringValue: opts.note }
 	return {
@@ -187,14 +187,14 @@ function settlementReadDoc(opts: {
 	}
 }
 
-function seedDebt(fromUid: string, toUid: string, amount: number): void {
-	// One expense: toUid paid `amount`, fromUid owes full split.
+function seedDebt(fromUid: string, toUid: string, amountMinor: number): void {
+	// One expense: toUid paid `amountMinor`, fromUid owes full split.
 	txQueryResponses.set(`trips/${TRIP_ID}|expenses`, [
 		expenseReadDoc({
-			id:     `exp-${fromUid}-${toUid}`,
-			paidBy: toUid,
-			amount,
-			splits: [[fromUid, amount]],
+			id:          `exp-${fromUid}-${toUid}`,
+			paidBy:      toUid,
+			amountMinor,
+			splits: [[fromUid, amountMinor]],
 		}),
 	])
 	// No prior settlements unless test overrides.
@@ -208,7 +208,7 @@ const baseCreatePayload = () => ({
 	settlementId: SETTLEMENT_ID,
 	fromUid:      FROM_UID,
 	toUid:        TO_UID,
-	amount:       100,
+	amountMinor:  100,
 	currency:     'JPY',
 })
 
@@ -249,7 +249,7 @@ describe('settlementCreate endpoint', () => {
 		expect(w.currentDocument).toEqual({ exists: false })
 		expect(w.fields.fromUid).toEqual({ stringValue: FROM_UID })
 		expect(w.fields.toUid).toEqual({ stringValue: TO_UID })
-		expect(w.fields.amount).toEqual({ integerValue: '100' })
+		expect(w.fields.amountMinor).toEqual({ integerValue: '100' })
 		expect(w.fields.currency).toEqual({ stringValue: 'JPY' })
 		expect(w.fields.settledBy).toEqual({ stringValue: TO_UID })
 		expect(w.fields.tripId).toEqual({ stringValue: TRIP_ID })
@@ -277,11 +277,11 @@ describe('settlementCreate endpoint', () => {
 		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
 		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`, memberReadDoc(FROM_UID))
-		// Existing doc: same fromUid/toUid/amount/currency/settledBy/no-note.
+		// Existing doc: same fromUid/toUid/amountMinor/currency/settledBy/no-note.
 		// The payload-match check requires ALL business fields to align;
 		// see the dedicated mismatch tests below.
 		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
-			settlementReadDoc({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amount: 100 }))
+			settlementReadDoc({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amountMinor: 100 }))
 		seedLock(FROM_UID, TO_UID)
 		// No need to seed debt -- the early return short-circuits before
 		// the pair math runs.
@@ -397,7 +397,7 @@ describe('settlementDelete endpoint', () => {
 		txGetResponses.set(`trips/${TRIP_ID}`,                          tripReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,        memberReadDoc(TO_UID, 'editor'))
 		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
-			settlementReadDoc({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amount: 100, settledBy: TO_UID }))
+			settlementReadDoc({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amountMinor: 100, settledBy: TO_UID }))
 		seedLock(FROM_UID, TO_UID)
 
 		const result = await settlementDelete(TO_UID, {
@@ -426,7 +426,7 @@ describe('settlementDelete endpoint', () => {
 		txGetResponses.set(`trips/${TRIP_ID}`,                          tripReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`,     memberReadDoc(OWNER_UID, 'owner'))
 		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
-			settlementReadDoc({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amount: 100, settledBy: TO_UID }))
+			settlementReadDoc({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amountMinor: 100, settledBy: TO_UID }))
 		seedLock(FROM_UID, TO_UID)
 
 		const result = await settlementDelete(OWNER_UID, {
@@ -445,7 +445,7 @@ describe('settlementDelete endpoint', () => {
 		txGetResponses.set(`trips/${TRIP_ID}`,                          tripReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/members/${editorUid}`,     memberReadDoc(editorUid, 'editor'))
 		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
-			settlementReadDoc({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amount: 100, settledBy: TO_UID }))
+			settlementReadDoc({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amountMinor: 100, settledBy: TO_UID }))
 
 		await expect(settlementDelete(editorUid, {
 			tripId: TRIP_ID, settlementId: SETTLEMENT_ID,
@@ -471,7 +471,7 @@ describe('settlementDelete endpoint', () => {
 			tripReadDoc('JPY', { deletingAt: { timestampValue: '2026-05-28T00:00:00Z' } }))
 		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,        memberReadDoc(TO_UID))
 		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
-			settlementReadDoc({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amount: 100, settledBy: TO_UID }))
+			settlementReadDoc({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amountMinor: 100, settledBy: TO_UID }))
 
 		await expect(settlementDelete(TO_UID, {
 			tripId: TRIP_ID, settlementId: SETTLEMENT_ID,
@@ -483,7 +483,7 @@ describe('settlementDelete endpoint', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,
 			notFoundReadDoc(`trips/${TRIP_ID}/members/${TO_UID}`))
 		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
-			settlementReadDoc({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amount: 100, settledBy: TO_UID }))
+			settlementReadDoc({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amountMinor: 100, settledBy: TO_UID }))
 
 		await expect(settlementDelete(TO_UID, {
 			tripId: TRIP_ID, settlementId: SETTLEMENT_ID,
@@ -550,7 +550,7 @@ describe('pair-lock guard (P1 fix)', () => {
 		txGetResponses.set(`trips/${TRIP_ID}`,                          tripReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,        memberReadDoc(TO_UID))
 		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
-			settlementReadDoc({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amount: 100, settledBy: TO_UID }))
+			settlementReadDoc({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amountMinor: 100, settledBy: TO_UID }))
 		seedLock(FROM_UID, TO_UID)
 
 		await settlementDelete(TO_UID, {
@@ -584,7 +584,7 @@ describe('pair-lock guard (P1 fix)', () => {
 
 		await settlementCreate(UID_C, {
 			tripId: TRIP_ID, settlementId: 's-1',
-			fromUid: UID_AB, toUid: UID_C, amount: 100, currency: 'JPY',
+			fromUid: UID_AB, toUid: UID_C, amountMinor: 100, currency: 'JPY',
 		}, '{}')
 
 		const lockPathsHit = txGetCalls.filter(p => p.includes('settlementPairLocks/'))
@@ -610,7 +610,7 @@ describe('pair-lock guard (P1 fix)', () => {
 
 		await settlementCreate(UID_BC, {
 			tripId: TRIP_ID, settlementId: 's-2',
-			fromUid: UID_A, toUid: UID_BC, amount: 100, currency: 'JPY',
+			fromUid: UID_A, toUid: UID_BC, amountMinor: 100, currency: 'JPY',
 		}, '{}')
 
 		const keyForA_BC = txGetCalls.filter(p => p.includes('settlementPairLocks/'))[0]
@@ -643,7 +643,7 @@ describe('read-cap truncation fail-closed (P2 fix)', () => {
 		const tooMany = Array.from({ length: 501 }, (_, i) => expenseReadDoc({
 			id:     `exp-${i}`,
 			paidBy: TO_UID,
-			amount: 1,
+			amountMinor: 1,
 			splits: [[FROM_UID, 1]],
 		}))
 		txQueryResponses.set(`trips/${TRIP_ID}|expenses`,    tooMany)
@@ -662,7 +662,7 @@ describe('read-cap truncation fail-closed (P2 fix)', () => {
 			id:       `s-${i}`,
 			fromUid:  FROM_UID,
 			toUid:    TO_UID,
-			amount:   1,
+			amountMinor: 1,
 			settledBy: TO_UID,
 		}))
 		txQueryResponses.set(`trips/${TRIP_ID}|settlements`, tooMany)
@@ -679,7 +679,7 @@ describe('read-cap truncation fail-closed (P2 fix)', () => {
 		const exact = Array.from({ length: 500 }, (_, i) => expenseReadDoc({
 			id:     `exp-${i}`,
 			paidBy: TO_UID,
-			amount: 1,
+			amountMinor: 1,
 			splits: [[FROM_UID, 1]],
 		}))
 		txQueryResponses.set(`trips/${TRIP_ID}|expenses`,    exact)
@@ -707,36 +707,36 @@ describe('idempotent retry payload-exact match (P2 fix)', () => {
 		seedLock(FROM_UID, TO_UID)
 	}
 
-	it('amount mismatch → SettlementValidationError(settlementId)', async () => {
-		setupRetry({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amount: 99 })
+	it('amountMinor mismatch → SettlementValidationError(settlementId)', async () => {
+		setupRetry({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amountMinor: 99 })
 
 		await expect(settlementCreate(TO_UID, baseCreatePayload(), '{}'))
 			.rejects.toThrowError(/id collision or replay attempt/i)
 	})
 
 	it('fromUid mismatch → reject', async () => {
-		setupRetry({ id: SETTLEMENT_ID, fromUid: 'someone-else', toUid: TO_UID, amount: 100 })
+		setupRetry({ id: SETTLEMENT_ID, fromUid: 'someone-else', toUid: TO_UID, amountMinor: 100 })
 
 		await expect(settlementCreate(TO_UID, baseCreatePayload(), '{}'))
 			.rejects.toBeInstanceOf(SettlementValidationError)
 	})
 
 	it('currency mismatch → reject (existing USD, request JPY)', async () => {
-		setupRetry({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amount: 100, currency: 'USD' })
+		setupRetry({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amountMinor: 100, currency: 'USD' })
 
 		await expect(settlementCreate(TO_UID, baseCreatePayload(), '{}'))
 			.rejects.toThrowError(/id collision or replay attempt/i)
 	})
 
 	it('settledBy mismatch → reject (existing was recorded by someone other than caller)', async () => {
-		setupRetry({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amount: 100, settledBy: 'other-recorder' })
+		setupRetry({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amountMinor: 100, settledBy: 'other-recorder' })
 
 		await expect(settlementCreate(TO_UID, baseCreatePayload(), '{}'))
 			.rejects.toBeInstanceOf(SettlementValidationError)
 	})
 
 	it('note mismatch → reject (existing has note, request does not)', async () => {
-		setupRetry({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amount: 100, note: '焼肉の精算' })
+		setupRetry({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amountMinor: 100, note: '焼肉の精算' })
 
 		// baseCreatePayload omits note → normalized to '' → mismatch with '焼肉の精算'.
 		await expect(settlementCreate(TO_UID, baseCreatePayload(), '{}'))
@@ -748,7 +748,7 @@ describe('idempotent retry payload-exact match (P2 fix)', () => {
 		// path). Request explicitly sends note: ''. Both normalize to '' →
 		// must be considered identical to avoid false positives on the
 		// most common no-note path.
-		setupRetry({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amount: 100 })
+		setupRetry({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amountMinor: 100 })
 
 		const result = await settlementCreate(TO_UID, { ...baseCreatePayload(), note: '' }, '{}')
 
@@ -757,7 +757,7 @@ describe('idempotent retry payload-exact match (P2 fix)', () => {
 	})
 
 	it('exact match w/ matching note → accepted (no writes)', async () => {
-		setupRetry({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amount: 100, note: '焼肉の精算' })
+		setupRetry({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amountMinor: 100, note: '焼肉の精算' })
 
 		const result = await settlementCreate(TO_UID, { ...baseCreatePayload(), note: '焼肉の精算' }, '{}')
 

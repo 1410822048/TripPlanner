@@ -84,15 +84,22 @@ const CALLER_UID = 'editor-uid'
 const BUCKET     = 'tripplanner-80a4f.firebasestorage.app'
 const MEMBERS    = ['owner-uid', 'editor-uid', 'viewer-uid']
 
-/** Standard trip doc TxReadDoc -- caller is an editor, no deletingAt. */
-function tripReadDoc() {
+/** Standard trip doc TxReadDoc -- caller is an editor, no deletingAt.
+ *  `currency` defaults to JPY to match validExpensePayload; tests that
+ *  exercise the trip-currency bind pass an override (or `null` to
+ *  simulate a malformed trip doc with no currency field). */
+function tripReadDoc(overrides: { currency?: string | null } = {}) {
+	const fields: Record<string, unknown> = {
+		memberIds: { arrayValue: { values: MEMBERS.map(uid => ({ stringValue: uid })) } },
+	}
+	if (overrides.currency !== null) {
+		fields.currency = { stringValue: overrides.currency ?? 'JPY' }
+	}
 	return {
 		exists: true,
 		name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}`,
 		updateTime: '2026-05-22T00:00:00Z',
-		fields: {
-			memberIds: { arrayValue: { values: MEMBERS.map(uid => ({ stringValue: uid })) } },
-		},
+		fields,
 	}
 }
 
@@ -120,13 +127,13 @@ function tombstonedExpenseReadDoc() {
 		name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/expenses/${EXPENSE_ID}`,
 		updateTime: '2026-05-22T00:00:00Z',
 		fields: {
-			tripId:   { stringValue: TRIP_ID },
-			amount:   { doubleValue: 1000 },
-			currency: { stringValue: 'JPY' },
-			paidBy:   { stringValue: 'editor-uid' },
-			splits:   { arrayValue: { values: [{ mapValue: { fields: {
-				memberId: { stringValue: 'editor-uid' },
-				amount:   { doubleValue: 1000 },
+			tripId:      { stringValue: TRIP_ID },
+			amountMinor: { integerValue: '1000' },
+			currency:    { stringValue: 'JPY' },
+			paidBy:      { stringValue: 'editor-uid' },
+			splits:      { arrayValue: { values: [{ mapValue: { fields: {
+				memberId:    { stringValue: 'editor-uid' },
+				amountMinor: { integerValue: '1000' },
 			} } }] } },
 			deletedAt: { timestampValue: '2026-05-15T00:00:00Z' },
 		},
@@ -145,13 +152,14 @@ function aliveExpenseReadDoc() {
 
 function validExpensePayload(overrides: Record<string, unknown> = {}) {
 	return {
-		title:    'Lunch',
-		amount:   1000,
-		currency: 'JPY',
-		category: 'food' as const,
-		paidBy:   'editor-uid',
-		splits:   [{ memberId: 'editor-uid', amount: 1000 }],
-		date:     '2026-05-22',
+		title:       'Lunch',
+		amountMinor: 1000,
+		currency:    'JPY',
+		category:    'food' as const,
+		paidBy:      'editor-uid',
+		splits:      [{ memberId: 'editor-uid', amountMinor: 1000 }],
+		date:        '2026-05-22',
+		adjustments: [],
 		...overrides,
 	}
 }
@@ -255,20 +263,47 @@ describe('expenseCreate endpoint', () => {
 			CALLER_UID,
 			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validExpensePayload({
 				paidBy: 'stranger-uid',
-				splits: [{ memberId: 'stranger-uid', amount: 1000 }],
+				splits: [{ memberId: 'stranger-uid', amountMinor: 1000 }],
 			}) },
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(ExpenseValidationError)
 	})
 
-	it('rejects payload that fails schema (negative amount)', async () => {
+	it('rejects payload that fails schema (negative amountMinor)', async () => {
 		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('editor'))
 		await expect(expenseCreate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validExpensePayload({ amount: -100 }) },
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validExpensePayload({ amountMinor: -100 }) },
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(ExpenseValidationError)
+	})
+
+	// Trip-currency bind: prevents a raw Worker caller from writing
+	// a JPY-trip expense with currency:'USD' (amountMinor would then
+	// be encoded under USD-cent semantics, silently corrupting
+	// settlement/trip-total math which assume one currency per trip).
+	it('rejects when expense.currency does not match trip.currency', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc({ currency: 'JPY' }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, notFoundReadDoc(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`))
+
+		await expect(expenseCreate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validExpensePayload({ currency: 'USD' }) },
+			'{}', BUCKET,
+		)).rejects.toThrowError(/expense currency USD does not match trip currency JPY/)
+	})
+
+	it('rejects when trip.currency field is missing (data-integrity guard)', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc({ currency: null }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('editor'))
+
+		await expect(expenseCreate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validExpensePayload() },
+			'{}', BUCKET,
+		)).rejects.toThrow(/trip\.currency is missing/)
 	})
 })
 
@@ -380,7 +415,7 @@ describe('expenseUpdate endpoint', () => {
 			CALLER_UID,
 			{
 				tripId: TRIP_ID, expenseId: EXPENSE_ID,
-				patch: { paidBy: 'stranger-uid', splits: [{ memberId: 'stranger-uid', amount: 1000 }] },
+				patch: { paidBy: 'stranger-uid', splits: [{ memberId: 'stranger-uid', amountMinor: 1000 }] },
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(ExpenseValidationError)
@@ -395,6 +430,23 @@ describe('expenseUpdate endpoint', () => {
 			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { title: 'Edit' } },
 			'{}', BUCKET,
 		)).rejects.toThrow(/role/i)
+	})
+
+	// Trip-currency bind on update: same invariant as create, but
+	// applied to the post-merge value so it catches BOTH a raw
+	// patch.currency divergence AND a pre-existing doc whose currency
+	// somehow drifted from the trip (data-integrity guard for older
+	// writes that pre-date the create-side gate).
+	it('rejects update when patch.currency does not match trip.currency', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc({ currency: 'JPY' }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, aliveExpenseReadDoc())
+
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { currency: 'USD' } },
+			'{}', BUCKET,
+		)).rejects.toThrowError(/expense currency USD does not match trip currency JPY/)
 	})
 })
 

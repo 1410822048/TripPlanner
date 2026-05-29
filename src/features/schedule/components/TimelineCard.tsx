@@ -5,7 +5,7 @@ import {
 } from 'lucide-react'
 import type { Schedule, ScheduleCategory } from '@/types'
 import { mapsSearchUrl } from '@/utils/maps'
-import { formatAmount } from '@/utils/currency'
+import { formatMinorAmount } from '@/utils/money'
 
 const CAT: Record<ScheduleCategory, { bg: string; color: string; Icon: React.ElementType }> = {
   transport:     { bg:'#E8EEF5', color:'#4A6FA0', Icon: Bus         },
@@ -86,12 +86,12 @@ export default function TimelineCard({ s, isLast, currency, onEdit }: Props) {
             <span className="text-[14px] font-semibold text-ink leading-[1.3]">
               {s.title}
             </span>
-            {typeof s.estimatedCost === 'number' && s.estimatedCost > 0 && (
+            {typeof s.estimatedCostMinor === 'number' && s.estimatedCostMinor > 0 && (
               <span
                 className="text-[11px] font-semibold px-2 py-0.5 rounded-card shrink-0 whitespace-nowrap tabular-nums"
                 style={{ color: cat.color, background: cat.bg }}
               >
-                {formatAmount(s.estimatedCost, currency)}
+                {formatMinorAmount(s.estimatedCostMinor, currency)}
               </span>
             )}
           </div>

@@ -9,7 +9,7 @@
 // admin authority on read.
 //
 // Writes (create + delete) go through the Cloudflare Worker because the
-// core invariant `amount <= pairwise[fromUid][toUid]` can't be expressed
+// core invariant `amountMinor <= pairwise[fromUid][toUid]` can't be expressed
 // in firestore.rules (no array reduce / cross-doc sum in CEL). The
 // Worker re-derives gross → applied → remaining inside a single tx,
 // guards concurrent same-pair creates with a per-pair lock doc, and
@@ -83,8 +83,9 @@ export const subscribeToSettlements = (
  * Record a settlement (X paid Y back). The Worker enforces the
  * receiver-only invariant (`toUid` must equal the caller's uid) so
  * `settledBy` is derived server-side from the verified Firebase token
- * -- not accepted from the client. amount is rounded to an integer
- * here so the Worker's `z.number().int()` schema accepts it cleanly.
+ * -- not accepted from the client. `amountMinor` arrives already as an
+ * integer minor-unit value (the caller derives it via parseMoneyToMinor
+ * at the form boundary), matching the Worker's `z.number().int()` schema.
  *
  * `vars.settlementId` is minted at the call site (see
  * CreateSettlementVariables) so the Worker's `currentDocument.exists
@@ -111,7 +112,7 @@ export async function createSettlement(
     settlementId: vars.settlementId,
     fromUid:      vars.fromUid,
     toUid:        vars.toUid,
-    amount:       Math.round(vars.amount),
+    amountMinor:  vars.amountMinor,
     currency:     vars.currency,
     ...(vars.note ? { note: vars.note } : {}),
   })

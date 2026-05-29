@@ -44,7 +44,7 @@ export interface TripItem {
   /**
    * ISO 4217 currency code for all amounts on this trip (expenses,
    * estimated costs, settlement). Consumed via useTripCurrency() →
-   * formatAmount(); see utils/currency.ts for the supported set.
+   * formatMinorAmount(); see utils/money.ts + utils/currency.ts.
    */
   currency:  string
 }

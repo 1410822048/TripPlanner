@@ -787,10 +787,10 @@ describe('/trips/{tripId}/expenses create (Worker-only)', () => {
   function expenseShape() {
     return {
       tripId: TRIP_ID, title: 'X',
-      amount: 1000, currency: 'JPY',
+      amountMinor: 1000, currency: 'JPY',
       category: 'food',
       paidBy: EDITOR_UID,
-      splits: [{ memberId: EDITOR_UID, amount: 1000 }],
+      splits: [{ memberId: EDITOR_UID, amountMinor: 1000 }],
       date: '2026-05-19',
       memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
       createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
@@ -834,10 +834,10 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
   function expenseBase(overrides: Record<string, unknown> = {}) {
     return {
       tripId: TRIP_ID, title: 'X',
-      amount: 1000, currency: 'JPY',
+      amountMinor: 1000, currency: 'JPY',
       category: 'food',
       paidBy: EDITOR_UID,
-      splits: [{ memberId: EDITOR_UID, amount: 1000 }],
+      splits: [{ memberId: EDITOR_UID, amountMinor: 1000 }],
       date: '2026-05-19',
       memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
       createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
@@ -1020,8 +1020,8 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
     await assertFails(
       updateDoc(ref, {
         title:     'X',
-        amount:    1,
-        splits:    [{ memberId: EDITOR_UID, amount: 1 }],
+        amountMinor:    1,
+        splits:    [{ memberId: EDITOR_UID, amountMinor: 1 }],
         updatedBy: EDITOR_UID,
         updatedAt: serverTimestamp(),
       }),
@@ -1045,8 +1045,8 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
     })
     await assertFails(
       updateDoc(ref, {
-        amount:    99999,
-        splits:    [{ memberId: EDITOR_UID, amount: 99999 }],
+        amountMinor:    99999,
+        splits:    [{ memberId: EDITOR_UID, amountMinor: 99999 }],
         updatedBy: EDITOR_UID,
         updatedAt: serverTimestamp(),
       }),
@@ -1071,7 +1071,7 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
     // Step 2: try to mutate amount on the tombstoned doc -- must fail.
     await assertFails(
       updateDoc(ref, {
-        amount: 9999,
+        amountMinor: 9999,
         updatedBy: EDITOR_UID,
         updatedAt: serverTimestamp(),
       }),
@@ -1079,7 +1079,7 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
     // Step 3: same check for splits.
     await assertFails(
       updateDoc(ref, {
-        splits: [{ memberId: EDITOR_UID, amount: 50 }, { memberId: VIEWER_UID, amount: 950 }],
+        splits: [{ memberId: EDITOR_UID, amountMinor: 50 }, { memberId: VIEWER_UID, amountMinor: 950 }],
         updatedBy: EDITOR_UID,
         updatedAt: serverTimestamp(),
       }),
@@ -1096,7 +1096,7 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
     await assertFails(
       updateDoc(ref, {
         deletedAt: serverTimestamp(),
-        amount: 9999,
+        amountMinor: 9999,
         updatedBy: EDITOR_UID,
         updatedAt: serverTimestamp(),
       }),
@@ -1113,8 +1113,8 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
       updateDoc(ref, {
         deletedAt: serverTimestamp(),
         splits: [
-          { memberId: EDITOR_UID, amount: 50 },
-          { memberId: VIEWER_UID, amount: 950 },
+          { memberId: EDITOR_UID, amountMinor: 50 },
+          { memberId: VIEWER_UID, amountMinor: 950 },
         ],
         updatedBy: EDITOR_UID,
         updatedAt: serverTimestamp(),
@@ -1547,7 +1547,7 @@ describe('/trips/{tripId}/settlements client write rejection (Worker-only)', () 
       settledBy: EDITOR_UID,
       toUid:     EDITOR_UID,    // receiver = caller
       fromUid:   VIEWER_UID,    // payer = distinct, real member
-      amount:    100,
+      amountMinor:    100,
       currency:  'JPY',
       createdAt: serverTimestamp(),
     }
@@ -1562,7 +1562,7 @@ describe('/trips/{tripId}/settlements client write rejection (Worker-only)', () 
         doc(ctx.firestore(), 'trips', TRIP_ID, 'settlements', 's-readable'),
         {
           tripId: TRIP_ID, settledBy: EDITOR_UID, toUid: EDITOR_UID,
-          fromUid: VIEWER_UID, amount: 100, currency: 'JPY',
+          fromUid: VIEWER_UID, amountMinor: 100, currency: 'JPY',
           createdAt: serverTimestamp(),
         },
       )
@@ -1602,7 +1602,7 @@ describe('/trips/{tripId}/settlements client write rejection (Worker-only)', () 
         doc(ctx.firestore(), 'trips', TRIP_ID, 'settlements', 's-client-del'),
         {
           tripId: TRIP_ID, settledBy: EDITOR_UID, toUid: EDITOR_UID,
-          fromUid: VIEWER_UID, amount: 100, currency: 'JPY',
+          fromUid: VIEWER_UID, amountMinor: 100, currency: 'JPY',
           createdAt: serverTimestamp(),
         },
       )
@@ -1625,7 +1625,7 @@ describe('/trips/{tripId}/settlements client write rejection (Worker-only)', () 
         doc(ctx.firestore(), 'trips', TRIP_ID, 'settlements', 's-client-upd'),
         {
           tripId: TRIP_ID, settledBy: EDITOR_UID, toUid: EDITOR_UID,
-          fromUid: VIEWER_UID, amount: 100, currency: 'JPY',
+          fromUid: VIEWER_UID, amountMinor: 100, currency: 'JPY',
           createdAt: serverTimestamp(),
         },
       )
@@ -1633,7 +1633,7 @@ describe('/trips/{tripId}/settlements client write rejection (Worker-only)', () 
     await assertFails(
       updateDoc(
         doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-client-upd'),
-        { amount: 1 },
+        { amountMinor: 1 },
       ),
     )
   })
@@ -1774,6 +1774,31 @@ describe('/trips/{tripId}/schedules shape guards', () => {
         baseSchedule({
           location: { name: 'Tokyo Tower', lat: 35.6586, lng: 139.7454 },
         })),
+    )
+  })
+
+  // Money domain post-refactor: schedule budget is stored as integer
+  // minor units in `estimatedCostMinor`. Rules allowlist + validator
+  // were renamed in lockstep with the client schema; legacy
+  // `estimatedCost` must now be rejected by the hasOnly allowlist.
+  test('schedule create with valid `estimatedCostMinor` succeeds', async () => {
+    await assertSucceeds(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-cost-ok'),
+        baseSchedule({ estimatedCostMinor: 12000 })),
+    )
+  })
+
+  test('schedule create with non-integer `estimatedCostMinor` is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-cost-float'),
+        baseSchedule({ estimatedCostMinor: 12.34 })),
+    )
+  })
+
+  test('schedule create with legacy `estimatedCost` field is rejected by allowlist', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-cost-legacy'),
+        baseSchedule({ estimatedCost: 100 })),
     )
   })
 })

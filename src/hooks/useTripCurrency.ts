@@ -1,7 +1,7 @@
 // src/hooks/useTripCurrency.ts
 // Read the active trip's currency code without threading it through
 // props. Wraps useTripContext so callers (ExpensePage, SettlementSummary,
-// TimelineCard, etc.) can format amounts via formatAmount(n, code)
+// TimelineCard, etc.) can format amounts via formatMinorAmount(n, code)
 // without each one re-deriving the source.
 //
 // Status fallbacks:

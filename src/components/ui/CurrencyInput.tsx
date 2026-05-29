@@ -52,8 +52,11 @@ export default function CurrencyInput({
         {symbol}
       </span>
       <input
-        type="number"
-        inputMode="numeric"
+        type="text"
+        inputMode="decimal"
+        autoComplete="off"
+        autoCorrect="off"
+        spellCheck={false}
         className={[
           'flex-1 min-w-0 h-full bg-transparent text-[16px] text-ink outline-none',
           alignRight ? 'text-right tabular-nums' : '',

@@ -15,9 +15,50 @@
 import { getFirebaseAuth } from '@/services/firebase'
 
 export interface OcrItem {
-  name:   string
-  amount: number
+  name: string
+  /** Positive decimal string in the receipt currency (e.g. "12.34" /
+   *  "500"). Caller parses to integer minor units via
+   *  `parseMoneyToMinor(amountText, currency)` at the form→Firestore
+   *  boundary so the wire never carries an IEEE-754 float. Discounts /
+   *  surcharges arrive via `OcrResult.adjustments[]` instead. */
+  amountText: string
 }
+
+/** Adjustment kind hint from OCR. Mirrors the Worker schema
+ *  (`OcrAdjustmentKindSchema`) and the persisted `ExpenseAdjustmentKind`
+ *  on the client. Worker is the source of truth — kept in lockstep with
+ *  workers/ocr/src/schema.ts. */
+export type OcrAdjustmentKind =
+  | 'DISCOUNT'
+  | 'COUPON'
+  | 'TAX_EXEMPT'
+  | 'SURCHARGE'
+  | 'TAX'
+  | 'TIP'
+  | 'OTHER'
+
+/** OCR-only scope hint. `UNKNOWN` is downgraded by the client form
+ *  (Phase B default: → EXPENSE) before any persistence call. Persisted
+ *  adjustments only carry ITEM / EXPENSE. */
+export type OcrAdjustmentScope = 'ITEM' | 'EXPENSE' | 'UNKNOWN'
+
+export interface OcrAdjustment {
+  label: string
+  kind:  OcrAdjustmentKind
+  /** Positive decimal string in the receipt currency. Sign is encoded by
+   *  `kind`. Caller parses via `parseMoneyToMinor(amountText, currency)`. */
+  amountText: string
+  suggestedScope: OcrAdjustmentScope
+  /** Index into `items[]` when scope === 'ITEM'. The client resolves
+   *  this to a freshly-minted `targetItemId` before constructing the
+   *  persisted ExpenseAdjustment. */
+  suggestedTargetItemIndex?: number
+}
+
+/** OCR-visible receipt text intentionally excluded from financial math.
+ *  Examples: included-tax disclosure, payment method, cash received,
+ *  change, receipt/register id, address/phone/footer noise. */
+export type OcrIgnoredLine = string
 
 /** 必須與 src/types/expense.ts 的 ExpenseCategory 同步;worker schema
  *  那邊也有一份對應 enum(OcrCategorySchema)。 */
@@ -31,7 +72,15 @@ export type OcrCategory =
 
 export interface OcrResult {
   items:     OcrItem[]
-  total:     number
+  /** Phase B contract: always present (empty array when none). */
+  adjustments: OcrAdjustment[]
+  /** Phase B contract: always present. Client currently ignores this
+   *  bucket; it exists so OCR can avoid forcing non-financial receipt
+   *  lines into items[] / adjustments[]. */
+  ignoredLines: OcrIgnoredLine[]
+  /** Receipt grand total as a positive decimal string. Caller parses via
+   *  `parseMoneyToMinor(totalText, currency)`. Empty receipts emit "0". */
+  totalText: string
   currency?: string
   /** Store / venue name from the receipt header. Optional — present
    *  when Gemini can confidently identify a single store name. */

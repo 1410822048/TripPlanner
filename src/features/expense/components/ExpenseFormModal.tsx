@@ -20,8 +20,22 @@
 //   - useOcrFlow       — OCR pipeline (compress + worker + error copy)
 import { useRef, useState } from 'react'
 import { Camera, Loader2, Plus, ScanLine, Trash2, Upload } from 'lucide-react'
-import type { Expense, ExpenseCategory, ExpenseSplit, CreateExpenseInput } from '@/types'
+import {
+  EXPENSE_ADJUSTMENT_KINDS,
+  type Expense,
+  type ExpenseAdjustment,
+  type ExpenseAdjustmentKind,
+  type ExpenseAdjustmentScope,
+  type ExpenseCategory,
+  type ExpenseSplit,
+  type CreateExpenseInput,
+} from '@/types'
 import type { TripMember } from '@/features/trips/types'
+import {
+  adjustmentSign,
+  materializeExpenseSplits,
+  MaterializeError,
+} from '@tripmate/expense-materialize'
 import FormModalShell from '@/components/ui/FormModalShell'
 import { DatePicker } from '@/components/ui/pickers'
 import FormField from '@/components/ui/FormField'
@@ -37,14 +51,30 @@ import { useAttachment, type AttachmentChange } from '@/hooks/useAttachment'
 import { useSplitsState, type SplitMode } from '../hooks/useSplitsState'
 import { useExpenseItems } from '../hooks/useExpenseItems'
 import { useOcrFlow } from '../hooks/useOcrFlow'
-import { splitEqually, splitsFromItems } from '../utils'
+import { splitEqually } from '../utils'
 import { useTripCurrency } from '@/hooks/useTripCurrency'
-import { formatAmount, currencySymbol } from '@/utils/currency'
+import { currencySymbol } from '@/utils/currency'
+import { formatMinorAmount, formatMinorForInput, parseMoneyToMinor } from '@/utils/money'
 import { compressImage } from '@/utils/image'
 import AttachmentPreviewModal from '@/features/bookings/components/AttachmentPreviewModal'
 
 const IMAGE_ACCEPT = 'image/*'
 const ANY_ACCEPT   = 'image/*,application/pdf'
+
+const ADJUSTMENT_KIND_LABEL: Record<ExpenseAdjustmentKind, string> = {
+  DISCOUNT:   '割引',
+  COUPON:     'クーポン',
+  TAX_EXEMPT: '免税',
+  SURCHARGE:  '追加料金',
+  TAX:        '税',
+  TIP:        'チップ',
+  OTHER:      'その他',
+}
+
+const ADJUSTMENT_SCOPE_OPTIONS: { value: ExpenseAdjustmentScope; label: string }[] = [
+  { value: 'EXPENSE', label: '全体' },
+  { value: 'ITEM',    label: '項目' },
+]
 
 const CATEGORIES: { value: ExpenseCategory; label: string }[] = [
   { value: 'food',          label: '食事'   },
@@ -59,12 +89,15 @@ const CATEGORIES: { value: ExpenseCategory; label: string }[] = [
 // `Record<string, unknown>` since interfaces are open for declaration
 // merging. Type aliases are closed and pass useFormReducer's constraint.
 type FormState = {
-  title:    string
-  amount:   string                // string for input control; rounded to int on save
-  date:     string
-  category: ExpenseCategory
-  paidBy:   string
-  note:     string
+  title:      string
+  /** Raw decimal string the user types (e.g. "12.34" / "1200"). The
+   *  canonical integer minor amount is rederived at validate-time via
+   *  parseMoneyToMinor — wire never carries the float. */
+  amountText: string
+  date:       string
+  category:   ExpenseCategory
+  paidBy:     string
+  note:       string
 }
 
 export interface ExpenseFormResult {
@@ -131,12 +164,12 @@ function initFormState(
   members: TripMember[],
 ): FormState {
   return {
-    title:    editTarget?.title ?? '',
-    amount:   editTarget ? String(editTarget.amount) : '',
-    date:     editTarget?.date ?? defaultDate,
-    category: editTarget?.category ?? 'food',
-    paidBy:   editTarget?.paidBy ?? members[0]?.id ?? '',
-    note:     editTarget?.note ?? '',
+    title:      editTarget?.title ?? '',
+    amountText: editTarget ? formatMinorForInput(editTarget.amountMinor, editTarget.currency) : '',
+    date:       editTarget?.date ?? defaultDate,
+    category:   editTarget?.category ?? 'food',
+    paidBy:     editTarget?.paidBy ?? members[0]?.id ?? '',
+    note:       editTarget?.note ?? '',
   }
 }
 
@@ -160,21 +193,105 @@ export default function ExpenseFormModal({
   })
 
   // By-item state machine
-  const items = useExpenseItems(editTarget?.items ?? [])
+  const items = useExpenseItems(editTarget?.items ?? [], currency)
+
+  // Phase B: adjustments are a separate state slice. OCR populates
+  // them, the form exposes the rows for correction, and save-time
+  // materialization is the single source of split truth. A later UI pass
+  // can add richer confidence chips, but Phase B must not hide financial
+  // adjustments from the user.
+  const [adjustments, setAdjustments] = useState<ExpenseAdjustment[]>(
+    editTarget?.adjustments ?? [],
+  )
 
   // OCR pipeline. onSuccess wires the parsed result into the existing
-  // form state — items, total, and (when blank) title. Title-fill is
-  // intentionally non-destructive: if the user already typed a title,
-  // OCR doesn't clobber it.
+  // form state — items, adjustments, total, and (when blank) title.
+  // Title-fill is intentionally non-destructive: if the user already
+  // typed a title, OCR doesn't clobber it.
+  //
+  // Money: OCR emits decimal strings (amountText / totalText); the
+  // client parses each via parseMoneyToMinor at this boundary so
+  // everything downstream (items[].amountMinor, total) stays integer.
+  //
+  // Parse is FAIL-FAST: the Worker schema only validates a currency-
+  // agnostic decimal shape, so e.g. Gemini emitting "12.34" for JPY
+  // passes the wire but breaks parseMoneyToMinor (JPY has 0 fraction
+  // digits). Silently coercing that to 0 would import garbage rows and
+  // leak the mismatch into the saved expense. Instead we parse every
+  // field up-front, abort on the first failure with a localised error
+  // (surfaced through useOcrFlow → receiptErrText banner), and only
+  // mutate form state after all parses succeed — partial application
+  // is never visible to the user.
   const ocr = useOcrFlow({
     currency,
     onSuccess: (result) => {
-      items.reset(result.items.map(it => ({
-        name:      it.name,
-        amount:    Math.round(it.amount),
-        assignees: [],
+      const strictParse = (text: string, label: string): number => {
+        try { return Math.max(0, parseMoneyToMinor(text, currency)) }
+        catch {
+          throw new Error(
+            `OCRの金額が${currency}の形式と一致しません(${label}: "${text}")。撮り直してください。`,
+          )
+        }
+      }
+      // Phase 1: parse ALL fields up-front. Any failure throws before
+      // a single setField runs, so the form stays at its prior state
+      // and the user sees a single clear error banner.
+      const itemMinors = result.items.map((it, i) =>
+        strictParse(it.amountText, `item[${i}] ${it.name}`),
+      )
+      const adjustmentMinors = result.adjustments.map((adj, i) =>
+        strictParse(adj.amountText, `adjustment[${i}] ${adj.label}`),
+      )
+      const totalMinor = strictParse(result.totalText, 'total')
+
+      // Phase 2: all parses succeeded — now mutate form state. Mint
+      // item ids first so OCR-emitted ITEM-scope adjustments can resolve
+      // `suggestedTargetItemIndex` → `targetItemId` in the same pass.
+      // Items reset to assignees=[] (Phase B contract: assignee picking
+      // is a deliberate user action).
+      const mintedItemIds = result.items.map(() => crypto.randomUUID())
+      items.reset(result.items.map((it, idx) => ({
+        id:          mintedItemIds[idx]!,
+        name:        it.name,
+        amountMinor: itemMinors[idx]!,
+        amountText:  formatMinorForInput(itemMinors[idx]!, currency),
+        assignees:   [],
       })))
-      setField('amount', String(Math.max(0, Math.round(result.total))))
+      // Translate OCR adjustment drafts to persisted shape. UNKNOWN
+      // scope defaults to EXPENSE (Phase B contract: persisted scope
+      // is binary; the visible adjustment row lets the user switch it
+      // back to ITEM when the receipt clearly ties it to one line).
+      // ITEM scope falls back to EXPENSE if the target index is missing
+      // or out-of-range — defensive against OCR producing a partial /
+      // malformed adjustment payload.
+      setAdjustments(result.adjustments.map((adj, i) => {
+        const idx = adj.suggestedTargetItemIndex
+        const itemTarget =
+          adj.suggestedScope === 'ITEM' &&
+          idx !== undefined &&
+          idx >= 0 &&
+          idx < mintedItemIds.length
+            ? mintedItemIds[idx]
+            : undefined
+        const minor = adjustmentMinors[i]!
+        return itemTarget
+          ? {
+              id:           crypto.randomUUID(),
+              label:        adj.label,
+              kind:         adj.kind,
+              scope:        'ITEM' as const,
+              amountMinor:  minor,
+              targetItemId: itemTarget,
+            }
+          : {
+              id:          crypto.randomUUID(),
+              label:       adj.label,
+              kind:        adj.kind,
+              scope:       'EXPENSE' as const,
+              amountMinor: minor,
+            }
+      }))
+      setField('amountText', formatMinorForInput(totalMinor, currency))
       if (result.storeName && !state.title.trim()) {
         setField('title', result.storeName)
       }
@@ -237,31 +354,145 @@ export default function ExpenseFormModal({
   function handleClearReceipt() {
     att.clear()
     items.clear()
+    setAdjustments([])
     ocr.reset()
   }
 
-  // Amounts are integer minor units (JPY=yen). Round at the boundary so
-  // downstream math (splits, settlement) stays integer-exact regardless of
-  // any fractional input the user types.
-  const amountNum   = Math.round(Number(state.amount) || 0)
-  const itemsDiff   = amountNum - items.sum
+  function updateAdjustment(
+    id: string,
+    mapper: (adjustment: ExpenseAdjustment) => ExpenseAdjustment,
+  ) {
+    setAdjustments(prev => prev.map(adj => adj.id === id ? mapper(adj) : adj))
+  }
+
+  function setAdjustmentKind(id: string, kind: ExpenseAdjustmentKind) {
+    updateAdjustment(id, adj => ({ ...adj, kind }))
+  }
+
+  function setAdjustmentLabel(id: string, label: string) {
+    updateAdjustment(id, adj => ({ ...adj, label }))
+  }
+
+  // Adjustment rows hold the raw input text per-row (keyed by id) so the
+  // `amountMinor` on the persisted adjustment stays integer minor units
+  // while the input keeps its in-flight value (handles mid-keystroke
+  // "12." like the items hook). Lookup falls back to formatting the
+  // current amountMinor so edit-mode / OCR-populated rows render
+  // without needing to dual-write at every entry point.
+  const [adjustmentAmountText, setAdjustmentAmountText] = useState<Record<string, string>>({})
+
+  function adjustmentAmountValue(adj: ExpenseAdjustment): string {
+    const inFlight = adjustmentAmountText[adj.id]
+    if (inFlight !== undefined) return inFlight
+    return adj.amountMinor > 0 ? formatMinorForInput(adj.amountMinor, currency) : ''
+  }
+
+  function setAdjustmentAmount(id: string, value: string) {
+    setAdjustmentAmountText(prev => ({ ...prev, [id]: value }))
+    let minor = 0
+    if (value.trim() !== '') {
+      try { minor = Math.max(0, parseMoneyToMinor(value, currency)) }
+      catch { minor = 0 }
+    }
+    updateAdjustment(id, adj => ({ ...adj, amountMinor: minor }))
+  }
+
+  function setAdjustmentScope(id: string, scope: ExpenseAdjustmentScope) {
+    updateAdjustment(id, adj => {
+      if (scope === 'EXPENSE') {
+        return {
+          id:          adj.id,
+          label:       adj.label,
+          kind:        adj.kind,
+          scope:       'EXPENSE',
+          amountMinor: adj.amountMinor,
+        }
+      }
+
+      const existingTarget =
+        adj.targetItemId && items.items.some(item => item.id === adj.targetItemId)
+          ? adj.targetItemId
+          : undefined
+      const targetItemId = existingTarget ?? items.items[0]?.id
+      return targetItemId
+        ? { ...adj, scope: 'ITEM', targetItemId }
+        : adj
+    })
+  }
+
+  function setAdjustmentTarget(id: string, targetItemId: string) {
+    updateAdjustment(id, adj => ({ ...adj, scope: 'ITEM', targetItemId }))
+  }
+
+  function removeAdjustment(id: string) {
+    setAdjustments(prev => prev.filter(adj => adj.id !== id))
+  }
+
+  // Manual escape-hatch for OCR misses (e.g. クーポン unprinted on the
+  // receipt or low-confidence line that came back as a regular item).
+  // Defaults: DISCOUNT (the most common manual case — subtractive),
+  // EXPENSE scope (simpler mental model; switch to ITEM if needed).
+  // Label/amount start blank so the existing validation gate forces
+  // the user to fill them — surfaces "未入力" instead of silently saving
+  // a zero-amount adjustment that would leak the mismatch into splits.
+  function addAdjustment() {
+    setAdjustments(prev => [
+      ...prev,
+      {
+        id:          crypto.randomUUID(),
+        label:       '',
+        kind:        'DISCOUNT',
+        scope:       'EXPENSE',
+        amountMinor: 0,
+      },
+    ])
+  }
+
+  function removeItemRow(index: number) {
+    const removedId = items.items[index]?.id
+    items.remove(index)
+    if (!removedId) return
+    setAdjustments(prev => prev.filter(adj => adj.targetItemId !== removedId))
+  }
+
+  // All money in form derivations is integer minor units. The user types
+  // a decimal string into the amount field; parseMoneyToMinor is the
+  // boundary that converts it. Parse failures (partial input "12." /
+  // empty) clamp to 0 so downstream math doesn't see NaN.
+  function safeParseMinor(text: string): number {
+    if (text.trim() === '') return 0
+    try { return Math.max(0, parseMoneyToMinor(text, currency)) }
+    catch { return 0 }
+  }
+  const amountMinor = safeParseMinor(state.amountText)
+  // Net effect of adjustments (signed). DISCOUNT/COUPON/TAX_EXEMPT/OTHER
+  // subtract; SURCHARGE/TAX/TIP add. Same sign convention used by the
+  // materializer — adjustmentSign is exported so the form can mirror
+  // the math without re-deriving it.
+  const adjustmentNetMinor  = adjustments.reduce((s, a) => s + adjustmentSign(a.kind) * a.amountMinor, 0)
+  // Effective post-adjustment total. The sum-check banner compares this
+  // (not raw items.sum) to amountMinor, so receipts with discounts don't
+  // look like a "超過" error.
+  const effectiveItemsTotal = items.sum + adjustmentNetMinor
+  const itemsDiff           = amountMinor - effectiveItemsTotal
   const includedArr = members.map(m => m.id).filter(id => splits.state.included.has(id))
   const equalSplits: Record<string, number> = Object.fromEntries(
-    splitEqually(amountNum, includedArr).map(s => [s.memberId, s.amount]),
+    splitEqually(amountMinor, includedArr).map(s => [s.memberId, s.amountMinor]),
   )
 
   function customAmountOf(id: string): number {
-    const v = Number(splits.state.custom[id])
-    return Number.isFinite(v) && v > 0 ? v : 0
+    const text = splits.state.custom[id]
+    if (typeof text !== 'string') return 0
+    return safeParseMinor(text)
   }
   const customSum  = members.reduce((s, m) => s + customAmountOf(m.id), 0)
-  const customDiff = amountNum - customSum
+  const customDiff = amountMinor - customSum
 
   function switchMode(mode: SplitMode) {
     const seed: Record<string, string> = {}
     members.forEach(m => {
       const v = equalSplits[m.id] ?? 0
-      seed[m.id] = v > 0 ? String(v) : ''
+      seed[m.id] = v > 0 ? formatMinorForInput(v, currency) : ''
     })
     splits.switchMode(mode, seed)
   }
@@ -269,7 +500,7 @@ export default function ExpenseFormModal({
   function validate(): ExpenseFormResult | null {
     const e: Record<string, string> = {}
     if (!state.title.trim()) e.title = '請輸入標題'
-    if (!amountNum)          e.amount = '請輸入金額'
+    if (!amountMinor)        e.amount = '請輸入金額'
     if (!state.date)         e.date = '請選擇日期'
     if (!state.paidBy)       e.paidBy = '請選擇付款人'
 
@@ -277,40 +508,88 @@ export default function ExpenseFormModal({
     // Always send `items` (even empty) so that clearing a receipt's items
     // overwrites whatever was previously stored. Don't rely on deleteField
     // gymnastics — empty array IS the canonical "no items" state.
-    let resultItems = items.items
+    // Strip the form-only amountText before persistence — ExpenseItem
+    // (the persisted shape) has no such field.
+    let resultItems = items.items.map(it => ({
+      id:          it.id,
+      name:        it.name,
+      amountMinor: it.amountMinor,
+      assignees:   it.assignees,
+    }))
+    const resultAdjustments: ExpenseAdjustment[] = items.hasItems
+      ? adjustments.map(adj => {
+          const label = adj.label.trim()
+          if (adj.scope === 'ITEM') {
+            return { ...adj, label }
+          }
+          return {
+            id:          adj.id,
+            label,
+            kind:        adj.kind,
+            scope:       'EXPENSE',
+            amountMinor: adj.amountMinor,
+          }
+        })
+      : []
 
     if (items.hasItems) {
       // Strict by-item validation. The user chose strict over lenient so
       // both invariants must hold before save:
       //   - every item is assigned to ≥1 person
-      //   - sum(items) === amount
+      //   - sum(items) + Σ adjustment sign·amountMinor === amountMinor
       const noAssigneeIdx = items.items.findIndex(it => it.assignees.length === 0)
       const blankNameIdx  = items.items.findIndex(it => !it.name.trim())
-      // Allow negative — discount lines are valid. Reject only exact zero
-      // since that's almost certainly garbage (OCR mis-read).
-      const zeroAmountIdx = items.items.findIndex(it => it.amount === 0)
+      // Phase B: items are positive-int minor units. The setter clamps to
+      // ≥0; reject exact zero since that's almost certainly garbage (OCR
+      // mis-read or partial input).
+      const zeroAmountIdx = items.items.findIndex(it => it.amountMinor <= 0)
+      const blankAdjustmentIdx = resultAdjustments.findIndex(adj => !adj.label)
+      const zeroAdjustmentIdx  = resultAdjustments.findIndex(adj => adj.amountMinor <= 0)
+      const danglingAdjustmentIdx = resultAdjustments.findIndex(adj =>
+        adj.scope === 'ITEM' && !items.items.some(it => it.id === adj.targetItemId),
+      )
       if (noAssigneeIdx >= 0) {
         e.items = `行 ${noAssigneeIdx + 1}：分担者を選択してください`
       } else if (blankNameIdx >= 0) {
         e.items = `行 ${blankNameIdx + 1}：項目名を入力してください`
       } else if (zeroAmountIdx >= 0) {
         e.items = `行 ${zeroAmountIdx + 1}：金額を入力してください`
-      } else if (Math.abs(itemsDiff) >= 0.01) {
-        e.items = `明細合計 ${formatAmount(items.sum, currency)} と請求書合計 ${formatAmount(amountNum, currency)} が一致しません`
+      } else if (blankAdjustmentIdx >= 0) {
+        e.items = `調整 ${blankAdjustmentIdx + 1}: ラベルを入力してください`
+      } else if (zeroAdjustmentIdx >= 0) {
+        e.items = `調整 ${zeroAdjustmentIdx + 1}: 金額を入力してください`
+      } else if (danglingAdjustmentIdx >= 0) {
+        e.items = `調整 ${danglingAdjustmentIdx + 1}: 対象項目を選択してください`
+      } else if (itemsDiff !== 0) {
+        e.items = `明細合計 ${formatMinorAmount(effectiveItemsTotal, currency)} と請求書合計 ${formatMinorAmount(amountMinor, currency)} が一致しません`
       }
       if (!e.items) {
-        resultSplits = splitsFromItems(items.items)
+        // Authoritative split derivation. Matches the Worker recompute
+        // (same `@tripmate/expense-materialize` import); if this throws,
+        // the Worker would reject SPLIT_PREVIEW_DRIFT anyway, so we
+        // surface the same gate locally and keep the modal open.
+        try {
+          resultSplits = materializeExpenseSplits({
+            items:       resultItems,
+            adjustments: resultAdjustments,
+            members:     members.map(m => m.id),
+          })
+        } catch (err) {
+          e.items = err instanceof MaterializeError
+            ? `明細の計算エラー: ${err.message}`
+            : '明細の計算に失敗しました'
+        }
       }
     } else {
       if (splits.state.mode === 'equal') {
         if (includedArr.length === 0) e.splits = '至少選擇一位分攤人'
-        resultSplits = includedArr.map(id => ({ memberId: id, amount: equalSplits[id] ?? 0 }))
+        resultSplits = includedArr.map(id => ({ memberId: id, amountMinor: equalSplits[id] ?? 0 }))
       } else {
         resultSplits = members
-          .map(m => ({ memberId: m.id, amount: customAmountOf(m.id) }))
-          .filter(s => s.amount > 0)
+          .map(m => ({ memberId: m.id, amountMinor: customAmountOf(m.id) }))
+          .filter(s => s.amountMinor > 0)
         if (resultSplits.length === 0) e.splits = '至少需有一人分攤'
-        else if (Math.abs(customDiff) >= 0.01) e.splits = `分攤總和需等於 ${formatAmount(amountNum, currency)}`
+        else if (customDiff !== 0) e.splits = `分攤總和需等於 ${formatMinorAmount(amountMinor, currency)}`
       }
       resultItems = []
     }
@@ -319,15 +598,19 @@ export default function ExpenseFormModal({
     if (Object.keys(e).length > 0) return null
 
     const input: CreateExpenseInput = {
-      title:    state.title.trim(),
-      amount:   amountNum,
+      title:       state.title.trim(),
+      amountMinor,
       currency,
-      category: state.category,
-      paidBy:   state.paidBy,
-      splits:   resultSplits,
-      date:     state.date,
-      items:    resultItems,
-      note:     state.note.trim() || undefined,
+      category:    state.category,
+      paidBy:      state.paidBy,
+      splits:      resultSplits,
+      date:        state.date,
+      items:       resultItems,
+      // Phase B: adjustments only attach to by-item mode. The Worker
+      // rejects adjustments-without-items, so blanking here is the
+      // single source of truth for "manual entry has no adjustments".
+      adjustments: resultAdjustments,
+      note:        state.note.trim() || undefined,
     }
     return { input, attachment: att.pickAttachmentChange() }
   }
@@ -466,10 +749,9 @@ export default function ExpenseFormModal({
         <FormField label={`金額（${symbol}）`} error={errors.amount} required className="flex-1">
           <CurrencyInput
             symbol={symbol}
-            value={state.amount}
-            onChange={e => setField('amount', e.target.value)}
+            value={state.amountText}
+            onChange={e => setField('amountText', e.target.value)}
             placeholder="0"
-            min={0}
             error={!!errors.amount}
           />
         </FormField>
@@ -521,7 +803,7 @@ export default function ExpenseFormModal({
                 table patterns than the previous "stack of cards". */}
             <div className="rounded-input border border-border bg-surface overflow-hidden divide-y divide-border">
               {items.items.map((it, i) => (
-                <div key={i} className="flex flex-col gap-1.5 px-2.5 py-2.5">
+                <div key={it.id} className="flex flex-col gap-1.5 px-2.5 py-2.5">
                   {/* Row 1: name + amount. Amount widened to 120px (was 100px)
                       so 5-digit JPY values like ¥10,000 fit without clipping.
                       Removed delete button from this row — it was crowding
@@ -542,11 +824,9 @@ export default function ExpenseFormModal({
                         size="compact"
                         alignRight
                         shellClassName="h-9 px-2.5 rounded-[8px]"
-                        value={it.amount || ''}
+                        value={it.amountText}
                         onChange={e => items.setAmount(i, e.target.value)}
                         placeholder="0"
-                        // Tint negative amounts so discounts read as such at a glance.
-                        className={it.amount < 0 ? 'text-warn' : ''}
                       />
                     </div>
                   </div>
@@ -567,7 +847,7 @@ export default function ExpenseFormModal({
                     </div>
                     <button
                       type="button"
-                      onClick={() => items.remove(i)}
+                      onClick={() => removeItemRow(i)}
                       aria-label={`行 ${i + 1} を削除`}
                       className="w-7 h-7 rounded-full flex items-center justify-center bg-transparent text-muted border-none cursor-pointer hover:text-warn transition-colors shrink-0"
                     >
@@ -578,32 +858,132 @@ export default function ExpenseFormModal({
               ))}
             </div>
 
-            <button
-              type="button"
-              onClick={items.add}
-              className="flex items-center justify-center gap-1.5 h-9 rounded-input border-[1.5px] border-dashed border-border bg-transparent text-muted text-[12px] font-medium cursor-pointer hover:border-accent hover:text-accent transition-colors"
-            >
-              <Plus size={14} strokeWidth={2} />
-              行を追加
-            </button>
+            {adjustments.length > 0 && (
+              <div className="rounded-input border border-border bg-surface overflow-hidden divide-y divide-border">
+                <div className="px-2.5 py-2 text-[11px] font-semibold text-muted">
+                  割引・税・調整
+                </div>
+                {adjustments.map((adj, i) => {
+                  const sign = adjustmentSign(adj.kind)
+                  return (
+                    <div key={adj.id} className="flex flex-col gap-2 px-2.5 py-2.5">
+                      <div className="flex items-center gap-2">
+                        <input
+                          value={adj.label}
+                          onChange={e => setAdjustmentLabel(adj.id, e.target.value)}
+                          placeholder={`調整 ${i + 1}`}
+                          aria-label={`調整 ${i + 1} ラベル`}
+                          className="flex-1 min-w-0 h-9 px-2.5 rounded-[8px] border-[1.5px] border-border bg-app text-[16px] text-ink outline-none focus-visible:border-accent"
+                        />
+                        <div className="shrink-0 w-[120px]">
+                          <CurrencyInput
+                            symbol={`${sign < 0 ? '-' : '+'}${symbol}`}
+                            size="compact"
+                            alignRight
+                            shellClassName="h-9 px-2.5 rounded-[8px]"
+                            value={adjustmentAmountValue(adj)}
+                            onChange={e => setAdjustmentAmount(adj.id, e.target.value)}
+                            placeholder="0"
+                            aria-label={`調整 ${i + 1} 金額`}
+                          />
+                        </div>
+                      </div>
 
-            {/* Sum check — same green/red pattern as カスタム split */}
-            {amountNum > 0 && (
+                      <div className="grid grid-cols-[1fr_1fr_auto] gap-2 items-center">
+                        <select
+                          value={adj.kind}
+                          onChange={e => setAdjustmentKind(adj.id, e.target.value as ExpenseAdjustmentKind)}
+                          aria-label={`調整 ${i + 1} 種類`}
+                          className="h-9 min-w-0 px-2.5 rounded-[8px] border-[1.5px] border-border bg-app text-[16px] text-ink outline-none focus-visible:border-accent"
+                        >
+                          {EXPENSE_ADJUSTMENT_KINDS.map(kind => (
+                            <option key={kind} value={kind}>{ADJUSTMENT_KIND_LABEL[kind]}</option>
+                          ))}
+                        </select>
+
+                        <select
+                          value={adj.scope}
+                          onChange={e => setAdjustmentScope(adj.id, e.target.value as ExpenseAdjustmentScope)}
+                          aria-label={`調整 ${i + 1} 対象範囲`}
+                          className="h-9 min-w-0 px-2.5 rounded-[8px] border-[1.5px] border-border bg-app text-[16px] text-ink outline-none focus-visible:border-accent"
+                        >
+                          {ADJUSTMENT_SCOPE_OPTIONS.map(scope => (
+                            <option key={scope.value} value={scope.value}>{scope.label}</option>
+                          ))}
+                        </select>
+
+                        <button
+                          type="button"
+                          onClick={() => removeAdjustment(adj.id)}
+                          aria-label={`調整 ${i + 1} を削除`}
+                          className="w-7 h-7 rounded-full flex items-center justify-center bg-transparent text-muted border-none cursor-pointer hover:text-warn transition-colors shrink-0"
+                        >
+                          <Trash2 size={13} strokeWidth={2} />
+                        </button>
+                      </div>
+
+                      {adj.scope === 'ITEM' && (
+                        <select
+                          value={adj.targetItemId ?? ''}
+                          onChange={e => setAdjustmentTarget(adj.id, e.target.value)}
+                          aria-label={`調整 ${i + 1} 対象項目`}
+                          className="h-9 w-full min-w-0 px-2.5 rounded-[8px] border-[1.5px] border-border bg-app text-[16px] text-ink outline-none focus-visible:border-accent"
+                        >
+                          <option value="" disabled>対象項目を選択</option>
+                          {items.items.map((item, itemIndex) => (
+                            <option key={item.id} value={item.id}>
+                              {item.name.trim() || `行 ${itemIndex + 1}`}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {/* 「行」と「調整」を同列に並べることで「OCRが拾えなかった
+                クーポン/税は手で足せる」というメンタルモデルを明示する。
+                Phase Bで負金額itemが封じられた今、ここがズレ補正の唯一の
+                正規ルート。 */}
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={items.add}
+                className="flex items-center justify-center gap-1.5 h-9 rounded-input border-[1.5px] border-dashed border-border bg-transparent text-muted text-[12px] font-medium cursor-pointer hover:border-accent hover:text-accent transition-colors"
+              >
+                <Plus size={14} strokeWidth={2} />
+                行を追加
+              </button>
+              <button
+                type="button"
+                onClick={addAdjustment}
+                className="flex items-center justify-center gap-1.5 h-9 rounded-input border-[1.5px] border-dashed border-border bg-transparent text-muted text-[12px] font-medium cursor-pointer hover:border-accent hover:text-accent transition-colors"
+              >
+                <Plus size={14} strokeWidth={2} />
+                調整を追加
+              </button>
+            </div>
+
+            {/* Sum check — compares the post-adjustment effective total
+                to the bill total. Same green/red pattern as カスタム split. */}
+            {amountMinor > 0 && (
               <div
                 className={[
                   'flex justify-between items-center px-2.5 py-1.5 rounded-input text-[11.5px] font-semibold tabular-nums',
-                  Math.abs(itemsDiff) < 0.01
+                  itemsDiff === 0
                     ? 'bg-teal-pale text-teal'
                     : 'bg-warn-bg text-warn',
                 ].join(' ')}
               >
                 <span>
-                  {Math.abs(itemsDiff) < 0.01 ? '✓ 合計一致' : itemsDiff > 0 ? '不足' : '超過'}
+                  {itemsDiff === 0 ? '✓ 合計一致' : itemsDiff > 0 ? '不足' : '超過'}
                 </span>
                 <span>
-                  {formatAmount(items.sum, currency)} / {formatAmount(amountNum, currency)}
-                  {Math.abs(itemsDiff) >= 0.01 && (
-                    <span className="ml-1.5">({itemsDiff > 0 ? '+' : ''}{formatAmount(itemsDiff, currency)})</span>
+                  {formatMinorAmount(effectiveItemsTotal, currency)} / {formatMinorAmount(amountMinor, currency)}
+                  {itemsDiff !== 0 && (
+                    <span className="ml-1.5">({itemsDiff > 0 ? '+' : ''}{formatMinorAmount(itemsDiff, currency)})</span>
                   )}
                 </span>
               </div>
@@ -659,7 +1039,7 @@ export default function ExpenseFormModal({
                     {splits.state.mode === 'equal' ? (
                       <>
                         <span className="text-[13px] font-semibold text-ink tabular-nums">
-                          {included ? formatAmount(displayAmount, currency) : '—'}
+                          {included ? formatMinorAmount(displayAmount, currency) : '—'}
                         </span>
                         <input
                           type="checkbox"
@@ -675,7 +1055,6 @@ export default function ExpenseFormModal({
                           size="compact"
                           alignRight
                           shellClassName="h-9 px-2.5 rounded-[8px]"
-                          min={0}
                           value={splits.state.custom[m.id] ?? ''}
                           onChange={e => splits.setCustom(m.id, e.target.value)}
                           placeholder="0"
@@ -687,22 +1066,22 @@ export default function ExpenseFormModal({
               })}
             </div>
 
-            {splits.state.mode === 'custom' && amountNum > 0 && (
+            {splits.state.mode === 'custom' && amountMinor > 0 && (
               <div
                 className={[
                   'flex justify-between items-center px-2.5 py-1.5 rounded-input text-[11.5px] font-semibold tabular-nums',
-                  Math.abs(customDiff) < 0.01
+                  customDiff === 0
                     ? 'bg-teal-pale text-teal'
                     : 'bg-warn-bg text-warn',
                 ].join(' ')}
               >
                 <span>
-                  {Math.abs(customDiff) < 0.01 ? '✓ 總和一致' : customDiff > 0 ? '残り' : '超過'}
+                  {customDiff === 0 ? '✓ 總和一致' : customDiff > 0 ? '残り' : '超過'}
                 </span>
                 <span>
-                  {formatAmount(customSum, currency)} / {formatAmount(amountNum, currency)}
-                  {Math.abs(customDiff) >= 0.01 && (
-                    <span className="ml-1.5">({customDiff > 0 ? '+' : ''}{formatAmount(customDiff, currency)})</span>
+                  {formatMinorAmount(customSum, currency)} / {formatMinorAmount(amountMinor, currency)}
+                  {customDiff !== 0 && (
+                    <span className="ml-1.5">({customDiff > 0 ? '+' : ''}{formatMinorAmount(customDiff, currency)})</span>
                   )}
                 </span>
               </div>

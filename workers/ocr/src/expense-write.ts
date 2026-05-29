@@ -79,6 +79,12 @@ export type ExpenseUpdateRequest = z.infer<typeof ExpenseUpdateRequestSchema>
 
 interface TripContext {
   memberIds:  string[]
+  /** Trip-scoped ISO 4217 currency. Every expense in this trip MUST
+   *  carry this currency; mixing currencies inside a single trip would
+   *  silently corrupt settlement / trip-total math (those layers assume
+   *  one currency per trip). The bind is enforced in doCreate / doUpdate
+   *  against parsed.data.currency / merged.currency respectively. */
+  currency:   string
 }
 
 /** Verify caller is owner/editor of trip AND trip is not being
@@ -116,7 +122,15 @@ async function authorizeCanWriteTx(
   if (memberIds.length === 0) {
     throw new CascadeError(500, 'trip.memberIds is empty')
   }
-  return { memberIds }
+  // Trip currency is required for every trip created post-onboarding;
+  // a missing value here is a data-integrity bug (e.g. raw admin write
+  // bypassing the client onboarding flow) and we fail-closed rather
+  // than silently let the caller pick the currency.
+  const currency = readString(trip.fields, 'currency')
+  if (!currency) {
+    throw new CascadeError(500, 'trip.currency is missing')
+  }
+  return { memberIds, currency }
 }
 
 // ─── Firestore value encoders ─────────────────────────────────────
@@ -141,7 +155,7 @@ function encodeExpense(
   const fields: Record<string, FsValue> = {
     tripId:          { stringValue: tripId },
     title:           { stringValue: payload.title },
-    amount:          { doubleValue: payload.amount },
+    amountMinor:     { integerValue: String(payload.amountMinor) },
     currency:        { stringValue: payload.currency },
     category:        { stringValue: payload.category },
     paidBy:          { stringValue: payload.paidBy },
@@ -150,8 +164,8 @@ function encodeExpense(
         values: payload.splits.map(s => ({
           mapValue: {
             fields: {
-              memberId: { stringValue: s.memberId },
-              amount:   { doubleValue: s.amount },
+              memberId:    { stringValue: s.memberId },
+              amountMinor: { integerValue: String(s.amountMinor) },
             },
           },
         })),
@@ -175,8 +189,9 @@ function encodeExpense(
         values: payload.items.map(item => ({
           mapValue: {
             fields: {
-              name:   { stringValue: item.name },
-              amount: { doubleValue: item.amount },
+              id:          { stringValue: item.id },
+              name:        { stringValue: item.name },
+              amountMinor: { integerValue: String(item.amountMinor) },
               assignees: {
                 arrayValue: {
                   values: item.assignees.map(uid => ({ stringValue: uid })),
@@ -187,6 +202,27 @@ function encodeExpense(
         })),
       },
     }
+  }
+  // Phase B: adjustments[] is REQUIRED on every persisted doc (empty
+  // array when none). The Worker is the only writer for content
+  // fields, so the encoded shape here is the canonical Firestore
+  // representation that ExpenseDocSchema parses on read.
+  fields.adjustments = {
+    arrayValue: {
+      values: payload.adjustments.map(adj => {
+        const aFields: Record<string, FsValue> = {
+          id:          { stringValue: adj.id },
+          label:       { stringValue: adj.label },
+          kind:        { stringValue: adj.kind },
+          scope:       { stringValue: adj.scope },
+          amountMinor: { integerValue: String(adj.amountMinor) },
+        }
+        if (adj.targetItemId !== undefined) {
+          aFields.targetItemId = { stringValue: adj.targetItemId }
+        }
+        return { mapValue: { fields: aFields } }
+      }),
+    },
   }
   if (receipt) {
     const rfields: Record<string, FsValue> = {
@@ -257,6 +293,17 @@ async function doCreate(
     if (!parsed.success) {
       const issue = parsed.error.issues[0]
       throw new ExpenseValidationError(issue.path.join('.'), issue.message)
+    }
+    // Bind expense currency to trip currency. Without this gate a raw
+    // Worker caller could create a JPY-trip expense with currency:'USD'
+    // and amountMinor encoded under USD-cent semantics; downstream
+    // settlement / trip-total math assumes a single currency per trip
+    // and would silently mix the two scales.
+    if (parsed.data.currency !== ctx.currency) {
+      throw new ExpenseValidationError(
+        'currency',
+        `expense currency ${parsed.data.currency} does not match trip currency ${ctx.currency}`,
+      )
     }
     validateExpenseCrossField(parsed.data, ctx.memberIds)
 
@@ -378,8 +425,8 @@ function buildReceiptFromIntents(consumed: ConsumedIntent[]): {
  * elsewhere and rejected here.
  */
 const UPDATABLE_FIELDS = new Set([
-  'title', 'amount', 'currency', 'category',
-  'paidBy', 'splits', 'date', 'note', 'items', 'receipt',
+  'title', 'amountMinor', 'currency', 'category',
+  'paidBy', 'splits', 'date', 'note', 'items', 'adjustments', 'receipt',
 ])
 
 export async function expenseUpdate(
@@ -480,6 +527,17 @@ async function doUpdate(
     }
 
     const merged = mergeExpense(current.fields, patchParsed.data)
+    // Same trip-currency bind as doCreate. Checking the merged value
+    // (not patchParsed.data.currency directly) catches BOTH a raw
+    // patch.currency divergence AND a pre-existing doc whose currency
+    // somehow drifted from the trip (data-integrity guard for older
+    // writes that pre-date this gate).
+    if (merged.currency !== ctx.currency) {
+      throw new ExpenseValidationError(
+        'currency',
+        `expense currency ${merged.currency} does not match trip currency ${ctx.currency}`,
+      )
+    }
     validateExpenseCrossField(merged, ctx.memberIds)
 
     // Build the update mask + field map. Receipt write happens via
@@ -530,40 +588,43 @@ function mergeExpense(
   current: Record<string, FsValue>,
   patch:   ReturnType<ReturnType<typeof makeExpenseUpdateSchema>['parse']>,
 ): {
-  amount:   number
-  currency: string
-  paidBy:   string
-  splits:   { memberId: string; amount: number }[]
-  items?:   { amount: number; assignees: string[] }[]
+  amountMinor:  number
+  currency:     string
+  paidBy:       string
+  splits:       { memberId: string; amountMinor: number }[]
+  items?:       { id: string; amountMinor: number; assignees: string[] }[]
+  adjustments?: { id: string; kind: string; scope: string; amountMinor: number; targetItemId?: string }[]
 } {
   const decoded = decodeExpense(current)
   return {
-    amount:   patch.amount   ?? decoded.amount,
-    currency: patch.currency ?? decoded.currency,
-    paidBy:   patch.paidBy   ?? decoded.paidBy,
-    splits:   patch.splits   ?? decoded.splits,
-    items:    patch.items    ?? decoded.items,
+    amountMinor: patch.amountMinor ?? decoded.amountMinor,
+    currency:    patch.currency    ?? decoded.currency,
+    paidBy:      patch.paidBy      ?? decoded.paidBy,
+    splits:      patch.splits      ?? decoded.splits,
+    items:       patch.items       ?? decoded.items,
+    adjustments: patch.adjustments ?? decoded.adjustments,
   }
 }
 
 /** Decode the Firestore REST `fields` map back into the shape we
  *  need for cross-field validation. Only extracts what's checked. */
 function decodeExpense(fields: Record<string, FsValue>): {
-  amount:   number
-  currency: string
-  paidBy:   string
-  splits:   { memberId: string; amount: number }[]
-  items?:   { amount: number; assignees: string[] }[]
+  amountMinor:  number
+  currency:     string
+  paidBy:       string
+  splits:       { memberId: string; amountMinor: number }[]
+  items?:       { id: string; amountMinor: number; assignees: string[] }[]
+  adjustments?: { id: string; kind: string; scope: string; amountMinor: number; targetItemId?: string }[]
 } {
-  const amount = Number(fields.amount?.doubleValue ?? fields.amount?.integerValue ?? 0)
+  const amountMinor = Number(fields.amountMinor?.integerValue ?? 0)
   const currency = readString(fields, 'currency') ?? ''
   const paidBy = readString(fields, 'paidBy') ?? ''
   const splitArr = (fields.splits as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []
   const splits = splitArr.map(v => {
     const inner = v.mapValue?.fields ?? {}
     return {
-      memberId: readString(inner, 'memberId') ?? '',
-      amount:   Number(inner.amount?.doubleValue ?? inner.amount?.integerValue ?? 0),
+      memberId:    readString(inner, 'memberId') ?? '',
+      amountMinor: Number(inner.amountMinor?.integerValue ?? 0),
     }
   })
   const itemArr = (fields.items as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values
@@ -571,11 +632,25 @@ function decodeExpense(fields: Record<string, FsValue>): {
     const inner = v.mapValue?.fields ?? {}
     const aArr = (inner.assignees as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []
     return {
-      amount:    Number(inner.amount?.doubleValue ?? inner.amount?.integerValue ?? 0),
-      assignees: aArr.map(a => a.stringValue ?? '').filter(s => s !== ''),
+      id:          readString(inner, 'id') ?? '',
+      amountMinor: Number(inner.amountMinor?.integerValue ?? 0),
+      assignees:   aArr.map(a => a.stringValue ?? '').filter(s => s !== ''),
     }
   }) : undefined
-  return { amount, currency, paidBy, splits, items }
+  const adjArr = (fields.adjustments as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values
+  const adjustments = adjArr ? adjArr.map(v => {
+    const inner = v.mapValue?.fields ?? {}
+    const targetItemId = readString(inner, 'targetItemId')
+    const out: { id: string; kind: string; scope: string; amountMinor: number; targetItemId?: string } = {
+      id:          readString(inner, 'id')    ?? '',
+      kind:        readString(inner, 'kind')  ?? '',
+      scope:       readString(inner, 'scope') ?? '',
+      amountMinor: Number(inner.amountMinor?.integerValue ?? 0),
+    }
+    if (targetItemId !== undefined) out.targetItemId = targetItemId
+    return out
+  }) : undefined
+  return { amountMinor, currency, paidBy, splits, items, adjustments }
 }
 
 /** Encode the validated patch fields back into Firestore REST shape.
@@ -591,21 +666,21 @@ function encodePatch(
   receipt?: ExpenseReceiptOut,
 ): Record<string, FsValue> {
   const out: Record<string, FsValue> = {}
-  if (patch.title    !== undefined) out.title    = { stringValue: patch.title }
-  if (patch.amount   !== undefined) out.amount   = { doubleValue: patch.amount }
-  if (patch.currency !== undefined) out.currency = { stringValue: patch.currency }
-  if (patch.category !== undefined) out.category = { stringValue: patch.category }
-  if (patch.paidBy   !== undefined) out.paidBy   = { stringValue: patch.paidBy }
-  if (patch.date     !== undefined) out.date     = { stringValue: patch.date }
-  if (patch.note     !== undefined) out.note     = { stringValue: patch.note }
-  if (patch.splits   !== undefined) {
+  if (patch.title       !== undefined) out.title       = { stringValue: patch.title }
+  if (patch.amountMinor !== undefined) out.amountMinor = { integerValue: String(patch.amountMinor) }
+  if (patch.currency    !== undefined) out.currency    = { stringValue: patch.currency }
+  if (patch.category    !== undefined) out.category    = { stringValue: patch.category }
+  if (patch.paidBy      !== undefined) out.paidBy      = { stringValue: patch.paidBy }
+  if (patch.date        !== undefined) out.date        = { stringValue: patch.date }
+  if (patch.note        !== undefined) out.note        = { stringValue: patch.note }
+  if (patch.splits      !== undefined) {
     out.splits = {
       arrayValue: {
         values: patch.splits.map(s => ({
           mapValue: {
             fields: {
-              memberId: { stringValue: s.memberId },
-              amount:   { doubleValue: s.amount },
+              memberId:    { stringValue: s.memberId },
+              amountMinor: { integerValue: String(s.amountMinor) },
             },
           },
         })),
@@ -618,14 +693,34 @@ function encodePatch(
         values: patch.items.map(item => ({
           mapValue: {
             fields: {
-              name:   { stringValue: item.name },
-              amount: { doubleValue: item.amount },
+              id:          { stringValue: item.id },
+              name:        { stringValue: item.name },
+              amountMinor: { integerValue: String(item.amountMinor) },
               assignees: {
                 arrayValue: { values: item.assignees.map(uid => ({ stringValue: uid })) },
               },
             },
           },
         })),
+      },
+    }
+  }
+  if (patch.adjustments !== undefined) {
+    out.adjustments = {
+      arrayValue: {
+        values: patch.adjustments.map(adj => {
+          const aFields: Record<string, FsValue> = {
+            id:          { stringValue: adj.id },
+            label:       { stringValue: adj.label },
+            kind:        { stringValue: adj.kind },
+            scope:       { stringValue: adj.scope },
+            amountMinor: { integerValue: String(adj.amountMinor) },
+          }
+          if (adj.targetItemId !== undefined) {
+            aFields.targetItemId = { stringValue: adj.targetItemId }
+          }
+          return { mapValue: { fields: aFields } }
+        }),
       },
     }
   }

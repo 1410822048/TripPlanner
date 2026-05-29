@@ -7,7 +7,7 @@
 // total cost) are computed by the caller.
 import { Pencil } from 'lucide-react'
 import type { TripHeaderCardProps as Props } from './tripHeaderCardPropsAreEqual'
-import { formatAmount } from '@/utils/currency'
+import { formatMinorAmount } from '@/utils/money'
 import MemberAvatar from '@/components/ui/MemberAvatar'
 
 function TripHeaderCard({
@@ -17,7 +17,7 @@ function TripHeaderCard({
   const stats = [
     { value: `${tripDays}`,                                     unit: '日', label: '旅行天數' },
     { value: `${scheduleCount}`,                                unit: '個', label: '行程景點' },
-    { value: formatAmount(tripTotal, selectedTrip.currency),    unit: '',   label: '預估總費' },
+    { value: formatMinorAmount(tripTotal, selectedTrip.currency), unit: '',   label: '預估總費' },
   ] as const
 
   return (

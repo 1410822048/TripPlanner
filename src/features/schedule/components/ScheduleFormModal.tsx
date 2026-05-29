@@ -14,6 +14,7 @@ import CurrencyInput from '@/components/ui/CurrencyInput'
 import DeleteConfirm from '@/components/ui/DeleteConfirm'
 import { useTripCurrency } from '@/hooks/useTripCurrency'
 import { currencySymbol } from '@/utils/currency'
+import { formatMinorForInput, parseMoneyToMinor, MoneyParseError } from '@/utils/money'
 import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
@@ -37,10 +38,10 @@ type FormState = {
   category:  ScheduleCategory
   location:  string
   desc:      string
-  cost:      string                // string for input control; coerced to number on save
+  costText:  string                // raw user-typed money string; parsed to minor units on save
 }
 
-function initFormState(t: Schedule | null, defaultDate: string): FormState {
+function initFormState(t: Schedule | null, defaultDate: string, currency: string): FormState {
   return {
     title:     t?.title ?? '',
     date:      t?.date ?? defaultDate,
@@ -49,7 +50,9 @@ function initFormState(t: Schedule | null, defaultDate: string): FormState {
     category:  t?.category ?? 'activity',
     location:  t?.location?.name ?? '',
     desc:      t?.description ?? '',
-    cost:      t?.estimatedCost ? String(t.estimatedCost) : '',
+    costText:  typeof t?.estimatedCostMinor === 'number'
+      ? formatMinorForInput(t.estimatedCostMinor, currency)
+      : '',
   }
 }
 
@@ -73,12 +76,12 @@ export default function ScheduleFormModal({
   editTarget, defaultDate, tripStartDate, tripEndDate,
   isOpen, isSaving, saveError, onClose, onSave, onDelete,
 }: Props) {
-  const { state, setField } = useFormReducer<FormState>(
-    () => initFormState(editTarget, defaultDate),
-  )
-  const [errors, setErrors] = useState<Record<string, string>>({})
   const currency = useTripCurrency()
   const symbol   = currencySymbol(currency)
+  const { state, setField } = useFormReducer<FormState>(
+    () => initFormState(editTarget, defaultDate, currency),
+  )
+  const [errors, setErrors] = useState<Record<string, string>>({})
 
   const titleRef = useRef<HTMLInputElement>(null)
   useAutoFocus(titleRef, isOpen)
@@ -95,11 +98,25 @@ export default function ScheduleFormModal({
     })
   }
 
+  function parseCostMinor(): { ok: true; value: number | undefined } | { ok: false; error: string } {
+    const text = state.costText.trim()
+    if (text === '') return { ok: true, value: undefined }
+    try {
+      const minor = parseMoneyToMinor(text, currency)
+      if (minor < 0) return { ok: false, error: '0 以上の金額を入力してください' }
+      return { ok: true, value: minor }
+    } catch (e) {
+      if (e instanceof MoneyParseError) return { ok: false, error: '請輸入數字' }
+      throw e
+    }
+  }
+
   function validate() {
     const e: Record<string, string> = {}
     if (!state.title.trim()) e.title = '請輸入標題'
     if (!state.date)         e.date  = '請選擇日期'
-    if (state.cost && isNaN(Number(state.cost))) e.cost = '請輸入數字'
+    const parsed = parseCostMinor()
+    if (!parsed.ok) e.cost = parsed.error
     // 'HH:MM' strings sort lexicographically the same as time-of-day,
     // so a direct string compare correctly catches end < start.
     if (state.startTime && state.endTime && state.endTime < state.startTime) {
@@ -111,16 +128,18 @@ export default function ScheduleFormModal({
 
   function handleSave() {
     if (!validate()) return
+    const parsed = parseCostMinor()
+    if (!parsed.ok) return  // re-checked here for type narrowing; validate() already surfaced
     const loc = state.location.trim()
     onSave({
       title: state.title.trim(),
       date:  state.date,
-      startTime:     state.startTime || undefined,
-      endTime:       state.endTime   || undefined,
-      category:      state.category,
-      description:   state.desc      || undefined,
-      estimatedCost: state.cost ? Number(state.cost) : undefined,
-      location:      loc ? { name: loc } : undefined,
+      startTime:          state.startTime || undefined,
+      endTime:            state.endTime   || undefined,
+      category:           state.category,
+      description:        state.desc      || undefined,
+      estimatedCostMinor: parsed.value,
+      location:           loc ? { name: loc } : undefined,
     } as CreateScheduleInput)
   }
 
@@ -220,10 +239,9 @@ export default function ScheduleFormModal({
       <FormField label={`予算（${symbol}）`} error={errors.cost}>
         <CurrencyInput
           symbol={symbol}
-          value={state.cost}
-          onChange={e => setField('cost', e.target.value)}
+          value={state.costText}
+          onChange={e => setField('costText', e.target.value)}
           placeholder="0"
-          min={0}
           error={!!errors.cost}
         />
       </FormField>

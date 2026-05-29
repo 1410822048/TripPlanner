@@ -49,18 +49,18 @@ import type { TripMember } from '@/features/trips/types'
 
 export interface MemberBalance {
   memberId: string
-  /** 這個人代墊的總額(只看 expenses,不含 settlements)。 */
+  /** 這個人代墊的總額(只看 expenses,不含 settlements)。Integer minor units. */
   paid: number
-  /** 這個人應該分攤的總額(只看 expenses,不含 settlements)。 */
+  /** 這個人應該分攤的總額(只看 expenses,不含 settlements)。Integer minor units. */
   owed: number
-  /** Settlement + normalize 之後的淨額。正值 = 應收、負值 = 應付。 */
+  /** Settlement + normalize 之後的淨額。正值 = 應收、負值 = 應付。Integer minor units. */
   net: number
 }
 
 export interface Settlement {
-  fromId: string  // 付款人(應付)
-  toId:   string  // 收款人(應收)
-  amount: number
+  fromId:      string  // 付款人(應付)
+  toId:        string  // 收款人(應收)
+  amountMinor: number  // integer minor units
 }
 
 /**
@@ -106,8 +106,8 @@ export type OrphanReason = 'OVERPAYMENT' | 'EXPENSE_DELETED' | 'MIXED' | 'UNKNOW
 export interface OrphanSettlement {
   fromUserId:   string
   toUserId:     string
-  /** 這筆 settlement 自己的 leftover(非 pair 累積)。 */
-  amount:       number
+  /** 這筆 settlement 自己的 leftover(非 pair 累積)。Integer minor units. */
+  amountMinor:  number
   /** 對應的 SettlementRecord.id,UI 用來一鍵刪除這筆 orphan。 */
   settlementId: string
   /** Why this settlement is orphan -- drives the reason-specific
@@ -209,12 +209,12 @@ export function expandWithGhosts(
  * on both sides of the trust boundary.
  */
 function isExpenseSettlementSafe(e: Expense): boolean {
-  if (!Number.isFinite(e.amount) || e.amount < 0) return false
+  if (!Number.isFinite(e.amountMinor) || e.amountMinor < 0) return false
   if (typeof e.paidBy !== 'string' || e.paidBy === '') return false
   if (!Array.isArray(e.splits)) return false
   for (const s of e.splits) {
     if (typeof s.memberId !== 'string' || s.memberId === '') return false
-    if (!Number.isFinite(s.amount) || s.amount < 0) return false
+    if (!Number.isFinite(s.amountMinor) || s.amountMinor < 0) return false
   }
   return true
 }
@@ -224,7 +224,7 @@ function isExpenseSettlementSafe(e: Expense): boolean {
  *  console.warn the offending `s.id`. Predicates intentionally
  *  identical to the core; the only difference is the input type. */
 function isSettlementSafe(s: SettlementRecord): boolean {
-  if (!Number.isFinite(s.amount) || s.amount <= 0) return false
+  if (!Number.isFinite(s.amountMinor) || s.amountMinor <= 0) return false
   if (typeof s.fromUid !== 'string' || s.fromUid === '') return false
   if (typeof s.toUid   !== 'string' || s.toUid   === '') return false
   if (s.fromUid === s.toUid) return false
@@ -304,11 +304,11 @@ export function computeBalancesFull(
   // Step 1: gross debt + paid/owed display (active expenses only)
   for (const e of activeExpenses) {
     ensure(e.paidBy)
-    paid[e.paidBy] = (paid[e.paidBy] ?? 0) + e.amount
+    paid[e.paidBy] = (paid[e.paidBy] ?? 0) + e.amountMinor
     for (const s of e.splits) {
       ensure(s.memberId)
-      owed[s.memberId] = (owed[s.memberId] ?? 0) + s.amount
-      addGross(s.memberId, e.paidBy, s.amount)
+      owed[s.memberId] = (owed[s.memberId] ?? 0) + s.amountMinor
+      addGross(s.memberId, e.paidBy, s.amountMinor)
     }
   }
 
@@ -344,9 +344,9 @@ export function computeBalancesFull(
     const debt = gross[st.fromUid]?.[st.toUid] ?? 0
     const appliedSlot = ensureSlot(applied, st.fromUid)
     const already = appliedSlot[st.toUid] ?? 0
-    const usable = Math.min(st.amount, Math.max(0, debt - already))
+    const usable = Math.min(st.amountMinor, Math.max(0, debt - already))
     appliedSlot[st.toUid] = already + usable
-    const leftover = st.amount - usable
+    const leftover = st.amountMinor - usable
     if (leftover > SETTLEMENT_EPS) {
       // Per-settlement entry instead of per-pair sum so UI can target
       // the exact unmatched record for one-tap delete. Multiple entries
@@ -355,7 +355,7 @@ export function computeBalancesFull(
       orphans.push({
         fromUserId:   st.fromUid,
         toUserId:     st.toUid,
-        amount:       leftover,
+        amountMinor:  leftover,
         settlementId: st.id,
         reason:       classifyOrphan(replayById.get(st.id), leftover),
       })
@@ -375,7 +375,7 @@ export function computeBalancesFull(
     settlements.map<CoreSettlement>(s => ({
       fromUid:     s.fromUid,
       toUid:       s.toUid,
-      amount:      s.amount,
+      amountMinor: s.amountMinor,
       createdAtMs: s.createdAt?.toMillis?.() ?? 0,
     })),
   )
@@ -470,7 +470,7 @@ function buildOrphanReasonMap(
       for (const split of e.splits) {
         if (split.memberId === e.paidBy) continue
         const slot = ensureSlot(pairGrossT, split.memberId)
-        slot[e.paidBy] = (slot[e.paidBy] ?? 0) + sign * split.amount
+        slot[e.paidBy] = (slot[e.paidBy] ?? 0) + sign * split.amountMinor
       }
       continue
     }
@@ -479,16 +479,16 @@ function buildOrphanReasonMap(
     const grossT     = pairGrossT[st.fromUid]?.[st.toUid] ?? 0
     const appliedT   = pairAppliedT[st.fromUid]?.[st.toUid] ?? 0
     const availableT = Math.max(0, grossT - appliedT)
-    const usableT    = Math.min(st.amount, availableT)
+    const usableT    = Math.min(st.amountMinor, availableT)
     ensureSlot(pairAppliedT, st.fromUid)[st.toUid] = appliedT + usableT
 
     let atRecording: SettlementReplayInfo['atRecording']
     let overpayment = 0
     if (grossT < SETTLEMENT_EPS) {
       atRecording = 'NO_EXPENSE'
-    } else if (st.amount - availableT > SETTLEMENT_EPS) {
+    } else if (st.amountMinor - availableT > SETTLEMENT_EPS) {
       atRecording = 'OVER'
-      overpayment = st.amount - availableT
+      overpayment = st.amountMinor - availableT
     } else {
       atRecording = 'WITHIN'
     }
@@ -551,7 +551,7 @@ export function computeSettlements(
     for (const to of Object.keys(row).sort()) {
       const amount = row[to] ?? 0
       if (amount > SETTLEMENT_EPS) {
-        out.push({ fromId: from, toId: to, amount: Math.round(amount) })
+        out.push({ fromId: from, toId: to, amountMinor: Math.round(amount) })
       }
     }
   }

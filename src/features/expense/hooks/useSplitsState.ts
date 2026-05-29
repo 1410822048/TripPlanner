@@ -9,6 +9,7 @@
 import { useReducer } from 'react'
 import type { Expense } from '@/types'
 import type { TripMember } from '@/features/trips/types'
+import { formatMinorForInput } from '@/utils/money'
 
 export type SplitMode = 'equal' | 'custom'
 
@@ -62,11 +63,11 @@ function initFromExpense(editTarget: Expense | null, members: TripMember[]): Spl
       custom:   {},
     }
   }
-  const nonZero = editTarget.splits.filter(s => s.amount > 0)
+  const nonZero = editTarget.splits.filter(s => s.amountMinor > 0)
   const first = nonZero[0]
   const allEqual =
     first !== undefined &&
-    nonZero.every(s => Math.abs(s.amount - first.amount) <= 1)
+    nonZero.every(s => Math.abs(s.amountMinor - first.amountMinor) <= 1)
 
   if (allEqual) {
     return {
@@ -76,7 +77,9 @@ function initFromExpense(editTarget: Expense | null, members: TripMember[]): Spl
     }
   }
   const custom: Record<string, string> = {}
-  editTarget.splits.forEach(s => { custom[s.memberId] = String(s.amount) })
+  editTarget.splits.forEach(s => {
+    custom[s.memberId] = formatMinorForInput(s.amountMinor, editTarget.currency)
+  })
   return {
     mode:     'custom',
     included: new Set(members.map(m => m.id)),

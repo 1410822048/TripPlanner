@@ -33,7 +33,7 @@
 //   POST /booking-file-update    with file attachment (Phase 3.7).
 //   POST /settlement-create    — Worker-authoritative settlement create
 //   POST /settlement-delete      + delete, with full pairwise debt
-//                                computation in tx for the amount<=remaining
+//                                computation in tx for the amountMinor<=remaining
 //                                gate that firestore.rules cannot express.
 //
 // Scheduled:
@@ -418,7 +418,7 @@ export default {
       endpoint:       'settlement-create', body, cors, uid,
       schema:         SettlementCreateRequestSchema,
       handle:         data => settlementCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
-      formatLog:      (data, result) => `trip=${data.tripId} settlement=${result.settlementId} from=${data.fromUid} amount=${data.amount}`,
+      formatLog:      (data, result) => `trip=${data.tripId} settlement=${result.settlementId} from=${data.fromUid} amountMinor=${data.amountMinor}`,
       formatResponse: result => ({ ok: true, ...result }),
       catchDomain:    validationErrorCatcher(SettlementValidationError),
     })

@@ -18,7 +18,7 @@ import SwipeableExpenseItem from './SwipeableExpenseItem'
 import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
 import { splitSummary } from '../utils'
 import { fromLocalDateString } from '@/utils/dates'
-import { formatAmount } from '@/utils/currency'
+import { formatMinorAmount } from '@/utils/money'
 import { groupBy } from '@/utils/groupBy'
 
 /** 預設展開最近 N 天 — "today + yesterday"。一天 receipts 很容易破 10 筆,
@@ -81,7 +81,7 @@ export default function ExpenseDateGroups({
     <>
       {dates.map((date, idx) => {
         const items = grouped[date] ?? []
-        const subtotal = items.reduce((s, e) => s + e.amount, 0)
+        const subtotalMinor = items.reduce((s, e) => s + e.amountMinor, 0)
         const open = isOpen(date, idx)
         return (
           <div key={date} className="mb-4">
@@ -105,7 +105,7 @@ export default function ExpenseDateGroups({
                 </span>
               </div>
               <span className="text-[11px] text-muted font-medium tabular-nums shrink-0">
-                {formatAmount(subtotal, currency)}
+                {formatMinorAmount(subtotalMinor, currency)}
               </span>
             </button>
 

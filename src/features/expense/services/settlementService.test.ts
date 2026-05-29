@@ -8,7 +8,8 @@
 // closes the rule to `if false` the server-side check is the only one
 // left.
 //
-// Other assertions cover: amount rounding (Worker schema is `int`),
+// Other assertions cover: amountMinor integer pass-through (Worker schema
+// is `int`; the form already parsed to minor units via parseMoneyToMinor),
 // note conditional include (omit vs '' has Firestore-level semantics),
 // the delete payload shape, and the caller-supplied settlementId
 // (which the optimistic patch / Worker request / Firestore doc all
@@ -65,7 +66,7 @@ describe('createSettlement', () => {
       settlementId: SETTLEMENT_ID,
       fromUid:      'from-uid',
       toUid:        'to-uid',
-      amount:       100,
+      amountMinor:  100,
       currency:     'JPY',
     })
 
@@ -80,7 +81,7 @@ describe('createSettlement', () => {
       settlementId: SETTLEMENT_ID,
       fromUid:      'from-uid',
       toUid:        'to-uid',
-      amount:       100,
+      amountMinor:  100,
       currency:     'JPY',
     })
     // Critical invariant: Worker derives settledBy from the token. If
@@ -100,7 +101,7 @@ describe('createSettlement', () => {
       settlementId: 'another-uuid',
       fromUid:      'from-uid',
       toUid:        'to-uid',
-      amount:       100,
+      amountMinor:  100,
       currency:     'JPY',
     })
 
@@ -108,19 +109,24 @@ describe('createSettlement', () => {
     expect(sentBody.settlementId).toBe('another-uuid')
   })
 
-  it('rounds non-integer amount before sending (Worker schema is int)', async () => {
+  it('forwards integer amountMinor verbatim (no rounding inside the service)', async () => {
+    // After the minor-units migration, the form parses to an integer at
+    // the boundary via parseMoneyToMinor, so the service is allowed to
+    // trust its input and pass through unchanged. Regression guard: if
+    // anyone adds Math.round / Math.trunc back here, an off-by-one
+    // rounding bug could mask a real client-side parse bug.
     fetchMock.mockResolvedValueOnce(okResponse({ ok: true, settlementId: SETTLEMENT_ID }))
 
     await createSettlement(TRIP_ID, {
       settlementId: SETTLEMENT_ID,
       fromUid:      'from-uid',
       toUid:        'to-uid',
-      amount:       99.6,
+      amountMinor:  1234,
       currency:     'JPY',
     })
 
-    const sentBody = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string) as { amount: number }
-    expect(sentBody.amount).toBe(100)
+    const sentBody = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string) as { amountMinor: number }
+    expect(sentBody.amountMinor).toBe(1234)
   })
 
   it('omits note field when input.note is undefined', async () => {
@@ -130,7 +136,7 @@ describe('createSettlement', () => {
       settlementId: SETTLEMENT_ID,
       fromUid:      'from-uid',
       toUid:        'to-uid',
-      amount:       100,
+      amountMinor:  100,
       currency:     'JPY',
     })
 
@@ -145,7 +151,7 @@ describe('createSettlement', () => {
       settlementId: SETTLEMENT_ID,
       fromUid:      'from-uid',
       toUid:        'to-uid',
-      amount:       100,
+      amountMinor:  100,
       currency:     'JPY',
       note:         '焼肉の精算',
     })
@@ -161,7 +167,7 @@ describe('createSettlement', () => {
       settlementId: SETTLEMENT_ID,
       fromUid:      'from-uid',
       toUid:        'to-uid',
-      amount:       100,
+      amountMinor:  100,
       currency:     'JPY',
       note:         '',
     })
@@ -180,7 +186,7 @@ describe('createSettlement', () => {
       settlementId: SETTLEMENT_ID,
       fromUid:      'from-uid',
       toUid:        'to-uid',
-      amount:       100,
+      amountMinor:  100,
       currency:     'JPY',
     })).rejects.toThrowError(/exceeds remaining debt/)
   })

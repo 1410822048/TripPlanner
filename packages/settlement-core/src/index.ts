@@ -9,6 +9,12 @@
 // in the Worker. The core only handles plain data in / plain data out
 // — no Firebase, no Firestore Timestamp, no async, no side effects.
 //
+// Money domain: every `amountMinor` here is integer minor units, per
+// the money refactor. The math is integer-friendly but doesn't enforce
+// Number.isInteger — callers (client / Worker) already validate at
+// their Zod boundaries; the SETTLEMENT_EPS is kept defensively for
+// any pre-refactor rounding residue that hasn't been flushed yet.
+//
 // Why this exists:
 //   Before this package, `src/features/expense/services/settlement.ts`
 //   and `workers/ocr/src/settlement-domain.ts` carried mirrored copies
@@ -27,9 +33,9 @@
  *  represents "active state at this moment" and is unaware of the
  *  `deletedAt` field. */
 export interface CoreExpense {
-  amount: number
-  paidBy: string
-  splits: Array<{ memberId: string; amount: number }>
+  amountMinor: number
+  paidBy:      string
+  splits:      Array<{ memberId: string; amountMinor: number }>
 }
 
 /** Minimum settlement shape. `createdAtMs` is the millisecond epoch used
@@ -43,17 +49,18 @@ export interface CoreExpense {
 export interface CoreSettlement {
   fromUid:     string
   toUid:       string
-  amount:      number
+  amountMinor: number
   createdAtMs: number
 }
 
 // ─── Public constants ─────────────────────────────────────────────
 
 /** Rounding epsilon for "no debt" / "edges collapse" decisions. Anything
- *  with absolute value ≤ EPS is treated as zero. Same value on both
- *  sides of the trust boundary is the invariant that lets the Worker
- *  create-gate (`amount <= remaining`) agree with the client UI
- *  suggestion list to the cent. */
+ *  with absolute value ≤ EPS is treated as zero. Post-money-refactor all
+ *  amounts are integer minor units, so this is mostly defensive — kept
+ *  the same value on both sides of the trust boundary as the invariant
+ *  that lets the Worker create-gate (`amount <= remaining`) agree with
+ *  the client UI suggestion list to the cent. */
 export const SETTLEMENT_EPS = 0.5
 
 /** Canonical, order-independent identifier for an unordered pair of
@@ -75,17 +82,18 @@ export function canonicalPairKey(a: string, b: string): string {
 
 // ─── Public guards ────────────────────────────────────────────────
 
-/** Sanity gate: settlement is safe to feed into the cap loop iff amount
- *  is finite + strictly positive, both uids are non-empty strings, and
- *  the pair isn't self-debt. Caller passes the FULL settlement list and
- *  the math filters internally; exporting the guard lets the Worker
- *  reject malformed settlements with a 400 BEFORE running the math, so
- *  the surface produces the same accept/reject decision either way. */
+/** Sanity gate: settlement is safe to feed into the cap loop iff
+ *  amountMinor is finite + strictly positive, both uids are non-empty
+ *  strings, and the pair isn't self-debt. Caller passes the FULL
+ *  settlement list and the math filters internally; exporting the guard
+ *  lets the Worker reject malformed settlements with a 400 BEFORE running
+ *  the math, so the surface produces the same accept/reject decision
+ *  either way. */
 export function isSettlementSafe(s: CoreSettlement): boolean {
-  if (!Number.isFinite(s.amount) || s.amount <= 0)        return false
-  if (typeof s.fromUid !== 'string' || s.fromUid === '')  return false
-  if (typeof s.toUid   !== 'string' || s.toUid   === '')  return false
-  if (s.fromUid === s.toUid)                              return false
+  if (!Number.isFinite(s.amountMinor) || s.amountMinor <= 0) return false
+  if (typeof s.fromUid !== 'string' || s.fromUid === '')     return false
+  if (typeof s.toUid   !== 'string' || s.toUid   === '')     return false
+  if (s.fromUid === s.toUid)                                 return false
   return true
 }
 
@@ -111,12 +119,12 @@ function ensureSlot<T>(
  *  settlement card. Internal: callers don't need the predicate, they
  *  just pass raw lists and the math filters silently. */
 function isExpenseSettlementSafe(e: CoreExpense): boolean {
-  if (!Number.isFinite(e.amount) || e.amount < 0)       return false
-  if (typeof e.paidBy !== 'string' || e.paidBy === '')  return false
-  if (!Array.isArray(e.splits))                         return false
+  if (!Number.isFinite(e.amountMinor) || e.amountMinor < 0) return false
+  if (typeof e.paidBy !== 'string' || e.paidBy === '')      return false
+  if (!Array.isArray(e.splits))                             return false
   for (const s of e.splits) {
-    if (typeof s.memberId !== 'string' || s.memberId === '') return false
-    if (!Number.isFinite(s.amount) || s.amount < 0)          return false
+    if (typeof s.memberId !== 'string' || s.memberId === '')   return false
+    if (!Number.isFinite(s.amountMinor) || s.amountMinor < 0)  return false
   }
   return true
 }
@@ -125,7 +133,7 @@ function isExpenseSettlementSafe(e: CoreExpense): boolean {
 
 /**
  * Step-4 normalized remaining debt edges:
- * `pairwise[from][to] = amount` represents the real outstanding pair
+ * `pairwise[from][to] = amountMinor` represents the real outstanding pair
  * debt after settlement application AND opposite-direction cancellation.
  *
  * Used by:
@@ -138,10 +146,10 @@ function isExpenseSettlementSafe(e: CoreExpense): boolean {
  * cross-check fixture suite.
  *
  * Algorithm:
- *   1. gross[from][to] = Σ split.amount where split.memberId = from
+ *   1. gross[from][to] = Σ split.amountMinor where split.memberId = from
  *                        and expense.paidBy = to (self-debt stripped).
  *   2. settlements sorted by createdAtMs, then capped at gross per
- *      pair: applied += min(amount, max(0, gross - already_applied)).
+ *      pair: applied += min(amountMinor, max(0, gross - already_applied)).
  *      The leftover (overflow) is NOT returned here — the client owns
  *      orphan-reason classification via its chronological replay.
  *   3. remaining = max(0, gross - applied) per directed edge.
@@ -166,7 +174,7 @@ export function computePairwiseRemaining(
     for (const s of e.splits) {
       if (s.memberId === e.paidBy) continue
       const slot = ensureSlot(gross, s.memberId)
-      slot[e.paidBy] = (slot[e.paidBy] ?? 0) + s.amount
+      slot[e.paidBy] = (slot[e.paidBy] ?? 0) + s.amountMinor
     }
   }
 
@@ -181,7 +189,7 @@ export function computePairwiseRemaining(
     const debt        = gross[st.fromUid]?.[st.toUid] ?? 0
     const appliedSlot = ensureSlot(applied, st.fromUid)
     const already     = appliedSlot[st.toUid] ?? 0
-    const usable      = Math.min(st.amount, Math.max(0, debt - already))
+    const usable      = Math.min(st.amountMinor, Math.max(0, debt - already))
     appliedSlot[st.toUid] = already + usable
   }
 
@@ -217,8 +225,8 @@ export function computePairwiseRemaining(
 /** Convenience accessor: returns the directed remaining debt amount for
  *  the (fromUid → toUid) edge, or 0 when the pair has no normalized
  *  edge (no debt or both-sides cancelled). The Worker settlement-create
- *  gate compares `req.amount` against this; the client suggestion list
- *  reads it per-row to format the proposed transfer. */
+ *  gate compares `req.amountMinor` against this; the client suggestion
+ *  list reads it per-row to format the proposed transfer. */
 export function pairRemaining(
   pairwise: Record<string, Record<string, number>>,
   fromUid:  string,

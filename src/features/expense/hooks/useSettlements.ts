@@ -47,18 +47,20 @@ export function useCreateSettlement(tripId: string) {
     // `settledBy` mirrors the Worker's token-derived value. Under the UI
     // invariant (only the receiver renders the 済み button), the caller
     // IS toUid, so `settledBy: vars.toUid` matches what the server will
-    // write. amount is rounded to match what gets sent to the Worker.
+    // write. amountMinor arrives already as integer minor units (the
+    // form parses via parseMoneyToMinor before mutating), matching the
+    // Worker's z.number().int() schema.
     patch: (prev, vars) => [
       {
-        id:         vars.settlementId,
+        id:          vars.settlementId,
         tripId,
-        fromUid:    vars.fromUid,
-        toUid:      vars.toUid,
-        amount:     Math.round(vars.amount),
-        currency:   vars.currency,
+        fromUid:     vars.fromUid,
+        toUid:       vars.toUid,
+        amountMinor: vars.amountMinor,
+        currency:    vars.currency,
         settledBy:  vars.toUid,
         ...(vars.note ? { note: vars.note } : {}),
-        createdAt:  mockTimestampNow(),
+        createdAt:   mockTimestampNow(),
       },
       ...prev,
     ],

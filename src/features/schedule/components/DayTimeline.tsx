@@ -5,12 +5,12 @@ import { Plus } from 'lucide-react'
 import TimelineSkeleton from './TimelineSkeleton'
 import TimelineCard from './TimelineCard'
 import type { Schedule } from '@/types'
-import { formatAmount } from '@/utils/currency'
+import { formatMinorAmount } from '@/utils/money'
 
 interface Props {
   display:    string | undefined        // active 'YYYY-MM-DD'
   items:      Schedule[]
-  dayTotal:   number                    // sum of estimatedCost for items
+  dayTotal:   number                    // sum of estimatedCostMinor for items (integer minor units)
   isLoading:  boolean
   /** Owner / editor — controls visibility of add affordances. Viewers
    *  see the timeline but no add buttons (mirrors firestore.rules
@@ -42,7 +42,7 @@ function DayTimeline({
           </div>
           {dayTotal > 0 && (
             <div className="bg-[#F2EAE0] text-[#906848] text-[11px] font-semibold px-2.5 py-1 rounded-card tabular-nums">
-              合計 {formatAmount(dayTotal, currency)}
+              合計 {formatMinorAmount(dayTotal, currency)}
             </div>
           )}
         </div>

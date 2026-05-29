@@ -1,13 +1,14 @@
-// Unit tests for the expense validation helper. This is the logic
-// that took over from firestore.rules when expense create + content
-// update moved to the Worker (rules can't iterate arrays of maps).
-// Coverage focuses on the invariants the rule layer could NEVER
-// express:
+// Unit tests for the expense validation helper (Phase B contract).
+// Lives in the Worker because most invariants can't be expressed in
+// firestore.rules:
 //   - paidBy ∈ memberIds (cross-doc roster check)
 //   - every splits[i].memberId ∈ memberIds
-//   - amount + splits[i].amount non-negative
-//   - Σ splits[i].amount === amount
-//   - items[].assignees[] ∈ memberIds (if items present)
+//   - amountMinor + splits[i].amountMinor are integer minor units
+//     (enforced at the Zod boundary via .int())
+//   - Σ splits[i].amountMinor === amountMinor
+//   - items[] + adjustments[] materialize (via the shared
+//     `@tripmate/expense-materialize` pure-fn) to the claimed splits[]
+//     -- mismatches are rejected as SPLIT_PREVIEW_DRIFT
 import { describe, it, expect } from 'vitest'
 import {
 	ExpenseValidationError,
@@ -28,13 +29,15 @@ function legitReceiptUrl(path: string) {
 
 function basePayload(overrides: Record<string, unknown> = {}) {
 	return {
-		title:    'Lunch',
-		amount:   1000,
-		currency: 'JPY',
-		category: 'food' as const,
-		paidBy:   'editor-uid',
-		splits:   [{ memberId: 'editor-uid', amount: 1000 }],
-		date:     '2026-05-21',
+		title:       'Lunch',
+		amountMinor: 1000,
+		currency:    'JPY',
+		category:    'food' as const,
+		paidBy:      'editor-uid',
+		splits:      [{ memberId: 'editor-uid', amountMinor: 1000 }],
+		date:        '2026-05-21',
+		// Phase B: required field, blank for manual-entry expense.
+		adjustments: [] as unknown[],
 		...overrides,
 	}
 }
@@ -46,34 +49,44 @@ describe('expense schema (per-field) - makeExpenseCreateSchema', () => {
 		expect(schema.safeParse(basePayload()).success).toBe(true)
 	})
 
-	it('rejects amount of zero or negative', () => {
-		expect(schema.safeParse(basePayload({ amount: 0 })).success).toBe(false)
-		expect(schema.safeParse(basePayload({ amount: -5 })).success).toBe(false)
+	it('rejects amountMinor of zero or negative', () => {
+		expect(schema.safeParse(basePayload({ amountMinor: 0 })).success).toBe(false)
+		expect(schema.safeParse(basePayload({ amountMinor: -5 })).success).toBe(false)
 	})
 
-	it('rejects amount above 1B sanity cap', () => {
+	it('rejects amountMinor above 1B sanity cap', () => {
 		expect(schema.safeParse(basePayload({
-			amount: 1_000_000_001,
-			splits: [{ memberId: 'editor-uid', amount: 1_000_000_001 }],
+			amountMinor: 1_000_000_001,
+			splits: [{ memberId: 'editor-uid', amountMinor: 1_000_000_001 }],
 		})).success).toBe(false)
 	})
 
-	it('accepts amount at exactly the 1B cap (boundary)', () => {
+	it('accepts amountMinor at exactly the 1B cap (boundary)', () => {
 		expect(schema.safeParse(basePayload({
-			amount: 1_000_000_000,
-			splits: [{ memberId: 'editor-uid', amount: 1_000_000_000 }],
+			amountMinor: 1_000_000_000,
+			splits: [{ memberId: 'editor-uid', amountMinor: 1_000_000_000 }],
 		})).success).toBe(true)
 	})
 
-	it('rejects Infinity / NaN amounts (finite() guard)', () => {
-		expect(schema.safeParse(basePayload({ amount: Infinity })).success).toBe(false)
-		expect(schema.safeParse(basePayload({ amount: NaN })).success).toBe(false)
+	it('rejects non-integer amountMinor (int() guard)', () => {
+		// .int() rejects Infinity / NaN / fractional values uniformly.
+		expect(schema.safeParse(basePayload({ amountMinor: Infinity })).success).toBe(false)
+		expect(schema.safeParse(basePayload({ amountMinor: NaN })).success).toBe(false)
+		expect(schema.safeParse(basePayload({ amountMinor: 12.34 })).success).toBe(false)
 	})
 
-	it('rejects splits with negative amount', () => {
+	it('rejects splits with negative amountMinor', () => {
 		const res = schema.safeParse(basePayload({
-			amount: 100,
-			splits: [{ memberId: 'editor-uid', amount: -50 }],
+			amountMinor: 100,
+			splits: [{ memberId: 'editor-uid', amountMinor: -50 }],
+		}))
+		expect(res.success).toBe(false)
+	})
+
+	it('rejects splits with fractional amountMinor (.int() guard)', () => {
+		const res = schema.safeParse(basePayload({
+			amountMinor: 100,
+			splits: [{ memberId: 'editor-uid', amountMinor: 99.5 }],
 		}))
 		expect(res.success).toBe(false)
 	})
@@ -94,19 +107,14 @@ describe('expense schema (per-field) - makeExpenseCreateSchema', () => {
 	})
 
 	it('rejects > 50 splits (DoS cap)', () => {
-		const huge = Array.from({ length: 51 }, () => ({ memberId: 'editor-uid', amount: 1 }))
-		expect(schema.safeParse(basePayload({ splits: huge, amount: 51 })).success).toBe(false)
+		const huge = Array.from({ length: 51 }, () => ({ memberId: 'editor-uid', amountMinor: 1 }))
+		expect(schema.safeParse(basePayload({ splits: huge, amountMinor: 51 })).success).toBe(false)
 	})
 
 	it('silently strips client-supplied receipt key (legacy direct-path closed in 4c)', () => {
 		// Sanity-check the post-4c contract: receipt is NOT a field on
 		// makeExpenseCreateSchema. Zod's default strip() behavior makes
-		// the unknown key disappear from parsed output. Combined with
-		// the gate-level rejection in doCreate / doUpdate, this means a
-		// client-supplied receipt can never reach Firestore via this
-		// path. Receipt validation (URL/path binding, mime allowlist)
-		// is covered by the separate `makeReceiptSchema` block below,
-		// applied to Worker-built receipts via validateBuiltReceipt.
+		// the unknown key disappear from parsed output.
 		const path = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/r.webp`
 		const res = schema.safeParse(basePayload({
 			receipt: { url: legitReceiptUrl(path), path, type: 'image/webp' },
@@ -116,7 +124,9 @@ describe('expense schema (per-field) - makeExpenseCreateSchema', () => {
 	})
 
 	it('rejects items[] exceeding the DoS cap (100)', () => {
-		const huge = Array.from({ length: 101 }, () => ({ name: 'x', amount: 1, assignees: ['editor-uid'] }))
+		const huge = Array.from({ length: 101 }, (_, i) => ({
+			id: `it-${i}`, name: 'x', amountMinor: 1, assignees: ['editor-uid'],
+		}))
 		const res = schema.safeParse(basePayload({ items: huge }))
 		expect(res.success).toBe(false)
 	})
@@ -125,7 +135,7 @@ describe('expense schema (per-field) - makeExpenseCreateSchema', () => {
 		const longUid = 'x'.repeat(129)
 		const res = schema.safeParse(basePayload({
 			paidBy: longUid,
-			splits: [{ memberId: longUid, amount: 1000 }],
+			splits: [{ memberId: longUid, amountMinor: 1000 }],
 		}))
 		expect(res.success).toBe(false)
 	})
@@ -133,7 +143,7 @@ describe('expense schema (per-field) - makeExpenseCreateSchema', () => {
 	it('rejects splits[].memberId exceeding 128-char cap', () => {
 		const longUid = 'x'.repeat(200)
 		const res = schema.safeParse(basePayload({
-			splits: [{ memberId: longUid, amount: 1000 }],
+			splits: [{ memberId: longUid, amountMinor: 1000 }],
 		}))
 		expect(res.success).toBe(false)
 	})
@@ -141,7 +151,7 @@ describe('expense schema (per-field) - makeExpenseCreateSchema', () => {
 	it('rejects items[].assignees[] exceeding 128-char cap', () => {
 		const longUid = 'x'.repeat(300)
 		const res = schema.safeParse(basePayload({
-			items: [{ name: 'x', amount: 1, assignees: [longUid] }],
+			items: [{ id: 'it1', name: 'x', amountMinor: 1, assignees: [longUid] }],
 		}))
 		expect(res.success).toBe(false)
 	})
@@ -150,11 +160,9 @@ describe('expense schema (per-field) - makeExpenseCreateSchema', () => {
 		// Firebase uid max length; the validator must not reject the
 		// realistic worst case.
 		const maxUid = 'x'.repeat(128)
-		// memberId must be in MEMBERS so the cross-field check would pass,
-		// but here we only test the schema layer accepts the length.
 		const res = schema.safeParse(basePayload({
 			paidBy: maxUid,
-			splits: [{ memberId: maxUid, amount: 1000 }],
+			splits: [{ memberId: maxUid, amountMinor: 1000 }],
 		}))
 		expect(res.success).toBe(true)
 	})
@@ -162,8 +170,124 @@ describe('expense schema (per-field) - makeExpenseCreateSchema', () => {
 	it('rejects items[i].assignees exceeding cap (50)', () => {
 		const tooManyAssignees = Array.from({ length: 51 }, (_, i) => `uid-${i}`)
 		const res = schema.safeParse(basePayload({
-			items: [{ name: 'x', amount: 1, assignees: tooManyAssignees }],
+			items: [{ id: 'it1', name: 'x', amountMinor: 1, assignees: tooManyAssignees }],
 		}))
+		expect(res.success).toBe(false)
+	})
+
+	// ── Phase B item-shape regressions ─────────────────────────────────
+
+	it('rejects items[] missing id (Phase B: id is required)', () => {
+		const res = schema.safeParse(basePayload({
+			items: [{ name: 'Coffee', amountMinor: 500, assignees: ['editor-uid'] }],
+		}))
+		expect(res.success).toBe(false)
+	})
+
+	it('rejects items[i].amountMinor that is negative (Phase B: positive only)', () => {
+		// Discounts/surcharges now live in adjustments[], not as
+		// negative items.
+		const res = schema.safeParse(basePayload({
+			items: [{ id: 'it1', name: 'Discount', amountMinor: -100, assignees: ['editor-uid'] }],
+		}))
+		expect(res.success).toBe(false)
+	})
+
+	it('rejects items[i].amountMinor that is zero (Phase B: strictly positive)', () => {
+		const res = schema.safeParse(basePayload({
+			items: [{ id: 'it1', name: 'Free', amountMinor: 0, assignees: ['editor-uid'] }],
+		}))
+		expect(res.success).toBe(false)
+	})
+
+	it('rejects items[i].amountMinor that is non-integer (.int() guard)', () => {
+		const res = schema.safeParse(basePayload({
+			items: [{ id: 'it1', name: 'Coffee', amountMinor: 100.5, assignees: ['editor-uid'] }],
+		}))
+		expect(res.success).toBe(false)
+	})
+
+	// ── adjustments[] schema (Phase B contract) ─────────────────────────
+
+	it('requires adjustments field (no default → missing rejected)', () => {
+		const { adjustments: _omit, ...rest } = basePayload()
+		void _omit
+		expect(schema.safeParse(rest).success).toBe(false)
+	})
+
+	it('accepts empty adjustments[]', () => {
+		expect(schema.safeParse(basePayload({ adjustments: [] })).success).toBe(true)
+	})
+
+	it('accepts a valid EXPENSE-scope adjustment', () => {
+		const res = schema.safeParse(basePayload({
+			adjustments: [{ id: 'a1', label: 'Tax', kind: 'TAX', scope: 'EXPENSE', amountMinor: 80 }],
+		}))
+		expect(res.success).toBe(true)
+	})
+
+	it('accepts a valid ITEM-scope adjustment with targetItemId', () => {
+		const res = schema.safeParse(basePayload({
+			adjustments: [{
+				id: 'a1', label: 'Coupon', kind: 'COUPON', scope: 'ITEM',
+				amountMinor: 100, targetItemId: 'it1',
+			}],
+		}))
+		expect(res.success).toBe(true)
+	})
+
+	it('rejects ITEM-scope adjustment without targetItemId', () => {
+		const res = schema.safeParse(basePayload({
+			adjustments: [{ id: 'a1', label: 'Coupon', kind: 'COUPON', scope: 'ITEM', amountMinor: 100 }],
+		}))
+		expect(res.success).toBe(false)
+	})
+
+	it('rejects EXPENSE-scope adjustment WITH targetItemId (defensive symmetry)', () => {
+		const res = schema.safeParse(basePayload({
+			adjustments: [{
+				id: 'a1', label: 'Tax', kind: 'TAX', scope: 'EXPENSE',
+				amountMinor: 80, targetItemId: 'it1',
+			}],
+		}))
+		expect(res.success).toBe(false)
+	})
+
+	it('rejects UNKNOWN scope (OCR-draft-only — must be resolved before write)', () => {
+		const res = schema.safeParse(basePayload({
+			adjustments: [{ id: 'a1', label: 'Tax', kind: 'TAX', scope: 'UNKNOWN', amountMinor: 80 }],
+		}))
+		expect(res.success).toBe(false)
+	})
+
+	it('rejects adjustment kind outside the enum', () => {
+		const res = schema.safeParse(basePayload({
+			adjustments: [{ id: 'a1', label: 'X', kind: 'BOGUS', scope: 'EXPENSE', amountMinor: 80 }],
+		}))
+		expect(res.success).toBe(false)
+	})
+
+	it('rejects adjustment with non-positive amountMinor', () => {
+		expect(schema.safeParse(basePayload({
+			adjustments: [{ id: 'a1', label: 'T', kind: 'TAX', scope: 'EXPENSE', amountMinor: 0 }],
+		})).success).toBe(false)
+		expect(schema.safeParse(basePayload({
+			adjustments: [{ id: 'a1', label: 'T', kind: 'TAX', scope: 'EXPENSE', amountMinor: -1 }],
+		})).success).toBe(false)
+	})
+
+	it('rejects adjustment with non-integer amountMinor', () => {
+		const res = schema.safeParse(basePayload({
+			adjustments: [{ id: 'a1', label: 'T', kind: 'TAX', scope: 'EXPENSE', amountMinor: 80.5 }],
+		}))
+		expect(res.success).toBe(false)
+	})
+
+	it('rejects adjustments[] exceeding cap (50)', () => {
+		const huge = Array.from({ length: 51 }, (_, i) => ({
+			id: `a-${i}`, label: 'x', kind: 'TAX', scope: 'EXPENSE', amountMinor: 1,
+		}))
+		const res = schema.safeParse(basePayload({ adjustments: huge }))
 		expect(res.success).toBe(false)
 	})
 })
@@ -171,386 +295,85 @@ describe('expense schema (per-field) - makeExpenseCreateSchema', () => {
 describe('validateExpenseCrossField - settlement-engine integrity', () => {
 	it('passes on valid single-payer split', () => {
 		expect(() => validateExpenseCrossField({
-			amount: 1000, currency: 'JPY',
+			amountMinor: 1000, currency: 'JPY',
 			paidBy: 'editor-uid',
-			splits: [{ memberId: 'editor-uid', amount: 1000 }],
+			splits: [{ memberId: 'editor-uid', amountMinor: 1000 }],
 		}, MEMBERS)).not.toThrow()
 	})
 
 	it('passes on equal split across all members', () => {
 		expect(() => validateExpenseCrossField({
-			amount: 900, currency: 'JPY',
+			amountMinor: 900, currency: 'JPY',
 			paidBy: 'editor-uid',
 			splits: [
-				{ memberId: 'owner-uid',  amount: 300 },
-				{ memberId: 'editor-uid', amount: 300 },
-				{ memberId: 'viewer-uid', amount: 300 },
+				{ memberId: 'owner-uid',  amountMinor: 300 },
+				{ memberId: 'editor-uid', amountMinor: 300 },
+				{ memberId: 'viewer-uid', amountMinor: 300 },
 			],
 		}, MEMBERS)).not.toThrow()
 	})
 
 	it('rejects paidBy that is not a trip member', () => {
 		expect(() => validateExpenseCrossField({
-			amount: 100, currency: 'JPY',
+			amountMinor: 100, currency: 'JPY',
 			paidBy: 'stranger-uid',                  // <-- not in MEMBERS
-			splits: [{ memberId: 'editor-uid', amount: 100 }],
+			splits: [{ memberId: 'editor-uid', amountMinor: 100 }],
 		}, MEMBERS)).toThrow(ExpenseValidationError)
 	})
 
 	it('rejects a split whose memberId is not a trip member', () => {
 		expect(() => validateExpenseCrossField({
-			amount: 100, currency: 'JPY',
+			amountMinor: 100, currency: 'JPY',
 			paidBy: 'editor-uid',
 			splits: [
-				{ memberId: 'editor-uid',  amount: 50 },
-				{ memberId: 'stranger-uid', amount: 50 },   // <-- not in MEMBERS
+				{ memberId: 'editor-uid',   amountMinor: 50 },
+				{ memberId: 'stranger-uid', amountMinor: 50 },   // <-- not in MEMBERS
 			],
 		}, MEMBERS)).toThrow(/splits\[1\]\.memberId/)
 	})
 
-	it('rejects when Σ splits != amount (the headline gap rules couldn\'t close)', () => {
+	it('rejects when Σ splits != amountMinor', () => {
 		expect(() => validateExpenseCrossField({
-			amount: 1000, currency: 'JPY',
+			amountMinor: 1000, currency: 'JPY',
 			paidBy: 'editor-uid',
 			splits: [
-				{ memberId: 'owner-uid',  amount: 400 },
-				{ memberId: 'editor-uid', amount: 400 },   // sum = 800, not 1000
+				{ memberId: 'owner-uid',  amountMinor: 400 },
+				{ memberId: 'editor-uid', amountMinor: 400 },   // sum = 800, not 1000
 			],
 		}, MEMBERS)).toThrow(/sum of splits/)
 	})
 
 	it('accepts properly distributed JPY equal-split (sum exact)', () => {
-		// 1000 / 3 → splitEqually distributes remainder: [334, 333, 333] = 1000
+		// 1000 / 3 → [334, 333, 333] = 1000
 		expect(() => validateExpenseCrossField({
-			amount: 1000, currency: 'JPY',
+			amountMinor: 1000, currency: 'JPY',
 			paidBy: 'editor-uid',
 			splits: [
-				{ memberId: 'owner-uid',  amount: 334 },
-				{ memberId: 'editor-uid', amount: 333 },
-				{ memberId: 'viewer-uid', amount: 333 },
+				{ memberId: 'owner-uid',  amountMinor: 334 },
+				{ memberId: 'editor-uid', amountMinor: 333 },
+				{ memberId: 'viewer-uid', amountMinor: 333 },
 			],
 		}, MEMBERS)).not.toThrow()
 	})
 
-	it('rejects JPY split with sub-yen amounts (no minor-unit currency tolerance)', () => {
-		// Previous code tolerated |diff| <= 0.5; now JPY (0 minor units)
-		// rounds each side and demands strict equality. 333.33×3 = 999.99
-		// rounds to 1000... but each individual split is non-integer too,
-		// and a malicious payload could exploit the gap to corrupt
-		// settlement math. Strict round-then-equal is what we want.
+	it('rejects USD split off by 1 minor unit (integer equality, no tolerance)', () => {
+		// USD 10.00 = 1000 minor; splits sum to 999 → reject.
 		expect(() => validateExpenseCrossField({
-			amount: 1000.5, currency: 'JPY',
+			amountMinor: 1000, currency: 'USD',
 			paidBy: 'editor-uid',
 			splits: [
-				{ memberId: 'owner-uid',  amount: 333 },
-				{ memberId: 'editor-uid', amount: 333 },
-				{ memberId: 'viewer-uid', amount: 333 },   // sum = 999, amount = 1000.5
-			],
-		}, MEMBERS)).toThrow(/amount/)
-	})
-
-	it('rejects JPY splits with sub-yen amounts even when sum rounds to amount', () => {
-		// The headline regression for the per-field precision gate: raw
-		// caller submits 333.33 × 3 = 999.99 ≈ 1000 (sum rounds clean to
-		// 1000) but each individual split sits between integer yen.
-		// Settlement engine + display layer downstream assume amounts
-		// are clean on the currency's minor-unit grid.
-		expect(() => validateExpenseCrossField({
-			amount: 1000, currency: 'JPY',
-			paidBy: 'editor-uid',
-			splits: [
-				{ memberId: 'owner-uid',  amount: 333.33 },
-				{ memberId: 'editor-uid', amount: 333.33 },
-				{ memberId: 'viewer-uid', amount: 333.34 },   // sum = 1000.00 exact
-			],
-		}, MEMBERS)).toThrow(/splits\[0\]\.amount/)
-	})
-
-	it('rejects USD splits with sub-cent amounts even when sum rounds to amount', () => {
-		// USD analogue of the above: 1.0050 isn't a legal 2-decimal
-		// amount even though three of them sum cleanly to 3.015 ≈ 3.02.
-		expect(() => validateExpenseCrossField({
-			amount: 3.02, currency: 'USD',
-			paidBy: 'editor-uid',
-			splits: [
-				{ memberId: 'owner-uid',  amount: 1.0050 },
-				{ memberId: 'editor-uid', amount: 1.0075 },
-				{ memberId: 'viewer-uid', amount: 1.0075 },
-			],
-		}, MEMBERS)).toThrow(/splits\[0\]\.amount/)
-	})
-
-	it('rejects items[i].amount with sub-unit value for the currency', () => {
-		// items[] amounts feed splitsFromItems on the client; sub-unit
-		// items would propagate through the splits derivation, but a raw
-		// caller could bypass the client and write the items directly.
-		expect(() => validateExpenseCrossField({
-			amount: 100, currency: 'JPY',
-			paidBy: 'editor-uid',
-			splits: [{ memberId: 'editor-uid', amount: 100 }],
-			items: [
-				{ amount: 50.5, assignees: ['editor-uid'] },
-				{ amount: 49.5, assignees: ['editor-uid'] },
-			],
-		}, MEMBERS)).toThrow(/items\[0\]\.amount/)
-	})
-
-	it('rejects amount itself with sub-unit value for the currency', () => {
-		expect(() => validateExpenseCrossField({
-			amount: 100.5, currency: 'JPY',
-			paidBy: 'editor-uid',
-			splits: [{ memberId: 'editor-uid', amount: 100.5 }],
-		}, MEMBERS)).toThrow(/amount/)
-	})
-
-	it('accepts USD split exact at 2-decimal precision', () => {
-		// $10.50 split into thirds with proper distribution = $3.50 each
-		expect(() => validateExpenseCrossField({
-			amount: 10.50, currency: 'USD',
-			paidBy: 'editor-uid',
-			splits: [
-				{ memberId: 'owner-uid',  amount: 3.50 },
-				{ memberId: 'editor-uid', amount: 3.50 },
-				{ memberId: 'viewer-uid', amount: 3.50 },
-			],
-		}, MEMBERS)).not.toThrow()
-	})
-
-	it('accepts USD split with IEEE-754 drift absorbed by minor-unit rounding', () => {
-		// 0.1 + 0.2 = 0.30000000000000004 in JS; rounded to cents = 30.
-		expect(() => validateExpenseCrossField({
-			amount: 0.3, currency: 'USD',
-			paidBy: 'editor-uid',
-			splits: [
-				{ memberId: 'owner-uid',  amount: 0.1 },
-				{ memberId: 'editor-uid', amount: 0.2 },
-			],
-		}, MEMBERS)).not.toThrow()
-	})
-
-	it('rejects USD split off by 1 cent (no half-unit tolerance for USD)', () => {
-		// Previous Math.abs(diff) <= 0.5 would have accepted this --
-		// 49 cent gap is well below 0.5 USD. Now: rejected.
-		expect(() => validateExpenseCrossField({
-			amount: 10.00, currency: 'USD',
-			paidBy: 'editor-uid',
-			splits: [
-				{ memberId: 'owner-uid',  amount: 5.00 },
-				{ memberId: 'editor-uid', amount: 4.99 },   // sum 9.99, amount 10.00
+				{ memberId: 'owner-uid',  amountMinor: 500 },
+				{ memberId: 'editor-uid', amountMinor: 499 },   // sum 999, amount 1000
 			],
 		}, MEMBERS)).toThrow(/sum of splits/)
-	})
-
-	it('falls back to 2-decimal precision for unrecognised currency code', () => {
-		// Honest path gets caught by Zod's `.length(3)` upstream; defensive
-		// branch protects the cross-field validator from crashing on an
-		// unknown code that slipped past.
-		expect(() => validateExpenseCrossField({
-			amount: 100.00, currency: 'XYZ',
-			paidBy: 'editor-uid',
-			splits: [{ memberId: 'editor-uid', amount: 100.00 }],
-		}, MEMBERS)).not.toThrow()
-	})
-
-	it('rejects items whose sum does not equal amount (items-mode invariant)', () => {
-		// Headline gap the Worker was the last chokepoint to close:
-		// splits sum to amount (1000) but items sum to 300. On next edit
-		// the items-mode toggle would regenerate splits from items and
-		// silently rewrite the splits total, breaking settlement
-		// chronology.
-		expect(() => validateExpenseCrossField({
-			amount: 1000, currency: 'JPY',
-			paidBy: 'editor-uid',
-			splits: [{ memberId: 'editor-uid', amount: 1000 }],
-			items: [
-				{ amount: 100, assignees: ['editor-uid'] },
-				{ amount: 200, assignees: ['editor-uid'] },
-			],
-		}, MEMBERS)).toThrow(/sum of items/)
-	})
-
-	it('accepts items with negative line (discount / refund) when sum still equals amount', () => {
-		// splitEqually supports negative totals for discount lines; the
-		// items-sum invariant must too.
-		expect(() => validateExpenseCrossField({
-			amount: 1000, currency: 'JPY',
-			paidBy: 'editor-uid',
-			splits: [{ memberId: 'editor-uid', amount: 1000 }],
-			items: [
-				{ amount: 1100, assignees: ['editor-uid'] },
-				{ amount: -100, assignees: ['editor-uid'] },   // discount line
-			],
-		}, MEMBERS)).not.toThrow()
-	})
-
-	it('skips items-sum check when items[] is empty (not items mode)', () => {
-		// Schema allows items to be omitted OR an empty array. Empty
-		// means "no items mode"; sum invariant should not apply.
-		expect(() => validateExpenseCrossField({
-			amount: 1000, currency: 'JPY',
-			paidBy: 'editor-uid',
-			splits: [{ memberId: 'editor-uid', amount: 1000 }],
-			items: [],
-		}, MEMBERS)).not.toThrow()
-	})
-
-	it('rejects items with non-member assignees', () => {
-		expect(() => validateExpenseCrossField({
-			amount: 100, currency: 'JPY',
-			paidBy: 'editor-uid',
-			splits: [{ memberId: 'editor-uid', amount: 100 }],
-			items: [
-				{ amount: 100, assignees: ['editor-uid', 'stranger-uid'] },   // <-- stranger
-			],
-		}, MEMBERS)).toThrow(/items\[0\]\.assignees\[1\]/)
-	})
-
-	// ── Per-member items↔splits consistency (P1: financial attribution) ──
-
-	it('P1: items pin debt on C but splits pin it on B → rejected (attribution corruption vector)', async () => {
-		// The headline attack: both sum invariants pass (Σitems=1000,
-		// Σsplits=1000, both === amount), but items{assignees:[C]} +
-		// splits{memberId:B} attribute the same 1000 to different
-		// members. Settlement records B's debt; next items-mode UI
-		// edit recomputes splits from items and silently flips B→C.
-		expect(() => validateExpenseCrossField({
-			amount: 1000, currency: 'JPY',
-			paidBy: 'editor-uid',
-			splits: [{ memberId: 'owner-uid',  amount: 1000 }],   // owner owes
-			items:  [{ amount: 1000, assignees: ['viewer-uid'] }], // viewer ate
-		}, MEMBERS)).toThrow(/member/)
-	})
-
-	it('P1: items derive correct per-member totals → accepted', async () => {
-		// 3 members split a 900 yen meal: items → splits derivation is
-		// the same as the client's splitsFromItems. Worker accepts the
-		// match.
-		expect(() => validateExpenseCrossField({
-			amount: 900, currency: 'JPY',
-			paidBy: 'editor-uid',
-			splits: [
-				{ memberId: 'owner-uid',  amount: 300 },
-				{ memberId: 'editor-uid', amount: 300 },
-				{ memberId: 'viewer-uid', amount: 300 },
-			],
-			items: [
-				{ amount: 900, assignees: ['owner-uid', 'editor-uid', 'viewer-uid'] },
-			],
-		}, MEMBERS)).not.toThrow()
-	})
-
-	it('P1: derived split contains member NOT in splits → rejected', async () => {
-		// items name 3 assignees but splits only lists 2 -- the 3rd
-		// member's debt would be lost from settlement.
-		expect(() => validateExpenseCrossField({
-			amount: 900, currency: 'JPY',
-			paidBy: 'editor-uid',
-			splits: [
-				{ memberId: 'owner-uid',  amount: 450 },
-				{ memberId: 'editor-uid', amount: 450 },   // missing viewer-uid
-			],
-			items: [
-				{ amount: 900, assignees: ['owner-uid', 'editor-uid', 'viewer-uid'] },
-			],
-		}, MEMBERS)).toThrow(/items derive 3 per-member entries but splits has 2/)
-	})
-
-	it('P1: split amount differs from derived → rejected', async () => {
-		// Both sides have the same 3 members; same sum (900); but
-		// splits skew the distribution unevenly compared to what
-		// items derive (300/300/300). This would silently rewrite
-		// the per-member distribution on next items-mode UI edit.
-		expect(() => validateExpenseCrossField({
-			amount: 900, currency: 'JPY',
-			paidBy: 'editor-uid',
-			splits: [
-				{ memberId: 'owner-uid',  amount: 500 },   // derived: 300
-				{ memberId: 'editor-uid', amount: 200 },   // derived: 300
-				{ memberId: 'viewer-uid', amount: 200 },   // derived: 300
-			],
-			items: [
-				{ amount: 900, assignees: ['owner-uid', 'editor-uid', 'viewer-uid'] },
-			],
-		}, MEMBERS)).toThrow(/member owner-uid: items derive 300 but splits has 500/)
-	})
-
-	it('P1: items remainder distribution (¥1 / 3 → [1, 0, 0]) preserved in splits', async () => {
-		// Edge case: item amount 1 with 3 assignees → splitEqually
-		// returns [1, 0, 0]. Splits must include the 0 entries (the
-		// client's splitsFromItems doesn't filter them out).
-		expect(() => validateExpenseCrossField({
-			amount: 1, currency: 'JPY',
-			paidBy: 'editor-uid',
-			splits: [
-				{ memberId: 'owner-uid',  amount: 1 },
-				{ memberId: 'editor-uid', amount: 0 },
-				{ memberId: 'viewer-uid', amount: 0 },
-			],
-			items: [
-				{ amount: 1, assignees: ['owner-uid', 'editor-uid', 'viewer-uid'] },
-			],
-		}, MEMBERS)).not.toThrow()
-	})
-
-	it('P1: USD $10 / 3 assignees → client integer convention (no minor-unit scaling)', async () => {
-		// REGRESSION: an earlier version of the Worker derivation
-		// scaled item.amount * factor and ran the distribution in
-		// minor-unit space, producing [334¢, 333¢, 333¢] for USD $10
-		// across 3 assignees. But the app's convention is amount-as-
-		// integer regardless of currency (see src/utils/currency.ts):
-		// client's splitsFromItems(amount=10, assignees=[a,b,c]) returns
-		// [{a, 4}, {b, 3}, {c, 3}] -- dollar-unit integers. Worker MUST
-		// mirror that exactly or every USD/EUR write via items mode
-		// gets falsely flagged as attribution-corruption.
-		expect(() => validateExpenseCrossField({
-			amount: 10, currency: 'USD',
-			paidBy: 'editor-uid',
-			splits: [
-				{ memberId: 'owner-uid',  amount: 4 },   // client splitEqually gives 4 to first
-				{ memberId: 'editor-uid', amount: 3 },
-				{ memberId: 'viewer-uid', amount: 3 },
-			],
-			items: [
-				{ amount: 10, assignees: ['owner-uid', 'editor-uid', 'viewer-uid'] },
-			],
-		}, MEMBERS)).not.toThrow()
-	})
-
-	it('P1: USD attribution attack still rejected (cross-member swap)', async () => {
-		// The genuine attack vector must still be caught for USD:
-		// items pin 10 on owner, splits pin 10 on viewer → reject.
-		expect(() => validateExpenseCrossField({
-			amount: 10, currency: 'USD',
-			paidBy: 'editor-uid',
-			splits: [{ memberId: 'viewer-uid', amount: 10 }],
-			items:  [{ amount: 10, assignees: ['owner-uid'] }],
-		}, MEMBERS)).toThrow(/member/)
-	})
-
-	it('P1: negative item (discount line) accumulates correctly into per-member totals', async () => {
-		// Two items: ¥1500 split between owner+editor, then a ¥-600
-		// discount split between the same two. Net derived totals
-		// should be owner=450, editor=450.
-		expect(() => validateExpenseCrossField({
-			amount: 900, currency: 'JPY',
-			paidBy: 'editor-uid',
-			splits: [
-				{ memberId: 'owner-uid',  amount: 450 },
-				{ memberId: 'editor-uid', amount: 450 },
-			],
-			items: [
-				{ amount: 1500, assignees: ['owner-uid', 'editor-uid'] },
-				{ amount: -600, assignees: ['owner-uid', 'editor-uid'] },
-			],
-		}, MEMBERS)).not.toThrow()
 	})
 
 	it('error.field carries the dotted path for form-level error UI', () => {
 		try {
 			validateExpenseCrossField({
-				amount: 100, currency: 'JPY',
+				amountMinor: 100, currency: 'JPY',
 				paidBy: 'stranger-uid',
-				splits: [{ memberId: 'editor-uid', amount: 100 }],
+				splits: [{ memberId: 'editor-uid', amountMinor: 100 }],
 			}, MEMBERS)
 		} catch (e) {
 			expect(e).toBeInstanceOf(ExpenseValidationError)
@@ -561,15 +384,210 @@ describe('validateExpenseCrossField - settlement-engine integrity', () => {
 	})
 })
 
+describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer gate)', () => {
+	// The Phase B contract: when items[] is present, the materializer
+	// recomputes the authoritative splits from (items, adjustments,
+	// members) and compares them to the caller-supplied splits[]. A
+	// mismatch is the SPLIT_PREVIEW_DRIFT signal: client preview
+	// disagrees with the Worker's authoritative recompute.
+
+	it('accepts items-mode payload where splits match the materializer output', () => {
+		// 900 / 3 assignees = 300/300/300, no adjustments
+		expect(() => validateExpenseCrossField({
+			amountMinor: 900, currency: 'JPY',
+			paidBy: 'editor-uid',
+			splits: [
+				{ memberId: 'owner-uid',  amountMinor: 300 },
+				{ memberId: 'editor-uid', amountMinor: 300 },
+				{ memberId: 'viewer-uid', amountMinor: 300 },
+			],
+			items: [
+				{ id: 'it1', amountMinor: 900, assignees: ['owner-uid', 'editor-uid', 'viewer-uid'] },
+			],
+			adjustments: [],
+		}, MEMBERS)).not.toThrow()
+	})
+
+	it('rejects attribution-corruption attack (items pin debt on C, splits on B)', () => {
+		// Σitems=1000, Σsplits=1000, both === amountMinor, but items pin
+		// debt on viewer while splits pin it on owner.
+		expect(() => validateExpenseCrossField({
+			amountMinor: 1000, currency: 'JPY',
+			paidBy: 'editor-uid',
+			splits: [{ memberId: 'owner-uid', amountMinor: 1000 }],
+			items:  [{ id: 'it1', amountMinor: 1000, assignees: ['viewer-uid'] }],
+			adjustments: [],
+		}, MEMBERS)).toThrow(/SPLIT_PREVIEW_DRIFT/)
+	})
+
+	it('rejects when splits drops a member that items derive', () => {
+		// items name 3 assignees but splits only lists 2.
+		expect(() => validateExpenseCrossField({
+			amountMinor: 900, currency: 'JPY',
+			paidBy: 'editor-uid',
+			splits: [
+				{ memberId: 'owner-uid',  amountMinor: 450 },
+				{ memberId: 'editor-uid', amountMinor: 450 },   // missing viewer-uid
+			],
+			items: [
+				{ id: 'it1', amountMinor: 900, assignees: ['owner-uid', 'editor-uid', 'viewer-uid'] },
+			],
+			adjustments: [],
+		}, MEMBERS)).toThrow(/SPLIT_PREVIEW_DRIFT/)
+	})
+
+	it('rejects splits that skew distribution away from the materializer', () => {
+		// Three members; same sum; but splits skew the distribution
+		// unevenly compared to what items derive (300/300/300).
+		expect(() => validateExpenseCrossField({
+			amountMinor: 900, currency: 'JPY',
+			paidBy: 'editor-uid',
+			splits: [
+				{ memberId: 'owner-uid',  amountMinor: 500 },   // materializer: 300
+				{ memberId: 'editor-uid', amountMinor: 200 },   // materializer: 300
+				{ memberId: 'viewer-uid', amountMinor: 200 },   // materializer: 300
+			],
+			items: [
+				{ id: 'it1', amountMinor: 900, assignees: ['owner-uid', 'editor-uid', 'viewer-uid'] },
+			],
+			adjustments: [],
+		}, MEMBERS)).toThrow(/SPLIT_PREVIEW_DRIFT/)
+	})
+
+	it('accepts items remainder distribution (¥1 / 3 → [1, 0, 0]) preserved by materializer', () => {
+		// item amountMinor 1 with 3 assignees: splitEqually gives [1, 0, 0];
+		// materializer drops zero-amount members from the output, so
+		// splits must drop them too.
+		expect(() => validateExpenseCrossField({
+			amountMinor: 1, currency: 'JPY',
+			paidBy: 'editor-uid',
+			splits: [
+				{ memberId: 'owner-uid', amountMinor: 1 },
+			],
+			items: [
+				{ id: 'it1', amountMinor: 1, assignees: ['owner-uid', 'editor-uid', 'viewer-uid'] },
+			],
+			adjustments: [],
+		}, MEMBERS)).not.toThrow()
+	})
+
+	it('accepts ITEM-scope discount applied to a single line', () => {
+		// Two items, ¥600 + ¥400 = ¥1000; ITEM-scope discount of ¥200
+		// off item 1 → effective ¥400 + ¥400 = ¥800.
+		// Owner+editor share item 1 (200 each); viewer takes item 2 (400).
+		expect(() => validateExpenseCrossField({
+			amountMinor: 800, currency: 'JPY',
+			paidBy: 'editor-uid',
+			splits: [
+				{ memberId: 'owner-uid',  amountMinor: 200 },
+				{ memberId: 'editor-uid', amountMinor: 200 },
+				{ memberId: 'viewer-uid', amountMinor: 400 },
+			],
+			items: [
+				{ id: 'it1', amountMinor: 600, assignees: ['owner-uid', 'editor-uid'] },
+				{ id: 'it2', amountMinor: 400, assignees: ['viewer-uid'] },
+			],
+			adjustments: [
+				{ id: 'a1', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: 200, targetItemId: 'it1' },
+			],
+		}, MEMBERS)).not.toThrow()
+	})
+
+	it('accepts EXPENSE-scope tax apportioned proportionally', () => {
+		// items: ¥600 + ¥400 = ¥1000 base; EXPENSE-scope TAX +¥100.
+		// Apportioned proportionally: 600/1000 → +60 to it1; remainder
+		// goes to the last item → +40 to it2. Effective: 660 + 440 = 1100.
+		// Owner+editor share it1 → 330 each; viewer takes it2 → 440.
+		expect(() => validateExpenseCrossField({
+			amountMinor: 1100, currency: 'JPY',
+			paidBy: 'editor-uid',
+			splits: [
+				{ memberId: 'owner-uid',  amountMinor: 330 },
+				{ memberId: 'editor-uid', amountMinor: 330 },
+				{ memberId: 'viewer-uid', amountMinor: 440 },
+			],
+			items: [
+				{ id: 'it1', amountMinor: 600, assignees: ['owner-uid', 'editor-uid'] },
+				{ id: 'it2', amountMinor: 400, assignees: ['viewer-uid'] },
+			],
+			adjustments: [
+				{ id: 'a1', kind: 'TAX', scope: 'EXPENSE', amountMinor: 100 },
+			],
+		}, MEMBERS)).not.toThrow()
+	})
+
+	it('rejects ITEM-scope adjustment whose targetItemId is not in items[]', () => {
+		expect(() => validateExpenseCrossField({
+			amountMinor: 800, currency: 'JPY',
+			paidBy: 'editor-uid',
+			splits: [{ memberId: 'editor-uid', amountMinor: 800 }],
+			items: [
+				{ id: 'it1', amountMinor: 1000, assignees: ['editor-uid'] },
+			],
+			adjustments: [
+				{ id: 'a1', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: 200, targetItemId: 'nonexistent' },
+			],
+		}, MEMBERS)).toThrow(/TARGET_ITEM_NOT_FOUND/)
+	})
+
+	it('rejects ITEM-scope adjustment that drives an item below zero', () => {
+		// 500 - 800 = -300 < 0 → OVER_DISCOUNT_ITEM
+		expect(() => validateExpenseCrossField({
+			amountMinor: 0, currency: 'JPY',
+			paidBy: 'editor-uid',
+			splits: [{ memberId: 'editor-uid', amountMinor: 0 }],
+			items: [
+				{ id: 'it1', amountMinor: 500, assignees: ['editor-uid'] },
+			],
+			adjustments: [
+				{ id: 'a1', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: 800, targetItemId: 'it1' },
+			],
+		}, MEMBERS)).toThrow(/OVER_DISCOUNT_ITEM/)
+	})
+
+	it('rejects items with non-member assignees (via materializer NON_MEMBER_ASSIGNEE)', () => {
+		expect(() => validateExpenseCrossField({
+			amountMinor: 100, currency: 'JPY',
+			paidBy: 'editor-uid',
+			splits: [{ memberId: 'editor-uid', amountMinor: 100 }],
+			items: [
+				{ id: 'it1', amountMinor: 100, assignees: ['editor-uid', 'stranger-uid'] },
+			],
+			adjustments: [],
+		}, MEMBERS)).toThrow(/NON_MEMBER_ASSIGNEE/)
+	})
+
+	it('rejects adjustments[] when items[] is empty (manual-entry constraint)', () => {
+		expect(() => validateExpenseCrossField({
+			amountMinor: 100, currency: 'JPY',
+			paidBy: 'editor-uid',
+			splits: [{ memberId: 'editor-uid', amountMinor: 100 }],
+			items: [],
+			adjustments: [
+				{ id: 'a1', kind: 'TAX', scope: 'EXPENSE', amountMinor: 10 },
+			],
+		}, MEMBERS)).toThrow(/adjustments require items/)
+	})
+
+	it('skips materializer when items[] is empty (manual-entry mode)', () => {
+		// No items, no adjustments → cross-field check stops after the
+		// splits-sum invariant. Headline regression: the old items-sum
+		// invariant was unconditionally enforced even with items=[].
+		expect(() => validateExpenseCrossField({
+			amountMinor: 1000, currency: 'JPY',
+			paidBy: 'editor-uid',
+			splits: [{ memberId: 'editor-uid', amountMinor: 1000 }],
+			items: [],
+			adjustments: [],
+		}, MEMBERS)).not.toThrow()
+	})
+})
+
 // ── makeReceiptSchema ────────────────────────────────────────────────
 //
 // After Phase 3.5 commit 4c the client can no longer supply a receipt
 // shape; the Worker builds it from consumed upload intents and validates
-// the built object through this schema as defense-in-depth. The tests
-// that used to live under makeExpenseCreateSchema (URL origin binding,
-// path mismatch, thumbUrl pairing) moved here -- the receipt-shape
-// invariants are the same, just exercised directly on the receipt
-// schema rather than via an outer create body.
+// the built object through this schema as defense-in-depth.
 
 describe('makeReceiptSchema (Worker-built receipt validation)', () => {
 	const schema = makeReceiptSchema(TRIP_ID, EXPENSE_ID, BUCKET)
@@ -594,12 +612,6 @@ describe('makeReceiptSchema (Worker-built receipt validation)', () => {
 		expect(res.success).toBe(false)
 	})
 
-	// P1 regression: receipt URL must be bound to receipt path. Pre-fix
-	// the schema only checked the path regex; URL was any z.string().url().
-	// An attacker could submit a legit-looking path but a hostile URL
-	// pointing at an external server -- the Firestore doc gets written,
-	// then the UI renders an evil image from off-platform.
-
 	it('rejects receipt.url pointing at an off-Firebase origin (URL origin binding)', () => {
 		const res = schema.safeParse({
 			url:  'https://evil.example.com/track.png',
@@ -612,7 +624,7 @@ describe('makeReceiptSchema (Worker-built receipt validation)', () => {
 	it('rejects receipt.url whose Storage path doesn\'t match receipt.path (binding mismatch)', () => {
 		const wrongPath = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/something-else.webp`
 		const res = schema.safeParse({
-			url:  legitReceiptUrl(wrongPath),  // URL encodes wrongPath, not okPath
+			url:  legitReceiptUrl(wrongPath),
 			path: okPath,
 			type: 'image/webp',
 		})

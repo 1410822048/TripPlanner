@@ -30,13 +30,24 @@ const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODE
 // communicate intent + language preservation.
 function buildPrompt(currencyHint?: string): string {
   return [
-    'You are extracting line items from a receipt photo.',
+    'You are extracting line items + adjustments from a receipt photo.',
     '',
     'Rules:',
-    '- Preserve the original language of each item name exactly (do not translate).',
-    '- amount is the line total in MAJOR units (e.g. yen = whole yen, USD = dollars with cents as decimals). Tax/service rows are valid items too.',
-    '- Discount / cashback / promo / refund lines are valid items with NEGATIVE amounts (e.g. "キャッシュレス還元 -6", "割引 -50"). When the receipt prints a positive number in a discount column or with a label like 還元/割引/値引, output the amount as negative so sum(items) === total.',
-    '- "total" is the receipt grand total the customer paid (after tax / service / discounts).',
+    '- Preserve the original language of each item / adjustment label exactly (do not translate).',
+    '- items[] holds POSITIVE-only product / service line totals as the pre-discount subtotal printed next to each product line, in the receipt currency.',
+    '- amountText / totalText wire format: ASCII digits with an optional single dot for the fractional part (e.g. "12.34" for USD, "500" for JPY, "300" for TWD). NO thousand separators (no comma, no space, no full-width comma), NO currency symbols, NO leading sign, NO scientific notation. JPY/KRW/TWD/VND/IDR are zero-fraction currencies — emit integer-only strings for them. Do NOT scale to minor units. Do NOT round; preserve the printed precision.',
+    '- adjustments[] holds receipt-wide and per-item modifiers that CHANGE the paid total: discount / cashback / coupon / tax-exempt (negative effect) AND surcharge / service / tax / tip (positive effect). amountText on every adjustment is a POSITIVE decimal string in the same wire format as items[].amountText; the sign is encoded by `kind`.',
+    '    - kind = DISCOUNT | COUPON | TAX_EXEMPT (subtract from receipt total)',
+    '    - kind = SURCHARGE | TAX | TIP            (add to receipt total)',
+    '    - kind = OTHER                           (use when truly ambiguous; defaults to subtract downstream)',
+    '- suggestedScope hints whether the adjustment targets a single item or the whole receipt:',
+    '    - ITEM    : printed immediately under / beside one product line ("Donut 200 / 値引 -20")',
+    '    - EXPENSE : receipt-wide line (subtotal-level tax, service charge, total discount)',
+    '    - UNKNOWN : can\'t tell from layout; pick this only when neither ITEM nor EXPENSE is clearly correct',
+    '- suggestedTargetItemIndex is the 0-based index into items[] when scope is ITEM. Omit when scope is EXPENSE or UNKNOWN.',
+    '- ignoredLines[] holds visible receipt lines that do NOT change the paid total: included-tax disclosures such as 内税/内消費税/消費税等, subtotal echoes, payment method, cash received, change, receipt number, register id, address, phone, and footer text. Preserve the original text.',
+    '- TAX is only for a tax line that is added to a pre-tax subtotal and actually changes the grand total. If item prices already include tax and the receipt merely discloses the included tax amount, put that line in ignoredLines[], not adjustments[].',
+    '- "totalText" is the receipt grand total the customer paid (after tax / service / discounts), formatted as a decimal string in the receipt currency (same format as items[].amountText). The identity sum(items[].amountText) + Σ(adjustment sign × adjustment.amountText) === totalText MUST hold when parsed as decimals; ignoredLines[] are excluded from this identity. If you can\'t reconcile, prefer UNKNOWN/EXPENSE adjustment only for real financial modifiers, never for receipt metadata.',
     '- "storeName" is the store, restaurant, or venue name printed at the top of the receipt. Use the most prominent / largest name (skip branch numbers, addresses, phone numbers). Omit if no clear store identifier exists.',
     '- "category" is the most likely expense category for this receipt. Choose ONE from this fixed list, based on the storeName + line items:',
     '    - food          : restaurants, cafés, bars, supermarkets, convenience stores, takeout, drinks (居酒屋 / カフェ / レストラン / コンビニ / スーパー / 食堂)',
@@ -46,8 +57,7 @@ function buildPrompt(currencyHint?: string): string {
     '    - shopping      : clothing, electronics, souvenirs, drugstores, department stores, non-food retail (服 / 雑貨 / お土産 / ドラッグストア / 百貨店)',
     '    - other         : anything that does not clearly fit above (medical, ATM fees, services, mixed receipts where intent is unclear)',
     '  Omit "category" only when truly indeterminable. Prefer guessing over omitting.',
-    '- Skip header/footer noise (address, phone, register ID, payment method, EFTPOS confirmation lines, "thank you for shopping" text).',
-    '- If the receipt is unreadable, return items: [] and total: 0.',
+    '- If the receipt is unreadable, return items: [], adjustments: [], ignoredLines: [] and totalText: "0".',
     currencyHint
       ? `- Currency hint: ${currencyHint} (use this when the receipt symbol is ambiguous).`
       : '',
@@ -195,10 +205,10 @@ export async function extractReceiptItems(
   // it can't read the image. Map to a distinct error so the client
   // shows "看不懂,重拍" instead of a generic schema fail.
   if (parsed.data.items.length === 0) {
-    console.warn(`[gemini] unreadable: items=[] total=${parsed.data.total}`)
+    console.warn(`[gemini] unreadable: items=[] total=${parsed.data.totalText}`)
     throw new GeminiError('Receipt unreadable (Gemini returned empty items)', 422)
   }
 
-  console.log(`[gemini] success: items=${parsed.data.items.length} total=${parsed.data.total} currency=${parsed.data.currency ?? '?'}`)
+  console.log(`[gemini] success: items=${parsed.data.items.length} adjustments=${parsed.data.adjustments.length} ignored=${parsed.data.ignoredLines.length} total=${parsed.data.totalText} currency=${parsed.data.currency ?? '?'}`)
   return parsed.data
 }

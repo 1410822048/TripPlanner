@@ -131,13 +131,14 @@ function mockReceipt(): { intentIds: string[]; paths: string[]; traceId: string 
 
 function mockExpenseInput() {
   return {
-    title:    'Lunch',
-    amount:   1000,
-    currency: 'JPY',
-    category: 'food' as const,
-    paidBy:   'editor-uid',
-    splits:   [{ memberId: 'editor-uid', amount: 1000 }],
-    date:     '2026-05-22',
+    title:       'Lunch',
+    amountMinor: 1000,
+    currency:    'JPY',
+    category:    'food' as const,
+    paidBy:      'editor-uid',
+    splits:      [{ memberId: 'editor-uid', amountMinor: 1000 }],
+    date:        '2026-05-22',
+    adjustments: [],
   }
 }
 

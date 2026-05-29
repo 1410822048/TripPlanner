@@ -11,7 +11,7 @@ import { Loader2 } from 'lucide-react'
 import type { Expense } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import SwipeableShell from '@/components/ui/SwipeableShell'
-import { formatAmount } from '@/utils/currency'
+import { formatMinorAmount } from '@/utils/money'
 
 export interface SwipeableExpenseItemProps {
   expense:      Expense
@@ -104,7 +104,7 @@ function SwipeableExpenseItem({
           </div>
         </div>
         <div className="text-[14px] font-bold text-ink tabular-nums shrink-0 pointer-events-none">
-          {formatAmount(expense.amount, currency)}
+          {formatMinorAmount(expense.amountMinor, currency)}
         </div>
       </div>
     </SwipeableShell>

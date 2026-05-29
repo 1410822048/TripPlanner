@@ -9,6 +9,8 @@ export interface TripHeaderCardProps {
   selectedTrip:  TripItem
   tripDays:      number
   scheduleCount: number
+  /** Sum of schedule estimatedCostMinor in the active trip's currency
+   *  (integer minor units). Rendered via formatMinorAmount. */
   tripTotal:     number
   /** Owner-only: controls visibility of the invite "+" button.
    *  firestore.rules gates /invites create on isTripOwner — non-owners

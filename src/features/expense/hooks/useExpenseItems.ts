@@ -3,6 +3,15 @@
 // and every mutator the form needs — add / remove / setName /
 // setAmount / toggleAssignee — plus derived state (sum, hasItems).
 //
+// Money domain note: each row carries BOTH `amountText` (raw user
+// input / OCR string) AND `amountMinor` (integer minor units, the
+// thing the materializer + Firestore see). The text is preserved
+// verbatim while the user types so mid-keystroke states like "12."
+// don't lose the trailing dot; the minor value is rederived on each
+// keystroke via `parseMoneyToMinor` and falls back to 0 on partial
+// input. Consumers read `amountMinor` for math / persistence and
+// `amountText` for input value binding.
+//
 // Why a hook, not raw useState in the form:
 //   - The form was getting 6 inline mutator functions sharing the same
 //     immutable-update pattern. That repetition is what hooks exist for.
@@ -12,14 +21,24 @@
 //     obvious at the call site.
 import { useState } from 'react'
 import type { ExpenseItem } from '@/types'
+import { parseMoneyToMinor, formatMinorForInput } from '@/utils/money'
+
+/** Form-only superset of ExpenseItem. The `amountText` field tracks
+ *  the raw input string so partial keystrokes like "12." survive the
+ *  parse → reformat round-trip. `amountMinor` stays the canonical
+ *  integer minor-unit value the materializer / Worker see. */
+export interface FormItem extends ExpenseItem {
+  amountText: string
+}
 
 export interface UseExpenseItemsResult {
-  items:    ExpenseItem[]
+  items:    FormItem[]
   hasItems: boolean
-  /** sum(item.amount) — note: can be negative (discount lines). */
+  /** sum(item.amountMinor). Phase B: positive only. Discount /
+   *  surcharge lines live in the sibling Expense.adjustments[] array. */
   sum:      number
   /** Replace the whole list (e.g. OCR result lands). */
-  reset:    (next: ExpenseItem[]) => void
+  reset:    (next: FormItem[]) => void
   /** Empty the list (called when the receipt is removed). */
   clear:    () => void
   /** Append a blank row (manual "+ 行を追加" button). */
@@ -30,16 +49,34 @@ export interface UseExpenseItemsResult {
   toggleAssignee: (i: number, memberId: string) => void
 }
 
-export function useExpenseItems(initial: ExpenseItem[] = []): UseExpenseItemsResult {
-  const [items, setItems] = useState<ExpenseItem[]>(initial)
+function seedFormItems(initial: ExpenseItem[], currency: string): FormItem[] {
+  return initial.map(it => ({
+    ...it,
+    amountText: formatMinorForInput(it.amountMinor, currency),
+  }))
+}
+
+export function useExpenseItems(
+  initial: ExpenseItem[] = [],
+  currency: string,
+): UseExpenseItemsResult {
+  const [items, setItems] = useState<FormItem[]>(() => seedFormItems(initial, currency))
 
   // No useCallback / useMemo — React Compiler auto-memoises this hook's
   // returned values and functions. reduce() over 4-20 items is trivial
   // anyway, so even without compiler memoisation the cost is negligible.
-  const sum = items.reduce((s, it) => s + it.amount, 0)
+  const sum = items.reduce((s, it) => s + it.amountMinor, 0)
 
   const add = () => {
-    setItems(prev => [...prev, { name: '', amount: 0, assignees: [] }])
+    // Mint id at row birth — ITEM-scope adjustments reference items by
+    // id, so every row needs a stable identifier even before save.
+    setItems(prev => [...prev, {
+      id:          crypto.randomUUID(),
+      name:        '',
+      amountMinor: 0,
+      amountText:  '',
+      assignees:   [],
+    }])
   }
 
   const remove = (i: number) => {
@@ -53,12 +90,16 @@ export function useExpenseItems(initial: ExpenseItem[] = []): UseExpenseItemsRes
   }
 
   const setAmount = (i: number, value: string) => {
-    // Round to int (currency alignment) and preserve sign — discount
-    // lines from OCR have negative amounts. Number('') === 0 handles
-    // the "user cleared the field" path.
-    const n = Math.round(Number(value) || 0)
+    // Preserve the raw user text so "12." mid-keystroke survives; the
+    // minor value rederives every keystroke and falls back to 0 when
+    // the text can't be parsed (empty, "12.", "1e3", etc.).
+    let minor = 0
+    if (value.trim() !== '') {
+      try { minor = Math.max(0, parseMoneyToMinor(value, currency)) }
+      catch { minor = 0 }
+    }
     setItems(prev => prev.map((it, idx) =>
-      idx === i ? { ...it, amount: n } : it,
+      idx === i ? { ...it, amountText: value, amountMinor: minor } : it,
     ))
   }
 
@@ -73,7 +114,7 @@ export function useExpenseItems(initial: ExpenseItem[] = []): UseExpenseItemsRes
     }))
   }
 
-  const reset = (next: ExpenseItem[]) => setItems(next)
+  const reset = (next: FormItem[]) => setItems(next)
   const clear = () => setItems([])
 
   return {

@@ -9,6 +9,24 @@
 // model is forced to match it; we still re-parse with Zod on our side
 // because (a) the model occasionally returns extra fields, (b) we want
 // runtime type safety, (c) we want to coerce / clean (e.g. amount → int).
+//
+// Phase B (Expense Adjustment refactor): items are POSITIVE-only line
+// totals (pre-discount subtotals). Discount / surcharge / tax / tip
+// lines that CHANGE the paid total flow into the new `adjustments[]`
+// field with a structured kind + scope hint. Informational receipt
+// lines (included tax, payment method, change, receipt number, etc.)
+// flow into `ignoredLines[]` so the model has a third bucket instead
+// of forcing them into items/adjustments. Negative item amounts are
+// rejected at the schema layer — drift between OCR output and
+// form/Worker validation would otherwise surface as silent
+// SPLIT_PREVIEW_DRIFT failures with no clear root cause.
+//
+// Money refactor: every monetary field on the wire is now an
+// `amountText` / `totalText` decimal string (e.g. "12.34", "500"). The
+// client parses to integer minor units via `parseMoneyToMinor` at the
+// form→Firestore boundary, so the wire never carries a float subject
+// to IEEE-754 drift. Gemini is instructed to emit raw decimal strings
+// matching the currency's fraction digits.
 import { z } from 'zod'
 
 // ─── Request ─────────────────────────────────────────────────────────────
@@ -43,14 +61,24 @@ export type OcrRequest = z.infer<typeof OcrRequestSchema>
 
 // ─── Response ────────────────────────────────────────────────────────────
 
+// Money refactor: OCR emits human-display decimal strings (e.g. "12.34" /
+// "500"); the client parses via parseMoneyToMinor(amountText, currency) at
+// the form→Firestore boundary so the lossy float round-trip never happens
+// on the wire. Canonical contract is `\d+(?:\.\d+)?` (no symbols, no group
+// separators) — see buildPrompt() in gemini.ts. The preprocess strips
+// ASCII commas, full-width commas (FF0C), and spaces as a defensive
+// self-heal against LLM drift on receipts with printed thousand separators
+// like "¥10,276"; anything else (sign, scientific notation, trailing dot,
+// non-digit chars) still throws so we don't silently swallow real bugs.
+// max(20) caps absurd lengths.
+const AMOUNT_TEXT = z.preprocess(
+  v => (typeof v === 'string' ? v.replace(/[,，\s]/g, '') : v),
+  z.string().regex(/^\d+(?:\.\d+)?$/, 'amountText must be a positive decimal string').max(20),
+)
+
 export const OcrItemSchema = z.object({
   name: z.string().min(1).max(200),
-  // Amount can be negative — discount / cashback / promo lines on a
-  // receipt are real items with negative amounts (e.g. "キャッシュレス
-  // 還元 -6"). We don't constrain on sign here; the form layer is
-  // responsible for sum-equals-total validation, which works the same
-  // whether some lines are negative.
-  amount: z.number(),
+  amountText: AMOUNT_TEXT,
 })
 export type OcrItem = z.infer<typeof OcrItemSchema>
 
@@ -72,6 +100,48 @@ export const OcrCategorySchema = z.enum([
 ])
 export type OcrCategory = z.infer<typeof OcrCategorySchema>
 
+// Adjustment kind / scope enums — mirror of the persisted
+// ExpenseAdjustment shape (src/types/expense.ts + the materializer
+// package). Duplicated here because the Worker bundle should not pull
+// the client types module.
+export const OcrAdjustmentKindSchema = z.enum([
+  'DISCOUNT', 'COUPON', 'TAX_EXEMPT', 'SURCHARGE', 'TAX', 'TIP', 'OTHER',
+])
+export type OcrAdjustmentKind = z.infer<typeof OcrAdjustmentKindSchema>
+
+/** OCR-only scope hint. Persisted adjustments only carry `ITEM` /
+ *  `EXPENSE`; `UNKNOWN` here signals "Gemini saw an adjustment but
+ *  couldn't confidently decide if it targets a single line or the whole
+ *  receipt". The client form downgrades UNKNOWN to EXPENSE by default
+ *  and exposes the adjustment row so the user can switch to ITEM when
+ *  the receipt makes the target clear. */
+export const OcrAdjustmentScopeSchema = z.enum(['ITEM', 'EXPENSE', 'UNKNOWN'])
+export type OcrAdjustmentScope = z.infer<typeof OcrAdjustmentScopeSchema>
+
+export const OcrAdjustmentSchema = z.object({
+  /** Free-form label visible on the receipt (e.g. "クーポン", "サービス料"). */
+  label: z.string().min(1).max(120),
+  /** Structured classification. Drives the +/- sign in the materializer
+   *  (DISCOUNT/COUPON/TAX_EXEMPT/OTHER subtract; SURCHARGE/TAX/TIP add). */
+  kind: OcrAdjustmentKindSchema,
+  /** Positive decimal string. Negative effect is encoded via `kind` in
+   *  the materializer pipeline; an attacker submitting a negative here
+   *  would flip the sign for a kind like TAX, which the regex rejects. */
+  amountText: AMOUNT_TEXT,
+  /** Hint for the persisted scope: ITEM if the line clearly belongs to a
+   *  single item (e.g. an itemised discount immediately under that item),
+   *  EXPENSE if it's a receipt-wide line (subtotal-level tax, receipt-wide
+   *  service charge), UNKNOWN if Gemini can't tell. */
+  suggestedScope: OcrAdjustmentScopeSchema,
+  /** Index into `items[]` when scope is ITEM. Omitted otherwise (the
+   *  client resolves UNKNOWN scope to EXPENSE by default in Phase B). */
+  suggestedTargetItemIndex: z.number().int().nonnegative().optional(),
+})
+export type OcrAdjustment = z.infer<typeof OcrAdjustmentSchema>
+
+export const OcrIgnoredLineSchema = z.string().min(1).max(200)
+export type OcrIgnoredLine = z.infer<typeof OcrIgnoredLineSchema>
+
 // items can legitimately be empty when Gemini decides the image is
 // unreadable (per our prompt: "if unreadable, return items: [] and
 // total: 0"). The worker layer maps the empty case to a distinct error
@@ -79,7 +149,20 @@ export type OcrCategory = z.infer<typeof OcrCategorySchema>
 // schema-mismatch one.
 export const OcrResponseSchema = z.object({
   items:    z.array(OcrItemSchema),
-  total:    z.number().nonnegative(),
+  /** Adjustment lines extracted from the receipt — discounts, taxes,
+   *  service charges, tips. Always present (empty when none); the field
+   *  is required so consumers don't have to differentiate "no adjustments"
+   *  from "older OCR build". Phase B contract. */
+  adjustments: z.array(OcrAdjustmentSchema),
+  /** Visible receipt lines that were deliberately ignored because they
+   *  do not affect the grand total (included-tax disclosures, payment
+   *  method, change, receipt id, address/phone/footer noise). Always
+   *  present so the OCR model has a non-financial bucket and does not
+   *  misclassify informational tax lines as TAX adjustments. */
+  ignoredLines: z.array(OcrIgnoredLineSchema).max(100),
+  /** Grand total as a positive decimal string. Client parses via
+   *  parseMoneyToMinor(totalText, currency). Empty receipts emit "0". */
+  totalText: AMOUNT_TEXT,
   currency: z.string().length(3).optional(),
   /** Store / venue name from the top of the receipt. Optional — some
    *  receipts (printer slips, parking tickets) have no clear store
@@ -105,14 +188,39 @@ export const GEMINI_RESPONSE_SCHEMA = {
       items: {
         type: 'object',
         properties: {
-          name:   { type: 'string' },
-          amount: { type: 'number' },
+          name:       { type: 'string' },
+          amountText: { type: 'string' },
         },
-        required: ['name', 'amount'],
-        propertyOrdering: ['name', 'amount'],
+        required: ['name', 'amountText'],
+        propertyOrdering: ['name', 'amountText'],
       },
     },
-    total:     { type: 'number' },
+    adjustments: {
+      type:  'array',
+      items: {
+        type: 'object',
+        properties: {
+          label:  { type: 'string' },
+          kind:   {
+            type: 'string',
+            enum: ['DISCOUNT', 'COUPON', 'TAX_EXEMPT', 'SURCHARGE', 'TAX', 'TIP', 'OTHER'],
+          },
+          amountText: { type: 'string' },
+          suggestedScope: {
+            type: 'string',
+            enum: ['ITEM', 'EXPENSE', 'UNKNOWN'],
+          },
+          suggestedTargetItemIndex: { type: 'number' },
+        },
+        required: ['label', 'kind', 'amountText', 'suggestedScope'],
+        propertyOrdering: ['label', 'kind', 'amountText', 'suggestedScope', 'suggestedTargetItemIndex'],
+      },
+    },
+    ignoredLines: {
+      type:  'array',
+      items: { type: 'string' },
+    },
+    totalText: { type: 'string' },
     currency:  { type: 'string' },
     storeName: { type: 'string' },
     category:  {
@@ -120,6 +228,6 @@ export const GEMINI_RESPONSE_SCHEMA = {
       enum: ['food', 'transport', 'accommodation', 'activity', 'shopping', 'other'],
     },
   },
-  required: ['items', 'total'],
-  propertyOrdering: ['items', 'total', 'currency', 'storeName', 'category'],
+  required: ['items', 'adjustments', 'ignoredLines', 'totalText'],
+  propertyOrdering: ['items', 'adjustments', 'ignoredLines', 'totalText', 'currency', 'storeName', 'category'],
 } as const

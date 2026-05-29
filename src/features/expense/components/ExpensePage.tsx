@@ -24,7 +24,8 @@ import SignInPromptModal from '@/features/auth/components/SignInPromptModal'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
 import DemoBanner from '@/components/ui/DemoBanner'
 import { useTripCurrency } from '@/hooks/useTripCurrency'
-import { currencySymbol, formatAmount } from '@/utils/currency'
+import { currencySymbol } from '@/utils/currency'
+import { formatMinorAmount, formatMinorNumber } from '@/utils/money'
 
 export default function ExpensePage() {
   const { ctx, uid, cloudTripId, mutationTripId, isDemo, canWrite, modal, signIn } =
@@ -79,12 +80,12 @@ export default function ExpensePage() {
   // Compiler memoises; collapses what used to be filter → reduce → for-of.
   const expenses: Expense[] = []
   const categoryStatsRaw: Partial<Record<ExpenseCategory, number>> = {}
-  let total = 0
+  let totalMinor = 0
   for (const e of allExpenses) {
     if (e.deletedAt) continue
     expenses.push(e)
-    total += e.amount
-    categoryStatsRaw[e.category] = (categoryStatsRaw[e.category] ?? 0) + e.amount
+    totalMinor += e.amountMinor
+    categoryStatsRaw[e.category] = (categoryStatsRaw[e.category] ?? 0) + e.amountMinor
   }
   const categoryStats = (Object.entries(categoryStatsRaw) as [ExpenseCategory, number][])
     .filter(([, v]) => v > 0)
@@ -94,7 +95,7 @@ export default function ExpensePage() {
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Receipt} reason="費用を記録" />
 
   const title = ctx.trip.title
-  const perPerson = members.length > 0 ? Math.round(total / members.length) : 0
+  const perPersonMinor = members.length > 0 ? Math.round(totalMinor / members.length) : 0
 
   function handleSave({ input, attachment }: ExpenseFormResult) {
     if (isDemo) { modal.close(); signIn.open(); return }
@@ -164,17 +165,17 @@ export default function ExpensePage() {
           <div className="mt-1 flex items-baseline gap-0.5">
             <span className="text-[18px] font-bold text-muted leading-none">{symbol}</span>
             <span className="text-[32px] font-black text-ink -tracking-[1px] leading-none tabular-nums">
-              {total.toLocaleString()}
+              {formatMinorNumber(totalMinor, currency)}
             </span>
           </div>
 
-          {total > 0 && categoryStats.length > 0 && (
+          {totalMinor > 0 && categoryStats.length > 0 && (
             <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted tabular-nums">
               {categoryStats.slice(0, 5).map(([cat, amt], i) => (
                 <span key={cat} className="flex items-center">
                   {i > 0 && <span className="mr-2 text-border">·</span>}
                   <span className="text-[13px] mr-1 leading-none">{CATEGORY_EMOJI[cat]}</span>
-                  <span className="text-ink font-semibold">{Math.round((amt / total) * 100)}</span>
+                  <span className="text-ink font-semibold">{Math.round((amt / totalMinor) * 100)}</span>
                   <span className="ml-px text-muted">%</span>
                 </span>
               ))}
@@ -185,7 +186,7 @@ export default function ExpensePage() {
             {[
               { value: String(expenses.length), unit: '件', label: '費用筆數' },
               { value: String(members.length),  unit: '人', label: '参加' },
-              { value: formatAmount(perPerson, currency), unit: '', label: '1人あたり' },
+              { value: formatMinorAmount(perPersonMinor, currency), unit: '', label: '1人あたり' },
             ].map(({ value, unit, label }) => (
               <div key={label} className="flex flex-col items-center gap-1">
                 <div className="flex items-baseline gap-px">
@@ -219,7 +220,7 @@ export default function ExpensePage() {
         settlements={settlements}
         currency={currency}
         uid={uid ?? null}
-        onMarkSettled={(fromUid, toUid, amount) => {
+        onMarkSettled={(fromUid, toUid, amountMinor) => {
           if (isDemo) { signIn.open(); return }
           if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
           // Mint id here(not inside the service)so the optimistic row,
@@ -227,7 +228,7 @@ export default function ExpensePage() {
           // realtime listener replaces the optimistic row atomically.
           createSettlementMut.mutate({
             settlementId: crypto.randomUUID(),
-            fromUid, toUid, amount, currency,
+            fromUid, toUid, amountMinor, currency,
           })
         }}
         onDeleteSettlement={id => {

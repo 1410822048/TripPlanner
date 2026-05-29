@@ -2,16 +2,31 @@
 // Centralised validation for the expense-create / expense-update
 // endpoints. Lives here (not in firestore.rules) because the
 // invariants we need to enforce can't be expressed in CEL/rules:
-//   - splits[i] inner shape ({ memberId, amount }) -- rules has no
-//     array-of-maps iteration / extraction
+//   - splits[i] inner shape ({ memberId, amountMinor }) -- rules has
+//     no array-of-maps iteration / extraction
 //   - splits[i].memberId ∈ trip roster -- can't extract field set
 //     from array of maps to call hasOnly() on
-//   - Σ splits[i].amount === amount -- no array reduce
+//   - Σ splits[i].amountMinor === amountMinor -- no array reduce
+//   - items[] + adjustments[] materialize to the claimed splits[]
+//     (Phase B SPLIT_PREVIEW_DRIFT gate -- defers to
+//     `@tripmate/expense-materialize` for the canonical pure-fn)
+//
+// Money: every wire-level amount is an integer minor-unit value
+// (JPY → yen, USD → cents). The form layer parses display strings via
+// parseMoneyToMinor before mutating; the Worker trusts integer input
+// and rejects non-integers at the Zod boundary.
 //
 // Architecture: rules layer denies client writes on expense create
 // + content update; clients call these Worker endpoints which do
 // the full validation + write via Admin SDK.
 import { z } from 'zod'
+import {
+  materializeExpenseSplits,
+  canonicalizeSplits,
+  MaterializeError,
+  type MaterializeAdjustment,
+  type MaterializeItem,
+} from '@tripmate/expense-materialize'
 
 /** Thrown for any validation failure. `field` is a dotted path the
  *  caller can surface in form-level error UI. */
@@ -113,26 +128,53 @@ export function makeReceiptSchema(tripId: string, expenseId: string, bucket: str
 const UID_MAX = 128
 
 const ExpenseSplitSchema = z.object({
-  memberId: z.string().min(1).max(UID_MAX),
-  // `.finite()` rejects Infinity / NaN early; the per-amount value is
-  // also bounded transitively via the sum-equals-amount invariant
-  // (amount itself is capped at 1B), so an explicit per-split cap
-  // would be redundant.
-  amount:   z.number().nonnegative().finite(),
+  memberId:    z.string().min(1).max(UID_MAX),
+  // Integer minor-unit grid is enforced by `.int()`; the per-split
+  // value is also bounded transitively via the sum-equals-amountMinor
+  // invariant (amountMinor itself capped at 1B), so an explicit
+  // per-split cap would be redundant.
+  amountMinor: z.number().int().nonnegative(),
 })
 
+// Phase B item schema: positive integer minor-unit amount, id required.
+// Negative discount/tax/tip lines live in the sibling `adjustments[]`
+// array. The materializer (`@tripmate/expense-materialize`) is the
+// authoritative split gate and rejects non-positive items with
+// ITEM_NOT_POSITIVE_INTEGER -- this schema rejects the same set at the
+// request boundary so we get a clean Zod error path before the
+// materializer runs in cross-field validation.
 const ExpenseItemSchema = z.object({
-  name:      z.string().min(1).max(200),
-  // Items support negative values (discount / refund lines); cap on
-  // both sides so a positive-and-negative pair can't sum to a tiny
-  // amount while each carrying an astronomical magnitude that would
-  // overflow downstream Math.
-  amount:    z.number().finite().min(-1_000_000_000).max(1_000_000_000),
+  id:          z.string().min(1).max(64),
+  name:        z.string().min(1).max(200),
+  amountMinor: z.number().int().positive().max(1_000_000_000),
   // Items use `assignees` (list of uids); the inner validation that
   // every assignee is a trip member is checked in the cross-field
   // pass below where we have memberIds in scope.
-  assignees: z.array(z.string().min(1).max(UID_MAX)).min(1),
+  assignees:   z.array(z.string().min(1).max(UID_MAX)).min(1),
 })
+
+// Phase B adjustment shape. amountMinor is POSITIVE integer minor units;
+// the sign on the expense total comes from `kind`. `scope` is either
+// ITEM (delta is applied to a single line) or EXPENSE (delta is
+// apportioned across all positive-effective items proportional to
+// their current weight). `UNKNOWN` is OCR-draft-only and NOT accepted
+// here -- the client downgrades it to EXPENSE by default and exposes
+// the adjustment row so the user can switch it to ITEM before saving.
+const ExpenseAdjustmentKindSchema = z.enum([
+  'DISCOUNT', 'COUPON', 'TAX_EXEMPT', 'SURCHARGE', 'TAX', 'TIP', 'OTHER',
+])
+const ExpenseAdjustmentScopeSchema = z.enum(['ITEM', 'EXPENSE'])
+const ExpenseAdjustmentSchema = z.object({
+  id:           z.string().min(1).max(64),
+  label:        z.string().min(1).max(120),
+  kind:         ExpenseAdjustmentKindSchema,
+  scope:        ExpenseAdjustmentScopeSchema,
+  amountMinor:  z.number().int().positive().max(1_000_000_000),
+  targetItemId: z.string().min(1).max(64).optional(),
+}).refine(
+  d => (d.scope === 'ITEM') === (d.targetItemId !== undefined),
+  { message: 'targetItemId must be present iff scope === ITEM', path: ['targetItemId'] },
+)
 
 /** Full create payload — the FULL client-supplied expense body the
  *  Worker will validate before write. createdBy/updatedBy/audit
@@ -146,28 +188,34 @@ const ExpenseItemSchema = z.object({
  *  with implicit upper bound from memberIds.includes check). */
 export function makeExpenseCreateSchema() {
   return z.object({
-    title:    z.string().min(1).max(200),
-    // 1B major units is a defensive sanity cap: ¥1B / $1B is far above
-    // any realistic single travel expense in any currency this app
-    // supports. Below this is a typo / OCR mis-read; above this is
-    // outright corruption or attack. Without an upper bound a raw POST
-    // could submit Number.MAX_SAFE_INTEGER and the splits/items sum
-    // math would silently roll downstream into settlement displaying
-    // astronomical debts.
-    amount:   z.number().positive().finite().max(1_000_000_000),
-    currency: z.string().length(3),
-    category: ExpenseCategorySchema,
-    paidBy:   z.string().min(1).max(UID_MAX),
-    splits:   z.array(ExpenseSplitSchema).min(1).max(50),
-    date:     z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
-    note:     z.string().max(1000).optional(),
+    title:       z.string().min(1).max(200),
+    // 1B minor units is a defensive sanity cap: ¥1,000,000,000 (≈ ¥1B)
+    // or $10,000,000.00 is far above any realistic single travel
+    // expense in any currency this app supports. Below this is a typo
+    // / OCR mis-read; above this is outright corruption or attack.
+    // Without an upper bound a raw POST could submit
+    // Number.MAX_SAFE_INTEGER and the splits/items sum math would
+    // silently roll downstream into settlement displaying astronomical
+    // debts.
+    amountMinor: z.number().int().positive().max(1_000_000_000),
+    currency:    z.string().length(3),
+    category:    ExpenseCategorySchema,
+    paidBy:      z.string().min(1).max(UID_MAX),
+    splits:      z.array(ExpenseSplitSchema).min(1).max(50),
+    date:        z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
+    note:        z.string().max(1000).optional(),
     // Items + assignees caps: OCR receipts rarely exceed ~30 line
     // items; 100 buys 3× headroom while bounding the worst-case
     // validation cost. Assignees per item caps at 50 to mirror the
     // splits cap (same per-item semantic -- N members on a line).
-    items:    z.array(ExpenseItemSchema.extend({
+    items:       z.array(ExpenseItemSchema.extend({
       assignees: z.array(z.string().min(1).max(UID_MAX)).min(1).max(50),
     })).max(100).optional(),
+    // Phase B: persisted adjustments. Required (default empty array) so
+    // every doc carries the field; legacy docs missing it fail
+    // parse on read per the no-backcompat decision. Cap at 50 matches
+    // a generous receipt: tax + tip + a handful of per-item discounts.
+    adjustments: z.array(ExpenseAdjustmentSchema).max(50),
   })
 }
 export type ExpenseCreateInput = z.infer<ReturnType<typeof makeExpenseCreateSchema>>
@@ -189,92 +237,50 @@ export type ExpenseReceiptOut = z.infer<ReturnType<typeof makeReceiptSchema>>
 // ─── Cross-field validation (needs trip member roster) ────────────
 
 /**
- * Resolve the ISO 4217 minor-unit count for `currency` via the ICU
- * data shipped with V8. JPY → 0 (integer yen). USD/EUR → 2 (cents).
- * BHD/JOD/KWD → 3. Returns 2 for any unknown / malformed code (the
- * safe default — strict equality on 2 decimals is at least as strict
- * as on 0 or 3, and an unrecognised currency code would have already
- * failed Zod's `.length(3)` upstream of this function on the honest
- * path). The previous `Math.abs(diff) <= 0.5` tolerance let any
- * currency through a half-unit gap; even integer JPY accepted a 0.49
- * discrepancy that an attacker could splash into the doc to corrupt
- * downstream settlement / display.
- */
-function minorUnitsFor(currency: string): number {
-  try {
-    const fmt = new Intl.NumberFormat('en-US', { style: 'currency', currency })
-    return fmt.resolvedOptions().minimumFractionDigits ?? 2
-  } catch {
-    return 2
-  }
-}
-
-/** Epsilon for "value lands on a minor-unit grid". 1e-6 swallows the
- *  worst-case IEEE-754 drift we'd see from summing a few dozen
- *  decimal-rounded amounts (~1e-10 per op) while still rejecting a
- *  half-unit deviation. Any genuine sub-unit value (JPY 333.33,
- *  USD 1.005) lands well above this threshold. */
-const PRECISION_EPS = 1e-6
-
-/** True when `value` rounds losslessly to the currency's minor-unit
- *  grid. For JPY (factor=1) this is "is essentially an integer". For
- *  USD/EUR (factor=100) this is "at most 2 decimal places". */
-function isMinorUnitAmount(value: number, factor: number): boolean {
-  const scaled = value * factor
-  return Math.abs(scaled - Math.round(scaled)) < PRECISION_EPS
-}
-
-/**
  * Run the cross-field invariants that Zod can't express on its own:
  *   - paidBy ∈ memberIds
  *   - every splits[i].memberId ∈ memberIds
- *   - amount + every splits[i].amount + every items[i].amount lands
- *     on the currency's minor-unit grid (JPY = integer yen, USD/EUR
- *     = at most 2 decimals, BHD = at most 3). Without this per-field
- *     gate a raw Worker caller could write JPY 333.33 splits that
- *     still sum-round to the correct total; the settlement engine
- *     and display layers downstream assume minor-unit cleanness.
- *   - Σ splits[i].amount === amount  (strict equality after rounding
- *     each side to the currency's minor-unit precision)
- *   - Σ items[i].amount  === amount  when items.length > 0 (items
- *     mode); without this gate splits and items can diverge in a doc
- *     and a subsequent items-mode edit would regenerate splits from
- *     items, silently rewriting the splits total.
- *   - PER-MEMBER consistency between items and splits: the per-member
- *     totals derived by `splitsFromItems(items)` (matching client
- *     algorithm bit-for-bit) MUST equal splits[]. Closes a financial
- *     attribution corruption vector where items{assignees:[C]} +
- *     splits{memberId:B} both passing the sum check would record
- *     B's debt initially, then flip to C on the next items-mode UI
- *     edit -- no audit trail of the rewrite.
- *   - every items[i].assignees[j] ∈ memberIds (if items present)
+ *   - Σ splits[i].amountMinor === amountMinor  (integer equality)
+ *   - When items.length > 0: the materializer (`@tripmate/expense-
+ *     materialize::materializeExpenseSplits`) recomputes the
+ *     authoritative splits from (items, adjustments, members) and
+ *     `canonicalizeSplits` is compared against the caller-supplied
+ *     splits[]. A mismatch is rejected as SPLIT_PREVIEW_DRIFT --
+ *     closes the same financial attribution corruption vector the
+ *     old splitsFromItemsMirror per-member check guarded, but with
+ *     the canonical pure-fn shared by client preview + Worker
+ *     authoritative recompute so there's no second impl to drift.
+ *   - every items[i].assignees[j] ∈ memberIds (handled by the
+ *     materializer's NON_MEMBER_ASSIGNEE guard, re-thrown as
+ *     ExpenseValidationError below).
+ *
+ * Per-field minor-unit-grid checks (formerly `isMinorUnitAmount` +
+ * `minorUnitsFor`) are gone: every wire-level money field is now
+ * `z.number().int()` at the Zod gate, so a malformed float can't
+ * reach this layer in the first place.
  *
  * Throws ExpenseValidationError on first failure with a dotted field
  * path so callers can surface a form-level error.
  */
 export function validateExpenseCrossField(
   payload: {
-    amount:   number
-    currency: string
-    paidBy:   string
-    splits:   { memberId: string; amount: number }[]
-    items?:   { amount: number; assignees: string[] }[]
+    amountMinor:  number
+    currency:     string
+    paidBy:       string
+    splits:       { memberId: string; amountMinor: number }[]
+    items?:       { id: string; amountMinor: number; assignees: string[] }[]
+    adjustments?: {
+      id:            string
+      kind:          string
+      scope:         string
+      amountMinor:   number
+      targetItemId?: string
+    }[]
   },
   memberIds: string[],
 ): void {
   if (!memberIds.includes(payload.paidBy)) {
     throw new ExpenseValidationError('paidBy', `${payload.paidBy} is not a trip member`)
-  }
-
-  // Resolve factor up-front so every per-field precision check uses
-  // the same currency-bound grid.
-  const factor = 10 ** minorUnitsFor(payload.currency)
-
-  if (!isMinorUnitAmount(payload.amount, factor)) {
-    throw new ExpenseValidationError(
-      'amount',
-      `amount (${payload.amount}) is not aligned to ${payload.currency} minor unit`,
-    )
   }
 
   let sum = 0
@@ -283,140 +289,89 @@ export function validateExpenseCrossField(
     if (!memberIds.includes(s.memberId)) {
       throw new ExpenseValidationError(`splits[${i}].memberId`, `${s.memberId} is not a trip member`)
     }
-    if (!isMinorUnitAmount(s.amount, factor)) {
-      throw new ExpenseValidationError(
-        `splits[${i}].amount`,
-        `splits[${i}].amount (${s.amount}) is not aligned to ${payload.currency} minor unit`,
-      )
-    }
-    sum += s.amount
+    sum += s.amountMinor
   }
-  // Sum-equals-amount, both scaled to minor-unit integers. Per-field
-  // precision was just checked above, so this only catches the
-  // "every individual amount is clean but they don't add up" case.
-  const sumScaled    = Math.round(sum * factor)
-  const amountScaled = Math.round(payload.amount * factor)
-  if (sumScaled !== amountScaled) {
+  if (sum !== payload.amountMinor) {
     throw new ExpenseValidationError(
       'splits',
-      `sum of splits (${sum}) must equal amount (${payload.amount}) at currency precision`,
+      `sum of splits (${sum}) must equal amountMinor (${payload.amountMinor})`,
     )
   }
-  if (payload.items && payload.items.length > 0) {
-    // Σ items[i].amount must also equal amount when items mode is in
-    // use. The client form gates "use items" on items.length > 0 and
-    // derives splits via splitsFromItems() -- so on the client the
-    // two sums move together. The Worker is the only chokepoint for
-    // expense content, and a raw caller could otherwise submit splits
-    // that sum to amount but items that DON'T (e.g. items sum 300,
-    // splits sum 1000, amount 1000). The doc would write; on next
-    // edit the form's items-mode toggle would regenerate splits from
-    // items and silently rewrite splits to total 300, breaking
-    // settlement chronology. Negative items (discount / refund lines)
-    // are intentionally supported -- the sum invariant naturally
-    // accommodates them.
-    let itemSum = 0
-    for (let i = 0; i < payload.items.length; i++) {
-      const item = payload.items[i]!  // safe by loop bound
-      if (!isMinorUnitAmount(item.amount, factor)) {
-        throw new ExpenseValidationError(
-          `items[${i}].amount`,
-          `items[${i}].amount (${item.amount}) is not aligned to ${payload.currency} minor unit`,
-        )
-      }
-      itemSum += item.amount
-      for (let j = 0; j < item.assignees.length; j++) {
-        const uid = item.assignees[j]!  // safe by loop bound
-        if (!memberIds.includes(uid)) {
-          throw new ExpenseValidationError(
-            `items[${i}].assignees[${j}]`,
-            `${uid} is not a trip member`,
-          )
-        }
-      }
-    }
-    const itemSumScaled = Math.round(itemSum * factor)
-    if (itemSumScaled !== amountScaled) {
+
+  // Phase B: when items[] is present, the materializer is the
+  // authoritative split gate. Compare canonicalize(materialized)
+  // against canonicalize(payload.splits); mismatch is the
+  // SPLIT_PREVIEW_DRIFT signal -- caller's client-preview disagrees
+  // with the Worker's authoritative recompute. The materializer also
+  // enforces the items/adjustments cross-field invariants (positive-
+  // int items, member-in-roster assignees, ITEM/EXPENSE scope shape,
+  // over-discount guards) so the items-mode path doesn't need
+  // duplicate Zod-level checks.
+  //
+  // adjustments[] without items[] is rejected: adjustments only make
+  // sense relative to an item set. A manual-entry expense (no items)
+  // should not carry adjustments -- the user types the final amount
+  // directly and splits manually.
+  const items       = payload.items ?? []
+  const adjustments = payload.adjustments ?? []
+  if (items.length === 0) {
+    if (adjustments.length > 0) {
       throw new ExpenseValidationError(
-        'items',
-        `sum of items (${itemSum}) must equal amount (${payload.amount}) at currency precision`,
+        'adjustments',
+        'adjustments require items[] to be non-empty (manual-entry expenses cannot carry adjustments)',
       )
     }
-
-    // Per-member consistency: splits[] MUST equal the per-member
-    // totals derivable from items[] via the client's splitsFromItems
-    // algorithm. Without this, items-mode + splits-mode can disagree
-    // on which member owes what -- attacker can submit items pinning
-    // cost on C (assignees=[C]) but splits pinning the debt on B
-    // (memberId=B). Both sums match `amount` so the existing checks
-    // pass. Settlement records B's debt. Next UI edit toggles items
-    // mode, derives splits from items, and silently rewrites B's
-    // debt over to C. That's financial attribution corruption with
-    // no audit trail. The check below mirrors splitsFromItems() in
-    // src/features/expense/utils.ts BIT-FOR-BIT -- both work in the
-    // integer-only major-unit domain (the app's amount-as-integer
-    // convention, see src/utils/currency.ts). DO NOT introduce the
-    // currency `factor` here -- it would scale into minor units and
-    // produce a different distribution than the client's algorithm,
-    // making legit USD/EUR writes look like attribution corruption.
-    // Parity is enforced by src/features/expense/utils.parity.test.ts
-    // which feeds the same fixtures through both implementations.
-    const derived = splitsFromItemsMirror(payload.items)
-    const actual  = new Map<string, number>()
-    for (const s of payload.splits) {
-      actual.set(s.memberId, Math.round(s.amount))
-    }
-    if (derived.size !== actual.size) {
-      throw new ExpenseValidationError(
-        'splits',
-        `items derive ${derived.size} per-member entries but splits has ${actual.size}`,
-      )
-    }
-    for (const [uid, derivedAmount] of derived) {
-      const actualAmount = actual.get(uid)
-      if (actualAmount === undefined) {
-        throw new ExpenseValidationError(
-          'splits',
-          `member ${uid} appears in items but not in splits`,
-        )
-      }
-      if (actualAmount !== derivedAmount) {
-        throw new ExpenseValidationError(
-          'splits',
-          `member ${uid}: items derive ${derivedAmount} but splits has ${actualAmount}`,
-        )
-      }
-    }
+    return
   }
-}
 
-/**
- * Worker-side mirror of `splitsFromItems()` in
- * `src/features/expense/utils.ts`. Returns a Map<memberId, integer>
- * where integer is in the same domain (major units) that the client
- * already uses. EXPORTED for the parity test that imports both this
- * and the client implementation and asserts equality over a
- * corpus -- the only thing keeping the two from drifting silently
- * over time. If you change this algorithm, that test will fail
- * loudly + point you at the client mirror.
- */
-export function splitsFromItemsMirror(
-  items: { amount: number; assignees: string[] }[],
-): Map<string, number> {
-  const totals = new Map<string, number>()
-  for (const item of items) {
-    if (item.assignees.length === 0) continue
-    const intTotal = Math.round(item.amount)
-    if (intTotal === 0) continue
-    const sign     = intTotal < 0 ? -1 : 1
-    const absTotal = Math.abs(intTotal)
-    const base     = Math.floor(absTotal / item.assignees.length)
-    const rem      = absTotal - base * item.assignees.length
-    for (let i = 0; i < item.assignees.length; i++) {
-      const per = sign * (base + (i < rem ? 1 : 0))
-      const uid = item.assignees[i]!  // safe by loop bound; appease noUncheckedIndexedAccess
-      totals.set(uid, (totals.get(uid) ?? 0) + per)
+  const matItems: MaterializeItem[] = items.map(i => ({
+    id:          i.id,
+    amountMinor: i.amountMinor,
+    assignees:   i.assignees,
+  }))
+  const matAdjustments: MaterializeAdjustment[] = adjustments.map(a => ({
+    id:           a.id,
+    kind:         a.kind as MaterializeAdjustment['kind'],
+    scope:        a.scope as MaterializeAdjustment['scope'],
+    amountMinor:  a.amountMinor,
+    targetItemId: a.targetItemId,
+  }))
+
+  let materialized: ReturnType<typeof materializeExpenseSplits>
+  try {
+    materialized = materializeExpenseSplits({
+      items:       matItems,
+      adjustments: matAdjustments,
+      members:     memberIds,
+    })
+  } catch (e) {
+    if (e instanceof MaterializeError) {
+      // Translate the structured materializer error to an
+      // ExpenseValidationError with a stable field hint. The
+      // materializer's `code` is the canonical handle; the dotted
+      // field path is for form-level UI -- it picks the parent
+      // collection that's most likely to surface the issue.
+      const field = e.code.startsWith('ITEM_') || e.code === 'NON_MEMBER_ASSIGNEE' ||
+                    e.code === 'DUPLICATE_ITEM_ASSIGNEE' || e.code === 'DUPLICATE_ITEM_ID' ||
+                    e.code === 'OVER_DISCOUNT_ITEM'
+        ? 'items'
+        : 'adjustments'
+      throw new ExpenseValidationError(field, `${e.code}: ${e.message}`)
     }
+    throw e
   }
-  return totals
+
+  // Compare canonical forms (sorted, zero-filtered) -- both sides
+  // arrive at the same byte sequence iff every per-member amount
+  // matches. A mismatch is the headline financial-attribution
+  // corruption signal: client preview disagrees with Worker
+  // authoritative recompute.
+  const want = canonicalizeSplits(materialized)
+  const got  = canonicalizeSplits(payload.splits.map(s => ({ memberId: s.memberId, amountMinor: s.amountMinor })))
+  if (want !== got) {
+    throw new ExpenseValidationError(
+      'splits',
+      `SPLIT_PREVIEW_DRIFT: materialized ${want} ≠ payload ${got}`,
+    )
+  }
 }

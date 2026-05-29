@@ -225,7 +225,7 @@ export function useSchedulePageState(): SchedulePageState {
     : (fbSchedules ?? [])
 
   const grouped   = groupByDate(schedules)
-  const tripTotal = schedules.reduce((s, i) => s + (i.estimatedCost ?? 0), 0)
+  const tripTotal = schedules.reduce((s, i) => s + (i.estimatedCostMinor ?? 0), 0)
 
   const trips = isDemo ? demoSelection.trips : cloudTripsList
   // Compiler memoises `selectedTrip` — child components (TripHeaderCard
@@ -252,7 +252,7 @@ export function useSchedulePageState(): SchedulePageState {
   const items   = display ? (grouped[display] ?? []) : []
   // dayTotal stays inline — items per day are small (≤ 20 typical) so
   // hoisting it costs more than it saves.
-  const dayTotal = items.reduce((s, i) => s + (i.estimatedCost ?? 0), 0)
+  const dayTotal = items.reduce((s, i) => s + (i.estimatedCostMinor ?? 0), 0)
 
   // ─── Action callbacks ─────────────────────────────────────────
   const selectTrip = isDemo

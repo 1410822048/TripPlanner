@@ -11,7 +11,7 @@ import {
   type OrphanReason,
   type OrphanSettlement,
 } from '../services/settlement'
-import { formatAmount } from '@/utils/currency'
+import { formatMinorAmount } from '@/utils/money'
 
 interface Props {
   expenses:    Expense[]
@@ -22,7 +22,7 @@ interface Props {
   /** Current user uid — must equal `toUid` for the「済み」button to
    *  enable. Receiver-only mirrors firestore.rules. */
   uid: string | null
-  onMarkSettled: (fromId: string, toId: string, amount: number) => void
+  onMarkSettled: (fromId: string, toId: string, amountMinor: number) => void
   /** Removes a previously recorded settlement. Used to clean up
    *  orphans whose expense was deleted, or to undo a premature「済み」. */
   onDeleteSettlement: (id: string) => void
@@ -56,11 +56,11 @@ export default function SettlementSummary({
   // reachable even if every expense was soft-deleted.
   if (!hasActiveExpenses && settlements.length === 0) return null
   const allSettled = suggestions.length === 0
-  const totalOrphan = orphans.reduce((s, o) => s + o.amount, 0)
+  const totalOrphanMinor = orphans.reduce((s, o) => s + o.amountMinor, 0)
   // Bucket orphan totals by reason so the warning banner can use
   // reason-specific copy. Typed against OrphanReason for exhaustiveness.
   const orphanByReason = orphans.reduce<Partial<Record<OrphanReason, number>>>((acc, o) => {
-    acc[o.reason] = (acc[o.reason] ?? 0) + o.amount
+    acc[o.reason] = (acc[o.reason] ?? 0) + o.amountMinor
     return acc
   }, {})
   // Per-settlement lookup so each history row can render its own reason
@@ -88,9 +88,10 @@ export default function SettlementSummary({
           <div className="flex flex-col gap-[3px]">
             {balances.map(b => {
               const m = memberById.get(b.memberId)!
-              const isCredit = b.net > 0.5
-              const isDebit  = b.net < -0.5
-              const rounded  = Math.round(Math.abs(b.net))
+              const netMinor = Math.round(b.net)
+              const isCredit = netMinor > 0
+              const isDebit  = netMinor < 0
+              const absMinor = Math.abs(netMinor)
               return (
                 <div key={b.memberId} className={[
                   'flex items-center gap-2.5 py-[3px]',
@@ -103,7 +104,7 @@ export default function SettlementSummary({
                     </div>
                     <div className="text-[10px] text-muted tabular-nums mt-px">
                       {m.isGhost && <span className="text-danger font-semibold">退出済み · </span>}
-                      立替 {formatAmount(b.paid, currency)} · 分担 {formatAmount(b.owed, currency)}
+                      立替 {formatMinorAmount(b.paid, currency)} · 分担 {formatMinorAmount(b.owed, currency)}
                     </div>
                   </div>
                   <span
@@ -114,7 +115,7 @@ export default function SettlementSummary({
                         : 'text-muted',
                     ].join(' ')}
                   >
-                    {isCredit ? '+' : isDebit ? '-' : '±'}{formatAmount(rounded, currency)}
+                    {isCredit ? '+' : isDebit ? '-' : '±'}{formatMinorAmount(absMinor, currency)}
                   </span>
                 </div>
               )
@@ -152,13 +153,13 @@ export default function SettlementSummary({
                     <ArrowRight size={12} strokeWidth={2.5} className="text-muted shrink-0" />
                     <MemberAvatar member={to}   size={28} />
                     <div className="flex-1 min-w-0 text-[14.5px] font-extrabold text-ink tabular-nums -tracking-[0.2px]">
-                      {formatAmount(s.amount, currency)}
+                      {formatMinorAmount(s.amountMinor, currency)}
                     </div>
                     {canRecord ? (
                       <button
                         type="button"
-                        onClick={() => onMarkSettled(s.fromId, s.toId, s.amount)}
-                        aria-label={`${from.label}から ${formatAmount(s.amount, currency)} の受取を清算済みとして記録`}
+                        onClick={() => onMarkSettled(s.fromId, s.toId, s.amountMinor)}
+                        aria-label={`${from.label}から ${formatMinorAmount(s.amountMinor, currency)} の受取を清算済みとして記録`}
                         className="shrink-0 flex items-center gap-1 px-2.5 h-7 rounded-full border-none bg-teal text-white text-[10.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
                       >
                         <Check size={11} strokeWidth={2.8} />
@@ -191,7 +192,7 @@ export default function SettlementSummary({
             memberById={memberById}
             currency={currency}
             uid={uid}
-            totalOrphan={totalOrphan}
+            totalOrphanMinor={totalOrphanMinor}
             orphanByReason={orphanByReason}
             orphanById={orphanById}
             onDelete={onDeleteSettlement}
@@ -242,10 +243,10 @@ interface HistoryProps {
   memberById:  Map<string, TripMember>
   currency:    string
   uid:         string | null
-  /** Aggregate orphan amount across all pairs. Triggers the warning
-   *  banner above the list when > 0 — explains why some settlements
-   *  may look detached from the balance view. */
-  totalOrphan: number
+  /** Aggregate orphan amount across all pairs, in integer minor units.
+   *  Triggers the warning banner above the list when > 0 — explains
+   *  why some settlements may look detached from the balance view. */
+  totalOrphanMinor: number
   /** Orphan amount split by reason -- drives reason-specific banner
    *  copy. Missing keys mean 0 for that reason. */
   orphanByReason: Partial<Record<OrphanReason, number>>
@@ -266,7 +267,7 @@ interface HistoryProps {
 const DEFAULT_VISIBLE = 3
 
 function SettlementHistory({
-  settlements, memberById, currency, uid, totalOrphan, orphanByReason, orphanById, onDelete,
+  settlements, memberById, currency, uid, totalOrphanMinor, orphanByReason, orphanById, onDelete,
 }: HistoryProps) {
   const [expanded, setExpanded] = useState(false)
   const visible    = expanded ? settlements : settlements.slice(0, DEFAULT_VISIBLE)
@@ -282,7 +283,7 @@ function SettlementHistory({
         </div>
       </div>
 
-      {totalOrphan > 0 && (
+      {totalOrphanMinor > 0 && (
         <div
           className="flex items-start gap-1.5 px-2.5 py-1.5 mb-2 rounded-input"
           style={{
@@ -292,7 +293,7 @@ function SettlementHistory({
         >
           <AlertCircle size={12} className="shrink-0 mt-px" style={{ color: '#B5651D' }} />
           <div className="text-[10.5px] leading-[1.5]" style={{ color: '#7A4A12' }}>
-            <span className="font-semibold">未對應的清算 {formatAmount(totalOrphan, currency)}</span>
+            <span className="font-semibold">未對應的清算 {formatMinorAmount(totalOrphanMinor, currency)}</span>
             <span className="opacity-80">{' · '}{orphanReasonExplain(orphanByReason)}</span>
           </div>
         </div>
@@ -370,17 +371,17 @@ function SettlementRow({ record, from, to, currency, canDelete, orphan, onDelete
       <ArrowRight size={10} strokeWidth={2.5} className="text-muted shrink-0" />
       <MemberAvatar member={to} size={20} />
       <div className="flex-1 min-w-0 text-[11.5px] font-semibold text-ink tabular-nums -tracking-[0.2px]">
-        {formatAmount(record.amount, currency)}
+        {formatMinorAmount(record.amountMinor, currency)}
       </div>
       {orphan && (
         <span
-          aria-label={`未對應 · ${ORPHAN_REASON_LABEL[orphan.reason]} ${formatAmount(orphan.amount, currency)}`}
+          aria-label={`未對應 · ${ORPHAN_REASON_LABEL[orphan.reason]} ${formatMinorAmount(orphan.amountMinor, currency)}`}
           title={ORPHAN_REASON_COPY[orphan.reason]}
           className="shrink-0 inline-flex items-center gap-0.5 px-1.5 h-5 rounded-full text-[9.5px] font-bold tracking-[0.02em]"
           style={{ background: '#FFF4E0', color: '#7A4A12', border: '1px solid #F0D49B' }}
         >
           <AlertCircle size={9} strokeWidth={2.5} />
-          {ORPHAN_REASON_LABEL[orphan.reason]} {formatAmount(orphan.amount, currency)}
+          {ORPHAN_REASON_LABEL[orphan.reason]} {formatMinorAmount(orphan.amountMinor, currency)}
         </span>
       )}
       {canDelete && (

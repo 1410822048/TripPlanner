@@ -17,22 +17,26 @@ const MEMBERS: TripMember[] = [
   { id: 'm3', label: 'C', color: '#000', bg: '#fff' },
 ]
 
+// JPY is zero-fraction, so the integer values in these fixtures map
+// 1:1 between display and minor units — keeps the test arithmetic
+// readable while exercising the integer-minor-unit contract.
 function mkExpense(
   paidBy: string,
-  amount: number,
+  amountMinor: number,
   splits: Array<[string, number]>,
   idSuffix = '',
 ): Expense {
   return {
-    id: `e_${paidBy}_${amount}${idSuffix}`,
+    id: `e_${paidBy}_${amountMinor}${idSuffix}`,
     tripId: 'demo',
     title: 't',
-    amount,
+    amountMinor,
     currency: 'JPY',
     category: 'food',
     paidBy,
-    splits: splits.map(([memberId, amount]) => ({ memberId, amount })),
+    splits: splits.map(([memberId, amountMinor]) => ({ memberId, amountMinor })),
     date: '2026-05-01',
+    adjustments: [],
     memberIds: ['m1', 'm2', 'm3'],
     createdBy: 'u',
     updatedBy: 'u',
@@ -44,15 +48,15 @@ function mkExpense(
 function mkSettlement(
   fromUid: string,
   toUid:   string,
-  amount:  number,
+  amountMinor: number,
   idSuffix = '',
 ): SettlementRecord {
   return {
-    id: `s_${fromUid}_${toUid}_${amount}${idSuffix}`,
+    id: `s_${fromUid}_${toUid}_${amountMinor}${idSuffix}`,
     tripId: 'demo',
     fromUid,
     toUid,
-    amount,
+    amountMinor,
     currency: 'JPY',
     settledBy: toUid,
     createdAt: TS,
@@ -150,7 +154,7 @@ describe('multiple settlements per pair', () => {
     expect(balances.find(b => b.memberId === 'm2')!.net).toBe(-40)
 
     const suggestions = computeSettlements(pairwise)
-    expect(suggestions).toEqual([{ fromId: 'm2', toId: 'm1', amount: 40 }])
+    expect(suggestions).toEqual([{ fromId: 'm2', toId: 'm1', amountMinor: 40 }])
   })
 
   it('once-overshooting last settlement of a chain produces an orphan', () => {
@@ -168,7 +172,7 @@ describe('multiple settlements per pair', () => {
     expect(orphans).toEqual([
       // Second settlement was over-cap at its own recording time (applied
       // had already consumed available debt) → OVERPAYMENT.
-      { fromUserId: 'm2', toUserId: 'm1', amount: 10, settlementId: 's_m2_m1_50_b', reason: 'OVERPAYMENT' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 10, settlementId: 's_m2_m1_50_b', reason: 'OVERPAYMENT' },
     ])
   })
 })
@@ -190,7 +194,7 @@ describe('cross-debt normalization', () => {
     expect(balances.find(b => b.memberId === 'm2')!.net).toBe(-10)
 
     const suggestions = computeSettlements(pairwise)
-    expect(suggestions).toEqual([{ fromId: 'm2', toId: 'm1', amount: 10 }])
+    expect(suggestions).toEqual([{ fromId: 'm2', toId: 'm1', amountMinor: 10 }])
   })
 
   it('zero-sum cross debt produces no edge and no suggestion', () => {
@@ -238,7 +242,7 @@ describe('orphan settlements', () => {
     const { balances, orphans } = computeBalancesFull(expenses, MEMBERS, settlements)
     expect(orphans).toEqual([
       // Gross existed at recording (30) but settlement (50) exceeded it.
-      { fromUserId: 'm2', toUserId: 'm1', amount: 20, settlementId: 's_m2_m1_50', reason: 'OVERPAYMENT' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 20, settlementId: 's_m2_m1_50', reason: 'OVERPAYMENT' },
     ])
     // Critical: the overpayment does NOT flip m1 into a debtor position.
     // Net is at most "0 on this pair" — no reverse-debt creation.
@@ -261,7 +265,7 @@ describe('orphan settlements', () => {
     const settlements = [mkSettlement('m2', 'm1', 50)]
     const { balances, orphans } = computeBalancesFull([], MEMBERS, settlements)
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amount: 50, settlementId: 's_m2_m1_50', reason: 'UNKNOWN' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 50, settlementId: 's_m2_m1_50', reason: 'UNKNOWN' },
     ])
     for (const b of balances) {
       expect(b.net).toBe(0)
@@ -280,10 +284,10 @@ describe('orphan settlements', () => {
     const sorted = [...orphans].sort((a, b) => a.fromUserId.localeCompare(b.fromUserId))
     expect(sorted).toEqual([
       // m2 had gross 20 at recording, paid 30 → OVERPAYMENT.
-      { fromUserId: 'm2', toUserId: 'm1', amount: 10, settlementId: 's_m2_m1_30', reason: 'OVERPAYMENT' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 10, settlementId: 's_m2_m1_30', reason: 'OVERPAYMENT' },
       // m3 had no gross at all on this pair → UNKNOWN (could be either
       // overpayment-to-the-wrong-person or a legacy hard-deleted expense).
-      { fromUserId: 'm3', toUserId: 'm1', amount: 15, settlementId: 's_m3_m1_15', reason: 'UNKNOWN' },
+      { fromUserId: 'm3', toUserId: 'm1', amountMinor: 15, settlementId: 's_m3_m1_15', reason: 'UNKNOWN' },
     ])
   })
 
@@ -299,8 +303,8 @@ describe('orphan settlements', () => {
     ]
     const { orphans } = computeBalancesFull([], MEMBERS, settlements)
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amount: 30, settlementId: 's_m2_m1_30_a', reason: 'UNKNOWN' },
-      { fromUserId: 'm2', toUserId: 'm1', amount: 50, settlementId: 's_m2_m1_50_b', reason: 'UNKNOWN' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 30, settlementId: 's_m2_m1_30_a', reason: 'UNKNOWN' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 50, settlementId: 's_m2_m1_50_b', reason: 'UNKNOWN' },
     ])
   })
 })
@@ -330,7 +334,7 @@ describe('chronological settlement attribution', () => {
     const later:   SettlementRecord = { ...mkSettlement('m2', 'm1', 50, '_late'),  createdAt: tsAt(2000) }
     const { orphans } = computeBalancesFull(expenses, MEMBERS, [earlier, later])
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amount: 10, settlementId: 's_m2_m1_50_late', reason: 'OVERPAYMENT' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 10, settlementId: 's_m2_m1_50_late', reason: 'OVERPAYMENT' },
     ])
   })
 
@@ -344,7 +348,7 @@ describe('chronological settlement attribution', () => {
     const later:   SettlementRecord = { ...mkSettlement('m2', 'm1', 50, '_late'),  createdAt: tsAt(2000) }
     const { orphans } = computeBalancesFull(expenses, MEMBERS, [later, earlier])
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amount: 10, settlementId: 's_m2_m1_50_late', reason: 'OVERPAYMENT' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 10, settlementId: 's_m2_m1_50_late', reason: 'OVERPAYMENT' },
     ])
   })
 })
@@ -368,7 +372,7 @@ describe('orphan reason classification (phase-2)', () => {
     const settlement = { ...mkSettlement('m2', 'm1', 50), createdAt: tsAt(2000) }
     const { orphans, balances } = computeBalancesFull([expense], MEMBERS, [settlement])
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amount: 50, settlementId: 's_m2_m1_50', reason: 'EXPENSE_DELETED' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 50, settlementId: 's_m2_m1_50', reason: 'EXPENSE_DELETED' },
     ])
     // Soft-deleted expense must NOT count toward paid / owed / net.
     expect(balances.find(b => b.memberId === 'm1')!.paid).toBe(0)
@@ -389,7 +393,7 @@ describe('orphan reason classification (phase-2)', () => {
     const settlement = { ...mkSettlement('m2', 'm1', 50), createdAt: tsAt(2000) }
     const { orphans } = computeBalancesFull([expense], MEMBERS, [settlement])
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amount: 20, settlementId: 's_m2_m1_50', reason: 'OVERPAYMENT' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 20, settlementId: 's_m2_m1_50', reason: 'OVERPAYMENT' },
     ])
   })
 
@@ -424,7 +428,7 @@ describe('orphan reason classification (phase-2)', () => {
     const settlement = { ...mkSettlement('m2', 'm1', 70), createdAt: tsAt(2000) }
     const { orphans } = computeBalancesFull([expense], MEMBERS, [settlement])
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amount: 70, settlementId: 's_m2_m1_70', reason: 'MIXED' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 70, settlementId: 's_m2_m1_70', reason: 'MIXED' },
     ])
   })
 
@@ -510,8 +514,8 @@ describe('computeSettlements', () => {
     const { pairwise } = computeBalancesFull(expenses, MEMBERS)
     const s = computeSettlements(pairwise)
     expect(s).toEqual([
-      { fromId: 'm2', toId: 'm1', amount: 1000 },
-      { fromId: 'm3', toId: 'm1', amount: 1000 },
+      { fromId: 'm2', toId: 'm1', amountMinor: 1000 },
+      { fromId: 'm3', toId: 'm1', amountMinor: 1000 },
     ])
   })
 
@@ -535,15 +539,15 @@ describe('computeSettlements', () => {
     const { pairwise } = computeBalancesFull(expenses, MEMBERS)
     const s = computeSettlements(pairwise)
     expect(s).toEqual([
-      { fromId: 'm2', toId: 'm1', amount: 1000 },
-      { fromId: 'm2', toId: 'm3', amount: 300 },
-      { fromId: 'm3', toId: 'm1', amount: 700 },
+      { fromId: 'm2', toId: 'm1', amountMinor: 1000 },
+      { fromId: 'm2', toId: 'm3', amountMinor: 300 },
+      { fromId: 'm3', toId: 'm1', amountMinor: 700 },
     ])
     // Net-flow invariant still holds: out - in == member.net (just routed
     // through more edges).
     const { balances } = computeBalancesFull(expenses, MEMBERS)
-    const outFor = (id: string) => s.filter(t => t.fromId === id).reduce((x, t) => x + t.amount, 0)
-    const inFor  = (id: string) => s.filter(t => t.toId   === id).reduce((x, t) => x + t.amount, 0)
+    const outFor = (id: string) => s.filter(t => t.fromId === id).reduce((x, t) => x + t.amountMinor, 0)
+    const inFor  = (id: string) => s.filter(t => t.toId   === id).reduce((x, t) => x + t.amountMinor, 0)
     for (const b of balances) {
       expect(outFor(b.memberId) - inFor(b.memberId)).toBe(-b.net)
     }
@@ -590,9 +594,9 @@ describe('computeSettlements', () => {
     // Every net is zero, yet:
     for (const b of balances) expect(b.net).toBe(0)
     expect(computeSettlements(pairwise)).toEqual([
-      { fromId: 'm1', toId: 'm3', amount: 10 },
-      { fromId: 'm2', toId: 'm1', amount: 10 },
-      { fromId: 'm3', toId: 'm2', amount: 10 },
+      { fromId: 'm1', toId: 'm3', amountMinor: 10 },
+      { fromId: 'm2', toId: 'm1', amountMinor: 10 },
+      { fromId: 'm3', toId: 'm2', amountMinor: 10 },
     ])
   })
 })

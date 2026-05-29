@@ -49,7 +49,7 @@ const PAIRWISE_FIXTURES: PairwiseFixture[] = [
   {
     name: '2. single-pair debt (B owes A 100) survives normalize as-is',
     expenses: [
-      { paidBy: 'A', amount: 100, splits: [{ memberId: 'B', amount: 100 }] },
+      { paidBy: 'A', amountMinor: 100, splits: [{ memberId: 'B', amountMinor: 100 }] },
     ],
     settlements: [],
     expected:    { B: { A: 100 } },
@@ -59,8 +59,8 @@ const PAIRWISE_FIXTURES: PairwiseFixture[] = [
     // A pays for B (B owes A 30); B pays for A (A owes B 50)
     // → A owes B net 20.
     expenses: [
-      { paidBy: 'A', amount: 30, splits: [{ memberId: 'B', amount: 30 }] },
-      { paidBy: 'B', amount: 50, splits: [{ memberId: 'A', amount: 50 }] },
+      { paidBy: 'A', amountMinor: 30, splits: [{ memberId: 'B', amountMinor: 30 }] },
+      { paidBy: 'B', amountMinor: 50, splits: [{ memberId: 'A', amountMinor: 50 }] },
     ],
     settlements: [],
     expected:    { A: { B: 20 } },
@@ -69,8 +69,8 @@ const PAIRWISE_FIXTURES: PairwiseFixture[] = [
     name: '4. equal opposite debts collapse via EPS (no edge)',
     // Both directions = 25 → |fwd - bwd| = 0 ≤ EPS, no surviving edge.
     expenses: [
-      { paidBy: 'A', amount: 25, splits: [{ memberId: 'B', amount: 25 }] },
-      { paidBy: 'B', amount: 25, splits: [{ memberId: 'A', amount: 25 }] },
+      { paidBy: 'A', amountMinor: 25, splits: [{ memberId: 'B', amountMinor: 25 }] },
+      { paidBy: 'B', amountMinor: 25, splits: [{ memberId: 'A', amountMinor: 25 }] },
     ],
     settlements: [],
     expected:    {},
@@ -78,30 +78,30 @@ const PAIRWISE_FIXTURES: PairwiseFixture[] = [
   {
     name: '5. settlement fully pays single pair → no remaining edge',
     expenses: [
-      { paidBy: 'A', amount: 100, splits: [{ memberId: 'B', amount: 100 }] },
+      { paidBy: 'A', amountMinor: 100, splits: [{ memberId: 'B', amountMinor: 100 }] },
     ],
     settlements: [
-      { fromUid: 'B', toUid: 'A', amount: 100, createdAtMs: 1 },
+      { fromUid: 'B', toUid: 'A', amountMinor: 100, createdAtMs: 1 },
     ],
     expected: {},
   },
   {
     name: '6. settlement partially pays → remaining survives',
     expenses: [
-      { paidBy: 'A', amount: 100, splits: [{ memberId: 'B', amount: 100 }] },
+      { paidBy: 'A', amountMinor: 100, splits: [{ memberId: 'B', amountMinor: 100 }] },
     ],
     settlements: [
-      { fromUid: 'B', toUid: 'A', amount: 40, createdAtMs: 1 },
+      { fromUid: 'B', toUid: 'A', amountMinor: 40, createdAtMs: 1 },
     ],
     expected: { B: { A: 60 } },
   },
   {
     name: '7. overpay caps at gross → no remaining edge (leftover ignored here)',
     expenses: [
-      { paidBy: 'A', amount: 50, splits: [{ memberId: 'B', amount: 50 }] },
+      { paidBy: 'A', amountMinor: 50, splits: [{ memberId: 'B', amountMinor: 50 }] },
     ],
     settlements: [
-      { fromUid: 'B', toUid: 'A', amount: 80, createdAtMs: 1 },
+      { fromUid: 'B', toUid: 'A', amountMinor: 80, createdAtMs: 1 },
     ],
     expected: {},
   },
@@ -115,20 +115,20 @@ const PAIRWISE_FIXTURES: PairwiseFixture[] = [
     expenses: [
       {
         paidBy: 'A',
-        amount: 90,
+        amountMinor: 90,
         splits: [
-          { memberId: 'B', amount: 30 },
-          { memberId: 'C', amount: 30 },
-          { memberId: 'A', amount: 30 },
+          { memberId: 'B', amountMinor: 30 },
+          { memberId: 'C', amountMinor: 30 },
+          { memberId: 'A', amountMinor: 30 },
         ],
       },
       {
         paidBy: 'B',
-        amount: 60,
+        amountMinor: 60,
         splits: [
-          { memberId: 'A', amount: 20 },
-          { memberId: 'C', amount: 20 },
-          { memberId: 'B', amount: 20 },
+          { memberId: 'A', amountMinor: 20 },
+          { memberId: 'C', amountMinor: 20 },
+          { memberId: 'B', amountMinor: 20 },
         ],
       },
     ],
@@ -186,17 +186,17 @@ describe('canonicalPairKey', () => {
 })
 
 describe('isSettlementSafe', () => {
-  const ok: CoreSettlement = { fromUid: 'a', toUid: 'b', amount: 10, createdAtMs: 1 }
+  const ok: CoreSettlement = { fromUid: 'a', toUid: 'b', amountMinor: 10, createdAtMs: 1 }
 
   it('accepts a well-formed settlement', () => {
     expect(isSettlementSafe(ok)).toBe(true)
   })
 
   it('rejects non-finite or non-positive amount', () => {
-    expect(isSettlementSafe({ ...ok, amount: 0 })).toBe(false)
-    expect(isSettlementSafe({ ...ok, amount: -1 })).toBe(false)
-    expect(isSettlementSafe({ ...ok, amount: NaN })).toBe(false)
-    expect(isSettlementSafe({ ...ok, amount: Infinity })).toBe(false)
+    expect(isSettlementSafe({ ...ok, amountMinor: 0 })).toBe(false)
+    expect(isSettlementSafe({ ...ok, amountMinor: -1 })).toBe(false)
+    expect(isSettlementSafe({ ...ok, amountMinor: NaN })).toBe(false)
+    expect(isSettlementSafe({ ...ok, amountMinor: Infinity })).toBe(false)
   })
 
   it('rejects empty or non-string uids', () => {
@@ -238,15 +238,15 @@ describe('SETTLEMENT_EPS', () => {
 
 describe('input self-defense (silent filter)', () => {
   it('skips malformed expenses without throwing', () => {
-    const ok: CoreExpense  = { paidBy: 'A', amount: 100, splits: [{ memberId: 'B', amount: 100 }] }
-    const bad: CoreExpense = { paidBy: '', amount: NaN, splits: [] }
+    const ok: CoreExpense  = { paidBy: 'A', amountMinor: 100, splits: [{ memberId: 'B', amountMinor: 100 }] }
+    const bad: CoreExpense = { paidBy: '', amountMinor: NaN, splits: [] }
     const r = computePairwiseRemaining([ok, bad], [])
     expect(r).toEqual({ B: { A: 100 } })
   })
 
   it('skips malformed settlements without throwing', () => {
-    const e: CoreExpense = { paidBy: 'A', amount: 100, splits: [{ memberId: 'B', amount: 100 }] }
-    const bad: CoreSettlement = { fromUid: '', toUid: '', amount: -1, createdAtMs: 1 }
+    const e: CoreExpense = { paidBy: 'A', amountMinor: 100, splits: [{ memberId: 'B', amountMinor: 100 }] }
+    const bad: CoreSettlement = { fromUid: '', toUid: '', amountMinor: -1, createdAtMs: 1 }
     const r = computePairwiseRemaining([e], [bad])
     // Bad settlement filtered → debt unchanged
     expect(r).toEqual({ B: { A: 100 } })
@@ -258,10 +258,10 @@ describe('ordering determinism (createdAtMs sort)', () => {
     // 2-step settlement on the same pair: 40 then 80 (sum > gross 100,
     // so the LATER one absorbs the leftover). Input order shuffled.
     const expenses: CoreExpense[] = [
-      { paidBy: 'A', amount: 100, splits: [{ memberId: 'B', amount: 100 }] },
+      { paidBy: 'A', amountMinor: 100, splits: [{ memberId: 'B', amountMinor: 100 }] },
     ]
-    const first:  CoreSettlement = { fromUid: 'B', toUid: 'A', amount: 40, createdAtMs: 1 }
-    const second: CoreSettlement = { fromUid: 'B', toUid: 'A', amount: 80, createdAtMs: 2 }
+    const first:  CoreSettlement = { fromUid: 'B', toUid: 'A', amountMinor: 40, createdAtMs: 1 }
+    const second: CoreSettlement = { fromUid: 'B', toUid: 'A', amountMinor: 80, createdAtMs: 2 }
 
     const inOrder    = computePairwiseRemaining(expenses, [first, second])
     const outOfOrder = computePairwiseRemaining(expenses, [second, first])
