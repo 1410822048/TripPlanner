@@ -32,6 +32,8 @@
 //   in practice. UI may gain an explicit signed `direction` field in a
 //   later phase if that default is wrong often enough.
 
+import { convertMinorHalfEven, allocateRoundingResidual } from '@tripmate/fx-core'
+
 // ─── Public types ─────────────────────────────────────────────────
 
 /** Item kinds the materializer accepts. Identical to the persisted
@@ -116,6 +118,15 @@ export type MaterializeErrorCode =
   | 'OVER_DISCOUNT_ITEM'
   | 'OVER_DISCOUNT_EXPENSE'
   | 'EXPENSE_SCOPE_NO_WEIGHT'
+  // Foreign-currency conversion gate. Source-domain inputs to
+  // `convertAndMaterializeFromSource` fail with these before any
+  // fx-core math runs; once converted, the post-conversion items/
+  // adjustments flow through the regular materializer and surface as
+  // the codes above.
+  | 'SOURCE_AMOUNT_NOT_POSITIVE_INTEGER'
+  | 'SOURCE_ITEM_NOT_POSITIVE_INTEGER'
+  | 'SOURCE_ADJUSTMENT_NOT_POSITIVE_INTEGER'
+  | 'SOURCE_SUM_MISMATCH'
 
 export class MaterializeError extends Error {
   // Field declared explicitly (not via `public code: ...` shorthand)
@@ -471,4 +482,226 @@ export function canonicalizeSplits(splits: MaterializeSplit[]): string {
       .sort((a, b) => (a.memberId < b.memberId ? -1 : a.memberId > b.memberId ? 1 : 0))
       .map(s => ({ memberId: s.memberId, amountMinor: s.amountMinor })),
   )
+}
+
+// ─── Source-domain conversion + materialization ───────────────────
+//
+// Pure helper consumed by the Worker's foreign-mode router
+// (workers/ocr/src/expense-write.ts) on every foreign-currency expense
+// create + money/date update. Keeping per-line allocation here keeps
+// the financial attribution boundary Worker-authoritative — a
+// totals-only validation would let an attacker rearrange
+// item→assignee mapping while keeping the source total constant,
+// biasing settlement debt edges.
+// See memory: per-line-authority-over-totals-only-validation.
+
+/** Item shape in source currency. `amountMinor` is integer minor units
+ *  in the SOURCE currency (e.g. USD cents) — the conversion pipeline
+ *  re-expresses it in TRIP currency before invoking the materializer. */
+export interface ConvertAndMaterializeSourceItem {
+  id:          string
+  amountMinor: number   // positive integer source-currency minor units
+  assignees:   string[]
+}
+
+/** Adjustment shape in source currency. Sign comes from `kind` exactly
+ *  like the materializer's `MaterializeAdjustment`; this layer adds
+ *  nothing semantic, only changes the currency basis of `amountMinor`. */
+export interface ConvertAndMaterializeSourceAdjustment {
+  id:            string
+  kind:          AdjustmentKind
+  scope:         AdjustmentScope
+  amountMinor:   number   // positive integer source-currency minor units
+  targetItemId?: string
+}
+
+export interface ConvertAndMaterializeFromSourceInput {
+  sourceItems:          ConvertAndMaterializeSourceItem[]
+  sourceAdjustments:    ConvertAndMaterializeSourceAdjustment[]
+  /** Authoritative source-currency total of the receipt. Must equal
+   *  Σ sourceItems.amountMinor + sign(adj.kind) × Σ sourceAdjustments.amountMinor;
+   *  mismatch → SOURCE_SUM_MISMATCH at the boundary. */
+  sourceAmountMinor:    number
+  /** Canonical decimal string per fx-core::isCanonicalRateString. */
+  rateDecimal:          string
+  sourceFractionDigits: number
+  targetFractionDigits: number
+  members:              string[]
+}
+
+export interface ConvertAndMaterializeFromSourceResult {
+  /** Trip-currency total — converted from sourceAmountMinor via half-even
+   *  rounding; equal to Σ items.amountMinor + sign × Σ adjustments.amountMinor
+   *  by construction (rounding residual lands on the largest item). */
+  amountMinor: number
+  /** Trip-currency items. amountMinor on each line is positive integer
+   *  trip-currency minor units; the LARGEST line absorbs any rounding
+   *  residual so the materializer's pre-adjustment sum reconciles
+   *  against the authoritative converted total. */
+  items:       MaterializeItem[]
+  /** Trip-currency adjustments. Each amountMinor is independently
+   *  converted; no residual is applied here (residual lands on items
+   *  by design — discounts/tips drift ±1 minor across thousands of
+   *  expenses biases line-item display worse than absorbing on items). */
+  adjustments: MaterializeAdjustment[]
+  /** Per-member splits derived from the trip-currency items+adjustments
+   *  via `materializeExpenseSplits`. Σ splits === amountMinor. */
+  splits:      MaterializeSplit[]
+}
+
+/**
+ * Convert source-currency items+adjustments to trip currency and
+ * materialize splits in one pass. The output is the canonical
+ * trip-currency expense shape — caller (Phase 3b Worker handler) writes
+ * `amountMinor / items / adjustments / splits` directly into Firestore
+ * and persists the FxSnapshot separately for audit.
+ *
+ * Pipeline:
+ *   1. Validate source-domain self-consistency (positive integers +
+ *      Σ items + signed Σ adjustments === sourceAmountMinor).
+ *   2. Convert sourceAmountMinor → tripAmountMinor (authoritative).
+ *   3. Convert each item.amountMinor + adjustment.amountMinor
+ *      independently via `convertMinorHalfEven`.
+ *   4. Compute signedAdjustmentSumTrip = Σ sign(kind) × tripAdjMinor.
+ *   5. expectedItemSum = tripAmountMinor - signedAdjustmentSumTrip;
+ *      reconcile per-line items via `allocateRoundingResidual` so
+ *      Σ tripItems === expectedItemSum (residual lands on largest item).
+ *   6. Run `materializeExpenseSplits` over the trip-currency
+ *      items+adjustments+members to derive splits.
+ *
+ * Determinism: identical inputs → identical bytes on every call. Both
+ * the client preview (Phase 3c) and the Worker authoritative recompute
+ * (Phase 3b) call this exact function; preview is display-only,
+ * Worker overwrites whatever the client sent.
+ */
+export function convertAndMaterializeFromSource(
+  input: ConvertAndMaterializeFromSourceInput,
+): ConvertAndMaterializeFromSourceResult {
+  const {
+    sourceItems, sourceAdjustments, sourceAmountMinor,
+    rateDecimal, sourceFractionDigits, targetFractionDigits, members,
+  } = input
+
+  // Step 1a: source-domain positive-integer gates. We re-validate here
+  // (the Worker Zod schema in expense-validate.ts already enforces
+  // these at the boundary) because the function is shared with the
+  // client preview path — preview callers don't run through Zod and we
+  // don't want preview to silently produce garbage on a malformed
+  // input. Defense-in-depth without duplicating per-field error codes.
+  if (!Number.isInteger(sourceAmountMinor) || sourceAmountMinor <= 0) {
+    throw new MaterializeError(
+      'SOURCE_AMOUNT_NOT_POSITIVE_INTEGER',
+      `sourceAmountMinor must be a positive integer, got ${sourceAmountMinor}`,
+    )
+  }
+  for (const item of sourceItems) {
+    if (!Number.isInteger(item.amountMinor) || item.amountMinor <= 0) {
+      throw new MaterializeError(
+        'SOURCE_ITEM_NOT_POSITIVE_INTEGER',
+        `source item ${item.id}: amountMinor must be a positive integer source-currency minor amount, got ${item.amountMinor}`,
+      )
+    }
+  }
+  for (const adj of sourceAdjustments) {
+    if (!Number.isInteger(adj.amountMinor) || adj.amountMinor <= 0) {
+      throw new MaterializeError(
+        'SOURCE_ADJUSTMENT_NOT_POSITIVE_INTEGER',
+        `source adjustment ${adj.id}: amountMinor must be a positive integer source-currency minor amount, got ${adj.amountMinor}`,
+      )
+    }
+  }
+
+  // Step 1b: source-sum reconciliation. The receipt's printed total
+  // (sourceAmountMinor) must equal items + signed adjustments. A mismatch
+  // here means the client lied or the OCR draft is internally
+  // inconsistent — refuse to proceed so the Worker doesn't paper over
+  // the inconsistency by silently rebalancing during conversion.
+  let signedSourceAdjSum = 0
+  for (const adj of sourceAdjustments) {
+    signedSourceAdjSum += adjustmentSign(adj.kind) * adj.amountMinor
+  }
+  let sourceItemSum = 0
+  for (const item of sourceItems) sourceItemSum += item.amountMinor
+  if (sourceItemSum + signedSourceAdjSum !== sourceAmountMinor) {
+    throw new MaterializeError(
+      'SOURCE_SUM_MISMATCH',
+      `source items (${sourceItemSum}) + signed source adjustments (${signedSourceAdjSum}) must equal sourceAmountMinor (${sourceAmountMinor})`,
+    )
+  }
+
+  // Step 2: authoritative total conversion.
+  const tripAmountMinor = convertMinorHalfEven({
+    sourceMinor: sourceAmountMinor,
+    rateDecimal,
+    sourceFractionDigits,
+    targetFractionDigits,
+  })
+
+  // Step 3: per-line conversion. Items and adjustments use the SAME
+  // rateDecimal so a single fxSnapshot covers the entire expense and
+  // replay (cache rateDecimal → reconvert) produces the same bytes.
+  const tripItemRaw = sourceItems.map(item => convertMinorHalfEven({
+    sourceMinor: item.amountMinor,
+    rateDecimal,
+    sourceFractionDigits,
+    targetFractionDigits,
+  }))
+  const tripAdjMinor = sourceAdjustments.map(adj => convertMinorHalfEven({
+    sourceMinor: adj.amountMinor,
+    rateDecimal,
+    sourceFractionDigits,
+    targetFractionDigits,
+  }))
+
+  // Step 4: signed sum of adjustments in trip currency. Sign is purely
+  // a function of `kind`, not of the converted minor value.
+  let signedTripAdjSum = 0
+  for (let i = 0; i < sourceAdjustments.length; i++) {
+    signedTripAdjSum += adjustmentSign(sourceAdjustments[i]!.kind) * tripAdjMinor[i]!
+  }
+
+  // Step 5: reconcile per-item sum. We need
+  //   Σ tripItems + signedTripAdjSum === tripAmountMinor
+  // so the expected per-item sum is `tripAmountMinor - signedTripAdjSum`.
+  // `allocateRoundingResidual` puts the drift on the LARGEST line —
+  // tie-broken by first index — which keeps relative distortion minimal
+  // and is deterministic for client/Worker parity.
+  const expectedItemSum = tripAmountMinor - signedTripAdjSum
+  const tripItemMinor   = allocateRoundingResidual({
+    lines:       tripItemRaw,
+    targetTotal: expectedItemSum,
+  })
+
+  // Step 6: build trip-currency materializer inputs and delegate to
+  // the canonical split gate. The materializer rejects any item that
+  // ended up ≤ 0 after residual allocation (an over-discounted receipt
+  // converted into too-small minor units, or a SOURCE input where
+  // adjustments dominate items) via ITEM_NOT_POSITIVE_INTEGER —
+  // the Worker maps that to the same ExpenseValidationError path so
+  // the operator sees one error class instead of two.
+  const tripItems: MaterializeItem[] = sourceItems.map((item, i) => ({
+    id:          item.id,
+    amountMinor: tripItemMinor[i]!,
+    assignees:   item.assignees,
+  }))
+  const tripAdjustments: MaterializeAdjustment[] = sourceAdjustments.map((adj, i) => ({
+    id:           adj.id,
+    kind:         adj.kind,
+    scope:        adj.scope,
+    amountMinor:  tripAdjMinor[i]!,
+    targetItemId: adj.targetItemId,
+  }))
+
+  const splits = materializeExpenseSplits({
+    items:       tripItems,
+    adjustments: tripAdjustments,
+    members,
+  })
+
+  return {
+    amountMinor: tripAmountMinor,
+    items:       tripItems,
+    adjustments: tripAdjustments,
+    splits,
+  }
 }

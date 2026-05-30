@@ -13,6 +13,8 @@ import { describe, it, expect } from 'vitest'
 import {
 	ExpenseValidationError,
 	makeExpenseCreateSchema,
+	makeForeignExpenseCreateSchema,
+	makeForeignExpenseUpdateSchema,
 	makeReceiptSchema,
 	validateExpenseCrossField,
 } from '../src/expense-validate'
@@ -668,4 +670,289 @@ describe('makeReceiptSchema (Worker-built receipt validation)', () => {
 		const res = schema.safeParse({ url, path: okPath, type: 'image/webp' })
 		expect(res.success).toBe(true)
 	})
+})
+
+// ─── Foreign-schema parser contract ───────────────────────────────
+//
+// makeForeignExpenseCreateSchema / makeForeignExpenseUpdateSchema are
+// wired into the Worker's foreign-mode router (expense-write.ts): a
+// payload carrying `sourceCurrency` is parsed by these schemas and
+// fed through convertAndMaterializeFromSource. These tests pin the
+// parser shape independently of the handler-level integration covered
+// by expense-write.spec.ts so a schema refactor that loosens the
+// contract surfaces here, not as a behavioural regression downstream.
+
+describe('makeForeignExpenseCreateSchema', () => {
+	const schema = makeForeignExpenseCreateSchema()
+
+	function baseForeignPayload(overrides: Record<string, unknown> = {}) {
+		return {
+			title:             'NYC Lunch',
+			sourceCurrency:    'USD',
+			sourceAmountMinor: 1234, // $12.34
+			category:          'food' as const,
+			paidBy:            'editor-uid',
+			date:              '2026-05-30',
+			sourceItems: [
+				{ id: 'i1', name: 'Burger',  sourceAmountMinor: 800, assignees: ['editor-uid'] },
+				{ id: 'i2', name: 'Soda',    sourceAmountMinor: 434, assignees: ['editor-uid'] },
+			],
+			sourceAdjustments: [] as unknown[],
+			...overrides,
+		}
+	}
+
+	it('accepts a minimal valid source-domain payload', () => {
+		expect(schema.safeParse(baseForeignPayload()).success).toBe(true)
+	})
+
+	it('rejects sourceCurrency length !== 3', () => {
+		expect(schema.safeParse(baseForeignPayload({ sourceCurrency: 'US' })).success).toBe(false)
+		expect(schema.safeParse(baseForeignPayload({ sourceCurrency: 'USDX' })).success).toBe(false)
+	})
+
+	it('rejects lowercase sourceCurrency (ISO 4217 uppercase regex)', () => {
+		// Aligns with fx-rate.ts CCY_RE + schema.ts trip.currency. A
+		// tolerant length(3) check would let 'usd' sneak through and
+		// then quietly miss the foreign-mode router's `sourceCurrency
+		// !== tripContext.currency` bind (which compares uppercase
+		// strings).
+		expect(schema.safeParse(baseForeignPayload({ sourceCurrency: 'usd' })).success).toBe(false)
+		expect(schema.safeParse(baseForeignPayload({ sourceCurrency: 'Usd' })).success).toBe(false)
+		expect(schema.safeParse(baseForeignPayload({ sourceCurrency: '123' })).success).toBe(false)
+	})
+
+	it('rejects sourceAmountMinor 0 / negative / non-integer / above cap', () => {
+		expect(schema.safeParse(baseForeignPayload({ sourceAmountMinor: 0 })).success).toBe(false)
+		expect(schema.safeParse(baseForeignPayload({ sourceAmountMinor: -1 })).success).toBe(false)
+		expect(schema.safeParse(baseForeignPayload({ sourceAmountMinor: 12.34 })).success).toBe(false)
+		expect(schema.safeParse(baseForeignPayload({ sourceAmountMinor: 1_000_000_001 })).success).toBe(false)
+	})
+
+	it('rejects empty sourceItems[] (min(1) — no foreign manual-entry path)', () => {
+		expect(schema.safeParse(baseForeignPayload({ sourceItems: [] })).success).toBe(false)
+	})
+
+	it('rejects sourceItems[] above the 100-item cap', () => {
+		const items = Array.from({ length: 101 }, (_, i) => ({
+			id: `i${i}`, name: `item-${i}`, sourceAmountMinor: 100, assignees: ['editor-uid'],
+		}))
+		expect(schema.safeParse(baseForeignPayload({ sourceItems: items })).success).toBe(false)
+	})
+
+	it('rejects sourceItems[].sourceAmountMinor 0 / negative', () => {
+		const res = schema.safeParse(baseForeignPayload({
+			sourceItems: [{ id: 'i1', name: 'x', sourceAmountMinor: 0, assignees: ['editor-uid'] }],
+		}))
+		expect(res.success).toBe(false)
+	})
+
+	it('rejects sourceItems[] entry missing assignees', () => {
+		const res = schema.safeParse(baseForeignPayload({
+			sourceItems: [{ id: 'i1', name: 'x', sourceAmountMinor: 100, assignees: [] }],
+		}))
+		expect(res.success).toBe(false)
+	})
+
+	it('accepts EXPENSE-scope adjustment without targetItemId', () => {
+		const res = schema.safeParse(baseForeignPayload({
+			sourceAdjustments: [{
+				id: 'a1', label: 'Service', kind: 'SURCHARGE', scope: 'EXPENSE', sourceAmountMinor: 50,
+			}],
+		}))
+		expect(res.success).toBe(true)
+	})
+
+	it('accepts ITEM-scope adjustment WITH targetItemId', () => {
+		const res = schema.safeParse(baseForeignPayload({
+			sourceAdjustments: [{
+				id: 'a1', label: 'Combo', kind: 'DISCOUNT', scope: 'ITEM',
+				sourceAmountMinor: 30, targetItemId: 'i1',
+			}],
+		}))
+		expect(res.success).toBe(true)
+	})
+
+	it('rejects ITEM-scope adjustment WITHOUT targetItemId (refine)', () => {
+		const res = schema.safeParse(baseForeignPayload({
+			sourceAdjustments: [{
+				id: 'a1', label: 'Combo', kind: 'DISCOUNT', scope: 'ITEM', sourceAmountMinor: 30,
+			}],
+		}))
+		expect(res.success).toBe(false)
+	})
+
+	it('rejects EXPENSE-scope adjustment WITH targetItemId (refine)', () => {
+		const res = schema.safeParse(baseForeignPayload({
+			sourceAdjustments: [{
+				id: 'a1', label: 'Service', kind: 'SURCHARGE', scope: 'EXPENSE',
+				sourceAmountMinor: 50, targetItemId: 'i1',
+			}],
+		}))
+		expect(res.success).toBe(false)
+	})
+
+	// ── .strict() smuggling rejection battery ───────────────────────
+	//
+	// Foreign schemas use .strict() so Zod *rejects* (rather than
+	// silently strips) any trip-currency wire-contract key that leaks
+	// into a source-domain payload. Rationale: the Worker is
+	// authoritative for amountMinor / currency / splits / fxSnapshot;
+	// a foreign payload that even mentions them at the top level is a
+	// buggy client we want to surface, not a no-op. This battery pins
+	// the schema-level rejection so a future refactor can't
+	// re-introduce the silent-strip loophole.
+	//
+	// Tested per-key so a future refactor that re-orders schemas can't
+	// regress ONE key by accident; the issues-array check enforces the
+	// rejection comes from the strict() gate (`unrecognized_keys`),
+	// not e.g. a coincidental refine failure.
+	it('rejects payload that smuggles trip-currency fields (amountMinor / currency / splits combined)', () => {
+		const res = schema.safeParse({
+			...baseForeignPayload(),
+			amountMinor: 12345,
+			currency:    'JPY',
+			splits:      [{ memberId: 'editor-uid', amountMinor: 12345 }],
+		})
+		expect(res.success).toBe(false)
+		if (!res.success) {
+			// Each unknown key produces its own unrecognized_keys issue
+			// (Zod aggregates by parent object). Pin the issue code so a
+			// refactor that flipped back to .strip() (which yields no
+			// issues at all) would surface here.
+			const issues = res.error.issues
+			expect(issues.some(i => i.code === 'unrecognized_keys')).toBe(true)
+		}
+	})
+
+	for (const key of ['amountMinor', 'currency', 'splits', 'items', 'adjustments', 'fxSnapshot'] as const) {
+		it(`rejects smuggled trip-currency key "${key}" individually`, () => {
+			const res = schema.safeParse({
+				...baseForeignPayload(),
+				[key]: 1,  // value type is irrelevant -- .strict() fires on key presence
+			})
+			expect(res.success).toBe(false)
+			if (!res.success) {
+				expect(res.error.issues.some(i => i.code === 'unrecognized_keys')).toBe(true)
+			}
+		})
+	}
+
+	it('rejects bad date format', () => {
+		expect(schema.safeParse(baseForeignPayload({ date: '2026/05/30' })).success).toBe(false)
+		expect(schema.safeParse(baseForeignPayload({ date: '5-30-2026' })).success).toBe(false)
+	})
+})
+
+describe('makeForeignExpenseUpdateSchema', () => {
+	const schema = makeForeignExpenseUpdateSchema()
+
+	// Helpers for full money-group / text-only patches.
+	function fullMoneyPatch(overrides: Record<string, unknown> = {}) {
+		return {
+			sourceCurrency:    'USD',
+			sourceAmountMinor: 1234,
+			sourceItems: [
+				{ id: 'i1', name: 'Burger', sourceAmountMinor: 1234, assignees: ['editor-uid'] },
+			],
+			sourceAdjustments: [],
+			...overrides,
+		}
+	}
+
+	it('accepts an empty partial patch', () => {
+		expect(schema.safeParse({}).success).toBe(true)
+	})
+
+	it('accepts a text-only patch (title) — non-money field freely partial', () => {
+		expect(schema.safeParse({ title: 'renamed' }).success).toBe(true)
+	})
+
+	it('accepts a date-only patch — non-money field freely partial', () => {
+		expect(schema.safeParse({ date: '2026-06-01' }).success).toBe(true)
+	})
+
+	it('accepts a full money-group patch (all four source fields together)', () => {
+		expect(schema.safeParse(fullMoneyPatch()).success).toBe(true)
+	})
+
+	it('accepts a full money-group + text patch (mixed money and non-money)', () => {
+		expect(schema.safeParse(fullMoneyPatch({ title: 'Updated' })).success).toBe(true)
+	})
+
+	// Atomic-money-group regression battery: each source-money field
+	// alone MUST reject, otherwise the Worker's foreign-mode authority
+	// can't reliably recompute per-line FX/splits from a partial patch.
+	it('rejects partial money-group patch — only sourceAmountMinor', () => {
+		const res = schema.safeParse({ sourceAmountMinor: 999 })
+		expect(res.success).toBe(false)
+		if (!res.success) {
+			expect(res.error.issues[0].message).toMatch(/atomic group/i)
+		}
+	})
+
+	it('rejects partial money-group patch — only sourceCurrency', () => {
+		// Critical: previously a regression that accepted `{ sourceCurrency:
+		// 'USD' }` alone would let a client toggle the currency without
+		// providing the per-line source breakdown needed to recompute.
+		expect(schema.safeParse({ sourceCurrency: 'USD' }).success).toBe(false)
+	})
+
+	it('rejects partial money-group patch — only sourceItems', () => {
+		expect(schema.safeParse({
+			sourceItems: [{ id: 'i1', name: 'x', sourceAmountMinor: 100, assignees: ['u'] }],
+		}).success).toBe(false)
+	})
+
+	it('rejects partial money-group patch — only sourceAdjustments', () => {
+		expect(schema.safeParse({
+			sourceAdjustments: [{
+				id: 'a1', label: 'Tip', kind: 'TIP', scope: 'EXPENSE', sourceAmountMinor: 50,
+			}],
+		}).success).toBe(false)
+	})
+
+	it('rejects three-of-four money-group patch (missing sourceAdjustments)', () => {
+		// Belt-and-suspenders: even 3-of-4 must fail. The atomic group
+		// requires ALL four together; "I'll always add an empty
+		// adjustments[] later" semantics are not allowed.
+		const patch = fullMoneyPatch() as Record<string, unknown>
+		delete patch.sourceAdjustments
+		expect(schema.safeParse(patch).success).toBe(false)
+	})
+
+	it('still enforces per-field rules inside a full money-group patch (uppercase regex)', () => {
+		// Even with a full money group, per-field rules still fire --
+		// lowercase 'usd' violates the ISO 4217 uppercase regex.
+		expect(schema.safeParse(fullMoneyPatch({ sourceCurrency: 'usd' })).success).toBe(false)
+	})
+
+	it('still enforces ITEM-iff-targetItemId refine on sourceAdjustments under partial', () => {
+		// Adjustments-only is also a partial-money-group rejection, but
+		// the inner refine should fire FIRST -- this test pins that both
+		// gates are alive (a regression that flattened to a single
+		// rejection path would still pass this assertion, so combined
+		// with the partial-money-group test above we get full coverage).
+		const res = schema.safeParse({
+			sourceAdjustments: [{
+				id: 'a1', label: 'Combo', kind: 'DISCOUNT', scope: 'ITEM', sourceAmountMinor: 30,
+			}],
+		})
+		expect(res.success).toBe(false)
+	})
+
+	// .strict() propagates through .partial().superRefine(): an update
+	// payload that smuggles a trip-currency key must reject even when
+	// no money fields are present (i.e. text-only patch shape). Without
+	// this assertion a future refactor that re-built the update schema
+	// from a fresh z.object() could silently drop the strict gate.
+	for (const key of ['amountMinor', 'currency', 'splits', 'items', 'adjustments', 'fxSnapshot'] as const) {
+		it(`rejects smuggled trip-currency key "${key}" on an update patch (strict() propagates through partial)`, () => {
+			const res = schema.safeParse({ title: 'renamed', [key]: 1 })
+			expect(res.success).toBe(false)
+			if (!res.success) {
+				expect(res.error.issues.some(i => i.code === 'unrecognized_keys')).toBe(true)
+			}
+		})
+	}
 })

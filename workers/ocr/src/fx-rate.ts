@@ -129,6 +129,29 @@ export interface GetFxSnapshotOptions {
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 const CCY_RE      = /^[A-Z]{3}$/
 
+/** Digits of fractional precision per ISO 4217 code. Worker-side
+ *  mirror of `src/utils/money.ts::FRACTION_DIGITS` (kept independent
+ *  so the Worker doesn't import from the client bundle).
+ *
+ *  TWD / IDR are 0 here even though ISO 4217 says 2, matching the
+ *  client convention: the app's pre-minor-units formatter rendered
+ *  these with no decimals, so re-interpreting persisted integers from
+ *  before the minor-unit migration as cents would silently move the
+ *  decimal point. The two tables MUST stay in lock-step. */
+const FRACTION_DIGITS: Record<string, number> = {
+  JPY: 0, TWD: 0, KRW: 0, VND: 0, IDR: 0,
+  USD: 2, EUR: 2, CNY: 2, HKD: 2, THB: 2,
+  SGD: 2, GBP: 2, AUD: 2, PHP: 2, MYR: 2,
+}
+
+/** Currency fraction digits for a 3-letter ISO 4217 code. Unknown
+ *  codes default to 2 (worldwide majority). Caller is expected to
+ *  pass an uppercase code -- the regex gate in foreign-schema
+ *  validation already enforces this so we don't lower-case here. */
+export function currencyFractionDigits(code: string): number {
+  return FRACTION_DIGITS[code] ?? 2
+}
+
 const FRANKFURTER_BASE = 'https://api.frankfurter.dev/v2/rates'
 
 const FIRESTORE_BASE = 'https://firestore.googleapis.com/v1'

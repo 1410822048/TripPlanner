@@ -32,9 +32,11 @@ import {
   materializeExpenseSplits,
   canonicalizeSplits,
   adjustmentSign,
+  convertAndMaterializeFromSource,
   MaterializeError,
   type MaterializeInput,
   type MaterializeSplit,
+  type ConvertAndMaterializeFromSourceInput,
 } from './index'
 
 // ─── Helpers ──────────────────────────────────────────────────────
@@ -528,5 +530,361 @@ describe('materializeExpenseSplits — determinism', () => {
     const out2 = materializeExpenseSplits(fixture)
     expect(out1).toEqual(out2)
     expect(canonicalizeSplits(out1)).toBe(canonicalizeSplits(out2))
+  })
+})
+
+// ─── convertAndMaterializeFromSource ──────────────────────────────
+//
+// Source-domain wrapper. Each block exercises one corner of the
+// source-domain contract:
+//   1. USD → JPY zero-fraction target, exact-multiple receipt
+//   2. USD → JPY rounding residual lands on largest item
+//   3. USD → JPY adjustments (TAX) reconcile via residual
+//   4. USD → JPY DISCOUNT subtracts in both source + trip domains
+//   5. USD → TWD zero-fraction target with apportionment
+//   6. USD → VND wide-magnitude target, residual stays on items
+//   7. USD → IDR similar wide-magnitude target
+//   8. degenerate source-sum mismatch rejection (items only)
+//   9. degenerate source-sum mismatch rejection (with adjustments)
+//  10. NaN / non-canonical rate propagates fx-core error
+//  11. source item non-positive integer rejected at boundary
+//  12. source adjustment non-positive integer rejected at boundary
+//  13. SOURCE_AMOUNT_NOT_POSITIVE_INTEGER on missing total
+//  14. materializer error (over-discount EXPENSE) propagates
+//  15. determinism — identical input → identical bytes
+
+function sourceInput(
+  partial: Partial<ConvertAndMaterializeFromSourceInput>,
+): ConvertAndMaterializeFromSourceInput {
+  return {
+    sourceItems:          partial.sourceItems          ?? [],
+    sourceAdjustments:    partial.sourceAdjustments    ?? [],
+    sourceAmountMinor:    partial.sourceAmountMinor    ?? 0,
+    rateDecimal:          partial.rateDecimal          ?? '1',
+    sourceFractionDigits: partial.sourceFractionDigits ?? 2,  // USD default
+    targetFractionDigits: partial.targetFractionDigits ?? 0,  // JPY default
+    members:              partial.members              ?? M,
+  }
+}
+
+describe('convertAndMaterializeFromSource — USD → JPY exact-multiple receipt', () => {
+  it('converts items + reconciles totals when residual is zero', () => {
+    // USD $10.00 (1000 minor with sf=2) × rate 100 → ¥1000 (1000 minor with tf=0)
+    //   num = 1000 * 100 * 10^0 = 100000; den = 10^(2+0) = 100; 100000/100 = 1000 → ¥1000
+    const result = convertAndMaterializeFromSource(sourceInput({
+      sourceItems: [
+        { id: 'i1', amountMinor: 1000, assignees: ['alice', 'bob'] },
+      ],
+      sourceAmountMinor: 1000,
+      rateDecimal:       '100',
+    }))
+    expect(result.amountMinor).toBe(1000)
+    expect(result.items).toEqual([
+      { id: 'i1', amountMinor: 1000, assignees: ['alice', 'bob'] },
+    ])
+    expect(result.adjustments).toEqual([])
+    expect(result.splits).toEqual([
+      { memberId: 'alice', amountMinor: 500 },
+      { memberId: 'bob',   amountMinor: 500 },
+    ])
+  })
+})
+
+describe('convertAndMaterializeFromSource — USD → JPY residual on largest item', () => {
+  it('drift from per-line rounding lands on the largest item', () => {
+    // USD source: $0.01 + $0.01 + $0.02 = $0.04 total
+    // sourceMinor: 1 + 1 + 2 = 4
+    // rate 146.2 → tripAmountMinor = convert(4, 146.2, sf=2, tf=0)
+    //   num = 4 * 1462 * 1 = 5848; den = 10^(2+1)=1000; 5848/1000=5 rem 848 → 6
+    // per-line:
+    //   convert(1, 146.2) → num=1462, den=1000 → 1 rem 462 → 1 (half-even)
+    //   convert(2, 146.2) → num=2924, den=1000 → 2 rem 924 → 3
+    // raw items: [1, 1, 3] sum=5, expected=6 → residual +1 to largest (3) → [1,1,4]
+    const result = convertAndMaterializeFromSource(sourceInput({
+      sourceItems: [
+        { id: 'i1', amountMinor: 1, assignees: ['alice'] },
+        { id: 'i2', amountMinor: 1, assignees: ['bob'] },
+        { id: 'i3', amountMinor: 2, assignees: ['carol'] },
+      ],
+      sourceAmountMinor: 4,
+      rateDecimal:       '146.2',
+    }))
+    expect(result.amountMinor).toBe(6)
+    expect(result.items.map(i => i.amountMinor)).toEqual([1, 1, 4])
+    expect(result.splits).toEqual([
+      { memberId: 'alice', amountMinor: 1 },
+      { memberId: 'bob',   amountMinor: 1 },
+      { memberId: 'carol', amountMinor: 4 },
+    ])
+  })
+})
+
+describe('convertAndMaterializeFromSource — USD → JPY positive adjustment (TAX)', () => {
+  it('TAX adjustment converts independently, items absorb apportionment', () => {
+    // USD: items $10.00 + $5.00 = $15.00 + TAX $1.50 = $16.50 → 1650 minor
+    // rate 100 → ¥1650 total. items raw: ¥1000 + ¥500 = ¥1500;
+    //   tax 150 cents → ¥150; expectedItemSum = 1650 - 150 = 1500;
+    //   residual = 0; items stay [1000, 500].
+    // Materializer: EXPENSE TAX +150 apportions 100 / 50 → effective [1100, 550].
+    // splits: i1 1100 / [alice,bob] = 550 each; i2 550 / [carol] = 550.
+    const result = convertAndMaterializeFromSource(sourceInput({
+      sourceItems: [
+        { id: 'i1', amountMinor: 1000, assignees: ['alice', 'bob'] },
+        { id: 'i2', amountMinor: 500,  assignees: ['carol'] },
+      ],
+      sourceAdjustments: [
+        { id: 'a1', kind: 'TAX', scope: 'EXPENSE', amountMinor: 150 },
+      ],
+      sourceAmountMinor: 1650,
+      rateDecimal:       '100',
+    }))
+    expect(result.amountMinor).toBe(1650)
+    expect(result.items.map(i => i.amountMinor)).toEqual([1000, 500])
+    expect(result.adjustments.map(a => a.amountMinor)).toEqual([150])
+    expect(result.splits).toEqual([
+      { memberId: 'alice', amountMinor: 550 },
+      { memberId: 'bob',   amountMinor: 550 },
+      { memberId: 'carol', amountMinor: 550 },
+    ])
+  })
+})
+
+describe('convertAndMaterializeFromSource — USD → JPY negative adjustment (DISCOUNT)', () => {
+  it('DISCOUNT subtracts in source and trip domains', () => {
+    // USD: $10.00 + $5.00 items - $1.50 discount = $13.50 → 1350 minor
+    // rate 100 → ¥1350 total. items raw [1000, 500]; signedAdjSum = -150;
+    //   expectedItemSum = 1350 - (-150) = 1500; residual = 0.
+    // Materializer DISCOUNT 150 apportions -100/-50 → effective [900, 450].
+    const result = convertAndMaterializeFromSource(sourceInput({
+      sourceItems: [
+        { id: 'i1', amountMinor: 1000, assignees: ['alice', 'bob'] },
+        { id: 'i2', amountMinor: 500,  assignees: ['carol'] },
+      ],
+      sourceAdjustments: [
+        { id: 'a1', kind: 'DISCOUNT', scope: 'EXPENSE', amountMinor: 150 },
+      ],
+      sourceAmountMinor: 1350,
+      rateDecimal:       '100',
+    }))
+    expect(result.amountMinor).toBe(1350)
+    expect(result.splits).toEqual([
+      { memberId: 'alice', amountMinor: 450 },
+      { memberId: 'bob',   amountMinor: 450 },
+      { memberId: 'carol', amountMinor: 450 },
+    ])
+  })
+})
+
+describe('convertAndMaterializeFromSource — USD → TWD', () => {
+  it('zero-fraction trip currency with per-line residual reconciliation', () => {
+    // USD $1.00 + $2.00 = $3.00 → 100 + 200 = 300 minor
+    // rate 32.5 → tripAmount = convert(300, 32.5, sf=2, tf=0)
+    //   num=300*325*1=97500; den=10^(2+1)=1000; 97500/1000=97 rem 500 → exact half → even rounding → 98
+    // per-line:
+    //   convert(100, 32.5) num=100*325=32500, den=1000, 32 rem 500 → even → 32
+    //   convert(200, 32.5) num=200*325=65000, den=1000, 65 rem 0 → 65
+    // raw: 32 + 65 = 97, expected 98 → residual +1 on largest (65) → [32, 66]
+    const result = convertAndMaterializeFromSource(sourceInput({
+      sourceItems: [
+        { id: 'i1', amountMinor: 100, assignees: ['alice'] },
+        { id: 'i2', amountMinor: 200, assignees: ['bob'] },
+      ],
+      sourceAmountMinor: 300,
+      rateDecimal:       '32.5',
+    }))
+    expect(result.amountMinor).toBe(98)
+    expect(result.items.map(i => i.amountMinor)).toEqual([32, 66])
+    expect(result.splits).toEqual([
+      { memberId: 'alice', amountMinor: 32 },
+      { memberId: 'bob',   amountMinor: 66 },
+    ])
+  })
+})
+
+describe('convertAndMaterializeFromSource — USD → VND wide-magnitude', () => {
+  it('handles ~23000x rate without overflow', () => {
+    // USD $1.00 (100 minor sf=2) × rate 23500 → ₫23500 (23500 minor tf=0)
+    //   num = 100 * 23500 * 10^0 = 2_350_000; den = 10^(2+0) = 100; → 23500
+    const result = convertAndMaterializeFromSource(sourceInput({
+      sourceItems: [
+        { id: 'i1', amountMinor: 100, assignees: ['alice', 'bob'] },
+      ],
+      sourceAmountMinor: 100,
+      rateDecimal:       '23500',
+    }))
+    expect(result.amountMinor).toBe(23500)
+    expect(result.items).toEqual([
+      { id: 'i1', amountMinor: 23500, assignees: ['alice', 'bob'] },
+    ])
+    expect(result.splits).toEqual([
+      { memberId: 'alice', amountMinor: 11750 },
+      { memberId: 'bob',   amountMinor: 11750 },
+    ])
+  })
+})
+
+describe('convertAndMaterializeFromSource — USD → IDR wide-magnitude', () => {
+  it('handles ~14500x rate with residual on largest item', () => {
+    // USD $0.03 + $0.02 = $0.05 → 3+2=5 minor sf=2
+    // rate 14567 → tripAmount = convert(5, 14567, 2, 0)
+    //   num = 5 * 14567 = 72835; den = 100; 72835/100 = 728 rem 35 → 728 (round down)
+    // per-line:
+    //   convert(3) num=3*14567=43701, den=100, 43701/100=437 rem 1 → 437
+    //   convert(2) num=2*14567=29134, den=100, 29134/100=291 rem 34 → 291
+    // raw 437+291=728, expected 728 → residual 0 → items stay [437, 291]
+    const result = convertAndMaterializeFromSource(sourceInput({
+      sourceItems: [
+        { id: 'i1', amountMinor: 3, assignees: ['alice'] },
+        { id: 'i2', amountMinor: 2, assignees: ['bob'] },
+      ],
+      sourceAmountMinor: 5,
+      rateDecimal:       '14567',
+    }))
+    expect(result.amountMinor).toBe(728)
+    expect(result.items.map(i => i.amountMinor)).toEqual([437, 291])
+    expect(result.splits).toEqual([
+      { memberId: 'alice', amountMinor: 437 },
+      { memberId: 'bob',   amountMinor: 291 },
+    ])
+  })
+})
+
+describe('convertAndMaterializeFromSource — source-domain validation', () => {
+  it('rejects when items sum ≠ sourceAmountMinor (no adjustments)', () => {
+    expect(() => convertAndMaterializeFromSource(sourceInput({
+      sourceItems: [
+        { id: 'i1', amountMinor: 100, assignees: ['alice'] },
+        { id: 'i2', amountMinor: 200, assignees: ['bob'] },
+      ],
+      sourceAmountMinor: 500, // claims 500 but items sum is 300
+      rateDecimal:       '100',
+    }))).toThrow(MaterializeError)
+    let err: unknown
+    try {
+      convertAndMaterializeFromSource(sourceInput({
+        sourceItems: [
+          { id: 'i1', amountMinor: 100, assignees: ['alice'] },
+          { id: 'i2', amountMinor: 200, assignees: ['bob'] },
+        ],
+        sourceAmountMinor: 500,
+        rateDecimal:       '100',
+      }))
+    } catch (e) { err = e }
+    expect((err as MaterializeError).code).toBe('SOURCE_SUM_MISMATCH')
+  })
+
+  it('rejects when items + signed adjustments ≠ sourceAmountMinor', () => {
+    // items 1000 + 500 = 1500; TAX +150 → expected 1650; client claims 1700
+    expectThrows(() => convertAndMaterializeFromSource(sourceInput({
+      sourceItems: [
+        { id: 'i1', amountMinor: 1000, assignees: ['alice'] },
+        { id: 'i2', amountMinor: 500,  assignees: ['bob'] },
+      ],
+      sourceAdjustments: [
+        { id: 'a1', kind: 'TAX', scope: 'EXPENSE', amountMinor: 150 },
+      ],
+      sourceAmountMinor: 1700,
+      rateDecimal:       '100',
+    })), 'SOURCE_SUM_MISMATCH')
+  })
+
+  it('rejects sourceAmountMinor 0', () => {
+    expectThrows(() => convertAndMaterializeFromSource(sourceInput({
+      sourceItems: [],
+      sourceAmountMinor: 0,
+      rateDecimal:       '100',
+    })), 'SOURCE_AMOUNT_NOT_POSITIVE_INTEGER')
+  })
+
+  it('rejects sourceAmountMinor non-integer', () => {
+    expectThrows(() => convertAndMaterializeFromSource(sourceInput({
+      sourceItems: [
+        { id: 'i1', amountMinor: 100, assignees: ['alice'] },
+      ],
+      sourceAmountMinor: 100.5,
+      rateDecimal:       '100',
+    })), 'SOURCE_AMOUNT_NOT_POSITIVE_INTEGER')
+  })
+
+  it('rejects source item amountMinor 0', () => {
+    expectThrows(() => convertAndMaterializeFromSource(sourceInput({
+      sourceItems: [
+        { id: 'i1', amountMinor: 0, assignees: ['alice'] },
+      ],
+      sourceAmountMinor: 100,
+      rateDecimal:       '100',
+    })), 'SOURCE_ITEM_NOT_POSITIVE_INTEGER')
+  })
+
+  it('rejects source adjustment amountMinor 0', () => {
+    expectThrows(() => convertAndMaterializeFromSource(sourceInput({
+      sourceItems: [
+        { id: 'i1', amountMinor: 100, assignees: ['alice'] },
+      ],
+      sourceAdjustments: [
+        { id: 'a1', kind: 'TAX', scope: 'EXPENSE', amountMinor: 0 },
+      ],
+      sourceAmountMinor: 100,
+      rateDecimal:       '100',
+    })), 'SOURCE_ADJUSTMENT_NOT_POSITIVE_INTEGER')
+  })
+})
+
+describe('convertAndMaterializeFromSource — fx-core error propagation', () => {
+  it('propagates non-canonical rate from fx-core', () => {
+    // fx-core throws plain Error for non-canonical rate (not MaterializeError)
+    expect(() => convertAndMaterializeFromSource(sourceInput({
+      sourceItems: [
+        { id: 'i1', amountMinor: 100, assignees: ['alice'] },
+      ],
+      sourceAmountMinor: 100,
+      rateDecimal:       '1.20',  // trailing zero — non-canonical
+    }))).toThrow(/non-canonical/)
+  })
+
+  it('propagates NaN-ish rate from fx-core (zero rejected)', () => {
+    expect(() => convertAndMaterializeFromSource(sourceInput({
+      sourceItems: [
+        { id: 'i1', amountMinor: 100, assignees: ['alice'] },
+      ],
+      sourceAmountMinor: 100,
+      rateDecimal:       '0',
+    }))).toThrow()
+  })
+})
+
+describe('convertAndMaterializeFromSource — materializer error propagation', () => {
+  it('items rounding to zero in trip currency surfaces ITEM_NOT_POSITIVE_INTEGER', () => {
+    // Pathological rate forces per-line + total to round to 0 minor in
+    // trip currency. Source-domain checks pass; the materializer is the
+    // final gate and rejects zero-amount items. Worker maps this error
+    // to ExpenseValidationError so the operator sees one error class.
+    expectThrows(() => convertAndMaterializeFromSource(sourceInput({
+      sourceItems: [
+        { id: 'i1', amountMinor: 1, assignees: ['alice'] },
+      ],
+      sourceAmountMinor: 1,
+      rateDecimal:       '0.00001',
+    })), 'ITEM_NOT_POSITIVE_INTEGER')
+  })
+})
+
+describe('convertAndMaterializeFromSource — determinism', () => {
+  it('identical input produces identical output', () => {
+    const fixture = sourceInput({
+      sourceItems: [
+        { id: 'i1', amountMinor: 333, assignees: ['alice', 'bob', 'carol'] },
+        { id: 'i2', amountMinor: 100, assignees: ['alice'] },
+      ],
+      sourceAdjustments: [
+        { id: 'a1', kind: 'TAX', scope: 'EXPENSE', amountMinor: 50 },
+      ],
+      sourceAmountMinor: 483,
+      rateDecimal:       '146.2',
+    })
+    const r1 = convertAndMaterializeFromSource(fixture)
+    const r2 = convertAndMaterializeFromSource(fixture)
+    expect(r1).toEqual(r2)
+    expect(canonicalizeSplits(r1.splits)).toBe(canonicalizeSplits(r2.splits))
   })
 })
