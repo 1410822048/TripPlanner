@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@tripmate/expense-materialize": "file:../../packages/expense-materialize",
+    "@tripmate/fx-core": "file:../../packages/fx-core",
     "@tripmate/settlement-core": "file:../../packages/settlement-core",
     "jose": "^6.1.0",
     "zod": "^4.0.0"
