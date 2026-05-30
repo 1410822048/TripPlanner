@@ -60,9 +60,11 @@ const baseFx = {
 
 /** Consistent foreign-currency doc: USD 12.34 → JPY 1850 @ rate 146.2.
  *
- *  Foreign-mode docs MUST carry sourceAdjustments (mirror of
- *  adjustments, which is always present). Items + sourceItems stay
- *  off-by-default; tests that exercise the OCR path overlay them. */
+ *  Foreign-mode docs MUST carry items + sourceItems (Worker materializes
+ *  items from sourceItems; a no-OCR foreign path is unsupported) and
+ *  sourceAdjustments (mirror of adjustments, which is always present).
+ *  Defaults supply all three so tests that aren't about presence
+ *  invariants stay readable; presence tests overlay deletes manually. */
 function foreignDoc(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return baseDoc({
     amountMinor:       1850,
@@ -70,6 +72,8 @@ function foreignDoc(overrides: Record<string, unknown> = {}): Record<string, unk
     sourceCurrency:    'USD',
     sourceAmountMinor: 1234,
     fxSnapshot:        baseFx,
+    items:             [...baseItems],
+    sourceItems:       [...baseSourceItems],
     sourceAdjustments: [],
     ...overrides,
   })
@@ -288,14 +292,30 @@ describe('ExpenseDocSchema — source-domain mirror', () => {
     }
   })
 
-  // sourceItems mirrors items presence: foreign-no-OCR omits both,
-  // foreign-with-OCR carries both with id pair-wise alignment.
+  // Foreign mode REQUIRES both items + sourceItems (Worker materializes
+  // items from sourceItems on every money/date update; a foreign doc
+  // without either is unsupported state that would 500 on the next
+  // edit, so the read schema rejects it loudly).
 
-  it('accepts foreign-mode doc with no items + no sourceItems (no-OCR path)', () => {
-    expect(ExpenseDocSchema.safeParse(foreignDoc()).success).toBe(true)
+  it('rejects foreign-mode doc missing BOTH items and sourceItems (no-OCR foreign path unsupported)', () => {
+    // Manually undo the helper defaults so we can assert the schema
+    // (rather than the helper) is what enforces the invariant.
+    const doc = foreignDoc()
+    delete (doc as Record<string, unknown>).items
+    delete (doc as Record<string, unknown>).sourceItems
+    const res = ExpenseDocSchema.safeParse(doc)
+    expect(res.success).toBe(false)
+    if (!res.success) {
+      expect(res.error.issues.some(i =>
+        /must carry both items and sourceItems/i.test(i.message),
+      )).toBe(true)
+    }
   })
 
   it('accepts foreign-mode doc with aligned items + sourceItems', () => {
+    // foreignDoc() now supplies items + sourceItems by default; this
+    // explicit overlay keeps the test self-documenting for the
+    // alignment-aware happy path.
     const doc = foreignDoc({
       items:       [...baseItems],
       sourceItems: [...baseSourceItems],
@@ -304,23 +324,25 @@ describe('ExpenseDocSchema — source-domain mirror', () => {
   })
 
   it('rejects foreign-mode items without sourceItems', () => {
-    const doc = foreignDoc({ items: [...baseItems] })  // no sourceItems
+    const doc = foreignDoc({ items: [...baseItems] })
+    delete (doc as Record<string, unknown>).sourceItems
     const res = ExpenseDocSchema.safeParse(doc)
     expect(res.success).toBe(false)
     if (!res.success) {
       expect(res.error.issues.some(i =>
-        /sourceItems must be present iff items/i.test(i.message),
+        /must carry both items and sourceItems/i.test(i.message),
       )).toBe(true)
     }
   })
 
   it('rejects foreign-mode sourceItems without items', () => {
-    const doc = foreignDoc({ sourceItems: [...baseSourceItems] })  // no items
+    const doc = foreignDoc({ sourceItems: [...baseSourceItems] })
+    delete (doc as Record<string, unknown>).items
     const res = ExpenseDocSchema.safeParse(doc)
     expect(res.success).toBe(false)
     if (!res.success) {
       expect(res.error.issues.some(i =>
-        /sourceItems must be present iff items/i.test(i.message),
+        /must carry both items and sourceItems/i.test(i.message),
       )).toBe(true)
     }
   })

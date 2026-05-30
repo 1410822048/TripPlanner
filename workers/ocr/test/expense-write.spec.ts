@@ -73,8 +73,36 @@ vi.mock('../src/cascade', async () => {
 	}
 })
 
+// Phase 3b: FX snapshot is fetched by the Worker on foreign-create and
+// foreign-update (when date or money group changes). Mock the resolver
+// so tests don't hit Frankfurter / Firestore cache. `currencyFractionDigits`
+// stays real -- it's a pure lookup the Worker uses for materializer
+// math and the mock would have to mirror the real ISO 4217 table anyway.
+vi.mock('../src/fx-rate', async () => {
+	const actual = await vi.importActual<typeof import('../src/fx-rate')>('../src/fx-rate')
+	return {
+		...actual,
+		// Fixed rate '150' (USD→JPY in tests). The mock fn signature
+		// matches the real getFxSnapshot's input/output -- callers
+		// override per-test via vi.mocked(...).mockImplementationOnce().
+		getFxSnapshot: vi.fn(async (input: import('../src/fx-rate').GetFxSnapshotInput) => ({
+			provider:             'frankfurter-v2' as const,
+			baseCurrency:         input.sourceCurrency,
+			quoteCurrency:        input.tripCurrency,
+			requestedDate:        input.requestedDate,
+			rateDate:             input.requestedDate,
+			rateDecimal:          '150',
+			sourceAmountMinor:    input.sourceAmountMinor,
+			// 1000 cents USD * 150 / 100 = 1500 yen (JPY fraction 0).
+			convertedAmountMinor: Math.round(input.sourceAmountMinor * 150 / 100),
+			fetchedAtMs:          1_700_000_000_000,
+		})),
+	}
+})
+
 import { expenseCreate, expenseUpdate } from '../src/expense-write'
 import * as storage from '../src/storage'
+import * as fxRate from '../src/fx-rate'
 import { ExpenseValidationError } from '../src/expense-validate'
 import { CascadeError } from '../src/cascade'
 
@@ -386,11 +414,18 @@ describe('expenseUpdate endpoint', () => {
 		)).rejects.toBeInstanceOf(CascadeError)
 	})
 
-	it('REGRESSION: patch with non-updatable field is rejected BEFORE tx begins', async () => {
+	it('REGRESSION: patch with non-updatable field is rejected via ExpenseValidationError', async () => {
 		// tripId / createdBy / createdAt / memberIds / deletedAt /
 		// receiptPurgedAt are all owned by other layers (rules /
-		// cron). The allowlist check runs BEFORE the tx starts so a
-		// rejected patch costs zero Firestore reads.
+		// cron). Phase 3b moved the UPDATABLE_FIELDS check inside the
+		// tx body (it lives in `buildTripUpdateWrite`, which is only
+		// reachable after the in-tx foreign-vs-trip branch decision
+		// reads the current doc). The semantic contract — random keys
+		// are rejected with ExpenseValidationError — is unchanged; the
+		// "before tx begins" timing pin from pre-3b is dropped.
+		txGetResponses.set(`trips/${TRIP_ID}`,                        tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`,  memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, aliveExpenseReadDoc())
 		await expect(expenseUpdate(
 			CALLER_UID,
 			{
@@ -399,9 +434,6 @@ describe('expenseUpdate endpoint', () => {
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(ExpenseValidationError)
-		// txGetResponses was never primed -- if the tx had run, the
-		// `unexpected tx.get` throw would have fired instead of the
-		// ExpenseValidationError.
 	})
 
 	it('rejects update where post-merge fails cross-field (paidBy no longer in roster)', async () => {
@@ -898,6 +930,482 @@ describe('expenseUpdate with intentIds (Phase 3.5)', () => {
 				patch: { receipt: null },
 				intentIds: [NEW_FULL_INTENT_ID],
 			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(ExpenseValidationError)
+	})
+})
+
+// ─── Phase 3b foreign-currency endpoints ──────────────────────────
+//
+// Phase 3b flips the foreign path from "rejected via guard" (3a) to
+// "fully supported with Worker-authoritative source-domain
+// persistence + FX snapshot". These tests pin:
+//
+//   - Foreign-CREATE: source-domain payload accepted, Worker fetches
+//     FxSnapshot via mocked getFxSnapshot, materializer derives
+//     trip-currency canonical fields, sourceCurrency/Amount/Items/
+//     Adjustments + fxSnapshot all land on the doc atomically;
+//     fxSnapshot.fetchedAt is server-stamped via REQUEST_TIME.
+//   - Mode-switch rejection (trip doc + foreign-key patch):
+//     `assertNoForeignFieldsOnTripPatch` rejects with
+//     UNSUPPORTED_FOREIGN_FIELD inside the tx (after the foreign-vs-
+//     trip branch is decided by reading the current doc).
+//   - Foreign-UPDATE: three sub-modes — text-only (no FX touched),
+//     date-only (FX re-fetched, full source mirror rewritten with
+//     unchanged values for consistency), money-group (full source
+//     replaced + FX re-fetched). Same-currency mode-switch via
+//     sourceCurrency=trip rejected.
+//
+// Same-currency reject lives on BOTH the create path (prepareForeign-
+// Create same-currency check) and the update path (buildForeign-
+// UpdateWrite effectiveSourceCurrency check) so a foreign expense
+// can never carry a degenerate fxSnapshot with no real conversion.
+
+// Trip currency is JPY (0 fraction digits) per tripReadDoc default;
+// foreign payloads use USD (2 fraction digits) so the materializer's
+// fraction-digit-diff math is exercised.
+function validForeignExpensePayload(overrides: Record<string, unknown> = {}) {
+	return {
+		title:             'Coffee',
+		sourceCurrency:    'USD',
+		sourceAmountMinor: 1000,
+		category:          'food' as const,
+		paidBy:            'editor-uid',
+		date:              '2026-05-22',
+		sourceItems: [
+			{
+				id:                'item-1',
+				name:              'Latte',
+				sourceAmountMinor: 1000,
+				assignees:         ['editor-uid'],
+			},
+		],
+		sourceAdjustments: [],
+		...overrides,
+	}
+}
+
+/** Pre-existing foreign-currency expense doc. Trip-currency canonical
+ *  fields (amountMinor=1500 = $10 * rate 150 / 100) match what the
+ *  Worker would have written at create time. Used by foreign-update
+ *  tests so the in-tx `tx.get(expenses/...)` returns a foreign doc and
+ *  routing goes through buildForeignUpdateWrite. */
+function foreignExpenseReadDoc() {
+	return {
+		exists: true,
+		name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/expenses/${EXPENSE_ID}`,
+		updateTime: '2026-05-22T00:00:00Z',
+		fields: {
+			tripId:      { stringValue: TRIP_ID },
+			title:       { stringValue: 'Coffee' },
+			amountMinor: { integerValue: '1500' },
+			currency:    { stringValue: 'JPY' },
+			category:    { stringValue: 'food' },
+			paidBy:      { stringValue: 'editor-uid' },
+			date:        { stringValue: '2026-05-22' },
+			deletedAt:   { nullValue: null },
+			splits: { arrayValue: { values: [
+				{ mapValue: { fields: {
+					memberId:    { stringValue:  'editor-uid' },
+					amountMinor: { integerValue: '1500' },
+				} } },
+			] } },
+			items: { arrayValue: { values: [
+				{ mapValue: { fields: {
+					id:          { stringValue:  'item-1' },
+					name:        { stringValue:  'Latte' },
+					amountMinor: { integerValue: '1500' },
+					assignees:   { arrayValue: { values: [{ stringValue: 'editor-uid' }] } },
+				} } },
+			] } },
+			adjustments: { arrayValue: { values: [] } },
+			// Source-domain mirror
+			sourceCurrency:    { stringValue:  'USD' },
+			sourceAmountMinor: { integerValue: '1000' },
+			sourceItems: { arrayValue: { values: [
+				{ mapValue: { fields: {
+					id:                { stringValue:  'item-1' },
+					name:              { stringValue:  'Latte' },
+					sourceAmountMinor: { integerValue: '1000' },
+					assignees:         { arrayValue: { values: [{ stringValue: 'editor-uid' }] } },
+				} } },
+			] } },
+			sourceAdjustments: { arrayValue: { values: [] } },
+			fxSnapshot: { mapValue: { fields: {
+				provider:             { stringValue:  'frankfurter-v2' },
+				baseCurrency:         { stringValue:  'USD' },
+				quoteCurrency:        { stringValue:  'JPY' },
+				requestedDate:        { stringValue:  '2026-05-22' },
+				rateDate:             { stringValue:  '2026-05-22' },
+				rateDecimal:          { stringValue:  '150' },
+				sourceAmountMinor:    { integerValue: '1000' },
+				convertedAmountMinor: { integerValue: '1500' },
+				fetchedAt:            { timestampValue: '2026-05-22T00:00:00Z' },
+			} } },
+		},
+	}
+}
+
+describe('Phase 3b foreign-create endpoint', () => {
+	beforeEach(() => {
+		vi.mocked(fxRate.getFxSnapshot).mockClear()
+	})
+
+	it('happy path: persists sourceCurrency / sourceAmountMinor / sourceItems / sourceAdjustments / fxSnapshot + REQUEST_TIME transform for fxSnapshot.fetchedAt', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`,                        tripReadDoc({ currency: 'JPY' }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`,  memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, notFoundReadDoc(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`))
+
+		const result = await expenseCreate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validForeignExpensePayload() },
+			'{}', BUCKET,
+		)
+		expect(result.expenseId).toBe(EXPENSE_ID)
+		// FX resolver was called with the trip + source pair from the body.
+		expect(vi.mocked(fxRate.getFxSnapshot)).toHaveBeenCalledTimes(1)
+		const fxCall = vi.mocked(fxRate.getFxSnapshot).mock.calls[0][0]
+		expect(fxCall).toMatchObject({
+			requestedDate:     '2026-05-22',
+			sourceCurrency:    'USD',
+			tripCurrency:      'JPY',
+			sourceAmountMinor: 1000,
+		})
+
+		const writes = capturedTxResult!.writes as Array<{
+			fields: Record<string, {
+				stringValue?:  string
+				integerValue?: string
+				mapValue?:     { fields: Record<string, { stringValue?: string; integerValue?: string; nullValue?: null; timestampValue?: string }> }
+				arrayValue?:   { values?: unknown[] }
+			}>
+			updateTransforms?: { fieldPath: string; setToServerValue: string }[]
+		}>
+		expect(writes).toHaveLength(1)
+		// Source-domain mirror present
+		expect(writes[0].fields.sourceCurrency?.stringValue).toBe('USD')
+		expect(writes[0].fields.sourceAmountMinor?.integerValue).toBe('1000')
+		expect(writes[0].fields.sourceItems?.arrayValue?.values).toHaveLength(1)
+		expect(writes[0].fields.sourceAdjustments?.arrayValue?.values).toHaveLength(0)
+		// Trip-currency canonical derived by materializer
+		expect(writes[0].fields.amountMinor?.integerValue).toBe('1500')
+		expect(writes[0].fields.currency?.stringValue).toBe('JPY')
+		// FxSnapshot persisted; fetchedAt placeholder is null and the
+		// server transform pins commit time.
+		const fx = writes[0].fields.fxSnapshot?.mapValue?.fields
+		expect(fx?.provider?.stringValue).toBe('frankfurter-v2')
+		expect(fx?.rateDecimal?.stringValue).toBe('150')
+		expect(fx?.fetchedAt?.nullValue).toBeNull()
+		expect(writes[0].updateTransforms).toEqual(expect.arrayContaining([
+			{ fieldPath: 'createdAt',           setToServerValue: 'REQUEST_TIME' },
+			{ fieldPath: 'updatedAt',           setToServerValue: 'REQUEST_TIME' },
+			{ fieldPath: 'fxSnapshot.fetchedAt', setToServerValue: 'REQUEST_TIME' },
+		]))
+	})
+
+	it('rejects sourceCurrency === trip currency (degenerate foreign path)', async () => {
+		// Same-currency means "no FX needed"; the foreign create would
+		// produce a degenerate FxSnapshot with provider=null. Force
+		// the caller to use the trip-currency expense path instead.
+		txGetResponses.set(`trips/${TRIP_ID}`,                        tripReadDoc({ currency: 'JPY' }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`,  memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, notFoundReadDoc(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`))
+
+		await expect(expenseCreate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validForeignExpensePayload({ sourceCurrency: 'JPY' }) },
+			'{}', BUCKET,
+		)).rejects.toThrowError(/equals trip currency/)
+		// FX resolver should NOT have been called -- same-currency reject
+		// fires before getFxSnapshot.
+		expect(vi.mocked(fxRate.getFxSnapshot)).not.toHaveBeenCalled()
+	})
+
+	it('rejects foreign payload that smuggles trip-currency money keys (.strict() on foreign schema)', async () => {
+		// makeForeignExpenseCreateSchema is .strict() — any top-level key
+		// outside the foreign contract is a loud rejection. Critical so a
+		// buggy client that adds `currency: 'JPY'` (or `amountMinor`,
+		// `splits`, `fxSnapshot`) to a foreign body can't silently land a
+		// half-merged write where the client lied about the conversion.
+		txGetResponses.set(`trips/${TRIP_ID}`,                        tripReadDoc({ currency: 'JPY' }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`,  memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, notFoundReadDoc(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`))
+
+		// `currency` is a trip-currency-only key; strict() should reject.
+		await expect(expenseCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				expense: validForeignExpensePayload({ currency: 'JPY' }),
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(ExpenseValidationError)
+	})
+})
+
+describe('Phase 3b mode-switch rejection (trip doc + foreign-key patch)', () => {
+	// Trip-currency docs cannot grow source-money fields via update.
+	// The guard `assertNoForeignFieldsOnTripPatch` runs INSIDE the tx
+	// (after the foreign-vs-trip branch is decided by reading the doc),
+	// so each test seeds auth + the current doc as a trip-currency
+	// expense. Field hint is patch.<key> for consistency with the
+	// other UPDATABLE_FIELDS rejections.
+	const REJECTED_KEYS = [
+		'sourceCurrency',
+		'sourceAmountMinor',
+		'sourceItems',
+		'sourceAdjustments',
+		'sourceFractionDigits',
+		'fxSnapshot',
+	] as const
+
+	for (const key of REJECTED_KEYS) {
+		it(`rejects patch.${key} on existing trip-currency doc → UNSUPPORTED_FOREIGN_FIELD`, async () => {
+			txGetResponses.set(`trips/${TRIP_ID}`,                        tripReadDoc())
+			txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`,  memberReadDoc('editor'))
+			txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, aliveExpenseReadDoc())
+
+			const patch: Record<string, unknown> = { [key]: 'USD' }
+			if (key === 'sourceAmountMinor' || key === 'sourceFractionDigits') patch[key] = 100
+			if (key === 'sourceItems')        patch[key] = []
+			if (key === 'sourceAdjustments')  patch[key] = []
+			if (key === 'fxSnapshot')         patch[key] = { provider: 'frankfurter-v2' }
+
+			await expect(expenseUpdate(
+				CALLER_UID,
+				{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch },
+				'{}', BUCKET,
+			)).rejects.toThrowError(/UNSUPPORTED_FOREIGN_FIELD/)
+		})
+	}
+
+	it('error path uses patch.<field> scoping', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`,                        tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`,  memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, aliveExpenseReadDoc())
+
+		try {
+			await expenseUpdate(
+				CALLER_UID,
+				{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { fxSnapshot: { provider: 'frankfurter-v2' } } },
+				'{}', BUCKET,
+			)
+			throw new Error('expected guard to reject')
+		} catch (err) {
+			expect(err).toBeInstanceOf(ExpenseValidationError)
+			expect((err as ExpenseValidationError).field).toBe('patch.fxSnapshot')
+		}
+	})
+})
+
+describe('Phase 3b foreign-update endpoint', () => {
+	beforeEach(() => {
+		vi.mocked(fxRate.getFxSnapshot).mockClear()
+	})
+
+	function seedForeignAlive() {
+		txGetResponses.set(`trips/${TRIP_ID}`,                        tripReadDoc({ currency: 'JPY' }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`,  memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, foreignExpenseReadDoc())
+	}
+
+		it('text-only patch on foreign doc → no FX fetch, no recompute, no source mirror in mask', async () => {
+			seedForeignAlive()
+			await expenseUpdate(
+				CALLER_UID,
+				{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { title: 'Renamed Coffee' } },
+			'{}', BUCKET,
+		)
+		// FX resolver MUST stay untouched on text-only -- a foreign-update
+		// that re-fetched FX on every rename would (a) waste Frankfurter
+		// quota and (b) overwrite a historical rate with a possibly-
+		// different cache hit on a backdated edit.
+		expect(vi.mocked(fxRate.getFxSnapshot)).not.toHaveBeenCalled()
+
+		const writes = capturedTxResult!.writes as Array<{
+			updateMask?: string[]
+			fields: Record<string, { stringValue?: string }>
+			updateTransforms?: { fieldPath: string; setToServerValue: string }[]
+		}>
+		expect(writes).toHaveLength(1)
+		// Text fields + updatedBy only -- source mirror NOT in the mask.
+		expect(writes[0].updateMask).toContain('title')
+		expect(writes[0].updateMask).toContain('updatedBy')
+		expect(writes[0].updateMask).not.toContain('amountMinor')
+		expect(writes[0].updateMask).not.toContain('sourceCurrency')
+		expect(writes[0].updateMask).not.toContain('sourceAmountMinor')
+		expect(writes[0].updateMask).not.toContain('sourceItems')
+		expect(writes[0].updateMask).not.toContain('sourceAdjustments')
+		expect(writes[0].updateMask).not.toContain('fxSnapshot')
+		// fxSnapshot.fetchedAt transform NOT applied (snapshot wasn't
+		// rewritten). updatedAt always is.
+			expect(writes[0].updateTransforms).toEqual([
+				{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' },
+			])
+		})
+
+		it('rejects text-only paidBy patch on foreign doc when payer is not a trip member', async () => {
+			seedForeignAlive()
+			await expect(expenseUpdate(
+				CALLER_UID,
+				{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { paidBy: 'stranger-uid' } },
+				'{}', BUCKET,
+			)).rejects.toBeInstanceOf(ExpenseValidationError)
+			expect(vi.mocked(fxRate.getFxSnapshot)).not.toHaveBeenCalled()
+		})
+
+		it('date-only patch on foreign doc → FX re-fetched, full source mirror + fxSnapshot rewritten', async () => {
+			// Date change on a foreign doc means the FX rate snapshot is no
+			// longer authoritative -- the Worker re-resolves for the new
+		// date using the persisted sourceItems/Adjustments. The source
+		// mirror is rewritten with the SAME values (date didn't change
+		// source-domain amounts), but the rewrite is still in the
+		// updateMask so the doc's source-fields/trip-fields stay byte-
+		// consistent post-write (any partial rewrite would risk a
+		// 5-tuple superRefine violation on a future read).
+		seedForeignAlive()
+		await expenseUpdate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { date: '2026-05-23' } },
+			'{}', BUCKET,
+		)
+		expect(vi.mocked(fxRate.getFxSnapshot)).toHaveBeenCalledTimes(1)
+		// Re-resolved with the NEW date but the PERSISTED sourceAmountMinor
+		// (date-only mode doesn't change the source-domain amount).
+		const fxCall = vi.mocked(fxRate.getFxSnapshot).mock.calls[0][0]
+		expect(fxCall.requestedDate).toBe('2026-05-23')
+		expect(fxCall.sourceCurrency).toBe('USD')
+		expect(fxCall.tripCurrency).toBe('JPY')
+		expect(fxCall.sourceAmountMinor).toBe(1000)
+
+		const writes = capturedTxResult!.writes as Array<{
+			updateMask?: string[]
+			fields: Record<string, {
+				stringValue?:  string
+				integerValue?: string
+				mapValue?:     { fields: Record<string, { stringValue?: string; nullValue?: null }> }
+				arrayValue?:   { values?: unknown[] }
+			}>
+			updateTransforms?: { fieldPath: string; setToServerValue: string }[]
+		}>
+		expect(writes[0].updateMask).toContain('date')
+		expect(writes[0].updateMask).toContain('amountMinor')
+		expect(writes[0].updateMask).toContain('splits')
+		expect(writes[0].updateMask).toContain('items')
+		expect(writes[0].updateMask).toContain('adjustments')
+		expect(writes[0].updateMask).toContain('sourceCurrency')
+		expect(writes[0].updateMask).toContain('sourceAmountMinor')
+		expect(writes[0].updateMask).toContain('sourceItems')
+		expect(writes[0].updateMask).toContain('sourceAdjustments')
+		expect(writes[0].updateMask).toContain('fxSnapshot')
+		// fxSnapshot encoded with fetchedAt=null + REQUEST_TIME transform.
+		const fx = writes[0].fields.fxSnapshot?.mapValue?.fields
+		expect(fx?.requestedDate?.stringValue).toBe('2026-05-23')
+		expect(fx?.fetchedAt?.nullValue).toBeNull()
+		expect(writes[0].updateTransforms).toEqual(expect.arrayContaining([
+			{ fieldPath: 'updatedAt',           setToServerValue: 'REQUEST_TIME' },
+			{ fieldPath: 'fxSnapshot.fetchedAt', setToServerValue: 'REQUEST_TIME' },
+		]))
+	})
+
+	it('money-group patch on foreign doc → FX re-fetched with new source amount + full mirror rewritten', async () => {
+		seedForeignAlive()
+		// Swap to a larger lunch item.
+		await expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				patch: {
+					sourceCurrency:    'USD',
+					sourceAmountMinor: 2000,
+					sourceItems: [
+						{
+							id:                'item-1',
+							name:              'Big Lunch',
+							sourceAmountMinor: 2000,
+							assignees:         ['editor-uid'],
+						},
+					],
+					sourceAdjustments: [],
+				},
+			},
+			'{}', BUCKET,
+		)
+		// FX call sees the new sourceAmountMinor + original date.
+		expect(vi.mocked(fxRate.getFxSnapshot)).toHaveBeenCalledTimes(1)
+		const fxCall = vi.mocked(fxRate.getFxSnapshot).mock.calls[0][0]
+		expect(fxCall.sourceAmountMinor).toBe(2000)
+		expect(fxCall.requestedDate).toBe('2026-05-22')   // unchanged (no date patch)
+
+		const writes = capturedTxResult!.writes as Array<{
+			updateMask?: string[]
+			fields: Record<string, {
+				stringValue?:  string
+				integerValue?: string
+				mapValue?:     { fields: Record<string, unknown> }
+				arrayValue?:   { values?: unknown[] }
+			}>
+		}>
+		expect(writes[0].fields.sourceAmountMinor?.integerValue).toBe('2000')
+		// 2000 cents USD * 150 / 100 = 3000 yen (JPY 0 frac).
+		expect(writes[0].fields.amountMinor?.integerValue).toBe('3000')
+	})
+
+	it('rejects money-group patch with sourceCurrency === trip currency (mode-switch via update is unsupported)', async () => {
+		// Mirror of the foreign-CREATE same-currency reject, this time
+		// inside buildForeignUpdateWrite. Forces delete-recreate
+		// semantics for any currency switch -- a foreign expense
+		// can't morph into a trip-currency one mid-doc.
+		seedForeignAlive()
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				patch: {
+					sourceCurrency:    'JPY',
+					sourceAmountMinor: 1500,
+					sourceItems: [
+						{
+							id:                'item-1',
+							name:              'Latte',
+							sourceAmountMinor: 1500,
+							assignees:         ['editor-uid'],
+						},
+					],
+					sourceAdjustments: [],
+				},
+			},
+			'{}', BUCKET,
+		)).rejects.toThrowError(/mode-switch via update is not supported/)
+		// Same-currency reject fires BEFORE FX fetch.
+		expect(vi.mocked(fxRate.getFxSnapshot)).not.toHaveBeenCalled()
+	})
+
+	it('rejects partial source-money patch (all-or-none group invariant)', async () => {
+		// makeForeignExpenseUpdateSchema superRefine: the source-money
+		// 4-tuple must be present together or not at all. A partial
+		// patch (e.g. sourceAmountMinor alone) can't be soundly
+		// reconciled against the current doc's per-line breakdown.
+		seedForeignAlive()
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				patch: { sourceAmountMinor: 2000 },   // missing the other three
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(ExpenseValidationError)
+	})
+
+	it('rejects foreign-update patch that smuggles trip-currency money keys (.strict() on foreign-update schema)', async () => {
+		// Foreign-update schema is built from makeForeignExpenseCreateSchema()
+		// .partial() which preserves .strict() — a patch carrying
+		// `currency` / `amountMinor` / `splits` / `items` / `adjustments`
+		// against a foreign doc is rejected at parse time.
+		seedForeignAlive()
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { currency: 'EUR' } },
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(ExpenseValidationError)
 	})

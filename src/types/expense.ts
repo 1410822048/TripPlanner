@@ -568,16 +568,22 @@ export const ExpenseDocSchema = z.object({
     })
   }
 
-  // sourceItems presence mirrors items presence -- foreign expenses
-  // without OCR have neither; foreign expenses with OCR carry both.
+  // foreign mode requires BOTH items + sourceItems. The Worker's foreign
+  // create schema mandates `sourceItems.min(1)` and the materializer
+  // derives `items` from it on every money/date update -- a foreign doc
+  // without items/sourceItems is unsupported state (admin drift or
+  // Worker bug) that would 500 on any subsequent update. Catching it on
+  // read here means the client rejects the doc loudly via the
+  // firestoreDocFromSchema Sentry path instead of parsing it as valid
+  // and exploding mid-edit.
   const hasItems = data.items !== undefined
-  if (hasSourceItems !== hasItems) {
+  if (!hasItems || !hasSourceItems) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'sourceItems must be present iff items is present (foreign-mode source-domain mirror)',
-      path: ['sourceItems'],
+      message: 'foreign-mode expenses must carry both items and sourceItems (Worker materializes items from sourceItems on every money/date update)',
+      path: [!hasItems ? 'items' : 'sourceItems'],
     })
-  } else if (hasSourceItems && hasItems) {
+  } else {
     const items = data.items!
     const src   = data.sourceItems!
     if (src.length !== items.length) {
