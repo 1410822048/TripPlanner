@@ -8,6 +8,7 @@ import {
   allocateRoundingResidual,
   canonicalizeRate,
   convertMinorHalfEven,
+  currencyFractionDigits,
   isCanonicalRateString,
   parseDecimalRate,
 } from './index'
@@ -42,6 +43,37 @@ describe('isCanonicalRateString', () => {
     expect(isCanonicalRateString('0')).toBe(false)
     expect(isCanonicalRateString('0.0')).toBe(false)
     expect(isCanonicalRateString('0.00')).toBe(false)
+  })
+})
+
+describe('currencyFractionDigits', () => {
+  test('zero-fraction codes (app convention)', () => {
+    expect(currencyFractionDigits('JPY')).toBe(0)
+    expect(currencyFractionDigits('TWD')).toBe(0)
+    expect(currencyFractionDigits('KRW')).toBe(0)
+    expect(currencyFractionDigits('VND')).toBe(0)
+    expect(currencyFractionDigits('IDR')).toBe(0)
+  })
+
+  test('two-fraction codes', () => {
+    expect(currencyFractionDigits('USD')).toBe(2)
+    expect(currencyFractionDigits('EUR')).toBe(2)
+    expect(currencyFractionDigits('CNY')).toBe(2)
+    expect(currencyFractionDigits('HKD')).toBe(2)
+    expect(currencyFractionDigits('THB')).toBe(2)
+    expect(currencyFractionDigits('SGD')).toBe(2)
+    expect(currencyFractionDigits('GBP')).toBe(2)
+    expect(currencyFractionDigits('AUD')).toBe(2)
+    expect(currencyFractionDigits('PHP')).toBe(2)
+    expect(currencyFractionDigits('MYR')).toBe(2)
+  })
+
+  // Unknown ISO codes default to 2 (worldwide majority). Locks the
+  // contract callers depend on for forward-compat with currencies the
+  // app hasn't explicitly opined on yet (e.g. NOK, SEK, MXN).
+  test('unknown codes default to 2', () => {
+    expect(currencyFractionDigits('NOK')).toBe(2)
+    expect(currencyFractionDigits('ZZZ')).toBe(2)
   })
 })
 

@@ -10,7 +10,18 @@
 // values loudly.
 import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
-import { TimestampSchema } from './_shared'
+import {
+  CurrencyCodeSchema,
+  type FxSnapshot,
+  FxSnapshotSchema,
+  TimestampSchema,
+} from './_shared'
+
+/** Re-export so existing `import { FxSnapshot } from '@/types/expense'`
+ *  consumers keep compiling. The canonical declaration lives in
+ *  `_shared.ts` as `z.infer<typeof FxSnapshotSchema>` — same shape
+ *  shared with the settlement FX records. */
+export type { FxSnapshot }
 
 export interface ExpenseSplit {
   memberId:    string
@@ -148,31 +159,12 @@ export interface SourceExpenseSplit {
   sourceAmountMinor: number
 }
 
-/** Worker-minted FX conversion snapshot — locked at the moment the
- *  expense was created / had its money fields updated. Present iff
- *  `sourceCurrency !== tripCurrency`; same-currency expenses keep
- *  `fxSnapshot` undefined (degenerate path).
- *
- *  Written by the Worker's foreign-mode router on create + every
- *  money/date update. The read schema validates it so any drift
- *  surfaces via firestoreDocFromSchema. No client code reads / writes
- *  it directly until Phase 3c surfaces source-domain UI.
- *
- *  `convertedAmountMinor` MUST equal `Expense.amountMinor` (trip
- *  currency); the Worker is authoritative and overwrites any client-
- *  supplied preview. `rateDecimal` is a canonical string (no trailing
- *  zeros, see `@tripmate/fx-core::isCanonicalRateString`). */
-export interface FxSnapshot {
-  provider:             'frankfurter-v2'
-  baseCurrency:         string        // === sourceCurrency
-  quoteCurrency:        string        // === Expense.currency (trip currency)
-  requestedDate:        string        // 'YYYY-MM-DD' — caller's expense.date
-  rateDate:             string        // 'YYYY-MM-DD' — provider's rate date (may differ on weekends/holidays)
-  rateDecimal:          string        // canonical decimal string (no trailing zeros)
-  sourceAmountMinor:    number        // === Expense.sourceAmountMinor
-  convertedAmountMinor: number        // === Expense.amountMinor (trip-currency minor)
-  fetchedAt:            Timestamp     // server-stamped REQUEST_TIME
-}
+// FxSnapshot type lives in _shared.ts (re-exported at the top of this
+// file) — Worker-minted record of one conversion event, present iff
+// `sourceCurrency !== tripCurrency`. `convertedAmountMinor` MUST equal
+// `Expense.amountMinor` (trip currency); the Worker is authoritative
+// and overwrites any client-supplied preview. `rateDecimal` is a
+// canonical string per `@tripmate/fx-core::isCanonicalRateString`.
 
 // trips/{tripId}/expenses/{expenseId}
 export interface Expense {
@@ -362,12 +354,9 @@ export const SourceExpenseSplitSchema = z.object({
   sourceAmountMinor: z.number().int().nonnegative(),
 })
 
-/** Currency code shape — ISO 4217 alpha-3 uppercase. Mirrors the
- *  Worker-side foreign-schema validator. Re-declared locally rather
- *  than imported so the client doesn't take a runtime dep on the
- *  Worker package. Hoisted above ExpenseShape (Phase 3c-1) so the
- *  shape's foreign-mode fields can reference it. */
-const CurrencyCodeSchema = z.string().regex(/^[A-Z]{3}$/, 'currency must be ISO 4217 alpha-3 uppercase')
+// CurrencyCodeSchema is imported from _shared — the same regex now
+// gates trip / expense / settlement currency fields. Hoisted there as
+// part of the Settlement FX rollout (Commit 1).
 
 // Pulled out as a base so UpdateExpenseSchema can `.partial()` from the
 // pre-refine shape (refines don't survive .partial(), and a partial
@@ -438,36 +427,11 @@ export const ExpenseReceiptSchema = z.object({
   thumbPath: z.string().min(1).max(500).optional(),
 })
 
-/** ISO date 'YYYY-MM-DD' shape — both `requestedDate` (caller's
- *  expense.date) and `rateDate` (provider's actual rate date) follow
- *  the same form. */
-const IsoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
-
-/** Canonical decimal rate string — no trailing zeros, no leading zeros
- *  beyond a single `0` before a `.`, at least one digit. Mirrors
- *  `@tripmate/fx-core::isCanonicalRateString`. Local declaration keeps
- *  the read schema free of the fx-core runtime dep. */
-const CanonicalRateDecimalSchema = z.string().regex(
-  /^(0|[1-9][0-9]*)(\.[0-9]*[1-9])?$/,
-  'rateDecimal must be canonical (no trailing zeros)',
-)
-
-/** FxSnapshot read schema. The Worker is authoritative for writes
- *  (foreign-mode router in expense-write.ts); this schema only gates
- *  reads so an unexpected shape gets surfaced via the same
- *  firestoreDocFromSchema Sentry path as other doc-level schema
- *  regressions. */
-export const FxSnapshotSchema = z.object({
-  provider:             z.literal('frankfurter-v2'),
-  baseCurrency:         CurrencyCodeSchema,
-  quoteCurrency:        CurrencyCodeSchema,
-  requestedDate:        IsoDateSchema,
-  rateDate:             IsoDateSchema,
-  rateDecimal:          CanonicalRateDecimalSchema,
-  sourceAmountMinor:    z.number().int().positive(),
-  convertedAmountMinor: z.number().int().nonnegative(),
-  fetchedAt:            TimestampSchema,
-})
+// FxSnapshot read schema + IsoDate / CanonicalRateDecimal sub-schemas
+// are imported from _shared so settlement.ts can reuse the exact same
+// shape contract. Drift between the two consumers would mean a Worker
+// fxSnapshot that parses on expense reads but fails on settlement
+// reads (or vice versa) — one source-of-truth avoids the class.
 
 export const ExpenseDocSchema = z.object({
   tripId:      z.string(),

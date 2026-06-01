@@ -75,9 +75,10 @@ vi.mock('../src/cascade', async () => {
 
 // Phase 3b: FX snapshot is fetched by the Worker on foreign-create and
 // foreign-update (when date or money group changes). Mock the resolver
-// so tests don't hit Frankfurter / Firestore cache. `currencyFractionDigits`
-// stays real -- it's a pure lookup the Worker uses for materializer
-// math and the mock would have to mirror the real ISO 4217 table anyway.
+// so tests don't hit Frankfurter / Firestore cache. The fraction-digit
+// lookup lives in `@tripmate/fx-core` (not mocked) — it's a pure ISO
+// 4217 table the Worker uses for materializer math, mirroring it in a
+// mock would just duplicate the same lookup.
 vi.mock('../src/fx-rate', async () => {
 	const actual = await vi.importActual<typeof import('../src/fx-rate')>('../src/fx-rate')
 	return {

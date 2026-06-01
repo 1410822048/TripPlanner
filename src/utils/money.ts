@@ -11,24 +11,18 @@
 // digits before / after the decimal point as separate integers and
 // composes the result via integer arithmetic only.
 
+import { currencyFractionDigits as fxCurrencyFractionDigits } from '@tripmate/fx-core'
 import { currencySymbol, DEFAULT_CURRENCY } from './currency'
 
-// What we persist, matching the app's existing UI convention. TWD /
-// IDR are treated as zero-fraction even though official ISO 4217 says
-// 2, because the app's pre-minor-units formatter rendered them with
-// no decimals and we don't want to silently re-interpret persisted
-// integers from before this migration.
-const FRACTION_DIGITS: Record<string, number> = {
-  JPY: 0, TWD: 0, KRW: 0, VND: 0, IDR: 0,
-  USD: 2, EUR: 2, CNY: 2, HKD: 2, THB: 2,
-  SGD: 2, GBP: 2, AUD: 2, PHP: 2, MYR: 2,
-}
-
 /** Digits of fractional precision for an ISO 4217 code. Unknown
- *  codes default to 2, matching the worldwide majority. */
+ *  codes default to 2, matching the worldwide majority. UI callers
+ *  often have `string | undefined` (e.g. before a trip currency is
+ *  resolved) — we fall back to the app's DEFAULT_CURRENCY so summary
+ *  rows never crash mid-render. The strict registry lives in
+ *  `@tripmate/fx-core` so the Worker FX path and settlement FX share
+ *  one table; this wrapper only adds the client-side undefined hop. */
 export function currencyFractionDigits(code: string | undefined): number {
-  if (!code) return FRACTION_DIGITS[DEFAULT_CURRENCY]!
-  return FRACTION_DIGITS[code] ?? 2
+  return fxCurrencyFractionDigits(code ?? DEFAULT_CURRENCY)
 }
 
 // Structured reason so callers (form modals, OCR import) can show the

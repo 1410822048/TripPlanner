@@ -40,15 +40,42 @@ export interface ParsedRate {
 
 /** Conversion problem statement. Caller adapts whatever it has into
  *  this shape — no currency code is needed here, only fraction-digit
- *  count. The CALLER is responsible for looking up fraction digits
- *  from the currency code (see src/utils/money.ts
- *  currencyFractionDigits). Decoupling here lets fx-core stay free of
- *  the currency registry, which lives in the app domain. */
+ *  count. Callers typically resolve the digits via
+ *  `currencyFractionDigits` below; the math itself stays
+ *  registry-agnostic so currencies beyond the app's table (e.g. BHD=3)
+ *  still flow through if the caller supplies the right count. */
 export interface ConvertMinorInput {
   sourceMinor:          number
   rateDecimal:          string
   sourceFractionDigits: number
   targetFractionDigits: number
+}
+
+// ─── Currency fraction-digit registry ─────────────────────────────
+
+/** App-canonical ISO 4217 fraction-digit table. The Worker FX path,
+ *  the client money util, and the settlement FX path all need the
+ *  exact same answer for "how many decimals does this currency have?",
+ *  so the table lives here as the single source of truth.
+ *
+ *  TWD / IDR are 0 here even though official ISO 4217 says 2 — the
+ *  app's pre-minor-units formatter rendered them with no decimals, so
+ *  re-interpreting persisted integers from before the minor-unit
+ *  migration as cents would silently move the decimal point. The
+ *  table MUST stay in lock-step with how the UI formats these codes. */
+const FRACTION_DIGITS: Record<string, number> = {
+  JPY: 0, TWD: 0, KRW: 0, VND: 0, IDR: 0,
+  USD: 2, EUR: 2, CNY: 2, HKD: 2, THB: 2,
+  SGD: 2, GBP: 2, AUD: 2, PHP: 2, MYR: 2,
+}
+
+/** Fraction digits for a 3-letter ISO 4217 code. Unknown codes default
+ *  to 2 (worldwide majority). Strict signature — caller is responsible
+ *  for handling its own "no currency yet" fallback semantics; this
+ *  keeps the registry boundary explicit and lets the Worker call it
+ *  without a `string | undefined` widening. */
+export function currencyFractionDigits(code: string): number {
+  return FRACTION_DIGITS[code] ?? 2
 }
 
 // ─── Canonical-form helpers ───────────────────────────────────────

@@ -57,10 +57,10 @@ import {
   type ConsumedIntent,
 }                                                                   from './upload-intent'
 import {
-  currencyFractionDigits,
   getFxSnapshot,
   type FxSnapshot,
 }                                                                   from './fx-rate'
+import { currencyFractionDigits }                                   from '@tripmate/fx-core'
 
 // ─── Request body schemas ─────────────────────────────────────────
 

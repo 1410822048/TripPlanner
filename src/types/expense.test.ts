@@ -220,6 +220,19 @@ describe('ExpenseDocSchema — FX field types still enforced', () => {
     expect(ExpenseDocSchema.safeParse(doc).success).toBe(false)
   })
 
+  // Zero is rejected to match fx-core::isCanonicalRateString. Same
+  // rationale as the settlement schema test — a "0" rate would
+  // silently materialise every conversion as 0 minor units.
+  it('rejects zero rateDecimal ("0")', () => {
+    const doc = foreignDoc({ fxSnapshot: { ...baseFx, rateDecimal: '0' } })
+    expect(ExpenseDocSchema.safeParse(doc).success).toBe(false)
+  })
+
+  it('rejects zero rateDecimal ("0.0")', () => {
+    const doc = foreignDoc({ fxSnapshot: { ...baseFx, rateDecimal: '0.0' } })
+    expect(ExpenseDocSchema.safeParse(doc).success).toBe(false)
+  })
+
   it('rejects lowercase sourceCurrency', () => {
     // Both sides of the pair must be lowered together to isolate the
     // per-field regex from the cross-field equality check.
