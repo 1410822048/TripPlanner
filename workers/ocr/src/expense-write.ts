@@ -22,6 +22,7 @@
 import { z }                                                        from 'zod'
 import {
   convertAndMaterializeFromSource,
+  convertSourceSplitsToTarget,
   MaterializeError,
   type MaterializeItem,
   type MaterializeAdjustment,
@@ -91,10 +92,25 @@ export const ExpenseUpdateRequestSchema = z.object({
 })
 export type ExpenseUpdateRequest = z.infer<typeof ExpenseUpdateRequestSchema>
 
+const ExpensePayloadModeSchema = z.enum(['TRIP_CURRENCY', 'FOREIGN_CURRENCY'])
+type ExpensePayloadMode = z.infer<typeof ExpensePayloadModeSchema>
+
+const SOURCE_EXPENSE_WIRE_KEYS = [
+  'sourceCurrency',
+  'sourceAmountMinor',
+  'sourceItems',
+  'sourceAdjustments',
+  'sourceSplits',
+] as const
+
 // ─── Foreign-mode routing ─────────────────────────────────────────
 //
-// Payloads carrying `sourceCurrency` are routed through the
-// source-domain pipeline:
+// Create payloads must carry an explicit `mode`. This makes the
+// submit-boundary DTO the single source of truth: stale source*
+// form fields can no longer accidentally strip trip-currency fields
+// on the client and then fall through to the trip schema on Worker.
+//
+// `mode: FOREIGN_CURRENCY` routes through the source-domain pipeline:
 //   1. parse via `makeForeignExpenseCreateSchema` (.strict() rejects
 //      any client attempt to also send trip-currency money fields)
 //   2. cross-field gate: `sourceCurrency !== tripContext.currency`
@@ -109,18 +125,64 @@ export type ExpenseUpdateRequest = z.infer<typeof ExpenseUpdateRequestSchema>
 //      fetchedAt` is server-stamped via REQUEST_TIME
 //
 // Trip-currency (non-foreign) payloads continue to use the original
-// `makeExpenseCreateSchema` path. The branch is on `sourceCurrency`
-// presence in the request body, not a separate URL/parameter, so the
-// client can stop sending sourceCurrency to fall back to the trip path
-// without coordinating a new endpoint.
+// `makeExpenseCreateSchema` path. Trip mode rejects any defined
+// source* key so cancelled foreign UI state cannot produce a half
+// foreign / half trip payload.
 
-/** Body-shape probe used to decide which create/update schema to run.
- *  Returning a typed-narrowed `string | undefined` lets the caller
- *  branch on `if (sourceCurrency)` without re-asserting types. */
-function readSourceCurrency(body: unknown): string | undefined {
-  if (typeof body !== 'object' || body === null) return undefined
-  const sc = (body as { sourceCurrency?: unknown }).sourceCurrency
-  return typeof sc === 'string' ? sc : undefined
+function assertPayloadRecord(
+  body:  unknown,
+  field: 'expense' | 'patch',
+): Record<string, unknown> {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    throw new ExpenseValidationError(field, `${field} must be an object`)
+  }
+  return body as Record<string, unknown>
+}
+
+function readExpensePayloadMode(
+  body:  Record<string, unknown>,
+  field: 'expense' | 'patch',
+  opts:  { required: boolean },
+): ExpensePayloadMode | undefined {
+  const mode = body.mode
+  if (mode === undefined) {
+    if (opts.required) {
+      throw new ExpenseValidationError(`${field}.mode`, 'mode is required')
+    }
+    return undefined
+  }
+
+  const result = ExpensePayloadModeSchema.safeParse(mode)
+  if (!result.success) {
+    throw new ExpenseValidationError(
+      `${field}.mode`,
+      'mode must be TRIP_CURRENCY or FOREIGN_CURRENCY',
+    )
+  }
+  return result.data
+}
+
+function stripExpensePayloadMode(body: Record<string, unknown>): Record<string, unknown> {
+  const { mode: _mode, ...rest } = body
+  return rest
+}
+
+function hasDefinedOwn(body: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(body, key) && body[key] !== undefined
+}
+
+function assertNoSourceExpenseKeys(
+  body:  Record<string, unknown>,
+  field: 'expense' | 'patch',
+): void {
+  for (const key of SOURCE_EXPENSE_WIRE_KEYS) {
+    if (hasDefinedOwn(body, key)) {
+      throw new ExpenseValidationError(
+        `${field}.${key}`,
+        'source fields require mode=FOREIGN_CURRENCY',
+      )
+    }
+  }
 }
 
 // ─── Authorization helpers ────────────────────────────────────────
@@ -191,8 +253,9 @@ async function authorizeCanWriteTx(
 export interface ForeignArtifacts {
   sourceCurrency:    string
   sourceAmountMinor: number
-  sourceItems:       ExpenseForeignCreateInput['sourceItems']
-  sourceAdjustments: ExpenseForeignCreateInput['sourceAdjustments']
+  sourceItems?:       ExpenseForeignCreateInput['sourceItems']
+  sourceAdjustments?: ExpenseForeignCreateInput['sourceAdjustments']
+  sourceSplits?:      ExpenseForeignCreateInput['sourceSplits']
   fxSnapshot:        FxSnapshot
 }
 
@@ -304,15 +367,21 @@ function encodeExpense(
   if (foreign) {
     fields.sourceCurrency    = { stringValue:  foreign.sourceCurrency }
     fields.sourceAmountMinor = { integerValue: String(foreign.sourceAmountMinor) }
-    fields.sourceItems       = encodeSourceItems(foreign.sourceItems)
-    fields.sourceAdjustments = encodeSourceAdjustments(foreign.sourceAdjustments)
+    if (foreign.sourceSplits !== undefined) {
+      fields.sourceSplits = encodeSourceSplits(foreign.sourceSplits)
+    } else if (foreign.sourceItems !== undefined && foreign.sourceAdjustments !== undefined) {
+      fields.sourceItems       = encodeSourceItems(foreign.sourceItems)
+      fields.sourceAdjustments = encodeSourceAdjustments(foreign.sourceAdjustments)
+    } else {
+      throw new CascadeError(500, 'foreign artifacts missing source domain')
+    }
     fields.fxSnapshot        = encodeFxSnapshot(foreign.fxSnapshot)
   }
   return fields
 }
 
 function encodeSourceItems(
-  src: ExpenseForeignCreateInput['sourceItems'],
+  src: NonNullable<ExpenseForeignCreateInput['sourceItems']>,
 ): FsValue {
   return {
     arrayValue: {
@@ -333,7 +402,7 @@ function encodeSourceItems(
 }
 
 function encodeSourceAdjustments(
-  src: ExpenseForeignCreateInput['sourceAdjustments'],
+  src: NonNullable<ExpenseForeignCreateInput['sourceAdjustments']>,
 ): FsValue {
   return {
     arrayValue: {
@@ -350,6 +419,23 @@ function encodeSourceAdjustments(
         }
         return { mapValue: { fields: aFields } }
       }),
+    },
+  }
+}
+
+function encodeSourceSplits(
+  src: NonNullable<ExpenseForeignCreateInput['sourceSplits']>,
+): FsValue {
+  return {
+    arrayValue: {
+      values: src.map(split => ({
+        mapValue: {
+          fields: {
+            memberId:          { stringValue:  split.memberId },
+            sourceAmountMinor: { integerValue: String(split.sourceAmountMinor) },
+          },
+        },
+      })),
     },
   }
 }
@@ -410,7 +496,11 @@ async function doCreate(
     // anymore -- it's threaded into encodeExpense as a separate
     // parameter and validated via `makeReceiptSchema` as defense-in-
     // depth against a malformed intent producing a bad URL/path.
-    const callerReceipt = (req.expense as { receipt?: unknown } | null)?.receipt
+    const expenseBody = assertPayloadRecord(req.expense, 'expense')
+    const expenseMode = readExpensePayloadMode(expenseBody, 'expense', { required: true })
+    const expenseForSchema = stripExpensePayloadMode(expenseBody)
+
+    const callerReceipt = expenseForSchema.receipt
     if (callerReceipt !== undefined && callerReceipt !== null) {
       throw new ExpenseValidationError(
         'receipt',
@@ -430,23 +520,21 @@ async function doCreate(
       intentMarkUsedWrites.push(...markUsedWrites)
     }
 
-    // Phase 3b: branch on body shape. A `sourceCurrency` field flags the
-    // foreign path; the request body is parsed against either the
-    // foreign or trip-currency schema accordingly. Each branch produces
-    // a (parsed trip-currency payload, optional foreign artifacts) pair
-    // that the shared encode + write tail-end consumes.
-    const sourceCurrency = readSourceCurrency(req.expense)
+    // Phase 3b: branch on the explicit submit DTO mode. Each branch
+    // produces a (parsed trip-currency payload, optional foreign
+    // artifacts) pair that the shared encode + write tail-end consumes.
     let parsed:  ReturnType<ReturnType<typeof makeExpenseCreateSchema>['parse']>
     let foreign: ForeignArtifacts | undefined
 
-    if (sourceCurrency !== undefined) {
+    if (expenseMode === 'FOREIGN_CURRENCY') {
       const { parsedTrip, foreignArtifacts } = await prepareForeignCreate(
-        req.expense, ctx, serviceAccountJson,
+        expenseForSchema, ctx, serviceAccountJson,
       )
       parsed  = parsedTrip
       foreign = foreignArtifacts
     } else {
-      const parseResult = makeExpenseCreateSchema().safeParse(req.expense)
+      assertNoSourceExpenseKeys(expenseForSchema, 'expense')
+      const parseResult = makeExpenseCreateSchema().safeParse(expenseForSchema)
       if (!parseResult.success) {
         const issue = parseResult.error.issues[0]
         throw new ExpenseValidationError(issue.path.join('.'), issue.message)
@@ -530,6 +618,12 @@ function mapMaterializeErrorField(code: MaterializeErrorCode): string {
     case 'SOURCE_AMOUNT_NOT_POSITIVE_INTEGER':
     case 'SOURCE_SUM_MISMATCH':
       return 'sourceAmountMinor'
+    case 'SOURCE_SPLITS_EMPTY':
+    case 'SOURCE_SPLIT_MEMBER_MISSING':
+    case 'SOURCE_SPLIT_NOT_NONNEGATIVE_INTEGER':
+    case 'DUPLICATE_SOURCE_SPLIT_MEMBER':
+    case 'SOURCE_SPLIT_SUM_MISMATCH':
+      return 'sourceSplits'
     case 'SOURCE_ADJUSTMENT_NOT_POSITIVE_INTEGER':
       return 'sourceAdjustments'
     case 'SOURCE_ITEM_NOT_POSITIVE_INTEGER':
@@ -620,15 +714,66 @@ async function prepareForeignCreate(
     throw new CascadeError(500, 'unexpected null FxSnapshot for foreign expense (source !== trip)')
   }
 
+  if (fp.sourceSplits !== undefined) {
+    let converted: ReturnType<typeof convertSourceSplitsToTarget>
+    try {
+      converted = convertSourceSplitsToTarget({
+        sourceSplits: fp.sourceSplits.map(split => ({
+          memberId:    split.memberId,
+          amountMinor: split.sourceAmountMinor,
+        })),
+        sourceAmountMinor: fp.sourceAmountMinor,
+        rateDecimal:       snapshot.rateDecimal,
+        sourceFractionDigits,
+        targetFractionDigits,
+      })
+    } catch (e) {
+      if (e instanceof MaterializeError) {
+        throw new ExpenseValidationError(
+          mapMaterializeErrorField(e.code),
+          `${e.code}: ${e.message}`,
+        )
+      }
+      throw e
+    }
+
+    return {
+      parsedTrip: {
+        title:       fp.title,
+        amountMinor: converted.amountMinor,
+        currency:    ctx.currency,
+        category:    fp.category,
+        paidBy:      fp.paidBy,
+        splits:      converted.splits,
+        date:        fp.date,
+        items:       [],
+        adjustments: [],
+        ...(fp.note !== undefined ? { note: fp.note } : {}),
+      },
+      foreignArtifacts: {
+        sourceCurrency:    fp.sourceCurrency,
+        sourceAmountMinor: fp.sourceAmountMinor,
+        sourceSplits:      fp.sourceSplits,
+        fxSnapshot:        snapshot,
+      },
+    }
+  }
+
+  const sourceItems       = fp.sourceItems
+  const sourceAdjustments = fp.sourceAdjustments
+  if (!sourceItems || !sourceAdjustments) {
+    throw new CascadeError(500, 'foreign create source-domain invariant violated post-parse')
+  }
+
   let materialized: ReturnType<typeof convertAndMaterializeFromSource>
   try {
     materialized = convertAndMaterializeFromSource({
-      sourceItems: fp.sourceItems.map(i => ({
+      sourceItems: sourceItems.map(i => ({
         id:          i.id,
         amountMinor: i.sourceAmountMinor,
         assignees:   i.assignees,
       })),
-      sourceAdjustments: fp.sourceAdjustments.map(a => ({
+      sourceAdjustments: sourceAdjustments.map(a => ({
         id:           a.id,
         kind:         a.kind,
         scope:        a.scope,
@@ -659,7 +804,7 @@ async function prepareForeignCreate(
   // encoder + cross-field validator expect. The materializer guarantees
   // its output preserves source order, so positional zip is safe.
   const tripItems = materialized.items.map((mi: MaterializeItem, i: number) => {
-    const src = fp.sourceItems[i]!
+    const src = sourceItems[i]!
     return {
       id:          mi.id,
       name:        src.name,
@@ -668,7 +813,7 @@ async function prepareForeignCreate(
     }
   })
   const tripAdjustments = materialized.adjustments.map((ma: MaterializeAdjustment, i: number) => {
-    const src = fp.sourceAdjustments[i]!
+    const src = sourceAdjustments[i]!
     const out: {
       id:            string
       label:         string
@@ -702,8 +847,8 @@ async function prepareForeignCreate(
   const foreignArtifacts: ForeignArtifacts = {
     sourceCurrency:    fp.sourceCurrency,
     sourceAmountMinor: fp.sourceAmountMinor,
-    sourceItems:       fp.sourceItems,
-    sourceAdjustments: fp.sourceAdjustments,
+    sourceItems,
+    sourceAdjustments,
     fxSnapshot:        snapshot,
   }
   return { parsedTrip, foreignArtifacts }
@@ -796,21 +941,17 @@ const UPDATABLE_FIELDS = new Set([
   'paidBy', 'splits', 'date', 'note', 'items', 'adjustments', 'receipt',
 ])
 
-// Phase 3b update routing: foreign-ness is determined by reading the
-// CURRENT doc inside the tx, NOT by inspecting the patch shape. A patch
-// carrying foreign keys against a trip-currency doc -- i.e. an attempt
-// to switch an existing expense's mode -- is rejected via this guard
-// inside the trip branch. A patch carrying trip-currency money keys
-// against a foreign doc is rejected by `makeForeignExpenseUpdateSchema`'s
-// `.strict()` gate. Mode switching is out of scope for Phase 3b; a
-// future "convert this expense to/from foreign" UX would need its own
-// design (likely delete-recreate so the FX audit trail aligns with the
-// user-facing currency-change event).
+// Phase 3c update routing: the explicit patch.mode is the source of
+// truth. TRIP_CURRENCY patches may not carry source/fx fields; when
+// applied to an existing foreign doc they atomically delete the source
+// mirror + fxSnapshot. FOREIGN_CURRENCY patches use the foreign schema
+// and require a full source money group when switching from a trip doc.
 const PATCH_FOREIGN_KEYS_REJECTED_ON_TRIP_DOC = [
   'sourceCurrency',
   'sourceAmountMinor',
   'sourceItems',
   'sourceAdjustments',
+  'sourceSplits',
   'sourceFractionDigits',
   'fxSnapshot',
 ] as const
@@ -820,7 +961,7 @@ function assertNoForeignFieldsOnTripPatch(patch: Record<string, unknown>): void 
     if (key in patch) {
       throw new ExpenseValidationError(
         `patch.${key}`,
-        `UNSUPPORTED_FOREIGN_FIELD: cannot add source-currency fields to a trip-currency expense; mode-switch is not supported via update`,
+        `UNSUPPORTED_FOREIGN_FIELD: ${key} is not allowed in TRIP_CURRENCY mode`,
       )
     }
   }
@@ -852,6 +993,11 @@ interface DecodedSourceAdjustment {
   scope:             MaterializeAdjustment['scope']
   sourceAmountMinor: number
   targetItemId?:     string
+}
+
+interface DecodedSourceSplit {
+  memberId:          string
+  sourceAmountMinor: number
 }
 
 /** Decode the persisted `sourceItems` array from Firestore REST shape
@@ -898,6 +1044,20 @@ function decodeSourceAdjustmentsField(
   })
 }
 
+function decodeSourceSplitsField(
+  fields: Record<string, FsValue>,
+): DecodedSourceSplit[] | undefined {
+  const arr = (fields.sourceSplits as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values
+  if (!arr) return undefined
+  return arr.map(v => {
+    const inner = v.mapValue?.fields ?? {}
+    return {
+      memberId:          readString(inner, 'memberId') ?? '',
+      sourceAmountMinor: Number((inner.sourceAmountMinor as { integerValue?: string } | undefined)?.integerValue ?? 0),
+    }
+  })
+}
+
 export async function expenseUpdate(
   callerUid:          string,
   req:                ExpenseUpdateRequest,
@@ -919,19 +1079,17 @@ async function doUpdate(
   // Patch-shape gate runs OUTSIDE the transaction body -- it's pure
   // request validation, no retry value. UPDATABLE_FIELDS is only
   // checked for the trip-currency path (foreign-update schema's
-  // `.strict()` is the equivalent gate for the foreign branch); the
-  // foreign-keys reject is moved inside the tx after we read the
-  // current doc to determine which branch applies.
-  if (typeof req.patch !== 'object' || req.patch === null) {
-    throw new ExpenseValidationError('patch', 'patch must be an object')
-  }
+  // `.strict()` is the equivalent gate for the foreign branch). The
+  // branch itself is explicit patch.mode, not inferred from stray
+  // source fields or current document shape.
+  const patchBody = assertPayloadRecord(req.patch, 'patch')
   // Phase 3.5 legacy-cleanup: only two patch.receipt values are
   // accepted from the client -- `undefined` (no change) or `null`
   // (deletion sentinel). Any object value is rejected; new receipts
   // must come through intentIds. The deletion-vs-intentIds case is
   // still mutually exclusive because they're contradictory operations
   // (delete current vs. set new); the client picks one.
-  const callerPatchReceipt = (req.patch as { receipt?: unknown }).receipt
+  const callerPatchReceipt = patchBody.receipt
   if (callerPatchReceipt !== undefined && callerPatchReceipt !== null) {
     throw new ExpenseValidationError(
       'receipt',
@@ -948,13 +1106,18 @@ async function doUpdate(
   // patch.receipt is no longer part of the parse schema -- handle the
   // deletion sentinel out-of-band so the receipt object can never
   // reach the parser by accident.
-  const receiptDeletion = (req.patch as { receipt?: unknown }).receipt === null
+  const receiptDeletion = patchBody.receipt === null
   // Strip `receipt` from the parseable body so a stray key from
   // future client-side bugs can't sneak in via Zod's default strip()
   // behavior (it would silently drop the field, but explicit removal
   // makes the contract obvious to readers).
-  const patchForSchema = { ...(req.patch as Record<string, unknown>) }
+  const patchForSchema = { ...patchBody }
   delete patchForSchema.receipt
+  const patchMode = readExpensePayloadMode(patchForSchema, 'patch', { required: true })
+  delete patchForSchema.mode
+  if (patchMode === 'TRIP_CURRENCY') {
+    assertNoSourceExpenseKeys(patchForSchema, 'patch')
+  }
 
   await runFirestoreTransaction(accessToken, projectId, async (tx) => {
     const ctx = await authorizeCanWriteTx(tx, req.tripId, callerUid)
@@ -980,8 +1143,8 @@ async function doUpdate(
     // tombstone-flip between our read and our write. Pre-tx the
     // window between read and write let an editor land content
     // patches onto an already-tombstoned doc (Admin bypasses the
-    // rules-layer tombstone freeze). The read ALSO drives the
-    // Phase 3b foreign-vs-trip branch decision below.
+    // rules-layer tombstone freeze). It also tells us whether a
+    // TRIP_CURRENCY patch must delete an existing source mirror.
     const current = await tx.get(`trips/${req.tripId}/expenses/${req.expenseId}`)
     if (!current.exists) {
       throw new CascadeError(404, 'expense not found')
@@ -994,13 +1157,13 @@ async function doUpdate(
     const isCurrentForeign      = typeof currentSourceCurrency === 'string' && currentSourceCurrency.length > 0
 
     let write: TxWrite
-    if (isCurrentForeign) {
+    if (patchMode === 'FOREIGN_CURRENCY') {
       write = await buildForeignUpdateWrite({
         patchForSchema,
         receipt,
         receiptDeletion,
         currentFields:         current.fields,
-        currentSourceCurrency: currentSourceCurrency,
+        currentSourceCurrency: isCurrentForeign ? currentSourceCurrency : undefined,
         ctx,
         projectId,
         tripId:                req.tripId,
@@ -1014,6 +1177,7 @@ async function doUpdate(
         receipt,
         receiptDeletion,
         currentFields: current.fields,
+        deleteForeignFields: isCurrentForeign,
         ctx,
         projectId,
         tripId:        req.tripId,
@@ -1030,22 +1194,25 @@ async function doUpdate(
   return { ok: true }
 }
 
-/** Build the TxWrite for a trip-currency update. Identical semantics to
- *  pre-Phase-3b doUpdate -- the foreign-keys guard is run here (instead
- *  of outside the tx) so the foreign branch can permit those same keys. */
+/** Build the TxWrite for a TRIP_CURRENCY update. This path is also the
+ *  canonical way to switch a foreign-currency expense back to the trip
+ *  currency: source-domain mirror fields are deleted by listing them in
+ *  the updateMask without writing corresponding field values. */
 function buildTripUpdateWrite(args: {
   patchForSchema: Record<string, unknown>
   receipt:        ExpenseReceiptOut | undefined
   receiptDeletion: boolean
   currentFields: Record<string, FsValue>
+  deleteForeignFields: boolean
   ctx:            TripContext
   projectId:      string
   tripId:         string
   expenseId:      string
   callerUid:      string
 }): TxWrite {
-  // Mode-switch reject: trip-currency docs cannot grow source money
-  // group via update. See PATCH_FOREIGN_KEYS_REJECTED_ON_TRIP_DOC.
+  // TRIP_CURRENCY mode cannot accept source-domain input. When this
+  // branch is applied to an existing foreign doc, the source mirror is
+  // deleted below via updateMask-only field paths.
   assertNoForeignFieldsOnTripPatch(args.patchForSchema)
   for (const k of Object.keys(args.patchForSchema)) {
     if (!UPDATABLE_FIELDS.has(k)) {
@@ -1090,6 +1257,14 @@ function buildTripUpdateWrite(args: {
 
   const updateMask = Object.keys(patchFields)
   if (args.receiptDeletion) updateMask.push('receipt')
+  if (args.deleteForeignFields) {
+    pushUnique(updateMask, 'sourceCurrency')
+    pushUnique(updateMask, 'sourceAmountMinor')
+    pushUnique(updateMask, 'sourceItems')
+    pushUnique(updateMask, 'sourceAdjustments')
+    pushUnique(updateMask, 'sourceSplits')
+    pushUnique(updateMask, 'fxSnapshot')
+  }
 
   return {
     document:        docResourceName(args.projectId, `trips/${args.tripId}/expenses/${args.expenseId}`),
@@ -1113,30 +1288,32 @@ function buildTripUpdateWrite(args: {
  *      title/category/paidBy/note/receipt. Just write the patched
  *      fields; trip-currency money + fxSnapshot are preserved.
  *    - **date-only** (`fp.date` present, no money group): re-fetch FX
- *      for the new date using the doc's persisted sourceItems +
- *      sourceAdjustments, re-materialize. Overwrites
- *      amountMinor/items/adjustments/splits/fxSnapshot and re-writes
- *      sourceItems/sourceAdjustments (unchanged values, but stays
- *      consistent with the "any recompute rewrites the whole source
- *      mirror" invariant).
+ *      for the new date using the doc's persisted source mirror
+ *      (either sourceItems+sourceAdjustments OR sourceSplits),
+ *      re-materialize. Overwrites amountMinor/items/adjustments/
+ *      splits/fxSnapshot and re-writes the active source mirror
+ *      (unchanged values, but stays consistent with the "any recompute
+ *      rewrites the whole source mirror" invariant).
  *    - **money-group** (any of the source-money fields present →
- *      schema all-or-none requires all four; optionally with date or
- *      text). Validate sourceCurrency !== trip currency, re-fetch FX,
+ *      schema all-or-none requires sourceCurrency + sourceAmountMinor
+ *      + exactly one source domain; optionally with date or text).
+ *      Validate sourceCurrency !== trip currency, re-fetch FX,
  *      re-materialize from the patched source-domain inputs. Overwrites
  *      everything trip-currency + fxSnapshot.
  *
  *  Persistence invariant: source-domain fields (sourceCurrency,
- *  sourceAmountMinor, sourceItems, sourceAdjustments) and the trip-
- *  currency canonical fields (amountMinor, currency, items,
- *  adjustments, splits, fxSnapshot) are ALL rewritten together when
- *  any recompute happens. Mode-switch into trip currency is rejected
- *  (see prepareForeignCreate's same-currency check). */
+ *  sourceAmountMinor, and exactly one of sourceItems+sourceAdjustments
+ *  or sourceSplits) and the trip-currency canonical fields
+ *  (amountMinor, currency, items, adjustments, splits, fxSnapshot) are
+ *  ALL rewritten together when any recompute happens. Switching into
+ *  trip currency is handled by the TRIP_CURRENCY branch, which deletes
+ *  the source mirror. */
 async function buildForeignUpdateWrite(args: {
   patchForSchema:        Record<string, unknown>
   receipt:               ExpenseReceiptOut | undefined
   receiptDeletion:       boolean
   currentFields:         Record<string, FsValue>
-  currentSourceCurrency: string
+  currentSourceCurrency: string | undefined
   ctx:                   TripContext
   projectId:             string
   tripId:                string
@@ -1152,21 +1329,36 @@ async function buildForeignUpdateWrite(args: {
   const fp = fParseResult.data
 
   // The foreign-update schema's superRefine guarantees source-money
-  // fields are present all-or-none; this assertion documents that
-  // assumption so a future refactor that relaxes the schema gets
-  // caught at the boundary instead of producing a half-recomputed doc.
-  const hasMoneyGroup = fp.sourceCurrency !== undefined
+  // fields are present all-or-none and exactly one source domain is
+  // active; this assertion documents that assumption so a future
+  // refactor that relaxes the schema gets caught at the boundary
+  // instead of producing a half-recomputed doc.
+  const hasLineDomainPatch  = fp.sourceItems !== undefined || fp.sourceAdjustments !== undefined
+  const hasSplitDomainPatch = fp.sourceSplits !== undefined
+  const hasMoneyGroup =
+    fp.sourceCurrency    !== undefined ||
+    fp.sourceAmountMinor !== undefined ||
+    hasLineDomainPatch ||
+    hasSplitDomainPatch
   if (hasMoneyGroup) {
+    const hasCompleteLineDomain = fp.sourceItems !== undefined && fp.sourceAdjustments !== undefined
     if (
+      fp.sourceCurrency    === undefined ||
       fp.sourceAmountMinor === undefined ||
-      fp.sourceItems       === undefined ||
-      fp.sourceAdjustments === undefined
+      hasLineDomainPatch === hasSplitDomainPatch ||
+      (hasLineDomainPatch && !hasCompleteLineDomain)
     ) {
       throw new CascadeError(500, 'source-money group all-or-none invariant violated post-parse')
     }
   }
   const hasDate         = fp.date !== undefined
   const needsRecompute  = hasMoneyGroup || hasDate
+  if (args.currentSourceCurrency === undefined && !hasMoneyGroup) {
+    throw new ExpenseValidationError(
+      'patch.sourceCurrency',
+      'FOREIGN_CURRENCY update requires sourceCurrency, sourceAmountMinor, and exactly one source domain (sourceItems+sourceAdjustments OR sourceSplits) when the current expense is trip-currency',
+    )
+  }
 
   const patchFields: Record<string, FsValue> = {}
   const updateMask:  string[]                = []
@@ -1174,16 +1366,15 @@ async function buildForeignUpdateWrite(args: {
 
   if (needsRecompute) {
     const effectiveSourceCurrency = fp.sourceCurrency ?? args.currentSourceCurrency
-    // Same-currency sourceCurrency means the user is trying to switch
-    // a foreign expense to trip currency via update. Reject -- the
-    // trip-currency expense type carries no FX snapshot, so flipping
-    // the mode mid-doc would either leave a dangling fxSnapshot or
-    // silently drop the audit trail. Force delete+recreate semantics
-    // for currency switch.
+    if (effectiveSourceCurrency === undefined) {
+      throw new CascadeError(500, 'foreign update sourceCurrency invariant violated post-parse')
+    }
+    // Same-currency sourceCurrency must use the TRIP_CURRENCY branch.
+    // FOREIGN_CURRENCY always means "persist a real FX snapshot".
     if (effectiveSourceCurrency === args.ctx.currency) {
       throw new ExpenseValidationError(
         'patch.sourceCurrency',
-        `sourceCurrency ${effectiveSourceCurrency} equals trip currency; mode-switch via update is not supported`,
+        `sourceCurrency ${effectiveSourceCurrency} equals trip currency; use TRIP_CURRENCY mode instead`,
       )
     }
 
@@ -1196,23 +1387,11 @@ async function buildForeignUpdateWrite(args: {
     const currentSourceAmountMinor = readIntegerField(args.currentFields, 'sourceAmountMinor')
     const currentSourceItems       = decodeSourceItemsField(args.currentFields)
     const currentSourceAdjustments = decodeSourceAdjustmentsField(args.currentFields)
+    const currentSourceSplits      = decodeSourceSplitsField(args.currentFields)
 
     const effectiveSourceAmountMinor = fp.sourceAmountMinor ?? currentSourceAmountMinor
     if (effectiveSourceAmountMinor === undefined) {
       throw new CascadeError(500, 'current foreign expense doc missing sourceAmountMinor')
-    }
-    // Effective sources must be present for any recompute. A foreign
-    // doc with missing sourceItems/sourceAdjustments fails the
-    // ExpenseDocSchema 5-tuple superRefine on read, so reaching here
-    // with `undefined` means a data-corruption path -- bail with 500
-    // rather than silently materialize an empty receipt.
-    const effectiveSourceItems       = fp.sourceItems       ?? currentSourceItems
-    const effectiveSourceAdjustments = fp.sourceAdjustments ?? currentSourceAdjustments
-    if (!effectiveSourceItems || effectiveSourceItems.length === 0) {
-      throw new CascadeError(500, 'current foreign expense doc missing sourceItems')
-    }
-    if (!effectiveSourceAdjustments) {
-      throw new CascadeError(500, 'current foreign expense doc missing sourceAdjustments')
     }
 
     const sourceFractionDigits = currencyFractionDigits(effectiveSourceCurrency)
@@ -1233,179 +1412,258 @@ async function buildForeignUpdateWrite(args: {
       throw new CascadeError(500, 'unexpected null FxSnapshot for foreign expense (source !== trip)')
     }
 
-    let materialized: ReturnType<typeof convertAndMaterializeFromSource>
-    try {
-      materialized = convertAndMaterializeFromSource({
-        sourceItems: effectiveSourceItems.map(i => ({
-          id:          i.id,
-          amountMinor: i.sourceAmountMinor,
-          assignees:   i.assignees,
-        })),
-        sourceAdjustments: effectiveSourceAdjustments.map(a => {
-          const out: {
-            id:            string
-            kind:          MaterializeAdjustment['kind']
-            scope:         MaterializeAdjustment['scope']
-            amountMinor:   number
-            targetItemId?: string
-          } = {
-            id:          a.id,
-            kind:        a.kind,
-            scope:       a.scope,
-            amountMinor: a.sourceAmountMinor,
-          }
-          if (a.targetItemId !== undefined) out.targetItemId = a.targetItemId
-          return out
-        }),
-        sourceAmountMinor: effectiveSourceAmountMinor,
-        rateDecimal:       snapshot.rateDecimal,
-        sourceFractionDigits,
-        targetFractionDigits,
-        members:           args.ctx.memberIds,
+    const useSplitDomain =
+      hasSplitDomainPatch ||
+      (!hasLineDomainPatch && currentSourceSplits !== undefined)
+
+    if (useSplitDomain) {
+      const effectiveSourceSplits = fp.sourceSplits ?? currentSourceSplits
+      if (!effectiveSourceSplits || effectiveSourceSplits.length === 0) {
+        throw new CascadeError(500, 'current foreign expense doc missing sourceSplits')
+      }
+
+      let converted: ReturnType<typeof convertSourceSplitsToTarget>
+      try {
+        converted = convertSourceSplitsToTarget({
+          sourceSplits: effectiveSourceSplits.map(split => ({
+            memberId:    split.memberId,
+            amountMinor: split.sourceAmountMinor,
+          })),
+          sourceAmountMinor: effectiveSourceAmountMinor,
+          rateDecimal:       snapshot.rateDecimal,
+          sourceFractionDigits,
+          targetFractionDigits,
+        })
+      } catch (e) {
+        if (e instanceof MaterializeError) {
+          throw new ExpenseValidationError(
+            mapMaterializeErrorField(e.code),
+            `${e.code}: ${e.message}`,
+          )
+        }
+        throw e
+      }
+
+      validateExpenseCrossField(
+        {
+          amountMinor: converted.amountMinor,
+          currency:    args.ctx.currency,
+          paidBy:      fp.paidBy ?? readString(args.currentFields, 'paidBy') ?? '',
+          splits:      converted.splits,
+          items:       [],
+          adjustments: [],
+        },
+        args.ctx.memberIds,
+      )
+
+      patchFields.amountMinor = { integerValue: String(converted.amountMinor) }
+      patchFields.currency    = { stringValue:  args.ctx.currency }
+      patchFields.splits      = {
+        arrayValue: {
+          values: converted.splits.map(s => ({
+            mapValue: {
+              fields: {
+                memberId:    { stringValue:  s.memberId },
+                amountMinor: { integerValue: String(s.amountMinor) },
+              },
+            },
+          })),
+        },
+      }
+      patchFields.items       = { arrayValue: { values: [] } }
+      patchFields.adjustments = { arrayValue: { values: [] } }
+
+      patchFields.sourceCurrency    = { stringValue:  effectiveSourceCurrency }
+      patchFields.sourceAmountMinor = { integerValue: String(effectiveSourceAmountMinor) }
+      patchFields.sourceSplits      = encodeSourceSplits(effectiveSourceSplits)
+
+      // Delete the line-domain source mirror if this expense is being
+      // recomputed in manual-total split-domain mode.
+      pushUnique(updateMask, 'sourceItems')
+      pushUnique(updateMask, 'sourceAdjustments')
+    } else {
+      // Effective sources must be present for any line-domain
+      // recompute. A foreign doc with a partial line source mirror is
+      // data corruption, so fail loudly instead of materializing an
+      // empty receipt.
+      const effectiveSourceItems       = fp.sourceItems       ?? currentSourceItems
+      const effectiveSourceAdjustments = fp.sourceAdjustments ?? currentSourceAdjustments
+      if (!effectiveSourceItems || effectiveSourceItems.length === 0) {
+        throw new CascadeError(500, 'current foreign expense doc missing sourceItems')
+      }
+      if (!effectiveSourceAdjustments) {
+        throw new CascadeError(500, 'current foreign expense doc missing sourceAdjustments')
+      }
+
+      let materialized: ReturnType<typeof convertAndMaterializeFromSource>
+      try {
+        materialized = convertAndMaterializeFromSource({
+          sourceItems: effectiveSourceItems.map(i => ({
+            id:          i.id,
+            amountMinor: i.sourceAmountMinor,
+            assignees:   i.assignees,
+          })),
+          sourceAdjustments: effectiveSourceAdjustments.map(a => {
+            const out: {
+              id:            string
+              kind:          MaterializeAdjustment['kind']
+              scope:         MaterializeAdjustment['scope']
+              amountMinor:   number
+              targetItemId?: string
+            } = {
+              id:          a.id,
+              kind:        a.kind,
+              scope:       a.scope,
+              amountMinor: a.sourceAmountMinor,
+            }
+            if (a.targetItemId !== undefined) out.targetItemId = a.targetItemId
+            return out
+          }),
+          sourceAmountMinor: effectiveSourceAmountMinor,
+          rateDecimal:       snapshot.rateDecimal,
+          sourceFractionDigits,
+          targetFractionDigits,
+          members:           args.ctx.memberIds,
+        })
+      } catch (e) {
+        if (e instanceof MaterializeError) {
+          throw new ExpenseValidationError(
+            mapMaterializeErrorField(e.code),
+            `${e.code}: ${e.message}`,
+          )
+        }
+        throw e
+      }
+
+      // Zip materializer output (id-keyed) with source-side names/labels
+      // by positional index -- materializer preserves source order.
+      const tripItems = materialized.items.map((mi: MaterializeItem, i: number) => ({
+        id:          mi.id,
+        name:        effectiveSourceItems[i]!.name,
+        amountMinor: mi.amountMinor,
+        assignees:   mi.assignees,
+      }))
+      const tripAdjustments = materialized.adjustments.map((ma: MaterializeAdjustment, i: number) => {
+        const src = effectiveSourceAdjustments[i]!
+        const out: {
+          id:            string
+          label:         string
+          kind:          MaterializeAdjustment['kind']
+          scope:         MaterializeAdjustment['scope']
+          amountMinor:   number
+          targetItemId?: string
+        } = {
+          id:          ma.id,
+          label:       src.label,
+          kind:        ma.kind,
+          scope:       ma.scope,
+          amountMinor: ma.amountMinor,
+        }
+        if (ma.targetItemId !== undefined) out.targetItemId = ma.targetItemId
+        return out
       })
-    } catch (e) {
-      if (e instanceof MaterializeError) {
-        throw new ExpenseValidationError(
-          mapMaterializeErrorField(e.code),
-          `${e.code}: ${e.message}`,
-        )
-      }
-      throw e
-    }
 
-    // Zip materializer output (id-keyed) with source-side names/labels
-    // by positional index -- materializer preserves source order.
-    const tripItems = materialized.items.map((mi: MaterializeItem, i: number) => ({
-      id:          mi.id,
-      name:        effectiveSourceItems[i]!.name,
-      amountMinor: mi.amountMinor,
-      assignees:   mi.assignees,
-    }))
-    const tripAdjustments = materialized.adjustments.map((ma: MaterializeAdjustment, i: number) => {
-      const src = effectiveSourceAdjustments[i]!
-      const out: {
-        id:            string
-        label:         string
-        kind:          MaterializeAdjustment['kind']
-        scope:         MaterializeAdjustment['scope']
-        amountMinor:   number
-        targetItemId?: string
-      } = {
-        id:          ma.id,
-        label:       src.label,
-        kind:        ma.kind,
-        scope:       ma.scope,
-        amountMinor: ma.amountMinor,
-      }
-      if (ma.targetItemId !== undefined) out.targetItemId = ma.targetItemId
-      return out
-    })
+      validateExpenseCrossField(
+        {
+          amountMinor: materialized.amountMinor,
+          currency:    args.ctx.currency,
+          paidBy:      fp.paidBy ?? readString(args.currentFields, 'paidBy') ?? '',
+          splits:      materialized.splits,
+          items:       tripItems,
+          adjustments: tripAdjustments,
+        },
+        args.ctx.memberIds,
+      )
 
-    // Cross-field defense-in-depth (mirror doCreate): the materializer
-    // already produced internally consistent splits, but a refactor
-    // bug here would surface as `paidBy not in memberIds` or similar
-    // -- catch it with the same error class the trip path uses.
-    const mergedForValidate = {
-      amountMinor: materialized.amountMinor,
-      currency:    args.ctx.currency,
-      paidBy:      fp.paidBy ?? readString(args.currentFields, 'paidBy') ?? '',
-      splits:      materialized.splits,
-      items:       tripItems,
-      adjustments: tripAdjustments,
-    }
-    validateExpenseCrossField(mergedForValidate, args.ctx.memberIds)
-
-    // Write trip-currency canonical fields
-    patchFields.amountMinor = { integerValue: String(materialized.amountMinor) }
-    patchFields.currency    = { stringValue:  args.ctx.currency }
-    patchFields.splits      = {
-      arrayValue: {
-        values: materialized.splits.map(s => ({
-          mapValue: {
-            fields: {
-              memberId:    { stringValue:  s.memberId },
-              amountMinor: { integerValue: String(s.amountMinor) },
-            },
-          },
-        })),
-      },
-    }
-    patchFields.items = {
-      arrayValue: {
-        values: tripItems.map(item => ({
-          mapValue: {
-            fields: {
-              id:          { stringValue:  item.id },
-              name:        { stringValue:  item.name },
-              amountMinor: { integerValue: String(item.amountMinor) },
-              assignees: {
-                arrayValue: { values: item.assignees.map(uid => ({ stringValue: uid })) },
+      patchFields.amountMinor = { integerValue: String(materialized.amountMinor) }
+      patchFields.currency    = { stringValue:  args.ctx.currency }
+      patchFields.splits      = {
+        arrayValue: {
+          values: materialized.splits.map(s => ({
+            mapValue: {
+              fields: {
+                memberId:    { stringValue:  s.memberId },
+                amountMinor: { integerValue: String(s.amountMinor) },
               },
             },
-          },
-        })),
-      },
-    }
-    patchFields.adjustments = {
-      arrayValue: {
-        values: tripAdjustments.map(adj => {
-          const aFields: Record<string, FsValue> = {
-            id:          { stringValue:  adj.id },
-            label:       { stringValue:  adj.label },
-            kind:        { stringValue:  adj.kind },
-            scope:       { stringValue:  adj.scope },
-            amountMinor: { integerValue: String(adj.amountMinor) },
-          }
-          if (adj.targetItemId !== undefined) {
-            aFields.targetItemId = { stringValue: adj.targetItemId }
-          }
-          return { mapValue: { fields: aFields } }
-        }),
-      },
-    }
-
-    // Source mirror -- always rewritten together with trip outputs so
-    // ExpenseDocSchema's 5-tuple invariant (all source-domain fields
-    // present iff foreign) can't be partially violated by a stale
-    // sourceItems/sourceAdjustments persisting alongside a new
-    // sourceAmountMinor. We re-encode current values when the patch
-    // didn't include them (mode B / date-only) so the bytes are stable
-    // post-write.
-    patchFields.sourceCurrency    = { stringValue:  effectiveSourceCurrency }
-    patchFields.sourceAmountMinor = { integerValue: String(effectiveSourceAmountMinor) }
-    patchFields.sourceItems       = {
-      arrayValue: {
-        values: effectiveSourceItems.map(item => ({
-          mapValue: {
-            fields: {
-              id:                { stringValue:  item.id },
-              name:              { stringValue:  item.name },
-              sourceAmountMinor: { integerValue: String(item.sourceAmountMinor) },
-              assignees: {
-                arrayValue: { values: item.assignees.map(uid => ({ stringValue: uid })) },
+          })),
+        },
+      }
+      patchFields.items = {
+        arrayValue: {
+          values: tripItems.map(item => ({
+            mapValue: {
+              fields: {
+                id:          { stringValue:  item.id },
+                name:        { stringValue:  item.name },
+                amountMinor: { integerValue: String(item.amountMinor) },
+                assignees: {
+                  arrayValue: { values: item.assignees.map(uid => ({ stringValue: uid })) },
+                },
               },
             },
-          },
-        })),
-      },
+          })),
+        },
+      }
+      patchFields.adjustments = {
+        arrayValue: {
+          values: tripAdjustments.map(adj => {
+            const aFields: Record<string, FsValue> = {
+              id:          { stringValue:  adj.id },
+              label:       { stringValue:  adj.label },
+              kind:        { stringValue:  adj.kind },
+              scope:       { stringValue:  adj.scope },
+              amountMinor: { integerValue: String(adj.amountMinor) },
+            }
+            if (adj.targetItemId !== undefined) {
+              aFields.targetItemId = { stringValue: adj.targetItemId }
+            }
+            return { mapValue: { fields: aFields } }
+          }),
+        },
+      }
+
+      patchFields.sourceCurrency    = { stringValue:  effectiveSourceCurrency }
+      patchFields.sourceAmountMinor = { integerValue: String(effectiveSourceAmountMinor) }
+      patchFields.sourceItems       = {
+        arrayValue: {
+          values: effectiveSourceItems.map(item => ({
+            mapValue: {
+              fields: {
+                id:                { stringValue:  item.id },
+                name:              { stringValue:  item.name },
+                sourceAmountMinor: { integerValue: String(item.sourceAmountMinor) },
+                assignees: {
+                  arrayValue: { values: item.assignees.map(uid => ({ stringValue: uid })) },
+                },
+              },
+            },
+          })),
+        },
+      }
+      patchFields.sourceAdjustments = {
+        arrayValue: {
+          values: effectiveSourceAdjustments.map(adj => {
+            const aFields: Record<string, FsValue> = {
+              id:                { stringValue:  adj.id },
+              label:             { stringValue:  adj.label },
+              kind:              { stringValue:  adj.kind },
+              scope:             { stringValue:  adj.scope },
+              sourceAmountMinor: { integerValue: String(adj.sourceAmountMinor) },
+            }
+            if (adj.targetItemId !== undefined) {
+              aFields.targetItemId = { stringValue: adj.targetItemId }
+            }
+            return { mapValue: { fields: aFields } }
+          }),
+        },
+      }
+
+      // Delete the split-domain source mirror if this expense is being
+      // recomputed in line-domain mode.
+      pushUnique(updateMask, 'sourceSplits')
     }
-    patchFields.sourceAdjustments = {
-      arrayValue: {
-        values: effectiveSourceAdjustments.map(adj => {
-          const aFields: Record<string, FsValue> = {
-            id:                { stringValue:  adj.id },
-            label:             { stringValue:  adj.label },
-            kind:              { stringValue:  adj.kind },
-            scope:             { stringValue:  adj.scope },
-            sourceAmountMinor: { integerValue: String(adj.sourceAmountMinor) },
-          }
-          if (adj.targetItemId !== undefined) {
-            aFields.targetItemId = { stringValue: adj.targetItemId }
-          }
-          return { mapValue: { fields: aFields } }
-        }),
-      },
-    }
+
     patchFields.fxSnapshot = encodeFxSnapshot(snapshot)
     fxSnapshotWritten      = true
 
@@ -1418,6 +1676,7 @@ async function buildForeignUpdateWrite(args: {
     pushUnique(updateMask, 'sourceAmountMinor')
     pushUnique(updateMask, 'sourceItems')
     pushUnique(updateMask, 'sourceAdjustments')
+    pushUnique(updateMask, 'sourceSplits')
     pushUnique(updateMask, 'fxSnapshot')
   } else {
     // Text-only on a foreign doc preserves the canonical trip-currency

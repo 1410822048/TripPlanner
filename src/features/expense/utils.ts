@@ -1,5 +1,55 @@
 // src/features/expense/utils.ts
 import type { Expense, ExpenseSplit } from '@/types'
+import { currencyFractionDigits, parseMoneyToMinor } from '@/utils/money'
+
+/** Parse a money text under a currency without throwing. Empty /
+ *  unparseable / negative inputs collapse to 0.
+ *
+ *  Why this exists (vs. calling parseMoneyToMinor directly): the form
+ *  modal needs to repeatedly reparse user-input text whenever the source
+ *  currency changes (toggle / picker / OCR auto-detect). Throwing inside
+ *  a render path would be a footgun — partial keystrokes like "12." are
+ *  legitimate mid-edit states the parser rejects, and we want those to
+ *  silently fall back to 0 rather than blow up the form. Centralising
+ *  the try/catch + clamp here keeps every reparse callsite consistent.
+ *
+ *  Used by:
+ *    - ExpenseFormModal's safeParseMinor (per-keystroke amount preview)
+ *    - ExpenseFormModal's setSourceCurrency (reparse items/adjustments
+ *      against a freshly-chosen source currency) */
+export function safeReparseMoney(text: string, currency: string): number {
+  if (text.trim() === '') return 0
+  try { return Math.max(0, parseMoneyToMinor(text, currency)) }
+  catch { return 0 }
+}
+
+/**
+ * Normalize display text after switching the currency attached to an
+ * existing controlled money input. This is intentionally conservative:
+ * only zeros that are no longer representable in the target currency are
+ * stripped. Non-zero fractional digits are preserved so validation can
+ * reject them instead of silently rounding or truncating user input.
+ */
+export function normalizeMoneyTextForCurrency(text: string, currency: string): string {
+  const trimmed = text.trim()
+  if (trimmed === '') return text
+
+  const match = /^(-?[\d,\s_\u00A0\u202F\uFF0C]+)(?:\.(\d*))$/.exec(trimmed)
+  if (!match) return text
+
+  const whole = match[1]!
+  const fraction = match[2] ?? ''
+  const targetDigits = currencyFractionDigits(currency)
+
+  if (targetDigits === 0 && fraction.length === 0) return whole
+  if (fraction.length <= targetDigits) return text
+
+  const excess = fraction.slice(targetDigits)
+  if (!/^0+$/.test(excess)) return text
+
+  const kept = fraction.slice(0, targetDigits)
+  return targetDigits === 0 ? whole : `${whole}.${kept}`
+}
 
 /**
  * 均等分攤 — 餘數逐一分給前面的成員,保證 sum === totalMinor。

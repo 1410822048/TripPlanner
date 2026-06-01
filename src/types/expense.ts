@@ -135,6 +135,19 @@ export interface SourceExpenseAdjustment {
   targetItemId?:     string
 }
 
+/** Source-currency manual split mirror. Used only for foreign-currency
+ *  expenses where the user entered a total amount without receipt line
+ *  items. It preserves source-currency per-member shares without
+ *  manufacturing a visible ExpenseItem.
+ *
+ *  Mutually exclusive with sourceItems/sourceAdjustments. The Worker
+ *  converts these source splits to trip-currency splits via
+ *  convertSourceSplitsToTarget. */
+export interface SourceExpenseSplit {
+  memberId:          string
+  sourceAmountMinor: number
+}
+
 /** Worker-minted FX conversion snapshot — locked at the moment the
  *  expense was created / had its money fields updated. Present iff
  *  `sourceCurrency !== tripCurrency`; same-currency expenses keep
@@ -242,6 +255,9 @@ export interface Expense {
    *    - same-currency mode (corePresent === 0): both MUST be absent. */
   sourceItems?: SourceExpenseItem[]
   sourceAdjustments?: SourceExpenseAdjustment[]
+  /** Source-domain split mirror for foreign manual-total expenses.
+   *  Mutually exclusive with sourceItems/sourceAdjustments. */
+  sourceSplits?: SourceExpenseSplit[]
 }
 
 export type ExpenseCategory =
@@ -341,6 +357,18 @@ export const SourceExpenseAdjustmentSchema = z.object({
   { message: 'targetItemId must be present iff scope === ITEM', path: ['targetItemId'] },
 )
 
+export const SourceExpenseSplitSchema = z.object({
+  memberId:          z.string().min(1),
+  sourceAmountMinor: z.number().int().nonnegative(),
+})
+
+/** Currency code shape — ISO 4217 alpha-3 uppercase. Mirrors the
+ *  Worker-side foreign-schema validator. Re-declared locally rather
+ *  than imported so the client doesn't take a runtime dep on the
+ *  Worker package. Hoisted above ExpenseShape (Phase 3c-1) so the
+ *  shape's foreign-mode fields can reference it. */
+const CurrencyCodeSchema = z.string().regex(/^[A-Z]{3}$/, 'currency must be ISO 4217 alpha-3 uppercase')
+
 // Pulled out as a base so UpdateExpenseSchema can `.partial()` from the
 // pre-refine shape (refines don't survive .partial(), and a partial
 // update can't fully enforce the splits-sum check without joining with
@@ -362,6 +390,19 @@ const ExpenseShape = z.object({
   // (items, adjustments, members) and rejects drift.
   adjustments: z.array(ExpenseAdjustmentSchema),
   note:        z.string().optional(),
+  // Phase 3c-1 foreign-mode additions. Optional at the shape level so
+  // same-currency expenses keep their existing payload unchanged; the
+  // service layer routes foreign-vs-trip wire shape based on
+  // sourceCurrency presence, and the Worker is authoritative for the
+  // resulting trip-currency fields. Co-presence of the four source-
+  // domain fields is the form layer's responsibility (it computes the
+  // trip-currency preview from them) — at the service / wire boundary
+  // we just need them transportable on CreateExpenseInput.
+  sourceCurrency:    CurrencyCodeSchema.optional(),
+  sourceAmountMinor: z.number().int().positive().optional(),
+  sourceItems:       z.array(SourceExpenseItemSchema).optional(),
+  sourceAdjustments: z.array(SourceExpenseAdjustmentSchema).optional(),
+  sourceSplits:      z.array(SourceExpenseSplitSchema).optional(),
 })
 
 export const CreateExpenseSchema = ExpenseShape.refine(
@@ -396,12 +437,6 @@ export const ExpenseReceiptSchema = z.object({
   thumbUrl:  z.string().url().max(2048).optional(),
   thumbPath: z.string().min(1).max(500).optional(),
 })
-
-/** Currency code shape — ISO 4217 alpha-3 uppercase. Mirrors the
- *  Worker-side foreign-schema validator. Re-declared locally rather
- *  than imported so the client doesn't take a runtime dep on the
- *  Worker package. */
-const CurrencyCodeSchema = z.string().regex(/^[A-Z]{3}$/, 'currency must be ISO 4217 alpha-3 uppercase')
 
 /** ISO date 'YYYY-MM-DD' shape — both `requestedDate` (caller's
  *  expense.date) and `rateDate` (provider's actual rate date) follow
@@ -486,6 +521,7 @@ export const ExpenseDocSchema = z.object({
    *  (foreign-mode-only + id pair-wise alignment). */
   sourceItems:       z.array(SourceExpenseItemSchema).optional(),
   sourceAdjustments: z.array(SourceExpenseAdjustmentSchema).optional(),
+  sourceSplits:      z.array(SourceExpenseSplitSchema).optional(),
 }).superRefine((data, ctx) => {
   // FX group all-or-none + cross-field equality + source-domain mirror.
   //
@@ -501,6 +537,7 @@ export const ExpenseDocSchema = z.object({
   const hasFx              = data.fxSnapshot         !== undefined
   const hasSourceItems     = data.sourceItems        !== undefined
   const hasSourceAdj       = data.sourceAdjustments  !== undefined
+  const hasSourceSplits    = data.sourceSplits       !== undefined
   const corePresent        = [hasSourceCurrency, hasSourceAmount, hasFx].filter(Boolean).length
 
   // Case 1: same-currency degenerate path -- ALL source fields must be
@@ -519,6 +556,13 @@ export const ExpenseDocSchema = z.object({
         code: z.ZodIssueCode.custom,
         message: 'sourceAdjustments must be absent on same-currency (non-FX) expenses',
         path: ['sourceAdjustments'],
+      })
+    }
+    if (hasSourceSplits) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'sourceSplits must be absent on same-currency (non-FX) expenses',
+        path: ['sourceSplits'],
       })
     }
     return
@@ -568,19 +612,77 @@ export const ExpenseDocSchema = z.object({
     })
   }
 
-  // foreign mode requires BOTH items + sourceItems. The Worker's foreign
-  // create schema mandates `sourceItems.min(1)` and the materializer
-  // derives `items` from it on every money/date update -- a foreign doc
-  // without items/sourceItems is unsupported state (admin drift or
-  // Worker bug) that would 500 on any subsequent update. Catching it on
-  // read here means the client rejects the doc loudly via the
-  // firestoreDocFromSchema Sentry path instead of parsing it as valid
-  // and exploding mid-edit.
   const hasItems = data.items !== undefined
+  const sourceModeCount = [
+    hasSourceItems || hasSourceAdj,
+    hasSourceSplits,
+  ].filter(Boolean).length
+  if (sourceModeCount !== 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'foreign-mode expenses must carry exactly one source domain: sourceItems+sourceAdjustments OR sourceSplits',
+      path: ['sourceCurrency'],
+    })
+    return
+  }
+
+  // Manual-total foreign expenses persist sourceSplits instead of
+  // sourceItems so the UI does not render a fake "manual total" line
+  // item. The trip-currency `splits` are still Worker-derived from
+  // these source splits.
+  if (hasSourceSplits) {
+    if (hasItems && data.items!.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'sourceSplits mode must not carry visible items',
+        path: ['items'],
+      })
+    }
+    if (data.adjustments.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'sourceSplits mode must not carry adjustments',
+        path: ['adjustments'],
+      })
+    }
+    const splitSum = data.sourceSplits!.reduce((sum, split) => sum + split.sourceAmountMinor, 0)
+    if (splitSum !== data.sourceAmountMinor) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `sourceSplits sum (${splitSum}) must equal sourceAmountMinor (${data.sourceAmountMinor})`,
+        path: ['sourceSplits'],
+      })
+    }
+    const tripSplitMembers   = new Set(data.splits.map(split => split.memberId))
+    const sourceSplitMembers = new Set(data.sourceSplits!.map(split => split.memberId))
+    if (tripSplitMembers.size !== sourceSplitMembers.size) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'sourceSplits members must match trip-currency splits members',
+        path: ['sourceSplits'],
+      })
+    } else {
+      for (const memberId of sourceSplitMembers) {
+        if (!tripSplitMembers.has(memberId)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `sourceSplits member ${memberId} must exist in splits`,
+            path: ['sourceSplits'],
+          })
+          break
+        }
+      }
+    }
+    return
+  }
+
+  // Line-mode foreign expenses require BOTH items + sourceItems. The
+  // Worker's foreign create schema mandates `sourceItems.min(1)` and
+  // the materializer derives `items` from it on every money/date update.
   if (!hasItems || !hasSourceItems) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'foreign-mode expenses must carry both items and sourceItems (Worker materializes items from sourceItems on every money/date update)',
+      message: 'foreign line-mode expenses must carry both items and sourceItems',
       path: [!hasItems ? 'items' : 'sourceItems'],
     })
   } else {
@@ -593,13 +695,7 @@ export const ExpenseDocSchema = z.object({
         path: ['sourceItems'],
       })
     } else {
-      // Pair-wise id alignment -- Worker uses positional index to map
-      // source -> trip during convertAndMaterializeFromSource, but the
-      // ids must also align so any future id-keyed consumer (UI edit,
-      // settlement replay) reads a consistent doc.
       src.forEach((s, i) => {
-        // Equal-length branch -- index safe; assertion is for
-        // noUncheckedIndexedAccess.
         const tripItem = items[i]!
         if (s.id !== tripItem.id) {
           ctx.addIssue({
@@ -612,12 +708,10 @@ export const ExpenseDocSchema = z.object({
     }
   }
 
-  // sourceAdjustments REQUIRED in foreign mode -- adjustments is always
-  // present (empty array when none), so its source mirror must be too.
   if (!hasSourceAdj) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'sourceAdjustments must be present on foreign-mode expenses (mirror of adjustments)',
+      message: 'sourceAdjustments must be present on foreign line-mode expenses (mirror of adjustments)',
       path: ['sourceAdjustments'],
     })
   } else {
@@ -631,8 +725,6 @@ export const ExpenseDocSchema = z.object({
       })
     } else {
       srcAdj.forEach((s, i) => {
-        // Equal-length branch -- index safe; assertion is for
-        // noUncheckedIndexedAccess.
         const tripAdj = adj[i]!
         if (s.id !== tripAdj.id) {
           ctx.addIssue({

@@ -107,12 +107,15 @@ export function parseMoneyToMinor(text: string, code: string): number {
   const [, sign, whole, fracRaw = ''] = m
   const digits = currencyFractionDigits(code)
   if (fracRaw.length > digits) {
-    throw new MoneyParseError(
-      text, code,
-      digits === 0 ? 'DECIMALS_FORBIDDEN' : 'TOO_MANY_DECIMALS',
-    )
+    const excessFraction = fracRaw.slice(digits)
+    if (!/^0+$/.test(excessFraction)) {
+      throw new MoneyParseError(
+        text, code,
+        digits === 0 ? 'DECIMALS_FORBIDDEN' : 'TOO_MANY_DECIMALS',
+      )
+    }
   }
-  const fracPadded = fracRaw.padEnd(digits, '0')
+  const fracPadded = fracRaw.slice(0, digits).padEnd(digits, '0')
   const multiplier = Math.pow(10, digits)
   const wholeMinor = Number(whole) * multiplier
   const fracMinor  = digits === 0 ? 0 : Number(fracPadded)

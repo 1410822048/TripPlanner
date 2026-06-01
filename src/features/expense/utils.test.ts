@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { splitEqually, splitSummary } from './utils'
+import {
+  normalizeMoneyTextForCurrency,
+  safeReparseMoney,
+  splitEqually,
+  splitSummary,
+} from './utils'
 import { MOCK_TIMESTAMP as TS } from '@/mocks/utils'
 import type { Expense } from '@/types'
 
@@ -110,5 +115,75 @@ describe('splitSummary', () => {
       { memberId: 'm2', amountMinor: 0 },
     ])
     expect(splitSummary(e, 2)).toBe('—')
+  })
+})
+
+describe('safeReparseMoney', () => {
+  // The motivating bug (Phase 3c P2): the form stored each item's
+  // amountMinor as React state, parsed at typing time with the THEN-
+  // current source currency. After the user toggled foreign / picked a
+  // new currency, the displayed amountText stayed valid but the stored
+  // minor unit was stale — itemsDiff / FX preview silently used the old
+  // canonical value. ExpenseFormModal's setSourceCurrency now routes
+  // every item / adjustment through this function with the NEW currency.
+  // These tests pin the cross-currency invariant the bug violated.
+  it('reparses the same display digits to different minor values across currencies', () => {
+    // "1200" under JPY (0 fraction digits) reads as ¥1,200 → 1200 minor
+    expect(safeReparseMoney('1200', 'JPY')).toBe(1200)
+    // Same "1200" under USD (2 fraction digits) reads as $1,200.00 →
+    // 120000 minor. This delta is exactly what the P2 fix exists to keep
+    // in sync after a currency switch.
+    expect(safeReparseMoney('1200', 'USD')).toBe(120000)
+  })
+
+  it('parses fractional input correctly under the new currency', () => {
+    // Inflight text "12.34" under USD → $12.34 → 1234 minor
+    expect(safeReparseMoney('12.34', 'USD')).toBe(1234)
+  })
+
+  it('returns 0 for empty / whitespace text without throwing', () => {
+    expect(safeReparseMoney('',     'JPY')).toBe(0)
+    expect(safeReparseMoney('   ',  'USD')).toBe(0)
+  })
+
+  it('returns 0 for partial / malformed input rather than throwing', () => {
+    // Mid-keystroke "12." would throw inside parseMoneyToMinor; the
+    // helper must clamp to 0 so the form never sees NaN. JPY rejects
+    // any decimal at all — same clamp behaviour.
+    expect(safeReparseMoney('12.',   'USD')).toBe(0)
+    expect(safeReparseMoney('12.34', 'JPY')).toBe(0)
+    expect(safeReparseMoney('abc',   'USD')).toBe(0)
+  })
+
+  it('never returns a negative value', () => {
+    // parseMoneyToMinor itself accepts "-1" → -100 minor; the form's
+    // contract is "no negative amounts" — adjustments encode the sign
+    // via kind, items + total are positive. Max(0, …) enforces that.
+    expect(safeReparseMoney('-1',     'USD')).toBe(0)
+    expect(safeReparseMoney('-99.99', 'USD')).toBe(0)
+  })
+})
+
+describe('normalizeMoneyTextForCurrency', () => {
+  it('strips zero-only decimals when switching to a zero-fraction currency', () => {
+    expect(normalizeMoneyTextForCurrency('888.00', 'JPY')).toBe('888')
+    expect(normalizeMoneyTextForCurrency('888.0', 'JPY')).toBe('888')
+    expect(normalizeMoneyTextForCurrency('888.', 'JPY')).toBe('888')
+    expect(normalizeMoneyTextForCurrency('1,234.00', 'JPY')).toBe('1,234')
+  })
+
+  it('keeps non-zero decimals so JPY validation can reject them', () => {
+    expect(normalizeMoneyTextForCurrency('888.34', 'JPY')).toBe('888.34')
+  })
+
+  it('trims only excess zero precision for currencies with decimals', () => {
+    expect(normalizeMoneyTextForCurrency('12.300', 'USD')).toBe('12.30')
+    expect(normalizeMoneyTextForCurrency('12.345', 'USD')).toBe('12.345')
+    expect(normalizeMoneyTextForCurrency('12.3', 'USD')).toBe('12.3')
+  })
+
+  it('leaves malformed and empty text unchanged', () => {
+    expect(normalizeMoneyTextForCurrency('', 'JPY')).toBe('')
+    expect(normalizeMoneyTextForCurrency('abc.00', 'JPY')).toBe('abc.00')
   })
 })

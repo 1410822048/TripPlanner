@@ -12,6 +12,7 @@
 // focus is the catch-block decision logic.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { CreateExpenseInput, UpdateExpenseInput } from '@/types'
 
 // ── Mocks ──────────────────────────────────────────────────────────
 
@@ -471,10 +472,106 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
 
     const init = fetchMock.mock.calls[0]![1] as RequestInit
     const body = JSON.parse(init.body as string) as {
-      expense: { receipt?: unknown }
+      expense: { receipt?: unknown; mode?: string }
       intentIds?: string[]
     }
     expect(body.expense.receipt).toBeUndefined()
+    expect(body.expense.mode).toBe('TRIP_CURRENCY')
     expect(body.intentIds).toEqual(upload.intentIds)
+  })
+
+  it('createExpense foreign payload strips trip-currency preview before Worker call', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }))
+
+    const foreignInput = {
+      ...mockExpenseInput(),
+      amountMinor: 1570,
+      currency:    'JPY',
+      splits:      [{ memberId: 'editor-uid', amountMinor: 1570 }],
+      items:       [{ id: 'item-1', name: 'Coffee', amountMinor: 1570, assignees: ['editor-uid'] }],
+      sourceCurrency:    'USD',
+      sourceAmountMinor: 1000,
+      sourceItems:       [{ id: 'item-1', name: 'Coffee', sourceAmountMinor: 1000, assignees: ['editor-uid'] }],
+      sourceAdjustments: [],
+    } satisfies CreateExpenseInput
+
+    const { createExpense } = await import('./expenseService')
+    await createExpense('t1', foreignInput, 'editor-uid')
+
+    const init = fetchMock.mock.calls[0]![1] as RequestInit
+    const body = JSON.parse(init.body as string) as {
+      expense: Record<string, unknown>
+    }
+    expect(body.expense.sourceCurrency).toBe('USD')
+    expect(body.expense.mode).toBe('FOREIGN_CURRENCY')
+    expect(body.expense.sourceAmountMinor).toBe(1000)
+    expect(body.expense.sourceItems).toEqual(foreignInput.sourceItems)
+    expect(body.expense.amountMinor).toBeUndefined()
+    expect(body.expense.currency).toBeUndefined()
+    expect(body.expense.splits).toBeUndefined()
+    expect(body.expense.items).toBeUndefined()
+    expect(body.expense.adjustments).toBeUndefined()
+  })
+
+  it('createExpense foreign manual-total payload sends sourceSplits without visible sourceItems', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }))
+
+    const foreignInput = {
+      ...mockExpenseInput(),
+      amountMinor: 1500,
+      currency:    'JPY',
+      splits:      [{ memberId: 'editor-uid', amountMinor: 1500 }],
+      items:       [],
+      adjustments: [],
+      sourceCurrency:    'USD',
+      sourceAmountMinor: 1000,
+      sourceSplits:      [{ memberId: 'editor-uid', sourceAmountMinor: 1000 }],
+    } satisfies CreateExpenseInput
+
+    const { createExpense } = await import('./expenseService')
+    await createExpense('t1', foreignInput, 'editor-uid')
+
+    const init = fetchMock.mock.calls[0]![1] as RequestInit
+    const body = JSON.parse(init.body as string) as {
+      expense: Record<string, unknown>
+    }
+    expect(body.expense.mode).toBe('FOREIGN_CURRENCY')
+    expect(body.expense.sourceCurrency).toBe('USD')
+    expect(body.expense.sourceAmountMinor).toBe(1000)
+    expect(body.expense.sourceSplits).toEqual(foreignInput.sourceSplits)
+    expect(body.expense.sourceItems).toBeUndefined()
+    expect(body.expense.sourceAdjustments).toBeUndefined()
+    expect(body.expense.amountMinor).toBeUndefined()
+    expect(body.expense.items).toBeUndefined()
+    expect(body.expense.splits).toBeUndefined()
+  })
+
+  it('createExpense rejects partial foreign payload before uploading receipt', async () => {
+    const partialForeignInput = {
+      ...mockExpenseInput(),
+      sourceCurrency: null,
+    } as unknown as CreateExpenseInput
+
+    const { createExpense } = await import('./expenseService')
+    await expect(createExpense('t1', partialForeignInput, 'editor-uid', new File([], 'r.jpg')))
+      .rejects.toThrow(/foreign expense payload requires sourceCurrency/)
+
+    expect(uploadReceiptMock).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('updateExpense rejects partial foreign payload before uploading replacement receipt', async () => {
+    const partialForeignPatch = {
+      sourceAmountMinor: 1000,
+    } as unknown as UpdateExpenseInput
+
+    const { updateExpense } = await import('./expenseService')
+    await expect(updateExpense('t1', 'exp-1', partialForeignPatch, {
+      uid: 'editor-uid',
+      attachment: new File([], 'r.jpg'),
+    })).rejects.toThrow(/foreign expense payload requires sourceCurrency/)
+
+    expect(uploadReceiptMock).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

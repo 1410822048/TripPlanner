@@ -103,8 +103,22 @@ function SwipeableExpenseItem({
             )}
           </div>
         </div>
-        <div className="text-[14px] font-bold text-ink tabular-nums shrink-0 pointer-events-none">
-          {formatMinorAmount(expense.amountMinor, currency)}
+        {/* Foreign expenses surface two amounts stacked: the trip-currency
+            canonical (authoritative — what Settlement math + totals see)
+            in the primary row, and the source-domain receipt amount in a
+            muted secondary line. Domestic expenses keep the single-amount
+            layout. Per-Phase-3 contract: when sourceCurrency is present,
+            sourceAmountMinor is ALSO present (FX group invariant in
+            ExpenseDocSchema superRefine), so the `!` assertions hold. */}
+        <div className="flex flex-col items-end shrink-0 pointer-events-none">
+          <div className="text-[14px] font-bold text-ink tabular-nums">
+            {formatMinorAmount(expense.amountMinor, currency)}
+          </div>
+          {expense.sourceCurrency && expense.sourceCurrency !== currency && (
+            <div className="text-[10.5px] text-muted tabular-nums leading-tight mt-0.5">
+              {formatMinorAmount(expense.sourceAmountMinor!, expense.sourceCurrency)}
+            </div>
+          )}
         </div>
       </div>
     </SwipeableShell>

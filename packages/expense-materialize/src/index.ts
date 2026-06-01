@@ -127,6 +127,11 @@ export type MaterializeErrorCode =
   | 'SOURCE_ITEM_NOT_POSITIVE_INTEGER'
   | 'SOURCE_ADJUSTMENT_NOT_POSITIVE_INTEGER'
   | 'SOURCE_SUM_MISMATCH'
+  | 'SOURCE_SPLITS_EMPTY'
+  | 'SOURCE_SPLIT_MEMBER_MISSING'
+  | 'SOURCE_SPLIT_NOT_NONNEGATIVE_INTEGER'
+  | 'DUPLICATE_SOURCE_SPLIT_MEMBER'
+  | 'SOURCE_SPLIT_SUM_MISMATCH'
 
 export class MaterializeError extends Error {
   // Field declared explicitly (not via `public code: ...` shorthand)
@@ -515,6 +520,52 @@ export interface ConvertAndMaterializeSourceAdjustment {
   targetItemId?: string
 }
 
+export interface ConvertSourceLineItem {
+  id:          string
+  amountMinor: number
+}
+
+export interface ConvertSourceLineAdjustment {
+  id:            string
+  kind:          AdjustmentKind
+  scope:         AdjustmentScope
+  amountMinor:   number
+  targetItemId?: string
+}
+
+export interface ConvertSourceLinesToTargetInput {
+  sourceItems:          ConvertSourceLineItem[]
+  sourceAdjustments:    ConvertSourceLineAdjustment[]
+  sourceAmountMinor:    number
+  rateDecimal:          string
+  sourceFractionDigits: number
+  targetFractionDigits: number
+}
+
+export interface ConvertSourceLinesToTargetResult {
+  amountMinor:  number
+  items:        ConvertSourceLineItem[]
+  adjustments:  ConvertSourceLineAdjustment[]
+}
+
+export interface ConvertSourceSplit {
+  memberId:    string
+  amountMinor: number
+}
+
+export interface ConvertSourceSplitsToTargetInput {
+  sourceSplits:          ConvertSourceSplit[]
+  sourceAmountMinor:     number
+  rateDecimal:           string
+  sourceFractionDigits:  number
+  targetFractionDigits:  number
+}
+
+export interface ConvertSourceSplitsToTargetResult {
+  amountMinor: number
+  splits:      MaterializeSplit[]
+}
+
 export interface ConvertAndMaterializeFromSourceInput {
   sourceItems:          ConvertAndMaterializeSourceItem[]
   sourceAdjustments:    ConvertAndMaterializeSourceAdjustment[]
@@ -574,12 +625,12 @@ export interface ConvertAndMaterializeFromSourceResult {
  * (Phase 3b) call this exact function; preview is display-only,
  * Worker overwrites whatever the client sent.
  */
-export function convertAndMaterializeFromSource(
-  input: ConvertAndMaterializeFromSourceInput,
-): ConvertAndMaterializeFromSourceResult {
+export function convertSourceLinesToTarget(
+  input: ConvertSourceLinesToTargetInput,
+): ConvertSourceLinesToTargetResult {
   const {
     sourceItems, sourceAdjustments, sourceAmountMinor,
-    rateDecimal, sourceFractionDigits, targetFractionDigits, members,
+    rateDecimal, sourceFractionDigits, targetFractionDigits,
   } = input
 
   // Step 1a: source-domain positive-integer gates. We re-validate here
@@ -679,12 +730,11 @@ export function convertAndMaterializeFromSource(
   // adjustments dominate items) via ITEM_NOT_POSITIVE_INTEGER —
   // the Worker maps that to the same ExpenseValidationError path so
   // the operator sees one error class instead of two.
-  const tripItems: MaterializeItem[] = sourceItems.map((item, i) => ({
+  const tripItems: ConvertSourceLineItem[] = sourceItems.map((item, i) => ({
     id:          item.id,
     amountMinor: tripItemMinor[i]!,
-    assignees:   item.assignees,
   }))
-  const tripAdjustments: MaterializeAdjustment[] = sourceAdjustments.map((adj, i) => ({
+  const tripAdjustments: ConvertSourceLineAdjustment[] = sourceAdjustments.map((adj, i) => ({
     id:           adj.id,
     kind:         adj.kind,
     scope:        adj.scope,
@@ -692,14 +742,134 @@ export function convertAndMaterializeFromSource(
     targetItemId: adj.targetItemId,
   }))
 
-  const splits = materializeExpenseSplits({
+  return {
+    amountMinor: tripAmountMinor,
     items:       tripItems,
     adjustments: tripAdjustments,
-    members,
+  }
+}
+
+/**
+ * Convert manual foreign-currency split totals to trip currency without
+ * manufacturing visible line items. This is the source-domain equivalent
+ * of "manual total split": the user only entered a total and per-member
+ * shares, so there is no receipt item to persist or render.
+ *
+ * The split sum is validated in source currency first. Each split is then
+ * converted independently and reconciled to the authoritative converted
+ * receipt total via largest-line residual allocation, keeping the Worker
+ * authoritative while preserving the user's split proportions.
+ */
+export function convertSourceSplitsToTarget(
+  input: ConvertSourceSplitsToTargetInput,
+): ConvertSourceSplitsToTargetResult {
+  const {
+    sourceSplits, sourceAmountMinor, rateDecimal,
+    sourceFractionDigits, targetFractionDigits,
+  } = input
+
+  if (!Number.isInteger(sourceAmountMinor) || sourceAmountMinor <= 0) {
+    throw new MaterializeError(
+      'SOURCE_AMOUNT_NOT_POSITIVE_INTEGER',
+      `sourceAmountMinor must be a positive integer, got ${sourceAmountMinor}`,
+    )
+  }
+  if (sourceSplits.length === 0) {
+    throw new MaterializeError(
+      'SOURCE_SPLITS_EMPTY',
+      'sourceSplits must contain at least one split',
+    )
+  }
+
+  const seen = new Set<string>()
+  let sourceSplitSum = 0
+  for (const split of sourceSplits) {
+    if (!split.memberId) {
+      throw new MaterializeError(
+        'SOURCE_SPLIT_MEMBER_MISSING',
+        'source split memberId is required',
+      )
+    }
+    if (seen.has(split.memberId)) {
+      throw new MaterializeError(
+        'DUPLICATE_SOURCE_SPLIT_MEMBER',
+        `source split member ${split.memberId} appears more than once`,
+      )
+    }
+    seen.add(split.memberId)
+
+    if (!Number.isInteger(split.amountMinor) || split.amountMinor < 0) {
+      throw new MaterializeError(
+        'SOURCE_SPLIT_NOT_NONNEGATIVE_INTEGER',
+        `source split ${split.memberId}: amountMinor must be a non-negative integer source-currency minor amount, got ${split.amountMinor}`,
+      )
+    }
+    sourceSplitSum += split.amountMinor
+  }
+  if (sourceSplitSum !== sourceAmountMinor) {
+    throw new MaterializeError(
+      'SOURCE_SPLIT_SUM_MISMATCH',
+      `source splits (${sourceSplitSum}) must equal sourceAmountMinor (${sourceAmountMinor})`,
+    )
+  }
+
+  const tripAmountMinor = convertMinorHalfEven({
+    sourceMinor: sourceAmountMinor,
+    rateDecimal,
+    sourceFractionDigits,
+    targetFractionDigits,
+  })
+  const rawTripSplits = sourceSplits.map(split => convertMinorHalfEven({
+    sourceMinor: split.amountMinor,
+    rateDecimal,
+    sourceFractionDigits,
+    targetFractionDigits,
+  }))
+  const tripSplits = allocateRoundingResidual({
+    lines:       rawTripSplits,
+    targetTotal: tripAmountMinor,
   })
 
   return {
     amountMinor: tripAmountMinor,
+    splits: sourceSplits
+      .map((split, i) => ({ memberId: split.memberId, amountMinor: tripSplits[i]! })),
+  }
+}
+
+export function convertAndMaterializeFromSource(
+  input: ConvertAndMaterializeFromSourceInput,
+): ConvertAndMaterializeFromSourceResult {
+  const converted = convertSourceLinesToTarget({
+    sourceItems:          input.sourceItems,
+    sourceAdjustments:    input.sourceAdjustments,
+    sourceAmountMinor:    input.sourceAmountMinor,
+    rateDecimal:          input.rateDecimal,
+    sourceFractionDigits: input.sourceFractionDigits,
+    targetFractionDigits: input.targetFractionDigits,
+  })
+
+  const tripItems: MaterializeItem[] = converted.items.map((item, i) => ({
+    id:          item.id,
+    amountMinor: item.amountMinor,
+    assignees:   input.sourceItems[i]!.assignees,
+  }))
+  const tripAdjustments: MaterializeAdjustment[] = converted.adjustments.map(adj => ({
+    id:           adj.id,
+    kind:         adj.kind,
+    scope:        adj.scope,
+    amountMinor:  adj.amountMinor,
+    targetItemId: adj.targetItemId,
+  }))
+
+  const splits = materializeExpenseSplits({
+    items:       tripItems,
+    adjustments: tripAdjustments,
+    members:     input.members,
+  })
+
+  return {
+    amountMinor: converted.amountMinor,
     items:       tripItems,
     adjustments: tripAdjustments,
     splits,

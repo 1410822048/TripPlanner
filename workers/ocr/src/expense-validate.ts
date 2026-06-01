@@ -280,6 +280,87 @@ const ForeignExpenseAdjustmentSchema = z.object({
   { message: 'targetItemId must be present iff scope === ITEM', path: ['targetItemId'] },
 )
 
+/** Source-currency split shape for manual-total foreign expenses.
+ *  No visible item line exists in this mode, so the Worker converts
+ *  source splits directly to trip-currency splits instead of creating
+ *  synthetic receipt rows. */
+const ForeignExpenseSplitSchema = z.object({
+  memberId:          z.string().min(1).max(UID_MAX),
+  sourceAmountMinor: z.number().int().nonnegative().max(1_000_000_000),
+})
+
+const ForeignExpenseCreateBaseSchema = z.object({
+  title:             z.string().min(1).max(200),
+  // ISO 4217 alpha-3 uppercase. Matches fx-rate.ts CCY_RE + schema.ts
+  // trip.currency. The foreign-mode router's cross-field check
+  // `sourceCurrency !== tripContext.currency` only makes sense if
+  // both sides agree on the uppercase normalization; a tolerant
+  // `.length(3)` would let 'usd' sneak through and skip the bind.
+  sourceCurrency:    z.string().regex(/^[A-Z]{3}$/, 'sourceCurrency must be ISO 4217 alpha-3 uppercase'),
+  sourceAmountMinor: z.number().int().positive().max(1_000_000_000),
+  category:          ExpenseCategorySchema,
+  paidBy:            z.string().min(1).max(UID_MAX),
+  date:              z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
+  note:              z.string().max(1000).optional(),
+  sourceItems:       z.array(ForeignExpenseItemSchema).min(1).max(100).optional(),
+  sourceAdjustments: z.array(ForeignExpenseAdjustmentSchema).max(50).optional(),
+  sourceSplits:      z.array(ForeignExpenseSplitSchema).min(1).max(50).optional(),
+}).strict()
+
+const FOREIGN_SOURCE_DOMAIN_FIELDS = [
+  'sourceItems',
+  'sourceAdjustments',
+  'sourceSplits',
+] as const
+const FOREIGN_MONEY_FIELDS = [
+  'sourceCurrency',
+  'sourceAmountMinor',
+  ...FOREIGN_SOURCE_DOMAIN_FIELDS,
+] as const
+
+function validateForeignSourceDomain(
+  data: {
+    sourceItems?: unknown
+    sourceAdjustments?: unknown
+    sourceSplits?: unknown
+  },
+  ctx: z.RefinementCtx,
+  opts: { required: boolean },
+): void {
+  const hasSourceItems       = data.sourceItems       !== undefined
+  const hasSourceAdjustments = data.sourceAdjustments !== undefined
+  const hasSourceSplits      = data.sourceSplits      !== undefined
+  const hasLineKey           = hasSourceItems || hasSourceAdjustments
+
+  if (!hasLineKey && !hasSourceSplits) {
+    if (opts.required) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'foreign expense requires exactly one source domain: sourceItems+sourceAdjustments OR sourceSplits',
+        path: ['sourceItems'],
+      })
+    }
+    return
+  }
+
+  if (hasSourceSplits && hasLineKey) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'foreign expense must carry exactly one source domain: sourceItems+sourceAdjustments OR sourceSplits',
+      path: ['sourceSplits'],
+    })
+    return
+  }
+
+  if (hasLineKey && (!hasSourceItems || !hasSourceAdjustments)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'sourceItems and sourceAdjustments must be supplied together for foreign line-mode expenses',
+      path: [hasSourceItems ? 'sourceAdjustments' : 'sourceItems'],
+    })
+  }
+}
+
 /** Foreign-currency expense create payload. Mirror of
  *  `makeExpenseCreateSchema()` but every money field is replaced with
  *  its source-currency `sourceAmountMinor` counterpart, and trip-currency
@@ -299,30 +380,13 @@ const ForeignExpenseAdjustmentSchema = z.object({
  *  the strict gate forces that decision to be deliberate.
  *
  *  No cross-field source-sum check at this layer: the pure fn
- *  `convertAndMaterializeFromSource` enforces it (SOURCE_SUM_MISMATCH)
- *  alongside the conversion math so we have one boundary instead of two. */
+ *  `convertAndMaterializeFromSource` / `convertSourceSplitsToTarget`
+ *  enforces it alongside the conversion math so we have one boundary
+ *  instead of two. */
 export function makeForeignExpenseCreateSchema() {
-  return z.object({
-    title:             z.string().min(1).max(200),
-    // ISO 4217 alpha-3 uppercase. Matches fx-rate.ts CCY_RE + schema.ts
-    // trip.currency. The foreign-mode router's cross-field check
-    // `sourceCurrency !== tripContext.currency` only makes sense if
-    // both sides agree on the uppercase normalization; a tolerant
-    // `.length(3)` would let 'usd' sneak through and skip the bind.
-    sourceCurrency:    z.string().regex(/^[A-Z]{3}$/, 'sourceCurrency must be ISO 4217 alpha-3 uppercase'),
-    sourceAmountMinor: z.number().int().positive().max(1_000_000_000),
-    category:          ExpenseCategorySchema,
-    paidBy:            z.string().min(1).max(UID_MAX),
-    date:              z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
-    note:              z.string().max(1000).optional(),
-    // At least 1 source item is required: convertAndMaterializeFromSource
-    // delegates to the materializer which has no splits derivation for
-    // zero items, and a foreign-currency expense with no items is
-    // semantically a manual-entry path that should use the trip-currency
-    // schema instead (foreign manual entry is not in the Phase 3 scope).
-    sourceItems:       z.array(ForeignExpenseItemSchema).min(1).max(100),
-    sourceAdjustments: z.array(ForeignExpenseAdjustmentSchema).max(50),
-  }).strict()
+  return ForeignExpenseCreateBaseSchema.superRefine((data, ctx) => {
+    validateForeignSourceDomain(data, ctx, { required: true })
+  })
 }
 export type ExpenseForeignCreateInput = z.infer<ReturnType<typeof makeForeignExpenseCreateSchema>>
 
@@ -332,38 +396,33 @@ export type ExpenseForeignCreateInput = z.infer<ReturnType<typeof makeForeignExp
  *  freely partial — patching just the title of a foreign expense is
  *  a normal, money-irrelevant operation.
  *
- *  Source-money fields (sourceCurrency / sourceAmountMinor /
- *  sourceItems / sourceAdjustments) are an ATOMIC GROUP: any one
- *  present requires all four. Rationale: the Worker is authoritative
- *  and recomputes amount/items/adjustments/splits via
- *  convertAndMaterializeFromSource — a partial money patch (e.g.
- *  only sourceAmountMinor) can't be soundly reconciled against the
- *  current doc's per-line breakdown, and silently rebuilding from a
- *  mixed-source-and-trip state would let a client gamy per-line
- *  attribution by patching one field at a time. All-or-none keeps
- *  the source domain as a single self-contained replace.
+ *  Source-money fields are an ATOMIC GROUP: any one present requires
+ *  sourceCurrency + sourceAmountMinor + exactly one complete source
+ *  domain (`sourceItems`+`sourceAdjustments` OR `sourceSplits`).
+ *  Rationale: the Worker is authoritative and recomputes
+ *  amount/items/adjustments/splits; a partial money patch cannot be
+ *  reconciled soundly against the current doc's source mirror.
  *
  *  A future "rename only" patch path that needs to also toggle
- *  source currency would still go through this schema; the four-
- *  field requirement is cheap on the wire and keeps the contract
- *  uniform. */
+ *  source currency would still go through this schema; the all-field
+ *  requirement is cheap on the wire and keeps the contract uniform. */
 export function makeForeignExpenseUpdateSchema() {
-  const MONEY_FIELDS = [
-    'sourceCurrency',
-    'sourceAmountMinor',
-    'sourceItems',
-    'sourceAdjustments',
-  ] as const
-  return makeForeignExpenseCreateSchema().partial().superRefine((data, ctx) => {
-    const present = MONEY_FIELDS.filter(f => data[f] !== undefined)
+  return ForeignExpenseCreateBaseSchema.partial().superRefine((data, ctx) => {
+    const present = FOREIGN_MONEY_FIELDS.filter(f => data[f] !== undefined)
     if (present.length === 0) return        // text-only patch — OK
-    if (present.length === MONEY_FIELDS.length) return  // full money-group patch — OK
-    const missing = MONEY_FIELDS.filter(f => data[f] === undefined)
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: `source-money fields are an atomic group; partial patch present=[${present.join(',')}] missing=[${missing.join(',')}] -- all four must be supplied together`,
-      path: [missing[0]],
-    })
+    if (data.sourceCurrency === undefined || data.sourceAmountMinor === undefined) {
+      const missing = [
+        data.sourceCurrency === undefined ? 'sourceCurrency' : undefined,
+        data.sourceAmountMinor === undefined ? 'sourceAmountMinor' : undefined,
+      ].filter(Boolean) as string[]
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `source-money fields are an atomic group; missing=[${missing.join(',')}]`,
+        path: [missing[0] ?? 'sourceCurrency'],
+      })
+      return
+    }
+    validateForeignSourceDomain(data, ctx, { required: true })
   })
 }
 export type ExpenseForeignUpdateInput = z.infer<ReturnType<typeof makeForeignExpenseUpdateSchema>>

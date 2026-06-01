@@ -7,7 +7,7 @@
 // Kept feature-scoped — the API is too expense-specific to belong in a
 // generic hook (`useFormReducer` covers the simple "set field" case).
 import { useReducer } from 'react'
-import type { Expense } from '@/types'
+import type { Expense, ExpenseSplit } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import { formatMinorForInput } from '@/utils/money'
 
@@ -25,6 +25,7 @@ type Action =
   | { kind: 'toggleIncluded'; id: string }
   | { kind: 'switchMode'; mode: SplitMode; seed: Record<string, string> }
   | { kind: 'setCustom'; id: string; value: string }
+  | { kind: 'resetCustom'; next: Record<string, string> }
 
 function reducer(state: SplitsState, action: Action): SplitsState {
   switch (action.kind) {
@@ -46,7 +47,19 @@ function reducer(state: SplitsState, action: Action): SplitsState {
     }
     case 'setCustom':
       return { ...state, custom: { ...state.custom, [action.id]: action.value } }
+    case 'resetCustom':
+      // Bulk-replace the custom map. Used by ExpenseFormModal.setSourceCurrency
+      // to renormalize user-typed split text after a currency switch — same
+      // hazard as items/adjustments (text is verbatim, amountMinor is
+      // derived under the CURRENT currency at read time). Reducer stays
+      // currency-agnostic; caller owns the normalize.
+      return { ...state, custom: action.next }
   }
+}
+
+export interface SplitSeed {
+  currency: string
+  splits:   ExpenseSplit[]
 }
 
 /**
@@ -54,8 +67,16 @@ function reducer(state: SplitsState, action: Action): SplitsState {
  * to "equal split among all members" (create). The mode detection looks
  * at whether the persisted splits are within ±1 of each other on
  * non-zero entries — typical equal-split rounding error tolerance.
+ *
+ * Foreign manual-total expenses persist two split domains: canonical
+ * trip-currency `splits`, and hidden source-currency `sourceSplits`.
+ * Editing must seed from the same currency the input controls parse.
  */
-function initFromExpense(editTarget: Expense | null, members: TripMember[]): SplitsState {
+function initFromExpense(
+  editTarget: Expense | null,
+  members:    TripMember[],
+  seed?:      SplitSeed,
+): SplitsState {
   if (!editTarget) {
     return {
       mode:     'equal',
@@ -63,7 +84,9 @@ function initFromExpense(editTarget: Expense | null, members: TripMember[]): Spl
       custom:   {},
     }
   }
-  const nonZero = editTarget.splits.filter(s => s.amountMinor > 0)
+  const splitCurrency = seed?.currency ?? editTarget.currency
+  const splitRows     = seed?.splits   ?? editTarget.splits
+  const nonZero = splitRows.filter(s => s.amountMinor > 0)
   const first = nonZero[0]
   const allEqual =
     first !== undefined &&
@@ -77,8 +100,8 @@ function initFromExpense(editTarget: Expense | null, members: TripMember[]): Spl
     }
   }
   const custom: Record<string, string> = {}
-  editTarget.splits.forEach(s => {
-    custom[s.memberId] = formatMinorForInput(s.amountMinor, editTarget.currency)
+  splitRows.forEach(s => {
+    custom[s.memberId] = formatMinorForInput(s.amountMinor, splitCurrency)
   })
   return {
     mode:     'custom',
@@ -92,19 +115,22 @@ export interface UseSplitsStateResult {
   toggleIncluded: (id: string) => void
   switchMode:     (mode: SplitMode, seed: Record<string, string>) => void
   setCustom:      (id: string, value: string) => void
+  resetCustom:    (next: Record<string, string>) => void
 }
 
 export function useSplitsState(
   editTarget: Expense | null,
   members:    TripMember[],
+  seed?:      SplitSeed,
 ): UseSplitsStateResult {
   const [state, dispatch] = useReducer(reducer, undefined,
-    () => initFromExpense(editTarget, members),
+    () => initFromExpense(editTarget, members, seed),
   )
   return {
     state,
     toggleIncluded: id          => dispatch({ kind: 'toggleIncluded', id }),
     switchMode:     (mode, seed) => dispatch({ kind: 'switchMode', mode, seed }),
     setCustom:      (id, value)  => dispatch({ kind: 'setCustom', id, value }),
+    resetCustom:    next         => dispatch({ kind: 'resetCustom', next }),
   }
 }

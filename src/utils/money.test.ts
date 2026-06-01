@@ -53,8 +53,18 @@ describe('parseMoneyToMinor — spec matrix', () => {
     expect(() => parseMoneyToMinor('12.345', 'USD')).toThrow(MoneyParseError)
   })
 
+  test('USD accepts lossless excess zero precision', () => {
+    expect(parseMoneyToMinor('12.300', 'USD')).toBe(1230)
+    expect(parseMoneyToMinor('12.340', 'USD')).toBe(1234)
+  })
+
   test('JPY 1200 -> 1200', () => {
     expect(parseMoneyToMinor('1200', 'JPY')).toBe(1200)
+  })
+
+  test('JPY accepts lossless .00 suffix as whole units', () => {
+    expect(parseMoneyToMinor('1200.0', 'JPY')).toBe(1200)
+    expect(parseMoneyToMinor('1200.00', 'JPY')).toBe(1200)
   })
 
   test('JPY 1200.5 rejected (zero-fraction currency)', () => {
@@ -72,6 +82,10 @@ describe('parseMoneyToMinor — spec matrix', () => {
 
   test('TWD 100 -> 100', () => {
     expect(parseMoneyToMinor('100', 'TWD')).toBe(100)
+  })
+
+  test('TWD accepts lossless .00 suffix as whole units', () => {
+    expect(parseMoneyToMinor('100.00', 'TWD')).toBe(100)
   })
 
   test('TWD 12.34 rejected (OCR mismatch — zero-fraction currency)', () => {

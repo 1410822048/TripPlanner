@@ -32,6 +32,8 @@ import {
   materializeExpenseSplits,
   canonicalizeSplits,
   adjustmentSign,
+  convertSourceLinesToTarget,
+  convertSourceSplitsToTarget,
   convertAndMaterializeFromSource,
   MaterializeError,
   type MaterializeInput,
@@ -591,6 +593,24 @@ describe('convertAndMaterializeFromSource — USD → JPY exact-multiple receipt
 })
 
 describe('convertAndMaterializeFromSource — USD → JPY residual on largest item', () => {
+  it('exposes the same line conversion without requiring assignees', () => {
+    const result = convertSourceLinesToTarget({
+      sourceItems: [
+        { id: 'i1', amountMinor: 1 },
+        { id: 'i2', amountMinor: 1 },
+        { id: 'i3', amountMinor: 2 },
+      ],
+      sourceAdjustments:    [],
+      sourceAmountMinor:    4,
+      rateDecimal:          '146.2',
+      sourceFractionDigits: 2,
+      targetFractionDigits: 0,
+    })
+    expect(result.amountMinor).toBe(6)
+    expect(result.items.map(i => i.amountMinor)).toEqual([1, 1, 4])
+    expect(result.adjustments).toEqual([])
+  })
+
   it('drift from per-line rounding lands on the largest item', () => {
     // USD source: $0.01 + $0.01 + $0.02 = $0.04 total
     // sourceMinor: 1 + 1 + 2 = 4
@@ -886,5 +906,58 @@ describe('convertAndMaterializeFromSource — determinism', () => {
     const r2 = convertAndMaterializeFromSource(fixture)
     expect(r1).toEqual(r2)
     expect(canonicalizeSplits(r1.splits)).toBe(canonicalizeSplits(r2.splits))
+  })
+})
+
+describe('convertSourceSplitsToTarget', () => {
+  it('converts manual-total source splits without manufacturing line items', () => {
+    const result = convertSourceSplitsToTarget({
+      sourceSplits: [
+        { memberId: 'alice', amountMinor: 700 },
+        { memberId: 'bob',   amountMinor: 300 },
+      ],
+      sourceAmountMinor:     1000,
+      rateDecimal:           '150',
+      sourceFractionDigits:  2,
+      targetFractionDigits:  0,
+    })
+
+    expect(result.amountMinor).toBe(1500)
+    expect(result.splits).toEqual([
+      { memberId: 'alice', amountMinor: 1050 },
+      { memberId: 'bob',   amountMinor: 450 },
+    ])
+  })
+
+  it('retains zero target-minor splits so source member coverage stays auditable', () => {
+    const result = convertSourceSplitsToTarget({
+      sourceSplits: [
+        { memberId: 'alice', amountMinor: 99 },
+        { memberId: 'bob',   amountMinor: 1 },
+      ],
+      sourceAmountMinor:     100,
+      rateDecimal:           '1',
+      sourceFractionDigits:  2,
+      targetFractionDigits:  0,
+    })
+
+    expect(result.amountMinor).toBe(1)
+    expect(result.splits).toEqual([
+      { memberId: 'alice', amountMinor: 1 },
+      { memberId: 'bob',   amountMinor: 0 },
+    ])
+  })
+
+  it('rejects source split sums that do not match the source total', () => {
+    expectThrows(() => convertSourceSplitsToTarget({
+      sourceSplits: [
+        { memberId: 'alice', amountMinor: 400 },
+        { memberId: 'bob',   amountMinor: 500 },
+      ],
+      sourceAmountMinor:     1000,
+      rateDecimal:           '150',
+      sourceFractionDigits:  2,
+      targetFractionDigits:  0,
+    }), 'SOURCE_SPLIT_SUM_MISMATCH')
   })
 })

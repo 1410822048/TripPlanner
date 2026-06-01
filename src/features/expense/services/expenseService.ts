@@ -46,6 +46,82 @@ function expenseFromDoc(d: QueryDocumentSnapshot): Expense {
   return firestoreDocFromSchema(ExpenseDocSchema, d, 'expenseFromDoc')
 }
 
+const SOURCE_EXPENSE_WIRE_KEYS = [
+  'sourceCurrency',
+  'sourceAmountMinor',
+  'sourceItems',
+  'sourceAdjustments',
+  'sourceSplits',
+] as const
+
+const TRIP_PREVIEW_WIRE_KEYS = [
+  'amountMinor',
+  'currency',
+  'splits',
+  'items',
+  'adjustments',
+] as const
+
+type WorkerExpenseMode = 'TRIP_CURRENCY' | 'FOREIGN_CURRENCY'
+
+function hasDefinedOwn(payload: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(payload, key) && payload[key] !== undefined
+}
+
+function assertCompleteForeignSourceGroup(
+  payload: Record<string, unknown>,
+  source: 'createExpense' | 'updateExpense',
+): void {
+  const hasAnySourceField = SOURCE_EXPENSE_WIRE_KEYS.some(key => hasDefinedOwn(payload, key))
+  if (!hasAnySourceField) return
+
+  const hasLineSourceGroup =
+    Array.isArray(payload.sourceItems) &&
+    Array.isArray(payload.sourceAdjustments) &&
+    payload.sourceSplits === undefined
+  const hasSplitSourceGroup =
+    Array.isArray(payload.sourceSplits) &&
+    payload.sourceItems === undefined &&
+    payload.sourceAdjustments === undefined
+
+  const hasCompleteSourceGroup =
+    typeof payload.sourceCurrency === 'string' &&
+    typeof payload.sourceAmountMinor === 'number' &&
+    (hasLineSourceGroup || hasSplitSourceGroup)
+
+  if (!hasCompleteSourceGroup) {
+    throw new Error(
+      `${source}: foreign expense payload requires sourceCurrency, sourceAmountMinor, and exactly one source domain: sourceItems+sourceAdjustments OR sourceSplits`,
+    )
+  }
+}
+
+function workerExpensePayload(
+  input: CreateExpenseInput | UpdateExpenseInput,
+  source: 'createExpense' | 'updateExpense',
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { ...input }
+  delete payload.mode
+  assertCompleteForeignSourceGroup(payload, source)
+
+  if (typeof payload.sourceCurrency === 'string') {
+    for (const key of TRIP_PREVIEW_WIRE_KEYS) delete payload[key]
+    return withWorkerExpenseMode(payload, 'FOREIGN_CURRENCY')
+  }
+
+  for (const key of SOURCE_EXPENSE_WIRE_KEYS) {
+    if (payload[key] === undefined) delete payload[key]
+  }
+  return withWorkerExpenseMode(payload, 'TRIP_CURRENCY')
+}
+
+function withWorkerExpenseMode(
+  payload: Record<string, unknown>,
+  mode: WorkerExpenseMode,
+): Record<string, unknown> {
+  return { ...payload, mode }
+}
+
 // ─── Read ─────────────────────────────────────────────────────────
 const listServices = createTripScopedListServices<Expense>({
   path:    P.expenses,
@@ -100,6 +176,7 @@ export async function createExpense(
   // The Worker's `currentDocument.exists = false` on the create
   // PATCH ensures we don't accidentally overwrite an existing doc.
   const ref = doc(collection(db, ...P.expenses(tripId)))
+  const expensePayload = workerExpensePayload(input, 'createExpense')
   // Phase 3.5: upload via intent flow, hand off intentIds + paths.
   // Worker /expense-create consumes the intentIds inline with the
   // expense doc write (single tx); paths are kept here for client-
@@ -108,7 +185,6 @@ export async function createExpense(
   if (attachment instanceof File) {
     uploaded = await uploadReceipt(tripId, ref.id, attachment)
   }
-  const expensePayload: Record<string, unknown> = { ...input }
 
   if (uploaded) {
     breadcrumb({
@@ -208,7 +284,17 @@ export async function updateExpense(
   const validated = validateUpdateOrThrow(UpdateExpenseSchema, updates, {
     source: 'updateExpense', tripId, expenseId,
   })
-  const patch: Record<string, unknown> = { ...validated }
+  // Phase 3c-1 foreign-mode wire strip — same rationale as createExpense.
+  // For updates the Worker's foreign-update schema treats
+  // (sourceCurrency, sourceAmountMinor, sourceItems, sourceAdjustments)
+  // as an atomic 4-field group: any source-side field present requires
+  // all four. The form layer enforces that by always emitting the full
+  // group together when the user is editing a foreign expense. Trip-
+  // currency fields (amountMinor / currency / splits / items /
+  // adjustments) on a foreign update are server-derived and stripped
+  // here so the Worker's `.partial()` schema doesn't reject the
+  // payload.
+  const patch = workerExpensePayload(validated, 'updateExpense')
 
   // Receipt order (Phase 3.5): upload the NEW blobs first via the
   // intent flow (Worker mints unique paths server-side so there's no
