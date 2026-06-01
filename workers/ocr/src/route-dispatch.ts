@@ -20,6 +20,7 @@
 
 import type { z } from 'zod'
 import { CascadeError } from './cascade'
+import { FxError }      from './fx-rate'
 
 /** Truncated uid for logs. 6-char prefix + ellipsis is enough to
  *  correlate abuse without retaining a fully-identifying token. */
@@ -91,6 +92,40 @@ export function validationErrorCatcher<E extends { field: string; message: strin
         status: 400,
       }
     : null
+}
+
+/** Catcher for FxError — Frankfurter-derived domain errors carry the
+ *  appropriate HTTP status (400 future-date / invalid input, 502
+ *  provider-down) plus a stable `code: FX_*` for client UX mapping.
+ *  Without this catcher every FX failure (settledOn in the future,
+ *  Frankfurter degraded) bubbles to the route-level generic catch and
+ *  the user sees `{ error: 'Internal error' }` 500 instead of the
+ *  actionable 4xx/5xx the FX layer already prepared. */
+export function fxErrorCatcher(): (e: unknown) => DomainErrorMapped | null {
+  return e => e instanceof FxError
+    ? {
+        log:    `fx-error: ${e.code} ${e.message}`,
+        body:   { error: e.message, code: e.code },
+        status: e.status,
+      }
+    : null
+}
+
+/** Compose multiple domain catchers — first non-null wins. Use when a
+ *  route can throw more than one domain error class (e.g. settlement-
+ *  create throws both SettlementValidationError + FxError). Order
+ *  matters only if two catchers could match the same throwable, which
+ *  isn't the case for any of the current pairings. */
+export function chainCatchers(
+  ...catchers: ((e: unknown) => DomainErrorMapped | null)[]
+): (e: unknown) => DomainErrorMapped | null {
+  return e => {
+    for (const c of catchers) {
+      const r = c(e)
+      if (r) return r
+    }
+    return null
+  }
 }
 
 export async function handleJsonRoute<TData, TResult>(args: {

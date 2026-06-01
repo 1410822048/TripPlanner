@@ -108,6 +108,11 @@ export async function createSettlement(
   const idToken    = await preflightIdToken()
 
   await workerFetch(workerBase, idToken, '/settlement-create', {
+    // `mode: 'TRIP_CURRENCY'` is the wire label for the discriminated
+    // union the Worker accepts (FOREIGN_CURRENCY arrives in Commit 3
+    // when the foreign-mode UI lands). Required field; sending without
+    // it parses as the wrong branch and the Worker rejects via Zod.
+    mode:         'TRIP_CURRENCY' as const,
     tripId,
     settlementId: vars.settlementId,
     fromUid:      vars.fromUid,

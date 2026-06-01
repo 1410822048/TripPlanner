@@ -107,6 +107,8 @@ import { checkGlobalRateLimit }                   from './rate-limiter'
 import {
   handleJsonRoute,
   validationErrorCatcher,
+  fxErrorCatcher,
+  chainCatchers,
   extractTraceId,
   UPLOAD_TRACE_HEADER,
   json,
@@ -369,7 +371,13 @@ export default {
       handle:         data => expenseCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
       formatLog:      (data, result) => `trip=${data.tripId} exp=${result.expenseId}`,
       formatResponse: result => ({ ok: true, ...result }),
-      catchDomain:    validationErrorCatcher(ExpenseValidationError),
+      // FOREIGN_CURRENCY path calls getFxSnapshot → FxError on future
+      // settledOn / Frankfurter degraded; chain in fxErrorCatcher so
+      // the route returns the actionable 4xx/5xx instead of generic 500.
+      catchDomain: chainCatchers(
+        validationErrorCatcher(ExpenseValidationError),
+        fxErrorCatcher(),
+      ),
     })
 
     if (isExpenseUpdate) return handleJsonRoute({
@@ -377,7 +385,11 @@ export default {
       schema:      ExpenseUpdateRequestSchema,
       handle:      data => expenseUpdate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
       formatLog:   data => `trip=${data.tripId} exp=${data.expenseId}`,
-      catchDomain: validationErrorCatcher(ExpenseValidationError),
+      // Same FX-touch + chain as expense-create above.
+      catchDomain: chainCatchers(
+        validationErrorCatcher(ExpenseValidationError),
+        fxErrorCatcher(),
+      ),
     })
 
     if (isWishCreate) return handleJsonRoute({
@@ -418,9 +430,25 @@ export default {
       endpoint:       'settlement-create', body, cors, uid,
       schema:         SettlementCreateRequestSchema,
       handle:         data => settlementCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
-      formatLog:      (data, result) => `trip=${data.tripId} settlement=${result.settlementId} from=${data.fromUid} amountMinor=${data.amountMinor}`,
+      // Mode-aware log line: TRIP carries amountMinor on the request;
+      // FOREIGN carries sourceAmountMinor + sourceCurrency (the Worker-
+      // derived canonical amount is in the persisted doc, not the
+      // request -- log the user-typed value so a tail trace stays
+      // recognisable against the form input).
+      formatLog: (data, result) =>
+        data.mode === 'FOREIGN_CURRENCY'
+          ? `trip=${data.tripId} settlement=${result.settlementId} from=${data.fromUid} mode=FOREIGN sourceAmountMinor=${data.sourceAmountMinor} sourceCurrency=${data.sourceCurrency} settledOn=${data.settledOn}`
+          : `trip=${data.tripId} settlement=${result.settlementId} from=${data.fromUid} mode=TRIP amountMinor=${data.amountMinor}`,
       formatResponse: result => ({ ok: true, ...result }),
-      catchDomain:    validationErrorCatcher(SettlementValidationError),
+      // FOREIGN_CURRENCY calls getFxSnapshot which throws FxError on
+      // future-date / provider-down / etc; without the FxError catcher
+      // the route's generic catch maps it to 500 "Internal error" and
+      // the client UI can't distinguish "FX provider down, retry later"
+      // from a real server bug.
+      catchDomain: chainCatchers(
+        validationErrorCatcher(SettlementValidationError),
+        fxErrorCatcher(),
+      ),
     })
 
     if (isSettlementDelete) return handleJsonRoute({

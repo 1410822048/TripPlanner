@@ -77,6 +77,10 @@ describe('createSettlement', () => {
 
     const sentBody = JSON.parse(init.body as string) as Record<string, unknown>
     expect(sentBody).toEqual({
+      // Settlement FX Commit 2/4: client always labels TRIP_CURRENCY
+      // payloads with the discriminator. Worker's discriminated union
+      // rejects payloads missing this field as the wrong branch.
+      mode:         'TRIP_CURRENCY',
       tripId:       TRIP_ID,
       settlementId: SETTLEMENT_ID,
       fromUid:      'from-uid',

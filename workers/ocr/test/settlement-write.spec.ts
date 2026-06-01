@@ -70,8 +70,60 @@ vi.mock('../src/cascade', async () => {
 	}
 })
 
-import { settlementCreate, settlementDelete, SettlementValidationError } from '../src/settlement-write'
+// Settlement FX (Commit 2/4): foreign-mode requests resolve the rate
+// via getFxSnapshot. Mock returns a fixed USD→JPY @ 150 snapshot so
+// tests don't hit Frankfurter / Firestore cache. Tests that exercise
+// FxError bubbling override the mock per-call via
+// `vi.mocked(fxRate.getFxSnapshot).mockImplementationOnce(...)`.
+// Matches expense-write.spec.ts's pattern so cross-feature mock setup
+// stays familiar. JPY has 0 fraction digits, USD 2 → 1 USD cent * 150
+// rounded = 2 yen (the actual real conversion is sourceAmountMinor *
+// 150 / 100 for these fraction digits, which `convertMinorHalfEven`
+// computes; we mirror the same arithmetic here so the snapshot's
+// convertedAmountMinor agrees with what `currencyFractionDigits` +
+// the rate string would produce -- otherwise the no-overpay gate /
+// idempotency comparisons would test the mock rather than the code).
+// Default FX-snapshot impl shared between the initial mock factory AND
+// the per-test reset in `beforeEach`. Hoisted via `vi.hoisted` so the
+// hoisted `vi.mock` factory can reference it (mock factories run before
+// module-level code, so a plain `const` defined here would be in TDZ at
+// the time the factory runs). Resetting in beforeEach lets any test use
+// `mockImplementation` (not just `…Once`) without leaking into the next
+// test -- e.g. the round-to-zero test below needs the override to stick
+// across BOTH `.rejects` calls, but the FxError-bubble test that runs
+// after must see the default 150-rate impl again.
+const { defaultFxSnapshotImpl } = vi.hoisted(() => ({
+	defaultFxSnapshotImpl: async (input: import('../src/fx-rate').GetFxSnapshotInput) => ({
+		provider:             'frankfurter-v2' as const,
+		baseCurrency:         input.sourceCurrency,
+		quoteCurrency:        input.tripCurrency,
+		requestedDate:        input.requestedDate,
+		rateDate:             input.requestedDate,
+		rateDecimal:          '150',
+		sourceAmountMinor:    input.sourceAmountMinor,
+		// USD→JPY: USD has 2 fraction digits, JPY has 0 → divide by 100
+		// then multiply by 150. Match convertMinorHalfEven semantics for
+		// the same inputs.
+		convertedAmountMinor: Math.round(input.sourceAmountMinor * 150 / 100),
+		fetchedAtMs:          1_700_000_000_000,
+	}),
+}))
+
+vi.mock('../src/fx-rate', async () => {
+	const actual = await vi.importActual<typeof import('../src/fx-rate')>('../src/fx-rate')
+	return {
+		...actual,
+		getFxSnapshot: vi.fn(defaultFxSnapshotImpl),
+	}
+})
+
+import {
+	settlementCreate, settlementDelete, SettlementValidationError,
+	SettlementCreateRequestSchema,
+} from '../src/settlement-write'
 import { CascadeError } from '../src/cascade'
+import * as fxRate from '../src/fx-rate'
+import { FxError } from '../src/fx-rate'
 
 const TRIP_ID       = 'trip-1'
 const SETTLEMENT_ID = 'settle-1'
@@ -187,6 +239,58 @@ function settlementReadDoc(opts: {
 	}
 }
 
+/** Foreign-mode persisted settlement: same canonical trip-currency
+ *  fields as `settlementReadDoc` PLUS the FX-group quartet (sourceCurrency,
+ *  sourceAmountMinor, settledOn, fxSnapshot). Used by idempotency tests
+ *  that need the Worker to take the FOREIGN comparison branch. */
+function foreignSettlementReadDoc(opts: {
+	id:                 string
+	fromUid:            string
+	toUid:              string
+	amountMinor:        number   // canonical (trip currency)
+	currency?:          string   // trip currency, default JPY
+	sourceCurrency?:    string
+	sourceAmountMinor?: number
+	settledOn?:         string
+	settledBy?:         string
+	createdAt?:         string
+	note?:              string
+}): MockReadDoc {
+	const sourceCurrency    = opts.sourceCurrency    ?? 'USD'
+	const sourceAmountMinor = opts.sourceAmountMinor ?? 6500
+	const settledOn         = opts.settledOn         ?? '2026-06-01'
+	const currency          = opts.currency          ?? 'JPY'
+	const fields: Record<string, unknown> = {
+		fromUid:           { stringValue:  opts.fromUid },
+		toUid:             { stringValue:  opts.toUid },
+		amountMinor:       { integerValue: String(opts.amountMinor) },
+		currency:          { stringValue:  currency },
+		settledBy:         { stringValue:  opts.settledBy ?? opts.toUid },
+		createdAt:         { timestampValue: opts.createdAt ?? '2026-06-01T00:00:00Z' },
+		sourceCurrency:    { stringValue:  sourceCurrency },
+		sourceAmountMinor: { integerValue: String(sourceAmountMinor) },
+		settledOn:         { stringValue:  settledOn },
+		fxSnapshot: { mapValue: { fields: {
+			provider:             { stringValue:  'frankfurter-v2' },
+			baseCurrency:         { stringValue:  sourceCurrency },
+			quoteCurrency:        { stringValue:  currency },
+			requestedDate:        { stringValue:  settledOn },
+			rateDate:             { stringValue:  settledOn },
+			rateDecimal:          { stringValue:  '150' },
+			sourceAmountMinor:    { integerValue: String(sourceAmountMinor) },
+			convertedAmountMinor: { integerValue: String(opts.amountMinor) },
+			fetchedAt:            { timestampValue: '2026-06-01T00:00:00Z' },
+		} } },
+	}
+	if (opts.note !== undefined) fields.note = { stringValue: opts.note }
+	return {
+		exists:     true,
+		name:       `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/settlements/${opts.id}`,
+		updateTime: '2026-06-01T00:00:00Z',
+		fields,
+	}
+}
+
 function seedDebt(fromUid: string, toUid: string, amountMinor: number): void {
 	// One expense: toUid paid `amountMinor`, fromUid owes full split.
 	txQueryResponses.set(`trips/${TRIP_ID}|expenses`, [
@@ -203,7 +307,12 @@ function seedDebt(fromUid: string, toUid: string, amountMinor: number): void {
 	}
 }
 
+/** Trip-currency (degenerate) base payload. Carries the discriminated-
+ *  union label `mode: 'TRIP_CURRENCY'` -- the Worker rejects payloads
+ *  missing the discriminator since Commit 2/4 of Settlement FX (client
+ *  ships the same label unconditionally). */
 const baseCreatePayload = () => ({
+	mode:         'TRIP_CURRENCY' as const,
 	tripId:       TRIP_ID,
 	settlementId: SETTLEMENT_ID,
 	fromUid:      FROM_UID,
@@ -212,11 +321,31 @@ const baseCreatePayload = () => ({
 	currency:     'JPY',
 })
 
+/** Foreign-currency base payload. settledOn drives the FX-rate lookup
+ *  key. sourceAmountMinor=6500 + the mocked rate '150' → canonical
+ *  9750 JPY minor (≈ US$65). Used by foreign-mode happy path + various
+ *  reject tests. */
+const baseForeignCreatePayload = () => ({
+	mode:              'FOREIGN_CURRENCY' as const,
+	tripId:            TRIP_ID,
+	settlementId:      SETTLEMENT_ID,
+	fromUid:           FROM_UID,
+	toUid:             TO_UID,
+	sourceCurrency:    'USD',
+	sourceAmountMinor: 6500,
+	settledOn:         '2026-06-01',
+})
+
 beforeEach(() => {
 	txGetResponses.clear()
 	txQueryResponses.clear()
 	txGetCalls.length = 0
 	capturedTxResult = null
+	// Restore the default FX impl so a per-test `mockImplementation`
+	// override (round-to-zero, FxError-down) doesn't leak into the next
+	// test. `mockImplementationOnce` is self-clearing; `mockImplementation`
+	// is sticky -- this is the isolation seam.
+	vi.mocked(fxRate.getFxSnapshot).mockImplementation(defaultFxSnapshotImpl)
 })
 
 // ─── settlementCreate ─────────────────────────────────────────────
@@ -341,6 +470,11 @@ describe('settlementCreate endpoint', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
 		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`,
 			notFoundReadDoc(`trips/${TRIP_ID}/members/${FROM_UID}`))
+		// Existing-settlement probe runs in parallel with the fromMember
+		// read in the idempotent-retry fast-path. notFound → take the
+		// new-write path where the fromUid-membership check rejects.
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			notFoundReadDoc(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`))
 
 		await expect(settlementCreate(TO_UID, baseCreatePayload(), '{}'))
 			.rejects.toBeInstanceOf(SettlementValidationError)
@@ -367,6 +501,12 @@ describe('settlementCreate endpoint', () => {
 	it('rejects on currency mismatch vs trip currency', async () => {
 		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc('JPY'))
 		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`, memberReadDoc(FROM_UID))
+		// Existing-settlement probe runs first now (idempotent-retry
+		// fast-path); seed notFound so we fall through to the new-write
+		// path where the trip-vs-request currency cross-check rejects.
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			notFoundReadDoc(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`))
 
 		await expect(settlementCreate(TO_UID, {
 			...baseCreatePayload(),
@@ -583,6 +723,7 @@ describe('pair-lock guard (P1 fix)', () => {
 		seedDebt(UID_AB, UID_C, 200)
 
 		await settlementCreate(UID_C, {
+			mode: 'TRIP_CURRENCY' as const,
 			tripId: TRIP_ID, settlementId: 's-1',
 			fromUid: UID_AB, toUid: UID_C, amountMinor: 100, currency: 'JPY',
 		}, '{}')
@@ -609,6 +750,7 @@ describe('pair-lock guard (P1 fix)', () => {
 		seedDebt(UID_A, UID_BC, 200)
 
 		await settlementCreate(UID_BC, {
+			mode: 'TRIP_CURRENCY' as const,
 			tripId: TRIP_ID, settlementId: 's-2',
 			fromUid: UID_A, toUid: UID_BC, amountMinor: 100, currency: 'JPY',
 		}, '{}')
@@ -763,5 +905,399 @@ describe('idempotent retry payload-exact match (P2 fix)', () => {
 
 		expect(result.settlementId).toBe(SETTLEMENT_ID)
 		expect(capturedTxResult!.writes).toEqual([])
+	})
+})
+
+// ─── settlement FX (foreign-mode) — Phase 4.2 Commit 2/4 ──────────
+//
+// Worker-authoritative FX: client sends sourceCurrency +
+// sourceAmountMinor + settledOn, Worker fetches the rate, derives the
+// canonical trip-currency amount, and persists the 4-field FX group
+// alongside. Mirrors expense Phase 3 set: reject same-currency,
+// overpay-after-convert reject, FxError bubbles, retry-payload-mismatch
+// reject, mode-flip retry reject, happy-path persists all 4 source
+// fields + canonical + fxSnapshot + fxSnapshot.fetchedAt REQUEST_TIME.
+
+describe('settlementCreate FOREIGN_CURRENCY (Settlement FX)', () => {
+	function setupForeignAuthz() {
+		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc('JPY'))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`, memberReadDoc(FROM_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			notFoundReadDoc(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`))
+		seedLock(FROM_UID, TO_UID)
+	}
+
+	it('happy path: persists all 4 source fields + canonical amountMinor + fxSnapshot + REQUEST_TIME fetchedAt', async () => {
+		setupForeignAuthz()
+		// 9750 JPY of debt: source 6500 USD * rate 150 / 100 = 9750 JPY canonical.
+		// Settlement of US$65 (=¥9750 derived) exactly clears the debt.
+		seedDebt(FROM_UID, TO_UID, 9750)
+
+		const result = await settlementCreate(TO_UID, baseForeignCreatePayload(), '{}')
+
+		expect(result.settlementId).toBe(SETTLEMENT_ID)
+		const writes = capturedTxResult!.writes as Array<{
+			document:         string
+			fields:           Record<string, { stringValue?: string; integerValue?: string; mapValue?: { fields: Record<string, unknown> } }>
+			updateTransforms?: Array<{ fieldPath: string; setToServerValue: string }>
+			currentDocument?: { exists?: boolean }
+		}>
+		expect(writes).toHaveLength(2)  // settlement doc + pair lock
+		const w = writes[0]
+		expect(w.currentDocument).toEqual({ exists: false })
+
+		// Trip-currency canonical: amountMinor = snapshot.convertedAmountMinor.
+		expect(w.fields.amountMinor).toEqual({ integerValue: '9750' })
+		// currency is Worker-derived from ctx (trip currency), NEVER from
+		// the foreign request -- there's no `currency` field on the foreign
+		// branch's payload schema.
+		expect(w.fields.currency).toEqual({ stringValue: 'JPY' })
+
+		// FX group quartet, all-or-none.
+		expect(w.fields.sourceCurrency).toEqual({ stringValue: 'USD' })
+		expect(w.fields.sourceAmountMinor).toEqual({ integerValue: '6500' })
+		expect(w.fields.settledOn).toEqual({ stringValue: '2026-06-01' })
+
+		// fxSnapshot map: every field present, fetchedAt null pending the
+		// REQUEST_TIME transform below.
+		const fx = w.fields.fxSnapshot.mapValue!.fields as Record<string, { stringValue?: string; integerValue?: string; nullValue?: null }>
+		expect(fx.provider).toEqual({ stringValue: 'frankfurter-v2' })
+		expect(fx.baseCurrency).toEqual({ stringValue: 'USD' })
+		expect(fx.quoteCurrency).toEqual({ stringValue: 'JPY' })
+		expect(fx.requestedDate).toEqual({ stringValue: '2026-06-01' })
+		expect(fx.rateDate).toEqual({ stringValue: '2026-06-01' })
+		expect(fx.rateDecimal).toEqual({ stringValue: '150' })
+		expect(fx.sourceAmountMinor).toEqual({ integerValue: '6500' })
+		expect(fx.convertedAmountMinor).toEqual({ integerValue: '9750' })
+		expect(fx.fetchedAt).toEqual({ nullValue: null })
+
+		// Both server-time transforms present: createdAt + the nested
+		// fxSnapshot.fetchedAt. Worker Date.now() would drift relative to
+		// Firestore commit; same rationale as expense-write.
+		expect(w.updateTransforms).toEqual([
+			{ fieldPath: 'createdAt',          setToServerValue: 'REQUEST_TIME' },
+			{ fieldPath: 'fxSnapshot.fetchedAt', setToServerValue: 'REQUEST_TIME' },
+		])
+	})
+
+	it('rejects when sourceCurrency === trip currency (use TRIP_CURRENCY path instead)', async () => {
+		// Same-currency foreign path is meaningless: no rate, no snapshot
+		// to persist, and a degenerate FxSnapshot with provider==null
+		// would confuse the audit trail. Worker rejects with
+		// SettlementValidationError(sourceCurrency).
+		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc('USD'))  // trip is USD
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`, memberReadDoc(FROM_UID))
+		// Existing-settlement probe runs first (idempotent-retry fast-
+		// path); notFound → new-write path → prepareForeignSettlement's
+		// same-currency reject.
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			notFoundReadDoc(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`))
+
+		await expect(settlementCreate(TO_UID, {
+			...baseForeignCreatePayload(),
+			sourceCurrency: 'USD',  // same as trip
+		}, '{}')).rejects.toBeInstanceOf(SettlementValidationError)
+	})
+
+	it('rejects when canonical (post-convert) amount exceeds remaining debt (OVERPAY)', async () => {
+		setupForeignAuthz()
+		// Only 5000 JPY of debt, but the foreign request derives 9750 JPY canonical.
+		// The gate compares Worker-derived canonical against remaining,
+		// NOT the source amount -- that's the whole point of being
+		// Worker-authoritative.
+		seedDebt(FROM_UID, TO_UID, 5000)
+
+		await expect(settlementCreate(TO_UID, baseForeignCreatePayload(), '{}'))
+			.rejects.toBeInstanceOf(SettlementValidationError)
+		await expect(settlementCreate(TO_UID, baseForeignCreatePayload(), '{}'))
+			.rejects.toThrow(/exceeds remaining debt/i)
+	})
+
+	it('rejects when FX conversion rounds canonical amountMinor to 0', async () => {
+		// Round-to-zero guard. The request passes schema (sourceAmountMinor
+		// is positive), but the FX conversion collapses it to 0 in the
+		// trip currency. Most realistic when the source is a low-face-
+		// value currency converted into a 0-fraction-digit trip currency
+		// (e.g. 1 IDR → JPY, 1 KRW → JPY). Without the guard, the Worker
+		// would persist `amountMinor: 0` -- SettlementDocSchema.positive()
+		// on the client read parser would then fail and the realtime
+		// listener would drop the row.
+		setupForeignAuthz()
+		seedDebt(FROM_UID, TO_UID, 9750)
+		// `mockImplementation` (not `…Once`) so BOTH `.rejects` assertions
+		// below -- one for instance, one for message -- see the zero-
+		// conversion snapshot. Matches the OVERPAY test pattern (which
+		// uses the default mock for both calls); here the default would
+		// return 9750 and bypass the guard, so we override for the test
+		// scope.
+		vi.mocked(fxRate.getFxSnapshot).mockImplementation(async (input) => ({
+			provider:             'frankfurter-v2',
+			baseCurrency:         input.sourceCurrency,
+			quoteCurrency:        input.tripCurrency,
+			requestedDate:        input.requestedDate,
+			rateDate:             input.requestedDate,
+			rateDecimal:          '0.0001',
+			sourceAmountMinor:    input.sourceAmountMinor,
+			// Rounded to 0 in trip currency. Tests the post-convert
+			// reject branch, not the FX layer's own rounding.
+			convertedAmountMinor: 0,
+			fetchedAtMs:          1_700_000_000_000,
+		}))
+
+		await expect(settlementCreate(TO_UID, baseForeignCreatePayload(), '{}'))
+			.rejects.toBeInstanceOf(SettlementValidationError)
+		await expect(settlementCreate(TO_UID, baseForeignCreatePayload(), '{}'))
+			.rejects.toThrowError(/rounds to zero/i)
+	})
+
+	it('FxError bubbles up to the caller (provider unavailable / future date / etc.)', async () => {
+		setupForeignAuthz()
+		seedDebt(FROM_UID, TO_UID, 9750)
+		// One-shot override: provider unavailable for this call only. Worker
+		// has no FxError → SettlementValidationError mapping -- letting it
+		// bubble keeps the error vocabulary single-source per fx-rate.ts.
+		// The settlement-create route in index.ts chains fxErrorCatcher()
+		// after validationErrorCatcher(SettlementValidationError) so the
+		// HTTP response carries FxError.status + .code; a route-level
+		// smoke for that mapping is in test/route-dispatch.spec.ts.
+		vi.mocked(fxRate.getFxSnapshot).mockImplementationOnce(async () => {
+			throw new FxError('FX_PROVIDER_UNAVAILABLE', 502, 'Frankfurter down')
+		})
+
+		await expect(settlementCreate(TO_UID, baseForeignCreatePayload(), '{}'))
+			.rejects.toBeInstanceOf(FxError)
+	})
+
+	it('idempotent retry FOREIGN: full source-domain match → no writes, same id', async () => {
+		// Existing doc carries the same source-domain quartet; Worker takes
+		// the FOREIGN comparison branch and short-circuits on match.
+		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc('JPY'))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`, memberReadDoc(FROM_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			foreignSettlementReadDoc({
+				id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID,
+				amountMinor: 9750, sourceCurrency: 'USD', sourceAmountMinor: 6500,
+				settledOn: '2026-06-01',
+			}))
+		seedLock(FROM_UID, TO_UID)
+
+		const result = await settlementCreate(TO_UID, baseForeignCreatePayload(), '{}')
+
+		expect(result.settlementId).toBe(SETTLEMENT_ID)
+		expect(capturedTxResult!.writes).toEqual([])
+	})
+
+	it('idempotent retry FOREIGN short-circuits BEFORE FX call (provider stays untouched)', async () => {
+		// Locks down the ordering guarantee: existing-doc probe happens
+		// in the fast-path BEFORE getFxSnapshot. Without this guarantee
+		// a Frankfurter outage would turn legitimate retries (same id,
+		// same source-domain payload) into 502s -- the source-domain
+		// idempotency contract is the whole reason FX runs AFTER the
+		// existing-doc check.
+		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc('JPY'))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`, memberReadDoc(FROM_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			foreignSettlementReadDoc({
+				id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID,
+				amountMinor: 9750, sourceCurrency: 'USD', sourceAmountMinor: 6500,
+				settledOn: '2026-06-01',
+			}))
+		seedLock(FROM_UID, TO_UID)
+
+		const fxSpy = vi.mocked(fxRate.getFxSnapshot)
+		fxSpy.mockClear()
+
+		const result = await settlementCreate(TO_UID, baseForeignCreatePayload(), '{}')
+
+		expect(result.settlementId).toBe(SETTLEMENT_ID)
+		expect(fxSpy).not.toHaveBeenCalled()
+	})
+
+	it('idempotent retry FOREIGN succeeds even when FX provider is DOWN', async () => {
+		// The whole point of the source-domain idempotency contract:
+		// the original commit succeeded, the client missed the response,
+		// retries with the same id + same payload, and Frankfurter
+		// happens to be 502'ing right now. We must return success
+		// without ever touching FX -- which means the existing-doc check
+		// has to run BEFORE prepareForeignSettlement.
+		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc('JPY'))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`, memberReadDoc(FROM_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			foreignSettlementReadDoc({
+				id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID,
+				amountMinor: 9750, sourceCurrency: 'USD', sourceAmountMinor: 6500,
+				settledOn: '2026-06-01',
+			}))
+		seedLock(FROM_UID, TO_UID)
+
+		// Arm an FX failure -- if the fast-path is correct, this is never
+		// reached. If it IS reached, the test fails with FxError instead
+		// of the expected idempotent ok.
+		vi.mocked(fxRate.getFxSnapshot).mockImplementation(async () => {
+			throw new FxError('FX_PROVIDER_UNAVAILABLE', 502, 'Frankfurter down')
+		})
+
+		const result = await settlementCreate(TO_UID, baseForeignCreatePayload(), '{}')
+		expect(result.settlementId).toBe(SETTLEMENT_ID)
+		expect(capturedTxResult!.writes).toEqual([])
+	})
+
+	it('mismatched FOREIGN retry rejects BEFORE FX call (payload comparison is pure source-domain)', async () => {
+		// Even when the existing doc is FOREIGN with a different
+		// sourceAmountMinor, the comparison runs on the request's source
+		// quartet alone -- no need to fetch FX to know it's a mismatch.
+		// Locks down "FX is only ever called on the new-write path".
+		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc('JPY'))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`, memberReadDoc(FROM_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			foreignSettlementReadDoc({
+				id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID,
+				amountMinor: 10500, sourceCurrency: 'USD', sourceAmountMinor: 7000,
+				settledOn: '2026-06-01',
+			}))
+		seedLock(FROM_UID, TO_UID)
+
+		const fxSpy = vi.mocked(fxRate.getFxSnapshot)
+		fxSpy.mockClear()
+
+		await expect(settlementCreate(TO_UID, baseForeignCreatePayload(), '{}'))
+			.rejects.toThrowError(/id collision or replay attempt/i)
+		expect(fxSpy).not.toHaveBeenCalled()
+	})
+
+	it('rejects FOREIGN retry with mismatched sourceAmountMinor → id collision', async () => {
+		// Existing doc has source 7000 USD, request has 6500 USD. The
+		// FOREIGN comparison checks sourceAmountMinor (not canonical
+		// amountMinor) so a "same id, different source typed" replay is
+		// caught even when the FX rate-derived canonical happens to match.
+		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc('JPY'))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`, memberReadDoc(FROM_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			foreignSettlementReadDoc({
+				id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID,
+				amountMinor: 10500, sourceCurrency: 'USD', sourceAmountMinor: 7000,
+				settledOn: '2026-06-01',
+			}))
+		seedLock(FROM_UID, TO_UID)
+
+		await expect(settlementCreate(TO_UID, baseForeignCreatePayload(), '{}'))
+			.rejects.toThrowError(/id collision or replay attempt/i)
+	})
+
+	it('rejects mode-flip retry: existing is TRIP, request is FOREIGN → id collision', async () => {
+		// Persisted doc has no sourceCurrency field → Worker treats it as
+		// TRIP; FOREIGN request hits the mode-mismatch branch first. This
+		// is the cross-mode replay guard.
+		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc('JPY'))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`, memberReadDoc(FROM_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			settlementReadDoc({ id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amountMinor: 9750 }))
+		seedLock(FROM_UID, TO_UID)
+
+		await expect(settlementCreate(TO_UID, baseForeignCreatePayload(), '{}'))
+			.rejects.toThrowError(/id collision or replay attempt/i)
+	})
+
+	it('rejects mode-flip retry: existing is FOREIGN, request is TRIP → id collision', async () => {
+		// Persisted doc has sourceCurrency → FOREIGN; TRIP request hits
+		// the mode-mismatch branch. Same guard, other direction.
+		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc('JPY'))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`, memberReadDoc(FROM_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			foreignSettlementReadDoc({
+				id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID,
+				amountMinor: 100, sourceCurrency: 'USD', sourceAmountMinor: 6500,
+				settledOn: '2026-06-01',
+			}))
+		seedLock(FROM_UID, TO_UID)
+
+		await expect(settlementCreate(TO_UID, baseCreatePayload(), '{}'))
+			.rejects.toThrowError(/id collision or replay attempt/i)
+	})
+})
+
+// Discriminator + per-branch .strict() guards. The route layer
+// (`SettlementCreateRequestSchema` in index.ts) is the only thing
+// gating raw wire bodies before settlementCreate() sees them, so
+// these schema-level tests are the analogue of expense-write's
+// "smuggled trip-currency money keys" test -- different code shape
+// because settlementCreate accepts a typed `SettlementCreateRequest`
+// (parsing happens at the route), whereas expenseCreate parses the
+// nested `expense:` field internally.
+describe('SettlementCreateRequestSchema (.strict() per-branch + discriminator)', () => {
+	const TRIP_BODY = {
+		mode:         'TRIP_CURRENCY' as const,
+		tripId:       TRIP_ID,
+		settlementId: SETTLEMENT_ID,
+		fromUid:      FROM_UID,
+		toUid:        TO_UID,
+		amountMinor:  100,
+		currency:     'JPY',
+	}
+
+	const FOREIGN_BODY = {
+		mode:              'FOREIGN_CURRENCY' as const,
+		tripId:            TRIP_ID,
+		settlementId:      SETTLEMENT_ID,
+		fromUid:           FROM_UID,
+		toUid:             TO_UID,
+		sourceCurrency:    'USD',
+		sourceAmountMinor: 6500,
+		settledOn:         '2026-06-01',
+	}
+
+	it('accepts a minimal TRIP_CURRENCY body', () => {
+		expect(SettlementCreateRequestSchema.safeParse(TRIP_BODY).success).toBe(true)
+	})
+
+	it('accepts a minimal FOREIGN_CURRENCY body', () => {
+		expect(SettlementCreateRequestSchema.safeParse(FOREIGN_BODY).success).toBe(true)
+	})
+
+	it('rejects TRIP_CURRENCY body that smuggles foreign source fields (.strict() on TRIP branch)', () => {
+		// A buggy client that forgets to clear cancelled foreign UI state
+		// must not be able to ship `sourceCurrency: 'USD'` alongside a
+		// TRIP_CURRENCY label and have the Worker silently accept a
+		// half-foreign write. .strict() turns this into a loud Zod reject
+		// before any tx state is touched.
+		for (const smuggled of ['sourceCurrency', 'sourceAmountMinor', 'settledOn'] as const) {
+			const body = { ...TRIP_BODY, [smuggled]: smuggled === 'sourceAmountMinor' ? 100 : 'USD' }
+			const r = SettlementCreateRequestSchema.safeParse(body)
+			expect(r.success, `TRIP body must reject smuggled ${smuggled}`).toBe(false)
+		}
+	})
+
+	it('rejects FOREIGN_CURRENCY body that smuggles trip-currency money keys (.strict() on FOREIGN branch)', () => {
+		// Mirror of the expense-write strictness test: a foreign body
+		// MUST NOT carry trip-currency-only keys (`amountMinor`,
+		// `currency`) -- otherwise a client that lied about the
+		// conversion (sent a wrong amountMinor next to a real source
+		// quartet) could land a doc where the canonical amount doesn't
+		// match the snapshot. .strict() turns it into a Zod reject.
+		for (const smuggled of ['amountMinor', 'currency'] as const) {
+			const body = { ...FOREIGN_BODY, [smuggled]: smuggled === 'amountMinor' ? 100 : 'JPY' }
+			const r = SettlementCreateRequestSchema.safeParse(body)
+			expect(r.success, `FOREIGN body must reject smuggled ${smuggled}`).toBe(false)
+		}
+	})
+
+	it('rejects unknown discriminator value', () => {
+		const r = SettlementCreateRequestSchema.safeParse({ ...TRIP_BODY, mode: 'SOMETHING_ELSE' })
+		expect(r.success).toBe(false)
+	})
+
+	it('rejects missing discriminator (no mode field)', () => {
+		const { mode: _omit, ...noMode } = TRIP_BODY
+		const r = SettlementCreateRequestSchema.safeParse(noMode)
+		expect(r.success).toBe(false)
 	})
 })

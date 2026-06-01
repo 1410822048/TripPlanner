@@ -55,7 +55,9 @@ import {
   docResourceName,
   type TxContext,
   type TxWrite,
+  type TxUpdateWrite,
   type TxReadDoc,
+  type TxResult,
 }                                                           from './firestore-tx'
 import {
   computePairwiseRemaining,
@@ -64,6 +66,11 @@ import {
   type CoreExpense,
   type CoreSettlement,
 }                                                           from '@tripmate/settlement-core'
+import {
+  getFxSnapshot,
+  type FxSnapshot,
+}                                                           from './fx-rate'
+import { currencyFractionDigits }                           from '@tripmate/fx-core'
 
 // ─── Request body schemas ─────────────────────────────────────────
 
@@ -87,21 +94,58 @@ const UID_MAX  = 128
 const EXPENSE_READ_LIMIT    = 500
 const SETTLEMENT_READ_LIMIT = 200
 
-/** Settlement create request. `.strict()` rejects extras at the
- *  protocol layer so we don't rely solely on firestore.rules' missing
- *  `keys().hasOnly()` gate. settlementId is client-minted via
- *  `doc(collection(...))` so the Worker's `currentDocument.exists=false`
- *  gives genuine create-only semantics (retry-safe). */
-export const SettlementCreateRequestSchema = z.object({
+/** Settlement create request. Discriminated by `mode`:
+ *
+ *    - TRIP_CURRENCY (degenerate): client provides amountMinor +
+ *      currency (== trip currency). Worker validates the cross-check
+ *      and persists as-is.
+ *    - FOREIGN_CURRENCY: client provides sourceCurrency +
+ *      sourceAmountMinor + settledOn; Worker fetches the FX rate,
+ *      derives canonical amountMinor = convertedAmountMinor, runs the
+ *      no-overpay gate against the derived amount, and persists
+ *      source-domain + fxSnapshot + canonical in one tx.
+ *
+ *  Per-branch `.strict()` rejects extras at the protocol layer so we
+ *  don't rely solely on firestore.rules' missing `keys().hasOnly()`
+ *  gate. settlementId is client-minted via `doc(collection(...))` so
+ *  the Worker's `currentDocument.exists=false` gives genuine
+ *  create-only semantics (retry-safe).
+ *
+ *  CurrencyRe is repeated literal here (not extracted) because the
+ *  trip / source currencies live in different branches; sharing one
+ *  regex makes the per-branch `.strict()` shapes harder to read with
+ *  no real DRY win. */
+const CurrencyRe = /^[A-Z]{3}$/
+const IsoDateRe  = /^\d{4}-\d{2}-\d{2}$/
+
+const SettlementCreateBaseSchema = z.object({
   tripId:       z.string().regex(TripIdRe),
   settlementId: z.string().regex(TripIdRe),
   fromUid:      z.string().min(1).max(UID_MAX),
   toUid:        z.string().min(1).max(UID_MAX),
-  amountMinor:  z.number().int().positive().max(1_000_000_000),
-  currency:     z.string().length(3),
   note:         z.string().max(200).optional(),
+})
+
+const SettlementCreateTripSchema = SettlementCreateBaseSchema.extend({
+  mode:        z.literal('TRIP_CURRENCY'),
+  amountMinor: z.number().int().positive().max(1_000_000_000),
+  currency:    z.string().regex(CurrencyRe, 'currency must be ISO 4217 alpha-3 uppercase'),
 }).strict()
-export type SettlementCreateRequest = z.infer<typeof SettlementCreateRequestSchema>
+
+const SettlementCreateForeignSchema = SettlementCreateBaseSchema.extend({
+  mode:              z.literal('FOREIGN_CURRENCY'),
+  sourceCurrency:    z.string().regex(CurrencyRe, 'sourceCurrency must be ISO 4217 alpha-3 uppercase'),
+  sourceAmountMinor: z.number().int().positive().max(1_000_000_000),
+  settledOn:         z.string().regex(IsoDateRe, 'settledOn must be YYYY-MM-DD'),
+}).strict()
+
+export const SettlementCreateRequestSchema = z.discriminatedUnion('mode', [
+  SettlementCreateTripSchema,
+  SettlementCreateForeignSchema,
+])
+export type SettlementCreateRequest        = z.infer<typeof SettlementCreateRequestSchema>
+export type SettlementCreateTripRequest    = z.infer<typeof SettlementCreateTripSchema>
+export type SettlementCreateForeignRequest = z.infer<typeof SettlementCreateForeignSchema>
 
 export const SettlementDeleteRequestSchema = z.object({
   tripId:       z.string().regex(TripIdRe),
@@ -217,6 +261,46 @@ function decodeExpenseForDomain(fields: Record<string, FsValue>): CoreExpense {
   return { amountMinor, paidBy, splits }
 }
 
+/** Carries the source-domain artifacts that FOREIGN_CURRENCY persists
+ *  alongside the trip-currency canonical fields. Mirrors expense-write's
+ *  ForeignArtifacts pattern: snapshot.fetchedAt is encoded as null and
+ *  REQUEST_TIME-stamped at commit. */
+interface ForeignSettlementArtifacts {
+  sourceCurrency:    string
+  sourceAmountMinor: number
+  settledOn:         string
+  fxSnapshot:        FxSnapshot
+}
+
+/** Encode FxSnapshot as a Firestore map. `fetchedAt` is set to null
+ *  here -- the caller adds an `updateTransforms` entry pinned to
+ *  REQUEST_TIME so Firestore stamps the field at commit. Writing both
+ *  is intentional: the field MUST appear in the map so the create
+ *  Write's `currentDocument.exists=false` doesn't reject the transform
+ *  as targeting a missing parent.
+ *
+ *  Inline (vs sharing from fx-rate.ts with expense-write) is deliberate:
+ *  both writers shaping the same fxSnapshot map keeps the contract
+ *  obvious at the write site, and the read-schema test
+ *  (settlement.test.ts FX cross-field equality) catches any divergence. */
+function encodeFxSnapshot(fx: FxSnapshot): FsValue {
+  return {
+    mapValue: {
+      fields: {
+        provider:             { stringValue:  fx.provider },
+        baseCurrency:         { stringValue:  fx.baseCurrency },
+        quoteCurrency:        { stringValue:  fx.quoteCurrency },
+        requestedDate:        { stringValue:  fx.requestedDate },
+        rateDate:             { stringValue:  fx.rateDate },
+        rateDecimal:          { stringValue:  fx.rateDecimal },
+        sourceAmountMinor:    { integerValue: String(fx.sourceAmountMinor) },
+        convertedAmountMinor: { integerValue: String(fx.convertedAmountMinor) },
+        fetchedAt:            { nullValue:    null },
+      },
+    },
+  }
+}
+
 function decodeSettlementForDomain(fields: Record<string, FsValue>): CoreSettlement {
   const fromUid = readString(fields, 'fromUid') ?? ''
   const toUid   = readString(fields, 'toUid')   ?? ''
@@ -246,6 +330,94 @@ export async function settlementCreate(
   return withTokenRetry(() => doCreate(callerUid, req, serviceAccountJson))
 }
 
+/** Idempotent-retry check for a pre-existing settlement at the same id.
+ *
+ *  The legitimate retry case is "client got no response, retried with
+ *  the same minted id, doc landed on first attempt". We treat that as
+ *  success ONLY if every business field on the existing doc matches
+ *  the request -- otherwise it's an id collision (or replay attempt
+ *  with a different payload) and the right answer is 409 so the caller
+ *  surfaces the mismatch.
+ *
+ *  Mode-discriminated comparison:
+ *    - TRIP retries compare from/to/amountMinor/currency/note
+ *      (request canonical fields).
+ *    - FOREIGN retries compare from/to/sourceCurrency/sourceAmountMinor/
+ *      settledOn/note. fxSnapshot is Worker-derived from those source
+ *      fields + cache lookup; excluded from the comparison so a legitimate
+ *      retry doesn't false-positive on a refreshed `fetchedAt` timestamp.
+ *
+ *  Cross-mode retry (request says FOREIGN but the persisted doc has no
+ *  sourceCurrency, or vice versa) is treated as an id collision -- the
+ *  persisted shape decides which comparison path applies, no auto-cast.
+ *
+ *  Critical: this helper is intentionally side-effect free and does
+ *  NOT call out to FX. It runs in the doCreate fast-path before any FX
+ *  resolve -- the source-domain comparison contract guarantees a
+ *  legitimate retry succeeds even when Frankfurter is down. */
+function idempotencyShortCircuit(
+  existingDoc: TxReadDoc,
+  req:         SettlementCreateRequest,
+  callerUid:   string,
+): TxResult<{ settlementId: string }> {
+  const existingFromUid   = readString(existingDoc.fields, 'fromUid')
+  const existingToUid     = readString(existingDoc.fields, 'toUid')
+  const existingSettledBy = readString(existingDoc.fields, 'settledBy')
+  const existingHasSource = existingDoc.fields.sourceCurrency !== undefined
+  // note: current write path omits the field entirely when the
+  // request's note is empty/absent. Normalize both sides to '' so a
+  // "no note both ways" retry doesn't false-positive a mismatch.
+  const existingNote = readString(existingDoc.fields, 'note') ?? ''
+  const requestNote  = req.note ?? ''
+
+  const reqIsForeign = req.mode === 'FOREIGN_CURRENCY'
+  if (existingHasSource !== reqIsForeign) {
+    throw new SettlementValidationError(
+      'settlementId',
+      'settlementId already exists with a different payload (id collision or replay attempt)',
+    )
+  }
+
+  let payloadMatches: boolean
+  if (req.mode === 'FOREIGN_CURRENCY') {
+    const existingSourceCurrency = readString(existingDoc.fields, 'sourceCurrency')
+    const existingSettledOn      = readString(existingDoc.fields, 'settledOn')
+    const existingSourceAmount   = Number(
+      existingDoc.fields.sourceAmountMinor?.integerValue ?? Number.NaN,
+    )
+    payloadMatches =
+         existingFromUid        === req.fromUid
+      && existingToUid          === req.toUid
+      && existingSourceCurrency === req.sourceCurrency
+      && existingSourceAmount   === req.sourceAmountMinor
+      && existingSettledOn      === req.settledOn
+      && existingSettledBy      === callerUid
+      && existingNote           === requestNote
+  } else {
+    const existingCurrency    = readString(existingDoc.fields, 'currency')
+    const existingAmountMinor = Number(
+      existingDoc.fields.amountMinor?.integerValue ?? Number.NaN,
+    )
+    payloadMatches =
+         existingFromUid     === req.fromUid
+      && existingToUid       === req.toUid
+      && existingAmountMinor === req.amountMinor
+      && existingCurrency    === req.currency
+      && existingSettledBy   === callerUid
+      && existingNote        === requestNote
+  }
+  if (!payloadMatches) {
+    throw new SettlementValidationError(
+      'settlementId',
+      'settlementId already exists with a different payload (id collision or replay attempt)',
+    )
+  }
+  return {
+    writes: [],
+    result: { settlementId: req.settlementId },
+  }
+}
+
 async function doCreate(
   callerUid:          string,
   req:                SettlementCreateRequest,
@@ -273,23 +445,51 @@ async function doCreate(
   return runFirestoreTransaction(accessToken, projectId, async (tx) => {
     const ctx = await authorizeMemberTx(tx, req.tripId, callerUid)
 
-    // Currency cross-check vs the trip. Rules only check
-    // `currency.size() == 3` -- a raw-SDK writer could pin a settlement
-    // in USD onto a JPY trip and the chronological replay would compare
-    // mismatched units. Worker is the only chokepoint after M4; gate
-    // here.
-    if (req.currency !== ctx.currency) {
-      throw new SettlementValidationError(
-        'currency',
-        `settlement currency (${req.currency}) does not match trip currency (${ctx.currency})`,
-      )
+    // ----- Idempotent-retry fast-path (read existing settlement first) -----
+    //
+    // Critical ordering decision: the existing-settlement probe (and the
+    // from-member existence check) happens BEFORE the FX network call
+    // for FOREIGN_CURRENCY and BEFORE the heavy expense + settlement
+    // runQuery fan-out for the overpay gate. Why:
+    //
+    //   The whole point of the source-domain idempotency contract is
+    //   that a retry of the SAME settlementId with the SAME
+    //   {fromUid, toUid, sourceCurrency, sourceAmountMinor, settledOn,
+    //   note} should return success even when the FX provider is down,
+    //   because the original commit already landed. If we called FX
+    //   first, a Frankfurter degraded window would turn legitimate
+    //   retries (after a client-timeout + retry) into 502s -- a regression
+    //   the source-domain-comparison contract was designed to prevent.
+    //
+    //   Same logic for the expense/settlement reads: those are pure
+    //   overpay-gate inputs, only meaningful on the new-write path. For
+    //   a retry we don't write anything; the existing doc is already
+    //   the authoritative answer.
+    //
+    //   The full tx still re-reads the existing doc on the new-write
+    //   path implicitly via the `currentDocument: { exists: false }`
+    //   precondition on the write -- the fast-path is a perf + retry-
+    //   robustness optimization, NOT the safety boundary.
+    const existingDocPath = `trips/${req.tripId}/settlements/${req.settlementId}`
+    const [existingDoc, fromMember] = await Promise.all([
+      tx.get(existingDocPath),
+      tx.get(`trips/${req.tripId}/members/${req.fromUid}`),
+    ])
+
+    if (existingDoc.exists) {
+      // Mode-discriminated payload comparison. Both branches operate
+      // entirely on the REQUEST (source-domain for FOREIGN, canonical
+      // for TRIP) -- no FX lookup needed. Cross-mode retry (existing
+      // shape mismatches request mode) is an id collision.
+      return idempotencyShortCircuit(existingDoc, req, callerUid)
     }
+
+    // ----- New-write path -----
 
     // fromUid must be a real trip member. Same intent as the rule's
     // `exists(memberPath(fromUid))` — without it the receiver could
     // fabricate "Charlie 還我 ¥100" records that pollute the audit
     // log without Charlie's input.
-    const fromMember = await tx.get(`trips/${req.tripId}/members/${req.fromUid}`)
     if (!fromMember.exists) {
       throw new SettlementValidationError(
         'fromUid',
@@ -297,11 +497,54 @@ async function doCreate(
       )
     }
 
+    // Mode branch derives the canonical (trip-currency) amountMinor that
+    // the rest of the flow -- no-overpay gate, doc write -- treats as
+    // authoritative. For TRIP_CURRENCY this is just the request amount
+    // after the currency cross-check; for FOREIGN_CURRENCY the Worker
+    // fetches the FX rate, derives the canonical amount, and carries
+    // the source-domain + snapshot alongside as
+    // ForeignSettlementArtifacts for the encoder.
+    let canonicalAmountMinor: number
+    let foreign: ForeignSettlementArtifacts | undefined
+
+    if (req.mode === 'FOREIGN_CURRENCY') {
+      const prepared = await prepareForeignSettlement(req, ctx, serviceAccountJson)
+      canonicalAmountMinor = prepared.canonicalAmountMinor
+      foreign              = prepared.foreignArtifacts
+      // Round-to-zero guard. `sourceAmountMinor` is .positive() at the
+      // request schema layer, but the FX conversion can collapse a tiny
+      // low-fraction-digit-source-to-zero-fraction-digit-trip payment
+      // to 0 (e.g. 1 IDR → 0 JPY when 1 IDR ≈ 0.0094 JPY). Persisting
+      // amountMinor=0 would (a) fail SettlementDocSchema.amountMinor
+      // .positive() on the client read parser and (b) write a no-op
+      // settlement that pollutes the audit trail. Reject with field=
+      // sourceAmountMinor so the form surfaces the right input as the
+      // actionable one.
+      if (canonicalAmountMinor <= 0) {
+        throw new SettlementValidationError(
+          'sourceAmountMinor',
+          'converted settlement amount rounds to zero in trip currency',
+        )
+      }
+    } else {
+      // Currency cross-check vs the trip. Rules only check
+      // `currency.size() == 3` -- a raw-SDK writer could pin a settlement
+      // in USD onto a JPY trip and the chronological replay would compare
+      // mismatched units. Worker is the only chokepoint after M4; gate
+      // here.
+      if (req.currency !== ctx.currency) {
+        throw new SettlementValidationError(
+          'currency',
+          `settlement currency (${req.currency}) does not match trip currency (${ctx.currency})`,
+        )
+      }
+      canonicalAmountMinor = req.amountMinor
+    }
+
     const lockPath = pairLockPath(req.tripId, req.fromUid, req.toUid)
 
-    // Read active expenses + all existing settlements + the existing-doc
-    // probe + the pair lock — all in the same tx snapshot. Critical
-    // bits:
+    // Read active expenses + all existing settlements + the pair lock
+    // in the same tx snapshot. Critical bits:
     //   - `limit + 1` on the runQueries so truncation is *detectable*
     //     (see EXPENSE_READ_LIMIT docstring for the overpay scenario).
     //   - The pair-lock read is what gives us same-pair-concurrent-create
@@ -311,7 +554,7 @@ async function doCreate(
     //     runQuery snapshot never included → no Firestore conflict on
     //     settlements alone. Reading + writing this shared doc forces
     //     the conflict.
-    const [expenseReads, settlementReads, existingDoc, _lockRead] = await Promise.all([
+    const [expenseReads, settlementReads, _lockRead] = await Promise.all([
       tx.runQuery({
         parent:     `trips/${req.tripId}`,
         collection: 'expenses',
@@ -323,7 +566,6 @@ async function doCreate(
         collection: 'settlements',
         limit:      SETTLEMENT_READ_LIMIT + 1,
       }),
-      tx.get(`trips/${req.tripId}/settlements/${req.settlementId}`),
       tx.get(lockPath),
     ])
 
@@ -338,45 +580,6 @@ async function doCreate(
       throw new CascadeError(503, 'trip has too many settlements to compute pair remaining safely (retry later)')
     }
 
-    if (existingDoc.exists) {
-      // Idempotency: legitimate retry case is "client got no response,
-      // retried with the same minted id, doc landed on first attempt".
-      // We treat that as success ONLY if every business field matches
-      // the existing doc -- otherwise it's an id collision (or replay
-      // attempt with a different payload) and the right answer is 409
-      // so the caller surfaces the mismatch instead of silently being
-      // told "ok" for a write that never reflected the latest payload.
-      const existingFromUid     = readString(existingDoc.fields, 'fromUid')
-      const existingToUid       = readString(existingDoc.fields, 'toUid')
-      const existingCurrency    = readString(existingDoc.fields, 'currency')
-      const existingSettledBy   = readString(existingDoc.fields, 'settledBy')
-      const existingAmountMinor = Number(
-        existingDoc.fields.amountMinor?.integerValue ?? Number.NaN,
-      )
-      // note: current write path omits the field entirely when the
-      // request's note is empty/absent. Normalize both sides to '' so
-      // a "no note both ways" retry doesn't false-positive a mismatch.
-      const existingNote = readString(existingDoc.fields, 'note') ?? ''
-      const requestNote  = req.note ?? ''
-      const matches =
-           existingFromUid     === req.fromUid
-        && existingToUid       === req.toUid
-        && existingAmountMinor === req.amountMinor
-        && existingCurrency    === req.currency
-        && existingSettledBy   === callerUid
-        && existingNote        === requestNote
-      if (!matches) {
-        throw new SettlementValidationError(
-          'settlementId',
-          'settlementId already exists with a different payload (id collision or replay attempt)',
-        )
-      }
-      return {
-        writes: [],
-        result: { settlementId: req.settlementId },
-      }
-    }
-
     const expenses    = expenseReads.map(d => decodeExpenseForDomain(d.fields))
     const settlements = settlementReads.map(d => decodeSettlementForDomain(d.fields))
     const pairwise    = computePairwiseRemaining(expenses, settlements)
@@ -389,10 +592,15 @@ async function doCreate(
     // EPS guard mirrors `computeBalancesFull` step 3's edge threshold
     // (`rest > EPS` to produce a remaining edge); within EPS is
     // effectively zero debt.
-    if (req.amountMinor > remaining + SETTLEMENT_EPS) {
+    //
+    // Note: on FOREIGN this uses the Worker-derived
+    // `canonicalAmountMinor` (= snapshot.convertedAmountMinor), NOT
+    // the source amount. The pairwise table is in trip-currency minor
+    // units, so the gate has to compare apples to apples.
+    if (canonicalAmountMinor > remaining + SETTLEMENT_EPS) {
       throw new SettlementValidationError(
         'amountMinor',
-        `amountMinor (${req.amountMinor}) exceeds remaining debt (${remaining}) from ${req.fromUid} to ${req.toUid}`,
+        `amountMinor (${canonicalAmountMinor}) exceeds remaining debt (${remaining}) from ${req.fromUid} to ${req.toUid}`,
       )
     }
 
@@ -407,26 +615,51 @@ async function doCreate(
       // `z.number().int().positive()` so client-side reads expect an
       // integer-shaped value (Firestore SDK decodes integerValue to
       // number). REST integerValue is a string per proto convention.
-      amountMinor: { integerValue: String(req.amountMinor) },
-      currency:    { stringValue: req.currency },
+      //
+      // On FOREIGN this is the Worker-derived
+      // snapshot.convertedAmountMinor; currency is always the trip
+      // currency (also Worker-derived from ctx, never accepted from
+      // the foreign request).
+      amountMinor: { integerValue: String(canonicalAmountMinor) },
+      currency:    { stringValue: ctx.currency },
       settledBy:   { stringValue: callerUid },
     }
     if (req.note != null && req.note !== '') {
       fields.note = { stringValue: req.note }
     }
+    if (foreign) {
+      // FX group all-or-none: write the full 4-field group together so
+      // SettlementDocSchema.superRefine (src/types/settlement.ts) never
+      // sees a half-populated doc on read. fetchedAt is null here and
+      // REQUEST_TIME-stamped via updateTransforms below.
+      fields.sourceCurrency    = { stringValue:  foreign.sourceCurrency }
+      fields.sourceAmountMinor = { integerValue: String(foreign.sourceAmountMinor) }
+      fields.settledOn         = { stringValue:  foreign.settledOn }
+      fields.fxSnapshot        = encodeFxSnapshot(foreign.fxSnapshot)
+    }
+
     // createdAt via REQUEST_TIME transform -- using CF Workers'
     // Date.now() would drift relative to Firestore server clock and
     // re-order settlements relative to expenses in the chronological
     // replay (buildOrphanReasonMap), flipping orphan reasons between
     // OVERPAYMENT and EXPENSE_DELETED at the boundary. Mirrors the
     // rule's `createdAt == request.time` invariant.
+    const updateTransforms: NonNullable<TxUpdateWrite['updateTransforms']> = [
+      { fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' },
+    ]
+    if (foreign) {
+      // Server-stamp fxSnapshot.fetchedAt at commit time. The field is
+      // written as null in encodeFxSnapshot so the parent map exists
+      // for the nested transform to target; Firestore applies the
+      // transform AFTER the field write within the same Write, so the
+      // final stored value is REQUEST_TIME-stamped.
+      updateTransforms.push({ fieldPath: 'fxSnapshot.fetchedAt', setToServerValue: 'REQUEST_TIME' })
+    }
     const write: TxWrite = {
       document:        docResourceName(projectId, `trips/${req.tripId}/settlements/${req.settlementId}`),
       fields,
       currentDocument: { exists: false },
-      updateTransforms: [
-        { fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' },
-      ],
+      updateTransforms,
     }
     // Lock write paired with the lock read at the top of the tx.
     // Touching the same doc from two concurrent creates forces Firestore
@@ -438,6 +671,76 @@ async function doCreate(
       result: { settlementId: req.settlementId },
     }
   })
+}
+
+// ─── Foreign-mode prep ────────────────────────────────────────────
+
+/** Foreign-mode prep for settlement-create. Mirrors expense-write's
+ *  `prepareForeignCreate` (workers/ocr/src/expense-write.ts) so the
+ *  cross-feature mental model is "Worker is authoritative for the
+ *  source→trip conversion; client never decides the canonical amount".
+ *
+ *  Difference vs expense-foreign: settlement has no items / adjustments
+ *  / splits in the source domain -- it's a single (amount, date) pair
+ *  -- so no per-line materialization, just a flat conversion via the
+ *  snapshot's `convertedAmountMinor`.
+ *
+ *  Steps:
+ *    1. Reject same-currency (use TRIP_CURRENCY path instead). Mirrors
+ *       expense-write's same gate; without it a foreign request with
+ *       sourceCurrency=tripCurrency would silently degrade to no-op
+ *       conversion, persist a degenerate FxSnapshot, and confuse the
+ *       audit trail.
+ *    2. Resolve FxSnapshot via getFxSnapshot (cache or provider).
+ *       FxError bubbles to the route handler → 4xx/5xx per fx-rate.ts's
+ *       FxErrorCode → status mapping (same as expense-write).
+ *    3. Take the snapshot's `convertedAmountMinor` as the canonical
+ *       amountMinor for the rest of the doCreate flow. */
+async function prepareForeignSettlement(
+  req:                SettlementCreateForeignRequest,
+  ctx:                TripCurrencyContext,
+  serviceAccountJson: string,
+): Promise<{
+  canonicalAmountMinor: number
+  foreignArtifacts:     ForeignSettlementArtifacts
+}> {
+  if (req.sourceCurrency === ctx.currency) {
+    throw new SettlementValidationError(
+      'sourceCurrency',
+      `sourceCurrency ${req.sourceCurrency} equals trip currency; use the trip-currency settlement path instead`,
+    )
+  }
+
+  const sourceFractionDigits = currencyFractionDigits(req.sourceCurrency)
+  const targetFractionDigits = currencyFractionDigits(ctx.currency)
+
+  const snapshot = await getFxSnapshot(
+    {
+      requestedDate:     req.settledOn,
+      sourceCurrency:    req.sourceCurrency,
+      tripCurrency:      ctx.currency,
+      sourceAmountMinor: req.sourceAmountMinor,
+      sourceFractionDigits,
+      targetFractionDigits,
+    },
+    serviceAccountJson,
+  )
+  if (!snapshot) {
+    // Defensive: getFxSnapshot returns null only when source === trip,
+    // which we explicitly rejected above. Reaching here means a logic
+    // drift; fail closed rather than persist a partial doc.
+    throw new CascadeError(500, 'unexpected null FxSnapshot for foreign settlement (source !== trip)')
+  }
+
+  return {
+    canonicalAmountMinor: snapshot.convertedAmountMinor,
+    foreignArtifacts: {
+      sourceCurrency:    req.sourceCurrency,
+      sourceAmountMinor: req.sourceAmountMinor,
+      settledOn:         req.settledOn,
+      fxSnapshot:        snapshot,
+    },
+  }
 }
 
 // ─── Endpoint: settlement-delete ──────────────────────────────────
