@@ -43,10 +43,15 @@ export function useCreateExpense(tripId: string) {
     // `receiptPurgedAt: null` mirrors the same invariant for the
     // receipt-purge marker — listener-reconciled rows always carry it,
     // so the optimistic row should too.
-    patch:      (prev, { input, createdBy }) => [
-      { id: tempId(), tripId, memberIds: [createdBy], deletedAt: null, receiptPurgedAt: null, ...auditCreateMock(createdBy), ...input },
-      ...prev,
-    ],
+    patch:      (prev, { input, createdBy }) => {
+      // `mode` is a wire-only discriminator (see ExpensePaymentMode) — strip
+      // it so the optimistic Expense row never carries a non-Expense field.
+      const { mode: _mode, ...expenseFields } = input
+      return [
+        { id: tempId(), tripId, memberIds: [createdBy], deletedAt: null, receiptPurgedAt: null, ...auditCreateMock(createdBy), ...expenseFields },
+        ...prev,
+      ]
+    },
     action:     MUTATION_ACTION.CREATE_EXPENSE,
   })
 }
@@ -69,8 +74,11 @@ export function useUpdateExpense(tripId: string) {
     mutationKey: expenseUpdateMutationKey,
     mutate:      ({ expenseId, updates, uid, attachment, existing }) =>
       updateExpense(tripId, expenseId, updates, { uid, attachment, existingPaths: existing }),
-    patch:       (prev, { expenseId, updates, uid }) =>
-      prev.map(e => e.id === expenseId ? { ...e, ...updates, ...auditUpdateMock(uid) } : e),
+    patch:       (prev, { expenseId, updates, uid }) => {
+      // Same wire-only `mode` strip as the create patch above.
+      const { mode: _mode, ...changes } = updates
+      return prev.map(e => e.id === expenseId ? { ...e, ...changes, ...auditUpdateMock(uid) } : e)
+    },
     action:      MUTATION_ACTION.UPDATE,
   })
 }

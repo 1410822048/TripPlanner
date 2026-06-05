@@ -96,15 +96,64 @@ function assertCompleteForeignSourceGroup(
   }
 }
 
+/**
+ * Resolve the wire mode. The explicit `input.mode` (stamped by
+ * buildExpenseFormResult from the form's foreign-open intent) is the
+ * PRIMARY discriminator; source-field presence is demoted to a
+ * defense-in-depth cross-check so a stale form field can't silently flip
+ * the route (mode=TRIP carrying a leftover sourceCurrency, or mode=FOREIGN
+ * with the source group dropped). When mode is absent — a text-only patch
+ * or a non-form caller — we fall back to deriving from source presence;
+ * that path is the defensive default, NOT the primary contract.
+ */
+function resolveWorkerExpenseMode(
+  declared: unknown,
+  payload:  Record<string, unknown>,
+  source:   'createExpense' | 'updateExpense',
+): WorkerExpenseMode {
+  const hasSourceCurrency = typeof payload.sourceCurrency === 'string'
+  if (declared === undefined) {
+    return hasSourceCurrency ? 'FOREIGN_CURRENCY' : 'TRIP_CURRENCY'
+  }
+  // Runtime enum gate. `mode` is TS-typed on the DTO, but createExpense
+  // never runs CreateExpenseSchema.parse — a cast, a test helper, an old
+  // caller, or corrupt data could smuggle an out-of-enum value. Without
+  // this, e.g. 'FOREIGN' would fail BOTH equality checks below and fall
+  // through to the trip path in workerExpensePayload, silently routing an
+  // invalid discriminator as trip-currency. Reject before any IO.
+  if (declared !== 'TRIP_CURRENCY' && declared !== 'FOREIGN_CURRENCY') {
+    throw new Error(`${source}: mode must be TRIP_CURRENCY or FOREIGN_CURRENCY, got "${String(declared)}"`)
+  }
+  if (declared === 'FOREIGN_CURRENCY' && !hasSourceCurrency) {
+    throw new Error(`${source}: mode=FOREIGN_CURRENCY requires a sourceCurrency on the payload`)
+  }
+  if (declared === 'TRIP_CURRENCY') {
+    const stray = SOURCE_EXPENSE_WIRE_KEYS.find(key => hasDefinedOwn(payload, key))
+    if (stray) {
+      throw new Error(`${source}: mode=TRIP_CURRENCY must not carry source-domain field "${stray}"`)
+    }
+  }
+  return declared
+}
+
 function workerExpensePayload(
   input: CreateExpenseInput | UpdateExpenseInput,
   source: 'createExpense' | 'updateExpense',
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = { ...input }
+  // Read the RAW runtime mode (untyped) before stripping it — the DTO type
+  // claims a valid enum, but only resolveWorkerExpenseMode's runtime gate
+  // actually enforces that.
+  const declaredMode = payload.mode
   delete payload.mode
+  // Defense-in-depth (unchanged): a half-populated foreign group is
+  // rejected up front, before we trust any mode. No-op when there are no
+  // source fields at all (the common trip-currency case).
   assertCompleteForeignSourceGroup(payload, source)
+  // Explicit mode wins; resolve() cross-checks it against source presence.
+  const mode = resolveWorkerExpenseMode(declaredMode, payload, source)
 
-  if (typeof payload.sourceCurrency === 'string') {
+  if (mode === 'FOREIGN_CURRENCY') {
     for (const key of TRIP_PREVIEW_WIRE_KEYS) delete payload[key]
     return withWorkerExpenseMode(payload, 'FOREIGN_CURRENCY')
   }

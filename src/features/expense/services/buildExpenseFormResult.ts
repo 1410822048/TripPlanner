@@ -273,6 +273,7 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
       }
 
       const out: CreateExpenseInput = {
+        mode:              'FOREIGN_CURRENCY',
         title:             title.trim(),
         amountMinor:       converted.amountMinor,
         currency:          tripCurrency,
@@ -386,6 +387,7 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
     )
 
     const out: CreateExpenseInput = {
+      mode:              'FOREIGN_CURRENCY',
       title:             title.trim(),
       amountMinor:       converted.amountMinor,
       currency:          tripCurrency,
@@ -406,6 +408,7 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
 
   // ── 同幣別分支 ──
   const out: CreateExpenseInput = {
+    mode:        'TRIP_CURRENCY',
     title:       title.trim(),
     amountMinor,
     currency,

@@ -132,6 +132,7 @@ function mockReceipt(): { intentIds: string[]; paths: string[]; traceId: string 
 
 function mockExpenseInput() {
   return {
+    mode:        'TRIP_CURRENCY' as const,
     title:       'Lunch',
     amountMinor: 1000,
     currency:    'JPY',
@@ -485,6 +486,7 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
 
     const foreignInput = {
       ...mockExpenseInput(),
+      mode:        'FOREIGN_CURRENCY',
       amountMinor: 1570,
       currency:    'JPY',
       splits:      [{ memberId: 'editor-uid', amountMinor: 1570 }],
@@ -518,6 +520,7 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
 
     const foreignInput = {
       ...mockExpenseInput(),
+      mode:        'FOREIGN_CURRENCY',
       amountMinor: 1500,
       currency:    'JPY',
       splits:      [{ memberId: 'editor-uid', amountMinor: 1500 }],
@@ -570,6 +573,59 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
       uid: 'editor-uid',
       attachment: new File([], 'r.jpg'),
     })).rejects.toThrow(/foreign expense payload requires sourceCurrency/)
+
+    expect(uploadReceiptMock).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  // ── P2: explicit mode is the primary discriminator; source-field
+  // presence is a defense-in-depth cross-check. A declared mode that
+  // disagrees with the payload is rejected BEFORE any Storage / Worker IO.
+
+  it('createExpense rejects mode=TRIP_CURRENCY carrying a stray source field (cross-check)', async () => {
+    const strayTrip = {
+      ...mockExpenseInput(),
+      mode:              'TRIP_CURRENCY' as const,
+      sourceCurrency:    'USD',
+      sourceAmountMinor: 1000,
+      sourceSplits:      [{ memberId: 'editor-uid', sourceAmountMinor: 1000 }],
+    } satisfies CreateExpenseInput
+
+    const { createExpense } = await import('./expenseService')
+    await expect(createExpense('t1', strayTrip, 'editor-uid', new File([], 'r.jpg')))
+      .rejects.toThrow(/mode=TRIP_CURRENCY must not carry source-domain field/)
+
+    expect(uploadReceiptMock).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('createExpense rejects mode=FOREIGN_CURRENCY missing its source group (cross-check)', async () => {
+    const foreignNoSource = {
+      ...mockExpenseInput(),
+      mode: 'FOREIGN_CURRENCY' as const,
+    } satisfies CreateExpenseInput
+
+    const { createExpense } = await import('./expenseService')
+    await expect(createExpense('t1', foreignNoSource, 'editor-uid', new File([], 'r.jpg')))
+      .rejects.toThrow(/mode=FOREIGN_CURRENCY requires a sourceCurrency/)
+
+    expect(uploadReceiptMock).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('createExpense rejects an out-of-enum mode before upload (runtime enum gate)', async () => {
+    // The DTO type says `mode` is a valid enum, but createExpense never
+    // runs CreateExpenseSchema.parse — a cast / legacy caller / corrupt
+    // payload could ship 'FOREIGN' (≠ FOREIGN_CURRENCY). Without the
+    // runtime gate it would silently fall through to the trip path.
+    const badMode = {
+      ...mockExpenseInput(),
+      mode: 'FOREIGN', // not FOREIGN_CURRENCY — invalid discriminator
+    } as unknown as CreateExpenseInput
+
+    const { createExpense } = await import('./expenseService')
+    await expect(createExpense('t1', badMode, 'editor-uid', new File([], 'r.jpg')))
+      .rejects.toThrow(/mode must be TRIP_CURRENCY or FOREIGN_CURRENCY/)
 
     expect(uploadReceiptMock).not.toHaveBeenCalled()
     expect(fetchMock).not.toHaveBeenCalled()

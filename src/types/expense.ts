@@ -373,7 +373,25 @@ export const SourceExpenseSplitSchema = z.object({
 // pre-refine shape (refines don't survive .partial(), and a partial
 // update can't fully enforce the splits-sum check without joining with
 // the persisted doc — leave that invariant to the create form).
+/** Wire-level payment-mode discriminator for the expense submit DTO.
+ *  `buildExpenseFormResult` stamps it from the form's foreign-open intent;
+ *  `expenseService.workerExpensePayload` reads it as the PRIMARY
+ *  trip-vs-foreign router (source-field presence is demoted to a
+ *  defense-in-depth cross-check), and the Worker routes on the same field.
+ *
+ *  NOT persisted — the Worker strips `mode` before the Firestore write; a
+ *  stored doc encodes foreign-ness via `sourceCurrency` presence + the FX
+ *  group, never `mode`. Optimistic-cache rows strip it too (see
+ *  useExpenses) so an `Expense` never carries a stray `mode`. */
+export const EXPENSE_PAYMENT_MODES = ['TRIP_CURRENCY', 'FOREIGN_CURRENCY'] as const
+export type ExpensePaymentMode = typeof EXPENSE_PAYMENT_MODES[number]
+
 const ExpenseShape = z.object({
+  // Explicit submit-DTO mode (see EXPENSE_PAYMENT_MODES). Required on the
+  // create payload — the form always knows trip vs foreign at submit —
+  // and made optional by UpdateExpenseSchema.partial() for text-only
+  // patches. Stripped before persistence; never a stored field.
+  mode:        z.enum(EXPENSE_PAYMENT_MODES),
   title:       z.string().min(1, '請輸入標題').max(100),
   // Persist-side: positive integer minor units. The form layer holds
   // the user-facing decimal string in `amountText` and converts via

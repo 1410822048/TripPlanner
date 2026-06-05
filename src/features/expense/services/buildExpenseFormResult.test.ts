@@ -53,6 +53,7 @@ function expectErr(r: ReturnType<typeof buildExpenseFormResult>) {
 describe('buildExpenseFormResult — trip currency manual', () => {
   it('equal split among included members', () => {
     const input = expectOk(buildExpenseFormResult(baseInput()))
+    expect(input.mode).toBe('TRIP_CURRENCY')
     expect(input.currency).toBe('JPY')
     expect(input.amountMinor).toBe(3000)
     expect(input.splits).toEqual([
@@ -139,6 +140,7 @@ describe('buildExpenseFormResult — foreign currency (USD → JPY @ 100)', () =
       amountText:     '30',          // USD $30.00 = 3000 source cents
       fx:             { ...FX },
     })))
+    expect(input.mode).toBe('FOREIGN_CURRENCY')
     expect(input.currency).toBe('JPY')
     expect(input.amountMinor).toBe(3000)         // 3000 cents × rate100 / 100 = 3000 JPY
     expect(input.sourceCurrency).toBe('USD')
@@ -185,6 +187,7 @@ describe('buildExpenseFormResult — foreign currency (USD → JPY @ 100)', () =
       amountText:     '30',
       fx:             { ...FX },
     })))
+    expect(input.mode).toBe('FOREIGN_CURRENCY')
     expect(input.amountMinor).toBe(3000)
     expect(input.items).toEqual([
       { id: 'i1', name: 'Coffee', amountMinor: 1000, assignees: ['a'] },
