@@ -871,6 +871,37 @@ describe('/trips/{tripId}/expenses soft-delete (phase-2)', () => {
     )
   })
 
+  test('editor cannot soft-delete an expense locked by a settlement', async () => {
+    await seedExpense('e-soft-locked', {
+      settlementLockIds: ['settlement-1'],
+    })
+    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-locked')
+    await assertFails(
+      updateDoc(ref, { deletedAt: serverTimestamp(), updatedBy: EDITOR_UID, updatedAt: serverTimestamp() }),
+    )
+  })
+
+  test('owner can soft-delete an expense locked by a settlement', async () => {
+    await seedExpense('e-soft-locked-owner', {
+      settlementLockIds: ['settlement-1'],
+    })
+    const ref = doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-locked-owner')
+    await assertSucceeds(
+      updateDoc(ref, { deletedAt: serverTimestamp(), updatedBy: OWNER_UID, updatedAt: serverTimestamp() }),
+    )
+  })
+
+  test('editor CAN soft-delete an expense whose settlementLockIds is empty (size()==0 unlocks)', async () => {
+    // After the last referencing settlement is deleted, the Worker leaves
+    // the ref set present-but-empty. Empty ⇔ unlocked, so a normal editor
+    // regains the soft-delete path — locks the `size() == 0` rule branch.
+    await seedExpense('e-soft-unlocked', { settlementLockIds: [] })
+    const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-unlocked')
+    await assertSucceeds(
+      updateDoc(ref, { deletedAt: serverTimestamp(), updatedBy: EDITOR_UID, updatedAt: serverTimestamp() }),
+    )
+  })
+
   test('soft-delete with a backdated Timestamp is rejected (no client backdate)', async () => {
     await seedExpense('e-soft-3b')
     const ref = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'expenses', 'e-soft-3b')

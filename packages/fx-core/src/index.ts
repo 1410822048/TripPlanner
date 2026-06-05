@@ -51,6 +51,16 @@ export interface ConvertMinorInput {
   targetFractionDigits: number
 }
 
+/** Inverse conversion problem statement. `rateDecimal` still means
+ *  `target = source * rate`; this helper estimates the source minor
+ *  amount that best represents an already-known target minor amount. */
+export interface EstimateSourceMinorInput {
+  targetMinor:          number
+  rateDecimal:          string
+  sourceFractionDigits: number
+  targetFractionDigits: number
+}
+
 // ─── Currency fraction-digit registry ─────────────────────────────
 
 /** App-canonical ISO 4217 fraction-digit table. The Worker FX path,
@@ -254,6 +264,111 @@ export function convertMinorHalfEven(args: ConvertMinorInput): number {
     throw new Error(`fx-core: converted result exceeds safe-integer range: ${rounded}`)
   }
   return Number(rounded)
+}
+
+/** Estimate the LARGEST non-negative source minor amount whose forward
+ *  conversion is ≤ `targetMinor`. Inverse of `convertMinorHalfEven` for
+ *  UI suggestions where the seed must NOT overshoot a hard cap.
+ *
+ *  The motivating case is settlement FX: the debt engine reports a
+ *  remaining JPY 550 between two members, the receiver picks "TWD",
+ *  and the form pre-fills a TWD amount. A naive nearest-integer inverse
+ *  could round UP to a TWD value whose JPY forward is 552 — the Worker
+ *  recompute rejects with OVERPAY, the optimistic patch rolls back, and
+ *  the receiver sees a confusing toast for a value they never edited.
+ *  At-most-target guarantees the forward conversion fits inside the cap.
+ *
+ *  Worked example (the failure mode this exists to prevent):
+ *    targetMinor=550, rateDecimal='4.6', sf=0, tf=0
+ *    Naive inverse rounds → 120 TWD; forward(120) = 552 (OVERPAY).
+ *    At-most policy       → 119 TWD; forward(119) = 547 (within).
+ *
+ *  Refunds are not in scope — settlement amounts are non-negative by
+ *  domain. `targetMinor < 0` throws to surface caller bugs early.
+ *  `targetMinor === 0` returns 0 (degenerate). If the rate is so
+ *  aggressive even 1 source unit converts above target, returns 0.
+ *
+ *  Implementation: BigInt floor of the real-valued inverse seeds the
+ *  search at `lo`; from there we exponentially double `hi` until
+ *  `forward(hi) > targetMinor`, then binary-search the boundary.
+ *  Forward conversion is monotone non-decreasing in `candidate`, so
+ *  this returns the EXACT largest safe candidate — not an approximation
+ *  near the floor. A fixed-radius scan would underfill on low rates
+ *  (e.g. rate ≈ 0.001 puts the answer ~500 minor units above the floor
+ *  because the half-even rounding plateau spans that wide). */
+export function estimateSourceMinorAtMostTargetHalfEven(args: EstimateSourceMinorInput): number {
+  const { targetMinor, rateDecimal, sourceFractionDigits, targetFractionDigits } = args
+  if (!Number.isInteger(targetMinor)) {
+    throw new Error(`fx-core: targetMinor must be integer, got ${targetMinor}`)
+  }
+  if (targetMinor < 0) {
+    throw new Error(`fx-core: estimateSourceMinorAtMostTargetHalfEven requires non-negative targetMinor, got ${targetMinor}`)
+  }
+  if (!Number.isInteger(sourceFractionDigits) || sourceFractionDigits < 0) {
+    throw new Error(`fx-core: sourceFractionDigits must be non-negative integer`)
+  }
+  if (!Number.isInteger(targetFractionDigits) || targetFractionDigits < 0) {
+    throw new Error(`fx-core: targetFractionDigits must be non-negative integer`)
+  }
+
+  if (targetMinor === 0) return 0
+
+  // parseDecimalRate throws on non-canonical input; rate-shape errors
+  // surface here rather than inside the inner forward loop.
+  const { mantissa, scale } = parseDecimalRate(rateDecimal)
+
+  const forward = (candidate: number): number =>
+    convertMinorHalfEven({
+      sourceMinor:          candidate,
+      rateDecimal,
+      sourceFractionDigits,
+      targetFractionDigits,
+    })
+
+  // BigInt floor of the exact real-valued inverse — the algebra: we
+  // want largest x with round_half_even(x * r * 10^(tf-sf)) <= target,
+  // where r = mantissa / 10^scale. The real-valued inverse x* satisfies
+  // x* * r * 10^(tf-sf) == target, so x* = target * 10^(sf+scale)
+  // / (mantissa * 10^tf). Flooring gives a value whose forward fits
+  // (since floored * r * 10^(tf-sf) <= target exactly), making it a
+  // safe `lo` to anchor the binary search.
+  const numerator =
+    BigInt(targetMinor) * (10n ** BigInt(sourceFractionDigits + scale))
+  const denominator =
+    mantissa * (10n ** BigInt(targetFractionDigits))
+  const flooredBig = numerator / denominator
+  if (flooredBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(`fx-core: at-most inverse seed exceeds safe-integer range: ${flooredBig}`)
+  }
+  const floored = Number(flooredBig)
+
+  // Exponential expansion to bracket the answer. Doubling keeps the
+  // bracketing cost O(log range) even when the rounding plateau is
+  // wide (low rates: 0.001 plateau ≈ 500 minor units, 1e-6 plateau
+  // ≈ 500_000). Pre-double guard prevents `hi` from silently exceeding
+  // safe-integer range and corrupting search arithmetic.
+  let lo = floored
+  let hi = floored + 1
+  while (forward(hi) <= targetMinor) {
+    if (hi > Number.MAX_SAFE_INTEGER / 2) {
+      throw new Error(`fx-core: at-most inverse upper bound exceeds safe-integer range`)
+    }
+    lo = hi
+    hi = hi * 2
+  }
+
+  // Binary search [lo, hi). Invariant maintained by the body:
+  //   forward(lo) <= targetMinor  AND  forward(hi) > targetMinor.
+  // Loop terminates when lo + 1 == hi → lo IS the largest safe.
+  while (lo + 1 < hi) {
+    const mid = Math.floor((lo + hi) / 2)
+    if (forward(mid) <= targetMinor) {
+      lo = mid
+    } else {
+      hi = mid
+    }
+  }
+  return lo
 }
 
 // ─── Public residual allocation ───────────────────────────────────

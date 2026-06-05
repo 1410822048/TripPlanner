@@ -30,6 +30,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   materializeExpenseSplits,
+  materializeExpenseSplitContributions,
   canonicalizeSplits,
   adjustmentSign,
   convertSourceLinesToTarget,
@@ -310,6 +311,42 @@ describe('materializeExpenseSplits — multi-adjustment ordering', () => {
     expect(out).toEqual([
       { memberId: 'alice', amountMinor: 400 },
       { memberId: 'bob',   amountMinor: 800 },
+    ])
+  })
+})
+
+describe('materializeExpenseSplitContributions', () => {
+  it('keeps item identity before member aggregation', () => {
+    const out = materializeExpenseSplitContributions(input({
+      items: [
+        { id: 'i1', amountMinor: 100, assignees: ['alice', 'bob'] },
+        { id: 'i2', amountMinor: 90,  assignees: ['alice'] },
+      ],
+    }))
+    expect(out).toEqual([
+      { itemId: 'i1', memberId: 'alice', amountMinor: 50 },
+      { itemId: 'i1', memberId: 'bob',   amountMinor: 50 },
+      { itemId: 'i2', memberId: 'alice', amountMinor: 90 },
+    ])
+  })
+
+  it('uses the same adjustment math as materializeExpenseSplits', () => {
+    const fixture = input({
+      items: [
+        { id: 'i1', amountMinor: 800, assignees: ['alice'] },
+        { id: 'i2', amountMinor: 200, assignees: ['bob'] },
+      ],
+      adjustments: [
+        { id: 'a1', kind: 'DISCOUNT', scope: 'EXPENSE', amountMinor: 100 },
+      ],
+    })
+    expect(materializeExpenseSplitContributions(fixture)).toEqual([
+      { itemId: 'i1', memberId: 'alice', amountMinor: 720 },
+      { itemId: 'i2', memberId: 'bob',   amountMinor: 180 },
+    ])
+    expect(materializeExpenseSplits(fixture)).toEqual([
+      { memberId: 'alice', amountMinor: 720 },
+      { memberId: 'bob',   amountMinor: 180 },
     ])
   })
 })

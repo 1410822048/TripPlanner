@@ -105,10 +105,17 @@ export interface TxReadDoc {
 
 /** Field-level filter for runQuery. `op` mirrors Firestore REST
  *  `FieldFilter.op` enum subset we actually need. `value` is a single
- *  FsValue, encoded by the caller (e.g. `{ stringValue: 'JPY' }`). */
+ *  FsValue, encoded by the caller (e.g. `{ stringValue: 'JPY' }`).
+ *
+ *  `IN` matches when the field equals any element of an ARRAY value:
+ *  the caller MUST pass `value: { arrayValue: { values: [...] } }`
+ *  (≤30 elements per Firestore). `IN` on a single field uses the
+ *  automatic single-field index, so no composite index is needed --
+ *  settlement-write relies on this to scope its in-tx reads to the
+ *  settling pair without a deploy-time index dependency. */
 export interface TxFieldFilter {
   fieldPath: string
-  op:        'EQUAL' | 'LESS_THAN' | 'LESS_THAN_OR_EQUAL' | 'GREATER_THAN' | 'GREATER_THAN_OR_EQUAL'
+  op:        'EQUAL' | 'LESS_THAN' | 'LESS_THAN_OR_EQUAL' | 'GREATER_THAN' | 'GREATER_THAN_OR_EQUAL' | 'IN' | 'ARRAY_CONTAINS'
   value:     FsValue
 }
 
@@ -208,6 +215,28 @@ const MAX_RETRIES = 5
 const BACKOFF_BASE_MS = 50
 const BACKOFF_CAP_MS  = 2_000
 
+/** Per-RPC wall-clock cap on each Firestore REST call (begin / read /
+ *  runQuery / commit). Under heavy document contention a single commit
+ *  can sit open for many seconds before Firestore returns ABORTED; left
+ *  uncapped, ~5 such commits blow past the client's 30s write budget
+ *  (workerBase.WORKER_FETCH_TIMEOUT_MS) and the client aborts into an
+ *  ambiguous "did not receive response". Capping each call lets the
+ *  retry loop cycle and the total-deadline guard fire.
+ *
+ *  Timeout handling is PHASE-AWARE (see runFirestoreTransaction):
+ *  begin / read / runQuery timeouts are pre-commit (nothing written) →
+ *  retry-eligible; a COMMIT timeout is AMBIGUOUS (the write may have
+ *  applied) → surfaced as TxCommitAmbiguous and NEVER blind-retried. */
+const TX_RPC_TIMEOUT_MS = 9_000
+
+/** Total wall-clock budget for the whole retry loop. We bail well under
+ *  the client's 30s write timeout so the Worker returns a DEFINITIVE
+ *  (retry-eligible) result BEFORE the client gives up -- the client
+ *  then surfaces a "still confirming" state instead of a hard failure.
+ *  Date.now() advances across the fetch awaits in the CF Workers
+ *  runtime, so elapsed measured here is real wall-clock. */
+const TX_TOTAL_DEADLINE_MS = 20_000
+
 function backoffDelay(attempt: number): number {
   const exp = BACKOFF_BASE_MS * 2 ** attempt
   const jitter = Math.random() * 50
@@ -239,63 +268,72 @@ export async function runFirestoreTransaction<T>(
   body:        (tx: TxContext) => Promise<TxResult<T>>,
 ): Promise<T> {
   let lastError: unknown
+  const startMs = Date.now()
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    let txId: string
     try {
-      txId = await beginTransaction(accessToken, projectId)
-    } catch (e) {
-      if (isUnauthorized(e)) {
-        invalidateAdminToken()
-        throw e
-      }
-      throw e
-    }
-
-    let bodyResult: TxResult<T>
-    try {
+      const txId = await beginTransaction(accessToken, projectId)
       const ctx: TxContext = {
         get:      path  => readDocInTransaction (accessToken, projectId, path,  txId),
         runQuery: query => runQueryInTransaction(accessToken, projectId, query, txId),
       }
-      bodyResult = await body(ctx)
-    } catch (e) {
-      // Body threw -- discard the tx (no explicit rollback RPC
-      // needed; uncommitted transactions are dropped server-side
-      // after their deadline). Re-raise.
-      throw e
-    }
-
-    try {
+      // The body only READS + computes + returns writes -- the actual
+      // writes land in commitTransaction below. So re-running the body
+      // on a retry is always safe: nothing has been written yet.
+      const bodyResult = await body(ctx)
       await commitTransaction(accessToken, projectId, txId, bodyResult.writes)
       return bodyResult.result
     } catch (e) {
       lastError = e
-      if (isAborted(e)) {
-        // Conflict -- one of the docs we read was modified between
-        // read and commit. Wait a jittered backoff so a contender can
-        // commit before we re-read, then retry the whole body with a
-        // fresh tx. Without the sleep all 5 attempts burn through in
-        // ms and the user sees a spurious "exhausted retries" error.
-        // Log to Worker console so `wrangler tail` surfaces contention
-        // patterns -- without this, retry behaviour was a silent black
-        // box and we couldn't tell whether ABORTED was actually firing
-        // in production.
-        console.warn(`[firestore-tx] ABORTED attempt ${attempt + 1}/${MAX_RETRIES}: ${(e as Error)?.message ?? e}`)
-        if (attempt < MAX_RETRIES - 1) {
-          await sleep(backoffDelay(attempt))
-        }
-        continue
-      }
+
+      // Commit response lost to the per-RPC timeout -> AMBIGUOUS. The
+      // write MAY have applied server-side. We deliberately do NOT
+      // blind-retry: a create-only caller (expense / booking / wish
+      // create with currentDocument.exists=false, or intent
+      // consumption) would see its own committed doc / used intents on
+      // the second pass and reject 409 -- turning a SUCCESSFUL write
+      // into a user-visible failure (the exact false-failure class this
+      // whole change set is fixing). Propagate so the route returns a
+      // 5xx the client classifies as WorkerAmbiguous, keeping optimistic
+      // state for the realtime listener to reconcile. (settlement-
+      // create's id-probe short-circuit makes a *client* retry safe, but
+      // that is the client's call, not a blind tx re-run here.)
+      if (e instanceof TxCommitAmbiguous) throw e
+
+      // Expired admin token -- refresh and let the caller retry.
       if (isUnauthorized(e)) {
         invalidateAdminToken()
         throw e
       }
+
+      // Retry-eligible, all DEFINITIVELY pre-commit (nothing written):
+      //   - commit conflict (409 ABORTED / 412 FAILED_PRECONDITION):
+      //     Firestore rejected the commit, so no write landed.
+      //   - begin / read / runQuery RPC timeout: the failure is before
+      //     the commit RPC, so no write landed either.
+      // Both are safe to re-run from a fresh tx. Bounded by BOTH the
+      // attempt cap AND a wall-clock deadline so the Worker surfaces
+      // TxRetryExhausted (5xx) BEFORE the client's 30s write timeout
+      // degrades into an ambiguous "did not receive response".
+      if (isAborted(e) || isRpcTimeout(e)) {
+        // Log to Worker console so `wrangler tail` surfaces contention
+        // patterns -- retry behaviour was otherwise a silent black box.
+        console.warn(`[firestore-tx] ${isRpcTimeout(e) ? 'RPC_TIMEOUT' : 'ABORTED'} attempt ${attempt + 1}/${MAX_RETRIES}: ${(e as Error)?.message ?? e}`)
+        const elapsed = Date.now() - startMs
+        if (attempt < MAX_RETRIES - 1 && elapsed < TX_TOTAL_DEADLINE_MS) {
+          await sleep(backoffDelay(attempt))
+          continue
+        }
+        throw new TxRetryExhausted(attempt + 1, e)
+      }
+
+      // Anything else (body validation throw, CascadeError, non-conflict
+      // commit 5xx, genuine network failure) is not retry-eligible.
       throw e
     }
   }
-  // Retry exhausted -- pack the attempt count into the message so
-  // upstream Sentry / error logs can group on "max-retry" separately
-  // from one-shot transaction failures.
+  // Defensive: the in-loop deadline/count guard is the normal exit for
+  // retry exhaustion; this covers the theoretically-unreachable
+  // fall-through so the function never returns undefined.
   throw new TxRetryExhausted(MAX_RETRIES, lastError)
 }
 
@@ -314,6 +352,24 @@ export class TxRetryExhausted extends Error {
   }
 }
 
+/** A COMMIT RPC that overran its per-call timeout. Distinct from every
+ *  other tx failure because it is AMBIGUOUS: Firestore may have applied
+ *  the write before the response was lost. runFirestoreTransaction never
+ *  blind-retries this (a create-only caller would 409 on its own
+ *  already-applied doc / used intents); it propagates to the route as a
+ *  generic 5xx, which the client classifies as WorkerAmbiguous and
+ *  reconciles via the realtime listener instead of rolling back. Callers
+ *  with genuine same-id replay semantics (settlement-create) can retry
+ *  at the application layer, but that is an explicit caller decision. */
+export class TxCommitAmbiguous extends Error {
+  readonly cause: unknown
+  constructor(cause: unknown) {
+    super('commit response lost (timeout); the write may or may not have applied')
+    this.name  = 'TxCommitAmbiguous'
+    this.cause = cause
+  }
+}
+
 // ─── REST primitives ──────────────────────────────────────────────
 
 async function beginTransaction(accessToken: string, projectId: string): Promise<string> {
@@ -326,6 +382,7 @@ async function beginTransaction(accessToken: string, projectId: string): Promise
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ options: { readWrite: {} } }),
+    signal: AbortSignal.timeout(TX_RPC_TIMEOUT_MS),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
@@ -358,6 +415,7 @@ async function readDocInTransaction(
       documents: [fullName],
       transaction: txId,
     }),
+    signal: AbortSignal.timeout(TX_RPC_TIMEOUT_MS),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
@@ -435,6 +493,7 @@ async function runQueryInTransaction(
     // the open tx so their snapshots feed the commit-time conflict
     // check -- same protocol as :batchGet's `transaction` field.
     body: JSON.stringify({ structuredQuery, transaction: txId }),
+    signal: AbortSignal.timeout(TX_RPC_TIMEOUT_MS),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
@@ -490,18 +549,32 @@ async function commitTransaction(
           : {}),
     }
   })
-  const res = await fetch(url, {
-    cache: 'no-store',
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      transaction: txId,
-      writes:      restWrites,
-    }),
-  })
+  let res: Response
+  try {
+    res = await fetch(url, {
+      cache: 'no-store',
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        transaction: txId,
+        writes:      restWrites,
+      }),
+      signal: AbortSignal.timeout(TX_RPC_TIMEOUT_MS),
+    })
+  } catch (e) {
+    // A commit that overran the per-RPC timeout is AMBIGUOUS -- Firestore
+    // may have applied the write before we stopped waiting for the
+    // response. Tag it so the wrapper never blind-retries (see the
+    // TxCommitAmbiguous handling in runFirestoreTransaction). Other
+    // fetch rejections (genuine network failure) propagate as-is: they
+    // predate this timeout, are also non-retried, and surface as a
+    // generic 5xx -> client ambiguous, which is the original behaviour.
+    if (isRpcTimeout(e)) throw new TxCommitAmbiguous(e)
+    throw e
+  }
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
     throw new TxRestError(res.status, `commit → ${res.status}: ${detail.slice(0, 300)}`)
@@ -532,6 +605,16 @@ function isAborted(e: unknown): boolean {
 
 function isUnauthorized(e: unknown): boolean {
   return e instanceof TxRestError && e.status === 401
+}
+
+/** A Firestore REST call that overran its per-RPC AbortSignal.timeout.
+ *  `AbortSignal.timeout` rejects fetch with a DOMException named
+ *  'TimeoutError'; some runtimes surface 'AbortError'. We treat either
+ *  as a retry-eligible conflict (see the runFirestoreTransaction commit
+ *  catch) -- a stuck commit under contention should cycle, not hard-fail. */
+function isRpcTimeout(e: unknown): boolean {
+  const name = (e as { name?: string } | undefined)?.name
+  return name === 'TimeoutError' || name === 'AbortError'
 }
 
 // ─── Convenience: doc name builder ────────────────────────────────

@@ -32,6 +32,10 @@ export const useSettlements = createRealtimeListHook<SettlementRecord>({
   initialFetch:    getSettlementsByTrip,
   subscribe:       (tripId, _uid, onData, onError) => subscribeToSettlements(tripId, onData, onError),
   source:          'useSettlements',
+  // Worker-authoritative delete → opt into the optimistic-delete overlay so
+  // a lagging snapshot can't flicker a just-deleted record back in. See
+  // useDeleteSettlement below + utils/listTombstones.
+  tombstoneIdOf:   s => s.id,
 })
 
 export function useCreateSettlement(tripId: string) {
@@ -47,21 +51,60 @@ export function useCreateSettlement(tripId: string) {
     // `settledBy` mirrors the Worker's token-derived value. Under the UI
     // invariant (only the receiver renders the 済み button), the caller
     // IS toUid, so `settledBy: vars.toUid` matches what the server will
-    // write. amountMinor arrives already as integer minor units (the
-    // form parses via parseMoneyToMinor before mutating), matching the
-    // Worker's z.number().int() schema.
+    // write.
+    //
+    // Phase 4.1 rearchitecture: vars carry NO client-supplied amount on
+    // the wire. The page mints `vars.optimistic.amountMinor =
+    // suggestion.amountMinor` (= pair-remaining) for BOTH modes —
+    // exactly what the Worker will write, since amountMinor ≡ remaining
+    // is the ledger truth. Foreign mode additionally derives
+    // `optimistic.sourceAmountMinor` via `useFxPreview` for the source-
+    // side display only (Worker re-derives authoritatively).
+    //
+    // The realtime listener swap is atomic and amountMinor matches by
+    // construction; foreign sourceAmountMinor may shift by 1-2 minor
+    // units if Worker's fresh FX rate differs from the cached client
+    // rate (~100-300ms typical window).
+    //
+    // fxSnapshot is intentionally omitted from the optimistic row: the
+    // SettlementDocSchema superRefine requires all-or-none FX group on
+    // *parse*, but the TanStack cache doesn't re-validate writes, and
+    // computeBalancesFull only reads amountMinor / currency / from /
+    // to / createdAt — the source-side display fields are sufficient
+    // for the history row's optimistic render.
     patch: (prev, vars) => [
-      {
-        id:          vars.settlementId,
-        tripId,
-        fromUid:     vars.fromUid,
-        toUid:       vars.toUid,
-        amountMinor: vars.amountMinor,
-        currency:    vars.currency,
-        settledBy:  vars.toUid,
-        ...(vars.note ? { note: vars.note } : {}),
-        createdAt:   mockTimestampNow(),
-      },
+      vars.mode === 'TRIP_CURRENCY'
+        ? {
+            id:          vars.settlementId,
+            tripId,
+            fromUid:     vars.fromUid,
+            toUid:       vars.toUid,
+            amountMinor: vars.optimistic.amountMinor,
+            currency:    vars.optimistic.currency,
+            settledBy:   vars.toUid,
+            // Conservative pending lock lineage so ExpensePage's readonly
+            // union locks the source expenses during the optimistic window
+            // (before the Worker writes settlementLockIds + the expense
+            // listener fires). Listener swap replaces it with the exact set.
+            ...(vars.pendingAppliedExpenseIds ? { appliedExpenseIds: vars.pendingAppliedExpenseIds } : {}),
+            ...(vars.note ? { note: vars.note } : {}),
+            createdAt:   mockTimestampNow(),
+          }
+        : {
+            id:                vars.settlementId,
+            tripId,
+            fromUid:           vars.fromUid,
+            toUid:             vars.toUid,
+            amountMinor:       vars.optimistic.amountMinor,
+            currency:          vars.optimistic.currency,
+            settledBy:         vars.toUid,
+            sourceCurrency:    vars.sourceCurrency,
+            sourceAmountMinor: vars.optimistic.sourceAmountMinor,
+            settledOn:         vars.settledOn,
+            ...(vars.pendingAppliedExpenseIds ? { appliedExpenseIds: vars.pendingAppliedExpenseIds } : {}),
+            ...(vars.note ? { note: vars.note } : {}),
+            createdAt:         mockTimestampNow(),
+          },
       ...prev,
     ],
     action: MUTATION_ACTION.RECORD_SETTLEMENT,
@@ -73,13 +116,22 @@ export function useDeleteSettlement(tripId: string) {
     tripId,
     keyFactory: settlementKeys.all,
     mutate:     ({ settlementId }) => deleteSettlement(tripId, settlementId),
-    // Optimistic remove: 「清算済み記録」row vanishes instantly and the
-    // matching 「支払い提案」row reappears with its green 済み button
-    // (computeBalancesFull recomputes from the filtered list — applied
-    // debt drops, remaining debt comes back, suggestion re-emerges).
-    // Worker rejection (403 non-recorder, 410 already gone) rolls back
+    // Optimistic remove via the tombstone OVERLAY (not a raw-cache patch):
+    // 「清算済み記録」row vanishes instantly and the matching 「支払い提案」
+    // row reappears with its green 済み button (computeBalancesFull
+    // recomputes from the select-filtered list — applied debt drops,
+    // remaining debt comes back, suggestion re-emerges). Crucially the raw
+    // cache is NOT shrunk, so a Firestore snapshot still mid-flight at
+    // delete time can't overwrite the removal and flicker the row back; the
+    // listener prunes the tombstone once the server confirms the delete.
+    // Worker rejection (403 non-recorder, 409 stale) removes the tombstone
     // via useTripListMutation's onError, restoring the row.
-    patch: (prev, { settlementId }) => prev.filter(s => s.id !== settlementId),
+    tombstone: ({ settlementId }) => [settlementId],
+    // settlement-delete is Worker-IDEMPOTENT (missing doc → ok, see
+    // settlement-write.ts), so an ambiguous failure (lost response / 5xx) is
+    // safe to retry once in the background before the 3s reconcile fallback.
+    // Opt-in here ONLY — never on non-idempotent create/update.
+    retryAmbiguous: ({ settlementId }) => deleteSettlement(tripId, settlementId),
     action: MUTATION_ACTION.CANCEL_SETTLEMENT,
   })
 }

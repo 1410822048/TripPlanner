@@ -14,6 +14,10 @@ export default defineConfig({
     // here because they don't touch DOM globals. Keeps a single config
     // instead of splitting projects, which is overkill at this scale.
     environment: 'jsdom',
+    // RTL DOM cleanup after each test (see vitest.setup.ts). Required because
+    // we don't set `globals: true`, so RTL's auto-cleanup wouldn't register —
+    // without it render() output accumulates across tests in document.body.
+    setupFiles: ['./vitest.setup.ts'],
     // Glob covers .ts (utility tests) AND .tsx (component / hook tests).
     // The previous .ts-only glob silently dropped any future *.test.tsx
     // file, which is the scariest kind of test gap — passes by not running.

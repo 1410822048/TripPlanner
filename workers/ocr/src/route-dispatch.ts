@@ -19,8 +19,9 @@
 // point each route diverges.
 
 import type { z } from 'zod'
-import { CascadeError } from './cascade'
-import { FxError }      from './fx-rate'
+import { CascadeError }     from './cascade'
+import { FxError }          from './fx-rate'
+import { TxRetryExhausted } from './firestore-tx'
 
 /** Truncated uid for logs. 6-char prefix + ellipsis is enough to
  *  correlate abuse without retaining a fully-identifying token. */
@@ -76,6 +77,13 @@ export interface DomainErrorMapped {
   log:    string
   body:   unknown
   status: number
+  /** True when this error is DEFINITIVELY pre-commit (thrown before any
+   *  Firestore write). The dispatcher stamps `precommit: true` into the
+   *  JSON body so the client can roll back optimistic state even on a 5xx
+   *  status (e.g. FxError 502 = provider down before the write) instead of
+   *  treating every 5xx as ambiguous. Omit/false for errors that could be
+   *  mid-write. */
+  precommit?: boolean
 }
 
 /** Catcher for the three entity ValidationError classes
@@ -107,6 +115,10 @@ export function fxErrorCatcher(): (e: unknown) => DomainErrorMapped | null {
         log:    `fx-error: ${e.code} ${e.message}`,
         body:   { error: e.message, code: e.code },
         status: e.status,
+        // FX is resolved BEFORE any settlement/expense write, so an FxError
+        // (provider 502, future-date 400) is always definitively pre-commit
+        // → client rolls back instead of keeping a phantom row on the 502.
+        precommit: true,
       }
     : null
 }
@@ -156,6 +168,16 @@ export async function handleJsonRoute<TData, TResult>(args: {
    *  domain error class (upload-intents / trip-cascade)
    *  omit this and fall through to the shared CascadeError catch. */
   catchDomain?:    (e: unknown) => DomainErrorMapped | null
+  /** Set true for endpoints whose ENTIRE body runs inside a single
+   *  runFirestoreTransaction, so every CascadeError they throw is
+   *  definitively pre-commit (the commit step throws TxRestError /
+   *  TxCommitAmbiguous / TxRetryExhausted, never CascadeError). The
+   *  dispatcher then stamps `precommit: true` onto CascadeError responses
+   *  so a 5xx (e.g. read-cap 503) rolls the optimistic row back. Leave
+   *  unset for /cascade-trip-delete, whose CascadeError CAN fire
+   *  mid-delete → genuinely ambiguous (partial writes), must stay
+   *  client-WorkerAmbiguous. */
+  cascadePrecommit?: boolean
 }): Promise<Response> {
   const trace = traceSuffix(args.traceId)
   const parsed = args.schema.safeParse(args.body)
@@ -171,11 +193,34 @@ export async function handleJsonRoute<TData, TResult>(args: {
     const domain = args.catchDomain?.(e) ?? null
     if (domain) {
       console.warn(`[${args.endpoint}] ${domain.log}${trace}`)
-      return json(domain.body, domain.status, args.cors)
+      const body = domain.precommit
+        ? { ...(domain.body as Record<string, unknown>), precommit: true }
+        : domain.body
+      return json(body, domain.status, args.cors)
+    }
+    // TxRetryExhausted is DEFINITIVE: the tx wrapper retried only
+    // pre-commit failures (commit ABORTED/412, or a begin/read/runQuery
+    // timeout) and gave up — so NOTHING was written. Map to 409, a
+    // DEFINITIVE_REJECT status on the client (workerBase.ts), so the
+    // optimistic row ROLLS BACK instead of lingering as a phantom that
+    // the realtime listener never replaces. Deliberately NOT caught:
+    // TxCommitAmbiguous (commit RPC timeout) — it falls through to the
+    // generic 500 below → client WorkerAmbiguous → keep optimistic +
+    // reconcile via listener, because that commit may have applied.
+    if (e instanceof TxRetryExhausted) {
+      console.warn(`[${args.endpoint}] tx-retry-exhausted: ${e.message}${trace}`)
+      return json(
+        { error: '混雑のため保存できませんでした。もう一度お試しください', code: 'TX_RETRY_EXHAUSTED' },
+        409,
+        args.cors,
+      )
     }
     if (e instanceof CascadeError) {
       console.warn(`[${args.endpoint}] ${e.status} ${e.message}${trace}`)
-      return json({ error: e.message }, e.status, args.cors)
+      const body = args.cascadePrecommit
+        ? { error: e.message, precommit: true }
+        : { error: e.message }
+      return json(body, e.status, args.cors)
     }
     console.error(`[${args.endpoint}] internal error: ${(e as Error).message}${trace}`)
     return json({ error: 'Internal error' }, 500, args.cors)

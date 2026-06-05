@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
+  moneyErrorMessage,
   normalizeMoneyTextForCurrency,
+  parsePositiveMoneyToMinorResult,
   safeReparseMoney,
   splitEqually,
   splitSummary,
@@ -161,6 +163,35 @@ describe('safeReparseMoney', () => {
     // via kind, items + total are positive. Max(0, …) enforces that.
     expect(safeReparseMoney('-1',     'USD')).toBe(0)
     expect(safeReparseMoney('-99.99', 'USD')).toBe(0)
+  })
+})
+
+describe('parsePositiveMoneyToMinorResult / moneyErrorMessage', () => {
+  it('keeps parser reasons instead of collapsing them into empty input', () => {
+    expect(parsePositiveMoneyToMinorResult('12.34', 'JPY')).toEqual({
+      ok: false,
+      reason: 'DECIMALS_FORBIDDEN',
+    })
+    expect(moneyErrorMessage('DECIMALS_FORBIDDEN', 'JPY')).toBe('JPY は小数を入力できません')
+  })
+
+  it('treats zero and negative totals as UI-level non-positive errors', () => {
+    expect(parsePositiveMoneyToMinorResult('0', 'USD')).toEqual({
+      ok: false,
+      reason: 'NON_POSITIVE',
+    })
+    expect(parsePositiveMoneyToMinorResult('-1', 'USD')).toEqual({
+      ok: false,
+      reason: 'NON_POSITIVE',
+    })
+    expect(moneyErrorMessage('NON_POSITIVE', 'USD')).toBe('金額は0より大きく入力してください')
+  })
+
+  it('returns positive minor units for valid input', () => {
+    expect(parsePositiveMoneyToMinorResult('12.34', 'USD')).toEqual({
+      ok: true,
+      value: 1234,
+    })
   })
 })
 

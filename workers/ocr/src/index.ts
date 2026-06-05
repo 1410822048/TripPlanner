@@ -59,6 +59,7 @@
 import { verifyFirebaseToken, extractBearerToken } from './auth'
 import { extractReceiptItems, GeminiError }       from './gemini'
 import { OcrRequestSchema }                       from './schema'
+import { expenseReceiptOcr, ExpenseReceiptOcrRequestSchema } from './expense-receipt-ocr'
 import { cascadeTripDelete, TripDeleteRequestSchema } from './trip-cascade'
 import { purgeExpiredReceipts }                   from './receipt-purge'
 import { drainOrphanPurges }                      from './orphan-purge'
@@ -220,6 +221,7 @@ export default {
 
     // ─── Routing ──────────────────────────────────────────────────────
     const isOcr           = url.pathname === '/ocr'                  && request.method === 'POST'
+    const isExpenseReceiptOcr = url.pathname === '/expense-receipt-ocr' && request.method === 'POST'
     const isTripCascade   = url.pathname === '/cascade-trip-delete'  && request.method === 'POST'
     const isExpenseCreate = url.pathname === '/expense-create'       && request.method === 'POST'
     const isExpenseUpdate = url.pathname === '/expense-update'       && request.method === 'POST'
@@ -233,7 +235,7 @@ export default {
     const isInviteRedeem     = url.pathname === '/invite-redeem'     && request.method === 'POST'
     const isMemberRemove     = url.pathname === '/member-remove'     && request.method === 'POST'
     const isMemberRoleUpdate = url.pathname === '/member-role-update' && request.method === 'POST'
-    if (!isOcr && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents && !isWishCreate && !isWishUpdate && !isBookingCreate && !isBookingUpdate && !isSettlementCreate && !isSettlementDelete && !isInviteRedeem && !isMemberRemove && !isMemberRoleUpdate) {
+    if (!isOcr && !isExpenseReceiptOcr && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents && !isWishCreate && !isWishUpdate && !isBookingCreate && !isBookingUpdate && !isSettlementCreate && !isSettlementDelete && !isInviteRedeem && !isMemberRemove && !isMemberRoleUpdate) {
       return json({ error: 'Not found' }, 404, cors)
     }
 
@@ -287,6 +289,11 @@ export default {
     //     is the cluster ceiling.
     const isExpenseWrite    = isExpenseCreate    || isExpenseUpdate
     const isSettlementWrite = isSettlementCreate || isSettlementDelete
+    // Cost class, NOT route identity: /expense-receipt-ocr is the same
+    // Gemini-call cost shape as /ocr, so it shares the OCR rate limiter +
+    // scope + global cap. Kept separate from `isOcr` so the new route isn't
+    // swallowed by the cascade default branch below.
+    const isOcrCostRoute    = isOcr || isExpenseReceiptOcr
     // /upload-intents reuses EXPENSE_RATE_LIMITER for this commit --
     // the realistic workload (intent request before each upload)
     // matches expense create/update cadence (30/min). Adding a
@@ -299,7 +306,7 @@ export default {
     // and the existing 10/min L2 cap is comfortably above realistic user
     // behavior (one invite accept per visit, owner batch-kicks measured in
     // single digits per session).
-    const limiter = isOcr             ? env.OCR_RATE_LIMITER
+    const limiter = isOcrCostRoute    ? env.OCR_RATE_LIMITER
                   : isTripCascade     ? env.TRIP_CASCADE_RATE_LIMITER
                   : isExpenseWrite    ? env.EXPENSE_RATE_LIMITER
                   : isUploadIntents   ? env.EXPENSE_RATE_LIMITER
@@ -319,7 +326,7 @@ export default {
     // matches OCR (60/min L2) -- both are user-facing rapid actions.
     // settlement L2 = 10/min (2x the per-PoP cap of 5/min) -- same
     // ratio the other low-volume endpoints use vs their L1.
-    const scope       = isOcr ? 'ocr'
+    const scope       = isOcrCostRoute ? 'ocr'
                       : isTripCascade     ? 'trip-cascade'
                       : isExpenseWrite    ? 'expense'
                       : isUploadIntents   ? 'upload-intent'
@@ -329,7 +336,7 @@ export default {
                       : isBookingUpdate   ? 'booking-write'
                       : isSettlementWrite ? 'settlement-write'
                       : 'cascade'
-    const globalLimit = isOcr ? 60
+    const globalLimit = isOcrCostRoute ? 60
                       : isTripCascade     ? 2
                       : isExpenseWrite    ? 60
                       : isUploadIntents   ? 60
@@ -430,15 +437,14 @@ export default {
       endpoint:       'settlement-create', body, cors, uid,
       schema:         SettlementCreateRequestSchema,
       handle:         data => settlementCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
-      // Mode-aware log line: TRIP carries amountMinor on the request;
-      // FOREIGN carries sourceAmountMinor + sourceCurrency (the Worker-
-      // derived canonical amount is in the persisted doc, not the
-      // request -- log the user-typed value so a tail trace stays
-      // recognisable against the form input).
+      // Mode-aware log line: no branch carries a user-entered ledger or
+      // source amount. `expectedRemainingMinor` is the stale-confirmation
+      // guard; Worker recomputes pair-remaining in the tx and writes
+      // amountMinor = remaining.
       formatLog: (data, result) =>
         data.mode === 'FOREIGN_CURRENCY'
-          ? `trip=${data.tripId} settlement=${result.settlementId} from=${data.fromUid} mode=FOREIGN sourceAmountMinor=${data.sourceAmountMinor} sourceCurrency=${data.sourceCurrency} settledOn=${data.settledOn}`
-          : `trip=${data.tripId} settlement=${result.settlementId} from=${data.fromUid} mode=TRIP amountMinor=${data.amountMinor}`,
+          ? `trip=${data.tripId} settlement=${result.settlementId} from=${data.fromUid} mode=FOREIGN expectedRemainingMinor=${data.expectedRemainingMinor} sourceCurrency=${data.sourceCurrency} settledOn=${data.settledOn}`
+          : `trip=${data.tripId} settlement=${result.settlementId} from=${data.fromUid} mode=TRIP expectedRemainingMinor=${data.expectedRemainingMinor}`,
       formatResponse: result => ({ ok: true, ...result }),
       // FOREIGN_CURRENCY calls getFxSnapshot which throws FxError on
       // future-date / provider-down / etc; without the FxError catcher
@@ -449,6 +455,10 @@ export default {
         validationErrorCatcher(SettlementValidationError),
         fxErrorCatcher(),
       ),
+      // Whole body runs in one tx → every CascadeError (read-cap 503,
+      // trip.currency 500) is pre-commit; stamp precommit so the client
+      // rolls back instead of keeping a phantom settlement on a 5xx.
+      cascadePrecommit: true,
     })
 
     if (isSettlementDelete) return handleJsonRoute({
@@ -457,6 +467,7 @@ export default {
       handle:      data => settlementDelete(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
       formatLog:   data => `trip=${data.tripId} settlement=${data.settlementId}`,
       catchDomain: validationErrorCatcher(SettlementValidationError),
+      cascadePrecommit: true,
     })
 
     if (isUploadIntents) return handleJsonRoute({
@@ -498,6 +509,24 @@ export default {
       handle:      data => memberRoleUpdate(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
       formatLog:   data => `trip=${data.tripId} member=${uidTag(data.memberUid)} role=${data.role}`,
       catchDomain: validationErrorCatcher(MembershipValidationError),
+    })
+
+    if (isExpenseReceiptOcr) return handleJsonRoute({
+      endpoint:  'expense-receipt-ocr', body, cors, uid,
+      schema:    ExpenseReceiptOcrRequestSchema,
+      // Re-OCR an EXISTING expense receipt: Worker reads receipt.path from
+      // the doc (client can't name the object), mirrors /expense-update auth
+      // (owner/editor; settlement-locked ⇒ owner), reads the image from
+      // Storage, and runs the SAME extractReceiptItems core as /ocr.
+      handle:    data => expenseReceiptOcr(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET, env.GEMINI_API_KEY),
+      formatLog: (data, result) => `trip=${data.tripId} exp=${data.expenseId} items=${result.result.items.length}`,
+      catchDomain: e => e instanceof GeminiError
+        ? {
+            log:    `GeminiError status=${e.status} msg=${e.message}`,
+            body:   { error: e.message },
+            status: e.status,
+          }
+        : null,
     })
 
     return handleJsonRoute({

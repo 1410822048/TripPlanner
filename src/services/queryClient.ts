@@ -81,13 +81,26 @@ export const queryClient = new QueryClient({
   mutationCache: new MutationCache({
     onError: (err, _vars, _ctx, mutation) => {
       const meta = mutation.meta
+      // WorkerAmbiguous = the write request reached the network but the
+      // response was lost (timeout / network / 5xx); the mutation MAY
+      // have committed. Realtime listeners reconcile the true state, so
+      // a hard 「失敗」 toast false-alarms the common case — e.g. a
+      // Firestore contention retry that actually landed but overran the
+      // client timeout. Surface a softer "still confirming" line instead.
+      const isAmbiguous = (err as { name?: string } | null)?.name === 'WorkerAmbiguous'
       // Always capture — silent only suppresses the user-facing toast,
-      // not the debugging signal.
+      // not the debugging signal. Tag ambiguity so contention spikes are
+      // greppable separately from definitive failures in Sentry.
       captureError(err as Error, {
-        source: 'mutationCache',
-        action: meta?.action ?? 'unknown',
+        source:    'mutationCache',
+        action:    meta?.action ?? 'unknown',
+        ambiguous: isAmbiguous,
       })
       if (meta?.silent) return
+      if (isAmbiguous) {
+        toast.info('通信が不安定です。反映を確認しています')
+        return
+      }
       toast.mutationError(err, meta?.action ?? '操作')
     },
   }),

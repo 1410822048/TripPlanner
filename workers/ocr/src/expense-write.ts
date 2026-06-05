@@ -189,6 +189,7 @@ function assertNoSourceExpenseKeys(
 
 interface TripContext {
   memberIds:  string[]
+  isOwner:    boolean
   /** Trip-scoped ISO 4217 currency. Every expense in this trip MUST
    *  carry this currency; mixing currencies inside a single trip would
    *  silently corrupt settlement / trip-total math (those layers assume
@@ -222,6 +223,7 @@ async function authorizeCanWriteTx(
   if ('deletingAt' in trip.fields) {
     throw new CascadeError(410, 'trip is being deleted')
   }
+  const ownerId = readString(trip.fields, 'ownerId')
 
   // Extract memberIds[] from the trip doc. Firestore REST shape:
   // { arrayValue: { values: [{ stringValue: '...' }, ...] } }
@@ -240,7 +242,31 @@ async function authorizeCanWriteTx(
   if (!currency) {
     throw new CascadeError(500, 'trip.currency is missing')
   }
-  return { memberIds, currency }
+  return { memberIds, isOwner: ownerId === callerUid, currency }
+}
+
+export function expenseIsSettlementLocked(fields: Record<string, FsValue>): boolean {
+  // Single source of truth: the settlementLockIds reference set. Each
+  // settlement that applies to this expense adds its id on create and
+  // removes it on delete, so a non-empty set ⇔ at least one live settlement
+  // still references it. Replaces the old `settlementLockedAt`-presence
+  // check PLUS the global `appliedExpenseIds ARRAY_CONTAINS` fallback — that
+  // fallback existed because the old singular lock pointer could go stale
+  // (delete never cleared it); the set is now maintained atomically on
+  // BOTH create and delete, so the per-expense field alone is authoritative
+  // and the trip-wide settlements scan is gone.
+  const arr = (fields.settlementLockIds as { arrayValue?: { values?: unknown[] } } | undefined)?.arrayValue?.values
+  return Array.isArray(arr) && arr.length > 0
+}
+
+function assertCanEditExpenseAfterSettlement(
+  ctx:           TripContext,
+  currentFields: Record<string, FsValue>,
+): void {
+  if (ctx.isOwner) return
+  if (expenseIsSettlementLocked(currentFields)) {
+    throw new CascadeError(403, 'only the trip owner may edit an expense after it has been settled')
+  }
 }
 
 // ─── Firestore value encoders ─────────────────────────────────────
@@ -1122,6 +1148,18 @@ async function doUpdate(
   await runFirestoreTransaction(accessToken, projectId, async (tx) => {
     const ctx = await authorizeCanWriteTx(tx, req.tripId, callerUid)
 
+    // Read current expense doc before consuming upload intents. A locked
+    // settled-source reject must not mark a freshly-uploaded receipt
+    // intent as used when no expense patch will be committed.
+    const current = await tx.get(`trips/${req.tripId}/expenses/${req.expenseId}`)
+    if (!current.exists) {
+      throw new CascadeError(404, 'expense not found')
+    }
+    if ('deletedAt' in current.fields && (current.fields.deletedAt as { nullValue?: null; timestampValue?: string } | undefined)?.timestampValue) {
+      throw new CascadeError(409, 'cannot edit a tombstoned expense')
+    }
+    assertCanEditExpenseAfterSettlement(ctx, current.fields)
+
     // Phase 3.5: consume intents inside tx and validate the built
     // receipt separately. Mirror of doCreate path. Done INSIDE the tx
     // so the consume + expense update commit atomically.
@@ -1136,21 +1174,6 @@ async function doUpdate(
         buildReceiptFromIntents(consumed), req.tripId, req.expenseId, bucket,
       )
       intentMarkUsedWrites.push(...markUsedWrites)
-    }
-
-    // Read current expense doc INSIDE the tx so commit-time
-    // conflict check catches concurrent soft-delete / restore /
-    // tombstone-flip between our read and our write. Pre-tx the
-    // window between read and write let an editor land content
-    // patches onto an already-tombstoned doc (Admin bypasses the
-    // rules-layer tombstone freeze). It also tells us whether a
-    // TRIP_CURRENCY patch must delete an existing source mirror.
-    const current = await tx.get(`trips/${req.tripId}/expenses/${req.expenseId}`)
-    if (!current.exists) {
-      throw new CascadeError(404, 'expense not found')
-    }
-    if ('deletedAt' in current.fields && (current.fields.deletedAt as { nullValue?: null; timestampValue?: string } | undefined)?.timestampValue) {
-      throw new CascadeError(409, 'cannot edit a tombstoned expense')
     }
 
     const currentSourceCurrency = readString(current.fields, 'sourceCurrency')

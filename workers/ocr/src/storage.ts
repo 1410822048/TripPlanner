@@ -146,6 +146,37 @@ export interface ObjectMetadata {
 }
 
 /**
+ * Download an object's raw bytes via the GCS media endpoint (`?alt=media`).
+ * Returns null on 404 (caller maps to a not-found error); throws on any
+ * other non-2xx so the caller can map to a 502. The returned `contentType`
+ * is the GCS-authoritative value (more trustworthy than a Firestore-stored
+ * mime). Caller is responsible for the size ceiling — read metadata FIRST
+ * (getObjectMetadata.size) to reject oversize before pulling the body, then
+ * re-check `bytes.byteLength` here as defence (a metadata/body mismatch
+ * shouldn't be possible, but we don't want to hand an unbounded buffer to
+ * the OCR step).
+ */
+export async function downloadObject(
+  accessToken: string,
+  bucket:      string,
+  path:        string,
+): Promise<{ bytes: ArrayBuffer; contentType: string } | null> {
+  const url = `${BASE}/b/${encodeURIComponent(bucket)}/o/${encodeURIComponent(path)}?alt=media`
+  const res = await fetch(url, {
+    ...NO_CACHE,
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (res.status === 404) return null
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`downloadObject ${path} → ${res.status}: ${detail.slice(0, 200)}`)
+  }
+  const contentType = res.headers.get('content-type')?.split(';')[0]?.trim() ?? 'application/octet-stream'
+  const bytes = await res.arrayBuffer()
+  return { bytes, contentType }
+}
+
+/**
  * Build a Firebase Storage public download URL for `path` given the
  * object's customMetadata.firebaseStorageDownloadTokens. Tokens are
  * comma-separated; we use the first one (Firebase SDK uses any valid

@@ -3,7 +3,17 @@
 // the wrapper is what closes the stale-read race that was the
 // motivating P1, so the retry-on-ABORTED behaviour is load-bearing.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { runFirestoreTransaction } from '../src/firestore-tx'
+import { runFirestoreTransaction, TxCommitAmbiguous } from '../src/firestore-tx'
+
+/** A portable stand-in for the DOMException AbortSignal.timeout throws.
+ *  isRpcTimeout keys on `.name`, so a plain Error tagged 'TimeoutError'
+ *  exercises the exact branch without depending on DOMException ctor
+ *  availability across the test runtime. */
+function timeoutError(): Error {
+  const e = new Error('The operation timed out.')
+  e.name = 'TimeoutError'
+  return e
+}
 
 const originalFetch = globalThis.fetch
 
@@ -172,5 +182,87 @@ describe('runFirestoreTransaction', () => {
 			return { writes: [], result: doc.exists }
 		})
 		expect(got).toBe(false)
+	})
+
+	it('commit timeout → TxCommitAmbiguous, NOT retried (write may have applied)', async () => {
+		// A commit RPC that overruns its per-call timeout is AMBIGUOUS:
+		// the write may already be in Firestore. Blind-retrying would
+		// re-run a create-only body and 409 on its own committed doc /
+		// used intents -- a successful write reported as a failure, the
+		// exact class this change set fixes. Assert: surfaced as
+		// TxCommitAmbiguous, body + commit each ran exactly ONCE.
+		let bodyCalls   = 0
+		let commitCalls = 0
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const url = typeof input === 'string' ? input : input.toString()
+			if (url.includes(':beginTransaction')) {
+				return new Response(JSON.stringify({ transaction: 'tx-1' }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				})
+			}
+			if (url.includes(':batchGet')) {
+				return new Response(JSON.stringify([{ missing: 'projects/demo/databases/(default)/documents/trips/t1/expenses/e1' }]), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				})
+			}
+			if (url.includes(':commit')) {
+				commitCalls += 1
+				throw timeoutError()
+			}
+			throw new Error(`unexpected URL ${url}`)
+		}) as typeof fetch
+
+		await expect(
+			runFirestoreTransaction('fake-token', 'demo', async (tx) => {
+				bodyCalls += 1
+				await tx.get('trips/t1/expenses/e1')
+				return {
+					writes: [{
+						document:        'projects/demo/databases/(default)/documents/trips/t1/expenses/e1',
+						fields:          {},
+						currentDocument: { exists: false },
+					}],
+					result: 'created',
+				}
+			}),
+		).rejects.toBeInstanceOf(TxCommitAmbiguous)
+
+		expect(bodyCalls).toBe(1)
+		expect(commitCalls).toBe(1)
+	})
+
+	it('read (batchGet) timeout IS retried -- pre-commit, nothing written', async () => {
+		// A read RPC timeout happens before any commit, so no write
+		// landed -- safe to re-run from a fresh tx (unlike a commit
+		// timeout). First batchGet times out, retry succeeds.
+		let batchGetCalls = 0
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const url = typeof input === 'string' ? input : input.toString()
+			if (url.includes(':beginTransaction')) {
+				return new Response(JSON.stringify({ transaction: 'tx' }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				})
+			}
+			if (url.includes(':batchGet')) {
+				batchGetCalls += 1
+				if (batchGetCalls === 1) throw timeoutError()
+				return new Response(JSON.stringify([{ missing: 'projects/demo/databases/(default)/documents/trips/t1/expenses/e1' }]), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				})
+			}
+			if (url.includes(':commit')) {
+				return new Response(JSON.stringify({ commitTime: 't', writeResults: [{}] }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				})
+			}
+			throw new Error(`unexpected URL ${url}`)
+		}) as typeof fetch
+
+		const result = await runFirestoreTransaction('fake-token', 'demo', async (tx) => {
+			await tx.get('trips/t1/expenses/e1')
+			return { writes: [], result: 'ok' }
+		})
+		expect(result).toBe('ok')
+		expect(batchGetCalls).toBe(2)   // first timed out, retry succeeded
 	})
 })

@@ -75,6 +75,42 @@ describe('SettlementDocSchema — TRIP_CURRENCY (degenerate path)', () => {
     expect(result.success).toBe(true)
   })
 
+  it('parses Worker-derived appliedSources audit snapshot', () => {
+    const result = SettlementDocSchema.safeParse(baseDoc({
+      appliedSources: [
+        {
+          expenseId:    'expense-1',
+          expenseTitle: 'Dinner',
+          itemId:       'item-1',
+          itemName:     'Noodles',
+          amountMinor:  750,
+        },
+      ],
+    }))
+    expect(result.success).toBe(true)
+  })
+
+  it('parses Worker-derived appliedExpenseIds lock index', () => {
+    const result = SettlementDocSchema.safeParse(baseDoc({
+      appliedExpenseIds: ['expense-1', 'expense-2'],
+    }))
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects half-populated appliedSources item identity', () => {
+    const result = SettlementDocSchema.safeParse(baseDoc({
+      appliedSources: [
+        {
+          expenseId:    'expense-1',
+          expenseTitle: 'Dinner',
+          itemId:       'item-1',
+          amountMinor:  750,
+        },
+      ],
+    }))
+    expect(result.success).toBe(false)
+  })
+
   it('rejects non-currency-code currency', () => {
     const result = SettlementDocSchema.safeParse(baseDoc({ currency: 'jpy' }))
     expect(result.success).toBe(false)
@@ -158,16 +194,19 @@ describe('SettlementDocSchema — FX cross-field equality', () => {
     }
   })
 
-  it('rejects amountMinor !== fxSnapshot.convertedAmountMinor', () => {
+  it('ACCEPTS amountMinor !== fxSnapshot.convertedAmountMinor (Phase 4.1 ledger truth: decoupled)', () => {
+    // Phase 4.1 (2026-06-02) explicitly drops the equality check between
+    // amountMinor and fxSnapshot.convertedAmountMinor. amountMinor is the
+    // ledger clear (≡ remaining); convertedAmountMinor is the FX forward
+    // result and may diverge by a few minor units due to half-even
+    // rounding plateaus. A doc with amountMinor=9751, convertedAmountMinor=
+    // 9750 is a legitimate "rate plateau" foreign settlement, not a drift
+    // bug — the other 4 FX cross-field checks (baseCurrency, quoteCurrency,
+    // sourceAmountMinor, requestedDate) still enforce group integrity.
     const result = SettlementDocSchema.safeParse(foreignDoc({
       amountMinor: 9751,
     }))
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.issues.some(i =>
-        i.message.includes('convertedAmountMinor'),
-      )).toBe(true)
-    }
+    expect(result.success).toBe(true)
   })
 
   it('rejects settledOn !== fxSnapshot.requestedDate', () => {

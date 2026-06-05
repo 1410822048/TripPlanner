@@ -1,9 +1,11 @@
-// src/features/expense/hooks/useFxPreview.ts
+// src/hooks/useFxPreview.ts
 //
-// Phase 3c-1 — client-side FX preview hook for the foreign-mode
-// ExpenseFormModal. Fetches the Frankfurter v2 rate so the form can
-// show the user "USD 12.34 → ¥1850 @ 146.2 (rate 2026-05-29)" before
-// they hit save.
+// Client-side FX preview hook. Fetches the Frankfurter v2 rate so a
+// form can show the user "USD 12.34 → ¥1850 @ 146.2 (rate 2026-05-29)"
+// before they hit save. Originally introduced as Phase 3c-1 for the
+// foreign-mode ExpenseFormModal; promoted from features/expense/hooks/
+// to src/hooks/ during the Settlement FX rollout (Commit 3/4) so the
+// settlement record sheet can reuse it. API unchanged.
 //
 // Trust model:
 //   This hook is PREVIEW ONLY. The Worker's expense-write router is

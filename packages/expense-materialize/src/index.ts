@@ -97,6 +97,16 @@ export interface MaterializeSplit {
   amountMinor: number   // signed integer minor units; non-zero
 }
 
+/** Per-item contribution before member-level aggregation. This is the
+ *  same authoritative math as `materializeExpenseSplits`, but keeps the
+ *  item id so settlement records can persist an audit snapshot of which
+ *  receipt lines were cleared. */
+export interface MaterializeSplitContribution {
+  itemId:      string
+  memberId:    string
+  amountMinor: number
+}
+
 // ─── Errors ───────────────────────────────────────────────────────
 
 /** Structured error codes — kept stable so the Worker can map them to
@@ -290,7 +300,7 @@ function splitEqually(total: number, memberIds: string[]): MaterializeSplit[] {
  * M = members. Expense-scale (I ≤ 50, A ≤ 5, M ≤ 8) is well under
  * a millisecond.
  */
-export function materializeExpenseSplits(input: MaterializeInput): MaterializeSplit[] {
+export function materializeExpenseSplitContributions(input: MaterializeInput): MaterializeSplitContribution[] {
   const { items, adjustments, members } = input
 
   // Step 1: validate items. amountMinor is integer minor units — we
@@ -451,19 +461,28 @@ export function materializeExpenseSplits(input: MaterializeInput): MaterializeSp
   // Step 4: split each item's effective amount across its assignees,
   // aggregate per-member. Preserve `members` order in the output so
   // both sides serialize identically.
-  const memberTotals = new Map<string, number>()
+  const contributions: MaterializeSplitContribution[] = []
   for (const item of items) {
     const effective = itemEffective.get(item.id) ?? 0
     if (effective === 0) continue
     const splits = splitEqually(effective, item.assignees)
     for (const { memberId, amountMinor } of splits) {
-      memberTotals.set(memberId, (memberTotals.get(memberId) ?? 0) + amountMinor)
+      contributions.push({ itemId: item.id, memberId, amountMinor })
     }
+  }
+  return contributions
+}
+
+export function materializeExpenseSplits(input: MaterializeInput): MaterializeSplit[] {
+  const contributions = materializeExpenseSplitContributions(input)
+  const memberTotals = new Map<string, number>()
+  for (const { memberId, amountMinor } of contributions) {
+    memberTotals.set(memberId, (memberTotals.get(memberId) ?? 0) + amountMinor)
   }
 
   // Step 5: project onto `members` input order, drop zero totals.
   const out: MaterializeSplit[] = []
-  for (const uid of members) {
+  for (const uid of input.members) {
     const total = memberTotals.get(uid) ?? 0
     if (total !== 0) out.push({ memberId: uid, amountMinor: total })
   }

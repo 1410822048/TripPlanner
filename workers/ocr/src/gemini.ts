@@ -80,12 +80,22 @@ export class GeminiError extends Error {
   }
 }
 
+function geminiStatusForClient(status: number): number {
+  // Preserve user-actionable retry classes. A Gemini 503 ("high demand")
+  // should stay 503 so the client can show "try again later" instead of a
+  // generic gateway failure. Keep 401/403 masked as 502: those are operator
+  // issues with our key/quota and should not leak as caller auth failures.
+  if (status === 429 || status === 503 || status === 504) return status
+  return 502
+}
+
 /**
  * Send a base64 image to Gemini and return parsed items[] + total.
  * Throws GeminiError with an HTTP-flavoured status hint:
  *   - 400 → bad image / Gemini rejected the prompt
  *   - 422 → Gemini returned but output couldn't be parsed OR was empty
  *   - 502 → network / upstream error
+ *   - 503/504 → upstream temporarily unavailable / timed out
  *
  * Logs go to console (visible via `wrangler tail`) at every meaningful
  * branch so debugging "why did OCR fail?" doesn't require redeploying
@@ -164,7 +174,7 @@ export async function extractReceiptItems(
     }
     throw new GeminiError(
       `Gemini ${res.status}: ${detail.slice(0, 200)}`,
-      res.status === 429 ? 429 : 502,
+      geminiStatusForClient(res.status),
     )
   }
 

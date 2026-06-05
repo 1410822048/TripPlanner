@@ -44,7 +44,42 @@ vi.mock('../src/storage', () => ({
 // runs once against this fake context and we assert on what it
 // returned. No actual fetch traffic.
 const txGetResponses = new Map<string, { exists: boolean; fields: Record<string, unknown>; name: string; updateTime: string | null }>()
+const txQueryResponses = new Map<string, { exists: boolean; fields: Record<string, unknown>; name: string; updateTime: string | null }[]>()
+const txQueryCalls: Array<{ parent: string; collection: string; filters?: unknown; limit?: number }> = []
 let capturedTxResult: { writes: unknown[]; result: unknown } | null = null
+
+interface MockFieldFilter {
+	fieldPath: string
+	op:        'EQUAL' | 'ARRAY_CONTAINS'
+	value:     { stringValue?: string }
+}
+
+function readMockStringField(fields: Record<string, unknown>, fieldPath: string): string | undefined {
+	return (fields[fieldPath] as { stringValue?: string } | undefined)?.stringValue
+}
+
+function readMockStringArrayField(fields: Record<string, unknown>, fieldPath: string): string[] {
+	const values = (fields[fieldPath] as { arrayValue?: { values?: Array<{ stringValue?: string }> } } | undefined)
+		?.arrayValue?.values ?? []
+	return values
+		.map(v => v.stringValue)
+		.filter((s): s is string => typeof s === 'string')
+}
+
+function matchesMockFilters(
+	doc: { fields: Record<string, unknown> },
+	filters: unknown,
+): boolean {
+	if (!Array.isArray(filters)) return true
+	for (const filter of filters as MockFieldFilter[]) {
+		if (filter.op === 'EQUAL') {
+			if (readMockStringField(doc.fields, filter.fieldPath) !== filter.value.stringValue) return false
+		} else if (filter.op === 'ARRAY_CONTAINS') {
+			if (!readMockStringArrayField(doc.fields, filter.fieldPath).includes(filter.value.stringValue ?? '')) return false
+		}
+	}
+	return true
+}
 
 vi.mock('../src/firestore-tx', () => ({
 	runFirestoreTransaction: vi.fn(async (_token, _pid, body) => {
@@ -53,6 +88,11 @@ vi.mock('../src/firestore-tx', () => ({
 				const resp = txGetResponses.get(path)
 				if (!resp) throw new Error(`unexpected tx.get('${path}') -- not seeded`)
 				return resp
+			},
+			runQuery: async (q: { parent: string; collection: string; filters?: unknown; limit?: number }) => {
+				txQueryCalls.push({ parent: q.parent, collection: q.collection, filters: q.filters, limit: q.limit })
+				return (txQueryResponses.get(`${q.parent}|${q.collection}`) ?? [])
+					.filter(doc => matchesMockFilters(doc, q.filters))
 			},
 		}
 		const result = await body(ctx)
@@ -117,9 +157,10 @@ const MEMBERS    = ['owner-uid', 'editor-uid', 'viewer-uid']
  *  `currency` defaults to JPY to match validExpensePayload; tests that
  *  exercise the trip-currency bind pass an override (or `null` to
  *  simulate a malformed trip doc with no currency field). */
-function tripReadDoc(overrides: { currency?: string | null } = {}) {
+function tripReadDoc(overrides: { currency?: string | null; ownerId?: string } = {}) {
 	const fields: Record<string, unknown> = {
 		memberIds: { arrayValue: { values: MEMBERS.map(uid => ({ stringValue: uid })) } },
+		ownerId:   { stringValue: overrides.ownerId ?? 'owner-uid' },
 	}
 	if (overrides.currency !== null) {
 		fields.currency = { stringValue: overrides.currency ?? 'JPY' }
@@ -197,6 +238,8 @@ function validExpensePayload(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
 	txGetResponses.clear()
+	txQueryResponses.clear()
+	txQueryCalls.length = 0
 	capturedTxResult = null
 })
 
@@ -243,7 +286,7 @@ describe('expenseCreate endpoint', () => {
 	})
 
 	it('rejects create payload without explicit mode', async () => {
-		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc({ ownerId: CALLER_UID }))
 		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('editor'))
 		const { mode: _mode, ...payload } = validExpensePayload()
 
@@ -442,6 +485,64 @@ describe('expenseUpdate endpoint', () => {
 			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'TRIP_CURRENCY', title: 'Resurrect' } },
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(CascadeError)
+	})
+
+	it('rejects editor update when the expense carries a settlement lock', async () => {
+		const lockedExpense = aliveExpenseReadDoc()
+		lockedExpense.fields = {
+			...lockedExpense.fields,
+			settlementLockIds: { arrayValue: { values: [{ stringValue: 'settlement-1' }] } },
+		}
+		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, lockedExpense)
+
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'TRIP_CURRENCY', amountMinor: 1200, splits: [{ memberId: 'editor-uid', amountMinor: 1200 }] } },
+			'{}', BUCKET,
+		)).rejects.toThrow(/only the trip owner/i)
+		expect(txQueryCalls).toHaveLength(0)
+	})
+
+	it('does NOT lock an expense that lacks settlementLockIds even if a settlement names it (single source of truth)', async () => {
+		// Post-redesign: the per-expense settlementLockIds set is the SOLE
+		// lock source. The old global `appliedExpenseIds ARRAY_CONTAINS`
+		// fallback is gone (the set is maintained atomically on create AND
+		// delete, so it can't go stale). An expense with no settlementLockIds
+		// is editable by an editor regardless of any settlement's lineage —
+		// and crucially the Worker runs NO settlements query for the lock.
+		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, aliveExpenseReadDoc())
+
+		await expenseUpdate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'TRIP_CURRENCY', title: 'Editable — not locked' } },
+			'{}', BUCKET,
+		)
+		// No settlements ARRAY_CONTAINS scan for the lock check.
+		expect(txQueryCalls.some(q => q.collection === 'settlements')).toBe(false)
+	})
+
+	it('allows owner update on a settled expense', async () => {
+		const lockedExpense = aliveExpenseReadDoc()
+		lockedExpense.fields = {
+			...lockedExpense.fields,
+			settlementLockIds: { arrayValue: { values: [{ stringValue: 'settlement-1' }] } },
+		}
+		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc({ ownerId: CALLER_UID }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('owner'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, lockedExpense)
+
+		await expenseUpdate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'TRIP_CURRENCY', title: 'Owner correction' } },
+			'{}', BUCKET,
+		)
+
+		expect(capturedTxResult).not.toBeNull()
+		expect(txQueryCalls).toHaveLength(0)
 	})
 
 	it('REGRESSION: patch with non-updatable field is rejected via ExpenseValidationError', async () => {

@@ -61,55 +61,30 @@ import { useFormReducer } from '@/hooks/useFormReducer'
 import { useAttachment, type AttachmentChange } from '@/hooks/useAttachment'
 import { useSplitsState, type SplitMode } from '../hooks/useSplitsState'
 import { useExpenseItems } from '../hooks/useExpenseItems'
-import { useFxPreview } from '../hooks/useFxPreview'
+import { useFxPreview } from '@/hooks/useFxPreview'
 import { useOcrFlow } from '../hooks/useOcrFlow'
-import { normalizeMoneyTextForCurrency, safeReparseMoney, splitEqually } from '../utils'
+import { ocrResultStillApplicable } from '../services/ocrService'
+import {
+  moneyErrorMessage,
+  normalizeMoneyTextForCurrency,
+  parsePositiveMoneyToMinorResult,
+  safeReparseMoney,
+  splitEqually,
+} from '../utils'
 import { useTripCurrency } from '@/hooks/useTripCurrency'
+import { useTripId } from '@/hooks/useTripId'
 import { CURRENCY_OPTIONS, currencySymbol } from '@/utils/currency'
 import {
   formatMinorAmount,
   formatMinorForInput,
   parseMoneyToMinor,
-  parseMoneyToMinorResult,
   currencyFractionDigits,
-  type MoneyParseErrorReason,
 } from '@/utils/money'
 import { compressImage } from '@/utils/image'
 import AttachmentPreviewModal from '@/features/bookings/components/AttachmentPreviewModal'
 
 const IMAGE_ACCEPT = 'image/*'
 const ANY_ACCEPT   = 'image/*,application/pdf'
-
-// NON_POSITIVE is UI-only: parseMoneyToMinor happily returns 0 / negative
-// (refunds are legitimate at parser level), but the expense form rejects
-// non-positive totals. Keeping it out of MoneyParseErrorReason preserves
-// the parser's "0 / -1 are valid integers" contract; lifting it into this
-// UI-facing union lets one mapper own every amount-field error message.
-type AmountErrorReason = MoneyParseErrorReason | 'NON_POSITIVE'
-
-// User-facing message for an amount-field error. Adding a new reason
-// to MoneyParseErrorReason (or AmountErrorReason) forces a switch arm
-// here — TS exhaustiveness covers the gap. DECIMALS_FORBIDDEN +
-// NON_POSITIVE were both originally collapsed into a misleading
-// "請輸入金額" (= "enter an amount").
-function moneyErrorMessage(reason: AmountErrorReason, currency: string): string {
-  switch (reason) {
-    case 'EMPTY':
-      return '金額を入力してください'
-    case 'NON_POSITIVE':
-      return '金額は0より大きく入力してください'
-    case 'DECIMALS_FORBIDDEN':
-      return `${currency} は小数を入力できません`
-    case 'TOO_MANY_DECIMALS':
-      return `${currency} は小数第${currencyFractionDigits(currency)}位まで入力できます`
-    case 'MALFORMED':
-      return '金額の形式が正しくありません'
-    case 'OUT_OF_RANGE':
-      return '金額が大きすぎます'
-    case 'EXPECTED_STRING':
-      return '金額の形式が正しくありません'
-  }
-}
 
 const ADJUSTMENT_KIND_LABEL: Record<ExpenseAdjustmentKind, string> = {
   DISCOUNT:   '割引',
@@ -260,6 +235,7 @@ export default function ExpenseFormModal({
   editTarget, defaultDate, members, isOpen, isSaving, onClose, onSave,
 }: Props) {
   const tripCurrency = useTripCurrency()
+  const tripId = useTripId()
   const { state, setField } = useFormReducer<FormState>(
     () => initFormState(editTarget, defaultDate, members, tripCurrency),
   )
@@ -471,11 +447,13 @@ export default function ExpenseFormModal({
       // un-registered code (e.g. CAD) would parse + format here but the
       // CurrencyPicker can't display or switch away from it, trapping the
       // user. Gate on the registry: known codes auto-set sourceCurrency
-      // (triggering foreign-mode if it differs from trip), unknown codes
-      // fall back to the trip currency. The OCR hint is also tripCurrency:
-      // ambiguous receipts should not inherit a previously opened foreign
-      // picker (e.g. Japanese receipt parsed as USD just because the user
-      // last tested USD mode).
+      // (triggering foreign-mode if it differs from trip), unknown/omitted
+      // codes fall back below (see ocrCurrency). For FRESH captures the hook
+      // hint is tripCurrency: an ambiguous receipt should not inherit a
+      // previously opened foreign picker (e.g. a JPY receipt parsed as USD
+      // just because the user last tested USD mode). The existing-receipt
+      // re-OCR path hints the draft's own currency instead — a saved foreign
+      // expense's currency is known, not ephemeral.
       //
       // The parsing below uses `ocrCurrency` directly (not the React-
       // state `sourceCurrency`) so it doesn't depend on the setField
@@ -486,7 +464,13 @@ export default function ExpenseFormModal({
         result.currency && CURRENCY_OPTIONS.some(c => c.code === result.currency)
           ? result.currency
           : undefined
-      const ocrCurrency = detectedCurrency ?? tripCurrency
+      // Fallback when OCR omits / uses an unregistered currency. A NEW or
+      // trip-currency expense has no persisted sourceCurrency → tripCurrency
+      // (preserving the "don't inherit an ephemeral picker" intent above,
+      // since editTarget.sourceCurrency is the PERSISTED value, not the live
+      // toggle). An EXISTING foreign expense keeps its authoritative saved
+      // currency rather than snapping back to trip when Gemini can't detect.
+      const ocrCurrency = detectedCurrency ?? editTarget?.sourceCurrency ?? tripCurrency
 
       const strictParse = (text: string, label: string): number => {
         try { return Math.max(0, parseMoneyToMinor(text, ocrCurrency)) }
@@ -864,9 +848,8 @@ export default function ExpenseFormModal({
     // branch coerced parse failures (e.g. JPY 12.34) to look like empty
     // input and surfaced a misleading "請輸入金額". moneyErrorMessage maps
     // the structured reason so the banner matches the actual problem.
-    const amountResult = parseMoneyToMinorResult(state.amountText, currency)
-    if (!amountResult.ok)               e.amount = moneyErrorMessage(amountResult.reason, currency)
-    else if (amountResult.value <= 0)   e.amount = moneyErrorMessage('NON_POSITIVE', currency)
+    const amountResult = parsePositiveMoneyToMinorResult(state.amountText, currency)
+    if (!amountResult.ok) e.amount = moneyErrorMessage(amountResult.reason, currency)
     if (!state.date)         e.date = '請選擇日期'
     if (!state.paidBy)       e.paidBy = '請選擇付款人'
 
@@ -1201,8 +1184,48 @@ export default function ExpenseFormModal({
 
   // ─── Receipt section helpers ────────────────────────────────────────
   const receiptErrText = att.error ?? ocr.error ?? undefined
-  const canAnalyze   = att.hasAttachment && att.previewIsImage && !ocr.loading && !items.hasItems
-  const canReanalyze = att.hasAttachment && att.previewIsImage && !ocr.loading && items.hasItems && !!ocr.lastFile
+  // Re-OCR has two sources: a freshly-picked File (camera/upload → compress
+  // → /ocr) or an EXISTING saved receipt (edit; only a URL → the Worker
+  // /expense-receipt-ocr route reads receipt.path from the doc). Both feed
+  // the same onSuccess. Existing-receipt is cloud-only (needs a real tripId)
+  // and only for image receipts.
+  const existingImageReceipt =
+    !ocr.lastFile &&
+    !!tripId &&
+    !!editTarget?.id &&
+    !!editTarget.receipt?.path &&
+    (editTarget.receipt?.type.startsWith('image/') ?? false)
+  const hasOcrSource = !!ocr.lastFile || existingImageReceipt
+
+  function runReceiptOcr() {
+    if (ocr.lastFile) { void ocr.run(ocr.lastFile); return }
+    if (!tripId || !editTarget?.id || !editTarget.receipt?.path) return
+    // Race snapshot captured at click time. The result is discarded unless,
+    // when it returns, the Worker OCR'd the SAME receipt path AND (when both
+    // sides carry it) the expense's updatedAt is unchanged — i.e. the
+    // receipt wasn't swapped and the expense wasn't edited elsewhere while
+    // the request was in flight. Worker re-OCR never re-uploads; only the
+    // draft fields change, so SAVE still routes through /expense-update.
+    const capturedPath   = editTarget.receipt.path
+    const capturedMillis = editTarget.updatedAt?.toMillis?.()
+    void ocr.runExisting({
+      tripId,
+      expenseId:    editTarget.id,
+      // Hint the draft's CURRENT currency (foreign code when this is a
+      // foreign expense), not tripCurrency — re-OCRing a saved foreign
+      // receipt should bias Gemini toward the known currency rather than
+      // risk it being reparsed as the trip currency.
+      currencyHint: effectiveCurrency,
+      isStillApplicable: (sourceReceiptPath, expenseUpdatedAt) =>
+        ocrResultStillApplicable(
+          { receiptPath: capturedPath, updatedAtMillis: capturedMillis },
+          { sourceReceiptPath, expenseUpdatedAt },
+        ),
+    })
+  }
+
+  const canAnalyze   = att.hasAttachment && att.previewIsImage && !ocr.loading && !items.hasItems && hasOcrSource
+  const canReanalyze = att.hasAttachment && att.previewIsImage && !ocr.loading && items.hasItems  && hasOcrSource
 
   return (
     <FormModalShell
@@ -1275,8 +1298,7 @@ export default function ExpenseFormModal({
             {canAnalyze && (
               <button
                 type="button"
-                onClick={() => ocr.lastFile && void ocr.run(ocr.lastFile)}
-                disabled={!ocr.lastFile}
+                onClick={runReceiptOcr}
                 className="w-full h-10 rounded-input bg-teal text-white text-[13px] font-bold border-none cursor-pointer flex items-center justify-center gap-2 transition-all hover:-translate-y-px disabled:opacity-50 disabled:cursor-not-allowed"
                 style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
               >
@@ -1288,7 +1310,7 @@ export default function ExpenseFormModal({
             {canReanalyze && (
               <button
                 type="button"
-                onClick={() => ocr.lastFile && void ocr.run(ocr.lastFile)}
+                onClick={runReceiptOcr}
                 className="flex items-center gap-1 text-[11.5px] text-accent font-medium border-none bg-transparent p-0 cursor-pointer hover:underline self-start"
               >
                 <ScanLine size={12} strokeWidth={2} />

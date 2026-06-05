@@ -1,6 +1,54 @@
 // src/features/expense/utils.ts
 import type { Expense, ExpenseSplit } from '@/types'
-import { currencyFractionDigits, parseMoneyToMinor } from '@/utils/money'
+import {
+  currencyFractionDigits,
+  parseMoneyToMinor,
+  parseMoneyToMinorResult,
+  type MoneyParseErrorReason,
+} from '@/utils/money'
+
+// NON_POSITIVE is UI-only: parseMoneyToMinor intentionally accepts 0
+// and negative values because refunds / adjustments are valid money
+// primitives. Expense-facing forms reject non-positive totals at the
+// submit boundary, so keep that policy here instead of weakening the
+// parser contract.
+export type AmountErrorReason = MoneyParseErrorReason | 'NON_POSITIVE'
+
+export type PositiveMoneyParseResult =
+  | { ok: true;  value: number }
+  | { ok: false; reason: AmountErrorReason }
+
+export function parsePositiveMoneyToMinorResult(
+  text: string,
+  currency: string,
+): PositiveMoneyParseResult {
+  const result = parseMoneyToMinorResult(text, currency)
+  if (!result.ok) return result
+  if (result.value <= 0) return { ok: false, reason: 'NON_POSITIVE' }
+  return result
+}
+
+// User-facing message for an amount-field error. Adding a new
+// MoneyParseErrorReason forces this switch to be revisited instead of
+// silently collapsing real parse failures into "金額を入力してください".
+export function moneyErrorMessage(reason: AmountErrorReason, currency: string): string {
+  switch (reason) {
+    case 'EMPTY':
+      return '金額を入力してください'
+    case 'NON_POSITIVE':
+      return '金額は0より大きく入力してください'
+    case 'DECIMALS_FORBIDDEN':
+      return `${currency} は小数を入力できません`
+    case 'TOO_MANY_DECIMALS':
+      return `${currency} は小数第${currencyFractionDigits(currency)}位まで入力できます`
+    case 'MALFORMED':
+      return '金額の形式が正しくありません'
+    case 'OUT_OF_RANGE':
+      return '金額が大きすぎます'
+    case 'EXPECTED_STRING':
+      return '金額の形式が正しくありません'
+  }
+}
 
 /** Parse a money text under a currency without throwing. Empty /
  *  unparseable / negative inputs collapse to 0.

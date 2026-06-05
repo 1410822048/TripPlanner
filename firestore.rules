@@ -495,6 +495,12 @@ service cloud.firestore {
         // for the soft-delete flow.
         allow update: if (
           canWrite(tripId)
+          // Once a settlement references this expense, normal editors can
+          // only view it (locked ⇔ settlementLockIds non-empty; Worker
+          // maintains the set). Owner keeps the explicit correction path.
+          && (isTripOwner(tripId)
+              || !('settlementLockIds' in resource.data)
+              || resource.data.settlementLockIds.size() == 0)
           && unchanged('tripId')
           && unchanged('createdBy')
           && unchanged('createdAt')

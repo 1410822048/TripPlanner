@@ -62,3 +62,69 @@ describe('workerBase', () => {
     expect(() => requireWorkerWriteBase()).toThrow(/VITE_WORKER_BASE_URL/)
   })
 })
+
+// The WorkerRejected vs WorkerAmbiguous split is what useTripListMutation
+// keys on to decide rollback (definitive) vs keep-optimistic (ambiguous).
+// It's the client half of the tx-failure taxonomy: the Worker maps a
+// DEFINITIVE retry-exhaustion to 409 (→ rollback) and an AMBIGUOUS commit
+// timeout to 5xx (→ keep). These lock the status → error-class contract so
+// a future tweak to DEFINITIVE_REJECT_STATUSES can't silently turn a
+// rollback into a phantom-row keep (or vice versa).
+describe('workerFetch — HTTP error classification', () => {
+  const realFetch = globalThis.fetch
+  afterEach(() => { globalThis.fetch = realFetch })
+
+  function stubFetchStatus(status: number, body: string) {
+    globalThis.fetch = vi.fn(async () => new Response(body, { status })) as typeof fetch
+  }
+
+  it('409 → WorkerRejected (definitive; caller rolls back optimistic state)', async () => {
+    // 409 is what handleJsonRoute returns for TxRetryExhausted (and for a
+    // stale settlement suggestion). Both are provably-not-committed → the
+    // optimistic settlement row must roll back, not linger.
+    stubFetchStatus(409, JSON.stringify({ error: 'stale', code: 'TX_RETRY_EXHAUSTED' }))
+    const { workerFetch, WorkerRejected } = await import('./workerBase')
+    await expect(
+      workerFetch('https://w.example.dev', 'tok', '/settlement-create', {}),
+    ).rejects.toBeInstanceOf(WorkerRejected)
+  })
+
+  it('500 → WorkerAmbiguous (commit may have applied; caller keeps optimistic state)', async () => {
+    stubFetchStatus(500, JSON.stringify({ error: 'Internal error' }))
+    const { workerFetch, WorkerAmbiguous } = await import('./workerBase')
+    await expect(
+      workerFetch('https://w.example.dev', 'tok', '/settlement-create', {}),
+    ).rejects.toBeInstanceOf(WorkerAmbiguous)
+  })
+
+  it('fetch rejection (timeout / network) → WorkerAmbiguous', async () => {
+    globalThis.fetch = vi.fn(async () => {
+      const e = new Error('The operation timed out.')
+      e.name = 'TimeoutError'
+      throw e
+    }) as typeof fetch
+    const { workerFetch, WorkerAmbiguous } = await import('./workerBase')
+    await expect(
+      workerFetch('https://w.example.dev', 'tok', '/settlement-create', {}),
+    ).rejects.toBeInstanceOf(WorkerAmbiguous)
+  })
+
+  it('5xx WITH precommit:true body → WorkerRejected (provably pre-commit; rolls back)', async () => {
+    // FX provider 502 / read-cap 503 in a single-tx endpoint carry
+    // precommit:true → definitively no write → the optimistic row must roll
+    // back, not linger behind a "still confirming" toast.
+    stubFetchStatus(502, JSON.stringify({ error: 'Frankfurter down', code: 'FX_PROVIDER_UNAVAILABLE', precommit: true }))
+    const { workerFetch, WorkerRejected } = await import('./workerBase')
+    await expect(
+      workerFetch('https://w.example.dev', 'tok', '/settlement-create', {}),
+    ).rejects.toBeInstanceOf(WorkerRejected)
+  })
+
+  it('5xx WITHOUT precommit → WorkerAmbiguous (response-loss / mid-cascade; keeps optimistic)', async () => {
+    stubFetchStatus(503, JSON.stringify({ error: 'partial cascade failure' }))
+    const { workerFetch, WorkerAmbiguous } = await import('./workerBase')
+    await expect(
+      workerFetch('https://w.example.dev', 'tok', '/cascade-trip-delete', {}),
+    ).rejects.toBeInstanceOf(WorkerAmbiguous)
+  })
+})

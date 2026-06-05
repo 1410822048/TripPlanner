@@ -9,12 +9,16 @@ import { useSettlements, useCreateSettlement, useDeleteSettlement } from '../hoo
 import { useMembers } from '@/features/members/hooks/useMembers'
 import { membersToTripMembers } from '@/features/members/utils'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
+import { useIsTripOwner } from '@/features/trips/hooks/useTripRole'
 import { useSwipeOpen } from '@/hooks/useSwipeOpen'
 import { MOCK_EXPENSES } from '../mocks'
 import { toast } from '@/shared/toast'
 import type { Expense, ExpenseCategory } from '@/types'
 import ExpenseFormModal, { type ExpenseFormResult } from './ExpenseFormModal'
+import ExpenseReadonlyModal from './ExpenseReadonlyModal'
 import SettlementSummary from './SettlementSummary'
+import SettlementRecordSheet, { type SettlementRecordSubmit } from './SettlementRecordSheet'
+import { useState } from 'react'
 import ExpenseListSkeleton from './ExpenseListSkeleton'
 import ExpensePageSkeleton from './ExpensePageSkeleton'
 import ExpenseListEmpty from './ExpenseListEmpty'
@@ -38,8 +42,16 @@ export default function ExpensePage() {
   const { data: fbMembers } = useMembers(cloudTripId)
   const { data: fbSettlements } = useSettlements(cloudTripId)
   const settlements = ctx.status === 'cloud' ? (fbSettlements ?? []) : []
+  const isOwner = useIsTripOwner(cloudTripId, isDemo)
   const createSettlementMut = useCreateSettlement(mutationTripId)
   const deleteSettlementMut = useDeleteSettlement(mutationTripId)
+  // Settlement record sheet state. Non-null when the receiver tapped
+  // 「済み」on a suggestion row — drives the sheet open + seeds it with
+  // the balance-engine's suggested (fromUid, toUid, amountMinor). Sheet
+  // closes by setting back to null; the parent owns the mutation.
+  const [recordTarget, setRecordTarget] = useState<
+    { fromUid: string; toUid: string; amountMinor: number } | null
+  >(null)
 
   // Plain derivations — React Compiler auto-memoises based on inferred
   // deps. The aggregation chain (expenses → total / categoryStats /
@@ -90,12 +102,33 @@ export default function ExpensePage() {
   const categoryStats = (Object.entries(categoryStatsRaw) as [ExpenseCategory, number][])
     .filter(([, v]) => v > 0)
     .sort((a, b) => b[1] - a[1])
+  // Expenses a non-owner may not edit / soft-delete. PRIMARY source is the
+  // server-enforced `expense.settlementLockIds` (exactly what the Worker +
+  // rules gate on). Settlement lineage (appliedExpenseIds / appliedSources)
+  // is UNIONED in only to cover the optimistic windows where the two can
+  // briefly disagree: on optimistic CREATE the settlement row lands before
+  // the expense's lock field propagates; on optimistic DELETE the settlement
+  // row is gone but the lock field lingers until the Worker clears it and
+  // the listener updates. Union keeps the row readonly across both, matching
+  // the server (no false "editable" flash that then 403s).
+  const lockedExpenseIds = new Set<string>()
+  for (const e of expenses) {
+    if ((e.settlementLockIds?.length ?? 0) > 0) lockedExpenseIds.add(e.id)
+  }
+  for (const settlement of settlements) {
+    for (const id of settlement.appliedExpenseIds ?? []) lockedExpenseIds.add(id)
+    for (const source of settlement.appliedSources ?? []) lockedExpenseIds.add(source.expenseId)
+  }
 
   if (ctx.status === 'loading') return <ExpensePageSkeleton />
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Receipt} reason="費用を記録" />
 
   const title = ctx.trip.title
   const perPersonMinor = members.length > 0 ? Math.round(totalMinor / members.length) : 0
+  const readonlyEditTarget =
+    modal.editTarget && !isOwner && lockedExpenseIds.has(modal.editTarget.id)
+      ? modal.editTarget
+      : null
 
   function handleSave({ input, attachment }: ExpenseFormResult) {
     if (isDemo) { modal.close(); signIn.open(); return }
@@ -111,6 +144,10 @@ export default function ExpensePage() {
     // Snapshot editTarget before modal.close() in case the close handler
     // clears it synchronously (closures can stale if we read after close).
     const editing = modal.editTarget
+    if (editing && !isOwner && lockedExpenseIds.has(editing.id)) {
+      toast.error('清算済みの費用はオーナーのみ編集できます')
+      return
+    }
     modal.close()
     if (editing) {
       updateMut.mutate({
@@ -131,9 +168,50 @@ export default function ExpensePage() {
       })
     }
   }
+  function handleRecordSettlement(submit: SettlementRecordSubmit) {
+    if (isDemo) { setRecordTarget(null); signIn.open(); return }
+    if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+    // Mint settlementId here (not inside the service) so the optimistic
+    // cache row, the Worker request, and the Firestore doc all share
+    // one id. Memory: [[settlement-id-hoist-load-bearing]] — any future
+    // refactor that moves id-minting back into the service breaks the
+    // realtime listener's atomic row replacement.
+    //
+    // `submit` is already a discriminated `CreateSettlementVariables`
+    // minus settlementId, so a single spread preserves the mode → shape
+    // correlation (FOREIGN keeps sourceAmountMinor on optimistic, TRIP
+    // doesn't carry it). No nested narrowing needed.
+    //
+    // Conservative pending lock lineage: every active expense that creates
+    // debt either direction within this pair. The Worker computes the exact
+    // lock set (forward sources ∪ reverse offset), but until its commit +
+    // the expense listener land, this is what ExpensePage's readonly union
+    // uses so a non-owner can't briefly edit a source expense post-済み.
+    // Over-approximation is safe — the listener swaps in the exact set.
+    const pendingAppliedExpenseIds = expenses
+      .filter(e =>
+        (e.paidBy === submit.toUid   && e.splits.some(s => s.memberId === submit.fromUid)) ||
+        (e.paidBy === submit.fromUid && e.splits.some(s => s.memberId === submit.toUid)))
+      .map(e => e.id)
+    // `pendingAppliedExpenseIds` is a top-level variables field (NOT nested
+    // in the discriminated `optimistic`), so this is a pure spread — no
+    // mutation of `submit`, no per-mode narrowing needed.
+    createSettlementMut.mutate({ ...submit, settlementId: crypto.randomUUID(), pendingAppliedExpenseIds })
+    // Close the sheet optimistically — the optimistic patch already
+    // inserts the row; the realtime listener will replace it once the
+    // Worker commits. Errors surface through the global
+    // MutationCache.onError toast (no banner inside the sheet) since
+    // the sheet is gone by the time the rejection lands.
+    setRecordTarget(null)
+  }
+
   async function handleSwipeDelete(e: Expense) {
     swipe.closeAll()
     if (isDemo) { signIn.open(); return }
+    if (!isOwner && lockedExpenseIds.has(e.id)) {
+      toast.error('清算済みの費用はオーナーのみ編集できます')
+      return
+    }
     // Hook onError rolls back the optimistic remove and shows the toast.
     await deleteMut.mutateAsync({ expenseId: e.id }).catch(() => {})
   }
@@ -220,16 +298,19 @@ export default function ExpensePage() {
         settlements={settlements}
         currency={currency}
         uid={uid ?? null}
-        onMarkSettled={(fromUid, toUid, amountMinor) => {
+        isOwner={isOwner}
+        onRecordSettlement={suggestion => {
           if (isDemo) { signIn.open(); return }
           if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
-          // Mint id here(not inside the service)so the optimistic row,
-          // the Worker request, and the Firestore doc share one id —
-          // realtime listener replaces the optimistic row atomically.
-          createSettlementMut.mutate({
-            settlementId: crypto.randomUUID(),
-            fromUid, toUid, amountMinor, currency,
-          })
+          // Open the sheet preseeded with the suggestion. The mutate
+          // happens inside handleRecordSettlement below; this just opens
+          // the UI. Settlement FX Commit 3/4 + Phase 4.1: previously this
+          // branch mutated directly with the trip-currency suggestion —
+          // now we hand over to the sheet so the receiver can pick the
+          // currency they actually received in (for display + audit). The
+          // cleared amount itself is fixed at pair-remaining (full clear);
+          // the sheet only exposes currency + date + note.
+          setRecordTarget(suggestion)
         }}
         onDeleteSettlement={id => {
           if (isDemo) { signIn.open(); return }
@@ -252,6 +333,7 @@ export default function ExpensePage() {
             canWrite={canWrite}
             swipe={swipe}
             pendingUpdateIds={pendingUpdateIds}
+            readonlyExpenseIds={isOwner ? undefined : lockedExpenseIds}
             onSelect={canWrite ? modal.openEdit : undefined}
             onSwipeDelete={handleSwipeDelete}
           />
@@ -265,15 +347,43 @@ export default function ExpensePage() {
           from useEffect; migrating to the key+unmount pattern removed the
           last setState-in-effect smell here. */}
       {modal.isOpen && (
-        <ExpenseFormModal
-          key={modal.key}
+        readonlyEditTarget ? (
+          <ExpenseReadonlyModal
+            key={modal.key}
+            isOpen
+            expense={readonlyEditTarget}
+            members={members}
+            currency={currency}
+            onClose={modal.close}
+          />
+        ) : (
+          <ExpenseFormModal
+            key={modal.key}
+            isOpen
+            editTarget={modal.editTarget}
+            defaultDate={new Date().toISOString().slice(0, 10)}
+            members={members}
+            isSaving={false}
+            onClose={modal.close}
+            onSave={handleSave}
+          />
+        )
+      )}
+
+      {/* Settlement record sheet — opens when the receiver taps「済み」
+          on a suggestion row. Conditionally rendered + keyed so each
+          open resets internal state from fresh props (same pattern as
+          ExpenseFormModal above). */}
+      {recordTarget && (
+        <SettlementRecordSheet
+          key={`${recordTarget.fromUid}-${recordTarget.toUid}-${recordTarget.amountMinor}`}
           isOpen
-          editTarget={modal.editTarget}
-          defaultDate={new Date().toISOString().slice(0, 10)}
+          onClose={() => setRecordTarget(null)}
+          onSave={handleRecordSettlement}
+          suggested={recordTarget}
+          tripCurrency={currency}
           members={members}
           isSaving={false}
-          onClose={modal.close}
-          onSave={handleSave}
         />
       )}
 

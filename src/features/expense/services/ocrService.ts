@@ -91,9 +91,17 @@ export interface OcrResult {
   category?: OcrCategory
 }
 
-import { WORKER_BASE_URL } from '@/services/workerBase'
+import { WORKER_BASE_URL, requireWorkerWriteBase } from '@/services/workerBase'
 
-export type OcrErrorKind = 'auth' | 'rate-limit' | 'parse' | 'network' | 'unknown'
+export type OcrErrorKind =
+  | 'auth'
+  | 'rate-limit'
+  | 'parse'
+  | 'network'
+  | 'unavailable'
+  | 'stale'
+  | 'forbidden'
+  | 'unknown'
 
 // Field declared explicitly (not via constructor-param syntax) because the
 // project's tsconfig sets `erasableSyntaxOnly`, which forbids parameter
@@ -179,6 +187,9 @@ export async function ocrReceipt(file: File, currency?: string): Promise<OcrResu
   if (res.status === 401) throw new OcrError('Session expired',     'auth')
   if (res.status === 429) throw new OcrError('Rate limit reached',  'rate-limit')
   if (res.status === 422) throw new OcrError('Could not read receipt', 'parse')
+  if (res.status === 502 || res.status === 503 || res.status === 504) {
+    throw new OcrError('OCR service is temporarily unavailable', 'unavailable')
+  }
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
     throw new OcrError(`OCR failed (${res.status}): ${detail.slice(0, 120)}`, 'unknown')
@@ -186,4 +197,114 @@ export async function ocrReceipt(file: File, currency?: string): Promise<OcrResu
 
   const data = await res.json() as OcrResult
   return data
+}
+
+/** Response envelope for the re-OCR-existing-receipt endpoint. Carries the
+ *  OCR candidate PLUS race metadata the caller checks before applying:
+ *  `sourceReceiptPath` (the object the Worker actually read) and
+ *  `expenseUpdatedAt` (the doc's updatedAt at OCR time). */
+export interface ExpenseReceiptOcrResponse {
+  result:            OcrResult
+  sourceReceiptPath: string
+  expenseUpdatedAt?: string
+}
+
+/**
+ * Re-run OCR against an EXISTING expense's stored receipt. The client never
+ * names the object — the Worker reads receipt.path from the Firestore doc
+ * (BOLA-safe) and enforces /expense-update permissions (owner/editor;
+ * settlement-locked ⇒ owner). Used by the edit-modal "再読み取り" button
+ * when there's no freshly-picked File (the old receipt is only a URL).
+ *
+ * Returns the OCR result + race metadata; the CALLER must verify the result
+ * still applies to the open modal (receipt path unchanged, expense not
+ * edited mid-flight) before applying it.
+ */
+export async function ocrExistingExpenseReceipt(
+  tripId:       string,
+  expenseId:    string,
+  currencyHint?: string,
+): Promise<ExpenseReceiptOcrResponse> {
+  const { auth } = await getFirebaseAuth()
+  const user = auth.currentUser
+  if (!user) throw new OcrError('Not signed in', 'auth')
+  const token = await user.getIdToken()
+
+  // Privileged data-plane: this route reads the expense doc + downloads the
+  // stored receipt with the Worker's admin service-account. Unlike the
+  // caller-supplied-bytes /ocr route, it MUST NOT fall back to the prod
+  // Worker from an unconfigured preview/local build (that would read prod
+  // Firestore/Storage). requireWorkerWriteBase() is the same no-prod-fallback
+  // gate the mutating endpoints use — it enforces an explicit
+  // VITE_WORKER_BASE_URL and throws otherwise.
+  const base = requireWorkerWriteBase()
+
+  let res: Response
+  try {
+    res = await fetch(`${base}/expense-receipt-ocr`, {
+      method:  'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      // ONLY identifiers cross the wire — never receipt.path / receipt.url.
+      body:    JSON.stringify({ tripId, expenseId, ...(currencyHint ? { currencyHint } : {}) }),
+      signal:  AbortSignal.timeout(60_000),
+    })
+  } catch (e) {
+    const err = e as Error
+    if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+      throw new OcrError('OCR request timed out', 'network')
+    }
+    throw new OcrError(`Network error: ${err.message}`, 'network')
+  }
+
+  if (res.status === 401) throw new OcrError('Session expired',        'auth')
+  if (res.status === 429) throw new OcrError('Rate limit reached',     'rate-limit')
+  // 403 = permission lost since the modal opened: the caller is no longer
+  // owner/editor, OR the expense became settlement-locked (someone recorded
+  // 済み mid-OCR) and the caller isn't the trip owner. Either way a re-OCR
+  // edit can't be applied — give it a distinct kind so the UI shows an
+  // actionable message, not a raw "OCR failed (403)".
+  if (res.status === 403) throw new OcrError('Forbidden: cannot edit this expense', 'forbidden')
+  // 409 = the Worker's post-OCR revalidation found the receipt/expense
+  // changed while Gemini was running → the result is for a stale image.
+  if (res.status === 409) throw new OcrError('Expense changed during OCR', 'stale')
+  // 422 = Gemini couldn't read; 415 = stored object isn't an image
+  // (shouldn't reach here — the button gates on image receipts — but map
+  // it to the same "couldn't read" copy rather than a raw status).
+  if (res.status === 422 || res.status === 415) throw new OcrError('Could not read receipt', 'parse')
+  if (res.status === 502 || res.status === 503 || res.status === 504) {
+    throw new OcrError('OCR service is temporarily unavailable', 'unavailable')
+  }
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new OcrError(`OCR failed (${res.status}): ${detail.slice(0, 120)}`, 'unknown')
+  }
+
+  return await res.json() as ExpenseReceiptOcrResponse
+}
+
+/**
+ * Race guard for re-OCR of an existing receipt: is the returned result still
+ * applicable to the modal that fired the request? True only when the Worker
+ * OCR'd the SAME receipt path the caller captured at request time AND — when
+ * BOTH sides carry it — the expense's `updatedAt` is unchanged. A missing
+ * `updatedAt` on either side falls back to the receipt-path check alone.
+ *
+ * Why: between firing the request and the response landing, another client
+ * could replace the receipt (path changes) or edit the expense (updatedAt
+ * advances). Applying a stale OCR result would overwrite the draft with
+ * items for a different image, so the caller discards it instead.
+ *
+ * `updatedAtMillis` is the captured `Timestamp.toMillis()`; `expenseUpdatedAt`
+ * is the Worker's RFC3339 string — compared at millisecond precision (both
+ * derive from the same Firestore write, so their millis match exactly).
+ */
+export function ocrResultStillApplicable(
+  captured: { receiptPath: string; updatedAtMillis?: number },
+  response: { sourceReceiptPath: string; expenseUpdatedAt?: string },
+): boolean {
+  if (response.sourceReceiptPath !== captured.receiptPath) return false
+  if (response.expenseUpdatedAt && captured.updatedAtMillis != null) {
+    return new Date(response.expenseUpdatedAt).getTime() === captured.updatedAtMillis
+  }
+  return true
 }

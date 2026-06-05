@@ -7,7 +7,7 @@
 // onDelete are omitted and the shell renders a plain non-swipeable
 // row. Tap-to-edit still works in that branch — viewers can read
 // details.
-import { Loader2 } from 'lucide-react'
+import { Loader2, Lock } from 'lucide-react'
 import type { Expense } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import SwipeableShell from '@/components/ui/SwipeableShell'
@@ -31,6 +31,8 @@ export interface SwipeableExpenseItemProps {
    *  via the `temp-` id prefix; UPDATE preserves the real server id and
    *  needs this signal to surface the same 保存中… visual. */
   isUpdating?:  boolean
+  /** Settled-source row locked for non-owner editors. */
+  isLocked?:    boolean
   /** Swipe-state controlled by parent (useSwipeOpen). Optional — when
    *  any of these are absent the row renders without swipe affordance
    *  (viewers, or pending optimistic rows). */
@@ -42,7 +44,7 @@ export interface SwipeableExpenseItemProps {
 
 function SwipeableExpenseItem({
   expense, payer, summary, categoryEmoji, currency,
-  isOpen, isUpdating, onSelect, onOpen, onClose, onDelete,
+  isOpen, isUpdating, isLocked, onSelect, onOpen, onClose, onDelete,
 }: SwipeableExpenseItemProps) {
   // Rows added via optimistic update carry a `temp-` prefixed id until
   // the Firestore + Storage round-trip lands. UPDATE mutations preserve
@@ -83,6 +85,11 @@ function SwipeableExpenseItem({
               <>
                 <Loader2 size={11} strokeWidth={2.2} className="animate-spin shrink-0" />
                 <span>保存中…</span>
+              </>
+            ) : isLocked ? (
+              <>
+                <Lock size={11} strokeWidth={2.2} className="shrink-0" />
+                <span>清算済み</span>
               </>
             ) : (
               <>

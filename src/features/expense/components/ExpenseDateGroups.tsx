@@ -40,6 +40,8 @@ interface Props {
    *  to each row so it can show the 保存中… pill. Page derives this
    *  via `usePendingMutationIds(expenseUpdateMutationKey, 'expenseId')`. */
   pendingUpdateIds: Set<string>
+  /** Settled-source expenses are view-only for non-owner editors. */
+  readonlyExpenseIds?: Set<string>
   /** Tap on an expense row. Optional — viewers omit it (the page gates
    *  on canWrite) so SwipeableExpenseItem renders read-only. */
   onSelect?:     (e: Expense) => void
@@ -47,7 +49,7 @@ interface Props {
 }
 
 export default function ExpenseDateGroups({
-  expenses, members, currency, canWrite, swipe, pendingUpdateIds, onSelect, onSwipeDelete,
+  expenses, members, currency, canWrite, swipe, pendingUpdateIds, readonlyExpenseIds, onSelect, onSwipeDelete,
 }: Props) {
   const grouped = groupBy(expenses, e => e.date)
   const dates = Object.keys(grouped).sort((a, b) => (a < b ? 1 : -1))
@@ -114,7 +116,10 @@ export default function ExpenseDateGroups({
                 {items.map(e => {
                   // Viewer mode skips swipe affordance + delete callback so
                   // SwipeableExpenseItem renders a plain tap-to-edit row.
-                  const swipeProps = canWrite ? swipe.bindRow(e.id) : {}
+                  const isReadonly = readonlyExpenseIds?.has(e.id) ?? false
+                  const canSelectRow = canWrite && !!onSelect
+                  const canMutateRow = canWrite && !isReadonly
+                  const swipeProps = canMutateRow ? swipe.bindRow(e.id) : {}
                   return (
                     <SwipeableExpenseItem
                       key={e.id}
@@ -124,9 +129,10 @@ export default function ExpenseDateGroups({
                       categoryEmoji={CATEGORY_EMOJI[e.category]}
                       currency={currency}
                       isUpdating={pendingUpdateIds.has(e.id)}
+                      isLocked={isReadonly}
                       {...swipeProps}
-                      onSelect={onSelect ? () => { swipe.closeAll(); onSelect(e) } : undefined}
-                      onDelete={canWrite ? () => onSwipeDelete(e) : undefined}
+                      onSelect={canSelectRow ? () => { swipe.closeAll(); onSelect(e) } : undefined}
+                      onDelete={canMutateRow ? () => onSwipeDelete(e) : undefined}
                     />
                   )
                 })}

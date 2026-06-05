@@ -216,8 +216,29 @@ export async function workerFetch(
   if (DEFINITIVE_REJECT_STATUSES.has(res.status)) {
     throw new WorkerRejected(res.status, message)
   }
-  // 5xx / unknown -- Worker may have partially committed.
+  // 5xx / unknown -- ambiguous BY DEFAULT (the Worker may have committed
+  // before the response was lost). EXCEPTION: a JSON body with
+  // `precommit: true` is the Worker explicitly stating the failure was
+  // thrown BEFORE any Firestore write (FX provider 502, read-cap 503 in a
+  // single-tx endpoint). That's definitively safe to roll back, so surface
+  // it as WorkerRejected instead of leaving a phantom optimistic row +
+  // misleading "still confirming" toast.
+  if (isPrecommitBody(detail)) {
+    throw new WorkerRejected(res.status, message)
+  }
   throw new WorkerAmbiguous(message, undefined)
+}
+
+/** True when the Worker error body explicitly marks the failure as
+ *  pre-commit (`{ "precommit": true, ... }`). Defensive parse: a non-JSON
+ *  or malformed body falls back to ambiguous (returns false), preserving
+ *  the safe default for genuine response-loss / infra 5xx. */
+function isPrecommitBody(text: string): boolean {
+  try {
+    return (JSON.parse(text) as { precommit?: unknown })?.precommit === true
+  } catch {
+    return false
+  }
 }
 
 /**

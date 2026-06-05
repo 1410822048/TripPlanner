@@ -2,7 +2,9 @@
 //
 // Phase 2 of the FX multicurrency design (see memory:
 // fx-multicurrency-design). Worker-authoritative FX rate lookup +
-// snapshot construction for the expense-write path.
+// snapshot construction, shared by the expense-write AND
+// settlement-write paths (a snapshot records one source→target
+// conversion event; how the consumer uses it differs — see FxSnapshot).
 //
 // Why this lives in the Worker and not the client:
 //   The expense's stored `amountMinor` is the target-currency
@@ -83,17 +85,24 @@ export class FxError extends Error {
   }
 }
 
-/** Snapshot persisted on the expense doc alongside `amountMinor`. Both
- *  the rate decimal AND the rateDate are stored so the client can
+/** Snapshot persisted alongside a money amount (expense or settlement).
+ *  Both the rate decimal AND the rateDate are stored so the client can
  *  display "USD 12.34 → JPY 1804 @ 146.2 (rate 2026-05-29)" without
  *  re-resolving the cache.
  *
- *  `convertedAmountMinor` is the materialized target-currency total
- *  AND must equal `expense.amountMinor` after the Worker tx commits.
- *  Storing it here is redundant for that field but lets a future
- *  auditor recompute conversion without having to recover the
- *  fraction-digit counts from the currency code -- it's a self-
- *  contained record of one conversion event. */
+ *  `convertedAmountMinor` is the FX forward result: `source → target`
+ *  via half-even rounding. Its relationship to the consumer's ledger
+ *  amount depends on the path:
+ *    - expense-write: convertedAmountMinor IS the materialized
+ *      `expense.amountMinor` (they're equal after the tx commits).
+ *    - settlement-write: DECOUPLED. The ledger `amountMinor` is the
+ *      pair-remaining (full clear of the suggested debt); the source
+ *      is inverse-derived at-most-remaining, so the forward
+ *      convertedAmountMinor may be ≤ amountMinor by a few minor units
+ *      (half-even plateau) — intentional, NOT a drift bug.
+ *  Either way it's a self-contained record of one conversion event:
+ *  a future auditor can recompute it without recovering fraction-digit
+ *  counts from the currency code. */
 export interface FxSnapshot {
   provider:             'frankfurter-v2'
   baseCurrency:         string
@@ -114,6 +123,27 @@ export interface GetFxSnapshotInput {
   sourceAmountMinor:     number  // signed integer minor units
   sourceFractionDigits:  number
   targetFractionDigits:  number
+}
+
+/** Just the rate, without the snapshot wrapper. Used by callers that
+ *  need to inverse-derive a source amount BEFORE they can build the full
+ *  snapshot — settlement-write does this: it computes pair-remaining in
+ *  trip-currency, then asks for the rate, then inverse-derives the
+ *  source amount that doesn't overshoot remaining. The full
+ *  `getFxSnapshot` is then a thin convert+package over this helper. */
+export interface ResolveFxRateInput {
+  requestedDate:  string
+  sourceCurrency: string
+  tripCurrency:   string
+}
+export interface ResolvedFxRate {
+  /** May differ from requestedDate (weekend / pre-publish). */
+  rateDate:    string
+  /** Canonical decimal per fx-core. */
+  rateDecimal: string
+  /** Epoch ms the rate was resolved (cache hit or provider). Lets the
+   *  caller compose `fxSnapshot.fetchedAtMs` without a second `now`. */
+  fetchedAtMs: number
 }
 
 /** Test seams. `now` lets tests fix "today" for future-date checks;
@@ -414,17 +444,74 @@ export async function getFxSnapshot(
   serviceAccountJson: string,
   options:            GetFxSnapshotOptions = {},
 ): Promise<FxSnapshot | null> {
+  // sourceAmountMinor sanity stays here (resolveFxRate doesn't see it).
+  if (!Number.isInteger(input.sourceAmountMinor)) {
+    throw new FxError('FX_INVALID_CURRENCY', 400, `sourceAmountMinor must be integer, got ${input.sourceAmountMinor}`)
+  }
+  if (!Number.isInteger(input.sourceFractionDigits) || input.sourceFractionDigits < 0 || input.sourceFractionDigits > 6) {
+    throw new FxError('FX_INVALID_CURRENCY', 400, `sourceFractionDigits out of range`)
+  }
+  if (!Number.isInteger(input.targetFractionDigits) || input.targetFractionDigits < 0 || input.targetFractionDigits > 6) {
+    throw new FxError('FX_INVALID_CURRENCY', 400, `targetFractionDigits out of range`)
+  }
+
+  const resolved = await resolveFxRate(
+    {
+      requestedDate:  input.requestedDate,
+      sourceCurrency: input.sourceCurrency,
+      tripCurrency:   input.tripCurrency,
+    },
+    serviceAccountJson,
+    options,
+  )
+  if (!resolved) return null
+
+  const convertedAmountMinor = convertMinorHalfEven({
+    sourceMinor:          input.sourceAmountMinor,
+    rateDecimal:          resolved.rateDecimal,
+    sourceFractionDigits: input.sourceFractionDigits,
+    targetFractionDigits: input.targetFractionDigits,
+  })
+
+  return {
+    provider:             'frankfurter-v2',
+    baseCurrency:         input.sourceCurrency,
+    quoteCurrency:        input.tripCurrency,
+    requestedDate:        input.requestedDate,
+    rateDate:             resolved.rateDate,
+    rateDecimal:          resolved.rateDecimal,
+    sourceAmountMinor:    input.sourceAmountMinor,
+    convertedAmountMinor,
+    fetchedAtMs:          resolved.fetchedAtMs,
+  }
+}
+
+/** Resolve just the canonical rate + rateDate for a (requestedDate,
+ *  base, quote) tuple. Cache-aware (same key + write-through path as
+ *  `getFxSnapshot`). Returns `null` when source === trip (degenerate
+ *  path: caller skips conversion). Validates the rate-only subset of
+ *  the input; sourceAmountMinor / fraction digits live on
+ *  `getFxSnapshot` since rate resolution doesn't depend on them. */
+export async function resolveFxRate(
+  input:              ResolveFxRateInput,
+  serviceAccountJson: string,
+  options:            GetFxSnapshotOptions = {},
+): Promise<ResolvedFxRate | null> {
   const now       = options.now       ?? new Date()
   const fetchImpl = options.fetchImpl ?? fetch
 
-  validateInput(input)
+  if (!ISO_DATE_RE.test(input.requestedDate)) {
+    throw new FxError('FX_INVALID_DATE', 400, `requestedDate must be YYYY-MM-DD, got ${input.requestedDate}`)
+  }
+  if (!CCY_RE.test(input.sourceCurrency)) {
+    throw new FxError('FX_INVALID_CURRENCY', 400, `sourceCurrency must be ISO 4217 (3 uppercase letters), got ${input.sourceCurrency}`)
+  }
+  if (!CCY_RE.test(input.tripCurrency)) {
+    throw new FxError('FX_INVALID_CURRENCY', 400, `tripCurrency must be ISO 4217 (3 uppercase letters), got ${input.tripCurrency}`)
+  }
 
-  // Degenerate path: same currency, no conversion needed.
   if (input.sourceCurrency === input.tripCurrency) return null
 
-  // Future-date guard. Use string compare on YYYY-MM-DD: lexicographic
-  // ordering matches calendar ordering for the canonical ISO 8601 date
-  // format, no Date parsing round-trip needed.
   const todayUtc = toUtcDateString(now)
   if (input.requestedDate > todayUtc) {
     throw new FxError(
@@ -438,79 +525,35 @@ export async function getFxSnapshot(
 
   const cacheKey = fxCacheKey(input.requestedDate, input.sourceCurrency, input.tripCurrency)
 
-  let rateDate:    string
-  let rateDecimal: string
-
   const cached = await readCache(accessToken, projectId, cacheKey, fetchImpl)
   if (cached) {
-    rateDate    = cached.rateDate
-    rateDecimal = cached.rateDecimal
-  } else {
-    const provider = await fetchProviderRate(
-      input.requestedDate,
-      input.sourceCurrency,
-      input.tripCurrency,
-      fetchImpl,
-    )
-    rateDate    = provider.rateDate
-    rateDecimal = provider.rateDecimal
-    // Best-effort cache write. Frankfurter returned a valid rate and
-    // we'll use it regardless -- a Firestore hiccup here shouldn't
-    // fail the expense-create. Worst case: the next request for the
-    // same date refetches from Frankfurter (~300ms, cheap).
-    try {
-      await writeCache(accessToken, projectId, cacheKey, {
-        base:          input.sourceCurrency,
-        quote:         input.tripCurrency,
-        requestedDate: input.requestedDate,
-        rateDate,
-        rateDecimal,
-        nowMs:         now.getTime(),
-      }, fetchImpl)
-    } catch (e) {
-      console.warn(`[fx] cache write failed for ${cacheKey}: ${(e as Error).message}`)
+    return {
+      rateDate:    cached.rateDate,
+      rateDecimal: cached.rateDecimal,
+      fetchedAtMs: now.getTime(),
     }
   }
-
-  const convertedAmountMinor = convertMinorHalfEven({
-    sourceMinor:          input.sourceAmountMinor,
-    rateDecimal,
-    sourceFractionDigits: input.sourceFractionDigits,
-    targetFractionDigits: input.targetFractionDigits,
-  })
-
+  const provider = await fetchProviderRate(
+    input.requestedDate,
+    input.sourceCurrency,
+    input.tripCurrency,
+    fetchImpl,
+  )
+  try {
+    await writeCache(accessToken, projectId, cacheKey, {
+      base:          input.sourceCurrency,
+      quote:         input.tripCurrency,
+      requestedDate: input.requestedDate,
+      rateDate:      provider.rateDate,
+      rateDecimal:   provider.rateDecimal,
+      nowMs:         now.getTime(),
+    }, fetchImpl)
+  } catch (e) {
+    console.warn(`[fx] cache write failed for ${cacheKey}: ${(e as Error).message}`)
+  }
   return {
-    provider:             'frankfurter-v2',
-    baseCurrency:         input.sourceCurrency,
-    quoteCurrency:        input.tripCurrency,
-    requestedDate:        input.requestedDate,
-    rateDate,
-    rateDecimal,
-    sourceAmountMinor:    input.sourceAmountMinor,
-    convertedAmountMinor,
-    fetchedAtMs:          now.getTime(),
-  }
-}
-
-// ─── Validation ───────────────────────────────────────────────────
-
-function validateInput(input: GetFxSnapshotInput): void {
-  if (!ISO_DATE_RE.test(input.requestedDate)) {
-    throw new FxError('FX_INVALID_DATE', 400, `requestedDate must be YYYY-MM-DD, got ${input.requestedDate}`)
-  }
-  if (!CCY_RE.test(input.sourceCurrency)) {
-    throw new FxError('FX_INVALID_CURRENCY', 400, `sourceCurrency must be ISO 4217 (3 uppercase letters), got ${input.sourceCurrency}`)
-  }
-  if (!CCY_RE.test(input.tripCurrency)) {
-    throw new FxError('FX_INVALID_CURRENCY', 400, `tripCurrency must be ISO 4217 (3 uppercase letters), got ${input.tripCurrency}`)
-  }
-  if (!Number.isInteger(input.sourceAmountMinor)) {
-    throw new FxError('FX_INVALID_CURRENCY', 400, `sourceAmountMinor must be integer, got ${input.sourceAmountMinor}`)
-  }
-  if (!Number.isInteger(input.sourceFractionDigits) || input.sourceFractionDigits < 0 || input.sourceFractionDigits > 6) {
-    throw new FxError('FX_INVALID_CURRENCY', 400, `sourceFractionDigits out of range`)
-  }
-  if (!Number.isInteger(input.targetFractionDigits) || input.targetFractionDigits < 0 || input.targetFractionDigits > 6) {
-    throw new FxError('FX_INVALID_CURRENCY', 400, `targetFractionDigits out of range`)
+    rateDate:    provider.rateDate,
+    rateDecimal: provider.rateDecimal,
+    fetchedAtMs: now.getTime(),
   }
 }

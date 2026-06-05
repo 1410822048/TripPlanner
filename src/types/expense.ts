@@ -221,6 +221,17 @@ export interface Expense {
    * would re-scan every soft-deleted expense forever.
    */
   receiptPurgedAt?: Timestamp | null
+  /** Settlement ids that currently reference (lock) this expense. Each
+   *  settlement that applies to this expense adds its id on create and
+   *  removes it on delete, so the array is the single source of truth for
+   *  the lock: `settlementLockIds.length > 0` ⇔ locked. While locked,
+   *  non-owner editors may not edit / soft-delete the expense (owner
+   *  override remains for corrections). Worker-maintained via admin SDK;
+   *  clients cannot mutate it (rules restrict client expense updates to
+   *  the deletedAt/audit allowlist). Absent or empty both mean unlocked —
+   *  cross-pair safe: an expense shared by >2 people carries one id per
+   *  referencing settlement and stays locked until the last is removed. */
+  settlementLockIds?: string[]
   /** FX source-currency fields. Present iff this expense was created
    *  from a source currency different from the trip currency. Written
    *  by the Worker's foreign-mode router (expense-write.ts) on create
@@ -466,6 +477,10 @@ export const ExpenseDocSchema = z.object({
    *  it's always shaped, but optimistic patches / partial cache rows
    *  may omit it before reconciliation. */
   receiptPurgedAt: TimestampSchema.nullable().optional(),
+  // Worker-maintained lock-ref set (see SettlementRecord lineage). Absent
+  // on unsettled expenses; may be present-but-empty after the last
+  // referencing settlement is deleted. Lock ⇔ length > 0.
+  settlementLockIds: z.array(z.string().min(1).max(60)).optional(),
   /** FX source fields. Optional (NOT nullable) because same-currency
    *  expenses simply omit them; the Worker's foreign-mode router
    *  writes them in the same tx as the materialized trip-currency

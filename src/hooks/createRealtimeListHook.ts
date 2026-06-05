@@ -26,10 +26,11 @@
 // Query dedupes the cache slot but not the underlying snapshot
 // subscription). The shared listener is keyed by stringified queryKey
 // and is released when the last subscriber unmounts.
-import { useEffect } from 'react'
+import { useEffect, useSyncExternalStore } from 'react'
 import { useQuery, useQueryClient, type QueryKey, type UseQueryResult, type QueryClient } from '@tanstack/react-query'
 import { captureError } from '@/services/sentry'
 import { useUid } from '@/hooks/useAuth'
+import { filterTombstoned, pruneTombstones, subscribeTombstones, tombstoneVersion } from '@/utils/listTombstones'
 
 // Two-shape config — a discriminated union on `requiresUid` so callbacks
 // get the right `uid` type without callers writing `uid!`. Tried a
@@ -38,7 +39,7 @@ import { useUid } from '@/hooks/useAuth'
 // (it kept defaulting to false). The DU narrows cleanly once we check
 // `config.requiresUid` in the factory body.
 
-interface RealtimeListConfigBase {
+interface RealtimeListConfigBase<T> {
   /** Build the query key from the scope key. Used by both useQuery
    *  (initial fetch + cache slot) and the listener (setQueryData target).
    *  Receives uid so per-user cache scoping is automatic when needed. */
@@ -49,13 +50,21 @@ interface RealtimeListConfigBase {
    *  the initial fetch and the listener. Used by useInvites where only
    *  trip owners should subscribe. */
   isEnabled?: (key: string) => boolean
+  /** Opt-in to the optimistic-delete overlay (see utils/listTombstones).
+   *  When provided, the hook (a) `select`-filters out ids that a pending
+   *  Worker-authoritative delete has tombstoned, and (b) prunes a
+   *  tombstone once that id leaves the raw server snapshot (delete
+   *  confirmed). Pair with `useTripListMutation({ tombstone })`. Omit for
+   *  the common case (client-SDK deletes are latency-compensated and
+   *  don't need this). Returns the doc id for tombstone matching. */
+  tombstoneIdOf?: (item: T) => string
 }
 
 /** Variant for hooks that need a signed-in uid (trip-scoped subcollection
  *  listeners needing the `memberIds` filter). Callbacks receive
  *  `uid: string` — the factory's `enabled` gate plus the runtime
  *  `!!uid` check guarantees it. */
-export interface RealtimeListConfigUidRequired<T> extends RealtimeListConfigBase {
+export interface RealtimeListConfigUidRequired<T> extends RealtimeListConfigBase<T> {
   requiresUid: true
   initialFetch: (key: string, uid: string) => Promise<T[]>
   subscribe: (
@@ -68,7 +77,7 @@ export interface RealtimeListConfigUidRequired<T> extends RealtimeListConfigBase
 
 /** Variant for hooks that don't require uid (collection-group queries
  *  with built-in filtering, owner-only listings, etc.). */
-export interface RealtimeListConfigUidOptional<T> extends RealtimeListConfigBase {
+export interface RealtimeListConfigUidOptional<T> extends RealtimeListConfigBase<T> {
   requiresUid?: false
   initialFetch: (key: string, uid: string | undefined) => Promise<T[]>
   subscribe: (
@@ -220,6 +229,7 @@ export function createRealtimeListHook<T>(
       && (isEnabled ? isEnabled(key) : true)
       && (config.requiresUid ? !!uid : true)
 
+    const getId = config.tombstoneIdOf
     const result = useQuery<T[]>({
       queryKey:  queryKeyFactory(key ?? '', uid),
       queryFn:   () => runInitialFetch(key!, uid),
@@ -239,6 +249,36 @@ export function createRealtimeListHook<T>(
       return release
     }, [key, uid, callerEnabled, qc])
 
-    return result
+    // ── Optimistic-delete overlay (opt-in via config.tombstoneIdOf) ──
+    // Subscribe to the tombstone store for this key so the hook re-renders
+    // deterministically on every overlay transition (optimistic delete /
+    // rollback / server-confirmed prune) — independent of react-query's
+    // select memoisation + structural sharing. When no extractor is
+    // configured the subscribe is a no-op and getSnapshot is a constant, so
+    // there is zero behaviour change for the other list hooks.
+    const tombstoneKey = queryKeyFactory(key ?? '', uid)
+    useSyncExternalStore(
+      cb => (getId ? subscribeTombstones(tombstoneKey, cb) : () => {}),
+      () => (getId ? tombstoneVersion(tombstoneKey) : 0),
+      () => 0,
+    )
+
+    // Prune confirmed deletes against server truth. Runs whenever the raw
+    // server list for this key changes (listener push OR initialFetch /
+    // refetch): result.data IS the raw list (no select), so any tombstoned
+    // id that has left it has been deleted for real and its tombstone is
+    // dropped. Structural sharing keeps the ref stable across identical
+    // snapshots, so this only fires when contents actually changed.
+    useEffect(() => {
+      if (!getId || !key || !callerEnabled || !result.data) return
+      pruneTombstones(queryKeyFactory(key, uid), result.data, getId)
+    }, [result.data, getId, key, uid, callerEnabled])
+
+    if (!getId || !result.data) return result
+    // Apply the overlay at read-time. filterTombstoned returns the SAME ref
+    // when nothing is tombstoned, so the spread only produces a new object
+    // when there's an actual pending delete to hide.
+    const filtered = filterTombstoned(tombstoneKey, result.data, getId)
+    return (filtered === result.data ? result : { ...result, data: filtered }) as UseQueryResult<T[]>
   }
 }

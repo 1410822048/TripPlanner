@@ -9,6 +9,7 @@ import {
   canonicalizeRate,
   convertMinorHalfEven,
   currencyFractionDigits,
+  estimateSourceMinorAtMostTargetHalfEven,
   isCanonicalRateString,
   parseDecimalRate,
 } from './index'
@@ -273,6 +274,128 @@ describe('convertMinorHalfEven — input validation', () => {
   test('throws on non-canonical rate', () => {
     expect(() => convertMinorHalfEven({
       sourceMinor: 100, rateDecimal: '1.20',
+      sourceFractionDigits: 2, targetFractionDigits: 0,
+    })).toThrow()
+  })
+})
+
+describe('estimateSourceMinorAtMostTargetHalfEven', () => {
+  // The settlement OVERPAY repro: closest-policy seed picks source=120
+  // → forward=552, which the Worker rejects against a remaining debt
+  // of 550. At-most policy must back off to source=119 → forward=547,
+  // leaving 3 minor units unsettled rather than rolling back the row.
+  test('does not overshoot the remaining debt (settlement OVERPAY repro)', () => {
+    const sourceMinor = estimateSourceMinorAtMostTargetHalfEven({
+      targetMinor: 550, rateDecimal: '4.6',
+      sourceFractionDigits: 0, targetFractionDigits: 0,
+    })
+
+    expect(sourceMinor).toBe(119)
+    expect(convertMinorHalfEven({
+      sourceMinor, rateDecimal: '4.6',
+      sourceFractionDigits: 0, targetFractionDigits: 0,
+    })).toBe(547)
+  })
+
+  test('returns the exact inverse when forward conversion is exact', () => {
+    const sourceMinor = estimateSourceMinorAtMostTargetHalfEven({
+      targetMinor: 1804, rateDecimal: '146.2',
+      sourceFractionDigits: 2, targetFractionDigits: 0,
+    })
+
+    expect(sourceMinor).toBe(1234)
+    expect(convertMinorHalfEven({
+      sourceMinor, rateDecimal: '146.2',
+      sourceFractionDigits: 2, targetFractionDigits: 0,
+    })).toBe(1804)
+  })
+
+  test('returns the largest candidate at or under target (tie-edge)', () => {
+    // Closest-policy picks 122 (forward 549, the closer of 549/553).
+    // At-most policy also picks 122 here because 122 forward=549 <= 550.
+    const sourceMinor = estimateSourceMinorAtMostTargetHalfEven({
+      targetMinor: 550, rateDecimal: '4.5',
+      sourceFractionDigits: 0, targetFractionDigits: 0,
+    })
+
+    expect(sourceMinor).toBe(122)
+    expect(convertMinorHalfEven({
+      sourceMinor, rateDecimal: '4.5',
+      sourceFractionDigits: 0, targetFractionDigits: 0,
+    })).toBe(549)
+  })
+
+  test('returns 0 when target is 0', () => {
+    expect(estimateSourceMinorAtMostTargetHalfEven({
+      targetMinor: 0, rateDecimal: '4.6',
+      sourceFractionDigits: 0, targetFractionDigits: 0,
+    })).toBe(0)
+  })
+
+  // Weak-currency regression: low rates make the half-even rounding
+  // plateau wide. The naive ±5 scan around the inverse-floor (100,000)
+  // would have returned ~100,005 — visibly underfilling a 100-unit debt
+  // by ~99 source minor units in VND/IDR-style domains. Binary search
+  // must walk all the way out to the plateau edge at 100,500.
+  test('finds the plateau edge for low rates (weak-currency regression)', () => {
+    const sourceMinor = estimateSourceMinorAtMostTargetHalfEven({
+      targetMinor: 100, rateDecimal: '0.001',
+      sourceFractionDigits: 0, targetFractionDigits: 0,
+    })
+
+    expect(sourceMinor).toBe(100500)
+    expect(convertMinorHalfEven({
+      sourceMinor, rateDecimal: '0.001',
+      sourceFractionDigits: 0, targetFractionDigits: 0,
+    })).toBe(100)
+    // Tightness: the next minor unit MUST overshoot — otherwise the
+    // search returned an underfill, not the plateau edge.
+    expect(convertMinorHalfEven({
+      sourceMinor: sourceMinor + 1, rateDecimal: '0.001',
+      sourceFractionDigits: 0, targetFractionDigits: 0,
+    })).toBe(101)
+  })
+
+  // Sanity case: identity rate, no fraction-digit asymmetry. Largest
+  // safe = target. Locks the trivial endpoint so refactors of the
+  // search algorithm can't silently regress.
+  test('identity rate returns target exactly', () => {
+    expect(estimateSourceMinorAtMostTargetHalfEven({
+      targetMinor: 100, rateDecimal: '1',
+      sourceFractionDigits: 0, targetFractionDigits: 0,
+    })).toBe(100)
+  })
+
+  test('returns 0 when even one source minor unit would overshoot', () => {
+    // target=1 JPY, rate=150 (JPY per USD), sf=2 (USD), tf=0 (JPY).
+    // BigInt floor seeds estimate=6; scan covers 1..11. The smallest
+    // positive candidate (1 USD-minor = 0.01 USD) forwards to round
+    // half-even(1.5) = 2 JPY > 1, so EVERY scanned candidate overshoots.
+    // The function must fall through to the `best < 0 ? 0` return, not
+    // emit a positive source amount that the Worker would later reject.
+    expect(estimateSourceMinorAtMostTargetHalfEven({
+      targetMinor: 1, rateDecimal: '150',
+      sourceFractionDigits: 2, targetFractionDigits: 0,
+    })).toBe(0)
+  })
+
+  test('throws on negative target (settlements are non-negative)', () => {
+    expect(() => estimateSourceMinorAtMostTargetHalfEven({
+      targetMinor: -1, rateDecimal: '4.6',
+      sourceFractionDigits: 0, targetFractionDigits: 0,
+    })).toThrow(/non-negative/)
+  })
+
+  test('throws on non-integer target', () => {
+    expect(() => estimateSourceMinorAtMostTargetHalfEven({
+      targetMinor: 1.5, rateDecimal: '4.6',
+      sourceFractionDigits: 0, targetFractionDigits: 0,
+    })).toThrow()
+  })
+
+  test('throws on non-canonical rates', () => {
+    expect(() => estimateSourceMinorAtMostTargetHalfEven({
+      targetMinor: 100, rateDecimal: '1.20',
       sourceFractionDigits: 2, targetFractionDigits: 0,
     })).toThrow()
   })
