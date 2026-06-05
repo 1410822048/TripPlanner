@@ -28,22 +28,12 @@ import {
   type ExpenseAdjustmentScope,
   type ExpenseCategory,
   type ExpenseItem,
-  type ExpenseSplit,
   type CreateExpenseInput,
-  type SourceExpenseAdjustment,
-  type SourceExpenseItem,
-  type SourceExpenseSplit,
 } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import {
   adjustmentSign,
-  convertAndMaterializeFromSource,
   convertSourceLinesToTarget,
-  convertSourceSplitsToTarget,
-  materializeExpenseSplits,
-  MaterializeError,
-  type ConvertAndMaterializeSourceAdjustment,
-  type ConvertAndMaterializeSourceItem,
 } from '@tripmate/expense-materialize'
 import { convertMinorHalfEven } from '@tripmate/fx-core'
 import FormModalShell from '@/components/ui/FormModalShell'
@@ -64,10 +54,9 @@ import { useExpenseItems } from '../hooks/useExpenseItems'
 import { useFxPreview } from '@/hooks/useFxPreview'
 import { useOcrFlow } from '../hooks/useOcrFlow'
 import { ocrResultStillApplicable } from '../services/ocrService'
+import { buildExpenseFormResult } from '../services/buildExpenseFormResult'
 import {
-  moneyErrorMessage,
   normalizeMoneyTextForCurrency,
-  parsePositiveMoneyToMinorResult,
   safeReparseMoney,
   splitEqually,
 } from '../utils'
@@ -268,7 +257,7 @@ export default function ExpenseFormModal({
   // FX preview — only fetches when foreign-open AND inputs are usable
   // (the hook gates internally). Returns null rate while loading /
   // disabled; save-button gate below blocks submission until the rate
-  // resolves so validate() never has to assume a fallback.
+  // resolves so buildExpenseFormResult never has to assume a fallback.
   const fxPreview = useFxPreview({
     requestedDate:  state.date,
     sourceCurrency: state.sourceCurrency,
@@ -772,8 +761,8 @@ export default function ExpenseFormModal({
             // Draft editing can be temporarily out of balance
             // (items + adjustments != total). Do not hide every per-line
             // FX hint in that state; show independent approximate line
-            // conversions and let validate()/Worker enforce the exact
-            // materialized total on save.
+            // conversions and let buildExpenseFormResult/Worker enforce the
+            // exact materialized total on save.
             const convertedAmount = convertPreviewMinor(amountMinor)
             if (convertedAmount === undefined) return null
 
@@ -841,345 +830,45 @@ export default function ExpenseFormModal({
     splits.switchMode(mode, seed)
   }
 
-  function validate(): ExpenseFormResult | null {
-    const e: Record<string, string> = {}
-    if (!state.title.trim()) e.title = '請輸入標題'
-    // Specific reason via the Result wrapper — the legacy `if (!amountMinor)`
-    // branch coerced parse failures (e.g. JPY 12.34) to look like empty
-    // input and surfaced a misleading "請輸入金額". moneyErrorMessage maps
-    // the structured reason so the banner matches the actual problem.
-    const amountResult = parsePositiveMoneyToMinorResult(state.amountText, currency)
-    if (!amountResult.ok) e.amount = moneyErrorMessage(amountResult.reason, currency)
-    if (!state.date)         e.date = '請選擇日期'
-    if (!state.paidBy)       e.paidBy = '請選擇付款人'
-
-    // FX preview is REQUIRED in foreign mode — without a confirmed
-    // rateDecimal we'd either (a) bail to source-unit math and let the
-    // optimistic cache patch trip-currency totals/splits with the wrong
-    // domain, or (b) hit a non-null assertion in convertAndMaterializeFromSource.
-    // The Worker IS authoritative for the persisted rate, but the
-    // optimistic preview that lands in the list cache between submit and
-    // realtime reconcile MUST already be trip-currency — otherwise totals
-    // and Settlement summary read garbage for up to ~1s. Block submit on
-    // every "no rate" state with a precedence-aware reason so the user
-    // can fix the root cause (date / currency / network).
-    if (isForeignOpen && !e.amount && !fxPreview.rateDecimal) {
-      e.amount =
-        fxPreview.disabledReason === 'future-date'   ? '未来日付は換算できません' :
-        fxPreview.disabledReason === 'invalid-input' ? '通貨または日付を確認してください' :
-        fxPreview.isError                            ? '換算レートを取得できません。再試行してください' :
-                                                       '換算レートを取得中です。少し待ってから再送信してください'
-    }
-
-    let resultSplits: ExpenseSplit[] = []
-    // Always send `items` (even empty) so that clearing a receipt's items
-    // overwrites whatever was previously stored. Don't rely on deleteField
-    // gymnastics — empty array IS the canonical "no items" state.
-    // Strip the form-only amountText before persistence — ExpenseItem
-    // (the persisted shape) has no such field. In foreign mode these
-    // entries are in SOURCE-currency minor units; the convert-and-
-    // materialize step below promotes them to the trip-currency mirror.
-    let resultItems = items.items.map(it => ({
-      id:          it.id,
-      name:        it.name,
-      amountMinor: it.amountMinor,
-      assignees:   it.assignees,
-    }))
-    let resultSourceSplits: SourceExpenseSplit[] = []
-    const resultAdjustments: ExpenseAdjustment[] = items.hasItems
-      ? adjustments.map(adj => {
-          const label = adj.label.trim()
-          if (adj.scope === 'ITEM') {
-            return { ...adj, label }
-          }
-          return {
-            id:          adj.id,
-            label,
-            kind:        adj.kind,
-            scope:       'EXPENSE',
-            amountMinor: adj.amountMinor,
-          }
-        })
-      : []
-
-    if (items.hasItems) {
-      // Strict by-item validation. The user chose strict over lenient so
-      // both invariants must hold before save:
-      //   - every item is assigned to ≥1 person
-      //   - sum(items) + Σ adjustment sign·amountMinor === amountMinor
-      const noAssigneeIdx = items.items.findIndex(it => it.assignees.length === 0)
-      const blankNameIdx  = items.items.findIndex(it => !it.name.trim())
-      // Phase B: items are positive-int minor units. The setter clamps to
-      // ≥0; reject exact zero since that's almost certainly garbage (OCR
-      // mis-read or partial input).
-      const zeroAmountIdx = items.items.findIndex(it => it.amountMinor <= 0)
-      const blankAdjustmentIdx = resultAdjustments.findIndex(adj => !adj.label)
-      const zeroAdjustmentIdx  = resultAdjustments.findIndex(adj => adj.amountMinor <= 0)
-      const danglingAdjustmentIdx = resultAdjustments.findIndex(adj =>
-        adj.scope === 'ITEM' && !items.items.some(it => it.id === adj.targetItemId),
-      )
-      if (noAssigneeIdx >= 0) {
-        e.items = `行 ${noAssigneeIdx + 1}：分担者を選択してください`
-      } else if (blankNameIdx >= 0) {
-        e.items = `行 ${blankNameIdx + 1}：項目名を入力してください`
-      } else if (zeroAmountIdx >= 0) {
-        e.items = `行 ${zeroAmountIdx + 1}：金額を入力してください`
-      } else if (blankAdjustmentIdx >= 0) {
-        e.items = `調整 ${blankAdjustmentIdx + 1}: ラベルを入力してください`
-      } else if (zeroAdjustmentIdx >= 0) {
-        e.items = `調整 ${zeroAdjustmentIdx + 1}: 金額を入力してください`
-      } else if (danglingAdjustmentIdx >= 0) {
-        e.items = `調整 ${danglingAdjustmentIdx + 1}: 対象項目を選択してください`
-      } else if (itemsDiff !== 0) {
-        e.items = `明細合計 ${formatMinorAmount(effectiveItemsTotal, currency)} と請求書合計 ${formatMinorAmount(amountMinor, currency)} が一致しません`
-      }
-      if (!e.items && !isForeignOpen) {
-        // Same-currency by-item path — authoritative split derivation
-        // happens client-side via the trip-currency materializer. Matches
-        // the Worker recompute (same `@tripmate/expense-materialize`
-        // import); a throw here means the Worker would also reject
-        // SPLIT_PREVIEW_DRIFT, so we keep the modal open.
-        //
-        // Foreign-by-item splits are derived below via
-        // `convertAndMaterializeFromSource`, which runs the same
-        // materializer on the trip-currency conversion of these inputs.
-        try {
-          resultSplits = materializeExpenseSplits({
-            items:       resultItems,
-            adjustments: resultAdjustments,
-            members:     members.map(m => m.id),
-          })
-        } catch (err) {
-          e.items = err instanceof MaterializeError
-            ? `明細の計算エラー: ${err.message}`
-            : '明細の計算に失敗しました'
-        }
-      }
-    } else {
-      if (splits.state.mode === 'equal') {
-        if (includedArr.length === 0) e.splits = '至少選擇一位分攤人'
-        resultSplits = includedArr.map(id => ({ memberId: id, amountMinor: equalSplits[id] ?? 0 }))
-      } else {
-        resultSplits = members
-          .map(m => ({ memberId: m.id, amountMinor: customAmountOf(m.id) }))
-          .filter(s => s.amountMinor > 0)
-        if (resultSplits.length === 0) e.splits = '至少需有一人分攤'
-        else if (customDiff !== 0) e.splits = `分攤總和需等於 ${formatMinorAmount(amountMinor, currency)}`
-      }
-      // Manual foreign entry has no receipt rows. Persisting a synthetic
-      // item would leak an implementation detail into the UI, so the
-      // source-domain mirror is represented as hidden sourceSplits.
-      // Worker converts those splits authoritatively and writes canonical
-      // trip-currency splits without manufacturing visible items.
-      resultItems = []
-      if (isForeignOpen) {
-        resultSourceSplits = resultSplits.map(split => ({
-          memberId:          split.memberId,
-          sourceAmountMinor: split.amountMinor,
-        }))
-      }
-    }
-
-    setErrors(e)
-    if (Object.keys(e).length > 0) return null
-
-    // Phase 3c-1 foreign-mode branch — convert source-domain payload
-    // into trip-currency canonical form (items/adjustments/splits/amountMinor)
-    // via `@tripmate/expense-materialize::convertAndMaterializeFromSource`,
-    // and emit BOTH sides on the input. The service layer strips the
-    // trip-currency fields before hitting the Worker (which is
-    // authoritative); this client-side conversion only feeds the
-    // optimistic-cache patch so list rows / totals render correctly
-    // until the realtime listener reconciles. The validate() FX gate
-    // above guarantees fxPreview.rateDecimal is set when we get here —
-    // there is intentionally no source-unit fallback, since patching
-    // source-unit numbers into a trip-currency cache field would
-    // poison totals / Settlement summary for the optimistic window.
-    if (isForeignOpen) {
-      if (resultSourceSplits.length > 0) {
-        let converted: {
-          amountMinor: number
-          splits:      ExpenseSplit[]
-        }
-        try {
-          converted = convertSourceSplitsToTarget({
-            sourceSplits: resultSourceSplits.map(split => ({
-              memberId:    split.memberId,
-              amountMinor: split.sourceAmountMinor,
-            })),
-            sourceAmountMinor:     amountMinor,
-            rateDecimal:           fxPreview.rateDecimal!,
-            sourceFractionDigits:  currencyFractionDigits(state.sourceCurrency),
-            targetFractionDigits:  currencyFractionDigits(tripCurrency),
-          })
-        } catch (err) {
-          setErrors(prev => ({
-            ...prev,
-            splits: err instanceof MaterializeError
-              ? `換算エラー: ${err.message}`
-              : '換算の計算に失敗しました',
-          }))
-          return null
-        }
-
-        const input: CreateExpenseInput = {
-          title:             state.title.trim(),
-          amountMinor:       converted.amountMinor,
-          currency:          tripCurrency,
-          category:          state.category,
-          paidBy:            state.paidBy,
-          splits:            converted.splits,
-          date:              state.date,
-          items:             [],
-          adjustments:       [],
-          note:              state.note.trim() || undefined,
-          sourceCurrency:    state.sourceCurrency,
-          sourceAmountMinor: amountMinor,
-          sourceSplits:      resultSourceSplits,
-        }
-        return { input, attachment: att.pickAttachmentChange() }
-      }
-
-      const sourceItemsForMaterialize: ConvertAndMaterializeSourceItem[] = resultItems.map(it => ({
+  function handleSave() {
+    // Financial assembly + validation now lives in the pure
+    // `buildExpenseFormResult` (services/buildExpenseFormResult.ts) so it can
+    // be unit-tested without the component. The two side effects stay here:
+    //   - setErrors:               drive the inline field banners
+    //   - att.pickAttachmentChange: pull the receipt lifecycle into onSave
+    const result = buildExpenseFormResult({
+      title:          state.title,
+      amountText:     state.amountText,
+      date:           state.date,
+      category:       state.category,
+      paidBy:         state.paidBy,
+      note:           state.note,
+      sourceCurrency: state.sourceCurrency,
+      // Strip the form-only `amountText` — the builder works in minor units.
+      items: items.items.map(it => ({
         id:          it.id,
+        name:        it.name,
         amountMinor: it.amountMinor,
         assignees:   it.assignees,
-      }))
-      const sourceAdjustmentsForMaterialize: ConvertAndMaterializeSourceAdjustment[] = resultAdjustments.map(a => ({
-        id:           a.id,
-        kind:         a.kind,
-        scope:        a.scope,
-        amountMinor:  a.amountMinor,
-        targetItemId: a.targetItemId,
-      }))
-
-      // validate() guarantees fxPreview.rateDecimal is set when we
-      // reach this branch (foreign-mode submit is blocked on missing
-      // rate), so the non-null assertion is sound. The Worker still
-      // recomputes against its authoritative rate; this client-side
-      // materialize feeds the optimistic cache only.
-      let converted: {
-        amountMinor: number
-        items:       ConvertAndMaterializeSourceItem[]
-        adjustments: ConvertAndMaterializeSourceAdjustment[]
-        splits:      ExpenseSplit[]
-      }
-      try {
-        converted = convertAndMaterializeFromSource({
-          sourceItems:          sourceItemsForMaterialize,
-          sourceAdjustments:    sourceAdjustmentsForMaterialize,
-          sourceAmountMinor:    amountMinor,
-          rateDecimal:          fxPreview.rateDecimal!,
-          sourceFractionDigits: currencyFractionDigits(state.sourceCurrency),
-          targetFractionDigits: currencyFractionDigits(tripCurrency),
-          members:              members.map(m => m.id),
-        })
-      } catch (err) {
-        setErrors(prev => ({
-          ...prev,
-          items: err instanceof MaterializeError
-            ? `換算エラー: ${err.message}`
-            : '換算の計算に失敗しました',
-        }))
-        return null
-      }
-
-      // Zip names/labels back onto materialized output — the materializer
-      // doesn't carry display strings (currency-agnostic pure fn).
-      const tripItems: ExpenseItem[] = converted.items.map((mi, i) => ({
-        id:          mi.id,
-        name:        resultItems[i]!.name,
-        amountMinor: mi.amountMinor,
-        assignees:   mi.assignees,
-      }))
-      const tripAdjustments: ExpenseAdjustment[] = converted.adjustments.map((ma, i) => {
-        const srcLabel = resultAdjustments[i]!.label
-        return ma.scope === 'ITEM'
-          ? {
-              id:           ma.id,
-              label:        srcLabel,
-              kind:         ma.kind,
-              scope:        'ITEM' as const,
-              amountMinor:  ma.amountMinor,
-              targetItemId: ma.targetItemId!,
-            }
-          : {
-              id:          ma.id,
-              label:       srcLabel,
-              kind:        ma.kind,
-              scope:       'EXPENSE' as const,
-              amountMinor: ma.amountMinor,
-            }
-      })
-
-      // Source-domain persistence shapes — same id alignment as trip
-      // items / adjustments so the Worker's ExpenseDocSchema.superRefine
-      // ID pair-wise check passes on read-back.
-      const sourceItemsOut: SourceExpenseItem[] = resultItems.map(it => ({
-        id:                it.id,
-        name:              it.name,
-        sourceAmountMinor: it.amountMinor,
-        assignees:         it.assignees,
-      }))
-      const sourceAdjustmentsOut: SourceExpenseAdjustment[] = resultAdjustments.map(a =>
-        a.scope === 'ITEM'
-          ? {
-              id:                a.id,
-              label:             a.label,
-              kind:              a.kind,
-              scope:             'ITEM' as const,
-              sourceAmountMinor: a.amountMinor,
-              targetItemId:      a.targetItemId!,
-            }
-          : {
-              id:                a.id,
-              label:             a.label,
-              kind:              a.kind,
-              scope:             'EXPENSE' as const,
-              sourceAmountMinor: a.amountMinor,
-            },
-      )
-
-      const input: CreateExpenseInput = {
-        title:             state.title.trim(),
-        amountMinor:       converted.amountMinor,
-        currency:          tripCurrency,
-        category:          state.category,
-        paidBy:            state.paidBy,
-        splits:            converted.splits,
-        date:              state.date,
-        items:             tripItems,
-        adjustments:       tripAdjustments,
-        note:              state.note.trim() || undefined,
-        sourceCurrency:    state.sourceCurrency,
-        sourceAmountMinor: amountMinor,
-        sourceItems:       sourceItemsOut,
-        sourceAdjustments: sourceAdjustmentsOut,
-      }
-      return { input, attachment: att.pickAttachmentChange() }
+      })),
+      adjustments,
+      splitMode:     splits.state.mode,
+      includedIds:   [...splits.state.included],
+      customAmounts: splits.state.custom,
+      tripCurrency,
+      memberIds:     members.map(m => m.id),
+      fx: {
+        rateDecimal:    fxPreview.rateDecimal,
+        disabledReason: fxPreview.disabledReason,
+        isError:        fxPreview.isError,
+      },
+    })
+    if (!result.ok) {
+      setErrors(result.errors)
+      return
     }
-
-    const input: CreateExpenseInput = {
-      title:       state.title.trim(),
-      amountMinor,
-      currency,
-      category:    state.category,
-      paidBy:      state.paidBy,
-      splits:      resultSplits,
-      date:        state.date,
-      items:       resultItems,
-      // Phase B: adjustments only attach to by-item mode. The Worker
-      // rejects adjustments-without-items, so blanking here is the
-      // single source of truth for "manual entry has no adjustments".
-      adjustments: resultAdjustments,
-      note:        state.note.trim() || undefined,
-    }
-    return { input, attachment: att.pickAttachmentChange() }
-  }
-
-  function handleSave() {
-    const result = validate()
-    if (result) onSave(result)
+    setErrors({})
+    onSave({ input: result.input, attachment: att.pickAttachmentChange() })
   }
 
   // ─── Receipt section helpers ────────────────────────────────────────
@@ -1429,7 +1118,7 @@ export default function ExpenseFormModal({
           className={[
             'flex items-center gap-2 px-3 py-2 rounded-input text-[12px] font-medium',
             // Warn for terminal "no rate" states — submit will be
-            // blocked by the validate() FX gate, so the banner must
+            // blocked by the buildExpenseFormResult FX gate, so the banner must
             // read as actionable. Loading stays teal-pale (transient,
             // shows a spinner) so it doesn't masquerade as an error.
             fxPreview.disabledReason || fxPreview.isError
