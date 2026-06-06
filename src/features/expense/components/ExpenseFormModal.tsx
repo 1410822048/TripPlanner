@@ -1056,6 +1056,15 @@ export default function ExpenseFormModal({
                 {adjustments.map((adj, i) => {
                   const sign = adjustmentSign(adj.kind)
                   const convertedAdjustmentAmount = foreignLinePreview?.adjustmentAmountById.get(adj.id)
+                  // UX B — who this adjustment hits: 全体 for EXPENSE scope,
+                  // the target item + its assignees for ITEM scope. Makes
+                  // 「クーポン −¥30」legible (扣哪個項目 / 影響誰).
+                  const targetItem = adj.scope === 'ITEM'
+                    ? items.items.find(it => it.id === adj.targetItemId)
+                    : undefined
+                  const targetAssignees = targetItem
+                    ? members.filter(m => targetItem.assignees.includes(m.id))
+                    : []
                   return (
                     <div key={adj.id} className="flex flex-col gap-2 px-2.5 py-2.5">
                       <div className="grid grid-cols-[minmax(0,1fr)_minmax(112px,38%)] items-start gap-2">
@@ -1133,6 +1142,26 @@ export default function ExpenseFormModal({
                           ))}
                         </select>
                       )}
+
+                      {/* UX B — 「誰に効くか」 summary. EXPENSE = 全体; ITEM =
+                          target item name + its assignee avatars. */}
+                      {adj.scope === 'EXPENSE' ? (
+                        <div className="text-[10.5px] text-muted">対象: 全体</div>
+                      ) : targetItem ? (
+                        <div className="flex items-center gap-1.5 text-[10.5px] text-muted min-w-0">
+                          <span className="shrink-0">対象:</span>
+                          <span className="truncate font-medium text-ink">
+                            {targetItem.name.trim() || '項目'}
+                          </span>
+                          {targetAssignees.length > 0 && (
+                            <span className="flex items-center gap-0.5 shrink-0">
+                              {targetAssignees.map(m => (
+                                <MemberAvatar key={m.id} member={m} size={16} />
+                              ))}
+                            </span>
+                          )}
+                        </div>
+                      ) : null}
                     </div>
                   )
                 })}
