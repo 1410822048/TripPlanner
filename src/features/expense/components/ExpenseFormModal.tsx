@@ -23,7 +23,6 @@ import { Camera, Globe, Loader2, Plus, ScanLine, Trash2, Upload } from 'lucide-r
 import {
   EXPENSE_ADJUSTMENT_KINDS,
   type Expense,
-  type ExpenseAdjustment,
   type ExpenseAdjustmentKind,
   type ExpenseAdjustmentScope,
   type ExpenseCategory,
@@ -51,12 +50,12 @@ import { useFormReducer } from '@/hooks/useFormReducer'
 import { useAttachment, type AttachmentChange } from '@/hooks/useAttachment'
 import { useSplitsState, type SplitMode } from '../hooks/useSplitsState'
 import { useExpenseItems } from '../hooks/useExpenseItems'
+import { useExpenseMoneyDraft } from '../hooks/useExpenseMoneyDraft'
 import { useFxPreview } from '@/hooks/useFxPreview'
 import { useOcrFlow } from '../hooks/useOcrFlow'
 import { ocrResultStillApplicable } from '../services/ocrService'
 import { buildExpenseFormResult } from '../services/buildExpenseFormResult'
 import {
-  normalizeMoneyTextForCurrency,
   safeReparseMoney,
   splitEqually,
 } from '../utils'
@@ -103,36 +102,11 @@ const CATEGORIES: { value: ExpenseCategory; label: string }[] = [
 // `Record<string, unknown>` since interfaces are open for declaration
 // merging. Type aliases are closed and pass useFormReducer's constraint.
 type FormState = {
-  title:      string
-  /** Raw decimal string the user types (e.g. "12.34" / "1200"). The
-   *  canonical integer minor amount is rederived at validate-time via
-   *  parseMoneyToMinor — wire never carries the float. In foreign-mode
-   *  this string is in SOURCE currency; the trip-currency preview is
-   *  computed at validate-time via convertAndMaterializeFromSource. */
-  amountText: string
-  date:       string
-  category:   ExpenseCategory
-  paidBy:     string
-  note:       string
-  /** Phase 3c-1 — source currency of the receipt. Equal to the trip
-   *  currency when the user hasn't opened the foreign-mode section
-   *  (degenerate path, behaves like pre-3c). When different, the form
-   *  parses amount + items in this currency and emits the source-domain
-   *  payload alongside the trip-currency preview at validate-time. */
-  sourceCurrency: string
-}
-
-/** Default code used when the user toggles 「外貨で記録」 open. USD picked
- *  as the global default; the CurrencyPicker lets them switch immediately.
- *  Edge case: if the trip currency itself is USD, fall back to EUR so the
- *  toggle never expands into a degenerate (source === trip) state.
- *
- *  Future work could remember "last foreign currency used" per user via
- *  Zustand persist, but that's tracked separately — Phase 3c-1 ships with
- *  the simple constant.
- */
-function defaultForeignCurrencyFor(tripCurrency: string): string {
-  return tripCurrency === 'USD' ? 'EUR' : 'USD'
+  title:    string
+  date:     string
+  category: ExpenseCategory
+  paidBy:   string
+  note:     string
 }
 
 export interface ExpenseFormResult {
@@ -197,26 +171,15 @@ function initFormState(
   editTarget: Expense | null,
   defaultDate: string,
   members: TripMember[],
-  tripCurrency: string,
 ): FormState {
-  // Foreign-edit branch: persisted shape carries sourceCurrency +
-  // sourceAmountMinor, so the amount input must show the source-side
-  // value (what the user originally typed) rather than the materialized
-  // trip-currency one. Same-currency edits keep the legacy behaviour.
-  const isForeignEdit = editTarget?.sourceCurrency !== undefined
-  const initialAmountText = editTarget
-    ? (isForeignEdit
-        ? formatMinorForInput(editTarget.sourceAmountMinor!, editTarget.sourceCurrency!)
-        : formatMinorForInput(editTarget.amountMinor, editTarget.currency))
-    : ''
+  // Money draft (amountText / sourceCurrency / adjustments) moved to
+  // useExpenseMoneyDraft; FormState now holds only the non-money fields.
   return {
-    title:          editTarget?.title ?? '',
-    amountText:     initialAmountText,
-    date:           editTarget?.date ?? defaultDate,
-    category:       editTarget?.category ?? 'food',
-    paidBy:         editTarget?.paidBy ?? members[0]?.id ?? '',
-    note:           editTarget?.note ?? '',
-    sourceCurrency: editTarget?.sourceCurrency ?? tripCurrency,
+    title:    editTarget?.title ?? '',
+    date:     editTarget?.date ?? defaultDate,
+    category: editTarget?.category ?? 'food',
+    paidBy:   editTarget?.paidBy ?? members[0]?.id ?? '',
+    note:     editTarget?.note ?? '',
   }
 }
 
@@ -226,7 +189,7 @@ export default function ExpenseFormModal({
   const tripCurrency = useTripCurrency()
   const tripId = useTripId()
   const { state, setField } = useFormReducer<FormState>(
-    () => initFormState(editTarget, defaultDate, members, tripCurrency),
+    () => initFormState(editTarget, defaultDate, members),
   )
   const splitSeed = editTarget?.sourceSplits !== undefined && editTarget.sourceCurrency
     ? {
@@ -241,12 +204,25 @@ export default function ExpenseFormModal({
   const [errors,      setErrors]      = useState<Record<string, string>>({})
   const [previewOpen, setPreviewOpen] = useState(false)
 
+  // Money draft — sourceCurrency / amountText / adjustments(+inflight text)
+  // / lastForeignCurrency under ONE reducer. `switchCurrency` is the single
+  // 「切換幣別」 transition (renormalizes every owned slice in one dispatch).
+  const money = useExpenseMoneyDraft(editTarget, tripCurrency)
+  const {
+    sourceCurrency, amountText, adjustments, lastForeignCurrency,
+    setAmountText, switchCurrency,
+    addAdjustment, removeAdjustment, dropAdjustmentsForItem,
+    setAdjustmentKind, setAdjustmentLabel, setAdjustmentAmount,
+    setAdjustmentScope, setAdjustmentTarget, adjustmentAmountValue,
+    resetAdjustments, clearAdjustments,
+  } = money
+
   // Phase 3c-1 — foreign-mode derivations. `isForeignOpen` keys every
   // currency-sensitive boundary in the form (parse, format, FX preview,
-  // validate). State of truth lives in `state.sourceCurrency`; the
-  // toggle button below mutates it, the CurrencyPicker re-points it.
-  const isForeignOpen     = state.sourceCurrency !== tripCurrency
-  const effectiveCurrency = isForeignOpen ? state.sourceCurrency : tripCurrency
+  // build). State of truth lives in `money.sourceCurrency`; the toggle
+  // button below mutates it, the CurrencyPicker re-points it.
+  const isForeignOpen     = sourceCurrency !== tripCurrency
+  const effectiveCurrency = isForeignOpen ? sourceCurrency : tripCurrency
   // `currency` alias: every existing money parse / format boundary below
   // routes through this name — aliasing here means foreign mode is
   // transparent to the rest of the form (items input symbol, items diff
@@ -260,7 +236,7 @@ export default function ExpenseFormModal({
   // resolves so buildExpenseFormResult never has to assume a fallback.
   const fxPreview = useFxPreview({
     requestedDate:  state.date,
-    sourceCurrency: state.sourceCurrency,
+    sourceCurrency,
     tripCurrency,
   })
 
@@ -287,126 +263,19 @@ export default function ExpenseFormModal({
     : (editTarget?.items ?? [])
   const items = useExpenseItems(initialItems, effectiveCurrency)
 
-  // Phase B: adjustments are a separate state slice. OCR populates
-  // them, the form exposes the rows for correction, and save-time
-  // materialization is the single source of split truth. A later UI pass
-  // can add richer confidence chips, but Phase B must not hide financial
-  // adjustments from the user.
-  //
-  // Same source-vs-trip seeding rationale as items above — foreign edits
-  // start from `sourceAdjustments`, others from the trip-currency mirror.
-  const initialAdjustments: ExpenseAdjustment[] = editTarget?.sourceAdjustments !== undefined
-    ? editTarget.sourceAdjustments.map(sa =>
-        sa.scope === 'ITEM'
-          ? {
-              id:           sa.id,
-              label:        sa.label,
-              kind:         sa.kind,
-              scope:        'ITEM' as const,
-              amountMinor:  sa.sourceAmountMinor,
-              targetItemId: sa.targetItemId!,
-            }
-          : {
-              id:          sa.id,
-              label:       sa.label,
-              kind:        sa.kind,
-              scope:       'EXPENSE' as const,
-              amountMinor: sa.sourceAmountMinor,
-            },
-      )
-    : (editTarget?.adjustments ?? [])
-  const [adjustments, setAdjustments] = useState<ExpenseAdjustment[]>(initialAdjustments)
-  const [lastForeignCurrency, setLastForeignCurrency] = useState(() =>
-    editTarget?.sourceCurrency && editTarget.sourceCurrency !== tripCurrency
-      ? editTarget.sourceCurrency
-      : defaultForeignCurrencyFor(tripCurrency),
-  )
-  // Adjustment rows hold the raw input text per-row (keyed by id) so the
-  // `amountMinor` on the persisted adjustment stays integer minor units
-  // while the input keeps its in-flight value (handles mid-keystroke
-  // "12." like the items hook). Seed initial rows up-front so currency
-  // toggles never have to reconstruct user-facing text from a converted
-  // minor-unit value.
-  const [adjustmentAmountText, setAdjustmentAmountText] = useState<Record<string, string>>(() =>
-    Object.fromEntries(
-      initialAdjustments.map(adj => [
-        adj.id,
-        adj.amountMinor > 0 ? formatMinorForInput(adj.amountMinor, effectiveCurrency) : '',
-      ]),
-    ),
-  )
-
-  // Phase 3c-1 — single source of truth for sourceCurrency mutation.
-  // Reparses item + adjustment minor-unit state against the new currency
-  // before updating the field. Without this round-trip the stored
-  // `amountMinor` (computed at typing time using the old fraction digits)
-  // would silently mismatch the displayed `amountText` after a switch —
-  // e.g. user types "1200" under JPY (amountMinor=1200), switches to
-  // USD: amountText still "1200" but USD parse would canonically be
-  // 120000 minor. itemsDiff / FX preview would silently use the stale
-  // 1200 and look like a different bug. Items + adjustments must travel
-  // through here on every currency change: the toggle button, the
-  // CurrencyPicker, and the OCR auto-detect path all do so below.
-  //
-  // Items.amountText is the authoritative display text (preserved
-  // verbatim through typing); we just rederive amountMinor. Adjustments
-  // don't carry amountText on the persisted shape, so we recover the
-  // display text via the inflight map (typed mid-edit) or by formatting
-  // the OLD amountMinor under the OLD currency before reparsing.
-  function setSourceCurrency(next: string) {
-    if (next === state.sourceCurrency) return
-    if (next !== tripCurrency) {
-      setLastForeignCurrency(next)
-    }
-    const oldCurrency = state.sourceCurrency
-    const nextAmountText = normalizeMoneyTextForCurrency(state.amountText, next)
-
-    const reparsedItems = items.items.map(it => {
-      const amountText = normalizeMoneyTextForCurrency(it.amountText, next)
-      return {
-        ...it,
-        amountText,
-        amountMinor: safeReparseMoney(amountText, next),
-      }
+  // Single 「切換幣別」 entry point. The money hook renormalizes its owned
+  // slices in ONE dispatch (see useExpenseMoneyDraft.switchCurrency +
+  // renormalizeMoneyDraftForCurrency) and returns the renormalized items +
+  // custom splits, which we apply to the sibling hooks. The toggle button,
+  // the CurrencyPicker, and the OCR auto-detect path all go through here.
+  function applyCurrencySwitch(next: string) {
+    if (next === sourceCurrency) return
+    const renorm = switchCurrency(next, {
+      items:        items.items,
+      customSplits: splits.state.custom,
     })
-    items.reset(reparsedItems)
-
-    const nextAdjustmentAmountText: Record<string, string> = {}
-    const reparsedAdjustments = adjustments.map(adj => {
-      const inflight = adjustmentAmountText[adj.id]
-      const rawText = inflight !== undefined
-        ? inflight
-        : adj.amountMinor > 0 ? formatMinorForInput(adj.amountMinor, oldCurrency) : ''
-      const text = normalizeMoneyTextForCurrency(rawText, next)
-      if (text !== '') nextAdjustmentAmountText[adj.id] = text
-      return { ...adj, amountMinor: safeReparseMoney(text, next) }
-    })
-    setAdjustments(reparsedAdjustments)
-    setAdjustmentAmountText(prev => {
-      const normalized = { ...prev }
-      for (const adj of adjustments) {
-        delete normalized[adj.id]
-      }
-      return { ...normalized, ...nextAdjustmentAmountText }
-    })
-
-    // Custom-split text follows the same hazard as items / adjustments:
-    // splits.state.custom stores user-typed text verbatim, and
-    // customAmountOf() reparses it under the *current* `currency` alias
-    // (which now points at `next`). Without renormalizing here, a user
-    // who typed "12.34" while sourceCurrency=USD then toggles to JPY
-    // would see customSum collapse to 0 (JPY rejects decimals) and the
-    // resulting sourceSplits / Worker payload would be silently wrong
-    // on the manual-total foreign path. Equal-mode `custom` is `{}` per
-    // the reducer init, so this is a no-op when not in custom mode.
-    const nextCustom: Record<string, string> = {}
-    for (const [id, text] of Object.entries(splits.state.custom)) {
-      nextCustom[id] = normalizeMoneyTextForCurrency(text, next)
-    }
-    splits.resetCustom(nextCustom)
-
-    setField('amountText', nextAmountText)
-    setField('sourceCurrency', next)
+    items.reset(renorm.items)
+    splits.resetCustom(renorm.customSplits)
   }
 
   // OCR pipeline. onSuccess wires the parsed result into the existing
@@ -489,8 +358,8 @@ export default function ExpenseFormModal({
       // Auto-set sourceCurrency BEFORE the other field updates so React
       // batches them in a single render — avoids a "trip currency for
       // one tick, then detected currency" flash on the items list.
-      if (ocrCurrency !== state.sourceCurrency) {
-        setSourceCurrency(ocrCurrency)
+      if (ocrCurrency !== sourceCurrency) {
+        applyCurrencySwitch(ocrCurrency)
       }
       const mintedItemIds = result.items.map(() => crypto.randomUUID())
       items.reset(result.items.map((it, idx) => ({
@@ -534,8 +403,8 @@ export default function ExpenseFormModal({
               amountMinor: minor,
             }
       })
-      setAdjustments(nextAdjustments)
-      setAdjustmentAmountText(
+      resetAdjustments(
+        nextAdjustments,
         Object.fromEntries(
           nextAdjustments.map(adj => [
             adj.id,
@@ -543,7 +412,7 @@ export default function ExpenseFormModal({
           ]),
         ),
       )
-      setField('amountText', formatMinorForInput(totalMinor, ocrCurrency))
+      setAmountText(formatMinorForInput(totalMinor, ocrCurrency))
       if (result.storeName && !state.title.trim()) {
         setField('title', result.storeName)
       }
@@ -606,110 +475,27 @@ export default function ExpenseFormModal({
   function handleClearReceipt() {
     att.clear()
     items.clear()
-    setAdjustments([])
-    setAdjustmentAmountText({})
+    clearAdjustments()
     ocr.reset()
   }
 
-  function updateAdjustment(
-    id: string,
-    mapper: (adjustment: ExpenseAdjustment) => ExpenseAdjustment,
-  ) {
-    setAdjustments(prev => prev.map(adj => adj.id === id ? mapper(adj) : adj))
-  }
-
-  function setAdjustmentKind(id: string, kind: ExpenseAdjustmentKind) {
-    updateAdjustment(id, adj => ({ ...adj, kind }))
-  }
-
-  function setAdjustmentLabel(id: string, label: string) {
-    updateAdjustment(id, adj => ({ ...adj, label }))
-  }
-
-  function adjustmentAmountValue(adj: ExpenseAdjustment): string {
-    const inFlight = adjustmentAmountText[adj.id]
-    if (inFlight !== undefined) return inFlight
-    return adj.amountMinor > 0 ? formatMinorForInput(adj.amountMinor, currency) : ''
-  }
-
-  function setAdjustmentAmount(id: string, value: string) {
-    setAdjustmentAmountText(prev => ({ ...prev, [id]: value }))
-    let minor = 0
-    if (value.trim() !== '') {
-      try { minor = Math.max(0, parseMoneyToMinor(value, currency)) }
-      catch { minor = 0 }
-    }
-    updateAdjustment(id, adj => ({ ...adj, amountMinor: minor }))
-  }
-
-  function setAdjustmentScope(id: string, scope: ExpenseAdjustmentScope) {
-    updateAdjustment(id, adj => {
-      if (scope === 'EXPENSE') {
-        return {
-          id:          adj.id,
-          label:       adj.label,
-          kind:        adj.kind,
-          scope:       'EXPENSE',
-          amountMinor: adj.amountMinor,
-        }
-      }
-
-      const existingTarget =
-        adj.targetItemId && items.items.some(item => item.id === adj.targetItemId)
-          ? adj.targetItemId
-          : undefined
-      const targetItemId = existingTarget ?? items.items[0]?.id
-      return targetItemId
-        ? { ...adj, scope: 'ITEM', targetItemId }
-        : adj
-    })
-  }
-
-  function setAdjustmentTarget(id: string, targetItemId: string) {
-    updateAdjustment(id, adj => ({ ...adj, scope: 'ITEM', targetItemId }))
-  }
-
-  function removeAdjustment(id: string) {
-    setAdjustments(prev => prev.filter(adj => adj.id !== id))
-    setAdjustmentAmountText(prev => {
-      const rest = { ...prev }
-      delete rest[id]
-      return rest
-    })
-  }
-
-  // Manual escape-hatch for OCR misses (e.g. クーポン unprinted on the
-  // receipt or low-confidence line that came back as a regular item).
-  // Defaults: DISCOUNT (the most common manual case — subtractive),
-  // EXPENSE scope (simpler mental model; switch to ITEM if needed).
-  // Label/amount start blank so the existing validation gate forces
-  // the user to fill them — surfaces "未入力" instead of silently saving
-  // a zero-amount adjustment that would leak the mismatch into splits.
-  function addAdjustment() {
-    setAdjustments(prev => [
-      ...prev,
-      {
-        id:          crypto.randomUUID(),
-        label:       '',
-        kind:        'DISCOUNT',
-        scope:       'EXPENSE',
-        amountMinor: 0,
-      },
-    ])
-  }
+  // Adjustment state + mutators (addAdjustment / removeAdjustment /
+  // setAdjustmentKind|Label|Amount|Scope|Target / adjustmentAmountValue)
+  // now live in useExpenseMoneyDraft and are destructured above.
 
   function removeItemRow(index: number) {
     const removedId = items.items[index]?.id
     items.remove(index)
     if (!removedId) return
-    setAdjustments(prev => prev.filter(adj => adj.targetItemId !== removedId))
+    // Drop any ITEM-scope adjustment that targeted the removed row.
+    dropAdjustmentsForItem(removedId)
   }
 
   // All money in form derivations is integer minor units. The user types
   // a decimal string into the amount field; safeReparseMoney is the
   // boundary that converts it (centralised in expense/utils so the
-  // setSourceCurrency reparse path uses the same try/catch + clamp).
-  const amountMinor = safeReparseMoney(state.amountText, currency)
+  // currency-switch reparse path uses the same try/catch + clamp).
+  const amountMinor = safeReparseMoney(amountText, currency)
   // Phase 3c-1 — trip-currency preview of the source-side amount. Inline
   // mirror of the conversion the materializer runs at save-time; used only
   // for the "USD 12.34 → ¥1804 @ 146.2" display row. Save-time math runs
@@ -719,7 +505,7 @@ export default function ExpenseFormModal({
   const foreignLinePreview =
     isForeignOpen && fxPreview.rateDecimal && amountMinor > 0
       ? (() => {
-          const sourceFractionDigits = currencyFractionDigits(state.sourceCurrency)
+          const sourceFractionDigits = currencyFractionDigits(sourceCurrency)
           const targetFractionDigits = currencyFractionDigits(tripCurrency)
           const convertPreviewMinor = (sourceMinor: number): number | undefined => {
             if (!Number.isInteger(sourceMinor) || sourceMinor <= 0) return undefined
@@ -794,7 +580,7 @@ export default function ExpenseFormModal({
       ? convertMinorHalfEven({
           sourceMinor:          amountMinor,
           rateDecimal:          fxPreview.rateDecimal,
-          sourceFractionDigits: currencyFractionDigits(state.sourceCurrency),
+          sourceFractionDigits: currencyFractionDigits(sourceCurrency),
           targetFractionDigits: currencyFractionDigits(tripCurrency),
         })
       : null)
@@ -838,12 +624,12 @@ export default function ExpenseFormModal({
     //   - att.pickAttachmentChange: pull the receipt lifecycle into onSave
     const result = buildExpenseFormResult({
       title:          state.title,
-      amountText:     state.amountText,
+      amountText:     amountText,
       date:           state.date,
       category:       state.category,
       paidBy:         state.paidBy,
       note:           state.note,
-      sourceCurrency: state.sourceCurrency,
+      sourceCurrency: sourceCurrency,
       // Strip the form-only `amountText` — the builder works in minor units.
       items: items.items.map(it => ({
         id:          it.id,
@@ -1040,14 +826,14 @@ export default function ExpenseFormModal({
           currency for the next row" rather than a buried setting. The
           section below is conditionally rendered (not just visually
           hidden) so aria-expanded ↔ presence stays in sync for AT users.
-          State of truth lives in `state.sourceCurrency` — toggling here
+          State of truth lives in `sourceCurrency` — toggling here
           flips it between trip-currency (degenerate / closed) and
           `defaultForeignCurrencyFor(tripCurrency)`. Picking trip-currency
           inside the picker also collapses the section (degenerate path),
           giving users two equivalent exits. */}
       <button
         type="button"
-        onClick={() => setSourceCurrency(
+        onClick={() => applyCurrencySwitch(
           isForeignOpen ? tripCurrency : lastForeignCurrency,
         )}
         aria-expanded={isForeignOpen}
@@ -1068,7 +854,7 @@ export default function ExpenseFormModal({
         </span>
         {isForeignOpen && (
           <span className="shrink-0 whitespace-nowrap text-[11px] tabular-nums opacity-80">
-            {state.sourceCurrency} → {tripCurrency}
+            {sourceCurrency} → {tripCurrency}
           </span>
         )}
       </button>
@@ -1077,8 +863,8 @@ export default function ExpenseFormModal({
         <section id="foreign-currency-fields" className="flex flex-col gap-2">
           <FormField label="入力する通貨">
             <CurrencyPicker
-              value={state.sourceCurrency}
-              onChange={setSourceCurrency}
+              value={sourceCurrency}
+              onChange={applyCurrencySwitch}
             />
             <p className="text-[11px] leading-relaxed text-muted">
               入力した金額を{tripCurrency}に換算して保存します
@@ -1091,8 +877,8 @@ export default function ExpenseFormModal({
         <FormField label={`金額（${symbol}）`} error={errors.amount} required className="flex-1">
           <CurrencyInput
             symbol={symbol}
-            value={state.amountText}
-            onChange={e => setField('amountText', e.target.value)}
+            value={amountText}
+            onChange={e => setAmountText(e.target.value)}
             placeholder="0"
             error={!!errors.amount}
           />
@@ -1140,7 +926,7 @@ export default function ExpenseFormModal({
           ) : previewConvertedMinor !== null ? (
             <div className="flex-1 min-w-0 flex flex-col gap-1 tabular-nums sm:flex-row sm:items-baseline sm:justify-between">
               <span className="min-w-0 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 leading-5">
-                <span>{formatMinorAmount(amountMinor, state.sourceCurrency)}</span>
+                <span>{formatMinorAmount(amountMinor, sourceCurrency)}</span>
                 <span className="opacity-60">→</span>
                 <span className="font-semibold">
                   {formatMinorAmount(previewConvertedMinor, tripCurrency)}
@@ -1313,7 +1099,7 @@ export default function ExpenseFormModal({
 
                         <select
                           value={adj.scope}
-                          onChange={e => setAdjustmentScope(adj.id, e.target.value as ExpenseAdjustmentScope)}
+                          onChange={e => setAdjustmentScope(adj.id, e.target.value as ExpenseAdjustmentScope, items.items.map(i => i.id))}
                           aria-label={`調整 ${i + 1} 対象範囲`}
                           className={compactInputClass(false)}
                         >
