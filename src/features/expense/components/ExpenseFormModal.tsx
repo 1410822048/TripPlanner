@@ -19,7 +19,7 @@
 //   - useExpenseItems  — by-item state + mutators
 //   - useOcrFlow       — OCR pipeline (compress + worker + error copy)
 import { useRef, useState } from 'react'
-import { Camera, Globe, Loader2, Plus, ScanLine, Trash2, Upload } from 'lucide-react'
+import { Plus, Trash2 } from 'lucide-react'
 import {
   EXPENSE_ADJUSTMENT_KINDS,
   type Expense,
@@ -36,14 +36,14 @@ import {
 } from '@tripmate/expense-materialize'
 import { convertMinorHalfEven } from '@tripmate/fx-core'
 import FormModalShell from '@/components/ui/FormModalShell'
-import { DatePicker } from '@/components/ui/pickers'
 import FormField from '@/components/ui/FormField'
 import { compactInputClass, inputClass } from '@/components/ui/inputStyle'
 import CurrencyInput from '@/components/ui/CurrencyInput'
-import CurrencyPicker from '@/components/ui/CurrencyPicker'
 import MemberChip from '@/components/ui/MemberChip'
 import MemberAvatar from '@/components/ui/MemberAvatar'
-import AttachmentRow from '@/components/ui/AttachmentRow'
+import ReceiptSection from './expenseForm/ReceiptSection'
+import CurrencySection from './expenseForm/CurrencySection'
+import SplitsSection from './expenseForm/SplitsSection'
 import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
@@ -71,8 +71,6 @@ import {
 import { compressImage } from '@/utils/image'
 import AttachmentPreviewModal from '@/features/bookings/components/AttachmentPreviewModal'
 
-const IMAGE_ACCEPT = 'image/*'
-const ANY_ACCEPT   = 'image/*,application/pdf'
 
 const ADJUSTMENT_KIND_LABEL: Record<ExpenseAdjustmentKind, string> = {
   DISCOUNT:   '割引',
@@ -122,49 +120,6 @@ interface Props {
   isSaving:    boolean
   onClose:     () => void
   onSave:      (result: ExpenseFormResult) => void
-}
-
-/** OCR 等待中的內嵌提示。給使用者三件事:
- *   1) 還在跑(spinner 動)
- *   2) 跑了多久(N.Ns)→ 比純 spinner 安心,知道沒卡死
- *   3) 慢的時候給原因 / 鼓勵繼續等(8s 後切換文案 + 黃色強調)
- *
- * Worker p99 ~5s,8s 為界把「正常」與「比較慢」分開 — slow 路徑
- * 通常是收據複雜 / line items 多 / 字跡模糊,讓使用者知道沒問題、
- * 不要急著按取消。 */
-function OcrLoadingHint({ elapsedMs }: { elapsedMs: number }) {
-  const elapsedSec = (elapsedMs / 1000).toFixed(1)
-  const slow = elapsedMs > 8_000
-
-  return (
-    <div
-      className={[
-        'flex items-start gap-2 px-3 py-2 rounded-input text-[12px] font-medium',
-        slow
-          ? 'bg-[#FFF4E0] text-[#B5651D] border border-[#F0D49B]'
-          : 'bg-teal-pale text-teal',
-      ].join(' ')}
-      role="status"
-      aria-live="polite"
-    >
-      <Loader2 size={14} strokeWidth={2.2} className="animate-spin mt-px shrink-0" />
-      <div className="flex-1 min-w-0 leading-[1.45]">
-        <div className="flex items-center justify-between gap-2">
-          <span>
-            {slow ? 'もう少しで完了します…' : '明細を読み取り中…'}
-          </span>
-          <span className="text-[10.5px] tabular-nums opacity-80 shrink-0">
-            {elapsedSec}s
-          </span>
-        </div>
-        <div className="text-[10.5px] opacity-75 mt-0.5">
-          {slow
-            ? '複雑なレシートは少し時間がかかります'
-            : 'Gemini で店名・品目・金額を解析しています'}
-        </div>
-      </div>
-    </div>
-  )
 }
 
 function initFormState(
@@ -431,8 +386,6 @@ export default function ExpenseFormModal({
   // picked. So the UX branches on which button was tapped:
   //   - camera button → capture=environment → auto-OCR on result
   //   - upload button → no capture → manual "✨ 解析" button
-  const cameraRef = useRef<HTMLInputElement>(null)
-  const uploadRef = useRef<HTMLInputElement>(null)
   const titleRef  = useRef<HTMLInputElement>(null)
   useAutoFocus(titleRef, isOpen)
 
@@ -747,200 +700,40 @@ export default function ExpenseFormModal({
         </div>
       </FormField>
 
-      {/* レシート appears EARLY in the form because OCR auto-fills 金額 +
-          明細 below. Putting it after 金額 would mean the user types an
-          amount only to have OCR overwrite it. */}
-      <FormField label="レシート（任意）" error={receiptErrText}>
-        <input ref={cameraRef} type="file" accept={IMAGE_ACCEPT} capture="environment" onChange={onCameraPicked} className="hidden" />
-        <input ref={uploadRef} type="file" accept={ANY_ACCEPT}                          onChange={onUploadPicked} className="hidden" />
+      <ReceiptSection
+        error={receiptErrText}
+        hasAttachment={att.hasAttachment}
+        attachmentName={att.attachmentName}
+        previewUrl={att.previewUrl}
+        previewIsImage={att.previewIsImage}
+        ocrLoading={ocr.loading}
+        ocrElapsedMs={ocr.elapsedMs}
+        canAnalyze={canAnalyze}
+        canReanalyze={canReanalyze}
+        onCameraPicked={onCameraPicked}
+        onUploadPicked={onUploadPicked}
+        onClear={handleClearReceipt}
+        onAnalyze={runReceiptOcr}
+        onPreview={() => att.previewUrl && setPreviewOpen(true)}
+      />
 
-        {att.hasAttachment ? (
-          <div className="flex flex-col gap-2">
-            <AttachmentRow
-              fileName={att.attachmentName}
-              previewUrl={att.previewUrl}
-              isImage={att.previewIsImage}
-              onReplace={() => uploadRef.current?.click()}
-              onClear={handleClearReceipt}
-              onPreview={() => att.previewUrl && setPreviewOpen(true)}
-              replaceAriaLabel="レシートを変更"
-              previewAriaLabel="レシートを拡大表示"
-              clearAriaLabel="レシートを削除"
-            />
-
-            {/* Manual read-items button (only when not yet OCR'd). ScanLine
-                + "読み取る" reads as scanning a receipt, not AI magic. */}
-            {canAnalyze && (
-              <button
-                type="button"
-                onClick={runReceiptOcr}
-                className="w-full h-10 rounded-input bg-teal text-white text-[13px] font-bold border-none cursor-pointer flex items-center justify-center gap-2 transition-all hover:-translate-y-px disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
-              >
-                <ScanLine size={16} strokeWidth={2.2} />
-                明細を読み取る
-              </button>
-            )}
-
-            {canReanalyze && (
-              <button
-                type="button"
-                onClick={runReceiptOcr}
-                className="flex items-center gap-1 text-[11.5px] text-accent font-medium border-none bg-transparent p-0 cursor-pointer hover:underline self-start"
-              >
-                <ScanLine size={12} strokeWidth={2} />
-                もう一度読み取る
-              </button>
-            )}
-
-            {ocr.loading && <OcrLoadingHint elapsedMs={ocr.elapsedMs} />}
-          </div>
-        ) : (
-          // Compact dual-button (52px instead of 68px). Receipt is an
-          // optional add-on, not a hero action — the previous chunky
-          // empty state pulled too much attention from the rest of
-          // the form. Inline icon + label fits in single row at 52px.
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => cameraRef.current?.click()}
-              className="h-[52px] rounded-input border-[1.5px] border-dashed border-border bg-app text-muted text-[11.5px] font-medium flex items-center justify-center gap-1.5 cursor-pointer hover:border-accent hover:text-accent transition-colors"
-            >
-              <Camera size={16} strokeWidth={1.8} />
-              <span>撮影</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => uploadRef.current?.click()}
-              className="h-[52px] rounded-input border-[1.5px] border-dashed border-border bg-app text-muted text-[11.5px] font-medium flex items-center justify-center gap-1.5 cursor-pointer hover:border-accent hover:text-accent transition-colors"
-            >
-              <Upload size={15} strokeWidth={1.8} />
-              <span>ファイルから追加</span>
-            </button>
-          </div>
-        )}
-      </FormField>
-
-      {/* Phase 3c-1 — foreign-mode toggle. Always-visible full-row button
-          (≥48px tap target) above the amount field so it reads as "the
-          currency for the next row" rather than a buried setting. The
-          section below is conditionally rendered (not just visually
-          hidden) so aria-expanded ↔ presence stays in sync for AT users.
-          State of truth lives in `sourceCurrency` — toggling here
-          flips it between trip-currency (degenerate / closed) and
-          `defaultForeignCurrencyFor(tripCurrency)`. Picking trip-currency
-          inside the picker also collapses the section (degenerate path),
-          giving users two equivalent exits. */}
-      <button
-        type="button"
-        onClick={() => applyCurrencySwitch(
-          isForeignOpen ? tripCurrency : lastForeignCurrency,
-        )}
-        aria-expanded={isForeignOpen}
-        aria-controls="foreign-currency-fields"
-        className={[
-          'w-full min-h-12 px-3 rounded-input border-[1.5px] text-[13px] font-semibold',
-          'flex items-center justify-between gap-2 cursor-pointer transition-colors',
-          isForeignOpen
-            ? 'border-accent bg-accent-pale text-accent'
-            : 'border-border bg-app text-muted hover:border-accent hover:text-accent',
-        ].join(' ')}
-      >
-        <span className="flex min-w-0 items-center gap-1.5">
-          <Globe size={14} strokeWidth={2} className="shrink-0" />
-          <span className="truncate">
-            {isForeignOpen ? `${tripCurrency}で入力に戻す` : '別の通貨で入力'}
-          </span>
-        </span>
-        {isForeignOpen && (
-          <span className="shrink-0 whitespace-nowrap text-[11px] tabular-nums opacity-80">
-            {sourceCurrency} → {tripCurrency}
-          </span>
-        )}
-      </button>
-
-      {isForeignOpen && (
-        <section id="foreign-currency-fields" className="flex flex-col gap-2">
-          <FormField label="入力する通貨">
-            <CurrencyPicker
-              value={sourceCurrency}
-              onChange={applyCurrencySwitch}
-            />
-            <p className="text-[11px] leading-relaxed text-muted">
-              入力した金額を{tripCurrency}に換算して保存します
-            </p>
-          </FormField>
-        </section>
-      )}
-
-      <div className="flex gap-2.5">
-        <FormField label={`金額（${symbol}）`} error={errors.amount} required className="flex-1">
-          <CurrencyInput
-            symbol={symbol}
-            value={amountText}
-            onChange={e => setAmountText(e.target.value)}
-            placeholder="0"
-            error={!!errors.amount}
-          />
-        </FormField>
-        <FormField label="日付" error={errors.date} required className="flex-1">
-          <DatePicker value={state.date} onChange={v => setField('date', v)} error={!!errors.date} />
-        </FormField>
-      </div>
-
-      {/* Phase 3c-1 — inline FX preview. Four render states:
-          - loading:  spinner + "rate will be finalized on save"
-          - error:    neutral "Worker will retry on save" copy
-          - blocked:  future/invalid inputs that Worker would also reject
-          - success:  「{source} → {trip} @ {rate} ({rateDate})」 with both
-                      sides rendered via the canonical money formatter so
-                      symbols / fraction digits match the rest of the form.
-          Only renders when foreign-open; same-currency keeps the form
-          layout unchanged. */}
-      {isForeignOpen && (
-        <div
-          role="status"
-          aria-live="polite"
-          className={[
-            'flex items-center gap-2 px-3 py-2 rounded-input text-[12px] font-medium',
-            // Warn for terminal "no rate" states — submit will be
-            // blocked by the buildExpenseFormResult FX gate, so the banner must
-            // read as actionable. Loading stays teal-pale (transient,
-            // shows a spinner) so it doesn't masquerade as an error.
-            fxPreview.disabledReason || fxPreview.isError
-              ? 'bg-warn-bg text-warn border border-warn'
-              : 'bg-teal-pale text-teal',
-          ].join(' ')}
-        >
-          {fxPreview.disabledReason === 'future-date' ? (
-            <span>未来日付は換算できません。日付を変更してください。</span>
-          ) : fxPreview.disabledReason === 'invalid-input' ? (
-            <span>通貨または日付を確認してください。</span>
-          ) : fxPreview.isLoading ? (
-            <>
-              <Loader2 size={14} strokeWidth={2.2} className="animate-spin shrink-0" />
-              <span>換算レートを取得中…</span>
-            </>
-          ) : fxPreview.isError || !fxPreview.rateDecimal ? (
-            <span>換算レートを取得できません。再試行してください。</span>
-          ) : previewConvertedMinor !== null ? (
-            <div className="flex-1 min-w-0 flex flex-col gap-1 tabular-nums sm:flex-row sm:items-baseline sm:justify-between">
-              <span className="min-w-0 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 leading-5">
-                <span>{formatMinorAmount(amountMinor, sourceCurrency)}</span>
-                <span className="opacity-60">→</span>
-                <span className="font-semibold">
-                  {formatMinorAmount(previewConvertedMinor, tripCurrency)}
-                </span>
-              </span>
-              <span className="shrink-0 whitespace-nowrap text-[10.5px] opacity-75">
-                @ {fxPreview.rateDecimal} ({fxPreview.rateDate})
-              </span>
-            </div>
-          ) : (
-            <span>レート {fxPreview.rateDecimal}（{fxPreview.rateDate}）— 金額を入力してください</span>
-          )}
-        </div>
-      )}
+      <CurrencySection
+        isForeignOpen={isForeignOpen}
+        sourceCurrency={sourceCurrency}
+        tripCurrency={tripCurrency}
+        lastForeignCurrency={lastForeignCurrency}
+        symbol={symbol}
+        amountText={amountText}
+        amountMinor={amountMinor}
+        amountError={errors.amount}
+        date={state.date}
+        dateError={errors.date}
+        fx={fxPreview}
+        previewConvertedMinor={previewConvertedMinor}
+        onSwitchCurrency={applyCurrencySwitch}
+        onAmountChange={setAmountText}
+        onDateChange={v => setField("date", v)}
+      />
 
       <FormField label="立替えた人" error={errors.paidBy} required>
         {/* Avatar-only dot picker. The label inside the avatar IS the
@@ -1216,103 +1009,23 @@ export default function ExpenseFormModal({
           </div>
         </FormField>
       ) : (
-        <FormField label="割り勘" error={errors.splits}>
-          <div className="flex flex-col gap-2">
-            {/* 割勘方式切換 */}
-            <div className="flex gap-1 p-1 rounded-card bg-app border border-border">
-              {([
-                { value: 'equal',  label: '均等' },
-                { value: 'custom', label: 'カスタム' },
-              ] as const).map(m => {
-                const active = splits.state.mode === m.value
-                return (
-                  <button
-                    key={m.value}
-                    type="button"
-                    onClick={() => switchMode(m.value)}
-                    className={[
-                      'flex-1 h-8 rounded-[8px] text-[12px] font-semibold cursor-pointer transition-all',
-                      active ? 'bg-surface text-ink shadow-[0_1px_3px_rgba(0,0,0,0.08)]' : 'bg-transparent text-muted',
-                    ].join(' ')}
-                  >
-                    {m.label}
-                  </button>
-                )
-              })}
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              {members.map(m => {
-                const included = splits.state.mode === 'equal'
-                  ? splits.state.included.has(m.id)
-                  : customAmountOf(m.id) > 0
-                const displayAmount = splits.state.mode === 'equal'
-                  ? (equalSplits[m.id] ?? 0)
-                  : customAmountOf(m.id)
-
-                return (
-                  <div
-                    key={m.id}
-                    className={[
-                      'flex items-center gap-2.5 px-2.5 py-1.5 rounded-input border-[1.5px] transition-colors',
-                      included ? 'border-border bg-surface' : 'border-border bg-app opacity-55',
-                    ].join(' ')}
-                  >
-                    <MemberAvatar member={m} size={28} />
-                    <span className="flex-1 text-[13px] text-ink font-medium">{m.label}</span>
-
-                    {splits.state.mode === 'equal' ? (
-                      <>
-                        <span className="text-[13px] font-semibold text-ink tabular-nums">
-                          {included ? formatMinorAmount(displayAmount, currency) : '—'}
-                        </span>
-                        <input
-                          type="checkbox"
-                          checked={included}
-                          onChange={() => splits.toggleIncluded(m.id)}
-                          className="w-4 h-4 accent-accent cursor-pointer"
-                        />
-                      </>
-                    ) : (
-                      <div className="w-[110px]">
-                        <CurrencyInput
-                          symbol={symbol}
-                          size="compact"
-                          alignRight
-                          shellClassName="min-h-10 px-2.5 py-1.5 rounded-[8px]"
-                          value={splits.state.custom[m.id] ?? ''}
-                          onChange={e => splits.setCustom(m.id, e.target.value)}
-                          placeholder="0"
-                        />
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-
-            {splits.state.mode === 'custom' && amountMinor > 0 && (
-              <div
-                className={[
-                  'flex justify-between items-center px-2.5 py-1.5 rounded-input text-[11.5px] font-semibold tabular-nums',
-                  customDiff === 0
-                    ? 'bg-teal-pale text-teal'
-                    : 'bg-warn-bg text-warn',
-                ].join(' ')}
-              >
-                <span>
-                  {customDiff === 0 ? '✓ 總和一致' : customDiff > 0 ? '残り' : '超過'}
-                </span>
-                <span>
-                  {formatMinorAmount(customSum, currency)} / {formatMinorAmount(amountMinor, currency)}
-                  {customDiff !== 0 && (
-                    <span className="ml-1.5">({customDiff > 0 ? '+' : ''}{formatMinorAmount(customDiff, currency)})</span>
-                  )}
-                </span>
-              </div>
-            )}
-          </div>
-        </FormField>
+        <SplitsSection
+          error={errors.splits}
+          mode={splits.state.mode}
+          members={members}
+          included={splits.state.included}
+          custom={splits.state.custom}
+          symbol={symbol}
+          currency={currency}
+          amountMinor={amountMinor}
+          equalSplits={equalSplits}
+          customAmountOf={customAmountOf}
+          customSum={customSum}
+          customDiff={customDiff}
+          onSwitchMode={switchMode}
+          onToggleIncluded={splits.toggleIncluded}
+          onSetCustom={splits.setCustom}
+        />
       )}
 
       <FormField label="メモ">
