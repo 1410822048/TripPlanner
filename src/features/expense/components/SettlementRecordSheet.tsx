@@ -27,7 +27,7 @@
 // settlementId is intentionally NOT minted here. The caller (ExpensePage)
 // mints via crypto.randomUUID so the optimistic patch / Worker request /
 // Firestore doc all share one id — see CreateSettlementVariables docstring.
-import { useMemo, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { ArrowRight, Loader2 } from 'lucide-react'
 import { estimateSourceMinorAtMostTargetHalfEven } from '@tripmate/fx-core'
 
@@ -138,7 +138,12 @@ export default function SettlementRecordSheet({
   // NOT forward-convert it back here — the Worker owns the canonical
   // `fxSnapshot.convertedAmountMinor`, so recomputing it client-side
   // would be dead weight.
-  const foreignDerived = useMemo(() => {
+  //
+  // Plain computation, not useMemo: the React Compiler memoises this derived
+  // value on its reactive inputs (currency / rate / remaining), so the
+  // binary-search inverse is skipped on unrelated re-renders (note / date
+  // typing) without a hand-written hook — matching the rest of the codebase.
+  const foreignDerived = ((): { sourceMinor: number } | null => {
     if (!isForeignMode) return null
     if (!fxPreview.rateDecimal) return null
     const sourceMinor = estimateSourceMinorAtMostTargetHalfEven({
@@ -148,7 +153,7 @@ export default function SettlementRecordSheet({
       targetFractionDigits: currencyFractionDigits(tripCurrency),
     })
     return { sourceMinor }
-  }, [currency, fxPreview.rateDecimal, isForeignMode, suggested.amountMinor, tripCurrency])
+  })()
 
   function handleCurrencyChange(next: string) {
     setCurrency(next)
