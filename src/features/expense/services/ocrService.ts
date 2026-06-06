@@ -135,6 +135,20 @@ function fileToBase64(file: File): Promise<string> {
   })
 }
 
+/** Combine the hard 60s OCR timeout with an OPTIONAL caller abort signal.
+ *  Either source aborts the fetch: the caller cancels stale OCR when the user
+ *  swaps / clears the receipt, while the timeout still bounds a hung worker.
+ *
+ *  `AbortSignal.any` is Baseline 2024 (Chrome 116 / Firefox 124 / Safari 17.4).
+ *  The app's client baseline is Safari/iOS 17.4+, so it's used directly rather
+ *  than hand-combining controllers. (`AbortSignal.timeout`, already used here,
+ *  is the older Safari 16.4+ floor.) */
+function ocrFetchSignal(external?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(60_000)
+  if (!external) return timeout
+  return AbortSignal.any([timeout, external])
+}
+
 /**
  * Extract receipt line items from an image. Throws OcrError with a `kind`
  * the UI can render distinct copy for ("登入逾時 / 速率限制 / 無法辨識...").
@@ -143,7 +157,7 @@ function fileToBase64(file: File): Promise<string> {
  * from receipt symbols. Pass the trip currency for better accuracy on
  * ambiguous receipts (e.g. a "$" that could be USD/TWD/CAD).
  */
-export async function ocrReceipt(file: File, currency?: string): Promise<OcrResult> {
+export async function ocrReceipt(file: File, currency?: string, signal?: AbortSignal): Promise<OcrResult> {
   // Auth — fail early before doing the (potentially slow) base64 encode.
   const { auth } = await getFirebaseAuth()
   const user = auth.currentUser
@@ -156,10 +170,10 @@ export async function ocrReceipt(file: File, currency?: string): Promise<OcrResu
 
   let res: Response
   try {
-    // 60s hard timeout via AbortSignal.timeout — native Web API, no
-    // polyfill needed (Safari 16.4+, Chrome 103+). Without it a hung
-    // worker / DNS blackhole leaves the UI's "解析中…" spinner up
-    // indefinitely. Worker p99 latency is ~5s, so 60s is generous.
+    // 60s hard timeout (so a hung worker / DNS blackhole can't pin the
+    // "解析中…" spinner up forever; Worker p99 is ~5s) combined with the
+    // optional caller abort (cancel when the user swaps / clears the
+    // receipt). See ocrFetchSignal.
     res = await fetch(`${WORKER_BASE_URL}/ocr`, {
       method: 'POST',
       headers: {
@@ -171,7 +185,7 @@ export async function ocrReceipt(file: File, currency?: string): Promise<OcrResu
         mimeType: file.type || 'image/jpeg',
         currency,
       }),
-      signal: AbortSignal.timeout(60_000),
+      signal: ocrFetchSignal(signal),
     })
   } catch (e) {
     // AbortError comes out as DOMException with name='TimeoutError' when
@@ -224,6 +238,7 @@ export async function ocrExistingExpenseReceipt(
   tripId:       string,
   expenseId:    string,
   currencyHint?: string,
+  signal?:      AbortSignal,
 ): Promise<ExpenseReceiptOcrResponse> {
   const { auth } = await getFirebaseAuth()
   const user = auth.currentUser
@@ -246,7 +261,7 @@ export async function ocrExistingExpenseReceipt(
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       // ONLY identifiers cross the wire — never receipt.path / receipt.url.
       body:    JSON.stringify({ tripId, expenseId, ...(currencyHint ? { currencyHint } : {}) }),
-      signal:  AbortSignal.timeout(60_000),
+      signal:  ocrFetchSignal(signal),
     })
   } catch (e) {
     const err = e as Error

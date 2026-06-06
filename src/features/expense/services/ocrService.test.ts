@@ -143,4 +143,24 @@ describe('ocrExistingExpenseReceipt', () => {
     await expect(ocrExistingExpenseReceipt('t', 'e')).rejects.toThrow(/VITE_WORKER_BASE_URL/)
     expect(fetchSpy).not.toHaveBeenCalled()
   })
+
+  it('UX A: the caller AbortSignal aborts the combined fetch signal mid-flight', async () => {
+    let captured: AbortSignal | undefined
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      captured = init?.signal ?? undefined
+      return Promise.resolve(new Response(
+        JSON.stringify({ result: { items: [], adjustments: [], ignoredLines: [], totalText: '0' }, sourceReceiptPath: 'p' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ))
+    })
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+
+    const ac = new AbortController()
+    await ocrExistingExpenseReceipt('t', 'e', 'JPY', ac.signal)
+    // fetch got AbortSignal.any(timeout, caller), not the raw external —
+    // still live until the caller aborts.
+    expect(captured?.aborted).toBe(false)
+    ac.abort()
+    expect(captured?.aborted).toBe(true)
+  })
 })

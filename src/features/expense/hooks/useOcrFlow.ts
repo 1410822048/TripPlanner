@@ -110,6 +110,15 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
   // cover changes to the PERSISTED doc.)
   const requestSeqRef = useRef(0)
 
+  // AbortController for the in-flight OCR fetch. The seq guard above already
+  // DROPS a superseded result; this additionally CANCELS the request so a
+  // swapped / cleared receipt doesn't keep the Worker call + network running
+  // to completion (or the 60s timeout) for a result nobody will use. run /
+  // runExisting replace it (aborting the previous); setFile / reset / unmount
+  // abort it. The seq guard stays as the last line of defense — an abort that
+  // races a just-landed response is still caught by the seq mismatch.
+  const abortRef = useRef<AbortController | null>(null)
+
   useEffect(() => {
     if (!loading) return
     const id = window.setInterval(() => {
@@ -118,15 +127,28 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
     return () => window.clearInterval(id)
   }, [loading])
 
+  // Cancel any in-flight OCR when the hook unmounts (modal closed) — no point
+  // finishing a Worker call whose result has nowhere to land. Bump the seq
+  // (exactly like setFile / reset) so the abort's rejection is DROPPED by the
+  // seq guard in run / runExisting instead of setState-ing a dead hook.
+  useEffect(() => () => {
+    requestSeqRef.current++
+    abortRef.current?.abort()
+    abortRef.current = null
+  }, [])
+
   const run = async (file: File): Promise<void> => {
     const seq = ++requestSeqRef.current
+    abortRef.current?.abort()           // cancel any prior in-flight OCR
+    const ac = new AbortController()
+    abortRef.current = ac
     setLastFile(file)
     startedAtRef.current = Date.now()
     setElapsedMs(0)
     setLoading(true)
     setError(null)
     try {
-      const result = await ocrReceipt(file, currency)
+      const result = await ocrReceipt(file, currency, ac.signal)
       // Superseded by a newer run / setFile / reset → drop silently; the
       // current owner of `loading` will release it.
       if (seq !== requestSeqRef.current) return
@@ -143,18 +165,24 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
       // Only the latest request controls the spinner — a superseded run must
       // NOT clear loading out from under the run that replaced it.
       if (seq === requestSeqRef.current) setLoading(false)
+      // Drop our controller once it has settled (if superseded, a newer run
+      // already replaced abortRef — don't clobber it).
+      if (abortRef.current === ac) abortRef.current = null
     }
   }
 
   const runExisting: UseOcrFlowResult['runExisting'] = async (opts) => {
     const seq = ++requestSeqRef.current
+    abortRef.current?.abort()           // cancel any prior in-flight OCR
+    const ac = new AbortController()
+    abortRef.current = ac
     startedAtRef.current = Date.now()
     setElapsedMs(0)
     setLoading(true)
     setError(null)
     try {
       const { result, sourceReceiptPath, expenseUpdatedAt } =
-        await ocrExistingExpenseReceipt(opts.tripId, opts.expenseId, opts.currencyHint)
+        await ocrExistingExpenseReceipt(opts.tripId, opts.expenseId, opts.currencyHint, ac.signal)
       // Superseded locally (new file picked / cleared) → drop. The persisted
       // receipt path may be UNCHANGED, so isStillApplicable below can't catch
       // this; only the seq can.
@@ -174,20 +202,26 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
       setError(e instanceof OcrError ? ocrErrorCopy(e) : (e as Error).message)
     } finally {
       if (seq === requestSeqRef.current) setLoading(false)
+      if (abortRef.current === ac) abortRef.current = null
     }
   }
 
   // Stash a file WITHOUT running OCR (upload path). Bumps the seq so an
-  // in-flight OCR for the OLD image is dropped, and clears loading since no
-  // new run auto-starts here (the user clicks 明細を読み取る to run).
+  // in-flight OCR for the OLD image is dropped + aborts it so the stale
+  // Worker call is cancelled, and clears loading since no new run
+  // auto-starts here (the user clicks 明細を読み取る to run).
   const setFile = (file: File | null): void => {
     requestSeqRef.current++
+    abortRef.current?.abort()
+    abortRef.current = null
     setLastFile(file)
     setLoading(false)
   }
 
   const reset = () => {
     requestSeqRef.current++
+    abortRef.current?.abort()
+    abortRef.current = null
     setLoading(false)
     setError(null)
     setLastFile(null)

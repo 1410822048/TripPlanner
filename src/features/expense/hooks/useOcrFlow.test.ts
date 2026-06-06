@@ -200,3 +200,88 @@ describe('useOcrFlow — runExisting applicability', () => {
     expect(view.result.current.lastFile).toBeNull()
   })
 })
+
+describe('useOcrFlow — aborts in-flight requests (UX A)', () => {
+  // The 3rd arg to ocrReceipt is the AbortSignal (file, currency, signal).
+  const runSignal = (call = 0) =>
+    vi.mocked(ocrReceipt).mock.calls[call]?.[2] as AbortSignal | undefined
+
+  it('a newer run aborts the prior request; the new run gets its own live signal', async () => {
+    const dA = deferred<OcrResult>()
+    const dB = deferred<OcrResult>()
+    vi.mocked(ocrReceipt).mockReturnValueOnce(dA.promise).mockReturnValueOnce(dB.promise)
+    const { view } = setup()
+
+    act(() => { void view.result.current.run(file('A.jpg')) })
+    const a = runSignal(0)
+    expect(a?.aborted).toBe(false)
+
+    act(() => { void view.result.current.run(file('B.jpg')) })
+    expect(a?.aborted).toBe(true)             // prior request cancelled, not just dropped
+    expect(runSignal(1)?.aborted).toBe(false) // new run owns a fresh, live signal
+
+    dB.resolve(RESULT('B')); await flush()
+  })
+
+  it('setFile aborts the in-flight run', async () => {
+    vi.mocked(ocrReceipt).mockReturnValueOnce(deferred<OcrResult>().promise)
+    const { view } = setup()
+    act(() => { void view.result.current.run(file('a.jpg')) })
+    const s = runSignal(0)
+    act(() => { view.result.current.setFile(file('new.jpg')) })
+    expect(s?.aborted).toBe(true)
+  })
+
+  it('reset aborts the in-flight run', async () => {
+    vi.mocked(ocrReceipt).mockReturnValueOnce(deferred<OcrResult>().promise)
+    const { view } = setup()
+    act(() => { void view.result.current.run(file('a.jpg')) })
+    const s = runSignal(0)
+    act(() => { view.result.current.reset() })
+    expect(s?.aborted).toBe(true)
+  })
+
+  it('unmount aborts the in-flight run', async () => {
+    vi.mocked(ocrReceipt).mockReturnValueOnce(deferred<OcrResult>().promise)
+    const { view } = setup()
+    act(() => { void view.result.current.run(file('a.jpg')) })
+    const s = runSignal(0)
+    view.unmount()
+    expect(s?.aborted).toBe(true)
+  })
+
+  it('after unmount, the abort rejection is DROPPED (seq bumped) — no onSuccess, no leak', async () => {
+    // Mirror the real service: an aborted fetch → rejected OcrError. Without
+    // the seq bump in the unmount cleanup, run()'s catch would still consider
+    // itself the latest request and setState on the dead hook.
+    vi.mocked(ocrReceipt).mockImplementationOnce((_f, _c, signal) =>
+      new Promise<OcrResult>((_res, rej) => {
+        signal?.addEventListener('abort', () => rej(new OcrError('aborted', 'network')), { once: true })
+      }),
+    )
+    const { onSuccess, view } = setup()
+    act(() => { void view.result.current.run(file('a.jpg')) })
+
+    view.unmount()   // cleanup bumps seq + aborts → the pending request rejects
+    await flush()    // settle the rejection through run()'s catch
+
+    // Seq guard drops it: onSuccess never fires and the rejection is handled
+    // (an uncaught one would fail the test run).
+    expect(onSuccess).not.toHaveBeenCalled()
+  })
+
+  it('runExisting also receives + aborts a signal', async () => {
+    vi.mocked(ocrExistingExpenseReceipt).mockReturnValueOnce(
+      deferred<{ result: OcrResult; sourceReceiptPath: string }>().promise,
+    )
+    const { view } = setup()
+    act(() => {
+      void view.result.current.runExisting({ tripId: 't', expenseId: 'e', isStillApplicable: () => true })
+    })
+    // signal is the 4th arg (tripId, expenseId, currencyHint, signal).
+    const s = vi.mocked(ocrExistingExpenseReceipt).mock.calls[0]?.[3] as AbortSignal | undefined
+    expect(s?.aborted).toBe(false)
+    act(() => { view.result.current.reset() })
+    expect(s?.aborted).toBe(true)
+  })
+})
