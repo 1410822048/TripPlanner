@@ -347,7 +347,7 @@ describe('buildExpenseFormResult — by-item validation surfaces', () => {
     const errors = expectErr(buildExpenseFormResult(baseInput({
       items, adjustments, amountText: '1900', // 2100 − 200 = 1900, so itemsDiff passes
     })))
-    expect(errors.items).toMatch(/^明細の計算エラー:/)
+    expect(errors.items).toBe('割引が項目の金額を超えています')
   })
 })
 
@@ -372,7 +372,7 @@ describe('buildExpenseFormResult — split validation surfaces', () => {
 })
 
 describe('buildExpenseFormResult — foreign conversion error surface', () => {
-  it('surfaces 換算エラー when a foreign ITEM discount drives an item below zero', () => {
+  it('surfaces the friendly over-discount copy for a foreign ITEM discount', () => {
     const items = [
       { id: 'i1', name: 'Coffee', amountMinor: 100,  assignees: ['a'] }, // $1.00
       { id: 'i2', name: 'Cake',   amountMinor: 2000, assignees: ['b'] }, // $20.00
@@ -386,6 +386,6 @@ describe('buildExpenseFormResult — foreign conversion error surface', () => {
       amountText: '19', // $19.00 = 1900 cents = 2100 − 200, itemsDiff passes
       fx: { rateDecimal: '100', disabledReason: null, isError: false },
     })))
-    expect(errors.items).toMatch(/^換算エラー:/)
+    expect(errors.items).toBe('割引が項目の金額を超えています')
   })
 })

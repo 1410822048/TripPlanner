@@ -32,6 +32,7 @@ import {
   convertSourceSplitsToTarget,
   materializeExpenseSplits,
   MaterializeError,
+  type MaterializeErrorCode,
   type ConvertAndMaterializeSourceAdjustment,
   type ConvertAndMaterializeSourceItem,
 } from '@tripmate/expense-materialize'
@@ -94,6 +95,44 @@ export interface BuildExpenseFormInput {
 export type BuildExpenseFormResult =
   | { ok: true;  input: CreateExpenseInput }
   | { ok: false; errors: Record<string, string> }
+
+/** Friendly Japanese copy for EVERY materializer failure, keyed on its stable
+ *  `code`. `satisfies Record<MaterializeErrorCode, string>` makes the table
+ *  EXHAUSTIVE — when @tripmate/expense-materialize adds a code, TypeScript
+ *  forces a copy entry here rather than letting a new error get swallowed by a
+ *  default. Most codes are gated by the form's own validation before
+ *  materialize runs (no-assignee / zero amounts / dangling target / sum
+ *  mismatch); the genuinely form-reachable one is OVER_DISCOUNT_ITEM, the rest
+ *  are defense-in-depth. Kept local — only buildExpenseFormResult consumes it. */
+const MATERIALIZE_ERROR_COPY = {
+  ITEM_NOT_POSITIVE_INTEGER:              '明細金額を確認してください',
+  ITEM_NO_ASSIGNEES:                      '明細の割り当て先を選択してください',
+  NON_MEMBER_ASSIGNEE:                    '明細の割り当て先に参加者以外が含まれています',
+  DUPLICATE_ITEM_ASSIGNEE:                '同じ参加者が重複しています',
+  DUPLICATE_ITEM_ID:                      '明細IDが重複しています',
+  ADJUSTMENT_NOT_POSITIVE_INTEGER:        '割引・調整額を確認してください',
+  ADJUSTMENT_UNKNOWN_KIND:                '割引・調整の種類を確認してください',
+  UNKNOWN_SCOPE:                          '割引・調整の対象を確認してください',
+  ITEM_SCOPE_NO_TARGET:                   '対象の明細を選択してください',
+  EXPENSE_SCOPE_HAS_TARGET:               '全体対象の割引に明細指定はできません',
+  TARGET_ITEM_NOT_FOUND:                  '対象の明細が見つかりません',
+  OVER_DISCOUNT_ITEM:                     '割引が項目の金額を超えています',
+  OVER_DISCOUNT_EXPENSE:                  '割引の合計が明細の合計を超えています',
+  EXPENSE_SCOPE_NO_WEIGHT:                '割引を適用できる項目がありません',
+  SOURCE_AMOUNT_NOT_POSITIVE_INTEGER:     '外貨の合計金額を確認してください',
+  SOURCE_ITEM_NOT_POSITIVE_INTEGER:       '外貨の明細金額を確認してください',
+  SOURCE_ADJUSTMENT_NOT_POSITIVE_INTEGER: '外貨の割引・調整額を確認してください',
+  SOURCE_SUM_MISMATCH:                    '外貨の明細合計と請求書合計が一致しません',
+  SOURCE_SPLITS_EMPTY:                    '外貨の分担先を選択してください',
+  SOURCE_SPLIT_MEMBER_MISSING:            '外貨の分担先を確認してください',
+  SOURCE_SPLIT_NOT_NONNEGATIVE_INTEGER:   '外貨の分担金額を確認してください',
+  DUPLICATE_SOURCE_SPLIT_MEMBER:          '外貨の分担先が重複しています',
+  SOURCE_SPLIT_SUM_MISMATCH:              '外貨の分担合計が請求書合計と一致しません',
+} satisfies Record<MaterializeErrorCode, string>
+
+function materializeErrorMessage(code: MaterializeErrorCode): string {
+  return MATERIALIZE_ERROR_COPY[code]
+}
 
 export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpenseFormResult {
   const {
@@ -211,7 +250,7 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
         })
       } catch (err) {
         e.items = err instanceof MaterializeError
-          ? `明細の計算エラー: ${err.message}`
+          ? materializeErrorMessage(err.code)
           : '明細の計算に失敗しました'
       }
     }
@@ -266,7 +305,7 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
           ok: false,
           errors: {
             splits: err instanceof MaterializeError
-              ? `換算エラー: ${err.message}`
+              ? materializeErrorMessage(err.code)
               : '換算の計算に失敗しました',
           },
         }
@@ -325,7 +364,7 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
         ok: false,
         errors: {
           items: err instanceof MaterializeError
-            ? `換算エラー: ${err.message}`
+            ? materializeErrorMessage(err.code)
             : '換算の計算に失敗しました',
         },
       }
