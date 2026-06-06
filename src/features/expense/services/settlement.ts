@@ -131,6 +131,19 @@ export interface BalanceResult {
    *  out (instead of recomputing pair-wise elsewhere) keeps UI suggestion
    *  / Worker reject semantics in lockstep. */
   pairwise: Record<string, Record<string, number>>
+  /** Step-1 directional gross debt from ACTIVE expenses: `gross[from][to]`
+   *  = total `from` owes `to` BEFORE any settlement (應清算 on that pair).
+   *  Pre-normalization + pre-cap — the raw expense-derived debt. Surfaced so
+   *  the UI can show「債務 ¥X のうち ¥Y 清算済み」on a partially-settled pair
+   *  without re-deriving it. Only directions with expense debt appear. */
+  gross: Record<string, Record<string, number>>
+  /** Step-2 settlements applied per direction, capped at `gross`:
+   *  `applied[from][to]` = how much of `gross[from][to]` settlements have
+   *  cleared (已清算; the cap keeps applied ≤ gross, never creating reverse
+   *  debt). `gross − applied` is the directional remaining; for a one-way pair
+   *  it equals the `pairwise` net the suggestion list shows. Only directions
+   *  with applied settlements appear. */
+  applied: Record<string, Record<string, number>>
 }
 
 /** Lazy-create `record[key]` as an empty sub-map and return it for
@@ -400,7 +413,7 @@ export function computeBalancesFull(
   }))
 
   const participants = ghosts.length === 0 ? members : [...members, ...ghosts]
-  return { balances, orphans, participants, pairwise: normalized }
+  return { balances, orphans, participants, pairwise: normalized, gross, applied }
 }
 
 /**
@@ -556,4 +569,57 @@ export function computeSettlements(
     }
   }
   return out
+}
+
+// ─── Enriched suggestions (UI display metadata) ───────────────────
+
+/** Settled-vs-owed breakdown for a partially-cleared pair, computed in the
+ *  domain so the UI just renders it. All integer minor units. */
+export interface SettledContext {
+  /** Total `from` owes `to` from expenses, before settlement (應清算). */
+  grossMinor:     number
+  /** How much of that gross settlements have already cleared (已清算). */
+  appliedMinor:   number
+  /** Outstanding remainder (還差) — equals the suggestion's amountMinor. */
+  remainingMinor: number
+}
+
+/** A settlement suggestion plus optional display metadata. */
+export interface SettlementSuggestion extends Settlement {
+  /** Present IFF this pair was PARTIALLY settled (applied > 0) AND its
+   *  directional `gross − applied` reconciles with the post-normalization
+   *  net `amountMinor` — i.e. no opposite-direction debt was cancelled away.
+   *  When it doesn't reconcile, the gross/applied figures wouldn't add up to
+   *  the shown amount, so the context is omitted rather than rendered as a
+   *  number that doesn't balance. This "is the breakdown mathematically
+   *  explicable?" decision is settlement-domain knowledge, kept here so the
+   *  UI only renders. */
+  settledContext?: SettledContext
+}
+
+/**
+ * UI-facing suggestion list: `computeSettlements(pairwise)` enriched with the
+ * settled-vs-owed context for partially-cleared pairs (so a bumped-after-
+ * settlement expense reads clearly: 應清算 / 已清算 / 還差).
+ *
+ * Deliberately SEPARATE from `computeSettlements`: that one stays lean
+ * (pairwise-only, the exact shape the Worker create-gate mirrors) for simple
+ * callers; this one takes the richer `{ pairwise, gross, applied }` that
+ * `computeBalancesFull` already returns and layers display metadata on top.
+ * Pure function, no ledger / Worker-contract impact.
+ */
+export function computeSettlementSuggestions(input: {
+  pairwise: Record<string, Record<string, number>>
+  gross:    Record<string, Record<string, number>>
+  applied:  Record<string, Record<string, number>>
+}): SettlementSuggestion[] {
+  const { pairwise, gross, applied } = input
+  return computeSettlements(pairwise).map(s => {
+    const grossMinor   = gross[s.fromId]?.[s.toId]   ?? 0
+    const appliedMinor = applied[s.fromId]?.[s.toId] ?? 0
+    if (appliedMinor > 0 && grossMinor - appliedMinor === s.amountMinor) {
+      return { ...s, settledContext: { grossMinor, appliedMinor, remainingMinor: s.amountMinor } }
+    }
+    return { ...s }
+  })
 }

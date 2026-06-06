@@ -7,7 +7,7 @@ import type { TripMember } from '@/features/trips/types'
 import MemberAvatar from '@/components/ui/MemberAvatar'
 import {
   computeBalancesFull,
-  computeSettlements,
+  computeSettlementSuggestions,
   type OrphanReason,
   type OrphanSettlement,
 } from '../services/settlement'
@@ -49,8 +49,11 @@ export default function SettlementSummary({
   // `pairwise` is the same normalized debt-edge map the suggestion
   // engine walks — one row per real pair debt, matching what the Worker
   // validation reads to gate `amount <= remaining`.
-  const { balances, orphans, participants, pairwise } = computeBalancesFull(expenses, members, settlements)
-  const suggestions = computeSettlements(pairwise)
+  const { balances, orphans, participants, pairwise, gross, applied } = computeBalancesFull(expenses, members, settlements)
+  // Domain-enriched suggestions: each carries an optional `settledContext`
+  // (應清算 / 已清算 / 還差) for a partially-cleared pair. The "is the
+  // breakdown mathematically explicable" decision lives in the service.
+  const suggestions = computeSettlementSuggestions({ pairwise, gross, applied })
   const memberById  = new Map(participants.map(m => [m.id, m]))
 
   // `expenses` includes soft-deleted rows (passed through for chronological
@@ -155,6 +158,9 @@ export default function SettlementSummary({
                 // Payer / third-party see a status pill, not a button.
                 const canRecord = uid != null && uid === s.toId
                 const isPayer   = uid != null && uid === s.fromId
+                // settledContext (應清算 / 已清算 / 還差) is computed in the
+                // settlement domain — the UI just renders it when present.
+                const settled   = s.settledContext
                 return (
                   <div
                     key={`${s.fromId}-${s.toId}-${i}`}
@@ -163,8 +169,15 @@ export default function SettlementSummary({
                     <MemberAvatar member={from} size={28} />
                     <ArrowRight size={12} strokeWidth={2.5} className="text-muted shrink-0" />
                     <MemberAvatar member={to}   size={28} />
-                    <div className="flex-1 min-w-0 text-[14.5px] font-extrabold text-ink tabular-nums -tracking-[0.2px]">
-                      {formatMinorAmount(s.amountMinor, currency)}
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[14.5px] font-extrabold text-ink tabular-nums -tracking-[0.2px]">
+                        {formatMinorAmount(s.amountMinor, currency)}
+                      </div>
+                      {settled && (
+                        <div className="text-[10px] text-muted font-medium tabular-nums mt-px">
+                          應清算 {formatMinorAmount(settled.grossMinor, currency)}，已清算 {formatMinorAmount(settled.appliedMinor, currency)}
+                        </div>
+                      )}
                     </div>
                     {canRecord ? (
                       <button

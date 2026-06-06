@@ -3,6 +3,7 @@ import {
   computeBalances,
   computeBalancesFull,
   computeSettlements,
+  computeSettlementSuggestions,
   expandWithGhosts,
   ghostMember,
 } from './settlement'
@@ -157,6 +158,28 @@ describe('multiple settlements per pair', () => {
     expect(suggestions).toEqual([{ fromId: 'm2', toId: 'm1', amountMinor: 40 }])
   })
 
+  it('exposes gross (應清算) + applied (已清算) per direction — the settled-vs-owed gap', () => {
+    // m2 owes m1 1200 (e.g. the owner bumped the expense to 1200 after a
+    // settlement); m2 has settled 1000 → 200 still owed. The UI reads
+    // gross/applied to show 「債務 ¥1,200 のうち ¥1,000 清算済み」.
+    const expenses    = [mkExpense('m1', 1200, [['m2', 1200]])]
+    const settlements = [mkSettlement('m2', 'm1', 1000)]
+    const { gross, applied, pairwise } = computeBalancesFull(expenses, MEMBERS, settlements)
+    expect(gross.m2?.m1).toBe(1200)    // 應清算
+    expect(applied.m2?.m1).toBe(1000)  // 已清算
+    expect(pairwise.m2?.m1).toBe(200)  // 還差 (== gross − applied for a one-way pair)
+    expect(computeSettlements(pairwise)).toEqual([{ fromId: 'm2', toId: 'm1', amountMinor: 200 }])
+  })
+
+  it('applied is capped at gross — an over-settlement never exceeds the debt', () => {
+    const expenses    = [mkExpense('m1', 1200, [['m2', 1200]])]
+    const settlements = [mkSettlement('m2', 'm1', 1500)]
+    const { gross, applied, orphans } = computeBalancesFull(expenses, MEMBERS, settlements)
+    expect(gross.m2?.m1).toBe(1200)
+    expect(applied.m2?.m1).toBe(1200)  // capped — applied ≤ gross
+    expect(orphans).toEqual([expect.objectContaining({ fromUserId: 'm2', toUserId: 'm1', amountMinor: 300 })])
+  })
+
   it('once-overshooting last settlement of a chain produces an orphan', () => {
     // m2 owes m1 100. Pays 60, then 50 (total 110, 10 too many).
     // Chronological processing means the later '_b' settlement bears
@@ -228,6 +251,46 @@ describe('cross-debt normalization', () => {
     expect(orphans).toEqual([])
     expect(balances.find(b => b.memberId === 'm1')!.net).toBe(-40)
     expect(balances.find(b => b.memberId === 'm2')!.net).toBe(40)
+  })
+})
+
+// ─── Enriched suggestions: settled-vs-owed context ────────────────
+
+describe('computeSettlementSuggestions', () => {
+  it('adds settledContext to a partially-settled pair (應清算 / 已清算 / 還差)', () => {
+    // m2 owes m1 1200 (e.g. owner bumped the expense after a settlement);
+    // 1000 already settled → 200 remaining.
+    const expenses    = [mkExpense('m1', 1200, [['m2', 1200]])]
+    const settlements = [mkSettlement('m2', 'm1', 1000)]
+    const { pairwise, gross, applied } = computeBalancesFull(expenses, MEMBERS, settlements)
+    expect(computeSettlementSuggestions({ pairwise, gross, applied })).toEqual([{
+      fromId: 'm2', toId: 'm1', amountMinor: 200,
+      settledContext: { grossMinor: 1200, appliedMinor: 1000, remainingMinor: 200 },
+    }])
+  })
+
+  it('omits settledContext for an unsettled pair (nothing cleared yet)', () => {
+    const expenses = [mkExpense('m1', 1200, [['m2', 1200]])]
+    const { pairwise, gross, applied } = computeBalancesFull(expenses, MEMBERS, [])
+    expect(computeSettlementSuggestions({ pairwise, gross, applied })).toEqual([
+      { fromId: 'm2', toId: 'm1', amountMinor: 1200 },
+    ])
+  })
+
+  it('omits settledContext when opposite-direction debt makes gross − applied not reconcile', () => {
+    // m2 owes m1 1200 (settled 1000 → directional remaining 200) AND m1 owes
+    // m2 50. Normalize nets m2→m1 to 150 ≠ gross − applied (200), so the
+    // breakdown can't be shown coherently → omitted (domain decides this,
+    // not the UI).
+    const expenses = [
+      mkExpense('m1', 1200, [['m2', 1200]], '_a'),  // m2 owes m1 1200
+      mkExpense('m2', 50,   [['m1', 50]],   '_b'),  // m1 owes m2 50
+    ]
+    const settlements = [mkSettlement('m2', 'm1', 1000)]
+    const { pairwise, gross, applied } = computeBalancesFull(expenses, MEMBERS, settlements)
+    expect(computeSettlementSuggestions({ pairwise, gross, applied })).toEqual([
+      { fromId: 'm2', toId: 'm1', amountMinor: 150 },
+    ])
   })
 })
 
