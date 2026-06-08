@@ -2,11 +2,13 @@ import { describe, it, expect } from 'vitest'
 import {
   computeBalances,
   computeBalancesFull,
-  computeSettlements,
-  computeSettlementSuggestions,
   expandWithGhosts,
   ghostMember,
 } from './settlement'
+import {
+  computeSettlements,
+  computeSettlementSuggestions,
+} from './settlementSuggestions'
 import { MOCK_TIMESTAMP as TS } from '@/mocks/utils'
 import type { Expense } from '@/types'
 import type { SettlementRecord } from '@/types/settlement'

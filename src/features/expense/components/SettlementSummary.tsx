@@ -7,10 +7,10 @@ import type { TripMember } from '@/features/trips/types'
 import MemberAvatar from '@/components/ui/MemberAvatar'
 import {
   computeBalancesFull,
-  computeSettlementSuggestions,
   type OrphanReason,
   type OrphanSettlement,
 } from '../services/settlement'
+import { computeSettlementSuggestions } from '../services/settlementSuggestions'
 import { formatMinorAmount } from '@/utils/money'
 
 interface Props {
