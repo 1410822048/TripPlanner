@@ -52,9 +52,15 @@ export async function getAdminToken(serviceAccountJson: string): Promise<string>
 
   // Service-account self-signed JWT → exchanged for an access token.
   // Scopes:
-  //   - datastore             (Firestore REST: cascade member/trip-delete)
-  //   - devstorage.read_write (GCS REST: list/delete trip Storage assets
-  //                            for trip-cascade + 10-day receipt purge)
+  //   - datastore               (Firestore REST: cascade member/trip-delete)
+  //   - devstorage.full_control (GCS REST: list/get/delete trip Storage assets
+  //                              for trip-cascade + receipt purge, AND
+  //                              objects.patch to strip download tokens at
+  //                              consume / in the cron scrubber). NOTE:
+  //                              read_write covers get/list/delete but NOT
+  //                              objects.patch (metadata update) — GCS returns
+  //                              403 "Provided scope(s) are not authorized" —
+  //                              so the token-strip needs full_control.
   // Both scopes go on the SAME access token so we keep one cache slot —
   // splitting per-scope would double JWT-sign + token-exchange overhead
   // for no real isolation benefit (the underlying service account already
@@ -63,7 +69,7 @@ export async function getAdminToken(serviceAccountJson: string): Promise<string>
   const jwt = await new SignJWT({
     scope: [
       'https://www.googleapis.com/auth/datastore',
-      'https://www.googleapis.com/auth/devstorage.read_write',
+      'https://www.googleapis.com/auth/devstorage.full_control',
     ].join(' '),
   })
     .setProtectedHeader({ alg: 'RS256', typ: 'JWT' })
