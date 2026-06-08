@@ -54,7 +54,6 @@
 // per-unordered-pair guard doc inside the same tx; two concurrent
 // creates on the same pair both touch this doc → Firestore aborts one,
 // retry sees the now-committed settlement and reapplies the gate.
-import { z }                                                from 'zod'
 import { getAdminToken, getProjectId }                      from './admin'
 import {
   readString,
@@ -78,25 +77,51 @@ import {
   type CoreSettlement,
 }                                                           from '@tripmate/settlement-core'
 import {
-  resolveFxRate,
-  type FxSnapshot,
-}                                                           from './fx-rate'
-import {
-  currencyFractionDigits,
-  convertMinorHalfEven,
-  estimateSourceMinorAtMostTargetHalfEven,
-}                                                           from '@tripmate/fx-core'
-import {
-  materializeExpenseSplitContributions,
   type MaterializeAdjustment,
-  type MaterializeItem,
 }                                                           from '@tripmate/expense-materialize'
+import {
+  buildSettlementLineage,
+  type PairExpenseForSettlement,
+  type SettlementAppliedSource,
+}                                                           from './settlement-lineage'
+import {
+  SettlementValidationError,
+  type TripCurrencyContext,
+  type SettlementCreateRequest,
+  type SettlementDeleteRequest,
+}                                                           from './settlement-write-shared'
+import {
+  resolveForeignRate,
+  deriveForeignArtifacts,
+  encodeFxSnapshot,
+  type ForeignRate,
+  type ForeignSettlementArtifacts,
+}                                                           from './settlement-fx-write'
+import {
+  pairLockPath,
+  buildLockWrite,
+  buildExpenseSettlementLockWrites,
+  buildExpenseUnlockWrites,
+  encodeStringArray,
+  decodeStringArrayField,
+}                                                           from './settlement-lock-write'
 
-// ─── Request body schemas ─────────────────────────────────────────
+// Keep the pre-extraction public surface stable: index.ts and
+// settlement-write.spec.ts import these from settlement-write. The
+// definitions now live in settlement-write-shared (schemas / error / types).
+export {
+  SettlementCreateRequestSchema,
+  SettlementDeleteRequestSchema,
+}                                                           from './settlement-write-shared'
+export { SettlementValidationError }
+export type {
+  SettlementCreateRequest,
+  SettlementCreateTripRequest,
+  SettlementCreateForeignRequest,
+  SettlementDeleteRequest,
+}                                                           from './settlement-write-shared'
 
-const TripIdRe = /^[A-Za-z0-9_-]{1,60}$/
-const UID_MAX  = 128
-const AMOUNT_MINOR_MAX = 999_999_999_999
+// ─── In-tx read caps (fail-closed) ────────────────────────────────
 
 /** Defensive caps for the in-tx reads. A pathological trip can't
  *  hang a tx waiting on 10k expenses / settlements; matches the
@@ -115,133 +140,7 @@ const AMOUNT_MINOR_MAX = 999_999_999_999
 const EXPENSE_READ_LIMIT    = 500
 const SETTLEMENT_READ_LIMIT = 200
 
-/** Settlement create request. Discriminated by `mode`:
- *
- *    - TRIP_CURRENCY (degenerate): client just declares "clear the
- *      remaining debt from fromUid to toUid in trip currency".
- *      No amount on the wire — Worker computes pair-remaining and
- *      writes it as the canonical amountMinor.
- *    - FOREIGN_CURRENCY: client picks the currency the payee actually
- *      received + the date that pins the FX rate. Worker resolves the
- *      rate, inverse-derives the source amount whose forward conversion
- *      does NOT exceed remaining (at-most-target policy), persists the
- *      forward-converted canonical alongside the source-domain trio +
- *      fxSnapshot.
- *
- *  Key shape change from the pre-rearchitecture design: the wire body
- *  no longer carries `amountMinor` / `currency` / `sourceAmountMinor`.
- *  Removing them eliminates the OVERPAY class of bug entirely — the
- *  client can no longer specify a value the Worker has to reject. The
- *  Worker is the sole authority for the canonical settlement amount,
- *  derived from pair-remaining at tx time.
- *
- *  Per-branch `.strict()` rejects extras at the protocol layer so we
- *  don't rely solely on firestore.rules' missing `keys().hasOnly()`
- *  gate. settlementId is client-minted via `crypto.randomUUID()` so
- *  the Worker's `currentDocument.exists=false` gives genuine
- *  create-only semantics (retry-safe). */
-const CurrencyRe = /^[A-Z]{3}$/
-const IsoDateRe  = /^\d{4}-\d{2}-\d{2}$/
-
-const SettlementCreateBaseSchema = z.object({
-  tripId:       z.string().regex(TripIdRe),
-  settlementId: z.string().regex(TripIdRe),
-  fromUid:      z.string().min(1).max(UID_MAX),
-  toUid:        z.string().min(1).max(UID_MAX),
-  expectedRemainingMinor: z.number().int().positive().max(AMOUNT_MINOR_MAX),
-  note:         z.string().max(200).optional(),
-})
-
-const SettlementCreateTripSchema = SettlementCreateBaseSchema.extend({
-  mode: z.literal('TRIP_CURRENCY'),
-}).strict()
-
-const SettlementCreateForeignSchema = SettlementCreateBaseSchema.extend({
-  mode:           z.literal('FOREIGN_CURRENCY'),
-  sourceCurrency: z.string().regex(CurrencyRe, 'sourceCurrency must be ISO 4217 alpha-3 uppercase'),
-  settledOn:      z.string().regex(IsoDateRe, 'settledOn must be YYYY-MM-DD'),
-}).strict()
-
-export const SettlementCreateRequestSchema = z.discriminatedUnion('mode', [
-  SettlementCreateTripSchema,
-  SettlementCreateForeignSchema,
-])
-export type SettlementCreateRequest        = z.infer<typeof SettlementCreateRequestSchema>
-export type SettlementCreateTripRequest    = z.infer<typeof SettlementCreateTripSchema>
-export type SettlementCreateForeignRequest = z.infer<typeof SettlementCreateForeignSchema>
-
-export const SettlementDeleteRequestSchema = z.object({
-  tripId:       z.string().regex(TripIdRe),
-  settlementId: z.string().regex(TripIdRe),
-}).strict()
-export type SettlementDeleteRequest = z.infer<typeof SettlementDeleteRequestSchema>
-
-// ─── Validation error ─────────────────────────────────────────────
-
-/** Thrown for any settlement validation failure. Mirrors the
- *  Expense/Wish/Booking shape so route-dispatch.validationErrorCatcher
- *  handles all four the same way. */
-export class SettlementValidationError extends Error {
-  readonly field: string
-  constructor(field: string, message: string) {
-    super(`${field}: ${message}`)
-    this.name  = 'SettlementValidationError'
-    this.field = field
-  }
-}
-
-// ─── Pair-key / Pair-lock path ────────────────────────────────────
-
-/** Deterministic unordered pair key for the pair-LOCK doc id. Settlement
- *  docs themselves are read by (fromUid,toUid) equality, NOT by a stored
- *  pairKey field — see the read fan-out in doCreate for why that's the
- *  migration-safe choice. The lock serializes same-pair create/delete so
- *  two concurrent creates on the same pair conflict on a shared doc.
- *
- *  Direction-agnostic via lexicographic min/max ordering (A→B and B→A
- *  share the same key). Storage is bounded (one lock doc per
- *  participating pair).
- *
- *  Encoding: `<lo.length>:<lo>:<hi.length>:<hi>`. Firebase Auth UIDs
- *  use the base64url alphabet `[A-Za-z0-9_-]`, so a naive
- *  `${lo}_${hi}` (or `${lo}__${hi}`) would not be injective:
- *  `{a, b_c}` and `{a_b, c}` both collapse to `a_b_c`. Length prefixes
- *  make every key trivially parseable back to (lo, hi), so collision
- *  is impossible. Worst-case symptom of a collision would be false
- *  contention (unrelated pair serializes through the same lock and
- *  one tx retries) -- not overpay or auth bypass -- but we'd rather
- *  not leave that on the floor for a future reviewer to re-discover.
- *  `:` is a legal Firestore doc-id character (only `/` is banned). */
-function pairKey(a: string, b: string): string {
-  const [lo, hi] = a < b ? [a, b] : [b, a]
-  return `${lo.length}:${lo}:${hi.length}:${hi}`
-}
-function pairLockPath(tripId: string, a: string, b: string): string {
-  return `trips/${tripId}/settlementPairLocks/${pairKey(a, b)}`
-}
-
-/** Build the lock-doc write that "touches" the pair guard. Same shape
- *  for create + delete: stamp the latest settlement id + REQUEST_TIME.
- *  No `currentDocument` precondition -- the doc is lazily created on
- *  the first settlement for the pair and persists thereafter (cascade
- *  is responsible for cleanup). */
-function buildLockWrite(projectId: string, lockPath: string, settlementId: string): TxWrite {
-  return {
-    document: docResourceName(projectId, lockPath),
-    fields:   {
-      lastSettlementId: { stringValue: settlementId },
-    },
-    updateTransforms: [
-      { fieldPath: 'lastSettlementAt', setToServerValue: 'REQUEST_TIME' },
-    ],
-  }
-}
-
 // ─── Authorization helpers ────────────────────────────────────────
-
-interface TripCurrencyContext {
-  currency: string
-}
 
 /** Settlement create authz: caller must be a trip member (any role —
  *  matches the existing rule's `exists(memberPath)`). The receiver-
@@ -287,46 +186,6 @@ function decodeExpenseForDomain(fields: Record<string, FsValue>): CoreExpense {
   return { amountMinor, paidBy, splits }
 }
 
-/** Carries the source-domain artifacts that FOREIGN_CURRENCY persists
- *  alongside the trip-currency canonical fields. Mirrors expense-write's
- *  ForeignArtifacts pattern: snapshot.fetchedAt is encoded as null and
- *  REQUEST_TIME-stamped at commit. */
-interface ForeignSettlementArtifacts {
-  sourceCurrency:    string
-  sourceAmountMinor: number
-  settledOn:         string
-  fxSnapshot:        FxSnapshot
-}
-
-/** Encode FxSnapshot as a Firestore map. `fetchedAt` is set to null
- *  here -- the caller adds an `updateTransforms` entry pinned to
- *  REQUEST_TIME so Firestore stamps the field at commit. Writing both
- *  is intentional: the field MUST appear in the map so the create
- *  Write's `currentDocument.exists=false` doesn't reject the transform
- *  as targeting a missing parent.
- *
- *  Inline (vs sharing from fx-rate.ts with expense-write) is deliberate:
- *  both writers shaping the same fxSnapshot map keeps the contract
- *  obvious at the write site, and the read-schema test
- *  (settlement.test.ts FX cross-field equality) catches any divergence. */
-function encodeFxSnapshot(fx: FxSnapshot): FsValue {
-  return {
-    mapValue: {
-      fields: {
-        provider:             { stringValue:  fx.provider },
-        baseCurrency:         { stringValue:  fx.baseCurrency },
-        quoteCurrency:        { stringValue:  fx.quoteCurrency },
-        requestedDate:        { stringValue:  fx.requestedDate },
-        rateDate:             { stringValue:  fx.rateDate },
-        rateDecimal:          { stringValue:  fx.rateDecimal },
-        sourceAmountMinor:    { integerValue: String(fx.sourceAmountMinor) },
-        convertedAmountMinor: { integerValue: String(fx.convertedAmountMinor) },
-        fetchedAt:            { nullValue:    null },
-      },
-    },
-  }
-}
-
 function decodeSettlementForDomain(fields: Record<string, FsValue>): CoreSettlement {
   const fromUid = readString(fields, 'fromUid') ?? ''
   const toUid   = readString(fields, 'toUid')   ?? ''
@@ -347,28 +206,6 @@ function decodeSettlementForDomain(fields: Record<string, FsValue>): CoreSettlem
 }
 
 // ─── Endpoint: settlement-create ──────────────────────────────────
-
-interface PairExpenseForSettlement extends CoreExpense {
-  id:          string
-  title:       string
-  createdAtMs: number
-  items?:      Array<MaterializeItem & { name: string }>
-  adjustments: Array<MaterializeAdjustment & { label: string }>
-}
-
-interface SettlementAppliedSource {
-  expenseId:    string
-  expenseTitle: string
-  itemId?:      string
-  itemName?:    string
-  amountMinor:  number
-}
-
-interface SettlementSourceUnit extends SettlementAppliedSource {
-  createdAtMs:    number
-  order:          number
-  remainingMinor: number
-}
 
 const MAX_APPLIED_SOURCES = 80
 
@@ -425,211 +262,6 @@ function decodePairExpenseForSettlement(doc: TxReadDoc): PairExpenseForSettlemen
   }
 }
 
-function membersForExpense(expense: PairExpenseForSettlement): string[] {
-  const out: string[] = []
-  const seen = new Set<string>()
-  const add = (uid: string) => {
-    if (!uid || seen.has(uid)) return
-    seen.add(uid)
-    out.push(uid)
-  }
-  add(expense.paidBy)
-  for (const split of expense.splits) add(split.memberId)
-  for (const item of expense.items ?? []) {
-    for (const uid of item.assignees) add(uid)
-  }
-  return out
-}
-
-function sourceUnitsForDirection(
-  expenses: PairExpenseForSettlement[],
-  fromUid:  string,
-  toUid:    string,
-): SettlementSourceUnit[] {
-  const units: SettlementSourceUnit[] = []
-  for (const expense of expenses) {
-    if (expense.paidBy !== toUid) continue
-    const pairSplitMinor = expense.splits
-      .filter(split => split.memberId === fromUid)
-      .reduce((sum, split) => sum + split.amountMinor, 0)
-    if (!Number.isFinite(pairSplitMinor) || pairSplitMinor <= SETTLEMENT_EPS) continue
-
-    const items = expense.items ?? []
-    if (items.length > 0) {
-      try {
-        const contributions = materializeExpenseSplitContributions({
-          items: items.map(item => ({
-            id:          item.id,
-            amountMinor: item.amountMinor,
-            assignees:   item.assignees,
-          })),
-          adjustments: expense.adjustments.map(adj => {
-            const out: MaterializeAdjustment = {
-              id:          adj.id,
-              kind:        adj.kind,
-              scope:       adj.scope,
-              amountMinor: adj.amountMinor,
-            }
-            if (adj.targetItemId !== undefined) out.targetItemId = adj.targetItemId
-            return out
-          }),
-          members: membersForExpense(expense),
-        }).filter(c => c.memberId === fromUid && c.amountMinor > SETTLEMENT_EPS)
-
-        const contributionTotal = contributions.reduce((sum, c) => sum + c.amountMinor, 0)
-        if (contributionTotal === pairSplitMinor) {
-          const itemById = new Map(items.map(item => [item.id, item]))
-          contributions.forEach((c, i) => {
-            const item = itemById.get(c.itemId)
-            units.push({
-              expenseId:      expense.id,
-              expenseTitle:   expense.title,
-              itemId:         c.itemId,
-              itemName:       item?.name ?? c.itemId,
-              amountMinor:    c.amountMinor,
-              remainingMinor: c.amountMinor,
-              createdAtMs:    expense.createdAtMs,
-              order:          i,
-            })
-          })
-          continue
-        }
-      } catch {
-        // Attribution is best-effort audit metadata; no-overpay math has
-        // already used the persisted splits. Fall back to expense-level
-        // lineage instead of rejecting a valid settlement.
-      }
-    }
-
-    units.push({
-      expenseId:      expense.id,
-      expenseTitle:   expense.title,
-      amountMinor:    pairSplitMinor,
-      remainingMinor: pairSplitMinor,
-      createdAtMs:    expense.createdAtMs,
-      order:          0,
-    })
-  }
-
-  return units.sort((a, b) =>
-    a.createdAtMs - b.createdAtMs
-    || a.expenseId.localeCompare(b.expenseId)
-    || a.order - b.order
-    || (a.itemId ?? '').localeCompare(b.itemId ?? ''),
-  )
-}
-
-function consumeSourceUnits(units: SettlementSourceUnit[], amountMinor: number): SettlementAppliedSource[] {
-  const consumed: SettlementAppliedSource[] = []
-  if (!Number.isFinite(amountMinor)) return consumed
-  let remaining = Math.round(amountMinor)
-  if (remaining <= 0) return consumed
-
-  for (const unit of units) {
-    if (remaining <= 0) break
-    if (unit.remainingMinor <= SETTLEMENT_EPS) continue
-    const taken = Math.min(unit.remainingMinor, remaining)
-    unit.remainingMinor -= taken
-    remaining -= taken
-    if (taken > SETTLEMENT_EPS) {
-      const out: SettlementAppliedSource = {
-        expenseId:    unit.expenseId,
-        expenseTitle: unit.expenseTitle,
-        amountMinor:  Math.round(taken),
-      }
-      if (unit.itemId !== undefined && unit.itemName !== undefined) {
-        out.itemId = unit.itemId
-        out.itemName = unit.itemName
-      }
-      consumed.push(out)
-    }
-  }
-  return consumed
-}
-
-function sourceTotal(units: SettlementSourceUnit[]): number {
-  return units.reduce((sum, unit) => sum + Math.max(0, unit.remainingMinor), 0)
-}
-
-function collapseAppliedSources(sources: SettlementAppliedSource[]): SettlementAppliedSource[] {
-  const collapsed: SettlementAppliedSource[] = []
-  const byKey = new Map<string, SettlementAppliedSource>()
-  for (const source of sources) {
-    const key = `${source.expenseId}\u0000${source.itemId ?? ''}`
-    const existing = byKey.get(key)
-    if (existing) {
-      existing.amountMinor += source.amountMinor
-      continue
-    }
-    const next = { ...source }
-    byKey.set(key, next)
-    collapsed.push(next)
-  }
-  return collapsed
-}
-
-
-interface SettlementLineage {
-  /** Forward-direction sources consumed by the settlement amount — the
-   *  DISPLAY lineage (「清算の元になった費用」). Capped for storage by the
-   *  caller (MAX_APPLIED_SOURCES). */
-  appliedSources: SettlementAppliedSource[]
-  /** Every expense whose edit would change the NET this settlement cleared:
-   *  the forward sources PLUS the reverse-direction expenses whose remaining
-   *  debt offset the forward gross to produce that net (and the forward
-   *  units they cancelled). This is the LOCK set — stored as the
-   *  settlement's appliedExpenseIds and written into each expense's
-   *  settlementLockIds. A forward-only set would leave a reverse offset
-   *  expense editable by a non-owner, who could then re-open the settled
-   *  balance (e.g. B paid 100→A, A paid 80→B, net A→B 20: editing A's 80
-   *  expense changes the 20). */
-  lockExpenseIds: string[]
-}
-
-function buildSettlementLineage(
-  expenses:    PairExpenseForSettlement[],
-  settlements: CoreSettlement[],
-  fromUid:     string,
-  toUid:       string,
-  amountMinor: number,
-): SettlementLineage {
-  const forward = sourceUnitsForDirection(expenses, fromUid, toUid)
-  const reverse = sourceUnitsForDirection(expenses, toUid, fromUid)
-
-  const sortedSettlements = [...settlements].sort((a, b) => a.createdAtMs - b.createdAtMs)
-  for (const settlement of sortedSettlements) {
-    if (!Number.isFinite(settlement.amountMinor) || settlement.amountMinor <= SETTLEMENT_EPS) continue
-    if (settlement.fromUid === settlement.toUid) continue
-    if (settlement.fromUid === fromUid && settlement.toUid === toUid) {
-      consumeSourceUnits(forward, settlement.amountMinor)
-    } else if (settlement.fromUid === toUid && settlement.toUid === fromUid) {
-      consumeSourceUnits(reverse, settlement.amountMinor)
-    }
-  }
-
-  const lockIds = new Set<string>()
-
-  // Reverse-direction expenses with remaining debt offset the forward gross
-  // to produce the net this settlement clears. They (and the forward units
-  // they cancel) are part of the settled balance, so they must be locked
-  // even though they are NOT forward "sources" — otherwise editing the
-  // reverse expense silently re-opens the debt.
-  const reverseRemaining = sourceTotal(reverse)
-  if (reverseRemaining > SETTLEMENT_EPS) {
-    for (const unit of reverse) {
-      if (unit.remainingMinor > SETTLEMENT_EPS) lockIds.add(unit.expenseId)
-    }
-    for (const offset of consumeSourceUnits(forward, reverseRemaining)) {
-      lockIds.add(offset.expenseId)
-    }
-  }
-
-  const appliedSources = collapseAppliedSources(consumeSourceUnits(forward, amountMinor))
-  for (const source of appliedSources) lockIds.add(source.expenseId)
-
-  return { appliedSources, lockExpenseIds: [...lockIds] }
-}
-
 function encodeAppliedSources(sources: SettlementAppliedSource[]): FsValue {
   return {
     arrayValue: {
@@ -647,48 +279,6 @@ function encodeAppliedSources(sources: SettlementAppliedSource[]): FsValue {
       }),
     },
   }
-}
-
-function encodeStringArray(values: string[]): FsValue {
-  return {
-    arrayValue: {
-      values: values.map(value => ({ stringValue: value })),
-    },
-  }
-}
-
-function decodeStringArrayField(fields: Record<string, FsValue> | undefined, key: string): string[] {
-  const arr = (fields?.[key] as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []
-  return arr
-    .map(v => (v as { stringValue?: string }).stringValue)
-    .filter((s): s is string => typeof s === 'string')
-}
-
-/** Add `settlementId` to each applied expense's `settlementLockIds`
- *  reference set (materialized union). `settlementLockIds.length > 0` is
- *  the single source of truth for the post-settlement edit lock. The
- *  applied expenses are already in the create tx's read/conflict set, so
- *  a concurrent settlement touching the SAME shared expense aborts + retries
- *  — making this read-modify-write race-safe (no lost update). Cross-pair
- *  correct: an expense shared by >2 people accumulates one id per
- *  referencing settlement and stays locked until the last is removed. */
-function buildExpenseSettlementLockWrites(
-  projectId:      string,
-  tripId:         string,
-  expenseIds:     string[],
-  settlementId:   string,
-  currentLockIds: Map<string, string[]>,
-): TxWrite[] {
-  return expenseIds.map(expenseId => {
-    const existing = currentLockIds.get(expenseId) ?? []
-    const next = existing.includes(settlementId) ? existing : [...existing, settlementId]
-    return {
-      document:        docResourceName(projectId, `trips/${tripId}/expenses/${expenseId}`),
-      fields:          { settlementLockIds: encodeStringArray(next) },
-      updateMask:      ['settlementLockIds'],
-      currentDocument: { exists: true },
-    }
-  })
 }
 
 function readInteger(fields: Record<string, FsValue> | undefined, key: string): number | null {
@@ -1136,114 +726,6 @@ async function doCreate(
   })
 }
 
-// ─── Foreign-mode prep (split: network resolve, then pure-CPU derive) ──
-//
-// Phase 4.1 ledger semantics (2026-06-02): settlement.amountMinor ≡
-// remaining (full clear). FX does NOT derive amountMinor; it only
-// populates the source-side display + audit (sourceAmountMinor +
-// fxSnapshot.convertedAmountMinor), which may be ≤ amountMinor by a few
-// minor units due to half-even rounding plateaus.
-//
-// The prep is split in two so the NETWORK half runs OUTSIDE the pair-docs
-// conflict window (see doCreate): resolveForeignRate does the FX I/O
-// BEFORE the pair fan-out; deriveForeignArtifacts is pure-CPU and runs
-// AFTER `remaining` is known.
-
-/** The FX rate + fraction-digit context resolved before the pair fan-out.
- *  Carries everything deriveForeignArtifacts needs so that step touches no
- *  network. `rate` is the non-null result of resolveFxRate. */
-interface ForeignRate {
-  rate:                 NonNullable<Awaited<ReturnType<typeof resolveFxRate>>>
-  sourceFractionDigits: number
-  targetFractionDigits: number
-}
-
-/** NETWORK half. Rejects same-currency (caller should use TRIP_CURRENCY),
- *  then resolves the FX rate for (sourceCurrency, tripCurrency, settledOn)
- *  via the cache-aware `resolveFxRate`. FxError bubbles to the route
- *  handler → 4xx/5xx per fx-rate.ts's FxErrorCode → status mapping. Runs
- *  before the pair fan-out, so an FX failure is definitively pre-commit
- *  (no pair doc has been read, nothing written). */
-async function resolveForeignRate(
-  req:                SettlementCreateForeignRequest,
-  ctx:                TripCurrencyContext,
-  serviceAccountJson: string,
-): Promise<ForeignRate> {
-  if (req.sourceCurrency === ctx.currency) {
-    throw new SettlementValidationError(
-      'sourceCurrency',
-      `sourceCurrency ${req.sourceCurrency} equals trip currency; use the trip-currency settlement path instead`,
-    )
-  }
-
-  const rate = await resolveFxRate(
-    {
-      requestedDate:  req.settledOn,
-      sourceCurrency: req.sourceCurrency,
-      tripCurrency:   ctx.currency,
-    },
-    serviceAccountJson,
-  )
-  if (!rate) {
-    // Defensive: resolveFxRate returns null only when source === trip,
-    // which we explicitly rejected above. Reaching here means a logic
-    // drift; fail closed rather than persist a partial doc.
-    throw new CascadeError(500, 'unexpected null rate for foreign settlement (source !== trip)')
-  }
-
-  return {
-    rate,
-    sourceFractionDigits: currencyFractionDigits(req.sourceCurrency),
-    targetFractionDigits: currencyFractionDigits(ctx.currency),
-  }
-}
-
-/** PURE-CPU half. Inverse-derives `sourceAmountMinor` via at-most-target
- *  policy (largest non-negative source minor whose forward conversion does
- *  NOT exceed `remaining`; may be 0 for weak rates against tiny remaining —
- *  caller rejects with SettlementValidationError('sourceCurrency')), then
- *  forward-converts to fill fxSnapshot.convertedAmountMinor (audit). No
- *  network — uses the rate resolved earlier by resolveForeignRate. */
-function deriveForeignArtifacts(
-  req:       SettlementCreateForeignRequest,
-  ctx:       TripCurrencyContext,
-  remaining: number,
-  fr:        ForeignRate,
-): ForeignSettlementArtifacts {
-  const sourceAmountMinor = estimateSourceMinorAtMostTargetHalfEven({
-    targetMinor:          remaining,
-    rateDecimal:          fr.rate.rateDecimal,
-    sourceFractionDigits: fr.sourceFractionDigits,
-    targetFractionDigits: fr.targetFractionDigits,
-  })
-
-  const convertedAmountMinor = convertMinorHalfEven({
-    sourceMinor:          sourceAmountMinor,
-    rateDecimal:          fr.rate.rateDecimal,
-    sourceFractionDigits: fr.sourceFractionDigits,
-    targetFractionDigits: fr.targetFractionDigits,
-  })
-
-  const fxSnapshot: FxSnapshot = {
-    provider:             'frankfurter-v2',
-    baseCurrency:         req.sourceCurrency,
-    quoteCurrency:        ctx.currency,
-    requestedDate:        req.settledOn,
-    rateDate:             fr.rate.rateDate,
-    rateDecimal:          fr.rate.rateDecimal,
-    sourceAmountMinor,
-    convertedAmountMinor,
-    fetchedAtMs:          fr.rate.fetchedAtMs,
-  }
-
-  return {
-    sourceCurrency:    req.sourceCurrency,
-    sourceAmountMinor,
-    settledOn:         req.settledOn,
-    fxSnapshot,
-  }
-}
-
 // ─── Endpoint: settlement-delete ──────────────────────────────────
 
 export async function settlementDelete(
@@ -1322,22 +804,17 @@ async function doDelete(
     const lockedExpenseReads = await Promise.all(
       appliedExpenseIds.map(eid => tx.get(`trips/${req.tripId}/expenses/${eid}`)),
     )
-    const expenseUnlockWrites: TxWrite[] = []
-    for (let i = 0; i < appliedExpenseIds.length; i++) {
-      const doc = lockedExpenseReads[i]
-      if (!doc.exists) continue   // expense already gone (e.g. cascade) — nothing to unlock
-      const existing = decodeStringArrayField(doc.fields, 'settlementLockIds')
-      if (!existing.includes(req.settlementId)) continue   // not referenced — leave untouched
-      expenseUnlockWrites.push({
-        document:        docResourceName(projectId, `trips/${req.tripId}/expenses/${appliedExpenseIds[i]}`),
-        fields:          { settlementLockIds: encodeStringArray(existing.filter(id => id !== req.settlementId)) },
-        updateMask:      ['settlementLockIds'],
-        // exists:true so a transform onto a concurrently-deleted expense
-        // can't resurrect it as a stub; 412 → retry → the exists check above
-        // then skips it.
-        currentDocument: { exists: true },
-      })
-    }
+    // Pure write-builder (settlement-lock-write) is the delete-side mirror
+    // of buildExpenseSettlementLockWrites — the tx reads stay here, the
+    // lock-set release math lives next to the create-side union so the
+    // symmetry is auditable in one module.
+    const expenseUnlockWrites = buildExpenseUnlockWrites(
+      projectId,
+      req.tripId,
+      req.settlementId,
+      appliedExpenseIds,
+      lockedExpenseReads,
+    )
 
     const deleteWrite: TxWrite = {
       op:              'delete',
