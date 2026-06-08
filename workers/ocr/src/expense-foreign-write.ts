@@ -1,20 +1,12 @@
 // workers/ocr/src/expense-foreign-write.ts
-// Foreign-currency domain for the expense-write endpoints: FX snapshot
-// resolution + source-domain materialization (create AND update) + the
-// Firestore encoders/decoders for the persisted source mirror. Split out of
-// expense-write.ts (P4 boundary extraction). The Worker stays authoritative
-// for per-line allocation (the financial-attribution boundary); this module
-// owns that math. Auth / BOLA / settlement-lock / mode routing stay in the
-// expense-write orchestrator, which calls prepareForeignCreate (create) and
+// Foreign-currency WRITE orchestration for the expense-write endpoints:
+// FX-snapshot resolution + the create/update control flow that assembles the
+// Firestore TxWrite. The two domains it delegates:
+//   - serialization  → expense-foreign-codec.ts   (source mirror encode/decode)
+//   - source→trip math → expense-foreign-materialize.ts (per-line allocation)
+// Auth / BOLA / settlement-lock / mode routing stay in the expense-write
+// orchestrator, which calls prepareForeignCreate (create) and
 // buildForeignUpdateWrite (update).
-import {
-  convertAndMaterializeFromSource,
-  convertSourceSplitsToTarget,
-  MaterializeError,
-  type MaterializeItem,
-  type MaterializeAdjustment,
-  type MaterializeErrorCode,
-}                                          from '@tripmate/expense-materialize'
 import { readString, type FsValue }        from './firestore'
 import {
   ExpenseValidationError,
@@ -34,6 +26,20 @@ import {
 import { getFxSnapshot, type FxSnapshot }  from './fx-rate'
 import { currencyFractionDigits }          from '@tripmate/fx-core'
 import { pushUnique, decodeExpense, type TripContext } from './expense-write-shared'
+import {
+  encodeSourceItems,
+  encodeSourceAdjustments,
+  encodeSourceSplits,
+  encodeFxSnapshot,
+  readIntegerField,
+  decodeSourceItemsField,
+  decodeSourceAdjustmentsField,
+  decodeSourceSplitsField,
+}                                          from './expense-foreign-codec'
+import {
+  materializeForeignLineDomain,
+  materializeForeignSplitDomain,
+}                                          from './expense-foreign-materialize'
 
 /** Carries the source-domain artifacts that Phase 3b persists alongside
  *  the trip-currency canonical fields. Only present on foreign-mode
@@ -49,128 +55,6 @@ export interface ForeignArtifacts {
   fxSnapshot:        FxSnapshot
 }
 
-export function encodeSourceItems(
-  src: NonNullable<ExpenseForeignCreateInput['sourceItems']>,
-): FsValue {
-  return {
-    arrayValue: {
-      values: src.map(item => ({
-        mapValue: {
-          fields: {
-            id:                { stringValue:  item.id },
-            name:              { stringValue:  item.name },
-            sourceAmountMinor: { integerValue: String(item.sourceAmountMinor) },
-            assignees: {
-              arrayValue: { values: item.assignees.map(uid => ({ stringValue: uid })) },
-            },
-          },
-        },
-      })),
-    },
-  }
-}
-
-export function encodeSourceAdjustments(
-  src: NonNullable<ExpenseForeignCreateInput['sourceAdjustments']>,
-): FsValue {
-  return {
-    arrayValue: {
-      values: src.map(adj => {
-        const aFields: Record<string, FsValue> = {
-          id:                { stringValue:  adj.id },
-          label:             { stringValue:  adj.label },
-          kind:              { stringValue:  adj.kind },
-          scope:             { stringValue:  adj.scope },
-          sourceAmountMinor: { integerValue: String(adj.sourceAmountMinor) },
-        }
-        if (adj.targetItemId !== undefined) {
-          aFields.targetItemId = { stringValue: adj.targetItemId }
-        }
-        return { mapValue: { fields: aFields } }
-      }),
-    },
-  }
-}
-
-export function encodeSourceSplits(
-  src: NonNullable<ExpenseForeignCreateInput['sourceSplits']>,
-): FsValue {
-  return {
-    arrayValue: {
-      values: src.map(split => ({
-        mapValue: {
-          fields: {
-            memberId:          { stringValue:  split.memberId },
-            sourceAmountMinor: { integerValue: String(split.sourceAmountMinor) },
-          },
-        },
-      })),
-    },
-  }
-}
-
-/** Encode FxSnapshot as a Firestore map. `fetchedAt` is set to null
- *  here -- the caller adds an `updateTransforms` entry pinned to
- *  REQUEST_TIME so Firestore stamps the field at commit. Writing both
- *  is intentional: the field MUST appear in the map so the create
- *  Write's `currentDocument.exists=false` doesn't reject the transform
- *  as targeting a missing parent. */
-export function encodeFxSnapshot(fx: FxSnapshot): FsValue {
-  return {
-    mapValue: {
-      fields: {
-        provider:             { stringValue:  fx.provider },
-        baseCurrency:         { stringValue:  fx.baseCurrency },
-        quoteCurrency:        { stringValue:  fx.quoteCurrency },
-        requestedDate:        { stringValue:  fx.requestedDate },
-        rateDate:             { stringValue:  fx.rateDate },
-        rateDecimal:          { stringValue:  fx.rateDecimal },
-        sourceAmountMinor:    { integerValue: String(fx.sourceAmountMinor) },
-        convertedAmountMinor: { integerValue: String(fx.convertedAmountMinor) },
-        fetchedAt:            { nullValue:    null },
-      },
-    },
-  }
-}
-
-/** Map a `MaterializeError.code` (raised by
- *  `convertAndMaterializeFromSource` on bad source-domain inputs) to the
- *  source-side field path the foreign create/update Worker handlers
- *  surface in their `ExpenseValidationError`. Kept as a single source
- *  of truth so create + update produce identical field hints for the
- *  same underlying materializer failure. */
-function mapMaterializeErrorField(code: MaterializeErrorCode): string {
-  switch (code) {
-    case 'SOURCE_AMOUNT_NOT_POSITIVE_INTEGER':
-    case 'SOURCE_SUM_MISMATCH':
-      return 'sourceAmountMinor'
-    case 'SOURCE_SPLITS_EMPTY':
-    case 'SOURCE_SPLIT_MEMBER_MISSING':
-    case 'SOURCE_SPLIT_NOT_NONNEGATIVE_INTEGER':
-    case 'DUPLICATE_SOURCE_SPLIT_MEMBER':
-    case 'SOURCE_SPLIT_SUM_MISMATCH':
-      return 'sourceSplits'
-    case 'SOURCE_ADJUSTMENT_NOT_POSITIVE_INTEGER':
-      return 'sourceAdjustments'
-    case 'SOURCE_ITEM_NOT_POSITIVE_INTEGER':
-    case 'NON_MEMBER_ASSIGNEE':
-    case 'DUPLICATE_ITEM_ID':
-    case 'DUPLICATE_ITEM_ASSIGNEE':
-    case 'ITEM_NOT_POSITIVE_INTEGER':
-    case 'OVER_DISCOUNT_ITEM':
-      return 'sourceItems'
-    default:
-      // Catch-all for shape errors the materializer can raise from the
-      // converted trip-currency inputs (ITEM_NO_ASSIGNEES, UNKNOWN_SCOPE,
-      // ITEM_SCOPE_NO_TARGET, EXPENSE_SCOPE_HAS_TARGET, TARGET_ITEM_NOT_
-      // FOUND, OVER_DISCOUNT_EXPENSE, ADJUSTMENT_UNKNOWN_KIND,
-      // ADJUSTMENT_NOT_POSITIVE_INTEGER, EXPENSE_SCOPE_NO_WEIGHT). All
-      // are line-shape problems on the source side because the trip
-      // counterparts are derived from source by zip.
-      return 'sourceItems'
-  }
-}
-
 /** Resolve a foreign-currency create payload into the shape the shared
  *  encode/write tail expects: a trip-currency `parsed` (matching
  *  `ExpenseCreateInput`) plus the source-domain artifacts that get
@@ -184,15 +68,11 @@ function mapMaterializeErrorField(code: MaterializeErrorCode): string {
  *       Same-currency clients must use the trip path (no FX snapshot
  *       to persist, would corrupt the audit trail with provider==null).
  *    3. Resolve the FxSnapshot via getFxSnapshot (cache or provider).
- *    4. Run convertAndMaterializeFromSource to derive the trip-domain
- *       items / adjustments / splits / amountMinor authoritatively.
- *       The materializer's per-line allocation is the financial-
- *       attribution boundary -- the Worker, not the client, decides
- *       who owes what for each receipt line.
- *    5. Zip the materializer's id-keyed outputs with the source-domain
- *       `name` / `label` strings to rebuild the trip-currency
- *       items[] / adjustments[] shape the encoder + cross-field
- *       validator expect. */
+ *    4. Delegate to expense-foreign-materialize to derive the trip-domain
+ *       items / adjustments / splits / amountMinor authoritatively. The
+ *       materializer's per-line allocation is the financial-attribution
+ *       boundary -- the Worker, not the client, decides who owes what for
+ *       each receipt line. */
 export async function prepareForeignCreate(
   body:               unknown,
   ctx:                TripContext,
@@ -241,27 +121,13 @@ export async function prepareForeignCreate(
   }
 
   if (fp.sourceSplits !== undefined) {
-    let converted: ReturnType<typeof convertSourceSplitsToTarget>
-    try {
-      converted = convertSourceSplitsToTarget({
-        sourceSplits: fp.sourceSplits.map(split => ({
-          memberId:    split.memberId,
-          amountMinor: split.sourceAmountMinor,
-        })),
-        sourceAmountMinor: fp.sourceAmountMinor,
-        rateDecimal:       snapshot.rateDecimal,
-        sourceFractionDigits,
-        targetFractionDigits,
-      })
-    } catch (e) {
-      if (e instanceof MaterializeError) {
-        throw new ExpenseValidationError(
-          mapMaterializeErrorField(e.code),
-          `${e.code}: ${e.message}`,
-        )
-      }
-      throw e
-    }
+    const converted = materializeForeignSplitDomain({
+      sourceSplits:         fp.sourceSplits,
+      sourceAmountMinor:    fp.sourceAmountMinor,
+      rateDecimal:          snapshot.rateDecimal,
+      sourceFractionDigits,
+      targetFractionDigits,
+    })
 
     return {
       parsedTrip: {
@@ -291,71 +157,14 @@ export async function prepareForeignCreate(
     throw new CascadeError(500, 'foreign create source-domain invariant violated post-parse')
   }
 
-  let materialized: ReturnType<typeof convertAndMaterializeFromSource>
-  try {
-    materialized = convertAndMaterializeFromSource({
-      sourceItems: sourceItems.map(i => ({
-        id:          i.id,
-        amountMinor: i.sourceAmountMinor,
-        assignees:   i.assignees,
-      })),
-      sourceAdjustments: sourceAdjustments.map(a => ({
-        id:           a.id,
-        kind:         a.kind,
-        scope:        a.scope,
-        amountMinor:  a.sourceAmountMinor,
-        targetItemId: a.targetItemId,
-      })),
-      sourceAmountMinor: fp.sourceAmountMinor,
-      rateDecimal:       snapshot.rateDecimal,
-      sourceFractionDigits,
-      targetFractionDigits,
-      members:           ctx.memberIds,
-    })
-  } catch (e) {
-    if (e instanceof MaterializeError) {
-      // Map materializer codes onto ExpenseValidationError so the
-      // operator sees a single error class. The structured `code` is
-      // preserved in the message for telemetry / Sentry grouping.
-      throw new ExpenseValidationError(
-        mapMaterializeErrorField(e.code),
-        `${e.code}: ${e.message}`,
-      )
-    }
-    throw e
-  }
-
-  // Zip materializer output (id-keyed) with source-side names/labels
-  // to rebuild the trip-currency items[] / adjustments[] shape the
-  // encoder + cross-field validator expect. The materializer guarantees
-  // its output preserves source order, so positional zip is safe.
-  const tripItems = materialized.items.map((mi: MaterializeItem, i: number) => {
-    const src = sourceItems[i]!
-    return {
-      id:          mi.id,
-      name:        src.name,
-      amountMinor: mi.amountMinor,
-      assignees:   mi.assignees,
-    }
-  })
-  const tripAdjustments = materialized.adjustments.map((ma: MaterializeAdjustment, i: number) => {
-    const src = sourceAdjustments[i]!
-    const out: {
-      id:            string
-      label:         string
-      kind:          MaterializeAdjustment['kind']
-      scope:         MaterializeAdjustment['scope']
-      amountMinor:   number
-      targetItemId?: string
-    } = {
-      id:          ma.id,
-      label:       src.label,
-      kind:        ma.kind,
-      scope:       ma.scope,
-      amountMinor: ma.amountMinor,
-    }
-    if (ma.targetItemId !== undefined) out.targetItemId = ma.targetItemId
-    return out
+  const materialized = materializeForeignLineDomain({
+    sourceItems,
+    sourceAdjustments,
+    sourceAmountMinor:    fp.sourceAmountMinor,
+    rateDecimal:          snapshot.rateDecimal,
+    sourceFractionDigits,
+    targetFractionDigits,
+    members:              ctx.memberIds,
   })
 
   const parsedTrip: ReturnType<ReturnType<typeof makeExpenseCreateSchema>['parse']> = {
@@ -366,8 +175,8 @@ export async function prepareForeignCreate(
     paidBy:      fp.paidBy,
     splits:      materialized.splits,
     date:        fp.date,
-    items:       tripItems,
-    adjustments: tripAdjustments,
+    items:       materialized.tripItems,
+    adjustments: materialized.tripAdjustments,
     ...(fp.note !== undefined ? { note: fp.note } : {}),
   }
   const foreignArtifacts: ForeignArtifacts = {
@@ -378,93 +187,6 @@ export async function prepareForeignCreate(
     fxSnapshot:        snapshot,
   }
   return { parsedTrip, foreignArtifacts }
-}
-
-/** Read an integer field encoded as Firestore REST's `{ integerValue: '<digits>' }`.
- *  Returns undefined when absent (not when zero -- distinguish via the
- *  caller's defensive check). */
-function readIntegerField(fields: Record<string, FsValue>, key: string): number | undefined {
-  const v = (fields[key] as { integerValue?: string } | undefined)?.integerValue
-  return v !== undefined ? Number(v) : undefined
-}
-
-interface DecodedSourceItem {
-  id:                string
-  name:              string
-  sourceAmountMinor: number
-  assignees:         string[]
-}
-
-interface DecodedSourceAdjustment {
-  id:                string
-  label:             string
-  kind:              MaterializeAdjustment['kind']
-  scope:             MaterializeAdjustment['scope']
-  sourceAmountMinor: number
-  targetItemId?:     string
-}
-
-interface DecodedSourceSplit {
-  memberId:          string
-  sourceAmountMinor: number
-}
-
-/** Decode the persisted `sourceItems` array from Firestore REST shape
- *  into the source-domain item structs the materializer + name-zip
- *  expect. Returns undefined when the field is absent (legitimate for
- *  trip-currency docs; caller branches on foreign-ness BEFORE invoking
- *  this so undefined here would indicate a corrupt foreign doc). */
-function decodeSourceItemsField(
-  fields: Record<string, FsValue>,
-): DecodedSourceItem[] | undefined {
-  const arr = (fields.sourceItems as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values
-  if (!arr) return undefined
-  return arr.map(v => {
-    const inner = v.mapValue?.fields ?? {}
-    const aArr = (inner.assignees as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []
-    return {
-      id:                readString(inner, 'id')   ?? '',
-      name:              readString(inner, 'name') ?? '',
-      sourceAmountMinor: Number((inner.sourceAmountMinor as { integerValue?: string } | undefined)?.integerValue ?? 0),
-      assignees:         aArr
-        .map(a => (a as { stringValue?: string }).stringValue ?? '')
-        .filter(s => s !== ''),
-    }
-  })
-}
-
-function decodeSourceAdjustmentsField(
-  fields: Record<string, FsValue>,
-): DecodedSourceAdjustment[] | undefined {
-  const arr = (fields.sourceAdjustments as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values
-  if (!arr) return undefined
-  return arr.map(v => {
-    const inner = v.mapValue?.fields ?? {}
-    const targetItemId = readString(inner, 'targetItemId')
-    const out: DecodedSourceAdjustment = {
-      id:                readString(inner, 'id')    ?? '',
-      label:             readString(inner, 'label') ?? '',
-      kind:              (readString(inner, 'kind')  ?? '') as MaterializeAdjustment['kind'],
-      scope:             (readString(inner, 'scope') ?? '') as MaterializeAdjustment['scope'],
-      sourceAmountMinor: Number((inner.sourceAmountMinor as { integerValue?: string } | undefined)?.integerValue ?? 0),
-    }
-    if (targetItemId !== undefined) out.targetItemId = targetItemId
-    return out
-  })
-}
-
-function decodeSourceSplitsField(
-  fields: Record<string, FsValue>,
-): DecodedSourceSplit[] | undefined {
-  const arr = (fields.sourceSplits as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values
-  if (!arr) return undefined
-  return arr.map(v => {
-    const inner = v.mapValue?.fields ?? {}
-    return {
-      memberId:          readString(inner, 'memberId') ?? '',
-      sourceAmountMinor: Number((inner.sourceAmountMinor as { integerValue?: string } | undefined)?.integerValue ?? 0),
-    }
-  })
 }
 
 /** Build the TxWrite for a foreign-currency update.
@@ -609,27 +331,13 @@ export async function buildForeignUpdateWrite(args: {
         throw new CascadeError(500, 'current foreign expense doc missing sourceSplits')
       }
 
-      let converted: ReturnType<typeof convertSourceSplitsToTarget>
-      try {
-        converted = convertSourceSplitsToTarget({
-          sourceSplits: effectiveSourceSplits.map(split => ({
-            memberId:    split.memberId,
-            amountMinor: split.sourceAmountMinor,
-          })),
-          sourceAmountMinor: effectiveSourceAmountMinor,
-          rateDecimal:       snapshot.rateDecimal,
-          sourceFractionDigits,
-          targetFractionDigits,
-        })
-      } catch (e) {
-        if (e instanceof MaterializeError) {
-          throw new ExpenseValidationError(
-            mapMaterializeErrorField(e.code),
-            `${e.code}: ${e.message}`,
-          )
-        }
-        throw e
-      }
+      const converted = materializeForeignSplitDomain({
+        sourceSplits:         effectiveSourceSplits,
+        sourceAmountMinor:    effectiveSourceAmountMinor,
+        rateDecimal:          snapshot.rateDecimal,
+        sourceFractionDigits,
+        targetFractionDigits,
+      })
 
       validateExpenseCrossField(
         {
@@ -682,72 +390,14 @@ export async function buildForeignUpdateWrite(args: {
         throw new CascadeError(500, 'current foreign expense doc missing sourceAdjustments')
       }
 
-      let materialized: ReturnType<typeof convertAndMaterializeFromSource>
-      try {
-        materialized = convertAndMaterializeFromSource({
-          sourceItems: effectiveSourceItems.map(i => ({
-            id:          i.id,
-            amountMinor: i.sourceAmountMinor,
-            assignees:   i.assignees,
-          })),
-          sourceAdjustments: effectiveSourceAdjustments.map(a => {
-            const out: {
-              id:            string
-              kind:          MaterializeAdjustment['kind']
-              scope:         MaterializeAdjustment['scope']
-              amountMinor:   number
-              targetItemId?: string
-            } = {
-              id:          a.id,
-              kind:        a.kind,
-              scope:       a.scope,
-              amountMinor: a.sourceAmountMinor,
-            }
-            if (a.targetItemId !== undefined) out.targetItemId = a.targetItemId
-            return out
-          }),
-          sourceAmountMinor: effectiveSourceAmountMinor,
-          rateDecimal:       snapshot.rateDecimal,
-          sourceFractionDigits,
-          targetFractionDigits,
-          members:           args.ctx.memberIds,
-        })
-      } catch (e) {
-        if (e instanceof MaterializeError) {
-          throw new ExpenseValidationError(
-            mapMaterializeErrorField(e.code),
-            `${e.code}: ${e.message}`,
-          )
-        }
-        throw e
-      }
-
-      // Zip materializer output (id-keyed) with source-side names/labels
-      // by positional index -- materializer preserves source order.
-      const tripItems = materialized.items.map((mi: MaterializeItem, i: number) => ({
-        id:          mi.id,
-        name:        effectiveSourceItems[i]!.name,
-        amountMinor: mi.amountMinor,
-        assignees:   mi.assignees,
-      }))
-      const tripAdjustments = materialized.adjustments.map((ma: MaterializeAdjustment, i: number) => {
-        const src = effectiveSourceAdjustments[i]!
-        const out: {
-          id:            string
-          label:         string
-          kind:          MaterializeAdjustment['kind']
-          scope:         MaterializeAdjustment['scope']
-          amountMinor:   number
-          targetItemId?: string
-        } = {
-          id:          ma.id,
-          label:       src.label,
-          kind:        ma.kind,
-          scope:       ma.scope,
-          amountMinor: ma.amountMinor,
-        }
-        if (ma.targetItemId !== undefined) out.targetItemId = ma.targetItemId
-        return out
+      const materialized = materializeForeignLineDomain({
+        sourceItems:          effectiveSourceItems,
+        sourceAdjustments:    effectiveSourceAdjustments,
+        sourceAmountMinor:    effectiveSourceAmountMinor,
+        rateDecimal:          snapshot.rateDecimal,
+        sourceFractionDigits,
+        targetFractionDigits,
+        members:              args.ctx.memberIds,
       })
 
       validateExpenseCrossField(
@@ -756,8 +406,8 @@ export async function buildForeignUpdateWrite(args: {
           currency:    args.ctx.currency,
           paidBy:      fp.paidBy ?? readString(args.currentFields, 'paidBy') ?? '',
           splits:      materialized.splits,
-          items:       tripItems,
-          adjustments: tripAdjustments,
+          items:       materialized.tripItems,
+          adjustments: materialized.tripAdjustments,
         },
         args.ctx.memberIds,
       )
@@ -778,7 +428,7 @@ export async function buildForeignUpdateWrite(args: {
       }
       patchFields.items = {
         arrayValue: {
-          values: tripItems.map(item => ({
+          values: materialized.tripItems.map(item => ({
             mapValue: {
               fields: {
                 id:          { stringValue:  item.id },
@@ -794,7 +444,7 @@ export async function buildForeignUpdateWrite(args: {
       }
       patchFields.adjustments = {
         arrayValue: {
-          values: tripAdjustments.map(adj => {
+          values: materialized.tripAdjustments.map(adj => {
             const aFields: Record<string, FsValue> = {
               id:          { stringValue:  adj.id },
               label:       { stringValue:  adj.label },
@@ -812,39 +462,8 @@ export async function buildForeignUpdateWrite(args: {
 
       patchFields.sourceCurrency    = { stringValue:  effectiveSourceCurrency }
       patchFields.sourceAmountMinor = { integerValue: String(effectiveSourceAmountMinor) }
-      patchFields.sourceItems       = {
-        arrayValue: {
-          values: effectiveSourceItems.map(item => ({
-            mapValue: {
-              fields: {
-                id:                { stringValue:  item.id },
-                name:              { stringValue:  item.name },
-                sourceAmountMinor: { integerValue: String(item.sourceAmountMinor) },
-                assignees: {
-                  arrayValue: { values: item.assignees.map(uid => ({ stringValue: uid })) },
-                },
-              },
-            },
-          })),
-        },
-      }
-      patchFields.sourceAdjustments = {
-        arrayValue: {
-          values: effectiveSourceAdjustments.map(adj => {
-            const aFields: Record<string, FsValue> = {
-              id:                { stringValue:  adj.id },
-              label:             { stringValue:  adj.label },
-              kind:              { stringValue:  adj.kind },
-              scope:             { stringValue:  adj.scope },
-              sourceAmountMinor: { integerValue: String(adj.sourceAmountMinor) },
-            }
-            if (adj.targetItemId !== undefined) {
-              aFields.targetItemId = { stringValue: adj.targetItemId }
-            }
-            return { mapValue: { fields: aFields } }
-          }),
-        },
-      }
+      patchFields.sourceItems       = encodeSourceItems(effectiveSourceItems)
+      patchFields.sourceAdjustments = encodeSourceAdjustments(effectiveSourceAdjustments)
 
       // Delete the split-domain source mirror if this expense is being
       // recomputed in line-domain mode.

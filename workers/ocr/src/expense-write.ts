@@ -36,9 +36,11 @@ import { buildReceiptFromIntents, validateBuiltReceipt }         from './expense
 import { pushUnique, decodeExpense, type TripContext }              from './expense-write-shared'
 import {
   prepareForeignCreate, buildForeignUpdateWrite,
-  encodeSourceItems, encodeSourceAdjustments, encodeSourceSplits, encodeFxSnapshot,
   type ForeignArtifacts,
 }                                                                   from './expense-foreign-write'
+import {
+  encodeSourceItems, encodeSourceAdjustments, encodeSourceSplits, encodeFxSnapshot,
+}                                                                   from './expense-foreign-codec'
 import { withTokenRetry, CascadeError }                             from './cascade'
 import {
   runFirestoreTransaction,
