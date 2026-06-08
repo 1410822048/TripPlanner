@@ -37,17 +37,14 @@ export function validateBuiltReceipt(
   return result.data
 }
 
-/** Build an ExpenseReceipt-shaped object from consumed intents.
- *  Required: at least one intent with kind='full' or kind='pdf' (the
- *  primary blob). Optional: a single thumb. Throws on a missing
- *  download token (the Firebase Storage SDK adds these on every
- *  upload, so missing means non-SDK upload path -- defense-in-depth
- *  against malformed object metadata). */
+/** Build an ExpenseReceipt-shaped object (path-only) from consumed
+ *  intents. Required: at least one intent with kind='full' or kind='pdf'
+ *  (the primary blob). Optional: a single thumb. No url/thumbUrl -- the
+ *  download token was stripped at consume time; reads go through
+ *  getBlob(path/thumbPath) gated by Storage Rules. */
 export function buildReceiptFromIntents(consumed: ConsumedIntent[]): {
-  url:        string
   path:       string
   type:       string
-  thumbUrl?:  string
   thumbPath?: string
 } {
   const primary = consumed.find(c => c.kind === 'full' || c.kind === 'pdf')
@@ -57,32 +54,16 @@ export function buildReceiptFromIntents(consumed: ConsumedIntent[]): {
       'must include a full or pdf intent (primary blob missing)',
     )
   }
-  if (!primary.downloadUrl) {
-    throw new ExpenseValidationError(
-      'intentIds',
-      `primary upload at ${primary.path} has no Firebase Storage download token`,
-    )
-  }
   const out: {
-    url:        string
     path:       string
     type:       string
-    thumbUrl?:  string
     thumbPath?: string
   } = {
-    url:  primary.downloadUrl,
     path: primary.path,
     type: primary.storage.contentType,
   }
   const thumb = consumed.find(c => c.kind === 'thumb')
   if (thumb) {
-    if (!thumb.downloadUrl) {
-      throw new ExpenseValidationError(
-        'intentIds',
-        `thumb upload at ${thumb.path} has no Firebase Storage download token`,
-      )
-    }
-    out.thumbUrl  = thumb.downloadUrl
     out.thumbPath = thumb.path
   }
   return out

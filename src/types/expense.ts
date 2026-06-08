@@ -33,7 +33,10 @@ export interface ExpenseSplit {
  *  (full + thumbnail). Optional fields exist for legacy reads + PDF
  *  case (PDFs upload without a thumb). */
 export interface ExpenseReceipt {
-  url:        string
+  /** Legacy bearer download URL. path-only model: Worker no longer writes
+   *  it (download token stripped at consume); reads go through getBlob(path)
+   *  gated by Storage Rules. Optional only for back-compat with any old doc. */
+  url?:       string
   path:       string
   /** Mime type at upload time. Drives image-vs-PDF rendering choice. */
   type:       string
@@ -449,7 +452,8 @@ export const EXPENSE_RECEIPT_MIME_TYPES = [
 ] as const
 
 export const ExpenseReceiptSchema = z.object({
-  url:       z.string().url().max(2048),
+  // path-only: url/thumbUrl legacy-optional (Worker stops writing them).
+  url:       z.string().url().max(2048).optional(),
   path:      z.string().min(1).max(500),
   type:      z.enum(EXPENSE_RECEIPT_MIME_TYPES),
   thumbUrl:  z.string().url().max(2048).optional(),

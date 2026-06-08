@@ -245,15 +245,7 @@ async function doCreate(
         'must include a full intent (primary image missing)',
       )
     }
-    if (primary.downloadUrl === null) {
-      throw new CascadeError(500,
-        `primary blob at ${primary.path} has no Firebase download token (upload bypassed SDK?)`)
-    }
     const thumb = consumed.find(c => c.kind === 'thumb')
-    if (thumb && thumb.downloadUrl === null) {
-      throw new CascadeError(500,
-        `thumb blob at ${thumb.path} has no Firebase download token (upload bypassed SDK?)`)
-    }
     // Wish doesn't accept PDFs — static validation in /upload-intents
     // already rejects (entityType='wish' + kind='pdf'). Defense in depth:
     // if some future change to /upload-intents accepted PDFs for wish,
@@ -457,15 +449,7 @@ async function doUpdate(
         'must include a full intent (primary image missing)',
       )
     }
-    if (primary.downloadUrl === null) {
-      throw new CascadeError(500,
-        `primary blob at ${primary.path} has no Firebase download token (upload bypassed SDK?)`)
-    }
     const thumb = consumed.find(c => c.kind === 'thumb')
-    if (thumb && thumb.downloadUrl === null) {
-      throw new CascadeError(500,
-        `thumb blob at ${thumb.path} has no Firebase download token (upload bypassed SDK?)`)
-    }
     const imageValue = buildAttachmentMapValue('wish', primary, thumb)
 
     // Build the patch field map. `image` always present (this endpoint's

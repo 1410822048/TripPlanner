@@ -98,9 +98,9 @@ export async function requestUploadIntents(
 /**
  * Upload `file` to `intent.path` with `intent.metadata` via
  * uploadBytesResumable + the same retry/timeout pattern legacy
- * uploads used. Returns void -- the path is `intent.path` and the
- * URL is fetched server-side at the entity-write endpoint from
- * `intent.path` once the Worker tx commits.
+ * uploads used. Returns void -- only `intent.path` is persisted (the
+ * entity doc stores the path, not a download URL; the Worker strips the
+ * download token at consume and reads go through getBlob + Storage Rules).
  *
  * `label` is a short tag used in the timeout error message
  * ('expense-full', 'booking-thumb', 'wish-full', etc).

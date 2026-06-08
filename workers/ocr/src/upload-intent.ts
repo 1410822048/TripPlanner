@@ -52,7 +52,7 @@ import {
   readTimestampMs,
   type FsValue,
 }                                                                   from './firestore'
-import { withTokenRetry, CascadeError }                             from './cascade'
+import { withTokenRetry, CascadeError, AttachmentHardeningError }    from './cascade'
 import {
   runFirestoreTransaction,
   docResourceName,
@@ -61,7 +61,8 @@ import {
 }                                                                   from './firestore-tx'
 import {
   getObjectMetadata,
-  downloadUrlFromMetadata,
+  updateObjectMetadata,
+  deleteObject,
   type ObjectMetadata,
 }                                                                   from './storage'
 
@@ -419,7 +420,6 @@ export interface ConsumedIntent {
   kind:           UploadKind
   path:           string
   storage:        ObjectMetadata
-  downloadUrl:    string | null
 }
 
 interface ConsumeResult {
@@ -570,7 +570,15 @@ async function consumeIntentInTx(
     }
   }
 
-  const downloadUrl = downloadUrlFromMetadata(bucket, path, storage.customMetadata)
+  // path-only hardening: strip the Firebase download token from the
+  // uploaded object's customMetadata so NO bearer `?alt=media&token=` URL
+  // can ever be constructed. The client reads bytes via getBlob() gated by
+  // Storage Rules instead. This runs AFTER the contract checks above and
+  // BEFORE the entity doc write (the markUsedWrite + doc write commit later
+  // in the caller's tx), so it is fail-closed: if the strip can't be made
+  // to stick, we delete the just-uploaded blob and abort the whole write —
+  // we never persist a doc that references a token-bearing object.
+  await stripDownloadTokenOrFail(accessToken, bucket, path)
 
   // updateMask MUST contain only fields actually present in
   // `fields` -- listing 'usedAt' there would be Firestore's
@@ -599,10 +607,53 @@ async function consumeIntentInTx(
       kind,
       path,
       storage,
-      downloadUrl,
     },
     markUsedWrite,
   }
+}
+
+/** Strip `firebaseStorageDownloadTokens` from an uploaded object, fail-
+ *  closed. Bounded retry (3 attempts, short backoff) absorbs transient
+ *  GCS blips; on persistent failure we best-effort delete the blob (so no
+ *  token-bearing orphan lingers between now and the cron scrubber) and
+ *  throw AttachmentHardeningError. Idempotent: a tx retry that re-reaches
+ *  here re-PATCHes an already-tokenless object (200 no-op) or hits a 404
+ *  (object gone → treated as success). */
+async function stripDownloadTokenOrFail(
+  accessToken: string,
+  bucket:      string,
+  path:        string,
+): Promise<void> {
+  const ATTEMPTS = 3
+  let lastErr: unknown
+  for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+    try {
+      const stripped = await updateObjectMetadata(accessToken, bucket, path, {
+        firebaseStorageDownloadTokens: null,
+      })
+      if (stripped) return
+      // false === 404: the object vanished between the existence check and
+      // this PATCH. TERMINAL -- committing the doc would point at a missing
+      // blob. Don't retry (it won't reappear) and don't delete (already gone).
+      throw new AttachmentHardeningError(`object missing at ${path} during token strip`)
+    } catch (e) {
+      if (e instanceof AttachmentHardeningError) throw e   // 404 → terminal, no retry/delete
+      lastErr = e
+      if (attempt < ATTEMPTS - 1) {
+        // 60ms, 180ms backoff -- well within the tx wall-clock budget.
+        await new Promise(r => setTimeout(r, 60 * (attempt + 1) ** 2))
+      }
+    }
+  }
+  // Persistent failure: remove the token-bearing blob so it can't be read
+  // via a self-minted bearer URL while waiting for the cron scrubber.
+  // Delete is best-effort -- if it also fails the scrubber is the backstop.
+  try {
+    await deleteObject(accessToken, bucket, path)
+  } catch { /* best-effort; cron scrubber backstops */ }
+  throw new AttachmentHardeningError(
+    `failed to strip download token at ${path}: ${(lastErr as Error)?.message ?? 'unknown'}`,
+  )
 }
 
 /** Public consume helper for Worker-side entity write paths
@@ -669,35 +720,28 @@ export function buildAttachmentMapValue(
   thumb:      ConsumedIntent | undefined,
 ): FsValue {
   if (entityType === 'booking') {
-    // BookingAttachment: fileUrl + filePath + fileType required;
-    // thumbUrl + thumbPath optional (PDFs ship without thumbs).
+    // BookingAttachment (path-only): filePath + fileType required;
+    // thumbPath optional (PDFs ship without thumbs). No url/thumbUrl --
+    // reads go through getBlob(filePath/thumbPath) gated by Storage Rules.
     const fields: Record<string, FsValue> = {
-      fileUrl:  { stringValue: primary.downloadUrl! },  // null-checked by caller
       filePath: { stringValue: primary.path },
       fileType: { stringValue: primary.storage.contentType },
     }
     if (thumb) {
-      fields.thumbUrl  = { stringValue: thumb.downloadUrl! }  // null-checked by caller
       fields.thumbPath = { stringValue: thumb.path }
     }
     return { mapValue: { fields } }
   }
-  // WishImage: url + path + thumbUrl + thumbPath ALL required. When
-  // the upload didn't include a thumb (HEIC / HEIF pass-through or
-  // canvas decode failure -- see src/utils/image.ts PASSTHROUGH_TYPES),
-  // collapse the thumb fields to the primary blob. Matches the
-  // pre-Phase-3.6 client-side fallback so existing UI that always
-  // indexes into both fields keeps rendering; cost is a full-size
-  // image in the list thumbnail slot for these edge cases (~10x
-  // bandwidth vs WebP thumb), which is the same trade we always made.
-  return {
-    mapValue: {
-      fields: {
-        url:       { stringValue: primary.downloadUrl! },
-        path:      { stringValue: primary.path },
-        thumbUrl:  { stringValue: thumb?.downloadUrl ?? primary.downloadUrl! },
-        thumbPath: { stringValue: thumb?.path        ?? primary.path },
-      },
-    },
+  // WishImage (path-only): path required; thumbPath only when a real thumb
+  // was uploaded. We deliberately do NOT collapse thumbPath to the primary
+  // path when there's no thumb (HEIC / HEIF pass-through or canvas decode
+  // failure -- see src/utils/image.ts PASSTHROUGH_TYPES): that would pull a
+  // full-size blob into the client thumbnail LRU. The card shows its
+  // gradient placeholder for those edge cases instead. No url/thumbUrl --
+  // reads go through getBlob() gated by Storage Rules.
+  const fields: Record<string, FsValue> = {
+    path: { stringValue: primary.path },
   }
+  if (thumb) fields.thumbPath = { stringValue: thumb.path }
+  return { mapValue: { fields } }
 }

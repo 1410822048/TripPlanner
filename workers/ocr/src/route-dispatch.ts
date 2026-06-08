@@ -19,7 +19,7 @@
 // point each route diverges.
 
 import type { z } from 'zod'
-import { CascadeError }     from './cascade'
+import { CascadeError, AttachmentHardeningError } from './cascade'
 import { FxError }          from './fx-rate'
 import { TxRetryExhausted } from './firestore-tx'
 
@@ -119,6 +119,29 @@ export function fxErrorCatcher(): (e: unknown) => DomainErrorMapped | null {
         // (provider 502, future-date 400) is always definitively pre-commit
         // → client rolls back instead of keeping a phantom row on the 502.
         precommit: true,
+      }
+    : null
+}
+
+/** Catcher for AttachmentHardeningError — the consume-time download-token
+ *  strip failed after bounded retry and the blob was deleted. Maps to 409
+ *  (∈ client DEFINITIVE_REJECT_STATUSES → WorkerRejected → optimistic row
+ *  rolls back, terminal). We deliberately use a definitive 4xx rather than
+ *  5xx+precommit so the failure is unambiguously terminal-non-retryable:
+ *  the blob is gone, the same payload must NOT be replayed; the user
+ *  re-picks the file (new intent). `retryable:false` / `precommit:false`
+ *  in the body document that contract for any higher-level retry layer. */
+export function attachmentHardeningErrorCatcher(): (e: unknown) => DomainErrorMapped | null {
+  return e => e instanceof AttachmentHardeningError
+    ? {
+        log:    `attachment-hardening: ${e.message}`,
+        body:   {
+          error:     '添付ファイルの保存に失敗しました。もう一度ファイルを選択してください',
+          code:      e.code,
+          retryable: false,
+          precommit: false,
+        },
+        status: 409,
       }
     : null
 }

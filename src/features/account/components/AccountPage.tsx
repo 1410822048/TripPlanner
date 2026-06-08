@@ -38,7 +38,7 @@ import { StackedEmojiPreview, StackedImagePreview, StackedAvatarPreview } from '
 import { useAuth } from '@/hooks/useAuth'
 import { useAllTripMembers } from '@/features/members/hooks/useAllTripMembers'
 import { useMyHotelBookings } from '@/features/bookings/hooks/useBookings'
-import { attachmentThumb } from '@/features/bookings/utils'
+import { useThreeHotelThumbUrls } from '../hooks/useThreeHotelThumbUrls'
 import { memberToTripMember } from '@/features/members/utils'
 import { useTripStore } from '@/store/tripStore'
 import { toast } from '@/shared/toast'
@@ -95,12 +95,8 @@ export default function AccountPage() {
   // existed.
   const totalDays = (trips ?? []).reduce((s, t) => s + tripDays(t), 0)
 
-  const lodgingThumbs: string[] = []
-  for (const b of hotelBookings ?? []) {
-    const url = attachmentThumb(b.attachment)
-    if (url) lodgingThumbs.push(url)
-    if (lodgingThumbs.length === 3) break
-  }
+  // path-only: resolve up to 3 hotel-thumb paths to blob URLs via getBlob.
+  const lodgingThumbs = useThreeHotelThumbUrls(hotelBookings)
 
   const collabSeen  = new Set<string>()
   const collaboratorChips: TripMember[] = []

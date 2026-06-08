@@ -32,10 +32,16 @@ interface BaseProps {
 /** Preview support is all-or-nothing — having `onPreview` without an
  *  aria-label would ship an unannounced thumbnail button, and supplying
  *  an aria-label without a handler is dead config. The `?: never` arm
- *  enforces "omit both" on callers like Wish that don't preview. */
+ *  enforces "omit both" on callers like Wish that don't preview.
+ *
+ *  `canPreview` gates the button independently of `previewUrl`: under the
+ *  path-only model a thumb-less attachment (PDF / pre-thumb image) has no
+ *  thumbnail URL but IS still openable in the full preview (the full blob
+ *  resolves on open), so enablement tracks "is there something to open"
+ *  (fullPath / a freshly-picked file), not "do we have a thumbnail". */
 type PreviewProps =
-  | { onPreview:  () => void; previewAriaLabel: string }
-  | { onPreview?: never;       previewAriaLabel?: never }
+  | { onPreview:  () => void; previewAriaLabel: string; canPreview: boolean }
+  | { onPreview?: never;       previewAriaLabel?: never; canPreview?: never }
 
 type Props = BaseProps & PreviewProps
 
@@ -46,6 +52,7 @@ export default function AttachmentRow({
   onReplace,
   onClear,
   onPreview,
+  canPreview,
   replaceAriaLabel,
   previewAriaLabel,
   clearAriaLabel,
@@ -73,7 +80,7 @@ export default function AttachmentRow({
         <button
           type="button"
           onClick={onPreview}
-          disabled={!previewUrl}
+          disabled={!canPreview}
           aria-label={previewAriaLabel}
           className={`relative z-10 ${thumbBase} border-none cursor-pointer hover:opacity-80 transition-opacity disabled:cursor-default disabled:opacity-100`}
         >

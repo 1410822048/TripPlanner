@@ -12,8 +12,9 @@
 import { FileText, MapPin } from 'lucide-react'
 import type { Booking } from '@/types'
 import {
-  attachmentThumb, bookingDisplayName, bookingSubtitle, BOOKING_TYPE_META, isImageAttachment,
+  attachmentThumbPath, bookingDisplayName, bookingSubtitle, BOOKING_TYPE_META, isImageAttachment,
 } from '../../utils'
+import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { mapsSearchUrl } from '@/utils/maps'
 
 interface Props {
@@ -27,13 +28,15 @@ interface Props {
 
 export default function GenericCard({ booking, whenLabel, onPreview }: Props) {
   const isImage  = isImageAttachment(booking.attachment)
-  const thumbSrc = attachmentThumb(booking.attachment)
-  const showImage = isImage && thumbSrc
+  const thumbSrc = useAttachmentUrl(isImage ? attachmentThumbPath(booking.attachment) : undefined, { kind: 'thumb' })
+  const showImage = isImage && !!thumbSrc
   const subtitle = bookingSubtitle(booking)
   const address  = booking.address
   const mapHref  = address ? mapsSearchUrl(address) : null
   const hasMeta  = subtitle.length > 0 || whenLabel.length > 0 || !!address
-  const hasPdf   = !isImage && !!booking.attachment?.fileUrl
+  // path-only: a non-image attachment exists iff it has a filePath (the
+  // bearer fileUrl no longer exists to gate on).
+  const hasPdf   = !isImage && !!booking.attachment?.filePath
 
   // Both handlers stop propagation so the PDF tap doesn't also arm the
   // outer swipe gesture or fire the row's tap-to-edit.

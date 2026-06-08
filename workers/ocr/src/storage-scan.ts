@@ -41,7 +41,7 @@
 // → skip + report, do NOT delete. Same invariant as orphan-purge.ts.
 // Storage delete failures bubble up to the per-candidate try/catch and
 // log; no retry budget (this is a daily cron, tomorrow tries again).
-import { listObjects, deleteObject } from './storage'
+import { listObjects, deleteObject, updateObjectMetadata } from './storage'
 import { getDocFields, getScanCursor, setScanCursor, clearScanCursor, readString, readTimestampMs } from './firestore'
 import { referencedPaths, type ValidCollection } from './orphan-purge'
 import { getAdminToken, getProjectId } from './admin'
@@ -527,4 +527,157 @@ async function pMap<T>(
     }
   })
   await Promise.all(workers)
+}
+
+// ─── Token scrubber (path-only hardening backstop) ─────────────────
+
+/** Independent cursor + budget for the token scrubber -- deliberately
+ *  NOT shared with the orphan scan's SCAN_KEY/SUBREQUEST_BUDGET (see
+ *  scanAndScrubTokens for why). Smaller budget: in steady state almost
+ *  no object carries a token (consume strips it fail-closed on write),
+ *  so this does real work only during a migration backlog or after a
+ *  never-consumed / bypass upload. */
+const SCRUB_KEY = 'tokenScrub'
+const SCRUB_BUDGET = 150
+
+export interface ScrubTokensReport {
+  scanned:     number
+  scrubbed:    number
+  scrubErrors: number
+  budgetHit:   boolean
+  deadlineHit: boolean
+}
+
+/** Strip leftover `firebaseStorageDownloadTokens` from any object under
+ *  `trips/`. Backstops the never-consumed / bypass case: a blob uploaded
+ *  via the Firebase SDK (which auto-adds the token) whose Worker consume
+ *  -- the fail-closed strip point -- never ran, leaving a bearer
+ *  `?alt=media&token=` URL the uploader could mint and share.
+ *
+ *  Deliberately a SEPARATE pass from scanOrphanStorage, not folded into
+ *  its per-object loop:
+ *   - NO 24h grace: stripping a token is non-destructive and doesn't touch
+ *     the intent-bound consume contract (the token is not one of
+ *     uploadIntentId/uploaderUid/tripId/entityType/entityId/kind/
+ *     schemaVersion), so a freshly-uploaded token-bearing blob is cleaned
+ *     immediately rather than waiting out the orphan-delete grace window.
+ *   - WIDER scope than the orphan parser: scrubs ANY trips/ object with a
+ *     token, including paths parsePath() rejects -- orphan DELETE needs a
+ *     parseable path + entity recheck, a metadata PATCH does not.
+ *   - INDEPENDENT cursor + budget: on SCRUB_BUDGET exhaustion we re-list
+ *     the SAME page next run (not nextPageToken), so un-scrubbed tokens
+ *     are never skipped by an advancing cursor; and orphan delete keeps
+ *     its own budget.
+ *
+ *  Reads the token straight from the listObjects partial-response
+ *  `metadata` (no extra getObjectMetadata). Idempotent: an already-
+ *  stripped object lists without the key and is skipped. */
+export async function scanAndScrubTokens(
+  serviceAccountJson: string,
+  bucket:             string,
+  opts: { subrequestBudget?: number } = {},
+): Promise<ScrubTokensReport> {
+  const accessToken = await getAdminToken(serviceAccountJson)
+  const projectId   = getProjectId(serviceAccountJson)
+
+  const startedAt = Date.now()
+  const budget    = opts.subrequestBudget ?? SCRUB_BUDGET
+  let used = 0
+  const report: ScrubTokensReport = {
+    scanned: 0, scrubbed: 0, scrubErrors: 0, budgetHit: false, deadlineHit: false,
+  }
+
+  let pageToken: string | undefined
+  try {
+    const cursor = await getScanCursor(accessToken, projectId, SCRUB_KEY)
+    if (cursor && Date.now() - cursor.savedAtMs < CURSOR_STALENESS_MS) {
+      pageToken = cursor.pageToken
+    }
+  } catch (e) {
+    console.warn(`[token-scrub] cursor load failed; starting from top: ${(e as Error).message}`)
+  }
+
+  while (true) {
+    if (Date.now() - startedAt > SOFT_DEADLINE_MS) { report.deadlineHit = true; break }
+    if (used + 1 > budget) { report.budgetHit = true; break }
+
+    let page
+    try {
+      used += 1
+      page = await listObjects(accessToken, bucket, 'trips/', pageToken, PAGE_SIZE)
+    } catch (e) {
+      throw new Error(
+        `token-scrub listObjects failed mid-scan ` +
+        `(scanned=${report.scanned} scrubbed=${report.scrubbed}): ${(e as Error).message}`,
+      )
+    }
+
+    let budgetHitMidPage = false
+    for (const obj of page.items) {
+      report.scanned += 1
+      if (!obj.metadata?.firebaseStorageDownloadTokens) continue
+      if (used + 1 > budget) { report.budgetHit = true; budgetHitMidPage = true; break }
+      used += 1
+      try {
+        await updateObjectMetadata(accessToken, bucket, obj.name, {
+          firebaseStorageDownloadTokens: null,
+        })
+        report.scrubbed += 1
+      } catch (e) {
+        report.scrubErrors += 1
+        console.warn(`[token-scrub] strip failed obj=${obj.name}: ${(e as Error).message}`)
+      }
+    }
+
+    // Budget hit mid-page → stop WITHOUT advancing pageToken, so next run
+    // re-lists this same page and finishes its un-scrubbed tokens (already-
+    // stripped ones list without the key and no-op). This is the load-
+    // bearing difference from orphan-scan, which advances on budget hit.
+    if (budgetHitMidPage) break
+    pageToken = page.nextPageToken
+    if (!pageToken) break
+  }
+
+  // Cursor: budget/deadline → save the token that fetched the page we
+  // STOPPED on (re-list it; no skip). Natural drain → clear (restart top).
+  try {
+    if (report.budgetHit || report.deadlineHit) {
+      if (pageToken) await setScanCursor(accessToken, projectId, SCRUB_KEY, pageToken)
+      else           await clearScanCursor(accessToken, projectId, SCRUB_KEY)
+    } else {
+      await clearScanCursor(accessToken, projectId, SCRUB_KEY)
+    }
+  } catch (e) {
+    console.warn(`[token-scrub] cursor maintenance failed: ${(e as Error).message}`)
+  }
+
+  return report
+}
+
+/** Storage-class daily maintenance: token scrubber THEN orphan scan,
+ *  SEQUENTIALLY under ONE cron `ctx.waitUntil` so they share a single
+ *  subrequest-budget envelope (SCRUB_BUDGET 150 + SUBREQUEST_BUDGET 300 =
+ *  ≤450, leaving headroom under the invocation's ~1000-subrequest pool
+ *  that receipt-purge + upload-intent-purge also draw from) instead of
+ *  two parallel waitUntils racing for the pool. Each pass is independently
+ *  best-effort: a throw in scrub is logged and orphan still runs. Returns
+ *  both reports for the cron's combined log line. */
+export async function runStorageMaintenance(
+  serviceAccountJson: string,
+  bucket:             string,
+  opts: { sentryEnv?: { SENTRY_DSN?: string } } = {},
+): Promise<{ scrub: ScrubTokensReport | null; orphan: StorageScanReport | null }> {
+  let scrub: ScrubTokensReport | null = null
+  try {
+    scrub = await scanAndScrubTokens(serviceAccountJson, bucket)
+  } catch (e) {
+    console.error(`[token-scrub] failed: ${(e as Error).message}`)
+  }
+  let orphan: StorageScanReport | null = null
+  try {
+    orphan = await scanOrphanStorage(serviceAccountJson, bucket, { sentryEnv: opts.sentryEnv })
+  } catch (e) {
+    console.error(`[storage-scan] failed: ${(e as Error).message}`)
+  }
+  return { scrub, orphan }
 }

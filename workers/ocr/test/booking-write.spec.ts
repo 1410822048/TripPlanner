@@ -32,12 +32,11 @@ vi.mock('../src/admin', () => ({
 }))
 
 vi.mock('../src/storage', () => ({
-	getObjectMetadata:      vi.fn(),
-	downloadUrlFromMetadata: (bucket: string, path: string, meta?: Record<string, string>) => {
-		const token = meta?.firebaseStorageDownloadTokens?.split(',')[0]?.trim()
-		if (!token) return null
-		return `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(path)}?alt=media&token=${token}`
-	},
+	getObjectMetadata:    vi.fn(),
+	// path-only: consume strips the download token fail-closed; both resolve
+	// truthy by default so the happy path proceeds. Specific tests override.
+	updateObjectMetadata: vi.fn(() => Promise.resolve(true)),
+	deleteObject:         vi.fn(() => Promise.resolve(true)),
 }))
 
 const txGetResponses = new Map<string, { exists: boolean; fields: Record<string, unknown>; name: string; updateTime: string | null }>()
@@ -222,6 +221,10 @@ beforeEach(() => {
 	txGetResponses.clear()
 	capturedTxResult = null
 	vi.clearAllMocks()
+	// clearAllMocks resets call history but NOT implementations, so restore
+	// the strip default (the fail-closed test sets mockRejectedValue).
+	vi.mocked(storage.updateObjectMetadata).mockResolvedValue(true)
+	vi.mocked(storage.deleteObject).mockResolvedValue(true)
 })
 
 // ─── Happy paths ───────────────────────────────────────────────────
@@ -282,14 +285,22 @@ describe('bookingFileCreate: happy paths', () => {
 		const memberIdValues = bookingWrite.fields.memberIds?.arrayValue?.values?.map(v => v.stringValue)
 		expect(memberIdValues).toEqual(MEMBERS)
 
-		// Attachment field built server-side (BookingAttachment shape:
-		// fileUrl/filePath/fileType + thumbUrl/thumbPath).
+		// Attachment field built server-side (path-only BookingAttachment:
+		// filePath/fileType + thumbPath; NO fileUrl/thumbUrl -- download
+		// token stripped at consume, reads via getBlob + Storage Rules).
 		const att = bookingWrite.fields.attachment?.mapValue?.fields
 		expect(att?.filePath?.stringValue).toBe(FULL_PATH)
-		expect(att?.fileUrl?.stringValue).toContain('token=tk-f')
+		expect(att?.fileUrl).toBeUndefined()
 		expect(att?.fileType?.stringValue).toBe('image/webp')
 		expect(att?.thumbPath?.stringValue).toBe(THUMB_PATH)
-		expect(att?.thumbUrl?.stringValue).toContain('token=tk-t')
+		expect(att?.thumbUrl).toBeUndefined()
+		// token strip happened for both blobs at consume time.
+		expect(vi.mocked(storage.updateObjectMetadata)).toHaveBeenCalledWith(
+			expect.anything(), expect.anything(), FULL_PATH, { firebaseStorageDownloadTokens: null },
+		)
+		expect(vi.mocked(storage.updateObjectMetadata)).toHaveBeenCalledWith(
+			expect.anything(), expect.anything(), THUMB_PATH, { firebaseStorageDownloadTokens: null },
+		)
 
 		// sortDate: parseable checkIn → Timestamp value present in fields,
 		// NOT a transform.
@@ -369,12 +380,55 @@ describe('bookingFileCreate: happy paths', () => {
 		expect(writes).toHaveLength(2)
 		const att = writes[1].fields.attachment?.mapValue?.fields
 		expect(att?.filePath?.stringValue).toBe(PDF_PATH)
-		expect(att?.fileUrl?.stringValue).toContain('token=tk')
+		expect(att?.fileUrl).toBeUndefined()
 		expect(att?.fileType?.stringValue).toBe('application/pdf')
 		// No thumb fields for PDF attachment.
 		expect(att?.thumbPath).toBeUndefined()
 		expect(att?.thumbUrl).toBeUndefined()
 		expect(writes[1].fields.confirmationCode?.stringValue).toBe('ABC123')
+	})
+
+	it('fail-closed: token strip fails after retry → blob deleted, ATTACHMENT_HARDENING_FAILED, no doc write', async () => {
+		seedAuth('editor')
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
+		vi.mocked(storage.getObjectMetadata)
+			.mockResolvedValueOnce(storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk-f' }))
+		// Strip never sticks (transient GCS failure on every bounded retry).
+		vi.mocked(storage.updateObjectMetadata).mockRejectedValue(new Error('GCS 503'))
+		capturedTxResult = null
+
+		await expect(bookingFileCreate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), intentIds: [FULL_INTENT_ID] },
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ code: 'ATTACHMENT_HARDENING_FAILED' })
+
+		// Token-bearing blob deleted (no orphan with a live bearer URL) and
+		// NO Firestore doc write captured (fail-closed: nothing committed).
+		expect(storage.deleteObject).toHaveBeenCalledWith(expect.anything(), BUCKET, FULL_PATH)
+		expect(capturedTxResult).toBeNull()
+	})
+
+	it('fail-closed: strip returns false (object 404 mid-write) → terminal, no doc write', async () => {
+		seedAuth('editor')
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
+		vi.mocked(storage.getObjectMetadata)
+			.mockResolvedValueOnce(storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk-f' }))
+		// updateObjectMetadata resolves FALSE = object 404'd between the
+		// existence check and the strip PATCH. Must be treated as terminal,
+		// not silently committed pointing at a missing blob.
+		vi.mocked(storage.updateObjectMetadata).mockResolvedValue(false)
+		capturedTxResult = null
+
+		await expect(bookingFileCreate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), intentIds: [FULL_INTENT_ID] },
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ code: 'ATTACHMENT_HARDENING_FAILED' })
+
+		expect(capturedTxResult).toBeNull()
 	})
 })
 
@@ -672,13 +726,13 @@ describe('bookingFileUpdate: happy paths', () => {
 		expect(patch.fields.title?.stringValue).toBe('new title')
 		expect(patch.fields.note?.stringValue).toBe('updated')
 
-		// New attachment bytes.
+		// New attachment bytes (path-only: no fileUrl/thumbUrl).
 		const att = patch.fields.attachment?.mapValue?.fields
 		expect(att?.filePath?.stringValue).toBe(NEW_FULL_PATH)
-		expect(att?.fileUrl?.stringValue).toContain('token=tk-f')
+		expect(att?.fileUrl).toBeUndefined()
 		expect(att?.fileType?.stringValue).toBe('image/webp')
 		expect(att?.thumbPath?.stringValue).toBe(NEW_THUMB_PATH)
-		expect(att?.thumbUrl?.stringValue).toContain('token=tk-t')
+		expect(att?.thumbUrl).toBeUndefined()
 
 		// updatedAt via transforms; createdAt untouched.
 		expect(patch.fields.updatedAt).toBeUndefined()

@@ -68,6 +68,9 @@ interface ReceiptSectionProps {
   canAnalyze:     boolean
   /** 「もう一度読み取る」 link visible (already has items). */
   canReanalyze:   boolean
+  /** Whether the full preview is openable (a new file or an existing
+   *  fullPath) — independent of whether a thumbnail URL resolved. */
+  canPreview:     boolean
   onCameraPicked: (e: ChangeEvent<HTMLInputElement>) => void
   onUploadPicked: (e: ChangeEvent<HTMLInputElement>) => void
   onClear:        () => void
@@ -76,7 +79,7 @@ interface ReceiptSectionProps {
 }
 
 export default function ReceiptSection({
-  error, hasAttachment, attachmentName, previewUrl, previewIsImage,
+  error, hasAttachment, attachmentName, previewUrl, previewIsImage, canPreview,
   ocrLoading, ocrElapsedMs, canAnalyze, canReanalyze,
   onCameraPicked, onUploadPicked, onClear, onAnalyze, onPreview,
 }: ReceiptSectionProps) {
@@ -103,6 +106,7 @@ export default function ReceiptSection({
             onReplace={() => uploadRef.current?.click()}
             onClear={onClear}
             onPreview={onPreview}
+            canPreview={canPreview}
             replaceAriaLabel="レシートを変更"
             previewAriaLabel="レシートを拡大表示"
             clearAriaLabel="レシートを削除"

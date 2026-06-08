@@ -20,6 +20,7 @@ import { useAutoFocus } from '@/hooks/useAutoFocus'
 import AttachmentPreviewModal from './AttachmentPreviewModal'
 import { useBookingFormState } from '../hooks/useBookingFormState'
 import { useAttachment, type AttachmentChange } from '@/hooks/useAttachment'
+import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 
 const TYPES: { value: Booking['type']; emoji: string; label: string }[] = [
   { value: 'flight', emoji: '✈️', label: 'フライト' },
@@ -87,12 +88,20 @@ export default function BookingFormModal({
 }: Props) {
   const { state, setField } = useBookingFormState(editTarget)
   const att = useAttachment({
-    url:  editTarget?.attachment?.fileUrl  ?? null,
-    path: editTarget?.attachment?.filePath ?? null,
-    type: editTarget?.attachment?.fileType ?? null,
+    // previewPath = real thumb only (no full-path fallback): a thumb-less /
+    // PDF attachment shows the row icon, and the full blob resolves only
+    // when the preview modal opens (path-driven via fullPath).
+    previewPath: editTarget?.attachment?.thumbPath ?? null,
+    fullPath:    editTarget?.attachment?.filePath  ?? null,
+    type:        editTarget?.attachment?.fileType  ?? null,
   })
   const [errors,      setErrors]      = useState<Record<string, string>>({})
   const [previewOpen, setPreviewOpen] = useState(false)
+  // Full-size preview URL: a newly-picked file uses its local blob (already
+  // full-res); an existing attachment resolves its fullPath via getBlob only
+  // while the modal is open (path-driven). null → modal shows a spinner.
+  const previewFullUrl = useAttachmentUrl(previewOpen && !att.hasNewFile ? att.fullPath : null, { kind: 'full' })
+  const previewModalUrl = att.hasNewFile ? att.previewUrl : previewFullUrl
 
   const titleRef    = useRef<HTMLInputElement>(null)
   const originRef   = useRef<HTMLInputElement>(null)
@@ -324,7 +333,8 @@ export default function BookingFormModal({
             isImage={att.previewIsImage}
             onReplace={pickFile}
             onClear={att.clear}
-            onPreview={() => att.previewUrl && setPreviewOpen(true)}
+            onPreview={() => (att.hasNewFile || att.fullPath) && setPreviewOpen(true)}
+            canPreview={att.hasNewFile || !!att.fullPath}
             replaceAriaLabel="ファイルを変更"
             previewAriaLabel="添付を表示"
             clearAriaLabel="添付を削除"
@@ -353,9 +363,9 @@ export default function BookingFormModal({
 
       {editTarget && onDelete && <DeleteConfirm noun="予約" onDelete={onDelete} />}
 
-      {previewOpen && att.previewUrl && (
+      {previewOpen && (att.hasNewFile || att.fullPath) && (
         <AttachmentPreviewModal
-          url={att.previewUrl}
+          url={previewModalUrl}
           fileType={att.previewMime}
           fileName={att.attachmentName}
           onClose={() => setPreviewOpen(false)}

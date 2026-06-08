@@ -103,8 +103,9 @@ export async function listObjects(
  * defense-in-depth layer.
  *
  * Firebase Storage SDK uploads auto-add a `firebaseStorageDownloadTokens`
- * entry to customMetadata; the Worker reads it to construct the public
- * download URL without holding a service-account signer key.
+ * entry to customMetadata; path-only hardening STRIPS that token at consume
+ * (updateObjectMetadata) so no bearer download URL is ever constructible —
+ * reads go through getBlob + Storage Rules instead.
  */
 export async function getObjectMetadata(
   accessToken: string,
@@ -177,35 +178,6 @@ export async function downloadObject(
 }
 
 /**
- * Build a Firebase Storage public download URL for `path` given the
- * object's customMetadata.firebaseStorageDownloadTokens. Tokens are
- * comma-separated; we use the first one (Firebase SDK uses any valid
- * token interchangeably).
- *
- * Returns null when the metadata doesn't carry a token. Phase 3.7
- * does NOT tolerate this -- the Worker is the authoritative writer
- * for booking.attachment / wish.image / expense.receipt and the
- * Firestore doc's url field cannot be left empty without violating
- * the entity's Zod schema. All consume callers (the entity-write
- * endpoints) explicitly reject when the URL is null with a 500 /
- * ExpenseValidationError, surfacing the bypass (non-Firebase-SDK
- * direct GCS upload). In practice Firebase Storage SDK uploads
- * always set this token automatically, so null indicates the upload
- * was not made via the Firebase Storage SDK.
- */
-export function downloadUrlFromMetadata(
-  bucket:        string,
-  path:          string,
-  customMetadata: Record<string, string> | undefined,
-): string | null {
-  const tokens = customMetadata?.firebaseStorageDownloadTokens
-  if (!tokens) return null
-  const firstToken = tokens.split(',')[0]?.trim()
-  if (!firstToken) return null
-  return `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucket)}/o/${encodeURIComponent(path)}?alt=media&token=${firstToken}`
-}
-
-/**
  * Delete a single object. 404 returns `false` (idempotent already-gone),
  * 2xx returns `true`, anything else throws. Caller treats `false` as a
  * non-error — receipt-purge / trip-cascade are both meant to be safely
@@ -226,6 +198,45 @@ export async function deleteObject(
   if (res.status === 404) return false
   const detail = await res.text().catch(() => '')
   throw new Error(`deleteObject ${path} → ${res.status}: ${detail.slice(0, 200)}`)
+}
+
+/**
+ * Patch an object's custom metadata via GCS `Objects.patch` (PARTIAL
+ * update — NOT a full `update`/PUT, so we never clobber size/contentType/
+ * other customMetadata keys). Setting a key to `null` in the request body
+ * DELETES that key from the stored customMetadata. We use this to strip
+ * `firebaseStorageDownloadTokens`, removing the bearer download URL so the
+ * file is only readable via the authenticated SDK + Storage Rules.
+ *
+ * 404 → returns false (object already gone; nothing to strip — not an
+ * error, mirrors deleteObject). 2xx → true. Anything else throws so a
+ * transient GCS failure surfaces to the caller's bounded retry / fail-
+ * closed path. Idempotent: patching an absent key is a no-op 200.
+ *
+ * Needs the `storage.objects.update` scope — same admin OAuth token that
+ * already powers deleteObject (a delete is a heavier grant than a metadata
+ * patch), so no scope change is required.
+ */
+export async function updateObjectMetadata(
+  accessToken:   string,
+  bucket:        string,
+  path:          string,
+  metadataPatch: Record<string, string | null>,
+): Promise<boolean> {
+  const url = `${BASE}/b/${encodeURIComponent(bucket)}/o/${encodeURIComponent(path)}`
+  const res = await fetch(url, {
+    ...NO_CACHE,
+    method:  'PATCH',
+    headers: {
+      Authorization:  `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ metadata: metadataPatch }),
+  })
+  if (res.ok) return true
+  if (res.status === 404) return false
+  const detail = await res.text().catch(() => '')
+  throw new Error(`updateObjectMetadata ${path} → ${res.status}: ${detail.slice(0, 200)}`)
 }
 
 /**

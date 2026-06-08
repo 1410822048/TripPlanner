@@ -1,23 +1,35 @@
 // src/features/bookings/components/AttachmentPreviewModal.tsx
-// Full-screen image viewer for booking attachments. Lets the user inspect
-// the actual confirmation contents (the list/form thumbnails are too small
-// to read e.g. a flight QR code or hotel room number).
+// Full-screen viewer for an attachment (booking / expense receipt). Lets the
+// user inspect the actual contents (list/form thumbnails are too small to
+// read e.g. a flight QR code or hotel room number).
 //
-// PDFs and other non-image types aren't rendered inline — we offer a
-// "別タブで開く" button that opens the storage download URL in a new tab,
-// which delegates to the OS / browser PDF viewer (every modern browser
-// has one built in). Trying to embed PDFs inline runs into MIME / CSP /
-// scrolling-in-modal issues that aren't worth the complexity for a feature
-// that gets used a few times per trip.
+// path-only: the caller resolves the full-size blob objectURL via
+// `useAttachmentUrl(fullPath, { kind: 'full' })` and passes it as `url`.
+// While that getBlob is in flight `url` is null → we show a spinner (the
+// modal is opened path-driven by the caller, not gated on the URL). The
+// objectURL's lifetime is owned by the caller's hook (revoked on close).
+//
+// PDFs: rendered inline via <iframe> on engines that support it. iOS Safari
+// (and iOS Chrome — same WebKit) can't render a blob: PDF in an iframe, so
+// there we fall back to a "別タブで開く" anchor. Because `url` is already
+// resolved when the button shows, the click is a direct, gesture-synchronous
+// navigation (no getBlob-then-open race that the popup blocker would trip),
+// and the new tab finishes loading the bytes well before the user returns
+// to close the modal (which revokes the objectURL).
 import { useEffect } from 'react'
-import { X, ExternalLink, FileText } from 'lucide-react'
+import { X, ExternalLink, FileText, Loader2 } from 'lucide-react'
 
 interface Props {
-  url:      string
+  /** Resolved blob objectURL, or null while the bytes are being fetched. */
+  url:      string | null
   fileType: string | undefined
   fileName: string
   onClose:  () => void
 }
+
+// iOS (any browser — all WebKit) can't inline-render a blob: PDF in an
+// <iframe>; everything else (desktop + Android) can.
+const IS_IOS = typeof navigator !== 'undefined' && /iP(hone|ad|od)/.test(navigator.userAgent)
 
 export default function AttachmentPreviewModal({ url, fileType, fileName, onClose }: Props) {
   // Escape closes. Lock body scroll while open so the page underneath
@@ -34,7 +46,8 @@ export default function AttachmentPreviewModal({ url, fileType, fileName, onClos
     }
   }, [onClose])
 
-  const isImage = (fileType ?? '').startsWith('image/')
+  const isImage    = (fileType ?? '').startsWith('image/')
+  const inlinePdf  = !isImage && !IS_IOS   // desktop/Android render PDF in <iframe>
 
   return (
     <div
@@ -55,15 +68,17 @@ export default function AttachmentPreviewModal({ url, fileType, fileName, onClos
           {fileName}
         </div>
         <div className="flex items-center gap-2">
-          <a
-            href={url}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label="別タブで開く"
-            className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center text-white transition-colors"
-          >
-            <ExternalLink size={16} strokeWidth={2} />
-          </a>
+          {url && (
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="別タブで開く"
+              className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center text-white transition-colors"
+            >
+              <ExternalLink size={16} strokeWidth={2} />
+            </a>
+          )}
           <button
             onClick={onClose}
             aria-label="閉じる"
@@ -74,10 +89,12 @@ export default function AttachmentPreviewModal({ url, fileType, fileName, onClos
         </div>
       </div>
 
-      {/* Body — single tap on the image area still bubbles to backdrop close,
-          but we allow native pinch-zoom via touchAction:none on the wrapper
-          and `auto` on the image. */}
-      {isImage ? (
+      {/* Body. While the blob is loading (url === null) show a spinner. */}
+      {url === null ? (
+        <div className="flex-1 min-h-0 flex items-center justify-center" onClick={e => e.stopPropagation()}>
+          <Loader2 size={28} strokeWidth={2} className="text-white/70 animate-spin" />
+        </div>
+      ) : isImage ? (
         <div
           className="flex-1 min-h-0 flex items-center justify-center p-4 overflow-hidden"
           onClick={e => e.stopPropagation()}
@@ -90,7 +107,16 @@ export default function AttachmentPreviewModal({ url, fileType, fileName, onClos
             draggable={false}
           />
         </div>
+      ) : inlinePdf ? (
+        <iframe
+          src={url}
+          title={fileName}
+          onClick={e => e.stopPropagation()}
+          className="flex-1 min-h-0 w-full border-0 bg-white"
+        />
       ) : (
+        // iOS / non-inline fallback: open the (already-resolved) blob URL in
+        // a new tab. Gesture-synchronous anchor → no popup-block race.
         <div
           className="flex-1 min-h-0 flex flex-col items-center justify-center p-6 gap-4 text-center"
           onClick={e => e.stopPropagation()}

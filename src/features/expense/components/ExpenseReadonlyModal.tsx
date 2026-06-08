@@ -6,6 +6,7 @@ import BottomSheet from '@/components/ui/BottomSheet'
 import FormField from '@/components/ui/FormField'
 import MemberAvatar from '@/components/ui/MemberAvatar'
 import AttachmentPreviewModal from '@/features/bookings/components/AttachmentPreviewModal'
+import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
 import { adjustmentSign } from '@tripmate/expense-materialize'
 import { fromLocalDateString } from '@/utils/dates'
@@ -32,7 +33,12 @@ export default function ExpenseReadonlyModal({
   const memberById = new Map(members.map(member => [member.id, member]))
   const payer = memberById.get(expense.paidBy)
   const receipt = expense.receipt
-  const receiptPreviewUrl = receipt?.thumbUrl ?? receipt?.url ?? null
+  // path-only: row thumbnail reads ONLY thumbPath (no full-path fallback —
+  // a PDF / thumb-less receipt shows the icon, never pulls the full blob
+  // into the thumb LRU). The full path resolves only while the preview
+  // modal is open, via kind:'full'.
+  const receiptPreviewUrl = useAttachmentUrl(receipt?.thumbPath, { kind: 'thumb' })
+  const receiptFullUrl    = useAttachmentUrl(previewOpen ? receipt?.path : undefined, { kind: 'full' })
 
   return (
     <BottomSheet isOpen={isOpen} onClose={onClose} title="費用詳細">
@@ -148,8 +154,8 @@ export default function ExpenseReadonlyModal({
         <FormField label="レシート">
           <button
             type="button"
-            onClick={() => receipt.url && setPreviewOpen(true)}
-            disabled={!receipt.url}
+            onClick={() => receipt.path && setPreviewOpen(true)}
+            disabled={!receipt.path}
             className="w-full flex items-center gap-3 rounded-input border border-border bg-app px-3 py-2 text-left cursor-pointer disabled:cursor-default disabled:opacity-70 hover:border-muted transition-colors"
           >
             <div className="w-10 h-10 rounded-md bg-tile shrink-0 overflow-hidden flex items-center justify-center">
@@ -176,9 +182,9 @@ export default function ExpenseReadonlyModal({
         </FormField>
       )}
 
-      {previewOpen && receipt?.url && (
+      {previewOpen && receipt?.path && (
         <AttachmentPreviewModal
-          url={receipt.url}
+          url={receiptFullUrl}
           fileType={receipt.type}
           fileName={receipt.path.split('/').pop() ?? 'receipt'}
           onClose={() => setPreviewOpen(false)}

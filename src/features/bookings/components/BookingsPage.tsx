@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { Plus, Ticket } from 'lucide-react'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
 import { useSwipeOpen } from '@/hooks/useSwipeOpen'
+import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { toast } from '@/shared/toast'
 import BookingsPageSkeleton from './BookingsPageSkeleton'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
@@ -56,6 +57,10 @@ export default function BookingsPage() {
     useFeatureListPage<Booking>()
   const swipe = useSwipeOpen()
   const [previewBooking, setPreviewBooking] = useState<Booking | null>(null)
+  // path-only: resolve the full-size blob for the preview modal via getBlob
+  // (Storage Rules). Starts fetching the instant a booking is set; the modal
+  // shows a spinner until it lands, and the URL is revoked when closed.
+  const previewUrl = useAttachmentUrl(previewBooking?.attachment?.filePath, { kind: 'full' })
 
   // Hooks must run unconditionally — pull tripId via optional chaining so
   // useBookings is always called (just disabled in non-cloud states).
@@ -278,7 +283,7 @@ export default function BookingsPage() {
 
       {previewBooking?.attachment && (
         <AttachmentPreviewModal
-          url={previewBooking.attachment.fileUrl}
+          url={previewUrl}
           fileType={previewBooking.attachment.fileType}
           fileName={bookingDisplayName(previewBooking)}
           onClose={() => setPreviewBooking(null)}

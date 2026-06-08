@@ -40,6 +40,7 @@ import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
 import { useAttachment, type AttachmentChange } from '@/hooks/useAttachment'
+import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { useSplitsState, type SplitMode } from '../hooks/useSplitsState'
 import { useExpenseItems } from '../hooks/useExpenseItems'
 import { useExpenseMoneyDraft } from '../hooks/useExpenseMoneyDraft'
@@ -174,10 +175,17 @@ export default function ExpenseFormModal({
 
   // Receipt attachment — owns the visual preview + file upload state.
   const att = useAttachment({
-    url:  editTarget?.receipt?.url  ?? null,
-    path: editTarget?.receipt?.path ?? null,
-    type: editTarget?.receipt?.type ?? null,
+    // previewPath = real thumb only (no full-path fallback): a thumb-less /
+    // PDF receipt shows the row icon, and the full blob resolves only when
+    // the preview modal opens (path-driven via fullPath).
+    previewPath: editTarget?.receipt?.thumbPath ?? null,
+    fullPath:    editTarget?.receipt?.path      ?? null,
+    type:        editTarget?.receipt?.type      ?? null,
   })
+  // Full-size receipt preview: new file → its local blob; existing →
+  // resolve fullPath via getBlob only while the modal is open (path-driven).
+  const previewFullUrl  = useAttachmentUrl(previewOpen && !att.hasNewFile ? att.fullPath : null, { kind: 'full' })
+  const previewModalUrl = att.hasNewFile ? att.previewUrl : previewFullUrl
 
   // By-item state machine. For foreign EDIT the persisted `items` are
   // trip-currency materializations of the receipt; the form must show
@@ -518,6 +526,7 @@ export default function ExpenseFormModal({
         attachmentName={att.attachmentName}
         previewUrl={att.previewUrl}
         previewIsImage={att.previewIsImage}
+        canPreview={att.hasNewFile || !!att.fullPath}
         ocrLoading={ocr.loading}
         ocrElapsedMs={ocr.elapsedMs}
         canAnalyze={canAnalyze}
@@ -526,7 +535,7 @@ export default function ExpenseFormModal({
         onUploadPicked={onUploadPicked}
         onClear={handleClearReceipt}
         onAnalyze={runReceiptOcr}
-        onPreview={() => att.previewUrl && setPreviewOpen(true)}
+        onPreview={() => (att.hasNewFile || att.fullPath) && setPreviewOpen(true)}
       />
 
       <CurrencySection
@@ -637,9 +646,9 @@ export default function ExpenseFormModal({
         />
       </FormField>
 
-      {previewOpen && att.previewUrl && (
+      {previewOpen && (att.hasNewFile || att.fullPath) && (
         <AttachmentPreviewModal
-          url={att.previewUrl}
+          url={previewModalUrl}
           fileType={att.previewMime}
           fileName={att.attachmentName}
           onClose={() => setPreviewOpen(false)}

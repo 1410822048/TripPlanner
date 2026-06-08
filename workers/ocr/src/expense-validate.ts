@@ -102,18 +102,19 @@ function urlMatchesPath(url: string, path: string, bucket: string): boolean {
 export function makeReceiptSchema(tripId: string, expenseId: string, bucket: string) {
   const pathRe = new RegExp(`^trips/${tripId}/expenses/${expenseId}/.+`)
   return z.object({
-    url:       z.string().url().max(2048),
+    // path-only model: url/thumbUrl are legacy-optional (Worker no longer
+    // writes them; the download token is stripped at consume time). path /
+    // thumbPath stay required-shaped (thumbPath optional = no thumb variant).
+    url:       z.string().url().max(2048).optional(),
     path:      z.string().min(1).max(500).regex(pathRe, 'receipt.path must match trips/<tripId>/expenses/<expenseId>/...'),
     type:      z.enum(RECEIPT_MIME),
     thumbUrl:  z.string().url().max(2048).optional(),
     thumbPath: z.string().min(1).max(500).regex(pathRe, 'receipt.thumbPath must match trips/<tripId>/expenses/<expenseId>/...').optional(),
   })
+    // When a legacy url IS present it must still bind to the same
+    // bucket+path; absent (the path-only norm) → skipped.
     .refine(
-      d => ('thumbUrl' in d) === ('thumbPath' in d),
-      { message: 'thumbUrl and thumbPath must be paired', path: ['thumbUrl'] },
-    )
-    .refine(
-      d => urlMatchesPath(d.url, d.path, bucket),
+      d => !d.url || urlMatchesPath(d.url, d.path, bucket),
       { message: 'receipt.url must be the Firebase Storage download URL for receipt.path', path: ['url'] },
     )
     .refine(

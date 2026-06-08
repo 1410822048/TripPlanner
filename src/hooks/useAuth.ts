@@ -2,6 +2,7 @@
 import { useSyncExternalStore } from 'react'
 import type { User } from 'firebase/auth'
 import { getFirebaseAuth } from '@/services/firebase'
+import { clearAttachmentUrlCache } from './useAttachmentUrl'
 import { markPerf } from '@/utils/perf'
 
 export type AuthState =
@@ -54,6 +55,10 @@ function writeAuthHint(signedIn: boolean): void {
 let currentState: AuthState = { status: 'loading', wasSignedIn: readAuthHint() }
 const listeners = new Set<() => void>()
 let initPromise: Promise<void> | null = null
+// Track the last observed uid so an account switch / sign-out purges the
+// attachment objectURL cache (private image bytes must not survive across
+// users on a shared device). `null` = signed-out / never-signed-in.
+let lastObservedUid: string | null = null
 
 function setGlobal(next: AuthState): void {
   currentState = next
@@ -107,6 +112,15 @@ export function initAuth(): Promise<void> {
       onAuthStateChanged(auth, u => {
         writeAuthHint(!!u)
         markPerf(u ? 'auth-state-signed-in' : 'auth-state-signed-out')
+        // Sign-out or account switch → drop the previous user's cached
+        // attachment objectURLs. Covers the explicit signOut() path too
+        // (it fires this observer with u=null). Skips the initial restore
+        // (lastObservedUid null → same uid, no-op).
+        const nextUid = u?.uid ?? null
+        if (nextUid !== lastObservedUid) {
+          if (lastObservedUid !== null) clearAttachmentUrlCache()
+          lastObservedUid = nextUid
+        }
         setGlobal(u ? { status: 'signed-in', user: u } : { status: 'signed-out' })
       })
     } catch (e) {

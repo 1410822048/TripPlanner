@@ -645,14 +645,16 @@ describe('makeReceiptSchema (Worker-built receipt validation)', () => {
 		expect(res.success).toBe(false)
 	})
 
-	it('rejects thumbUrl without paired thumbPath (and vice versa)', () => {
-		const thumbOnly = schema.safeParse({
-			url:      legitReceiptUrl(okPath),
-			path:     okPath,
-			type:     'image/webp',
-			thumbUrl: legitReceiptUrl(okPath),
+	it('accepts a path-only receipt (no url/thumbUrl — the Worker-written shape)', () => {
+		// Post path-only migration the Worker strips the download token and
+		// writes path + thumbPath only; url/thumbUrl are legacy-optional and
+		// absent on new receipts. This must validate.
+		const res = schema.safeParse({
+			path:      okPath,
+			type:      'image/webp',
+			thumbPath: `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/r.thumb.webp`,
 		})
-		expect(thumbOnly.success).toBe(false)
+		expect(res.success).toBe(true)
 	})
 
 	it('rejects type outside the RECEIPT_MIME allowlist', () => {

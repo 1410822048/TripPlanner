@@ -29,7 +29,8 @@ import { hotelBrand } from './brandMeta'
 import { fmtDate, fmtTime, nightsBetween } from './dateFormat'
 import ActionChip from '@/components/ui/ActionChip'
 import { mapsSearchUrl } from '@/utils/maps'
-import { attachmentThumb, isImageAttachment } from '../../utils'
+import { attachmentThumbPath, isImageAttachment } from '../../utils'
+import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 
 interface Props {
   booking: Booking
@@ -37,7 +38,9 @@ interface Props {
 
 export default function HotelCard({ booking }: Props) {
   const brand     = hotelBrand(booking.provider)
-  const coverSrc  = isImageAttachment(booking.attachment) ? attachmentThumb(booking.attachment) : undefined
+  // path-only: resolve the thumb path to a blob objectURL via Storage Rules.
+  const coverPath = isImageAttachment(booking.attachment) ? attachmentThumbPath(booking.attachment) : undefined
+  const coverSrc  = useAttachmentUrl(coverPath, { kind: 'thumb' })
   const nights    = nightsBetween(booking.checkIn, booking.checkOut)
   const inDate    = fmtDate(booking.checkIn)
   const inTime    = fmtTime(booking.checkIn)

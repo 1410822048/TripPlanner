@@ -410,15 +410,7 @@ async function doCreate(
         'must include a full or pdf intent (primary attachment missing)',
       )
     }
-    if (primary.downloadUrl === null) {
-      throw new CascadeError(500,
-        `primary blob at ${primary.path} has no Firebase download token (upload bypassed SDK?)`)
-    }
     const thumb = consumed.find(c => c.kind === 'thumb')
-    if (thumb && thumb.downloadUrl === null) {
-      throw new CascadeError(500,
-        `thumb blob at ${thumb.path} has no Firebase download token (upload bypassed SDK?)`)
-    }
     // BookingAttachment supports PDF-only (no thumb). If a thumb intent
     // was minted for a PDF primary, /upload-intents already rejected it
     // (kind=pdf forces contentType=application/pdf and kind!=pdf forces
@@ -609,15 +601,7 @@ async function doUpdate(
         'must include a full or pdf intent (primary attachment missing)',
       )
     }
-    if (primary.downloadUrl === null) {
-      throw new CascadeError(500,
-        `primary blob at ${primary.path} has no Firebase download token (upload bypassed SDK?)`)
-    }
     const thumb = consumed.find(c => c.kind === 'thumb')
-    if (thumb && thumb.downloadUrl === null) {
-      throw new CascadeError(500,
-        `thumb blob at ${thumb.path} has no Firebase download token (upload bypassed SDK?)`)
-    }
     const attachmentValue = buildAttachmentMapValue('booking', primary, thumb)
 
     const { fields, updateMask } = encodeBookingUpdate(

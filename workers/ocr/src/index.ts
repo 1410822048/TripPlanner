@@ -63,7 +63,7 @@ import { expenseReceiptOcr, ExpenseReceiptOcrRequestSchema } from './expense-rec
 import { cascadeTripDelete, TripDeleteRequestSchema } from './trip-cascade'
 import { purgeExpiredReceipts }                   from './receipt-purge'
 import { drainOrphanPurges }                      from './orphan-purge'
-import { scanOrphanStorage }                      from './storage-scan'
+import { runStorageMaintenance }                  from './storage-scan'
 import { purgeExpiredUploadIntents }              from './upload-intent-purge'
 import {
   expenseCreate, expenseUpdate,
@@ -109,6 +109,7 @@ import {
   handleJsonRoute,
   validationErrorCatcher,
   fxErrorCatcher,
+  attachmentHardeningErrorCatcher,
   chainCatchers,
   extractTraceId,
   UPLOAD_TRACE_HEADER,
@@ -384,6 +385,7 @@ export default {
       catchDomain: chainCatchers(
         validationErrorCatcher(ExpenseValidationError),
         fxErrorCatcher(),
+        attachmentHardeningErrorCatcher(),
       ),
     })
 
@@ -396,6 +398,7 @@ export default {
       catchDomain: chainCatchers(
         validationErrorCatcher(ExpenseValidationError),
         fxErrorCatcher(),
+        attachmentHardeningErrorCatcher(),
       ),
     })
 
@@ -405,7 +408,10 @@ export default {
       handle:         data => wishFileCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
       formatLog:      (data, result) => `trip=${data.tripId} wish=${result.wishId}`,
       formatResponse: result => ({ ok: true, ...result }),
-      catchDomain:    validationErrorCatcher(WishValidationError),
+      catchDomain:    chainCatchers(
+        validationErrorCatcher(WishValidationError),
+        attachmentHardeningErrorCatcher(),
+      ),
     })
 
     if (isWishUpdate) return handleJsonRoute({
@@ -413,7 +419,10 @@ export default {
       schema:      WishFileUpdateRequestSchema,
       handle:      data => wishFileUpdate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
       formatLog:   data => `trip=${data.tripId} wish=${data.wishId}`,
-      catchDomain: validationErrorCatcher(WishValidationError),
+      catchDomain: chainCatchers(
+        validationErrorCatcher(WishValidationError),
+        attachmentHardeningErrorCatcher(),
+      ),
     })
 
     if (isBookingCreate) return handleJsonRoute({
@@ -422,7 +431,10 @@ export default {
       handle:         data => bookingFileCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
       formatLog:      (data, result) => `trip=${data.tripId} booking=${result.bookingId}`,
       formatResponse: result => ({ ok: true, ...result }),
-      catchDomain:    validationErrorCatcher(BookingValidationError),
+      catchDomain:    chainCatchers(
+        validationErrorCatcher(BookingValidationError),
+        attachmentHardeningErrorCatcher(),
+      ),
     })
 
     if (isBookingUpdate) return handleJsonRoute({
@@ -430,7 +442,10 @@ export default {
       schema:      BookingFileUpdateRequestSchema,
       handle:      data => bookingFileUpdate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
       formatLog:   data => `trip=${data.tripId} booking=${data.bookingId}`,
-      catchDomain: validationErrorCatcher(BookingValidationError),
+      catchDomain: chainCatchers(
+        validationErrorCatcher(BookingValidationError),
+        attachmentHardeningErrorCatcher(),
+      ),
     })
 
     if (isSettlementCreate) return handleJsonRoute({
@@ -587,42 +602,42 @@ export default {
           console.error(`[cron] orphan-purge failed: ${(err as Error).message}`)
         }),
     )
-    // Level 4 orphan-blob reconciliation. Independent from the queue-
-    // driven orphan-purge: catches blobs uploaded outside the normal
-    // service paths (editor SDK abuse, mid-upload process kills, manual
-    // console writes). 24h grace window keeps the active flow safe.
-    // Runs parallel to the other two via its own waitUntil so any
-    // failure here doesn't starve them (or vice versa).
-    console.log('[cron] storage-scan starting')
+    // Storage-class maintenance: token scrubber + Level 4 orphan-blob
+    // reconciliation, run SEQUENTIALLY inside one waitUntil so they share
+    // a single subrequest-budget envelope rather than two parallel tasks
+    // racing the invocation's ~1000-subrequest pool. The scrubber strips
+    // leftover firebaseStorageDownloadTokens (never-consumed / bypass
+    // backstop, no 24h grace); the orphan scan deletes unreferenced blobs
+    // (24h grace + entity recheck). Each pass is independently best-effort.
+    console.log('[cron] storage-maintenance starting')
     ctx.waitUntil(
-      scanOrphanStorage(
-        env.FIREBASE_SERVICE_ACCOUNT,
-        env.FIREBASE_STORAGE_BUCKET,
-        // sentryEnv passed in so the scan's abuse-detection branch can
-        // fire captureMessage; sentry.ts no-ops when SENTRY_DSN is
-        // empty / unset, so this is safe to always wire up.
-        { sentryEnv: env },
-      )
-        .then(report => {
-          // Top-3 uids in the log line so operators can see attribution
-          // at a glance without digging into Sentry. JSON.stringify of
-          // the full map would balloon the log on a busy scan.
-          const topUids = Object.entries(report.orphansByUid)
-            .sort(([, a], [, b]) => b - a)
-            .slice(0, 3)
-            .map(([uid, n]) => `${uid}=${n}`)
-            .join(',') || 'none'
-          console.log(
-            `[cron] storage-scan done scanned=${report.scanned} ` +
-            `deleted=${report.deleted} referenced=${report.referenced} ` +
-            `freshSkipped=${report.freshSkipped} unparseable=${report.unparseable} ` +
-            `readErrors=${report.readErrors} deleteErrors=${report.deleteErrors} ` +
-            `deadlineHit=${report.deadlineHit} budgetHit=${report.budgetHit} ` +
-            `topOrphanUids=${topUids}`,
-          )
+      // sentryEnv passed through to the orphan scan's abuse-detection
+      // branch; sentry.ts no-ops when SENTRY_DSN is empty, so always safe.
+      runStorageMaintenance(env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET, { sentryEnv: env })
+        .then(({ scrub, orphan }) => {
+          const scrubLine = scrub
+            ? `scrub{scanned=${scrub.scanned} scrubbed=${scrub.scrubbed} ` +
+              `errors=${scrub.scrubErrors} budgetHit=${scrub.budgetHit} deadlineHit=${scrub.deadlineHit}}`
+            : 'scrub{failed}'
+          let orphanLine = 'orphan{failed}'
+          if (orphan) {
+            // Top-3 uids so operators see attribution without digging Sentry.
+            const topUids = Object.entries(orphan.orphansByUid)
+              .sort(([, a], [, b]) => b - a)
+              .slice(0, 3)
+              .map(([uid, n]) => `${uid}=${n}`)
+              .join(',') || 'none'
+            orphanLine =
+              `orphan{scanned=${orphan.scanned} deleted=${orphan.deleted} ` +
+              `referenced=${orphan.referenced} freshSkipped=${orphan.freshSkipped} ` +
+              `unparseable=${orphan.unparseable} readErrors=${orphan.readErrors} ` +
+              `deleteErrors=${orphan.deleteErrors} deadlineHit=${orphan.deadlineHit} ` +
+              `budgetHit=${orphan.budgetHit} topUids=${topUids}}`
+          }
+          console.log(`[cron] storage-maintenance done ${scrubLine} ${orphanLine}`)
         })
         .catch(err => {
-          console.error(`[cron] storage-scan failed: ${(err as Error).message}`)
+          console.error(`[cron] storage-maintenance failed: ${(err as Error).message}`)
         }),
     )
     // Phase 3.5 uploadIntents cleanup. Two-pass purge: expired pending

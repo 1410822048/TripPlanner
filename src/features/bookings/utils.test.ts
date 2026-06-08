@@ -4,7 +4,7 @@
 // branching in display name / subtitle.
 import { describe, expect, test } from 'vitest'
 import {
-  attachmentThumb,
+  attachmentThumbPath,
   isImageAttachment,
   bookingDisplayName,
   bookingSubtitle,
@@ -35,19 +35,21 @@ function makeBooking(over: Partial<Booking>): Booking {
   }
 }
 
-describe('attachmentThumb', () => {
-  test('prefers thumbUrl when present', () => {
-    expect(attachmentThumb(makeAtt({ thumbUrl: 'https://x/t.webp' })))
-      .toBe('https://x/t.webp')
+describe('attachmentThumbPath', () => {
+  test('returns thumbPath when present', () => {
+    expect(attachmentThumbPath(makeAtt({ thumbPath: 'trips/t/bookings/b/file.thumb.webp' })))
+      .toBe('trips/t/bookings/b/file.thumb.webp')
   })
 
-  test('falls back to fileUrl when no thumb', () => {
-    expect(attachmentThumb(makeAtt({})))
-      .toBe('https://example.com/file.webp')
+  test('returns undefined when no thumb path (no full-size fallback)', () => {
+    // path-only: deliberately does NOT fall back to filePath, so a thumb-
+    // less attachment renders the placeholder rather than loading the full
+    // blob into the thumbnail cache.
+    expect(attachmentThumbPath(makeAtt({}))).toBeUndefined()
   })
 
   test('undefined attachment returns undefined', () => {
-    expect(attachmentThumb(undefined)).toBeUndefined()
+    expect(attachmentThumbPath(undefined)).toBeUndefined()
   })
 })
 

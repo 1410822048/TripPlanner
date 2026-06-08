@@ -28,15 +28,12 @@ vi.mock('../src/admin', () => ({
 
 // Phase 3.5: storage mocked so the intent-consumption path (which
 // calls getObjectMetadata to verify the Storage upload landed) is
-// programmable per-test. downloadUrlFromMetadata stays "real" --
-// it's a pure transform on Worker-side, no external state.
+// programmable per-test. path-only: consume strips the download token
+// fail-closed via updateObjectMetadata; both resolve truthy by default.
 vi.mock('../src/storage', () => ({
-	getObjectMetadata:      vi.fn(),
-	downloadUrlFromMetadata: (bucket: string, path: string, meta?: Record<string, string>) => {
-		const token = meta?.firebaseStorageDownloadTokens?.split(',')[0]?.trim()
-		if (!token) return null
-		return `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(path)}?alt=media&token=${token}`
-	},
+	getObjectMetadata:    vi.fn(),
+	updateObjectMetadata: vi.fn(() => Promise.resolve(true)),
+	deleteObject:         vi.fn(() => Promise.resolve(true)),
 }))
 
 // Programmable transaction. Each test seeds `txGet` with a Map of
@@ -750,7 +747,7 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 		const receipt = writes[1].fields.receipt?.mapValue?.fields
 		expect(receipt?.path?.stringValue).toBe(FULL_PATH)
 		expect(receipt?.type?.stringValue).toBe('image/webp')
-		expect(receipt?.url?.stringValue).toContain('token=tk')
+		expect(receipt?.url).toBeUndefined()   // path-only: token stripped, no url
 		// No thumb fields (single full intent)
 		expect(receipt?.thumbPath).toBeUndefined()
 		expect(receipt?.thumbUrl).toBeUndefined()
@@ -784,8 +781,8 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 		const receipt = writes[2].fields.receipt?.mapValue?.fields
 		expect(receipt?.path?.stringValue).toBe(FULL_PATH)
 		expect(receipt?.thumbPath?.stringValue).toBe(THUMB_PATH)
-		expect(receipt?.url?.stringValue).toContain('token=tk-f')
-		expect(receipt?.thumbUrl?.stringValue).toContain('token=tk-t')
+		expect(receipt?.url).toBeUndefined()       // path-only
+		expect(receipt?.thumbUrl).toBeUndefined()  // path-only
 	})
 
 	it('rejects client-supplied expense.receipt (legacy direct path closed)', async () => {

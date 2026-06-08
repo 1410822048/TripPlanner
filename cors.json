@@ -1,0 +1,8 @@
+[
+  {
+    "origin": ["https://tripmate-2wg.pages.dev", "https://*.tripmate-2wg.pages.dev", "http://localhost:5173", "http://localhost:4173"],
+    "method": ["GET", "HEAD"],
+    "responseHeader": ["Authorization", "Content-Type", "Content-Length", "Content-Disposition", "ETag"],
+    "maxAgeSeconds": 3600
+  }
+]

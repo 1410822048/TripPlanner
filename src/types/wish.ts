@@ -17,10 +17,17 @@ import { TimestampSchema } from './_shared'
 export type WishCategory = 'place' | 'food'
 
 export interface WishImage {
-  url:       string
-  path:      string
-  thumbUrl:  string
-  thumbPath: string
+  /** Legacy bearer download URLs. path-only: Worker no longer writes them
+   *  (token stripped at consume); reads via getBlob(path/thumbPath) +
+   *  Storage Rules. Optional only for back-compat with any old doc. */
+  url?:       string
+  path:       string
+  thumbUrl?:  string
+  /** Small-variant path. Optional: thumb-less uploads (HEIC/HEIF pass-
+   *  through) omit it rather than collapse to the full path, so the card
+   *  shows its placeholder instead of pulling the full blob into the
+   *  thumbnail cache. */
+  thumbPath?: string
 }
 
 // trips/{tripId}/wishes/{wishId}
@@ -66,10 +73,12 @@ export interface Wish {
 // stays bucket-agnostic so a future bucket move doesn't require both
 // layers to update in lockstep.
 export const WishImageSchema = z.object({
-  url:       z.string().url().max(2048),
+  // path-only: url/thumbUrl legacy-optional (Worker stops writing them);
+  // thumbPath optional (omitted for thumb-less uploads, no full-path collapse).
+  url:       z.string().url().max(2048).optional(),
   path:      z.string().min(1).max(500),
-  thumbUrl:  z.string().url().max(2048),
-  thumbPath: z.string().min(1).max(500),
+  thumbUrl:  z.string().url().max(2048).optional(),
+  thumbPath: z.string().min(1).max(500).optional(),
 })
 
 export const WishDocSchema = z.object({

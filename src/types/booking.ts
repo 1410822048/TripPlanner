@@ -12,12 +12,14 @@ import { TimestampSchema } from './_shared'
  * Mirrors the Wish entity's `image: WishImage` shape.
  */
 export interface BookingAttachment {
-  /** Public download URL — full-size, used by the preview modal. */
-  fileUrl:    string
+  /** Legacy bearer download URL. path-only: Worker no longer writes it
+   *  (token stripped at consume); reads via getBlob(filePath) + Storage
+   *  Rules. Optional only for back-compat with any old doc. */
+  fileUrl?:   string
   /**
    * Storage object path (`trips/{tripId}/bookings/{bookingId}/file.webp`).
-   * Stored alongside fileUrl so we can deleteObject() without parsing the
-   * URL (the path is encoded into download URLs but parsing is fragile).
+   * path-only: this IS the canonical reference — getBlob(filePath) reads
+   * the bytes (Storage Rules), and deleteObject(filePath) removes them.
    */
   filePath:   string
   /** Mime type at upload time — drives icon vs <img> rendering in the UI. */
@@ -105,7 +107,8 @@ export const BOOKING_ATTACHMENT_MIME_TYPES = [
 ] as const
 
 export const BookingAttachmentSchema = z.object({
-  fileUrl:   z.string().url().max(2048),
+  // path-only: fileUrl/thumbUrl legacy-optional (Worker stops writing them).
+  fileUrl:   z.string().url().max(2048).optional(),
   filePath:  z.string().min(1).max(500),
   fileType:  z.enum(BOOKING_ATTACHMENT_MIME_TYPES),
   thumbUrl:  z.string().url().max(2048).optional(),

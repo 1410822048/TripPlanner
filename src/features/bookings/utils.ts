@@ -3,11 +3,14 @@
 // booking renderer in lockstep when the schema gains optional fields.
 import type { Booking, BookingAttachment } from '@/types'
 
-/** Preferred thumbnail source: smaller variant if present, otherwise the
- *  full file. Returns undefined when there's no attachment at all so
- *  callers can render the type emoji fallback. */
-export function attachmentThumb(att: BookingAttachment | undefined): string | undefined {
-  return att?.thumbUrl ?? att?.fileUrl
+/** Thumbnail Storage PATH for getBlob (path-only model). The small WebP
+ *  variant ONLY -- deliberately no fall-back to the full filePath so a
+ *  thumb-less attachment (PDF, or a pre-thumb upload) renders the type-
+ *  emoji / placeholder instead of pulling a full-size blob into the
+ *  thumbnail cache. Returns undefined when there's no thumb path. Feed the
+ *  result to `useAttachmentUrl(path, { kind: 'thumb' })`. */
+export function attachmentThumbPath(att: BookingAttachment | undefined): string | undefined {
+  return att?.thumbPath
 }
 
 /** True when the attachment is renderable as an `<img>`. PDFs and other

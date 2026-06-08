@@ -55,6 +55,22 @@ export class CascadeError extends Error {
   }
 }
 
+/** Thrown when the download-token strip can't be made to stick after
+ *  bounded retry during intent consume (upload-intent.ts). The just-
+ *  uploaded blob is deleted before this throws, so the failure is
+ *  TERMINAL (not transparently retryable): the same upload payload
+ *  cannot be replayed (its blob is gone) and no Firestore doc was
+ *  written. The route maps it to a definitive-reject 409 so the client
+ *  rolls back the optimistic row and prompts a fresh re-pick, rather
+ *  than keeping a phantom row or auto-resending the dead payload. */
+export class AttachmentHardeningError extends Error {
+  readonly code = 'ATTACHMENT_HARDENING_FAILED' as const
+  constructor(message: string) {
+    super(message)
+    this.name = 'AttachmentHardeningError'
+  }
+}
+
 /** Drive the cascade. Throws CascadeError(status, msg) for the
  *  index.ts handler to translate into an HTTP response.
  *

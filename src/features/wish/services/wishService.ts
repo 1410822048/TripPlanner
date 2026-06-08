@@ -83,10 +83,15 @@ export const subscribeToWishes = listServices.subscribe
 
 // ─── Storage helpers ──────────────────────────────────────────────
 
+/** All Storage paths backing a WishImage. thumbPath is optional (thumb-
+ *  less uploads omit it); Set() also dedupes legacy collapse shapes where
+ *  thumbPath == path. */
+function wishImagePaths(image: WishImage): string[] {
+  return [...new Set([image.path, image.thumbPath].filter((p): p is string => !!p))]
+}
+
 async function deleteWishImage(image: WishImage): Promise<void> {
-  // Set() dedupes when fullPath == thumbPath (some shapes had fall-through).
-  const paths = new Set([image.path, image.thumbPath])
-  await Promise.all([...paths].map(deleteStorageObject))
+  await Promise.all(wishImagePaths(image).map(deleteStorageObject))
 }
 
 // ─── Write ────────────────────────────────────────────────────────
@@ -250,7 +255,7 @@ export async function updateWish(
         purge: () => deleteWishImage(existingImage),
         enqueue: {
           tripId, collection: 'wishes', entityId: wishId,
-          paths: [...new Set([existingImage.path, existingImage.thumbPath])],
+          paths: wishImagePaths(existingImage),
           source: 'updateWish/purge-old-image',
         },
         sentry: { source: 'updateWish/purge-old-image', tripId, wishId },
@@ -289,7 +294,7 @@ export async function updateWish(
       purge: () => deleteWishImage(existingImage),
       enqueue: {
         tripId, collection: 'wishes', entityId: wishId,
-        paths: [...new Set([existingImage.path, existingImage.thumbPath])],
+        paths: wishImagePaths(existingImage),
         source: 'updateWish/purge-old-image',
       },
       sentry: { source: 'updateWish/purge-old-image', tripId, wishId },
@@ -317,7 +322,7 @@ export async function deleteWish(
       purge: () => deleteWishImage(image),
       enqueue: {
         tripId, collection: 'wishes', entityId: wishId,
-        paths: [...new Set([image.path, image.thumbPath])],
+        paths: wishImagePaths(image),
         source: 'deleteWish/image',
       },
       sentry: { source: 'deleteWish/image', tripId, wishId, path: image.path },

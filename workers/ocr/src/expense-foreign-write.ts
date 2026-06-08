@@ -8,6 +8,7 @@
 // orchestrator, which calls prepareForeignCreate (create) and
 // buildForeignUpdateWrite (update).
 import { readString, type FsValue }        from './firestore'
+import { encodeReceipt }                    from './expense-codec'
 import {
   ExpenseValidationError,
   makeExpenseCreateSchema,
@@ -521,16 +522,10 @@ export async function buildForeignUpdateWrite(args: {
   if (fp.note     !== undefined) { patchFields.note     = { stringValue: fp.note     }; pushUnique(updateMask, 'note') }
   if (fp.date     !== undefined) { patchFields.date     = { stringValue: fp.date     }; pushUnique(updateMask, 'date') }
 
-  // Receipt set / delete
+  // Receipt set / delete -- reuse the single shared (path-only) encoder
+  // from expense-codec so this path can't drift from the create path.
   if (args.receipt) {
-    const rfields: Record<string, FsValue> = {
-      url:  { stringValue: args.receipt.url },
-      path: { stringValue: args.receipt.path },
-      type: { stringValue: args.receipt.type },
-    }
-    if (args.receipt.thumbUrl  != null) rfields.thumbUrl  = { stringValue: args.receipt.thumbUrl }
-    if (args.receipt.thumbPath != null) rfields.thumbPath = { stringValue: args.receipt.thumbPath }
-    patchFields.receipt = { mapValue: { fields: rfields } }
+    patchFields.receipt = encodeReceipt(args.receipt)
     pushUnique(updateMask, 'receipt')
   }
   if (args.receiptDeletion) pushUnique(updateMask, 'receipt')

@@ -27,12 +27,10 @@ vi.mock('../src/admin', () => ({
 }))
 
 vi.mock('../src/storage', () => ({
-	getObjectMetadata:      vi.fn(),
-	downloadUrlFromMetadata: (bucket: string, path: string, meta?: Record<string, string>) => {
-		const token = meta?.firebaseStorageDownloadTokens?.split(',')[0]?.trim()
-		if (!token) return null
-		return `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(path)}?alt=media&token=${token}`
-	},
+	getObjectMetadata:    vi.fn(),
+	// path-only: consume strips the download token fail-closed.
+	updateObjectMetadata: vi.fn(() => Promise.resolve(true)),
+	deleteObject:         vi.fn(() => Promise.resolve(true)),
 }))
 
 const txGetResponses = new Map<string, { exists: boolean; fields: Record<string, unknown>; name: string; updateTime: string | null }>()
@@ -221,7 +219,7 @@ beforeEach(() => {
 // ─── Happy paths ───────────────────────────────────────────────────
 
 describe('wishFileCreate: happy paths', () => {
-	it('full intent only → wish doc + image (thumb collapses to primary) + markUsed in same tx', async () => {
+	it('full intent only → wish doc + image (no thumb → thumbPath omitted) + markUsed in same tx', async () => {
 		// HEIC/HEIF pass-through case: client couldn't canvas-decode a
 		// thumb, so it sends just `full`. Worker's WishImage encoding
 		// collapses thumb fields to the primary blob.
@@ -273,12 +271,14 @@ describe('wishFileCreate: happy paths', () => {
 		const memberIdValues = wishWrite.fields.memberIds?.arrayValue?.values?.map(v => v.stringValue)
 		expect(memberIdValues).toEqual(MEMBERS)
 
-		// Image field built server-side; thumb collapses to primary.
+		// Image field built server-side (path-only). No thumb intent → no
+		// thumbPath (we deliberately do NOT collapse to the full path; the
+		// card shows its placeholder). No url/thumbUrl -- token stripped.
 		const image = wishWrite.fields.image?.mapValue?.fields
 		expect(image?.path?.stringValue).toBe(FULL_PATH)
-		expect(image?.url?.stringValue).toContain('token=tk')
-		expect(image?.thumbPath?.stringValue).toBe(FULL_PATH)   // collapse → primary
-		expect(image?.thumbUrl?.stringValue).toContain('token=tk')
+		expect(image?.url).toBeUndefined()
+		expect(image?.thumbPath).toBeUndefined()   // no collapse
+		expect(image?.thumbUrl).toBeUndefined()
 
 		// createdAt + updatedAt via transforms, NOT in fields map.
 		expect(wishWrite.fields.createdAt).toBeUndefined()
@@ -325,12 +325,12 @@ describe('wishFileCreate: happy paths', () => {
 		expect(wishWrite.fields.link?.stringValue).toBe('https://example.com')
 		expect(wishWrite.fields.address?.stringValue).toBe('Tokyo')
 
-		// Image: distinct full + thumb (no collapse).
+		// Image: distinct full + thumb (no collapse). path-only.
 		const image = wishWrite.fields.image?.mapValue?.fields
 		expect(image?.path?.stringValue).toBe(FULL_PATH)
-		expect(image?.url?.stringValue).toContain('token=tk-f')
+		expect(image?.url).toBeUndefined()
 		expect(image?.thumbPath?.stringValue).toBe(THUMB_PATH)
-		expect(image?.thumbUrl?.stringValue).toContain('token=tk-t')
+		expect(image?.thumbUrl).toBeUndefined()
 	})
 
 	it('viewer-role caller can create a wish (any-member proposer authz)', async () => {
@@ -625,12 +625,12 @@ describe('wishFileUpdate: happy paths', () => {
 		expect(patch.fields.title?.stringValue).toBe('new title')
 		expect(patch.fields.description?.stringValue).toBe('updated')
 
-		// New image bytes (not the old FULL_PATH from ownedWishReadDoc).
+		// New image bytes (not the old FULL_PATH from ownedWishReadDoc). path-only.
 		const image = patch.fields.image?.mapValue?.fields
 		expect(image?.path?.stringValue).toBe(NEW_FULL_PATH)
-		expect(image?.url?.stringValue).toContain('token=tk-f')
+		expect(image?.url).toBeUndefined()
 		expect(image?.thumbPath?.stringValue).toBe(NEW_THUMB_PATH)
-		expect(image?.thumbUrl?.stringValue).toContain('token=tk-t')
+		expect(image?.thumbUrl).toBeUndefined()
 
 		// updatedAt via transforms, NOT in fields map; createdAt untouched.
 		expect(patch.fields.updatedAt).toBeUndefined()
@@ -673,7 +673,7 @@ describe('wishFileUpdate: happy paths', () => {
 		expect(Object.keys(patch.fields)).toEqual(['image', 'updatedBy'])
 	})
 
-	it('full-only new image collapses thumb fields to primary (HEIC pass-through case)', async () => {
+	it('full-only new image → thumbPath omitted (HEIC pass-through case, no collapse)', async () => {
 		seedUpdateAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
@@ -697,9 +697,9 @@ describe('wishFileUpdate: happy paths', () => {
 		}>
 		const image = writes[1].fields.image?.mapValue?.fields
 		expect(image?.path?.stringValue).toBe(NEW_FULL_PATH)
-		expect(image?.thumbPath?.stringValue).toBe(NEW_FULL_PATH)  // collapse
-		expect(image?.url?.stringValue).toContain('token=tk')
-		expect(image?.thumbUrl?.stringValue).toContain('token=tk')
+		expect(image?.thumbPath).toBeUndefined()   // no collapse to full path
+		expect(image?.url).toBeUndefined()
+		expect(image?.thumbUrl).toBeUndefined()
 	})
 })
 

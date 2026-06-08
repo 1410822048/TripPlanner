@@ -14,8 +14,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('../src/storage', () => ({
-	listObjects:  vi.fn(),
-	deleteObject: vi.fn(async (..._args: unknown[]) => true),
+	listObjects:          vi.fn(),
+	deleteObject:         vi.fn(async (..._args: unknown[]) => true),
+	updateObjectMetadata: vi.fn(async (..._args: unknown[]) => true),
 }))
 vi.mock('../src/sentry', () => ({
 	captureMessage: vi.fn(async () => undefined),
@@ -50,7 +51,7 @@ vi.mock('../src/admin', () => ({
 	getProjectId:  vi.fn(() => 'demo-project'),
 }))
 
-import { scanOrphanStorage } from '../src/storage-scan'
+import { scanOrphanStorage, scanAndScrubTokens } from '../src/storage-scan'
 import * as storage          from '../src/storage'
 import * as firestore        from '../src/firestore'
 import * as sentry           from '../src/sentry'
@@ -687,5 +688,90 @@ describe('scanOrphanStorage', () => {
 		expect(storage.deleteObject).toHaveBeenCalledTimes(1)
 		expect(report.deleted).toBe(0)
 		expect(report.deleteErrors).toBe(0)
+	})
+})
+
+// ─── Token scrubber (path-only hardening backstop) ─────────────────
+//
+// scanAndScrubTokens strips leftover firebaseStorageDownloadTokens from
+// any trips/ object, with semantics deliberately different from the
+// orphan scan: NO 24h grace, WIDER scope (unparseable paths too), and an
+// independent budget/cursor.
+describe('scanAndScrubTokens', () => {
+	beforeEach(() => {
+		vi.mocked(storage.listObjects).mockReset()
+		vi.mocked(storage.updateObjectMetadata).mockReset()
+		vi.mocked(storage.updateObjectMetadata).mockResolvedValue(true)
+		vi.mocked(firestore.getScanCursor).mockResolvedValue(null)
+		vi.mocked(firestore.setScanCursor).mockResolvedValue(undefined)
+		vi.mocked(firestore.clearScanCursor).mockResolvedValue(undefined)
+	})
+
+	const withTok  = (name: string, timeCreated?: string) =>
+		({ name, timeCreated, metadata: { firebaseStorageDownloadTokens: 'tok-1,tok-2' } })
+	const noTok    = (name: string) => ({ name, metadata: {} as Record<string, string> })
+
+	it('strips a FRESH token-bearing object (NO 24h grace, unlike orphan scan)', async () => {
+		vi.mocked(storage.listObjects).mockResolvedValueOnce({
+			items: [withTok(`trips/${TRIP_ID}/expenses/e1/r.webp`, FRESH_ISO)],
+		})
+		const report = await scanAndScrubTokens('{}', BUCKET)
+		expect(storage.updateObjectMetadata).toHaveBeenCalledWith(
+			expect.anything(), BUCKET, `trips/${TRIP_ID}/expenses/e1/r.webp`,
+			{ firebaseStorageDownloadTokens: null },
+		)
+		expect(report.scrubbed).toBe(1)
+	})
+
+	it('scrubs an UNPARSEABLE path (wider scope than orphan delete) and skips no-token objects', async () => {
+		vi.mocked(storage.listObjects).mockResolvedValueOnce({
+			items: [
+				withTok(`trips/${TRIP_ID}/other/weird/blob.bin`, OLD_ISO),  // parsePath would reject
+				noTok(`trips/${TRIP_ID}/expenses/e2/r.webp`),               // already stripped → skip
+			],
+		})
+		const report = await scanAndScrubTokens('{}', BUCKET)
+		expect(report.scanned).toBe(2)
+		expect(report.scrubbed).toBe(1)
+		expect(storage.updateObjectMetadata).toHaveBeenCalledTimes(1)
+		expect(storage.updateObjectMetadata).toHaveBeenCalledWith(
+			expect.anything(), BUCKET, `trips/${TRIP_ID}/other/weird/blob.bin`,
+			{ firebaseStorageDownloadTokens: null },
+		)
+	})
+
+	it('honours an independent SCRUB_BUDGET and reports budgetHit', async () => {
+		vi.mocked(storage.listObjects).mockResolvedValueOnce({
+			items: [
+				withTok(`trips/${TRIP_ID}/expenses/a/r.webp`),
+				withTok(`trips/${TRIP_ID}/expenses/b/r.webp`),
+				withTok(`trips/${TRIP_ID}/expenses/c/r.webp`),
+			],
+			nextPageToken: 'page-2',
+		})
+		// budget=2 → 1 list (used=1) + 1 strip (used=2) then budget hit.
+		const report = await scanAndScrubTokens('{}', BUCKET, { subrequestBudget: 2 })
+		expect(report.budgetHit).toBe(true)
+		expect(report.scrubbed).toBe(1)
+		// Budget hit mid-page → save the CURRENT page token (undefined here =
+		// first page) so we re-list it next run, never skipping un-scrubbed
+		// tokens. First page has no pageToken → cursor cleared (restart top).
+		expect(firestore.setScanCursor).not.toHaveBeenCalled()
+		expect(firestore.clearScanCursor).toHaveBeenCalled()
+	})
+
+	it('records scrubErrors but keeps going when a strip PATCH throws', async () => {
+		vi.mocked(storage.listObjects).mockResolvedValueOnce({
+			items: [
+				withTok(`trips/${TRIP_ID}/expenses/x/r.webp`),
+				withTok(`trips/${TRIP_ID}/expenses/y/r.webp`),
+			],
+		})
+		vi.mocked(storage.updateObjectMetadata)
+			.mockRejectedValueOnce(new Error('GCS 503'))
+			.mockResolvedValueOnce(true)
+		const report = await scanAndScrubTokens('{}', BUCKET)
+		expect(report.scrubErrors).toBe(1)
+		expect(report.scrubbed).toBe(1)
 	})
 })

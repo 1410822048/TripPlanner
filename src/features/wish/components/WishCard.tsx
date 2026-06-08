@@ -30,6 +30,7 @@ import type { Wish } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import ActionChip from '@/components/ui/ActionChip'
 import MemberAvatar from '@/components/ui/MemberAvatar'
+import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import WishActionMenu from './WishActionMenu'
 import { mapsSearchUrl } from '@/utils/maps'
 import { haptic } from '@/utils/haptics'
@@ -206,11 +207,14 @@ function WishCard({
 function WishHero({ wish, eager }: { wish: Wish; eager?: boolean }) {
   // 16:9 ratio keeps the card from getting too tall on phones while
   // leaving plenty of room for a meaningful image.
-  if (wish.image) {
+  // path-only: resolve the thumb path to a blob objectURL (Storage Rules).
+  // Hero shows once the URL resolves; until then the gradient fallback below.
+  const thumbUrl = useAttachmentUrl(wish.image?.thumbPath, { kind: 'thumb' })
+  if (wish.image && thumbUrl) {
     return (
       <div className="relative w-full aspect-[16/9] bg-tile pointer-events-none">
         <img
-          src={wish.image.thumbUrl}
+          src={thumbUrl}
           alt={wish.title}
           decoding="async"
           // eager === true ONLY for the first card on /wish — that's

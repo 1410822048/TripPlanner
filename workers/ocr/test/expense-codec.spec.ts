@@ -131,11 +131,11 @@ describe('encodeExpense', () => {
     expect(adjVals[1]!.mapValue.fields.targetItemId).toEqual({ stringValue: 'i1' })
   })
 
-  it('encodes receipt, pairing thumb fields only when present', () => {
+  it('encodes receipt path-only (no url/thumbUrl), thumbPath only when present', () => {
     const noThumb = encodeExpense(createPayload(), TRIP, MEMBERS, 'u1', RECEIPT)
+    // path-only: url/thumbUrl are never written; reads go through getBlob.
     expect(noThumb.receipt).toEqual({
       mapValue: { fields: {
-        url:  { stringValue: 'https://example.com/r.webp' },
         path: { stringValue: 'trips/trip1/expenses/e1/receipt.webp' },
         type: { stringValue: 'image/webp' },
       } },
@@ -143,12 +143,12 @@ describe('encodeExpense', () => {
 
     const withThumb = encodeExpense(createPayload(), TRIP, MEMBERS, 'u1', {
       ...RECEIPT,
-      thumbUrl:  'https://example.com/t.webp',
       thumbPath: 'trips/trip1/expenses/e1/thumb.webp',
     })
     const rfields = (withThumb.receipt as { mapValue: { fields: Record<string, unknown> } }).mapValue.fields
-    expect(rfields.thumbUrl).toEqual({ stringValue: 'https://example.com/t.webp' })
     expect(rfields.thumbPath).toEqual({ stringValue: 'trips/trip1/expenses/e1/thumb.webp' })
+    expect(rfields.thumbUrl).toBeUndefined()
+    expect(rfields.url).toBeUndefined()
   })
 })
 

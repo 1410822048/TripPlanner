@@ -99,15 +99,16 @@ function encodeAdjustments(
   }
 }
 
-/** receipt → Firestore REST mapValue. thumbUrl / thumbPath are paired and
- *  omitted together when absent (matches makeReceiptSchema's paired refine). */
-function encodeReceipt(receipt: ExpenseReceiptOut): FsValue {
+/** receipt → Firestore REST mapValue (path-only). url/thumbUrl are no
+ *  longer written (download token stripped at consume; reads via getBlob).
+ *  thumbPath omitted when absent. Exported so the foreign-mode update path
+ *  (expense-foreign-write.ts) reuses this single encoder instead of an
+ *  inline duplicate. */
+export function encodeReceipt(receipt: ExpenseReceiptOut): FsValue {
   const rfields: Record<string, FsValue> = {
-    url:  { stringValue: receipt.url },
     path: { stringValue: receipt.path },
     type: { stringValue: receipt.type },
   }
-  if (receipt.thumbUrl != null)  rfields.thumbUrl  = { stringValue: receipt.thumbUrl }
   if (receipt.thumbPath != null) rfields.thumbPath = { stringValue: receipt.thumbPath }
   return { mapValue: { fields: rfields } }
 }

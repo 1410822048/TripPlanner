@@ -11,6 +11,7 @@ import { Loader2, Lock } from 'lucide-react'
 import type { Expense } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import SwipeableShell from '@/components/ui/SwipeableShell'
+import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { formatMinorAmount } from '@/utils/money'
 
 export interface SwipeableExpenseItemProps {
@@ -56,7 +57,8 @@ function SwipeableExpenseItem({
   // Receipt thumbnail (if image + thumb exists) replaces the category
   // emoji tile. PDFs without thumbnails keep the emoji — the file-type
   // is still visible via the form modal's preview button when editing.
-  const thumb = expense.receipt?.thumbUrl
+  // path-only: resolve the thumb path to a blob objectURL via Storage Rules.
+  const thumb = useAttachmentUrl(expense.receipt?.thumbPath, { kind: 'thumb' })
 
   return (
     <SwipeableShell

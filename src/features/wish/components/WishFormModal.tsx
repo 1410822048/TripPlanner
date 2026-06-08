@@ -15,6 +15,7 @@ import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
 import { useImageCropFlow } from '@/hooks/useImageCropFlow'
 import { useBlobUrl } from '@/hooks/useBlobUrl'
+import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 
 const ACCEPT_TYPES = 'image/*'
 const MAX_FILE_BYTES = 5 * 1024 * 1024
@@ -144,8 +145,13 @@ export default function WishFormModal({
     if (r) onSave(r)
   }
 
-  const previewUrl  = newFileBlobUrl ?? existing?.url ?? null
-  const hasImage    = !!previewUrl
+  // path-only: resolve the existing image's thumb via getBlob (Storage
+  // Rules). New file blob takes priority.
+  const existingThumbUrl = useAttachmentUrl(existing?.thumbPath, { kind: 'thumb' })
+  const previewUrl  = newFileBlobUrl ?? existingThumbUrl ?? null
+  // presence-driven (not URL-driven) so the row doesn't flicker to the
+  // upload prompt while the existing thumb's getBlob is in flight.
+  const hasImage    = !!newFile || !!existing
   const previewName = newFile?.name ?? '画像'
 
   return (
