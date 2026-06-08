@@ -30,10 +30,7 @@ import {
   type CreateExpenseInput,
 } from '@/types'
 import type { TripMember } from '@/features/trips/types'
-import {
-  adjustmentSign,
-  convertSourceLinesToTarget,
-} from '@tripmate/expense-materialize'
+import { adjustmentSign } from '@tripmate/expense-materialize'
 import { convertMinorHalfEven } from '@tripmate/fx-core'
 import FormModalShell from '@/components/ui/FormModalShell'
 import FormField from '@/components/ui/FormField'
@@ -56,6 +53,7 @@ import { useOcrFlow } from '../hooks/useOcrFlow'
 import { ocrResultStillApplicable } from '../services/ocrService'
 import { buildExpenseFormResult } from '../services/buildExpenseFormResult'
 import { buildOcrExpenseDraft } from '../services/buildOcrExpenseDraft'
+import { buildForeignLinePreview } from '../services/buildForeignLinePreview'
 import {
   safeReparseMoney,
   splitEqually,
@@ -347,84 +345,21 @@ export default function ExpenseFormModal({
   // boundary that converts it (centralised in expense/utils so the
   // currency-switch reparse path uses the same try/catch + clamp).
   const amountMinor = safeReparseMoney(amountText, currency)
-  // Phase 3c-1 — trip-currency preview of the source-side amount. Inline
-  // mirror of the conversion the materializer runs at save-time; used only
-  // for the "USD 12.34 → ¥1804 @ 146.2" display row. Save-time math runs
-  // through `convertAndMaterializeFromSource`, so any drift here would be
-  // caught (and rejected) by the Worker recompute anyway. null = either
-  // not foreign-open, no rate yet, or user hasn't typed an amount.
-  const foreignLinePreview =
-    isForeignOpen && fxPreview.rateDecimal && amountMinor > 0
-      ? (() => {
-          const sourceFractionDigits = currencyFractionDigits(sourceCurrency)
-          const targetFractionDigits = currencyFractionDigits(tripCurrency)
-          const convertPreviewMinor = (sourceMinor: number): number | undefined => {
-            if (!Number.isInteger(sourceMinor) || sourceMinor <= 0) return undefined
-            return convertMinorHalfEven({
-              sourceMinor,
-              rateDecimal: fxPreview.rateDecimal!,
-              sourceFractionDigits,
-              targetFractionDigits,
-            })
-          }
-          try {
-            const converted = convertSourceLinesToTarget({
-              sourceItems: items.items.map(item => ({
-                id:          item.id,
-                amountMinor: item.amountMinor,
-              })),
-              sourceAdjustments: adjustments.map(adj => ({
-                id:           adj.id,
-                kind:         adj.kind,
-                scope:        adj.scope,
-                amountMinor:  adj.amountMinor,
-                targetItemId: adj.targetItemId,
-              })),
-              sourceAmountMinor:    amountMinor,
-              rateDecimal:          fxPreview.rateDecimal,
-              sourceFractionDigits,
-              targetFractionDigits,
-            })
-            return {
-              amountMinor: converted.amountMinor,
-              itemAmountById: new Map(
-                converted.items.map(item => [item.id, item.amountMinor] as const),
-              ),
-              adjustmentAmountById: new Map(
-                converted.adjustments.map(adj => [adj.id, adj.amountMinor] as const),
-              ),
-            }
-          } catch {
-            // Draft editing can be temporarily out of balance
-            // (items + adjustments != total). Do not hide every per-line
-            // FX hint in that state; show independent approximate line
-            // conversions and let buildExpenseFormResult/Worker enforce the
-            // exact materialized total on save.
-            const convertedAmount = convertPreviewMinor(amountMinor)
-            if (convertedAmount === undefined) return null
-
-            const itemAmountById = new Map<string, number>()
-            for (const item of items.items) {
-              const convertedItem = convertPreviewMinor(item.amountMinor)
-              if (convertedItem !== undefined) itemAmountById.set(item.id, convertedItem)
-            }
-
-            const adjustmentAmountById = new Map<string, number>()
-            for (const adj of adjustments) {
-              const convertedAdjustment = convertPreviewMinor(adj.amountMinor)
-              if (convertedAdjustment !== undefined) {
-                adjustmentAmountById.set(adj.id, convertedAdjustment)
-              }
-            }
-
-            return {
-              amountMinor: convertedAmount,
-              itemAmountById,
-              adjustmentAmountById,
-            }
-          }
-        })()
-      : null
+  // Phase 3c-1 — trip-currency per-line preview of the source-side amounts
+  // ("USD 12.34 → ¥1804 @ 146.2" display rows). PREVIEW only: save-time math
+  // runs through buildExpenseFormResult → convertAndMaterializeFromSource and
+  // the Worker recompute is authoritative, so any drift here is harmless.
+  // null = not foreign-open / no rate yet / no amount typed. See
+  // buildForeignLinePreview for the balanced-vs-imbalanced-draft split.
+  const foreignLinePreview = buildForeignLinePreview({
+    isForeignOpen,
+    rateDecimal:       fxPreview.rateDecimal,
+    sourceAmountMinor: amountMinor,
+    sourceCurrency,
+    tripCurrency,
+    items:             items.items,
+    adjustments,
+  })
   const previewConvertedMinor: number | null =
     foreignLinePreview?.amountMinor ??
     (isForeignOpen && fxPreview.rateDecimal && amountMinor > 0
