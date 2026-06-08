@@ -55,17 +55,17 @@ import { useFxPreview } from '@/hooks/useFxPreview'
 import { useOcrFlow } from '../hooks/useOcrFlow'
 import { ocrResultStillApplicable } from '../services/ocrService'
 import { buildExpenseFormResult } from '../services/buildExpenseFormResult'
+import { buildOcrExpenseDraft } from '../services/buildOcrExpenseDraft'
 import {
   safeReparseMoney,
   splitEqually,
 } from '../utils'
 import { useTripCurrency } from '@/hooks/useTripCurrency'
 import { useTripId } from '@/hooks/useTripId'
-import { CURRENCY_OPTIONS, currencySymbol } from '@/utils/currency'
+import { currencySymbol } from '@/utils/currency'
 import {
   formatMinorAmount,
   formatMinorForInput,
-  parseMoneyToMinor,
   currencyFractionDigits,
 } from '@/utils/money'
 import { compressImage } from '@/utils/image'
@@ -233,150 +233,48 @@ export default function ExpenseFormModal({
     splits.resetCustom(renorm.customSplits)
   }
 
-  // OCR pipeline. onSuccess wires the parsed result into the existing
-  // form state — items, adjustments, total, and (when blank) title.
-  // Title-fill is intentionally non-destructive: if the user already
-  // typed a title, OCR doesn't clobber it.
+  // OCR pipeline. The pure draft assembly (currency detect + fail-fast
+  // money parse + item id mint + adjustment target resolution + title/
+  // category fill decisions) lives in buildOcrExpenseDraft so it can be
+  // unit-tested with a deterministic id generator. onSuccess here is only
+  // the SIDE-EFFECT half: apply the returned draft to the sibling hooks.
   //
-  // Money: OCR emits decimal strings (amountText / totalText); the
-  // client parses each via parseMoneyToMinor at this boundary so
-  // everything downstream (items[].amountMinor, total) stays integer.
-  //
-  // Parse is FAIL-FAST: the Worker schema only validates a currency-
-  // agnostic decimal shape, so e.g. Gemini emitting "12.34" for JPY
-  // passes the wire but breaks parseMoneyToMinor (JPY has 0 fraction
-  // digits). Silently coercing that to 0 would import garbage rows and
-  // leak the mismatch into the saved expense. Instead we parse every
-  // field up-front, abort on the first failure with a localised error
-  // (surfaced through useOcrFlow → receiptErrText banner), and only
-  // mutate form state after all parses succeed — partial application
-  // is never visible to the user.
+  // A parse failure throws OUT of buildOcrExpenseDraft before it returns a
+  // draft (FAIL-FAST: Worker schema validates only a currency-agnostic
+  // decimal shape, so e.g. Gemini emitting "12.34" for JPY breaks
+  // parseMoneyToMinor). useOcrFlow.run catches the throw → receiptErrText
+  // banner; no state was mutated, so partial application is never visible.
   const ocr = useOcrFlow({
     currency: tripCurrency,
     onSuccess: (result) => {
-      // Phase 3c-3 — honor OCR-detected receipt currency.
-      //
-      // The Worker validates only the ISO 4217 SHAPE (^[A-Z]{3}$), so an
-      // un-registered code (e.g. CAD) would parse + format here but the
-      // CurrencyPicker can't display or switch away from it, trapping the
-      // user. Gate on the registry: known codes auto-set sourceCurrency
-      // (triggering foreign-mode if it differs from trip), unknown/omitted
-      // codes fall back below (see ocrCurrency). For FRESH captures the hook
-      // hint is tripCurrency: an ambiguous receipt should not inherit a
-      // previously opened foreign picker (e.g. a JPY receipt parsed as USD
-      // just because the user last tested USD mode). The existing-receipt
-      // re-OCR path hints the draft's own currency instead — a saved foreign
-      // expense's currency is known, not ephemeral.
-      //
-      // The parsing below uses `ocrCurrency` directly (not the React-
-      // state `sourceCurrency`) so it doesn't depend on the setField
-      // flushing before this closure body finishes. setField schedules
-      // a re-render; the form's useExpenseItems / safeReparseMoney pick up
-      // the new currency on the next paint.
-      const detectedCurrency: string | undefined =
-        result.currency && CURRENCY_OPTIONS.some(c => c.code === result.currency)
-          ? result.currency
-          : undefined
-      // Fallback when OCR omits / uses an unregistered currency. A NEW or
-      // trip-currency expense has no persisted sourceCurrency → tripCurrency
-      // (preserving the "don't inherit an ephemeral picker" intent above,
-      // since editTarget.sourceCurrency is the PERSISTED value, not the live
-      // toggle). An EXISTING foreign expense keeps its authoritative saved
-      // currency rather than snapping back to trip when Gemini can't detect.
-      const ocrCurrency = detectedCurrency ?? editTarget?.sourceCurrency ?? tripCurrency
-
-      const strictParse = (text: string, label: string): number => {
-        try { return Math.max(0, parseMoneyToMinor(text, ocrCurrency)) }
-        catch {
-          throw new Error(
-            `OCRの金額が${ocrCurrency}の形式と一致しません(${label}: "${text}")。撮り直してください。`,
-          )
-        }
-      }
-      // Phase 1: parse ALL fields up-front. Any failure throws before
-      // a single setField runs, so the form stays at its prior state
-      // and the user sees a single clear error banner.
-      const itemMinors = result.items.map((it, i) =>
-        strictParse(it.amountText, `item[${i}] ${it.name}`),
+      const draft = buildOcrExpenseDraft(
+        result,
+        {
+          tripCurrency,
+          // FRESH captures fall back to tripCurrency (don't inherit an
+          // ephemeral picker); EXISTING foreign expenses keep their
+          // PERSISTED authoritative currency when Gemini can't detect one.
+          persistedSourceCurrency: editTarget?.sourceCurrency,
+          isEdit:                  editTarget !== null,
+          currentTitle:            state.title,
+        },
+        () => crypto.randomUUID(),
       )
-      const adjustmentMinors = result.adjustments.map((adj, i) =>
-        strictParse(adj.amountText, `adjustment[${i}] ${adj.label}`),
-      )
-      const totalMinor = strictParse(result.totalText, 'total')
 
-      // Phase 2: all parses succeeded — now mutate form state. Mint
-      // item ids first so OCR-emitted ITEM-scope adjustments can resolve
-      // `suggestedTargetItemIndex` → `targetItemId` in the same pass.
-      // Items reset to assignees=[] (Phase B contract: assignee picking
-      // is a deliberate user action).
-      //
       // Auto-set sourceCurrency BEFORE the other field updates so React
-      // batches them in a single render — avoids a "trip currency for
-      // one tick, then detected currency" flash on the items list.
-      if (ocrCurrency !== sourceCurrency) {
-        applyCurrencySwitch(ocrCurrency)
+      // batches them in a single render — avoids a "trip currency for one
+      // tick, then detected currency" flash on the items list. The switch
+      // renormalizes the live items/splits, but the items.reset below
+      // immediately replaces items wholesale; the switch still matters for
+      // the sourceCurrency state + custom-splits renormalization.
+      if (draft.ocrCurrency !== sourceCurrency) {
+        applyCurrencySwitch(draft.ocrCurrency)
       }
-      const mintedItemIds = result.items.map(() => crypto.randomUUID())
-      items.reset(result.items.map((it, idx) => ({
-        id:          mintedItemIds[idx]!,
-        name:        it.name,
-        amountMinor: itemMinors[idx]!,
-        amountText:  formatMinorForInput(itemMinors[idx]!, ocrCurrency),
-        assignees:   [],
-      })))
-      // Translate OCR adjustment drafts to persisted shape. UNKNOWN
-      // scope defaults to EXPENSE (Phase B contract: persisted scope
-      // is binary; the visible adjustment row lets the user switch it
-      // back to ITEM when the receipt clearly ties it to one line).
-      // ITEM scope falls back to EXPENSE if the target index is missing
-      // or out-of-range — defensive against OCR producing a partial /
-      // malformed adjustment payload.
-      const nextAdjustments = result.adjustments.map((adj, i) => {
-        const idx = adj.suggestedTargetItemIndex
-        const itemTarget =
-          adj.suggestedScope === 'ITEM' &&
-          idx !== undefined &&
-          idx >= 0 &&
-          idx < mintedItemIds.length
-            ? mintedItemIds[idx]
-            : undefined
-        const minor = adjustmentMinors[i]!
-        return itemTarget
-          ? {
-              id:           crypto.randomUUID(),
-              label:        adj.label,
-              kind:         adj.kind,
-              scope:        'ITEM' as const,
-              amountMinor:  minor,
-              targetItemId: itemTarget,
-            }
-          : {
-              id:          crypto.randomUUID(),
-              label:       adj.label,
-              kind:        adj.kind,
-              scope:       'EXPENSE' as const,
-              amountMinor: minor,
-            }
-      })
-      resetAdjustments(
-        nextAdjustments,
-        Object.fromEntries(
-          nextAdjustments.map(adj => [
-            adj.id,
-            adj.amountMinor > 0 ? formatMinorForInput(adj.amountMinor, ocrCurrency) : '',
-          ]),
-        ),
-      )
-      setAmountText(formatMinorForInput(totalMinor, ocrCurrency))
-      if (result.storeName && !state.title.trim()) {
-        setField('title', result.storeName)
-      }
-      // Category: 只在新增模式套用。拍照即「請幫我自動分類」的意圖,
-      // 直接覆寫預設值('food')。edit 模式絕對不覆寫 — 使用者已選的
-      // category 是 ground truth,不應因為重新跑 OCR 而被改掉。
-      if (result.category && !editTarget) {
-        setField('category', result.category)
-      }
+      items.reset(draft.items)
+      resetAdjustments(draft.adjustments, draft.adjustmentText)
+      setAmountText(draft.amountText)
+      if (draft.title !== undefined) setField('title', draft.title)
+      if (draft.category !== undefined) setField('category', draft.category)
       setErrors(prev => ({ ...prev, items: '' }))
     },
   })
