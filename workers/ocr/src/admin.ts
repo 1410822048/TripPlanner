@@ -107,6 +107,18 @@ export function getProjectId(serviceAccountJson: string): string {
   return parseServiceAccount(serviceAccountJson).project_id
 }
 
+/** The two SA fields needed to mint a GCS V4 signed URL with a LOCAL
+ *  RSA signature (no IAM signBlob round-trip):
+ *    - clientEmail → the X-Goog-Credential principal
+ *    - privateKey  → the PKCS#8 PEM we import as an RSASSA-PKCS1-v1_5
+ *                    SHA-256 signing key (gcs-sign.ts)
+ *  Reuses the same parsed-JSON cache as getAdminToken / getProjectId so
+ *  the signed-URL endpoints don't re-JSON.parse the SA on every request. */
+export function getSigningCredentials(serviceAccountJson: string): { clientEmail: string; privateKey: string } {
+  const sa = parseServiceAccount(serviceAccountJson)
+  return { clientEmail: sa.client_email, privateKey: sa.private_key }
+}
+
 /** Drop the cached OAuth token. Call when a downstream Firestore REST
  *  call returns 401 — the cached token is presumed bad (e.g. the
  *  service account key was rotated mid-cache, or Google revoked it).

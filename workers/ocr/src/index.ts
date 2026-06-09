@@ -104,6 +104,12 @@ import {
   createUploadIntents,
   UploadIntentsRequestSchema,
 }                                                 from './upload-intent'
+import {
+  signThumbUrls,
+  signEntityUrl,
+  AttachmentThumbUrlsRequestSchema,
+  AttachmentUrlRequestSchema,
+}                                                 from './attachment-url'
 import { checkGlobalRateLimit }                   from './rate-limiter'
 import {
   handleJsonRoute,
@@ -150,6 +156,13 @@ interface WorkerEnv {
    *  rare event, and create runs a full pairwise debt computation
    *  (tx + 2 runQuery reads) per request. */
   SETTLEMENT_RATE_LIMITER:  RateLimit
+  /** Per-PoP per-uid rate limiter for the attachment signed-URL
+   *  endpoints (/attachment-thumb-urls + /attachment-url). Looser
+   *  (120/min) than expense -- a single list screen issues a few thumb
+   *  batches, and the work is a local RSA sign (no Gemini / no Firestore
+   *  write). thumb + entity-ref share this binding + the 'attachment-url'
+   *  scope. */
+  ATTACHMENT_URL_RATE_LIMITER: RateLimit
   /** Cross-PoP global rate limiter. Durable Object — strongly
    *  consistent counter per-uid that catches multi-PoP abuse that
    *  would slip past the per-PoP binding. ~10-50ms latency cost. */
@@ -236,7 +249,9 @@ export default {
     const isInviteRedeem     = url.pathname === '/invite-redeem'     && request.method === 'POST'
     const isMemberRemove     = url.pathname === '/member-remove'     && request.method === 'POST'
     const isMemberRoleUpdate = url.pathname === '/member-role-update' && request.method === 'POST'
-    if (!isOcr && !isExpenseReceiptOcr && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents && !isWishCreate && !isWishUpdate && !isBookingCreate && !isBookingUpdate && !isSettlementCreate && !isSettlementDelete && !isInviteRedeem && !isMemberRemove && !isMemberRoleUpdate) {
+    const isAttachmentThumbUrls = url.pathname === '/attachment-thumb-urls' && request.method === 'POST'
+    const isAttachmentUrl       = url.pathname === '/attachment-url'        && request.method === 'POST'
+    if (!isOcr && !isExpenseReceiptOcr && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents && !isWishCreate && !isWishUpdate && !isBookingCreate && !isBookingUpdate && !isSettlementCreate && !isSettlementDelete && !isInviteRedeem && !isMemberRemove && !isMemberRoleUpdate && !isAttachmentThumbUrls && !isAttachmentUrl) {
       return json({ error: 'Not found' }, 404, cors)
     }
 
@@ -290,6 +305,9 @@ export default {
     //     is the cluster ceiling.
     const isExpenseWrite    = isExpenseCreate    || isExpenseUpdate
     const isSettlementWrite = isSettlementCreate || isSettlementDelete
+    // Both signed-URL endpoints share one binding + scope + cap: same
+    // cost shape (one local RSA sign, no Gemini / no Firestore write).
+    const isAttachmentUrlRoute = isAttachmentThumbUrls || isAttachmentUrl
     // Cost class, NOT route identity: /expense-receipt-ocr is the same
     // Gemini-call cost shape as /ocr, so it shares the OCR rate limiter +
     // scope + global cap. Kept separate from `isOcr` so the new route isn't
@@ -316,6 +334,7 @@ export default {
                   : isBookingCreate   ? env.EXPENSE_RATE_LIMITER
                   : isBookingUpdate   ? env.EXPENSE_RATE_LIMITER
                   : isSettlementWrite ? env.SETTLEMENT_RATE_LIMITER
+                  : isAttachmentUrlRoute ? env.ATTACHMENT_URL_RATE_LIMITER
                   : env.CASCADE_RATE_LIMITER
     const localResult = await limiter.limit({ key: uid })
     if (!localResult.success) {
@@ -336,6 +355,7 @@ export default {
                       : isBookingCreate   ? 'booking-write'
                       : isBookingUpdate   ? 'booking-write'
                       : isSettlementWrite ? 'settlement-write'
+                      : isAttachmentUrlRoute ? 'attachment-url'
                       : 'cascade'
     const globalLimit = isOcrCostRoute ? 60
                       : isTripCascade     ? 2
@@ -346,6 +366,7 @@ export default {
                       : isBookingCreate   ? 60
                       : isBookingUpdate   ? 60
                       : isSettlementWrite ? 10
+                      : isAttachmentUrlRoute ? 300
                       : 10
     const globalResult = await checkGlobalRateLimit(
       env.GLOBAL_LIMITER, scope, uid, globalLimit, 60_000,
@@ -491,6 +512,23 @@ export default {
       handle:    data => createUploadIntents(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
       formatLog: (data, result) =>
         `trip=${data.tripId} entity=${data.entityType}/${data.entityId} count=${result.intents.length}`,
+    })
+
+    if (isAttachmentThumbUrls) return handleJsonRoute({
+      endpoint:  'attachment-thumb-urls', body, cors, uid,
+      schema:    AttachmentThumbUrlsRequestSchema,
+      handle:    data => signThumbUrls(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
+      // Log COUNT only — never the signed URLs (they carry a bearer
+      // signature). The response body returns them to the caller; logs don't.
+      formatLog: (data, result) => `trip=${data.tripId} count=${result.urls.length}`,
+    })
+
+    if (isAttachmentUrl) return handleJsonRoute({
+      endpoint:  'attachment-url', body, cors, uid,
+      schema:    AttachmentUrlRequestSchema,
+      handle:    data => signEntityUrl(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
+      // entity coordinates + variant only; the minted URL is never logged.
+      formatLog: data => `trip=${data.tripId} entity=${data.entityType}/${data.entityId} variant=${data.variant}`,
     })
 
     if (isTripCascade) return handleJsonRoute({

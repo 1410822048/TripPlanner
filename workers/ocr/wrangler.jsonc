@@ -52,6 +52,9 @@
 	//                         debt computation (tx + runQuery x 2);
 	//                         tighter cap reflects "this is a clicked
 	//                         button, not a typed-keystroke flow".
+	//   /attachment-*-url[s]  signed-URL minting (local RSA sign,      → 120/min
+	//                         no Gemini / no Firestore write). Looser:
+	//                         a list screen issues a few thumb batches.
 	"ratelimits": [
 		{
 			"name": "OCR_RATE_LIMITER",
@@ -77,6 +80,11 @@
 			"name": "SETTLEMENT_RATE_LIMITER",
 			"namespace_id": "1005",
 			"simple": { "limit": 5, "period": 60 }
+		},
+		{
+			"name": "ATTACHMENT_URL_RATE_LIMITER",
+			"namespace_id": "1006",
+			"simple": { "limit": 120, "period": 60 }
 		}
 	],
 	// Durable Object for cross-PoP rate limiting. Each instance is
