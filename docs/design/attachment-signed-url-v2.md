@@ -74,6 +74,8 @@ Worker 只簽 URL,不代理 bytes
 - 多一次 Firestore read,但 full/pdf 是「點開才發生」低頻,值得
 - TTL:**full image 10 min** / **PDF 5 min**
 
+> **Phase 2 簡化(實作後修訂)**:原規劃要為 full/pdf 新增一個 `useAttachmentUrlFromEntity` hook,因為 entity 端點吃座標而非 path。但所有 stored path 都是結構化的 `trips/{tripId}/{collection}/{entityId}/{file}` —— 座標(tripId / entityType / entityId / variant)**全都能從 path parse 出來**(`attachmentUrlResolver.parseEntityRef`,`.pdf` 副檔名 → variant=pdf)。所以 **沿用既有 `useAttachmentUrl(path, { kind })`,API 不變、零 UI 遷移**,只在 hook 內依 mode 切底層。client 傳的座標仍只是 locator,Worker 照舊從 doc 重新 derive(BOLA 不變)。
+
 權限:thumb 與 entity-ref 都是**純讀取**,只要 **trip member** 即可(viewer 也能看附件,對齊 Storage Rules `allow read: if isMember`)。**不要求** owner/editor —— 這跟 `/expense-receipt-ocr` 不同(那個是「準備寫入」才鎖 owner/editor)。
 
 ---
@@ -172,12 +174,21 @@ batch max:                                         20 paths / request
 ## 7. Rollout 順序
 
 ```
-Phase 1 ← 本次:Worker signing helper + 兩端點 + 完整 Worker 測試;client 不改,不切流量
-Phase 2:client signedUrlResolver(memory cache / in-flight dedup / thumb microtask batch),mode flag 預設 getBlob
-Phase 3:thumb 先開 signed,觀察 Worker request / 403 / 5xx / CPU
-Phase 4:再開 full/pdf entity-ref signed
-終態:mode flag 二選一;移除過渡期的 signed→getBlob 降級
+Phase 1 ✅ Worker signing helper + 兩端點 + 完整 Worker 測試;client 不改,不切流量
+         (deployed + 真 GCS 端到端驗證過,2026-06-09)
+Phase 2 ✅ client signedUrlResolver(memory cache / in-flight dedup / thumb microtask batch),
+         mode flag VITE_ATTACHMENT_URL_MODE 預設 getBlob → prod 行為不變;沿用既有 hook,零 UI 遷移
+Phase 3:把 prod Pages env VITE_ATTACHMENT_URL_MODE 設成 signed,先觀察 thumb(可只先對 thumb 開,
+         full/pdf 暫時… 註:目前 flag 是全域二選一,thumb/full 同時切。若要分階段需再加 per-kind flag)
+Phase 4:full/pdf 穩定後維持 signed
+終態:mode flag 二選一;移除任何過渡期降級
 ```
+
+> **Phase 3 注意**:目前 mode flag 是**全域**(thumb + full/pdf 一起切)。原 rollout 想「先只開 thumb,再開 full/pdf」,但單一 flag 做不到分 kind。若要保留分階段觀察,Phase 3 前需把 flag 拆成 per-kind(或先在 staging 全開觀察)。這是 Phase 2 用單 flag 換零 UI 遷移的 trade-off。
+
+> **Phase 3 切旗前必做(rollout gate,兩層都要綠才設 prod `VITE_ATTACHMENT_URL_MODE=signed`)**:
+> 1. **Worker→GCS 簽名**(re-runnable,Phase 1 已綠):`node workers/ocr/scripts/smoke-attachment-url.mjs entity <trip> <exp>` 與 `... thumb <trip> <thumbPath>`,GCS 須回 200。切旗前重跑一次確認 token / SA / bucket 沒漂。
+> 2. **端到端 client render**(Phase 2 新增,單元測試蓋不到):用 `VITE_ATTACHMENT_URL_MODE=signed` build(staging 或本機 `npm run dev`),開 expense / booking / wish 列表 + 全圖 / PDF 預覽,確認 — Network 看到 `/attachment-thumb-urls`(同列合批一次)+ `/attachment-url` 回 200、GCS 圖片 200、縮圖與全圖實際渲染、sign-out 後舊 URL 不再出現。
 
 ---
 

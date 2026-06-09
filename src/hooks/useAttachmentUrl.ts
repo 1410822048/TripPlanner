@@ -31,6 +31,13 @@
 
 import { useEffect, useLayoutEffect, useState } from 'react'
 import { getFirebaseStorage } from '@/services/firebase'
+import {
+  attachmentUrlMode,
+  resolveSignedUrl,
+  peekSignedUrl,
+  clearSignedUrlCache,
+  REFRESH_SKEW_MS,
+} from '@/services/attachmentUrlResolver'
 
 // ─── Shared blob-bytes fetch (in-flight dedup) ─────────────────────
 // Keyed by path; the bytes are identical regardless of kind, so a thumb
@@ -146,13 +153,26 @@ export function useAttachmentUrl(
   // correct. Initializer seeds a synchronous thumb-cache hit (no flash when
   // a cached list re-mounts).
   const [state, setState] = useState<{ path: string | null; kind: 'thumb' | 'full'; url: string | null; epoch: number }>(
-    () => ({ path: key, kind, url: kind === 'thumb' && key ? thumbUrls.get(key) ?? null : null, epoch: cacheEpoch }),
+    () => {
+      // Seed a synchronous cache hit so a re-mount of an already-resolved
+      // attachment shows the URL without a null flash. signed mode peeks the
+      // signed-URL cache (thumb OR full); getBlob mode peeks the thumb LRU.
+      let seed: string | null = null
+      if (key) {
+        seed = attachmentUrlMode() === 'signed'
+          ? peekSignedUrl(key, kind)?.url ?? null
+          : kind === 'thumb' ? thumbUrls.get(key) ?? null : null
+      }
+      return { path: key, kind, url: seed, epoch: cacheEpoch }
+    },
   )
 
   // Thumb ref-count: taken at DOM commit (useLayoutEffect), released on
   // unmount / path change. Keeps a visible thumbnail from being evicted.
+  // getBlob-mode only — the LRU/ref-count guards objectURLs, which signed
+  // mode never creates (it returns a plain https GCS URL).
   useLayoutEffect(() => {
-    if (kind !== 'thumb' || !key) return
+    if (attachmentUrlMode() !== 'getBlob' || kind !== 'thumb' || !key) return
     acquireThumb(key)
     return () => releaseThumb(key)
   }, [kind, key])
@@ -166,6 +186,31 @@ export function useAttachmentUrl(
     const settle = (url: string | null) => {
       if (cancelled || epoch !== cacheEpoch) return   // unmounted or cache cleared
       setState({ path: key, kind, url, epoch })
+    }
+
+    // ── signed mode: Worker-minted GCS URL (no objectURL lifecycle) ──
+    // resolveSignedUrl caches + de-dups + batches thumbs; we just set the URL.
+    // Only FULL/PDF auto-refresh: a long-open preview (PDF iframe range
+    // requests, full image) must not 403 mid-view, so we re-mint just before
+    // expiry. THUMBNAILS deliberately do NOT auto-refresh — once the <img> has
+    // loaded it stays rendered regardless of URL expiry, so a background timer
+    // would only burn Worker/GCS calls, re-fetch every visible thumb in a long
+    // list, and keep bearer URLs alive. Re-mount / cache-miss re-mints on demand.
+    if (attachmentUrlMode() === 'signed') {
+      let active = true
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const load = () => {
+        void resolveSignedUrl(key, kind).then(entry => {
+          if (!active) return
+          settle(entry?.url ?? null)
+          if (entry && kind === 'full') {
+            const ms = Math.max(0, entry.expiresAtMs - Date.now() - REFRESH_SKEW_MS)
+            timer = setTimeout(load, ms)
+          }
+        })
+      }
+      load()
+      return () => { active = false; cancelled = true; if (timer) clearTimeout(timer) }
     }
 
     if (kind === 'thumb') {
@@ -220,4 +265,5 @@ export function clearAttachmentUrlCache(): void {
   thumbLastUsed.clear()
   fullUrls.clear()
   blobInFlight.clear()
+  clearSignedUrlCache()                   // signed mode: drop cached GCS URLs + in-flight resolves
 }
