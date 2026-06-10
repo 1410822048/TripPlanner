@@ -14,14 +14,14 @@
     "@tripmate/expense-materialize": "file:../../packages/expense-materialize",
     "@tripmate/fx-core": "file:../../packages/fx-core",
     "@tripmate/settlement-core": "file:../../packages/settlement-core",
-    "jose": "^6.1.0",
-    "zod": "^4.0.0"
+    "jose": "^6.2.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.16.7",
-    "@types/node": "^25.7.0",
-    "typescript": "^5.5.2",
-    "vitest": "^4.1.7",
+    "@cloudflare/vitest-pool-workers": "^0.16.14",
+    "@types/node": "^25.9.2",
+    "typescript": "~6.0.2",
+    "vitest": "^4.1.8",
     "wrangler": "^4.90.0"
   }
 }

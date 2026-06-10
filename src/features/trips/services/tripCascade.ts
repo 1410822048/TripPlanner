@@ -59,6 +59,7 @@ export async function deleteTrip(tripId: string): Promise<void> {
       throw new Error(
         `Trip cascade rejected (${e.status}): ${e.message}. ` +
         `Fix the issue and retry.`,
+        { cause: e },
       )
     }
     // WorkerAmbiguous (timeout / network / 5xx) OR unrecognised.
@@ -68,6 +69,7 @@ export async function deleteTrip(tripId: string): Promise<void> {
     throw new Error(
       `Trip cascade did not complete: ${reason}. ` +
       `Retry to continue cleanup (operation is idempotent).`,
+      { cause: e },
     )
   }
 }
