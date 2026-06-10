@@ -21,13 +21,18 @@ export default defineConfig([
       reactRefresh.configs.vite,
     ],
     // eslint-plugin-react-compiler surfaces violations of the rules-of-react
-    // that prevent the compiler from auto-memoising a component. Treated
-    // as warnings (not errors) for now — existing code may have edge cases
-    // that the compiler safely skips, and we don't want CI to red-flag
-    // them all at once.
+    // that make the compiler bail out of auto-memoising a component. The
+    // codebase is currently at zero violations, so this is `error` rather
+    // than `warn`: CI's `eslint .` doesn't fail on warnings (only the
+    // pre-commit `--max-warnings 0` does, and only on staged files), so
+    // `warn` would let a new violation reach main via --no-verify or a
+    // contributor without husky. The one caveat is the plugin is still an
+    // RC (19.1.0-rc.x) — if a future bump gets noisier it can hard-block
+    // commits; the version is lockfile-pinned, so that only happens on a
+    // deliberate upgrade.
     plugins: { 'react-compiler': reactCompiler },
     rules: {
-      'react-compiler/react-compiler': 'warn',
+      'react-compiler/react-compiler': 'error',
       // Allow `_`-prefixed args / vars to opt out of the unused check —
       // standard convention for "I know this is unused, kept to match a
       // factory / callback signature". Used in queryKeyFactory / subscribe
