@@ -159,7 +159,7 @@ export function useAttachmentUrl(
       // signed-URL cache (thumb OR full); getBlob mode peeks the thumb LRU.
       let seed: string | null = null
       if (key) {
-        seed = attachmentUrlMode() === 'signed'
+        seed = attachmentUrlMode(kind) === 'signed'
           ? peekSignedUrl(key, kind)?.url ?? null
           : kind === 'thumb' ? thumbUrls.get(key) ?? null : null
       }
@@ -172,7 +172,7 @@ export function useAttachmentUrl(
   // getBlob-mode only — the LRU/ref-count guards objectURLs, which signed
   // mode never creates (it returns a plain https GCS URL).
   useLayoutEffect(() => {
-    if (attachmentUrlMode() !== 'getBlob' || kind !== 'thumb' || !key) return
+    if (attachmentUrlMode(kind) !== 'getBlob' || kind !== 'thumb' || !key) return
     acquireThumb(key)
     return () => releaseThumb(key)
   }, [kind, key])
@@ -196,7 +196,7 @@ export function useAttachmentUrl(
     // loaded it stays rendered regardless of URL expiry, so a background timer
     // would only burn Worker/GCS calls, re-fetch every visible thumb in a long
     // list, and keep bearer URLs alive. Re-mount / cache-miss re-mints on demand.
-    if (attachmentUrlMode() === 'signed') {
+    if (attachmentUrlMode(kind) === 'signed') {
       let active = true
       let timer: ReturnType<typeof setTimeout> | undefined
       const load = () => {

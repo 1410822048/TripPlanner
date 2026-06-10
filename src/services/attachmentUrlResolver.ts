@@ -17,17 +17,43 @@
 // re-derives the object path from the Firestore doc for full/pdf, so the
 // (tripId/entityType/entityId/variant) we parse from the path here is just a
 // LOCATOR the Worker re-validates — a stale client path can't widen access.
-import { WORKER_BASE_URL, workerFetch, preflightIdToken } from './workerBase'
+import { workerFetch, preflightIdToken, requireWorkerWriteBase } from './workerBase'
 
 export type AttachmentKind = 'thumb' | 'full'
 
-/** 'signed' only when explicitly opted in; anything else (incl. unset) is
- *  'getBlob'. Read lazily (not a module const) so a build/test can flip it
- *  via env without re-evaluating import order. */
-export function attachmentUrlMode(): 'getBlob' | 'signed' {
-  return (import.meta.env.VITE_ATTACHMENT_URL_MODE as string | undefined) === 'signed'
-    ? 'signed'
-    : 'getBlob'
+/** Per-kind signed/getBlob switch with a global fallback, read lazily so a
+ *  build/test can flip it via env. Precedence: the per-kind var
+ *  (VITE_ATTACHMENT_{THUMB,FULL}_URL_MODE) overrides the global
+ *  VITE_ATTACHMENT_URL_MODE; anything that isn't 'signed' (incl. unset) is
+ *  'getBlob'. The split lets the rollout move full/pdf and thumb
+ *  independently — thumb is the higher-traffic path, so they shouldn't be
+ *  forced to flip together. */
+export function attachmentUrlMode(kind: AttachmentKind): 'getBlob' | 'signed' {
+  const perKind = kind === 'thumb'
+    ? (import.meta.env.VITE_ATTACHMENT_THUMB_URL_MODE as string | undefined)
+    : (import.meta.env.VITE_ATTACHMENT_FULL_URL_MODE  as string | undefined)
+  const global = import.meta.env.VITE_ATTACHMENT_URL_MODE as string | undefined
+  return (perKind ?? global) === 'signed' ? 'signed' : 'getBlob'
+}
+
+/** Resolve the strict Worker base for signed-URL minting, or null. signed
+ *  mode mints bearer URLs — a more sensitive call than getBlob — so it
+ *  REQUIRES an explicit VITE_WORKER_BASE_URL (same strictness as Worker
+ *  writes) rather than silently falling back to the prod Worker: fail-closed
+ *  (→ null → placeholder) beats minting prod bearer URLs from a misconfigured
+ *  build, and stays correct if staging/prod ever split into separate Firebase
+ *  projects. Only reached in signed mode (getBlob never calls the resolver). */
+let warnedNoBase = false
+function signedBaseOrNull(): string | null {
+  try {
+    return requireWorkerWriteBase()
+  } catch {
+    if (import.meta.env.DEV && !warnedNoBase) {
+      warnedNoBase = true
+      console.warn('[attachmentUrlResolver] signed mode needs VITE_WORKER_BASE_URL; not falling back to prod. Set it, or use getBlob mode.')
+    }
+    return null
+  }
 }
 
 /** Re-mint this many ms BEFORE the absolute expiry so an in-use URL is
@@ -147,6 +173,9 @@ async function flushThumbs(): Promise<void> {
   }
   if (byTrip.size === 0) return
 
+  const base = signedBaseOrNull()
+  if (!base) { for (const path of batch.keys()) settle(path, null); return }
+
   let token: string
   try {
     token = await preflightIdToken()
@@ -160,7 +189,7 @@ async function flushThumbs(): Promise<void> {
       const chunk = paths.slice(i, i + THUMB_BATCH_MAX)
       let urls: Array<{ path: string; url: string; expiresAt: string }> = []
       try {
-        const res = await workerFetch(WORKER_BASE_URL, token, '/attachment-thumb-urls', { tripId, paths: chunk })
+        const res = await workerFetch(base, token, '/attachment-thumb-urls', { tripId, paths: chunk })
         urls = (res as { urls?: typeof urls }).urls ?? []
       } catch {
         // leave urls empty → every path in the chunk resolves null below
@@ -180,6 +209,8 @@ async function flushThumbs(): Promise<void> {
 async function fetchEntityUrl(path: string): Promise<SignedUrl | null> {
   const ref = parseEntityRef(path)
   if (!ref) return null
+  const base = signedBaseOrNull()
+  if (!base) return null
   const startEpoch = cacheEpoch
   let token: string
   try {
@@ -188,7 +219,7 @@ async function fetchEntityUrl(path: string): Promise<SignedUrl | null> {
     return null
   }
   try {
-    const res = await workerFetch(WORKER_BASE_URL, token, '/attachment-url', {
+    const res = await workerFetch(base, token, '/attachment-url', {
       tripId: ref.tripId, entityType: ref.entityType, entityId: ref.entityId, variant: ref.variant,
     }) as { url?: string; expiresAt?: string }
     if (cacheEpoch !== startEpoch || !res.url || !res.expiresAt) return null

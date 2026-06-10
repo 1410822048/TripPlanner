@@ -5,15 +5,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 interface WFBody { tripId?: string; paths?: string[]; entityType?: string; entityId?: string; variant?: string }
 
-const { workerFetchMock, preflightMock } = vi.hoisted(() => ({
+const { workerFetchMock, preflightMock, requireBaseMock } = vi.hoisted(() => ({
   workerFetchMock: vi.fn<(base: string, tok: string, endpoint: string, body: WFBody) => Promise<unknown>>(),
   preflightMock:   vi.fn<() => Promise<string>>(),
+  requireBaseMock: vi.fn<() => string>(),
 }))
 
 vi.mock('./workerBase', () => ({
-  WORKER_BASE_URL:  'http://worker',
-  preflightIdToken: preflightMock,
-  workerFetch:      workerFetchMock,
+  requireWorkerWriteBase: requireBaseMock,
+  preflightIdToken:       preflightMock,
+  workerFetch:            workerFetchMock,
 }))
 
 import {
@@ -42,15 +43,30 @@ beforeEach(() => {
   defaultWorkerFetch()
   preflightMock.mockReset()
   preflightMock.mockResolvedValue('tok')
+  requireBaseMock.mockReset()
+  requireBaseMock.mockReturnValue('http://worker')
 })
 
 describe('attachmentUrlMode', () => {
-  it('defaults to getBlob; signed only when explicitly set', () => {
-    expect(attachmentUrlMode()).toBe('getBlob')
+  it('defaults getBlob; global applies to both kinds; per-kind overrides global', () => {
+    expect(attachmentUrlMode('thumb')).toBe('getBlob')
+    expect(attachmentUrlMode('full')).toBe('getBlob')
+
+    // global signed → both kinds signed
     vi.stubEnv('VITE_ATTACHMENT_URL_MODE', 'signed')
-    expect(attachmentUrlMode()).toBe('signed')
-    vi.stubEnv('VITE_ATTACHMENT_URL_MODE', 'getBlob')
-    expect(attachmentUrlMode()).toBe('getBlob')
+    expect(attachmentUrlMode('thumb')).toBe('signed')
+    expect(attachmentUrlMode('full')).toBe('signed')
+
+    // per-kind overrides global: dial thumb back to getBlob, keep full signed
+    vi.stubEnv('VITE_ATTACHMENT_THUMB_URL_MODE', 'getBlob')
+    expect(attachmentUrlMode('thumb')).toBe('getBlob')
+    expect(attachmentUrlMode('full')).toBe('signed')
+    vi.unstubAllEnvs()
+
+    // per-kind can opt IN without the global (full-first rollout)
+    vi.stubEnv('VITE_ATTACHMENT_FULL_URL_MODE', 'signed')
+    expect(attachmentUrlMode('full')).toBe('signed')
+    expect(attachmentUrlMode('thumb')).toBe('getBlob')
     vi.unstubAllEnvs()
   })
 })
@@ -150,6 +166,18 @@ describe('resolveSignedUrl — failure + freshness + clear', () => {
   it('preflight token failure → null, no Worker call', async () => {
     preflightMock.mockRejectedValue(new Error('not signed in'))
     expect(await resolveSignedUrl(p, 'thumb')).toBeNull()
+    expect(workerFetchMock).not.toHaveBeenCalled()
+  })
+
+  it('signed base missing (requireWorkerWriteBase throws) → thumb null, no prod fallback', async () => {
+    requireBaseMock.mockImplementation(() => { throw new Error('VITE_WORKER_BASE_URL not set') })
+    expect(await resolveSignedUrl(p, 'thumb')).toBeNull()
+    expect(workerFetchMock).not.toHaveBeenCalled()   // fail-closed, not silently-prod
+  })
+
+  it('signed base missing → entity (full) null, no prod fallback', async () => {
+    requireBaseMock.mockImplementation(() => { throw new Error('VITE_WORKER_BASE_URL not set') })
+    expect(await resolveSignedUrl('trips/T/expenses/e1/r.webp', 'full')).toBeNull()
     expect(workerFetchMock).not.toHaveBeenCalled()
   })
 
