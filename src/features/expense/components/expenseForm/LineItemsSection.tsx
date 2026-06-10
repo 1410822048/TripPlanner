@@ -1,50 +1,34 @@
 // src/features/expense/components/expenseForm/LineItemsSection.tsx
 // Pure presentational section for the by-item「明細」 domain — receipt item
 // rows, adjustment rows (割引/税/調整), the add-row/add-adjustment buttons,
-// the foreign per-line ≈ preview, and the sum-check banner. Rendered instead
-// of SplitsSection when items.length > 0.
+// and the sum-check banner. Rendered instead of SplitsSection when
+// items.length > 0.
 //
 // Items + adjustments are deliberately ONE section, not two: they share the
 // item list (ITEM-scope adjustments target a row), the foreign preview map,
-// and the sum check. Splitting them would force the adjustment half to take
-// the item list + preview + diff as props anyway, scattering them worse.
+// and the sum check. Splitting them into two sibling sections would force the
+// adjustment half to take the item list + preview + diff as props anyway,
+// scattering them worse. The per-row render bodies ARE split out though —
+// ExpenseItemRow / ExpenseAdjustmentRow — purely to shorten this file; they
+// stay dumb (props in, UI + index/id callbacks out) and own no state.
 //
 // Split out of ExpenseFormModal (item 4). All state / hooks / derived math
 // stay in the modal; this component only renders + calls back. It does NOT
 // import useExpenseItems / useExpenseMoneyDraft — the modal hands in the
 // already-derived values and the individual handlers.
-import { Plus, Trash2 } from 'lucide-react'
-import {
-  EXPENSE_ADJUSTMENT_KINDS,
-  type ExpenseAdjustment,
-  type ExpenseAdjustmentKind,
-  type ExpenseAdjustmentScope,
+import { Plus } from 'lucide-react'
+import type {
+  ExpenseAdjustment,
+  ExpenseAdjustmentKind,
+  ExpenseAdjustmentScope,
 } from '@/types'
-import { adjustmentSign } from '@tripmate/expense-materialize'
 import FormField from '@/components/ui/FormField'
-import CurrencyInput from '@/components/ui/CurrencyInput'
-import MemberChip from '@/components/ui/MemberChip'
-import MemberAvatar from '@/components/ui/MemberAvatar'
-import { compactInputClass } from '@/components/ui/inputStyle'
 import { formatMinorAmount } from '@/utils/money'
 import type { TripMember } from '@/features/trips/types'
 import type { FormItem } from '../../hooks/useExpenseItems'
 import type { ForeignLinePreview } from '../../services/buildForeignLinePreview'
-
-const ADJUSTMENT_KIND_LABEL: Record<ExpenseAdjustmentKind, string> = {
-  DISCOUNT:   '割引',
-  COUPON:     'クーポン',
-  TAX_EXEMPT: '免税',
-  SURCHARGE:  '追加料金',
-  TAX:        '税',
-  TIP:        'チップ',
-  OTHER:      'その他',
-}
-
-const ADJUSTMENT_SCOPE_OPTIONS: { value: ExpenseAdjustmentScope; label: string }[] = [
-  { value: 'EXPENSE', label: '全体' },
-  { value: 'ITEM',    label: '項目' },
-]
+import ExpenseItemRow from './ExpenseItemRow'
+import ExpenseAdjustmentRow from './ExpenseAdjustmentRow'
 
 interface LineItemsSectionProps {
   error:               string | undefined
@@ -96,68 +80,21 @@ export default function LineItemsSection({
             as a unified list — closer to Splitwise / native iOS
             table patterns than the previous "stack of cards". */}
         <div className="rounded-input border border-border bg-surface overflow-hidden divide-y divide-border">
-          {items.map((it, i) => {
-            const convertedItemAmount = foreignLinePreview?.itemAmountById.get(it.id)
-            return (
-            <div key={it.id} className="flex flex-col gap-1.5 px-2.5 py-2.5">
-              {/* Row 1: name + amount. Amount widened to 120px (was 100px)
-                  so 5-digit JPY values like ¥10,000 fit without clipping.
-                  Removed delete button from this row — it was crowding
-                  both inputs. Delete moved to row 2's trailing edge. */}
-              <div className="grid grid-cols-[minmax(0,1fr)_minmax(112px,38%)] items-start gap-2">
-                {/* Font-size MUST be 16px or larger — iOS Safari auto-zooms
-                    the viewport on focus of any input below 16px. Keep
-                    compact rows descender-safe with explicit leading/padding. */}
-                <input
-                  value={it.name}
-                  onChange={e => onSetItemName(i, e.target.value)}
-                  placeholder="項目名"
-                  className={compactInputClass(false)}
-                />
-                <div className="min-w-0">
-                  <CurrencyInput
-                    symbol={symbol}
-                    size="compact"
-                    alignRight
-                    shellClassName="min-h-10 px-2.5 py-1.5 rounded-[8px]"
-                    value={it.amountText}
-                    onChange={e => onSetItemAmount(i, e.target.value)}
-                    placeholder="0"
-                  />
-                  {convertedItemAmount !== undefined && (
-                    <div className="mt-1 text-right text-[10.5px] font-semibold text-muted tabular-nums">
-                      ≈ {formatMinorAmount(convertedItemAmount, tripCurrency)}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Row 2: assignee chips + delete trailing.
-                  Splitwise-style "primary action area / cleanup tail". */}
-              <div className="flex items-center gap-1.5">
-                <div className="flex gap-1 flex-wrap flex-1 min-w-0">
-                  {members.map(m => (
-                    <MemberChip
-                      key={m.id}
-                      member={m}
-                      active={it.assignees.includes(m.id)}
-                      onClick={() => onToggleItemAssignee(i, m.id)}
-                      size="sm"
-                    />
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => onRemoveItem(i)}
-                  aria-label={`行 ${i + 1} を削除`}
-                  className="w-7 h-7 rounded-full flex items-center justify-center bg-transparent text-muted border-none cursor-pointer hover:text-warn transition-colors shrink-0"
-                >
-                  <Trash2 size={13} strokeWidth={2} />
-                </button>
-              </div>
-            </div>
-            )
-          })}
+          {items.map((it, i) => (
+            <ExpenseItemRow
+              key={it.id}
+              index={i}
+              item={it}
+              members={members}
+              symbol={symbol}
+              tripCurrency={tripCurrency}
+              convertedItemAmount={foreignLinePreview?.itemAmountById.get(it.id)}
+              onSetName={onSetItemName}
+              onSetAmount={onSetItemAmount}
+              onToggleAssignee={onToggleItemAssignee}
+              onRemove={onRemoveItem}
+            />
+          ))}
         </div>
 
         {adjustments.length > 0 && (
@@ -165,118 +102,25 @@ export default function LineItemsSection({
             <div className="px-2.5 py-2 text-[11px] font-semibold text-muted">
               割引・税・調整
             </div>
-            {adjustments.map((adj, i) => {
-              const sign = adjustmentSign(adj.kind)
-              const convertedAdjustmentAmount = foreignLinePreview?.adjustmentAmountById.get(adj.id)
-              // UX B — who this adjustment hits: 全体 for EXPENSE scope,
-              // the target item + its assignees for ITEM scope. Makes
-              // 「クーポン −¥30」legible (扣哪個項目 / 影響誰).
-              const targetItem = adj.scope === 'ITEM'
-                ? items.find(it => it.id === adj.targetItemId)
-                : undefined
-              const targetAssignees = targetItem
-                ? members.filter(m => targetItem.assignees.includes(m.id))
-                : []
-              return (
-                <div key={adj.id} className="flex flex-col gap-2 px-2.5 py-2.5">
-                  <div className="grid grid-cols-[minmax(0,1fr)_minmax(112px,38%)] items-start gap-2">
-                    <input
-                      value={adj.label}
-                      onChange={e => onSetAdjustmentLabel(adj.id, e.target.value)}
-                      placeholder={`調整 ${i + 1}`}
-                      aria-label={`調整 ${i + 1} ラベル`}
-                      className={compactInputClass(false)}
-                    />
-                    <div className="min-w-0">
-                      <CurrencyInput
-                        symbol={`${sign < 0 ? '-' : '+'}${symbol}`}
-                        size="compact"
-                        alignRight
-                        shellClassName="min-h-10 px-2.5 py-1.5 rounded-[8px]"
-                        value={adjustmentAmountValue(adj)}
-                        onChange={e => onSetAdjustmentAmount(adj.id, e.target.value)}
-                        placeholder="0"
-                        aria-label={`調整 ${i + 1} 金額`}
-                      />
-                      {convertedAdjustmentAmount !== undefined && (
-                        <div className="mt-1 text-right text-[10.5px] font-semibold text-muted tabular-nums">
-                          ≈ {sign < 0 ? '-' : '+'}{formatMinorAmount(convertedAdjustmentAmount, tripCurrency)}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2 items-center">
-                    <select
-                      value={adj.kind}
-                      onChange={e => onSetAdjustmentKind(adj.id, e.target.value as ExpenseAdjustmentKind)}
-                      aria-label={`調整 ${i + 1} 種類`}
-                      className={compactInputClass(false)}
-                    >
-                      {EXPENSE_ADJUSTMENT_KINDS.map(kind => (
-                        <option key={kind} value={kind}>{ADJUSTMENT_KIND_LABEL[kind]}</option>
-                      ))}
-                    </select>
-
-                    <select
-                      value={adj.scope}
-                      onChange={e => onSetAdjustmentScope(adj.id, e.target.value as ExpenseAdjustmentScope, items.map(it => it.id))}
-                      aria-label={`調整 ${i + 1} 対象範囲`}
-                      className={compactInputClass(false)}
-                    >
-                      {ADJUSTMENT_SCOPE_OPTIONS.map(scope => (
-                        <option key={scope.value} value={scope.value}>{scope.label}</option>
-                      ))}
-                    </select>
-
-                    <button
-                      type="button"
-                      onClick={() => onRemoveAdjustment(adj.id)}
-                      aria-label={`調整 ${i + 1} を削除`}
-                      className="w-7 h-7 rounded-full flex items-center justify-center bg-transparent text-muted border-none cursor-pointer hover:text-warn transition-colors shrink-0"
-                    >
-                      <Trash2 size={13} strokeWidth={2} />
-                    </button>
-                  </div>
-
-                  {adj.scope === 'ITEM' && (
-                    <select
-                      value={adj.targetItemId ?? ''}
-                      onChange={e => onSetAdjustmentTarget(adj.id, e.target.value)}
-                      aria-label={`調整 ${i + 1} 対象項目`}
-                      className={compactInputClass(false)}
-                    >
-                      <option value="" disabled>対象項目を選択</option>
-                      {items.map((item, itemIndex) => (
-                        <option key={item.id} value={item.id}>
-                          {item.name.trim() || `行 ${itemIndex + 1}`}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-
-                  {/* UX B — 「誰に効くか」 summary. EXPENSE = 全体; ITEM =
-                      target item name + its assignee avatars. */}
-                  {adj.scope === 'EXPENSE' ? (
-                    <div className="text-[10.5px] text-muted">対象: 全体</div>
-                  ) : targetItem ? (
-                    <div className="flex items-center gap-1.5 text-[10.5px] text-muted min-w-0">
-                      <span className="shrink-0">対象:</span>
-                      <span className="truncate font-medium text-ink">
-                        {targetItem.name.trim() || '項目'}
-                      </span>
-                      {targetAssignees.length > 0 && (
-                        <span className="flex items-center gap-0.5 shrink-0">
-                          {targetAssignees.map(m => (
-                            <MemberAvatar key={m.id} member={m} size={16} />
-                          ))}
-                        </span>
-                      )}
-                    </div>
-                  ) : null}
-                </div>
-              )
-            })}
+            {adjustments.map((adj, i) => (
+              <ExpenseAdjustmentRow
+                key={adj.id}
+                index={i}
+                adjustment={adj}
+                items={items}
+                members={members}
+                symbol={symbol}
+                tripCurrency={tripCurrency}
+                amountValue={adjustmentAmountValue(adj)}
+                convertedAdjustmentAmount={foreignLinePreview?.adjustmentAmountById.get(adj.id)}
+                onSetLabel={onSetAdjustmentLabel}
+                onSetAmount={onSetAdjustmentAmount}
+                onSetKind={onSetAdjustmentKind}
+                onSetScope={onSetAdjustmentScope}
+                onSetTarget={onSetAdjustmentTarget}
+                onRemove={onRemoveAdjustment}
+              />
+            ))}
           </div>
         )}
 
@@ -304,7 +148,9 @@ export default function LineItemsSection({
         </div>
 
         {/* Sum check — compares the post-adjustment effective total
-            to the bill total. Same green/red pattern as カスタム split. */}
+            to the bill total. Same green/red pattern as カスタム split.
+            Small + reads better in place, so it stays inline (not a
+            separate row component). */}
         {amountMinor > 0 && (
           <div
             className={[
