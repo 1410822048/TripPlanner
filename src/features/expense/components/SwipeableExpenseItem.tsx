@@ -10,6 +10,7 @@
 import { Loader2, Lock } from 'lucide-react'
 import type { Expense } from '@/types'
 import type { TripMember } from '@/features/trips/types'
+import MemberAvatar from '@/components/ui/MemberAvatar'
 import SwipeableShell from '@/components/ui/SwipeableShell'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { formatMinorAmount } from '@/utils/money'
@@ -97,12 +98,7 @@ function SwipeableExpenseItem({
               <>
                 {payer && (
                   <>
-                    <span
-                      className="inline-flex items-center justify-center w-[14px] h-[14px] rounded-full text-[8px] font-bold shrink-0"
-                      style={{ background: payer.bg, color: payer.color }}
-                    >
-                      {payer.label}
-                    </span>
+                    <MemberAvatar member={payer} size={14} />
                     <span>立替</span>
                     <span className="text-border">·</span>
                   </>
