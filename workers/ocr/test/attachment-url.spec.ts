@@ -1,12 +1,15 @@
-// Tests for the attachment signed-URL endpoints (attachment-url.ts).
+// Tests for the attachment signed-URL endpoint (attachment-url.ts).
 //
 // The whole point of routing through the Worker is the authz surface
-// (trip-member gate, thumb path scoping, entity-ref BOLA path derivation),
-// so it's exercised exhaustively here. External deps (admin token, Firestore
-// reads, the V4 signer) are mocked; the REAL readNestedString /
-// readTimestampMs / CascadeError / withTokenRetry run against the fixtures.
-// signV4Url is mocked to a deterministic stub so we assert WHICH object path
-// + TTL the handler chose, without doing real crypto (that's gcs-sign.spec).
+// (trip-member gate, entity-ref BOLA path derivation), so it's exercised
+// exhaustively here. External deps (admin token, Firestore reads, the V4
+// signer) are mocked; the REAL readNestedString / readTimestampMs /
+// CascadeError / withTokenRetry run against the fixtures. signV4Url is mocked
+// to a deterministic stub so we assert WHICH object path + TTL the handler
+// chose, without doing real crypto (that's gcs-sign.spec).
+//
+// Signed reads are full/pdf only — thumb signing was removed (thumbnails stay
+// on getBlob; see docs/design/attachment-signed-url-v2.md §7).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const { docFields, signCalls } = vi.hoisted(() => ({
@@ -36,12 +39,7 @@ vi.mock('../src/gcs-sign', () => ({
   }),
 }))
 
-import {
-  signThumbUrls,
-  signEntityUrl,
-  AttachmentThumbUrlsRequestSchema,
-  AttachmentUrlRequestSchema,
-} from '../src/attachment-url'
+import { signEntityUrl, AttachmentUrlRequestSchema } from '../src/attachment-url'
 import { CascadeError } from '../src/cascade'
 
 const TRIP   = 'trip-1'
@@ -65,92 +63,6 @@ function mapVal(fields: Record<string, unknown>) { return { mapValue: { fields }
 beforeEach(() => {
   docFields.clear()
   signCalls.length = 0
-})
-
-// ─── Thumb batch ───────────────────────────────────────────────────
-
-describe('signThumbUrls — happy path', () => {
-  function thumbPath(id: string) { return `trips/${TRIP}/expenses/${id}/x.thumb.webp` }
-
-  it('member (even viewer) + valid thumb paths → one signed url each, 30min TTL', async () => {
-    seedTrip(); seedMember(CALLER, 'viewer')
-    const paths = [thumbPath('a'), thumbPath('b')]
-    const out = await signThumbUrls(CALLER, { tripId: TRIP, paths }, SA, BUCKET)
-    expect(out.urls.map(u => u.path)).toEqual(paths)
-    expect(out.urls[0].url).toBe(`signed:${paths[0]}`)
-    expect(signCalls).toHaveLength(2)
-    expect(signCalls.every(c => c.expiresSeconds === 30 * 60)).toBe(true)
-    expect(signCalls.every(c => c.bucket === BUCKET)).toBe(true)
-  })
-
-  it('dedupes repeated paths server-side', async () => {
-    seedTrip(); seedMember(CALLER)
-    const p = thumbPath('a')
-    const out = await signThumbUrls(CALLER, { tripId: TRIP, paths: [p, p, thumbPath('b')] }, SA, BUCKET)
-    expect(out.urls).toHaveLength(2)
-    expect(signCalls).toHaveLength(2)
-  })
-
-  it('accepts booking + wish thumb paths under the same trip', async () => {
-    seedTrip(); seedMember(CALLER)
-    const paths = [`trips/${TRIP}/bookings/b1/x.thumb.jpg`, `trips/${TRIP}/wishes/w1/x.thumb.webp`]
-    const out = await signThumbUrls(CALLER, { tripId: TRIP, paths }, SA, BUCKET)
-    expect(out.urls).toHaveLength(2)
-  })
-})
-
-describe('signThumbUrls — authorization + path validation', () => {
-  const ok = `trips/${TRIP}/expenses/a/x.thumb.webp`
-
-  it('non-member → 403 (no signing)', async () => {
-    seedTrip() // no member doc
-    await expect(signThumbUrls(CALLER, { tripId: TRIP, paths: [ok] }, SA, BUCKET))
-      .rejects.toMatchObject({ status: 403 })
-    expect(signCalls).toHaveLength(0)
-  })
-
-  it('trip not found → 404 / deleting → 410', async () => {
-    await expect(signThumbUrls(CALLER, { tripId: TRIP, paths: [ok] }, SA, BUCKET))
-      .rejects.toMatchObject({ status: 404 })
-    seedTrip({ deletingAt: true }); seedMember(CALLER)
-    await expect(signThumbUrls(CALLER, { tripId: TRIP, paths: [ok] }, SA, BUCKET))
-      .rejects.toMatchObject({ status: 410 })
-  })
-
-  it('cross-trip path → 400', async () => {
-    seedTrip(); seedMember(CALLER)
-    await expect(signThumbUrls(CALLER, { tripId: TRIP, paths: [`trips/other/expenses/a/x.thumb.webp`] }, SA, BUCKET))
-      .rejects.toMatchObject({ status: 400 })
-    expect(signCalls).toHaveLength(0)
-  })
-
-  it('non-thumb path (no .thumb. infix) → 400', async () => {
-    seedTrip(); seedMember(CALLER)
-    await expect(signThumbUrls(CALLER, { tripId: TRIP, paths: [`trips/${TRIP}/expenses/a/x.webp`] }, SA, BUCKET))
-      .rejects.toMatchObject({ status: 400 })
-  })
-
-  it('path traversal / encoded slash / control chars → 400', async () => {
-    seedTrip(); seedMember(CALLER)
-    for (const bad of [
-      `trips/${TRIP}/../other/x.thumb.webp`,   // ..
-      `trips/${TRIP}//x.thumb.webp`,           // //
-      `trips/${TRIP}/a/x.thumb.webp?foo=1`,    // query
-      `trips/${TRIP}/a/x%2Ethumb.webp`,        // % (encoded)
-    ]) {
-      await expect(signThumbUrls(CALLER, { tripId: TRIP, paths: [bad] }, SA, BUCKET))
-        .rejects.toMatchObject({ status: 400 })
-    }
-    expect(signCalls).toHaveLength(0)
-  })
-
-  it('one bad path rejects the whole batch (no partial signing)', async () => {
-    seedTrip(); seedMember(CALLER)
-    await expect(signThumbUrls(CALLER, {
-      tripId: TRIP, paths: [ok, `trips/${TRIP}/expenses/a/full.webp`],
-    }, SA, BUCKET)).rejects.toMatchObject({ status: 400 })
-    expect(signCalls).toHaveLength(0)
-  })
 })
 
 // ─── Entity-ref full/pdf ───────────────────────────────────────────
@@ -287,15 +199,7 @@ describe('signEntityUrl — authorization + integrity', () => {
 
 // ─── Schema strictness ─────────────────────────────────────────────
 
-describe('request schemas — strict', () => {
-  it('thumb schema: rejects smuggled keys, empty + >20 paths', () => {
-    const ok = AttachmentThumbUrlsRequestSchema.safeParse({ tripId: TRIP, paths: ['p'] })
-    expect(ok.success).toBe(true)
-    expect(AttachmentThumbUrlsRequestSchema.safeParse({ tripId: TRIP, paths: ['p'], entityId: 'x' }).success).toBe(false)
-    expect(AttachmentThumbUrlsRequestSchema.safeParse({ tripId: TRIP, paths: [] }).success).toBe(false)
-    expect(AttachmentThumbUrlsRequestSchema.safeParse({ tripId: TRIP, paths: Array(21).fill('p') }).success).toBe(false)
-  })
-
+describe('request schema — strict', () => {
   it('entity schema: rejects a smuggled path / url and bad variant', () => {
     const ok = AttachmentUrlRequestSchema.safeParse({ tripId: TRIP, entityType: 'expense', entityId: 'e1', variant: 'full' })
     expect(ok.success).toBe(true)

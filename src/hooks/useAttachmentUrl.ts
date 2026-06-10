@@ -155,12 +155,12 @@ export function useAttachmentUrl(
   const [state, setState] = useState<{ path: string | null; kind: 'thumb' | 'full'; url: string | null; epoch: number }>(
     () => {
       // Seed a synchronous cache hit so a re-mount of an already-resolved
-      // attachment shows the URL without a null flash. signed mode peeks the
-      // signed-URL cache (thumb OR full); getBlob mode peeks the thumb LRU.
+      // attachment shows the URL without a null flash. signed mode (full/PDF
+      // only) peeks the signed-URL cache; getBlob mode peeks the thumb LRU.
       let seed: string | null = null
       if (key) {
         seed = attachmentUrlMode(kind) === 'signed'
-          ? peekSignedUrl(key, kind)?.url ?? null
+          ? peekSignedUrl(key)?.url ?? null
           : kind === 'thumb' ? thumbUrls.get(key) ?? null : null
       }
       return { path: key, kind, url: seed, epoch: cacheEpoch }
@@ -188,22 +188,19 @@ export function useAttachmentUrl(
       setState({ path: key, kind, url, epoch })
     }
 
-    // ── signed mode: Worker-minted GCS URL (no objectURL lifecycle) ──
-    // resolveSignedUrl caches + de-dups + batches thumbs; we just set the URL.
-    // Only FULL/PDF auto-refresh: a long-open preview (PDF iframe range
-    // requests, full image) must not 403 mid-view, so we re-mint just before
-    // expiry. THUMBNAILS deliberately do NOT auto-refresh — once the <img> has
-    // loaded it stays rendered regardless of URL expiry, so a background timer
-    // would only burn Worker/GCS calls, re-fetch every visible thumb in a long
-    // list, and keep bearer URLs alive. Re-mount / cache-miss re-mints on demand.
+    // ── signed mode (FULL/PDF only): Worker-minted GCS URL ──
+    // Thumbnails never reach here — attachmentUrlMode pins them to getBlob
+    // (signed thumb was removed; see design §7). resolveSignedUrl caches +
+    // de-dups; we set the URL and re-mint just before expiry so a long-open
+    // preview (PDF iframe range requests, full image) never 403s mid-view.
     if (attachmentUrlMode(kind) === 'signed') {
       let active = true
       let timer: ReturnType<typeof setTimeout> | undefined
       const load = () => {
-        void resolveSignedUrl(key, kind).then(entry => {
+        void resolveSignedUrl(key).then(entry => {
           if (!active) return
           settle(entry?.url ?? null)
-          if (entry && kind === 'full') {
+          if (entry) {
             const ms = Math.max(0, entry.expiresAtMs - Date.now() - REFRESH_SKEW_MS)
             timer = setTimeout(load, ms)
           }

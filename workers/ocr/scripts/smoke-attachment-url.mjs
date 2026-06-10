@@ -1,6 +1,6 @@
 // workers/ocr/scripts/smoke-attachment-url.mjs
 //
-// One-shot end-to-end smoke for the attachment signed-URL endpoints: confirm
+// One-shot end-to-end smoke for the attachment signed-URL endpoint: confirm
 // REAL GCS accepts our V4 signature (the Worker unit tests only prove the
 // sign→verify pipeline is self-consistent). Use it as the Phase 3 rollout gate
 // (re-run before flipping VITE_ATTACHMENT_URL_MODE=signed) and as a regression
@@ -19,7 +19,6 @@
 //
 // Then:
 //   TOKEN=<idToken> node scripts/smoke-attachment-url.mjs entity <tripId> <expenseId> [variant=full] [entityType=expense]
-//   TOKEN=<idToken> node scripts/smoke-attachment-url.mjs thumb  <tripId> <path> [path2 ...]
 //
 // Optional: WORKER_BASE (default http://localhost:8787).
 //   --allow-missing : treat a 404 NoSuchKey (stale path, signature still
@@ -40,7 +39,7 @@ const BASE  = process.env.WORKER_BASE ?? 'http://localhost:8787'
 const TOKEN = process.env.TOKEN
 
 // Strip flags before positional parsing so `--allow-missing` can't land in the
-// thumb path list. --allow-missing downgrades a 404 to a pass (signing-only
+// positional args. --allow-missing downgrades a 404 to a pass (signing-only
 // regression); the default rollout-gate behaviour exits non-zero on a 404.
 const rawArgs      = process.argv.slice(2)
 const allowMissing = rawArgs.includes('--allow-missing')
@@ -49,7 +48,7 @@ const [mode, tripId, ...rest] = rawArgs.filter(a => !a.startsWith('--'))
 function die(msg) { console.error(`✖ ${msg}`); process.exit(2) }
 
 if (!TOKEN)            die('set TOKEN=<firebase id token> (app DevTools: await firebase.auth().currentUser.getIdToken())')
-if (mode !== 'entity' && mode !== 'thumb') die('mode must be "entity" or "thumb"')
+if (mode !== 'entity') die('mode must be "entity"')
 if (!tripId)          die('missing <tripId>')
 
 /** Redact the X-Goog-Signature value so a bearer URL isn't dumped whole. */
@@ -98,23 +97,12 @@ async function fetchSigned(url) {
 
 const results = []
 
-if (mode === 'entity') {
-  const [entityId, variant = 'full', entityType = 'expense'] = rest
-  if (!entityId) die('entity mode: node ... entity <tripId> <entityId> [variant=full] [entityType=expense]')
-  console.log(`▶ entity ${entityType}/${entityId} variant=${variant} trip=${tripId}`)
-  const out = await callWorker('/attachment-url', { tripId, entityType, entityId, variant })
-  console.log(`  expiresAt=${out.expiresAt}`)
-  results.push(await fetchSigned(out.url))
-} else {
-  const paths = rest
-  if (paths.length === 0) die('thumb mode: node ... thumb <tripId> <path> [path2 ...]')
-  console.log(`▶ thumb trip=${tripId} paths=${paths.length}`)
-  const out = await callWorker('/attachment-thumb-urls', { tripId, paths })
-  for (const entry of out.urls) {
-    console.log(`  · ${entry.path}  expiresAt=${entry.expiresAt}`)
-    results.push(await fetchSigned(entry.url))
-  }
-}
+const [entityId, variant = 'full', entityType = 'expense'] = rest
+if (!entityId) die('entity mode: node ... entity <tripId> <entityId> [variant=full] [entityType=expense]')
+console.log(`▶ entity ${entityType}/${entityId} variant=${variant} trip=${tripId}`)
+const out = await callWorker('/attachment-url', { tripId, entityType, entityId, variant })
+console.log(`  expiresAt=${out.expiresAt}`)
+results.push(await fetchSigned(out.url))
 
 const sigFail = results.filter(r => r.kind === 'SIG_FAIL').length
 const other   = results.filter(r => r.kind === 'OTHER').length

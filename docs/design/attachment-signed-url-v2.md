@@ -1,6 +1,6 @@
 # Attachment Signed URL V2 — 設計書(修訂版）
 
-> 狀態:Phase 1(Worker signer)實作中,client 未啟用。
+> 狀態:**SHIPPED**(2026-06-10)。終態 = **full/PDF 走 signed、thumb 維持 getBlob**;mode flag 長存,可一鍵回退。
 > 前身:目前線上是 **path-only + `getBlob` + Storage Rules** 讀取(commit `2897a418` / `d24330f8`)。
 > 本文 supersede 對話中那份「V2 規劃書(4.7/5)」,差別在 **§2 fallback 策略**。
 
@@ -13,6 +13,8 @@
 - 瀏覽器原生快取 / range request(大圖、PDF 體驗)
 - 降低 client 記憶體壓力(不再每張圖都 `createObjectURL` 一份 blob)
 - 保留免費方案額度(Worker 只「簽 URL」不代理 bytes)
+
+> **實際落地(2026-06-10)**:只有 **full/PDF** 走 signed;**thumb 維持 getBlob**。上面「降低記憶體壓力」對縮圖收益其實邊際(thumb LRU 已 cap 200 + 圖小),而 signed 給縮圖加的 per-image Worker round-trip 量到單張 ~1.35s,不划算 → thumb 不走 signed。詳見 §7。
 
 **非目標**:
 
@@ -56,14 +58,9 @@ Worker 只簽 URL,不代理 bytes
 
 ## 3. 讀取策略
 
-### Thumb:batch path signer(client 直接給 path)
+### Thumb:~~batch path signer~~ → **getBlob(signed thumb 已移除)**
 
-用途:expense list / booking cards / wish cards / account lodging preview。
-
-- client 仍呼叫 `useAttachmentUrl(path, { kind: 'thumb' })`,底層改 resolver
-- resolver:memory cache hit → 直接回;pending hit → 共用 promise;miss → microtask queue 合批 → `POST /attachment-thumb-urls`
-- **安全論證**:thumb 端點吃 client 給的 path,但只簽 `trips/{tripId}/...` 底下的 `.thumb.*`,且 caller 必須是該 trip 成員 —— 這跟成員「本來就能 `getBlob` 同 trip 任何物件」(`allow read: if isMember`)等價,**沒有任何越權**。`.thumb.` 限制是 policy(逼 full/pdf 走 entity-ref 端點 + 較短 TTL),不是安全邊界。
-- TTL:**30 min**;client 在 `expiresAt - 60s` 重簽
+> **REMOVED 2026-06-10**:thumb 維持 `getBlob`,不走 signed。原本的 `POST /attachment-thumb-urls` batch signer + client microtask 合批佇列(`enqueueThumb` / `flushThumbs` / `thumbQueue`)**整套刪除**。原因:signed thumb 在 bytes 下載前插一段 Worker round-trip(verify + `requireTripMember` 2 個 Firestore 讀 + RSA 簽),getBlob 是 browser 直連 Storage、**零 Worker hop**,單張量到 ~1.35s。縮圖小、LRU 已 cap 記憶體,不值得。`useAttachmentUrl(path, { kind: 'thumb' })` 仍是同一個 hook,但 `attachmentUrlMode('thumb')` 硬回 `getBlob`(忽略 env)。詳見 §7。
 
 ### Full / PDF:entity-ref signer(client 給 entity 座標,不給 path)
 
@@ -82,27 +79,9 @@ Worker 只簽 URL,不代理 bytes
 
 ## 4. Worker endpoints
 
-### `POST /attachment-thumb-urls`(batch thumb)
+### ~~`POST /attachment-thumb-urls`(batch thumb)~~ — **REMOVED 2026-06-10**
 
-> 命名用 kebab,與 codebase 既有 `/expense-create` 等一致;不用 AIP 的 `:batch` colon 風格。
-
-Request:
-```ts
-{ tripId: string; paths: string[] }   // paths ≤ 20,server-side dedupe
-```
-Response:
-```ts
-{ urls: Array<{ path: string; url: string; expiresAt: string }> }
-```
-拒絕:
-```
-非 member               → 403
-paths 為空 / > 20       → 400
-path 不在 trips/{tripId}/ 底下 → 403
-path 非 .thumb.* 用途    → 400
-path 含 ../ // 控制字元等 → 400
-trip 不存在 / deleting   → 404 / 410
-```
+thumb 改回 getBlob,此端點與其 schema / 路徑驗證(`isValidThumbPath`)/ 測試**整套刪除**。`requireTripMember` 原本只有它在用,也一併移除(`signEntityUrl` 自己 inline 讀 trip+member+entity)。Worker 現在只有下面這一個 signed-URL 端點。
 
 ### `POST /attachment-url`(entity-ref full/pdf)
 
@@ -159,15 +138,14 @@ trip deleting                    → 410
 
 ## 6. Rate limit / quota
 
-新增 scope `attachment-url`,thumb 與 entity 共用:
+scope `attachment-url`(thumb 端點移除後只剩 entity full/pdf 端點用):
 
 ```
 L1 (per-PoP binding ATTACHMENT_URL_RATE_LIMITER): 120 / min / uid
 L2 (DO global,scope='attachment-url'):           300 / min / uid
-batch max:                                         20 paths / request
 ```
 
-理由:一個列表畫面約 1~3 次 batch(不是每張圖一次);full/pdf 點開才簽。實測 Worker CPU 簽 20 張太高再降到 10,很低再升。
+理由:full/pdf 點開才簽,低頻。(thumb batch 端點已移除,故無 batch max。)
 
 ---
 
@@ -180,26 +158,26 @@ Phase 2 ✅ client signedUrlResolver(memory cache / in-flight dedup / thumb micr
          mode flag VITE_ATTACHMENT_URL_MODE 預設 getBlob → prod 行為不變;沿用既有 hook,零 UI 遷移
 Phase 3 ✅ prod 切 signed(全域 VITE_ATTACHMENT_URL_MODE=signed,2026-06-09,gate 兩層綠)
 強化   ✅ per-kind flag(VITE_ATTACHMENT_{THUMB,FULL}_URL_MODE 覆寫全域)+ strict signed base
-建議分階段 dial(若要)：full/PDF first、thumb second —— thumb 是高流量那條
-終態:保留 getBlob 作 rollback,不刪;mode flag 長存
+dial   ✅ full/PDF first → thumb second(2026-06-10);但 thumb 切 signed 後單張量到 ~1.35s,同日 revert
+移除   ✅ signed thumb 整套刪除(2026-06-10):Worker /attachment-thumb-urls route + signThumbUrls + client thumb 佇列 + THUMB env flag 全拔;thumb 在 code 硬寫 getBlob
+終態   ✅ full/PDF signed、thumb getBlob(永久);getBlob 不刪、full/pdf mode flag 長存
 ```
 
-> **Per-kind flag(已實作)**:`attachmentUrlMode(kind)` 讀 `VITE_ATTACHMENT_THUMB_URL_MODE` / `VITE_ATTACHMENT_FULL_URL_MODE`,各自覆寫全域 `VITE_ATTACHMENT_URL_MODE`;非 `'signed'` 即 getBlob。現行 prod 只設了全域 signed → 兩 kind 都 signed(行為不變)。要 full-first:設 `VITE_ATTACHMENT_THUMB_URL_MODE=getBlob`(full 由全域維持 signed)→ 重 deploy;穩定後移除該覆寫讓 thumb 回 signed。**注意 thumb 是高流量路徑**,切 thumb 是上更大負載,不是更溫和的一步。
+> **thumb 已從 signed 移除(2026-06-10,終態)**:`attachmentUrlMode('thumb')` 在 code 硬回 `getBlob`(忽略 env);只有 full/pdf 讀 `VITE_ATTACHMENT_FULL_URL_MODE` 覆寫全域 `VITE_ATTACHMENT_URL_MODE`(`'signed'` 才 signed)。原本的 per-kind THUMB flag 已拿掉(留著只會是個性能誤用開關)。**為何 thumb 不走 signed**:signed thumb 在 bytes 下載前先插一段 Worker round-trip(verify + 2 個 Firestore 讀 + RSA 簽),getBlob 是 browser 直連 Storage、**零 Worker hop**;單張 thumb 量到 ~1.35s(冷 isolate + 跨區 Firestore 兩讀;admin token / JWKS 其實有 in-process cache,不是主因)。縮圖小、LRU 已 cap 記憶體,每張多一個 hop + 冷啟動稅不划算 → **signed 只對 full/PDF 合理**(刻意單開、bytes 大、PDF range,延遲被使用者等待吸收)。member cache(`uid:tripId` 60-120s)能砍暖狀態的 Firestore 兩讀,但救不了冷啟動、也拿不掉 hop → 不為撐 signed thumb 而做(直接移除)。
 >
 > **Strict signed base(已實作)**:signed mode 鑄造 bearer URL,比 OCR read 敏感,resolver signed 分支用 `requireWorkerWriteBase()`(嚴格讀 `VITE_WORKER_BASE_URL`,不 fallback prod)。沒設 → fail-closed(resolve 回 null → placeholder + DEV 警告一次),而非默默打 prod Worker。單一 Firebase 專案下當下風險低,屬 hardening + 防未來拆 staging/prod 專案。
 
 > **Phase 3 切旗前必做(rollout gate,兩層都要綠才設 prod `VITE_ATTACHMENT_URL_MODE=signed`)**:
-> 1. **Worker→GCS 簽名**(re-runnable,Phase 1 已綠):`node workers/ocr/scripts/smoke-attachment-url.mjs entity <trip> <exp>` 與 `... thumb <trip> <thumbPath>`,GCS 須回 200。切旗前重跑一次確認 token / SA / bucket 沒漂。
-> 2. **端到端 client render**(Phase 2 新增,單元測試蓋不到):用 `VITE_ATTACHMENT_URL_MODE=signed` build(staging 或本機 `npm run dev`),開 expense / booking / wish 列表 + 全圖 / PDF 預覽,確認 — Network 看到 `/attachment-thumb-urls`(同列合批一次)+ `/attachment-url` 回 200、GCS 圖片 200、縮圖與全圖實際渲染、sign-out 後舊 URL 不再出現。
+> 1. **Worker→GCS 簽名**(re-runnable):`node workers/ocr/scripts/smoke-attachment-url.mjs entity <trip> <exp>`,GCS 須回 200。切旗前重跑一次確認 token / SA / bucket 沒漂。(thumb smoke 已隨 thumb 端點移除。)
+> 2. **端到端 client render**(單元測試蓋不到):用 `VITE_ATTACHMENT_URL_MODE=signed` build(staging 或本機 `npm run dev`),開 expense / booking / wish 全圖 / PDF 預覽,確認 — Network 看到 `/attachment-url` 回 200、GCS 圖片 200、全圖實際渲染、sign-out 後舊 URL 不再出現。(縮圖走 getBlob,不打 Worker。)
 
 ---
 
 ## 8. 已知 tradeoff
 
 ```
-signed URL 在 TTL 內是 bearer URL(成員被移除後,舊 URL 最多 TTL 內仍可用:thumb 30m / full 10m / pdf 5m)
-Worker request 增加,但 batch + memory cache 壓低
-full/pdf 多一次 Firestore read
+signed URL 在 TTL 內是 bearer URL(成員被移除後,舊 URL 最多 TTL 內仍可用:full 10m / pdf 5m)
+full/pdf 點開才多一次 Worker round-trip + Firestore read(thumb 走 getBlob,零 Worker hop)
 系統複雜度高於 getBlob —— 所以才用 mode flag 守住「能一鍵回退」
 ```
 
@@ -216,14 +194,11 @@ auto region / path-style host / hex 簽章格式
 nowMs 注入 → X-Goog-Date / expiresAt deterministic
 ```
 
-Endpoints(`attachment-url.spec.ts`):
+Endpoints(`attachment-url.spec.ts`,entity full/pdf only — thumb 端點已移除):
 ```
-thumb: member + 合法 .thumb path → 200,回 N 個 url+expiresAt
-thumb: 非 member → 403 / cross-trip path → 403 / 非 thumb path → 400 / traversal → 400 / >20 → 400 / 重複 path → dedupe
-thumb: trip 不存在 → 404 / deleting → 410
 entity: expense full derive receipt.path → 200 / booking full derive attachment.filePath → 200 / wish full derive image.path → 200
 entity: 非 member → 403 / doc 不存在 → 404 / 缺 attachment → 404 / deletedAt expense → 404
 entity: derive path 跨 trip → 400 (BOLA) / variant 與 type 不符 → 415 / wish+pdf → 400
-schema strict:thumb 端點塞 entityId、entity 端點塞 path → 400
+schema strict:entity 端點塞 path / 壞 variant → 400
 回傳的 body 不被 log;handler 不 console.log url
 ```
