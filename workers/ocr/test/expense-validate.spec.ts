@@ -592,12 +592,11 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 // the built object through this schema as defense-in-depth.
 
 describe('makeReceiptSchema (Worker-built receipt validation)', () => {
-	const schema = makeReceiptSchema(TRIP_ID, EXPENSE_ID, BUCKET)
+	const schema = makeReceiptSchema(TRIP_ID, EXPENSE_ID)
 	const okPath = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/r.webp`
 
 	it('accepts a minimal valid receipt', () => {
 		const res = schema.safeParse({
-			url:  legitReceiptUrl(okPath),
 			path: okPath,
 			type: 'image/webp',
 		})
@@ -607,48 +606,25 @@ describe('makeReceiptSchema (Worker-built receipt validation)', () => {
 	it('rejects receipt.path that doesn\'t match trips/<tripId>/expenses/<expenseId>/...', () => {
 		const wrongPath = 'trips/OTHER-TRIP/expenses/exp123/r.webp'
 		const res = schema.safeParse({
-			url:  legitReceiptUrl(wrongPath),
 			path: wrongPath,
 			type: 'image/webp',
 		})
 		expect(res.success).toBe(false)
 	})
 
-	it('rejects receipt.url pointing at an off-Firebase origin (URL origin binding)', () => {
+	it('rejects receipt.thumbPath that doesn\'t match the expense prefix', () => {
 		const res = schema.safeParse({
-			url:  'https://evil.example.com/track.png',
-			path: okPath,
-			type: 'image/webp',
-		})
-		expect(res.success).toBe(false)
-	})
-
-	it('rejects receipt.url whose Storage path doesn\'t match receipt.path (binding mismatch)', () => {
-		const wrongPath = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/something-else.webp`
-		const res = schema.safeParse({
-			url:  legitReceiptUrl(wrongPath),
-			path: okPath,
-			type: 'image/webp',
-		})
-		expect(res.success).toBe(false)
-	})
-
-	it('rejects thumbUrl whose Storage path doesn\'t match thumbPath', () => {
-		const thumbPath = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/r.thumb.webp`
-		const res = schema.safeParse({
-			url:       legitReceiptUrl(okPath),
 			path:      okPath,
 			type:      'image/webp',
-			thumbUrl:  legitReceiptUrl(okPath),  // main path, not thumb path
-			thumbPath,
+			thumbPath: 'trips/OTHER-TRIP/expenses/exp123/r.thumb.webp',
 		})
 		expect(res.success).toBe(false)
 	})
 
-	it('accepts a path-only receipt (no url/thumbUrl — the Worker-written shape)', () => {
-		// Post path-only migration the Worker strips the download token and
-		// writes path + thumbPath only; url/thumbUrl are legacy-optional and
-		// absent on new receipts. This must validate.
+	it('accepts a path-only receipt (path + thumbPath, no bearer URL)', () => {
+		// path-only: the Worker writes path + thumbPath only; reads go
+		// through getBlob(path) gated by Storage Rules. No bearer URL is
+		// ever persisted.
 		const res = schema.safeParse({
 			path:      okPath,
 			type:      'image/webp',
@@ -657,20 +633,26 @@ describe('makeReceiptSchema (Worker-built receipt validation)', () => {
 		expect(res.success).toBe(true)
 	})
 
+	it('drops a stray legacy url/thumbUrl key (no bearer URL persisted)', () => {
+		// Regression guard: even if a url/thumbUrl sneaks into the built
+		// object, the path-only schema drops it so it can never land in
+		// Firestore.
+		const parsed = schema.parse({
+			url:      legitReceiptUrl(okPath),
+			path:     okPath,
+			type:     'image/webp',
+			thumbUrl: legitReceiptUrl(okPath),
+		})
+		expect(parsed).not.toHaveProperty('url')
+		expect(parsed).not.toHaveProperty('thumbUrl')
+	})
+
 	it('rejects type outside the RECEIPT_MIME allowlist', () => {
 		const res = schema.safeParse({
-			url:  legitReceiptUrl(okPath),
 			path: okPath,
 			type: 'application/zip' as unknown as 'image/webp',
 		})
 		expect(res.success).toBe(false)
-	})
-
-	it('accepts URL with arbitrary query string (token/alt=media) on top of correct base', () => {
-		const enc = okPath.replace(/\//g, '%2F')
-		const url = `https://firebasestorage.googleapis.com/v0/b/${BUCKET}/o/${enc}?alt=media&token=ffffffff-ffff-ffff-ffff-ffffffffffff&extra=ignored`
-		const res = schema.safeParse({ url, path: okPath, type: 'image/webp' })
-		expect(res.success).toBe(true)
 	})
 })
 

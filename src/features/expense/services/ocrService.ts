@@ -259,7 +259,7 @@ export async function ocrExistingExpenseReceipt(
     res = await fetch(`${base}/expense-receipt-ocr`, {
       method:  'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      // ONLY identifiers cross the wire — never receipt.path / receipt.url.
+      // ONLY identifiers cross the wire — never the receipt path.
       body:    JSON.stringify({ tripId, expenseId, ...(currencyHint ? { currencyHint } : {}) }),
       signal:  ocrFetchSignal(signal),
     })

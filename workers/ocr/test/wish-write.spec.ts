@@ -273,12 +273,10 @@ describe('wishFileCreate: happy paths', () => {
 
 		// Image field built server-side (path-only). No thumb intent → no
 		// thumbPath (we deliberately do NOT collapse to the full path; the
-		// card shows its placeholder). No url/thumbUrl -- token stripped.
+		// card shows its placeholder). No bearer download URL is persisted.
 		const image = wishWrite.fields.image?.mapValue?.fields
 		expect(image?.path?.stringValue).toBe(FULL_PATH)
-		expect(image?.url).toBeUndefined()
 		expect(image?.thumbPath).toBeUndefined()   // no collapse
-		expect(image?.thumbUrl).toBeUndefined()
 
 		// createdAt + updatedAt via transforms, NOT in fields map.
 		expect(wishWrite.fields.createdAt).toBeUndefined()
@@ -328,9 +326,7 @@ describe('wishFileCreate: happy paths', () => {
 		// Image: distinct full + thumb (no collapse). path-only.
 		const image = wishWrite.fields.image?.mapValue?.fields
 		expect(image?.path?.stringValue).toBe(FULL_PATH)
-		expect(image?.url).toBeUndefined()
 		expect(image?.thumbPath?.stringValue).toBe(THUMB_PATH)
-		expect(image?.thumbUrl).toBeUndefined()
 	})
 
 	it('viewer-role caller can create a wish (any-member proposer authz)', async () => {
@@ -464,7 +460,7 @@ describe('wishFileCreate: body validation', () => {
 				wish:      {
 					category: 'place',
 					title:    'x',
-					image:    { url: 'https://evil.example/x.png', path: 'x', thumbUrl: 'x', thumbPath: 'x' },
+					image:    { path: 'x', thumbPath: 'x' },
 				},
 				intentIds: [FULL_INTENT_ID],
 			},
@@ -549,9 +545,7 @@ function ownedWishReadDoc(proposedBy: string = CALLER_UID) {
 			image: {
 				mapValue: {
 					fields: {
-						url:       { stringValue: 'https://x/old' },
 						path:      { stringValue: FULL_PATH },
-						thumbUrl:  { stringValue: 'https://x/old' },
 						thumbPath: { stringValue: FULL_PATH },
 					},
 				},
@@ -628,9 +622,7 @@ describe('wishFileUpdate: happy paths', () => {
 		// New image bytes (not the old FULL_PATH from ownedWishReadDoc). path-only.
 		const image = patch.fields.image?.mapValue?.fields
 		expect(image?.path?.stringValue).toBe(NEW_FULL_PATH)
-		expect(image?.url).toBeUndefined()
 		expect(image?.thumbPath?.stringValue).toBe(NEW_THUMB_PATH)
-		expect(image?.thumbUrl).toBeUndefined()
 
 		// updatedAt via transforms, NOT in fields map; createdAt untouched.
 		expect(patch.fields.updatedAt).toBeUndefined()
@@ -698,8 +690,6 @@ describe('wishFileUpdate: happy paths', () => {
 		const image = writes[1].fields.image?.mapValue?.fields
 		expect(image?.path?.stringValue).toBe(NEW_FULL_PATH)
 		expect(image?.thumbPath).toBeUndefined()   // no collapse to full path
-		expect(image?.url).toBeUndefined()
-		expect(image?.thumbUrl).toBeUndefined()
 	})
 })
 
@@ -786,7 +776,7 @@ describe('wishFileUpdate: body validation', () => {
 			{
 				tripId:              TRIP_ID,
 				wishId:              WISH_ID,
-				patch:               { image: { url: 'https://evil/x', path: 'x', thumbUrl: 'x', thumbPath: 'x' } },
+				patch:               { image: { path: 'x', thumbPath: 'x' } },
 				intentIds:           [FULL_INTENT_ID],
 				expectedCurrentPath: FULL_PATH,
 			},

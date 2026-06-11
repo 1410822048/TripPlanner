@@ -1,8 +1,8 @@
 // workers/ocr/src/expense-receipt-ocr.ts
 // Worker-authoritative "re-OCR an EXISTING expense receipt" endpoint.
 //
-// Why a server route instead of the client re-downloading receipt.url and
-// re-POSTing to /ocr:
+// Why a server route instead of the client re-downloading the receipt
+// bytes and re-POSTing to /ocr:
 //   - The client never names the object. The Worker reads receipt.path from
 //     the Firestore expense doc, so a caller can't path-inject / read an
 //     arbitrary Storage object (BOLA defence).
@@ -32,10 +32,9 @@ const TripIdRe = /^[A-Za-z0-9_-]{1,60}$/
 const MAX_RECEIPT_BYTES = 5 * 1024 * 1024
 
 /** Strict request body. ONLY identifiers + a currency hint cross the wire —
- *  the client is NEVER allowed to supply receipt.path / receipt.url (the
- *  Worker reads those from the doc). `.strict()` rejects any extra key so a
- *  smuggled `path` / `url` / `receipt` is a 400, not a silently-ignored
- *  field. */
+ *  the client is NEVER allowed to supply the receipt path (the Worker reads
+ *  it from the doc — BOLA defence). `.strict()` rejects any extra key so a
+ *  smuggled `path` / `receipt` is a 400, not a silently-ignored field. */
 export const ExpenseReceiptOcrRequestSchema = z.object({
   tripId:       z.string().regex(TripIdRe),
   expenseId:    z.string().regex(TripIdRe),

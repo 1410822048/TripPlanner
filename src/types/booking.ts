@@ -12,21 +12,18 @@ import { TimestampSchema } from './_shared'
  * Mirrors the Wish entity's `image: WishImage` shape.
  */
 export interface BookingAttachment {
-  /** Legacy bearer download URL. path-only: Worker no longer writes it
-   *  (token stripped at consume); reads via getBlob(filePath) + Storage
-   *  Rules. Optional only for back-compat with any old doc. */
-  fileUrl?:   string
   /**
    * Storage object path (`trips/{tripId}/bookings/{bookingId}/file.webp`).
    * path-only: this IS the canonical reference — getBlob(filePath) reads
    * the bytes (Storage Rules), and deleteObject(filePath) removes them.
+   * No bearer download URL is ever persisted.
    */
   filePath:   string
   /** Mime type at upload time — drives icon vs <img> rendering in the UI. */
   fileType:   string
-  /** Smaller variant (192px @ q=0.7 WebP) used by the list row thumbnail.
-   *  Optional: PDFs (and other non-image attachments) have no thumbnail. */
-  thumbUrl?:  string
+  /** Smaller variant (192px @ q=0.7 WebP) path used by the list row
+   *  thumbnail. Optional: PDFs (and other non-image attachments) have no
+   *  thumbnail. */
   thumbPath?: string
 }
 
@@ -107,11 +104,9 @@ export const BOOKING_ATTACHMENT_MIME_TYPES = [
 ] as const
 
 export const BookingAttachmentSchema = z.object({
-  // path-only: fileUrl/thumbUrl legacy-optional (Worker stops writing them).
-  fileUrl:   z.string().url().max(2048).optional(),
+  // path-only: reads go through getBlob(filePath); no bearer URL persisted.
   filePath:  z.string().min(1).max(500),
   fileType:  z.enum(BOOKING_ATTACHMENT_MIME_TYPES),
-  thumbUrl:  z.string().url().max(2048).optional(),
   thumbPath: z.string().min(1).max(500).optional(),
 })
 

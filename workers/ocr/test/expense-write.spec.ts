@@ -743,14 +743,12 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 		expect(writes).toHaveLength(2)
 		expect(writes[0].document).toContain(`/trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`)
 		expect(writes[0].fields.status?.stringValue).toBe('used')
-		// Expense receipt field built from intent path + bucket-derived URL
+		// Expense receipt field built from intent path (path-only).
 		const receipt = writes[1].fields.receipt?.mapValue?.fields
 		expect(receipt?.path?.stringValue).toBe(FULL_PATH)
 		expect(receipt?.type?.stringValue).toBe('image/webp')
-		expect(receipt?.url).toBeUndefined()   // path-only: token stripped, no url
 		// No thumb fields (single full intent)
 		expect(receipt?.thumbPath).toBeUndefined()
-		expect(receipt?.thumbUrl).toBeUndefined()
 	})
 
 	it('full + thumb intents → both marked used + receipt has thumb fields', async () => {
@@ -781,8 +779,6 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 		const receipt = writes[2].fields.receipt?.mapValue?.fields
 		expect(receipt?.path?.stringValue).toBe(FULL_PATH)
 		expect(receipt?.thumbPath?.stringValue).toBe(THUMB_PATH)
-		expect(receipt?.url).toBeUndefined()       // path-only
-		expect(receipt?.thumbUrl).toBeUndefined()  // path-only
 	})
 
 	it('rejects client-supplied expense.receipt (legacy direct path closed)', async () => {

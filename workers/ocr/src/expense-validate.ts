@@ -61,37 +61,19 @@ const RECEIPT_MIME = [
   'application/pdf',
 ] as const
 
-/** Bucket-bound origin/path check. (Used to mirror a firestore.rules
- *  `validStorageUrlFor` helper that was removed in Phase 3.6 once all
- *  three media fields — expense.receipt, booking.attachment, wish.image
- *  — became Worker-authoritative.) The receipt URL MUST be a Firebase
- *  Storage
- *  download URL for the exact bucket + path in the same payload.
- *  Without this an attacker can submit a legit-looking path but an
- *  `evil.example.com/track.png` url; rules previously checked it,
- *  but the Worker bypasses rules so we have to port the invariant.
- *
- *  `path.replace(/\//g, '%2F')` matches `getDownloadURL` semantics:
- *  the entire path becomes the URL path segment with slashes percent-
- *  encoded. Our Storage paths only contain [A-Za-z0-9_./-], so no
- *  other chars need encoding for the equality check. Query string
- *  (`?alt=media&token=...`) is ignored -- it carries the per-blob
- *  download token and is irrelevant to origin binding. */
-function urlMatchesPath(url: string, path: string, bucket: string): boolean {
-  const prefix = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/`
-  const expectedBase = prefix + path.replace(/\//g, '%2F')
-  const actualBase = url.split('?')[0]
-  return actualBase === expectedBase
-}
-
 /**
  * Validates the Worker-built receipt object before it gets written to
  * the expense doc. After Phase 3.5 commit 4c the client can never
  * supply this shape directly -- it's always constructed server-side
  * from consumed upload intents (`buildReceiptFromIntents` in
  * expense-write.ts). Validation here is defense-in-depth: if an intent
- * ever produced a malformed URL / path mismatch, we want a clear error
- * at write time rather than a corrupt receipt landing in Firestore.
+ * ever produced a malformed path / mime, we want a clear error at write
+ * time rather than a corrupt receipt landing in Firestore.
+ *
+ * path-only: only Storage paths are persisted (no bearer download URL),
+ * so the regex pins receipt.path / receipt.thumbPath to the caller-
+ * claimed trips/<tripId>/expenses/<expenseId>/ prefix -- a payload can't
+ * reference another expense's blob.
  *
  * Exported so expense-write.ts can call it directly on the built
  * receipt -- previously this was reached indirectly via the inner
@@ -99,28 +81,15 @@ function urlMatchesPath(url: string, path: string, bucket: string): boolean {
  * removed in 4c so the body validation schemas only carry client-
  * supplied fields.
  */
-export function makeReceiptSchema(tripId: string, expenseId: string, bucket: string) {
+export function makeReceiptSchema(tripId: string, expenseId: string) {
   const pathRe = new RegExp(`^trips/${tripId}/expenses/${expenseId}/.+`)
   return z.object({
-    // path-only model: url/thumbUrl are legacy-optional (Worker no longer
-    // writes them; the download token is stripped at consume time). path /
-    // thumbPath stay required-shaped (thumbPath optional = no thumb variant).
-    url:       z.string().url().max(2048).optional(),
+    // path-only: only path / thumbPath are persisted (thumbPath optional =
+    // no thumb variant). Reads go through getBlob(path); no bearer URL.
     path:      z.string().min(1).max(500).regex(pathRe, 'receipt.path must match trips/<tripId>/expenses/<expenseId>/...'),
     type:      z.enum(RECEIPT_MIME),
-    thumbUrl:  z.string().url().max(2048).optional(),
     thumbPath: z.string().min(1).max(500).regex(pathRe, 'receipt.thumbPath must match trips/<tripId>/expenses/<expenseId>/...').optional(),
   })
-    // When a legacy url IS present it must still bind to the same
-    // bucket+path; absent (the path-only norm) → skipped.
-    .refine(
-      d => !d.url || urlMatchesPath(d.url, d.path, bucket),
-      { message: 'receipt.url must be the Firebase Storage download URL for receipt.path', path: ['url'] },
-    )
-    .refine(
-      d => !d.thumbUrl || !d.thumbPath || urlMatchesPath(d.thumbUrl, d.thumbPath, bucket),
-      { message: 'receipt.thumbUrl must be the Firebase Storage download URL for receipt.thumbPath', path: ['thumbUrl'] },
-    )
 }
 
 // Firebase uid is at most 128 chars. Capping every uid-shaped string

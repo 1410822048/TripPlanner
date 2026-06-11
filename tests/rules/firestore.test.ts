@@ -270,7 +270,6 @@ describe('/trips/{tripId}/bookings', () => {
   // These tests pin the gate so a future rule edit can't silently re-
   // open the raw-SDK direct-write path that would bypass those guards.
   const ATTACHMENT_VALUE = {
-    fileUrl:   'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fbookings%2Fb-att%2Ffile.webp?alt=media&token=abc',
     filePath:  'trips/trip-1/bookings/b-att/file.webp',
     fileType:  'image/webp',
   }
@@ -371,7 +370,6 @@ describe('/trips/{tripId}/bookings', () => {
           attachment: {
             ...ATTACHMENT_VALUE,
             filePath: 'trips/trip-1/bookings/b-with-att/different.webp',
-            fileUrl:  'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fbookings%2Fb-with-att%2Fdifferent.webp?alt=media&token=xyz',
           },
           updatedBy: EDITOR_UID,
           updatedAt: serverTimestamp(),
@@ -572,9 +570,7 @@ describe('/trips/{tripId}/wishes vote toggle', () => {
   // ─── wish.image is Worker-authoritative ──────────────────────────
   // Same Phase 3.6 commit 3 lock as booking.attachment above.
   const IMAGE_VALUE = {
-    url:       'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fwishes%2Fw-img%2Ffile.webp?alt=media&token=abc',
     path:      'trips/trip-1/wishes/w-img/file.webp',
-    thumbUrl:  'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fwishes%2Fw-img%2Fthumb.webp?alt=media&token=def',
     thumbPath: 'trips/trip-1/wishes/w-img/thumb.webp',
   }
 
@@ -667,9 +663,7 @@ describe('/trips/{tripId}/wishes vote toggle', () => {
           image: {
             ...IMAGE_VALUE,
             path:      'trips/trip-1/wishes/w-with-img/different.webp',
-            url:       'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fwishes%2Fw-with-img%2Fdifferent.webp?alt=media&token=xyz',
             thumbPath: 'trips/trip-1/wishes/w-with-img/different-thumb.webp',
-            thumbUrl:  'https://firebasestorage.googleapis.com/v0/b/tripplanner-80a4f.firebasestorage.app/o/trips%2Ftrip-1%2Fwishes%2Fw-with-img%2Fdifferent-thumb.webp?alt=media&token=xyz',
           },
           updatedBy: EDITOR_UID,
           updatedAt: serverTimestamp(),

@@ -14,19 +14,18 @@ import {
 import type { ConsumedIntent } from './upload-intent'
 
 /** Run the Worker-built receipt through `makeReceiptSchema` so the
- *  same URL/path-binding + mime invariants that used to gate the
- *  legacy direct-from-client path still apply to intent-derived
- *  receipts. Defense-in-depth: if Storage metadata ever returns an
- *  unexpected shape (token missing, mime drift, etc.) we want a clear
+ *  same path-binding + mime invariants that used to gate the legacy
+ *  direct-from-client path still apply to intent-derived receipts.
+ *  Defense-in-depth: if Storage metadata ever returns an unexpected
+ *  shape (mime drift, path mismatch, etc.) we want a clear
  *  ExpenseValidationError at write time rather than a corrupt
  *  `receipt` field landing in Firestore. */
 export function validateBuiltReceipt(
   built:     ReturnType<typeof buildReceiptFromIntents>,
   tripId:    string,
   expenseId: string,
-  bucket:    string,
 ): ExpenseReceiptOut {
-  const result = makeReceiptSchema(tripId, expenseId, bucket).safeParse(built)
+  const result = makeReceiptSchema(tripId, expenseId).safeParse(built)
   if (!result.success) {
     const issue = result.error.issues[0]
     throw new ExpenseValidationError(

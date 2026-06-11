@@ -43,7 +43,6 @@ function createPayload(over: Record<string, unknown> = {}) {
 }
 
 const RECEIPT: ExpenseReceiptOut = {
-  url:  'https://example.com/r.webp',
   path: 'trips/trip1/expenses/e1/receipt.webp',
   type: 'image/webp',
 }
@@ -131,9 +130,10 @@ describe('encodeExpense', () => {
     expect(adjVals[1]!.mapValue.fields.targetItemId).toEqual({ stringValue: 'i1' })
   })
 
-  it('encodes receipt path-only (no url/thumbUrl), thumbPath only when present', () => {
+  it('encodes receipt path-only (path/type/thumbPath, no bearer URL)', () => {
     const noThumb = encodeExpense(createPayload(), TRIP, MEMBERS, 'u1', RECEIPT)
-    // path-only: url/thumbUrl are never written; reads go through getBlob.
+    // path-only: only path / type are written when there's no thumb; reads
+    // go through getBlob(path). The exact-shape match excludes any url.
     expect(noThumb.receipt).toEqual({
       mapValue: { fields: {
         path: { stringValue: 'trips/trip1/expenses/e1/receipt.webp' },
@@ -145,10 +145,14 @@ describe('encodeExpense', () => {
       ...RECEIPT,
       thumbPath: 'trips/trip1/expenses/e1/thumb.webp',
     })
-    const rfields = (withThumb.receipt as { mapValue: { fields: Record<string, unknown> } }).mapValue.fields
-    expect(rfields.thumbPath).toEqual({ stringValue: 'trips/trip1/expenses/e1/thumb.webp' })
-    expect(rfields.thumbUrl).toBeUndefined()
-    expect(rfields.url).toBeUndefined()
+    // Exact-shape match: thumbPath added, still no url/thumbUrl.
+    expect(withThumb.receipt).toEqual({
+      mapValue: { fields: {
+        path:      { stringValue: 'trips/trip1/expenses/e1/receipt.webp' },
+        type:      { stringValue: 'image/webp' },
+        thumbPath: { stringValue: 'trips/trip1/expenses/e1/thumb.webp' },
+      } },
+    })
   })
 })
 

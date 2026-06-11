@@ -30,17 +30,16 @@ export interface ExpenseSplit {
 
 /** Receipt photo / PDF attached to an expense — uploaded via
  *  expenseStorage; same dual-variant pattern as booking attachments
- *  (full + thumbnail). Optional fields exist for legacy reads + PDF
- *  case (PDFs upload without a thumb). */
+ *  (full + thumbnail). path-only: only Storage paths are persisted (no
+ *  bearer download URL); `thumbPath` is optional (PDFs upload without a
+ *  thumb). */
 export interface ExpenseReceipt {
-  /** Legacy bearer download URL. path-only model: Worker no longer writes
-   *  it (download token stripped at consume); reads go through getBlob(path)
-   *  gated by Storage Rules. Optional only for back-compat with any old doc. */
-  url?:       string
+  /** Storage object path. Reads go through getBlob(path) gated by Storage
+   *  Rules — no bearer download URL is ever persisted. */
   path:       string
   /** Mime type at upload time. Drives image-vs-PDF rendering choice. */
   type:       string
-  thumbUrl?:  string
+  /** Small-variant path. Optional: PDFs upload without a thumb. */
   thumbPath?: string
 }
 
@@ -452,11 +451,9 @@ export const EXPENSE_RECEIPT_MIME_TYPES = [
 ] as const
 
 export const ExpenseReceiptSchema = z.object({
-  // path-only: url/thumbUrl legacy-optional (Worker stops writing them).
-  url:       z.string().url().max(2048).optional(),
+  // path-only: reads go through getBlob(path); no bearer URL persisted.
   path:      z.string().min(1).max(500),
   type:      z.enum(EXPENSE_RECEIPT_MIME_TYPES),
-  thumbUrl:  z.string().url().max(2048).optional(),
   thumbPath: z.string().min(1).max(500).optional(),
 })
 

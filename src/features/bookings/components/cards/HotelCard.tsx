@@ -19,7 +19,7 @@
 //   │  Confirmation: HTL-2026                            │
 //   └────────────────────────────────────────────────────┘
 //
-// Cover image is the existing booking attachment (thumbUrl / fileUrl) —
+// Cover image is the existing booking attachment (thumbPath / filePath) —
 // users typically upload the booking confirmation PDF or a hotel photo.
 // When no image, fall back to a brand-colored band so the card still
 // has a visual top half.

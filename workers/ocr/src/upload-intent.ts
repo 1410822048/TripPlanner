@@ -711,9 +711,9 @@ export async function consumeEntityIntents(
 
 /** Build the Firestore mapValue payload for a booking/wish attachment
  *  field from the consumed intents. Field-name asymmetry (BookingAttachment
- *  uses fileUrl/filePath/fileType; WishImage uses url/path) is captured
- *  here so the call sites in booking-write.ts and wish-write.ts stay
- *  clean and the encoding contract has one source. */
+ *  uses filePath/fileType; WishImage uses path) is captured here so the
+ *  call sites in booking-write.ts and wish-write.ts stay clean and the
+ *  encoding contract has one source. */
 export function buildAttachmentMapValue(
   entityType: 'booking' | 'wish',
   primary:    ConsumedIntent,

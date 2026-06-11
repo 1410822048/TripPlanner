@@ -53,8 +53,8 @@ beforeEach(() => {
 })
 
 /** Helper: shape a Firestore REST doc with the nested receipt map the
- *  schema uses. Mirrors `ExpenseDocSchema.receipt: { url, path, type,
- *  thumbUrl?, thumbPath? }`. */
+ *  schema uses. Mirrors `ExpenseDocSchema.receipt: { path, type,
+ *  thumbPath? }`. */
 function docWithReceipt(name: string, opts: {
 	path?:       string | null
 	thumbPath?:  string | null

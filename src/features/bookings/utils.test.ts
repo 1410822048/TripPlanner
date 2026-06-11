@@ -13,7 +13,6 @@ import type { Booking, BookingAttachment } from '@/types'
 
 function makeAtt(over: Partial<BookingAttachment>): BookingAttachment {
   return {
-    fileUrl:  'https://example.com/file.webp',
     filePath: 'trips/t/bookings/b/file.webp',
     fileType: 'image/webp',
     ...over,

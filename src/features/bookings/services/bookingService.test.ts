@@ -127,10 +127,8 @@ import { createBooking, updateBooking, deleteBooking } from './bookingService'
 import type { BookingAttachment } from '@/types'
 
 const ATTACHMENT: BookingAttachment = {
-  fileUrl:   'https://example.com/full.webp',
   filePath:  'trips/t1/bookings/b1/full.webp',
   fileType:  'image/webp',
-  thumbUrl:  'https://example.com/thumb.webp',
   thumbPath: 'trips/t1/bookings/b1/thumb.webp',
 }
 

@@ -48,8 +48,8 @@ import type { Trip } from '@/types'
 
 // Fallback thumbnail deck for the "過往の旅程" card when the user has
 // no hotel bookings (yet) or none of them carry an attachment image.
-// When at least one booking has a thumbUrl / fileUrl we replace this
-// deck with the real photos via StackedImagePreview below.
+// When at least one booking carries an attachment (thumbPath / filePath)
+// we replace this deck with the real photos via StackedImagePreview below.
 //
 // The realtime listener is shared with PastLodgingPage via
 // `useMyHotelBookings` → createRealtimeListHook (refCount semantics),
@@ -90,9 +90,8 @@ export default function AccountPage() {
 
   // Plain derivations — React Compiler auto-memoises based on inferred
   // deps. Up to 3 hotel-booking thumbnails: newest check-in first
-  // (useMyHotelBookings already returns sortDate-desc). Falls back to
-  // fileUrl for older bookings created before the thumbnail pipeline
-  // existed.
+  // (useMyHotelBookings already returns sortDate-desc), resolved to blob
+  // URLs by useThreeHotelThumbUrls below.
   const totalDays = (trips ?? []).reduce((s, t) => s + tripDays(t), 0)
 
   // path-only: resolve up to 3 hotel-thumb paths to blob URLs via getBlob.

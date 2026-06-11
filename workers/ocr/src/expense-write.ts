@@ -276,7 +276,7 @@ async function doCreate(
     // part of the body validation schema (`makeExpenseCreateSchema`)
     // anymore -- it's threaded into encodeExpense as a separate
     // parameter and validated via `makeReceiptSchema` as defense-in-
-    // depth against a malformed intent producing a bad URL/path.
+    // depth against a malformed intent producing a bad path.
     const expenseBody = assertPayloadRecord(req.expense, 'expense')
     const expenseMode = readExpensePayloadMode(expenseBody, 'expense', { required: true })
     const expenseForSchema = stripExpensePayloadMode(expenseBody)
@@ -296,7 +296,7 @@ async function doCreate(
         { tripId: req.tripId, entityType: 'expense', entityId: req.expenseId },
       )
       receipt = validateBuiltReceipt(
-        buildReceiptFromIntents(consumed), req.tripId, req.expenseId, bucket,
+        buildReceiptFromIntents(consumed), req.tripId, req.expenseId,
       )
       intentMarkUsedWrites.push(...markUsedWrites)
     }
@@ -513,7 +513,7 @@ async function doUpdate(
         { tripId: req.tripId, entityType: 'expense', entityId: req.expenseId },
       )
       receipt = validateBuiltReceipt(
-        buildReceiptFromIntents(consumed), req.tripId, req.expenseId, bucket,
+        buildReceiptFromIntents(consumed), req.tripId, req.expenseId,
       )
       intentMarkUsedWrites.push(...markUsedWrites)
     }

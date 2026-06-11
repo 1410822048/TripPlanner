@@ -286,14 +286,12 @@ describe('bookingFileCreate: happy paths', () => {
 		expect(memberIdValues).toEqual(MEMBERS)
 
 		// Attachment field built server-side (path-only BookingAttachment:
-		// filePath/fileType + thumbPath; NO fileUrl/thumbUrl -- download
-		// token stripped at consume, reads via getBlob + Storage Rules).
+		// filePath/fileType + thumbPath; reads via getBlob + Storage
+		// Rules, no bearer download URL is persisted).
 		const att = bookingWrite.fields.attachment?.mapValue?.fields
 		expect(att?.filePath?.stringValue).toBe(FULL_PATH)
-		expect(att?.fileUrl).toBeUndefined()
 		expect(att?.fileType?.stringValue).toBe('image/webp')
 		expect(att?.thumbPath?.stringValue).toBe(THUMB_PATH)
-		expect(att?.thumbUrl).toBeUndefined()
 		// token strip happened for both blobs at consume time.
 		expect(vi.mocked(storage.updateObjectMetadata)).toHaveBeenCalledWith(
 			expect.anything(), expect.anything(), FULL_PATH, { firebaseStorageDownloadTokens: null },
@@ -355,7 +353,7 @@ describe('bookingFileCreate: happy paths', () => {
 		// Booking attachment supports PDFs (e-tickets, hotel confirmations).
 		// kind='pdf' means primary is the PDF itself; no thumb intent.
 		// buildAttachmentMapValue('booking', primary, undefined) returns
-		// attachment with fileUrl/filePath/fileType only (no thumb*).
+		// attachment with filePath/fileType only (no thumb*).
 		seedAuth('editor')
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${PDF_INTENT_ID}`,
 			intentDoc({ intentId: PDF_INTENT_ID, kind: 'pdf', path: PDF_PATH, contentType: 'application/pdf' }))
@@ -380,11 +378,9 @@ describe('bookingFileCreate: happy paths', () => {
 		expect(writes).toHaveLength(2)
 		const att = writes[1].fields.attachment?.mapValue?.fields
 		expect(att?.filePath?.stringValue).toBe(PDF_PATH)
-		expect(att?.fileUrl).toBeUndefined()
 		expect(att?.fileType?.stringValue).toBe('application/pdf')
 		// No thumb fields for PDF attachment.
 		expect(att?.thumbPath).toBeUndefined()
-		expect(att?.thumbUrl).toBeUndefined()
 		expect(writes[1].fields.confirmationCode?.stringValue).toBe('ABC123')
 	})
 
@@ -554,7 +550,7 @@ describe('bookingFileCreate: body validation', () => {
 				booking:   {
 					type:       'hotel',
 					title:      'x',
-					attachment: { fileUrl: 'https://evil/x', filePath: 'x', fileType: 'image/webp' },
+					attachment: { filePath: 'x', fileType: 'image/webp' },
 				},
 				intentIds: [FULL_INTENT_ID],
 			},
@@ -644,10 +640,8 @@ function ownedBookingReadDoc(opts: { attachmentFilePath?: string | null } = {}) 
 		fields.attachment = {
 			mapValue: {
 				fields: {
-					fileUrl:   { stringValue: 'https://x/old' },
 					filePath:  { stringValue: filePath },
 					fileType:  { stringValue: 'image/webp' },
-					thumbUrl:  { stringValue: 'https://x/old-thumb' },
 					thumbPath: { stringValue: 'x/old-thumb' },
 				},
 			},
@@ -726,13 +720,11 @@ describe('bookingFileUpdate: happy paths', () => {
 		expect(patch.fields.title?.stringValue).toBe('new title')
 		expect(patch.fields.note?.stringValue).toBe('updated')
 
-		// New attachment bytes (path-only: no fileUrl/thumbUrl).
+		// New attachment bytes (path-only, no bearer download URL).
 		const att = patch.fields.attachment?.mapValue?.fields
 		expect(att?.filePath?.stringValue).toBe(NEW_FULL_PATH)
-		expect(att?.fileUrl).toBeUndefined()
 		expect(att?.fileType?.stringValue).toBe('image/webp')
 		expect(att?.thumbPath?.stringValue).toBe(NEW_THUMB_PATH)
-		expect(att?.thumbUrl).toBeUndefined()
 
 		// updatedAt via transforms; createdAt untouched.
 		expect(patch.fields.updatedAt).toBeUndefined()
@@ -801,7 +793,6 @@ describe('bookingFileUpdate: happy paths', () => {
 		expect(att?.filePath?.stringValue).toBe(NEW_PDF_PATH)
 		expect(att?.fileType?.stringValue).toBe('application/pdf')
 		expect(att?.thumbPath).toBeUndefined()
-		expect(att?.thumbUrl).toBeUndefined()
 	})
 
 	it('patch with new parseable checkIn → sortDate recomputed to Timestamp from checkIn', async () => {
@@ -981,7 +972,7 @@ describe('bookingFileUpdate: body validation', () => {
 			{
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
-				patch:               { attachment: { fileUrl: 'https://evil/x', filePath: 'x', fileType: 'image/webp' } },
+				patch:               { attachment: { filePath: 'x', fileType: 'image/webp' } },
 				intentIds:           [FULL_INTENT_ID],
 				expectedCurrentPath: FULL_PATH,
 			},

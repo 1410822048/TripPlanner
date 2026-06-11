@@ -38,9 +38,9 @@
 //     Update-clearing-checkIn reads the current doc's createdAt
 //     (already loaded for the stale-replace guard, so no extra get)
 //     and copies the FsValue verbatim into sortDate.
-//   - Attachment shape: BookingAttachment has fileUrl/filePath/fileType
-//     + optional thumbUrl/thumbPath (PDFs ship without thumb). Shape
-//     lives in buildAttachmentMapValue('booking', ...) in upload-intent.ts.
+//   - Attachment shape (path-only): BookingAttachment has filePath/fileType
+//     + optional thumbPath (PDFs ship without thumb). Shape lives in
+//     buildAttachmentMapValue('booking', ...) in upload-intent.ts.
 //   - PDFs supported (kind='pdf'); thumb intent optional.
 //   - Stale-replace guard via `attachment.filePath` (not `image.path`).
 import { z }                                                        from 'zod'

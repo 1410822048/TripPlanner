@@ -98,9 +98,9 @@ export async function purgeExpiredReceipts(
       report.scanned += 1
       const path = stripDocPrefix(doc.name, projectId)
 
-      // Receipt lives as a NESTED map: receipt.{url,path,type,thumbUrl,
-      // thumbPath}. Reading top-level `doc.fields.receiptPath` would
-      // always be undefined -- the silent no-op that shipped before.
+      // Receipt lives as a NESTED map: receipt.{path,type,thumbPath}.
+      // Reading top-level `doc.fields.receiptPath` would always be
+      // undefined -- the silent no-op that shipped before.
       // readNestedString walks one level into the mapValue.
       const receiptPath      = readNestedString(doc.fields, 'receipt', 'path')
       const receiptThumbPath = readNestedString(doc.fields, 'receipt', 'thumbPath')

@@ -125,9 +125,7 @@ import { deleteWish, createWish, updateWish } from './wishService'
 import type { WishImage } from '@/types'
 
 const IMAGE: WishImage = {
-  url:       'https://example.com/full.webp',
   path:      'trips/t1/wishes/w1/full.webp',
-  thumbUrl:  'https://example.com/thumb.webp',
   thumbPath: 'trips/t1/wishes/w1/thumb.webp',
 }
 
