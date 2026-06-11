@@ -82,7 +82,12 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
   if (!isOpen) return null
 
   return (
-    <BottomSheet isOpen onClose={handleClose} title="メンバー管理">
+    <>
+      {/* ConfirmSheet is itself a BottomSheet. Render the member sheet and
+          confirm sheet as mutually-exclusive siblings so we never stack two
+          sheet handles / backdrops on top of each other. */}
+      {!pendingRemove && !confirmLeave && (
+        <BottomSheet isOpen onClose={handleClose} title="メンバー管理">
       <div className="flex flex-col gap-3">
         <p className="m-0 text-[12px] text-muted leading-[1.6] tracking-[0.02em]">
           この旅程のメンバー一覧です。
@@ -162,6 +167,8 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
           </>
         )}
       </div>
+        </BottomSheet>
+      )}
 
       <ConfirmSheet
         isOpen={pendingRemove !== null}
@@ -203,7 +210,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
         onClose={() => setConfirmLeave(false)}
         onConfirm={handleConfirmLeave}
       />
-    </BottomSheet>
+    </>
   )
 }
 
