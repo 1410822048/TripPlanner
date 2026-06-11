@@ -8,7 +8,7 @@ import {
 	waitOnExecutionContext,
 } from 'cloudflare:test'
 import { describe, it, expect } from 'vitest'
-import worker from '../src/index'
+import worker, { ROUTES, RATE_CLASSES } from '../src/index'
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>
 
@@ -93,5 +93,56 @@ describe('OCR worker routing', () => {
 		expect(res.status).toBe(413)
 		const body = await res.json() as { error: string }
 		expect(body.error).toContain('Body too large')
+	})
+})
+
+describe('route descriptor table (rate-limit classification)', () => {
+	// Golden map: every endpoint → (L1 binding, L2 scope, L2 cap). This is
+	// the security-load-bearing 1:1 the descriptor table must preserve — a
+	// wrong binding / scope / cap silently weakens abuse protection, and no
+	// other test exercises the dispatch path's rate classification. Derived
+	// from the pre-refactor limiter/scope/globalLimit ternaries; pinned here
+	// so any future table edit that re-buckets an endpoint fails loudly.
+	const EXPECTED: Record<string, { limiter: string; scope: string; globalLimit: number }> = {
+		'/ocr':                 { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
+		'/expense-receipt-ocr': { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
+		'/cascade-trip-delete': { limiter: 'TRIP_CASCADE_RATE_LIMITER',   scope: 'trip-cascade',     globalLimit: 2 },
+		'/expense-create':      { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'expense',          globalLimit: 60 },
+		'/expense-update':      { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'expense',          globalLimit: 60 },
+		'/upload-intents':      { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'upload-intent',    globalLimit: 60 },
+		'/wish-file-create':    { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'wish-write',       globalLimit: 60 },
+		'/wish-file-update':    { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'wish-write',       globalLimit: 60 },
+		'/booking-file-create': { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'booking-write',    globalLimit: 60 },
+		'/booking-file-update': { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'booking-write',    globalLimit: 60 },
+		'/settlement-create':   { limiter: 'SETTLEMENT_RATE_LIMITER',     scope: 'settlement-write', globalLimit: 10 },
+		'/settlement-delete':   { limiter: 'SETTLEMENT_RATE_LIMITER',     scope: 'settlement-write', globalLimit: 10 },
+		'/attachment-url':      { limiter: 'ATTACHMENT_URL_RATE_LIMITER', scope: 'attachment-url',   globalLimit: 300 },
+		'/invite-create':       { limiter: 'CASCADE_RATE_LIMITER',        scope: 'cascade',          globalLimit: 10 },
+		'/invite-revoke':       { limiter: 'CASCADE_RATE_LIMITER',        scope: 'cascade',          globalLimit: 10 },
+		'/invite-redeem':       { limiter: 'CASCADE_RATE_LIMITER',        scope: 'cascade',          globalLimit: 10 },
+		'/member-remove':       { limiter: 'CASCADE_RATE_LIMITER',        scope: 'cascade',          globalLimit: 10 },
+		'/member-leave':        { limiter: 'CASCADE_RATE_LIMITER',        scope: 'cascade',          globalLimit: 10 },
+		'/member-role-update':  { limiter: 'CASCADE_RATE_LIMITER',        scope: 'cascade',          globalLimit: 10 },
+		'/owner-transfer':      { limiter: 'CASCADE_RATE_LIMITER',        scope: 'cascade',          globalLimit: 10 },
+	}
+
+	it('every route resolves to its expected (binding, scope, cap)', () => {
+		for (const route of ROUTES) {
+			const rc = RATE_CLASSES[route.rate]
+			expect(rc, `no rate class for ${route.path}`).toBeDefined()
+			expect(
+				{ limiter: rc.limiter, scope: rc.scope, globalLimit: rc.globalLimit },
+				`rate class mismatch for ${route.path}`,
+			).toEqual(EXPECTED[route.path])
+		}
+	})
+
+	it('covers exactly the expected endpoints (no missing / extra)', () => {
+		expect(ROUTES.map(r => r.path).sort()).toEqual(Object.keys(EXPECTED).sort())
+	})
+
+	it('has no duplicate paths', () => {
+		const paths = ROUTES.map(r => r.path)
+		expect(new Set(paths).size).toBe(paths.length)
 	})
 })

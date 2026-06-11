@@ -53,9 +53,9 @@
 //                     upload intents.
 //
 // All non-matching requests get a 404. CORS preflight (OPTIONS) is
-// handled inline. Hand-rolled `pathname === ...` dispatch — a router
-// lib isn't worth the bundle cost for these endpoints with bespoke
-// auth/rate-limit/Zod pipelines each.
+// handled inline. Dispatch is a flat endpoint descriptor table (ROUTES);
+// not a router lib — each endpoint keeps its bespoke auth/rate-limit/Zod
+// pipeline explicit in its `dispatch` closure.
 //
 // Observability: upload-flow callers send `X-Upload-Trace-Id: <uuid>`
 // minted client-side by `mintAndUploadEntityIntents`. Validated by
@@ -236,6 +236,342 @@ function corsHeaders(env: WorkerEnv, originHeader: string | null): Record<string
   }
 }
 
+// ─── Endpoint descriptor table ────────────────────────────────────
+// One row per endpoint, replacing the old parallel `isXxx` booleans +
+// limiter/scope/globalLimit ternaries + per-route `if` chain. Adding an
+// endpoint is now one ROUTES row (+ a RATE_CLASSES entry only if it needs
+// a new rate class) instead of editing four separate places. Deliberately
+// NOT a generic router: a flat table + linear path match, no middleware
+// framework — each endpoint's auth/Zod/error shape stays explicit in its
+// `dispatch`.
+
+/** Keys of WorkerEnv whose binding is a per-PoP RateLimit (the L1 layer). */
+type RateLimiterBinding = {
+  [K in keyof WorkerEnv]: WorkerEnv[K] extends RateLimit ? K : never
+}[keyof WorkerEnv]
+
+/** L1 binding + L2 scope + L2 cap for a class of endpoints. The L1 binding
+ *  and the L2 scope are deliberately NOT 1:1: expense / upload-intent /
+ *  wish-write / booking-write all share the EXPENSE_RATE_LIMITER per-PoP
+ *  counter but keep distinct L2 scopes (separate cross-PoP ceilings). A
+ *  scope string is the Durable Object counter namespace — changing it
+ *  re-buckets live counters, so treat these strings as a wire contract. */
+interface RateClass {
+  limiter:     RateLimiterBinding
+  scope:       string
+  globalLimit: number
+}
+
+// Exported for the rate-class golden test (workers/ocr/test/index.spec.ts):
+// it pins every endpoint's (binding, scope, cap) so a future table edit
+// that silently weakens abuse protection fails loudly.
+export const RATE_CLASSES = {
+  ocr:                { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
+  'trip-cascade':     { limiter: 'TRIP_CASCADE_RATE_LIMITER',   scope: 'trip-cascade',     globalLimit: 2 },
+  expense:            { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'expense',          globalLimit: 60 },
+  'upload-intent':    { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'upload-intent',    globalLimit: 60 },
+  'wish-write':       { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'wish-write',       globalLimit: 60 },
+  'booking-write':    { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'booking-write',    globalLimit: 60 },
+  'settlement-write': { limiter: 'SETTLEMENT_RATE_LIMITER',     scope: 'settlement-write', globalLimit: 10 },
+  'attachment-url':   { limiter: 'ATTACHMENT_URL_RATE_LIMITER', scope: 'attachment-url',   globalLimit: 300 },
+  membership:         { limiter: 'CASCADE_RATE_LIMITER',        scope: 'cascade',          globalLimit: 10 },
+} as const satisfies Record<string, RateClass>
+
+type RateClassKey = keyof typeof RATE_CLASSES
+
+/** Request-scoped values threaded into each route's dispatch closure. */
+interface DispatchCtx {
+  body:    unknown
+  cors:    Record<string, string>
+  uid:     string
+  traceId: string | undefined
+  env:     WorkerEnv
+}
+
+interface RouteDescriptor {
+  /** Exact pathname; POST only (every endpoint is POST). */
+  path:     string
+  /** Rate class → (L1 binding, L2 scope, L2 cap). */
+  rate:     RateClassKey
+  /** Per-route parse → handle → catch, wrapped by handleJsonRoute. */
+  dispatch: (c: DispatchCtx) => Response | Promise<Response>
+}
+
+export const ROUTES: RouteDescriptor[] = [
+  {
+    path: '/expense-create', rate: 'expense',
+    dispatch: c => handleJsonRoute({
+      endpoint:       'expense-create', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
+      schema:         ExpenseCreateRequestSchema,
+      handle:         data => expenseCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_STORAGE_BUCKET),
+      formatLog:      (data, result) => `trip=${data.tripId} exp=${result.expenseId}`,
+      formatResponse: result => ({ ok: true, ...result }),
+      // FOREIGN_CURRENCY path calls getFxSnapshot → FxError on future
+      // settledOn / Frankfurter degraded; chain in fxErrorCatcher so the
+      // route returns the actionable 4xx/5xx instead of a generic 500.
+      catchDomain: chainCatchers(
+        validationErrorCatcher(ExpenseValidationError),
+        fxErrorCatcher(),
+        attachmentHardeningErrorCatcher(),
+      ),
+    }),
+  },
+  {
+    path: '/expense-update', rate: 'expense',
+    dispatch: c => handleJsonRoute({
+      endpoint:    'expense-update', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
+      schema:      ExpenseUpdateRequestSchema,
+      handle:      data => expenseUpdate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_STORAGE_BUCKET),
+      formatLog:   data => `trip=${data.tripId} exp=${data.expenseId}`,
+      // Same FX-touch + chain as expense-create above.
+      catchDomain: chainCatchers(
+        validationErrorCatcher(ExpenseValidationError),
+        fxErrorCatcher(),
+        attachmentHardeningErrorCatcher(),
+      ),
+    }),
+  },
+  {
+    path: '/wish-file-create', rate: 'wish-write',
+    dispatch: c => handleJsonRoute({
+      endpoint:       'wish-file-create', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
+      schema:         WishFileCreateRequestSchema,
+      handle:         data => wishFileCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_STORAGE_BUCKET),
+      formatLog:      (data, result) => `trip=${data.tripId} wish=${result.wishId}`,
+      formatResponse: result => ({ ok: true, ...result }),
+      catchDomain:    chainCatchers(
+        validationErrorCatcher(WishValidationError),
+        attachmentHardeningErrorCatcher(),
+      ),
+    }),
+  },
+  {
+    path: '/wish-file-update', rate: 'wish-write',
+    dispatch: c => handleJsonRoute({
+      endpoint:    'wish-file-update', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
+      schema:      WishFileUpdateRequestSchema,
+      handle:      data => wishFileUpdate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_STORAGE_BUCKET),
+      formatLog:   data => `trip=${data.tripId} wish=${data.wishId}`,
+      catchDomain: chainCatchers(
+        validationErrorCatcher(WishValidationError),
+        attachmentHardeningErrorCatcher(),
+      ),
+    }),
+  },
+  {
+    path: '/booking-file-create', rate: 'booking-write',
+    dispatch: c => handleJsonRoute({
+      endpoint:       'booking-file-create', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
+      schema:         BookingFileCreateRequestSchema,
+      handle:         data => bookingFileCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_STORAGE_BUCKET),
+      formatLog:      (data, result) => `trip=${data.tripId} booking=${result.bookingId}`,
+      formatResponse: result => ({ ok: true, ...result }),
+      catchDomain:    chainCatchers(
+        validationErrorCatcher(BookingValidationError),
+        attachmentHardeningErrorCatcher(),
+      ),
+    }),
+  },
+  {
+    path: '/booking-file-update', rate: 'booking-write',
+    dispatch: c => handleJsonRoute({
+      endpoint:    'booking-file-update', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
+      schema:      BookingFileUpdateRequestSchema,
+      handle:      data => bookingFileUpdate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_STORAGE_BUCKET),
+      formatLog:   data => `trip=${data.tripId} booking=${data.bookingId}`,
+      catchDomain: chainCatchers(
+        validationErrorCatcher(BookingValidationError),
+        attachmentHardeningErrorCatcher(),
+      ),
+    }),
+  },
+  {
+    path: '/settlement-create', rate: 'settlement-write',
+    dispatch: c => handleJsonRoute({
+      endpoint:       'settlement-create', body: c.body, cors: c.cors, uid: c.uid,
+      schema:         SettlementCreateRequestSchema,
+      handle:         data => settlementCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
+      // Mode-aware log line: no branch carries a user-entered ledger or
+      // source amount. `expectedRemainingMinor` is the stale-confirmation
+      // guard; Worker recomputes pair-remaining in the tx and writes
+      // amountMinor = remaining.
+      formatLog: (data, result) =>
+        data.mode === 'FOREIGN_CURRENCY'
+          ? `trip=${data.tripId} settlement=${result.settlementId} from=${data.fromUid} mode=FOREIGN expectedRemainingMinor=${data.expectedRemainingMinor} sourceCurrency=${data.sourceCurrency} settledOn=${data.settledOn}`
+          : `trip=${data.tripId} settlement=${result.settlementId} from=${data.fromUid} mode=TRIP expectedRemainingMinor=${data.expectedRemainingMinor}`,
+      formatResponse: result => ({ ok: true, ...result }),
+      // FOREIGN_CURRENCY calls getFxSnapshot which throws FxError on
+      // future-date / provider-down / etc; without the FxError catcher the
+      // route's generic catch maps it to 500 and the client UI can't
+      // distinguish "FX provider down, retry later" from a real server bug.
+      catchDomain: chainCatchers(
+        validationErrorCatcher(SettlementValidationError),
+        fxErrorCatcher(),
+      ),
+      // Whole body runs in one tx → every CascadeError (read-cap 503,
+      // trip.currency 500) is pre-commit; stamp precommit so the client
+      // rolls back instead of keeping a phantom settlement on a 5xx.
+      cascadePrecommit: true,
+    }),
+  },
+  {
+    path: '/settlement-delete', rate: 'settlement-write',
+    dispatch: c => handleJsonRoute({
+      endpoint:    'settlement-delete', body: c.body, cors: c.cors, uid: c.uid,
+      schema:      SettlementDeleteRequestSchema,
+      handle:      data => settlementDelete(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog:   data => `trip=${data.tripId} settlement=${data.settlementId}`,
+      catchDomain: validationErrorCatcher(SettlementValidationError),
+      cascadePrecommit: true,
+    }),
+  },
+  {
+    path: '/upload-intents', rate: 'upload-intent',
+    dispatch: c => handleJsonRoute({
+      endpoint:  'upload-intents', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
+      schema:    UploadIntentsRequestSchema,
+      handle:    data => createUploadIntents(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog: (data, result) =>
+        `trip=${data.tripId} entity=${data.entityType}/${data.entityId} count=${result.intents.length}`,
+    }),
+  },
+  {
+    path: '/attachment-url', rate: 'attachment-url',
+    dispatch: c => handleJsonRoute({
+      endpoint:  'attachment-url', body: c.body, cors: c.cors, uid: c.uid,
+      schema:    AttachmentUrlRequestSchema,
+      handle:    data => signEntityUrl(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_STORAGE_BUCKET),
+      // entity coordinates + variant only; the minted URL is never logged.
+      formatLog: data => `trip=${data.tripId} entity=${data.entityType}/${data.entityId} variant=${data.variant}`,
+    }),
+  },
+  {
+    path: '/cascade-trip-delete', rate: 'trip-cascade',
+    dispatch: c => handleJsonRoute({
+      endpoint:       'trip-cascade', body: c.body, cors: c.cors, uid: c.uid,
+      schema:         TripDeleteRequestSchema,
+      handle:         data => cascadeTripDelete(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_STORAGE_BUCKET),
+      formatLog:      (data, result) => `trip=${data.tripId} docs=${result.deletedDocs} objects=${result.deletedObjects}`,
+      formatResponse: result => ({ ok: true, ...result }),
+    }),
+  },
+  {
+    path: '/invite-create', rate: 'membership',
+    dispatch: c => handleJsonRoute({
+      endpoint:       'invite-create', body: c.body, cors: c.cors, uid: c.uid,
+      schema:         InviteCreateRequestSchema,
+      handle:         data => inviteCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
+      // Token is a fresh bearer secret -- never logged (mirrors attachment-url
+      // "minted URL is never logged"). trip + role are enough to correlate.
+      formatLog:      data => `trip=${data.tripId} role=${data.role}`,
+      formatResponse: result => ({ ok: true, ...result }),
+      catchDomain:    validationErrorCatcher(MembershipValidationError),
+      // Whole body runs in one tx → every CascadeError is pre-commit; stamp
+      // precommit so a 5xx rolls the optimistic invite row back.
+      cascadePrecommit: true,
+    }),
+  },
+  {
+    path: '/invite-revoke', rate: 'membership',
+    dispatch: c => handleJsonRoute({
+      endpoint:    'invite-revoke', body: c.body, cors: c.cors, uid: c.uid,
+      schema:      InviteRevokeRequestSchema,
+      handle:      data => inviteRevoke(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog:   data => `trip=${data.tripId}`,
+      catchDomain: validationErrorCatcher(MembershipValidationError),
+      cascadePrecommit: true,
+    }),
+  },
+  {
+    path: '/invite-redeem', rate: 'membership',
+    dispatch: c => handleJsonRoute({
+      endpoint:       'invite-redeem', body: c.body, cors: c.cors, uid: c.uid,
+      schema:         InviteRedeemRequestSchema,
+      handle:         data => inviteRedeem(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog:      (data, result) => `trip=${data.tripId} outcome=${result.outcome} role=${result.role}`,
+      formatResponse: result => ({ ok: true, ...result }),
+      catchDomain:    validationErrorCatcher(MembershipValidationError),
+    }),
+  },
+  {
+    path: '/member-remove', rate: 'membership',
+    dispatch: c => handleJsonRoute({
+      endpoint:    'member-remove', body: c.body, cors: c.cors, uid: c.uid,
+      schema:      MemberRemoveRequestSchema,
+      handle:      data => memberRemove(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog:   data => `trip=${data.tripId} member=${uidTag(data.memberUid)}`,
+      catchDomain: validationErrorCatcher(MembershipValidationError),
+    }),
+  },
+  {
+    path: '/member-leave', rate: 'membership',
+    dispatch: c => handleJsonRoute({
+      endpoint:    'member-leave', body: c.body, cors: c.cors, uid: c.uid,
+      // Caller leaves themselves; the verified token's uid is the target.
+      handle:      data => memberLeave(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
+      schema:      MemberLeaveRequestSchema,
+      formatLog:   data => `trip=${data.tripId} member=${uidTag(c.uid)}`,
+      catchDomain: validationErrorCatcher(MembershipValidationError),
+    }),
+  },
+  {
+    path: '/member-role-update', rate: 'membership',
+    dispatch: c => handleJsonRoute({
+      endpoint:    'member-role-update', body: c.body, cors: c.cors, uid: c.uid,
+      schema:      MemberRoleUpdateRequestSchema,
+      handle:      data => memberRoleUpdate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog:   data => `trip=${data.tripId} member=${uidTag(data.memberUid)} role=${data.role}`,
+      catchDomain: validationErrorCatcher(MembershipValidationError),
+    }),
+  },
+  {
+    path: '/owner-transfer', rate: 'membership',
+    dispatch: c => handleJsonRoute({
+      endpoint:    'owner-transfer', body: c.body, cors: c.cors, uid: c.uid,
+      schema:      OwnerTransferRequestSchema,
+      handle:      data => ownerTransfer(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog:   data => `trip=${data.tripId} target=${uidTag(data.targetUid)}`,
+      catchDomain: validationErrorCatcher(MembershipValidationError),
+    }),
+  },
+  {
+    path: '/expense-receipt-ocr', rate: 'ocr',
+    dispatch: c => handleJsonRoute({
+      endpoint:  'expense-receipt-ocr', body: c.body, cors: c.cors, uid: c.uid,
+      schema:    ExpenseReceiptOcrRequestSchema,
+      // Re-OCR an EXISTING expense receipt: Worker reads receipt.path from
+      // the doc (client can't name the object), mirrors /expense-update auth
+      // (owner/editor; settlement-locked ⇒ owner), reads the image from
+      // Storage, and runs the SAME extractReceiptItems core as /ocr.
+      handle:    data => expenseReceiptOcr(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_STORAGE_BUCKET, c.env.GEMINI_API_KEY),
+      formatLog: (data, result) => `trip=${data.tripId} exp=${data.expenseId} items=${result.result.items.length}`,
+      catchDomain: e => e instanceof GeminiError
+        ? {
+            log:    `GeminiError status=${e.status} msg=${e.message}`,
+            body:   { error: e.message },
+            status: e.status,
+          }
+        : null,
+    }),
+  },
+  {
+    path: '/ocr', rate: 'ocr',
+    dispatch: c => handleJsonRoute({
+      endpoint:  'ocr', body: c.body, cors: c.cors, uid: c.uid,
+      schema:    OcrRequestSchema,
+      handle:    data => extractReceiptItems(data.image, data.mimeType, data.currency, c.env.GEMINI_API_KEY),
+      formatLog: (_data, result) => `items=${result.items.length}`,
+      catchDomain: e => e instanceof GeminiError
+        ? {
+            log:    `GeminiError status=${e.status} msg=${e.message}`,
+            body:   { error: e.message },
+            status: e.status,
+          }
+        : null,
+    }),
+  },
+]
+
 export default {
   async fetch(request, env): Promise<Response> {
     const url     = new URL(request.url)
@@ -247,54 +583,35 @@ export default {
     }
 
     // ─── Routing ──────────────────────────────────────────────────────
-    const isOcr           = url.pathname === '/ocr'                  && request.method === 'POST'
-    const isExpenseReceiptOcr = url.pathname === '/expense-receipt-ocr' && request.method === 'POST'
-    const isTripCascade   = url.pathname === '/cascade-trip-delete'  && request.method === 'POST'
-    const isExpenseCreate = url.pathname === '/expense-create'       && request.method === 'POST'
-    const isExpenseUpdate = url.pathname === '/expense-update'       && request.method === 'POST'
-    const isUploadIntents = url.pathname === '/upload-intents'       && request.method === 'POST'
-    const isWishCreate    = url.pathname === '/wish-file-create'     && request.method === 'POST'
-    const isWishUpdate    = url.pathname === '/wish-file-update'     && request.method === 'POST'
-    const isBookingCreate = url.pathname === '/booking-file-create'  && request.method === 'POST'
-    const isBookingUpdate = url.pathname === '/booking-file-update'  && request.method === 'POST'
-    const isSettlementCreate = url.pathname === '/settlement-create' && request.method === 'POST'
-    const isSettlementDelete = url.pathname === '/settlement-delete' && request.method === 'POST'
-    const isInviteCreate     = url.pathname === '/invite-create'     && request.method === 'POST'
-    const isInviteRevoke     = url.pathname === '/invite-revoke'     && request.method === 'POST'
-    const isInviteRedeem     = url.pathname === '/invite-redeem'     && request.method === 'POST'
-    const isMemberRemove     = url.pathname === '/member-remove'     && request.method === 'POST'
-    const isMemberLeave      = url.pathname === '/member-leave'      && request.method === 'POST'
-    const isMemberRoleUpdate = url.pathname === '/member-role-update' && request.method === 'POST'
-    const isOwnerTransfer    = url.pathname === '/owner-transfer'    && request.method === 'POST'
-    const isAttachmentUrl       = url.pathname === '/attachment-url'        && request.method === 'POST'
-    if (!isOcr && !isExpenseReceiptOcr && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents && !isWishCreate && !isWishUpdate && !isBookingCreate && !isBookingUpdate && !isSettlementCreate && !isSettlementDelete && !isInviteCreate && !isInviteRevoke && !isInviteRedeem && !isMemberRemove && !isMemberLeave && !isMemberRoleUpdate && !isOwnerTransfer && !isAttachmentUrl) {
+    // One descriptor per endpoint (see ROUTES). A known path with a non-
+    // POST method falls through to 404, same as the old isXxx + big-OR.
+    const route = request.method === 'POST'
+      ? ROUTES.find(r => r.path === url.pathname)
+      : undefined
+    if (!route) {
       return json({ error: 'Not found' }, 404, cors)
     }
 
-    // Pre-validated upload-flow correlation id. Read once at the top
-    // so every log line in this request (pre-dispatch + handleJsonRoute
-    // success/warn/error) carries the same `trace=<id>` suffix. Missing
-    // or malformed headers fall back to `undefined` → no suffix; we don't
-    // reject the request because observability is best-effort and a
-    // stale client shouldn't be denied for it.
+    // Pre-validated upload-flow correlation id. Read once so every log line
+    // in this request carries the same `trace=<id>` suffix. Missing or
+    // malformed → undefined → no suffix; we don't reject for it
+    // (observability is best-effort and a stale client shouldn't be denied).
     const traceId = extractTraceId(request)
     const trace   = traceId ? ` trace=${traceId}` : ''
 
     console.log(`[req] ${request.method} ${url.pathname} origin=${request.headers.get('Origin') ?? '?'}${trace}`)
 
     // ─── Body size guard ──────────────────────────────────────────────
-    // Done before auth so 100MB unauthenticated bodies are rejected
-    // without burning CPU on JWT verification first. 9MB covers an 8MB
-    // base64 image + JSON envelope; cascade body is <1KB so this is a
-    // no-op for it. Content-Length is client-supplied — bytes-actually-
-    // streamed are still bounded by the platform's 100MB hard cap.
+    // Before auth so a 100MB unauthenticated body is rejected without
+    // burning CPU on JWT verification. 9MB covers an 8MB base64 image +
+    // JSON envelope; cascade / membership bodies are <1KB.
     const contentLength = Number(request.headers.get('content-length') ?? '0')
     if (contentLength > 9 * 1024 * 1024) {
       console.warn(`[body] too large: contentLength=${contentLength}${trace}`)
       return json({ error: 'Body too large' }, 413, cors)
     }
 
-    // ─── Auth (shared by both routes) ─────────────────────────────────
+    // ─── Auth ─────────────────────────────────────────────────────────
     const token = extractBearerToken(request)
     if (!token) {
       console.warn(`[auth] no bearer token${trace}`)
@@ -311,81 +628,20 @@ export default {
     }
 
     // ─── Rate limit (per-uid, two-layer) ──────────────────────────────
-    // L1: Per-PoP binding — fast (~0ms), catches single-location abuse.
-    //     Per-uid key. Done after auth so unauthenticated noise doesn't
-    //     burn counter slots.
-    // L2: Cross-PoP Durable Object — slower (~10-50ms), strongly
-    //     consistent, catches botnet-style multi-PoP multiplication
-    //     that L1 alone can't see. Cap deliberately looser than L1 —
-    //     L1's tighter per-location bound is the primary defense; L2
-    //     is the cluster ceiling.
-    const isExpenseWrite    = isExpenseCreate    || isExpenseUpdate
-    const isSettlementWrite = isSettlementCreate || isSettlementDelete
-    // The signed-URL read endpoint: one local RSA sign, no Gemini / no
-    // Firestore write -- its own binding + scope + cap.
-    const isAttachmentUrlRoute = isAttachmentUrl
-    // Cost class, NOT route identity: /expense-receipt-ocr is the same
-    // Gemini-call cost shape as /ocr, so it shares the OCR rate limiter +
-    // scope + global cap. Kept separate from `isOcr` so the new route isn't
-    // swallowed by the cascade default branch below.
-    const isOcrCostRoute    = isOcr || isExpenseReceiptOcr
-    // /upload-intents reuses EXPENSE_RATE_LIMITER for this commit --
-    // the realistic workload (intent request before each upload)
-    // matches expense create/update cadence (30/min). Adding a
-    // dedicated UPLOAD_INTENT_RATE_LIMITER binding was deferred so
-    // this commit doesn't grow its deploy-failure surface area;
-    // future tuning can split if observed metrics justify.
-    // /invite-redeem, /member-remove, /member-leave, /member-role-update,
-    // /owner-transfer reuse CASCADE_RATE_LIMITER + scope='cascade' (the
-    // default branch below) -- they share the same "rare per-user action,
-    // server-heavy" shape and the existing 10/min L2 cap is comfortably
-    // above realistic user behavior (one invite accept per visit, owner
-    // batch-kicks + self-leaves + the odd transfer, single digits/session).
-    const limiter = isOcrCostRoute    ? env.OCR_RATE_LIMITER
-                  : isTripCascade     ? env.TRIP_CASCADE_RATE_LIMITER
-                  : isExpenseWrite    ? env.EXPENSE_RATE_LIMITER
-                  : isUploadIntents   ? env.EXPENSE_RATE_LIMITER
-                  : isWishCreate      ? env.EXPENSE_RATE_LIMITER
-                  : isWishUpdate      ? env.EXPENSE_RATE_LIMITER
-                  : isBookingCreate   ? env.EXPENSE_RATE_LIMITER
-                  : isBookingUpdate   ? env.EXPENSE_RATE_LIMITER
-                  : isSettlementWrite ? env.SETTLEMENT_RATE_LIMITER
-                  : isAttachmentUrlRoute ? env.ATTACHMENT_URL_RATE_LIMITER
-                  : env.CASCADE_RATE_LIMITER
-    const localResult = await limiter.limit({ key: uid })
+    // L1: per-PoP binding (~0ms, single-location abuse). L2: cross-PoP
+    // Durable Object (~10-50ms, strongly consistent cluster ceiling). The
+    // (binding, scope, cap) triple is the route's rate class — note the
+    // binding and scope are NOT 1:1 (expense / upload-intent / wish-write /
+    // booking-write share EXPENSE_RATE_LIMITER but keep distinct L2 scopes).
+    // After auth so unauthenticated noise doesn't burn counter slots.
+    const rc = RATE_CLASSES[route.rate]
+    const localResult = await env[rc.limiter].limit({ key: uid })
     if (!localResult.success) {
       console.warn(`[rate-limit] L1 deny uid=${uidTag(uid)} route=${url.pathname}${trace}`)
       return json({ error: 'Rate limit exceeded' }, 429, cors)
     }
-
-    // Scope name + L2 limit. trip-delete is the strictest. expense
-    // matches OCR (60/min L2) -- both are user-facing rapid actions.
-    // settlement L2 = 10/min (2x the per-PoP cap of 5/min) -- same
-    // ratio the other low-volume endpoints use vs their L1.
-    const scope       = isOcrCostRoute ? 'ocr'
-                      : isTripCascade     ? 'trip-cascade'
-                      : isExpenseWrite    ? 'expense'
-                      : isUploadIntents   ? 'upload-intent'
-                      : isWishCreate      ? 'wish-write'
-                      : isWishUpdate      ? 'wish-write'
-                      : isBookingCreate   ? 'booking-write'
-                      : isBookingUpdate   ? 'booking-write'
-                      : isSettlementWrite ? 'settlement-write'
-                      : isAttachmentUrlRoute ? 'attachment-url'
-                      : 'cascade'
-    const globalLimit = isOcrCostRoute ? 60
-                      : isTripCascade     ? 2
-                      : isExpenseWrite    ? 60
-                      : isUploadIntents   ? 60
-                      : isWishCreate      ? 60
-                      : isWishUpdate      ? 60
-                      : isBookingCreate   ? 60
-                      : isBookingUpdate   ? 60
-                      : isSettlementWrite ? 10
-                      : isAttachmentUrlRoute ? 300
-                      : 10
     const globalResult = await checkGlobalRateLimit(
-      env.GLOBAL_LIMITER, scope, uid, globalLimit, 60_000,
+      env.GLOBAL_LIMITER, rc.scope, uid, rc.globalLimit, 60_000,
     )
     if (!globalResult.allowed) {
       console.warn(
@@ -395,7 +651,7 @@ export default {
       return json({ error: 'Global rate limit exceeded' }, 429, cors)
     }
 
-    // ─── Body parsing (shared) ────────────────────────────────────────
+    // ─── Body parsing ─────────────────────────────────────────────────
     let body: unknown
     try {
       body = await request.json()
@@ -404,244 +660,11 @@ export default {
       return json({ error: 'Invalid JSON' }, 400, cors)
     }
 
-    // ─── Per-route dispatch ──────────────────────────────────────────
-    // Each route shares the same parse → handle → catch shape; see
-    // route-dispatch.ts for the wrapper contract. Per-route variation
-    // is captured by 4 callbacks: handle, formatLog, formatResponse,
-    // catchDomain. Auth + rate-limit + body-size + CORS handled above.
-
-    if (isExpenseCreate) return handleJsonRoute({
-      endpoint:       'expense-create', body, cors, uid, traceId,
-      schema:         ExpenseCreateRequestSchema,
-      handle:         data => expenseCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
-      formatLog:      (data, result) => `trip=${data.tripId} exp=${result.expenseId}`,
-      formatResponse: result => ({ ok: true, ...result }),
-      // FOREIGN_CURRENCY path calls getFxSnapshot → FxError on future
-      // settledOn / Frankfurter degraded; chain in fxErrorCatcher so
-      // the route returns the actionable 4xx/5xx instead of generic 500.
-      catchDomain: chainCatchers(
-        validationErrorCatcher(ExpenseValidationError),
-        fxErrorCatcher(),
-        attachmentHardeningErrorCatcher(),
-      ),
-    })
-
-    if (isExpenseUpdate) return handleJsonRoute({
-      endpoint:    'expense-update', body, cors, uid, traceId,
-      schema:      ExpenseUpdateRequestSchema,
-      handle:      data => expenseUpdate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
-      formatLog:   data => `trip=${data.tripId} exp=${data.expenseId}`,
-      // Same FX-touch + chain as expense-create above.
-      catchDomain: chainCatchers(
-        validationErrorCatcher(ExpenseValidationError),
-        fxErrorCatcher(),
-        attachmentHardeningErrorCatcher(),
-      ),
-    })
-
-    if (isWishCreate) return handleJsonRoute({
-      endpoint:       'wish-file-create', body, cors, uid, traceId,
-      schema:         WishFileCreateRequestSchema,
-      handle:         data => wishFileCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
-      formatLog:      (data, result) => `trip=${data.tripId} wish=${result.wishId}`,
-      formatResponse: result => ({ ok: true, ...result }),
-      catchDomain:    chainCatchers(
-        validationErrorCatcher(WishValidationError),
-        attachmentHardeningErrorCatcher(),
-      ),
-    })
-
-    if (isWishUpdate) return handleJsonRoute({
-      endpoint:    'wish-file-update', body, cors, uid, traceId,
-      schema:      WishFileUpdateRequestSchema,
-      handle:      data => wishFileUpdate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
-      formatLog:   data => `trip=${data.tripId} wish=${data.wishId}`,
-      catchDomain: chainCatchers(
-        validationErrorCatcher(WishValidationError),
-        attachmentHardeningErrorCatcher(),
-      ),
-    })
-
-    if (isBookingCreate) return handleJsonRoute({
-      endpoint:       'booking-file-create', body, cors, uid, traceId,
-      schema:         BookingFileCreateRequestSchema,
-      handle:         data => bookingFileCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
-      formatLog:      (data, result) => `trip=${data.tripId} booking=${result.bookingId}`,
-      formatResponse: result => ({ ok: true, ...result }),
-      catchDomain:    chainCatchers(
-        validationErrorCatcher(BookingValidationError),
-        attachmentHardeningErrorCatcher(),
-      ),
-    })
-
-    if (isBookingUpdate) return handleJsonRoute({
-      endpoint:    'booking-file-update', body, cors, uid, traceId,
-      schema:      BookingFileUpdateRequestSchema,
-      handle:      data => bookingFileUpdate(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
-      formatLog:   data => `trip=${data.tripId} booking=${data.bookingId}`,
-      catchDomain: chainCatchers(
-        validationErrorCatcher(BookingValidationError),
-        attachmentHardeningErrorCatcher(),
-      ),
-    })
-
-    if (isSettlementCreate) return handleJsonRoute({
-      endpoint:       'settlement-create', body, cors, uid,
-      schema:         SettlementCreateRequestSchema,
-      handle:         data => settlementCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
-      // Mode-aware log line: no branch carries a user-entered ledger or
-      // source amount. `expectedRemainingMinor` is the stale-confirmation
-      // guard; Worker recomputes pair-remaining in the tx and writes
-      // amountMinor = remaining.
-      formatLog: (data, result) =>
-        data.mode === 'FOREIGN_CURRENCY'
-          ? `trip=${data.tripId} settlement=${result.settlementId} from=${data.fromUid} mode=FOREIGN expectedRemainingMinor=${data.expectedRemainingMinor} sourceCurrency=${data.sourceCurrency} settledOn=${data.settledOn}`
-          : `trip=${data.tripId} settlement=${result.settlementId} from=${data.fromUid} mode=TRIP expectedRemainingMinor=${data.expectedRemainingMinor}`,
-      formatResponse: result => ({ ok: true, ...result }),
-      // FOREIGN_CURRENCY calls getFxSnapshot which throws FxError on
-      // future-date / provider-down / etc; without the FxError catcher
-      // the route's generic catch maps it to 500 "Internal error" and
-      // the client UI can't distinguish "FX provider down, retry later"
-      // from a real server bug.
-      catchDomain: chainCatchers(
-        validationErrorCatcher(SettlementValidationError),
-        fxErrorCatcher(),
-      ),
-      // Whole body runs in one tx → every CascadeError (read-cap 503,
-      // trip.currency 500) is pre-commit; stamp precommit so the client
-      // rolls back instead of keeping a phantom settlement on a 5xx.
-      cascadePrecommit: true,
-    })
-
-    if (isSettlementDelete) return handleJsonRoute({
-      endpoint:    'settlement-delete', body, cors, uid,
-      schema:      SettlementDeleteRequestSchema,
-      handle:      data => settlementDelete(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
-      formatLog:   data => `trip=${data.tripId} settlement=${data.settlementId}`,
-      catchDomain: validationErrorCatcher(SettlementValidationError),
-      cascadePrecommit: true,
-    })
-
-    if (isUploadIntents) return handleJsonRoute({
-      endpoint:  'upload-intents', body, cors, uid, traceId,
-      schema:    UploadIntentsRequestSchema,
-      handle:    data => createUploadIntents(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
-      formatLog: (data, result) =>
-        `trip=${data.tripId} entity=${data.entityType}/${data.entityId} count=${result.intents.length}`,
-    })
-
-    if (isAttachmentUrl) return handleJsonRoute({
-      endpoint:  'attachment-url', body, cors, uid,
-      schema:    AttachmentUrlRequestSchema,
-      handle:    data => signEntityUrl(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
-      // entity coordinates + variant only; the minted URL is never logged.
-      formatLog: data => `trip=${data.tripId} entity=${data.entityType}/${data.entityId} variant=${data.variant}`,
-    })
-
-    if (isTripCascade) return handleJsonRoute({
-      endpoint:       'trip-cascade', body, cors, uid,
-      schema:         TripDeleteRequestSchema,
-      handle:         data => cascadeTripDelete(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
-      formatLog:      (data, result) => `trip=${data.tripId} docs=${result.deletedDocs} objects=${result.deletedObjects}`,
-      formatResponse: result => ({ ok: true, ...result }),
-    })
-
-    if (isInviteCreate) return handleJsonRoute({
-      endpoint:       'invite-create', body, cors, uid,
-      schema:         InviteCreateRequestSchema,
-      handle:         data => inviteCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
-      // Token is a fresh bearer secret -- never logged (mirrors attachment-url
-      // "minted URL is never logged"). trip + role are enough to correlate.
-      formatLog:      (data) => `trip=${data.tripId} role=${data.role}`,
-      formatResponse: result => ({ ok: true, ...result }),
-      catchDomain:    validationErrorCatcher(MembershipValidationError),
-      // Whole body runs in one tx → every CascadeError is pre-commit; stamp
-      // precommit so a 5xx rolls the optimistic invite row back.
-      cascadePrecommit: true,
-    })
-
-    if (isInviteRevoke) return handleJsonRoute({
-      endpoint:    'invite-revoke', body, cors, uid,
-      schema:      InviteRevokeRequestSchema,
-      handle:      data => inviteRevoke(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
-      formatLog:   data => `trip=${data.tripId}`,
-      catchDomain: validationErrorCatcher(MembershipValidationError),
-      cascadePrecommit: true,
-    })
-
-    if (isInviteRedeem) return handleJsonRoute({
-      endpoint:       'invite-redeem', body, cors, uid,
-      schema:         InviteRedeemRequestSchema,
-      handle:         data => inviteRedeem(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
-      formatLog:      (data, result) => `trip=${data.tripId} outcome=${result.outcome} role=${result.role}`,
-      formatResponse: result => ({ ok: true, ...result }),
-      catchDomain:    validationErrorCatcher(MembershipValidationError),
-    })
-
-    if (isMemberRemove) return handleJsonRoute({
-      endpoint:    'member-remove', body, cors, uid,
-      schema:      MemberRemoveRequestSchema,
-      handle:      data => memberRemove(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
-      formatLog:   data => `trip=${data.tripId} member=${uidTag(data.memberUid)}`,
-      catchDomain: validationErrorCatcher(MembershipValidationError),
-    })
-
-    if (isMemberLeave) return handleJsonRoute({
-      endpoint:    'member-leave', body, cors, uid,
-      schema:      MemberLeaveRequestSchema,
-      // Caller leaves themselves; the verified token's uid is the target.
-      handle:      data => memberLeave(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
-      formatLog:   data => `trip=${data.tripId} member=${uidTag(uid)}`,
-      catchDomain: validationErrorCatcher(MembershipValidationError),
-    })
-
-    if (isMemberRoleUpdate) return handleJsonRoute({
-      endpoint:    'member-role-update', body, cors, uid,
-      schema:      MemberRoleUpdateRequestSchema,
-      handle:      data => memberRoleUpdate(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
-      formatLog:   data => `trip=${data.tripId} member=${uidTag(data.memberUid)} role=${data.role}`,
-      catchDomain: validationErrorCatcher(MembershipValidationError),
-    })
-
-    if (isOwnerTransfer) return handleJsonRoute({
-      endpoint:    'owner-transfer', body, cors, uid,
-      schema:      OwnerTransferRequestSchema,
-      handle:      data => ownerTransfer(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
-      formatLog:   data => `trip=${data.tripId} target=${uidTag(data.targetUid)}`,
-      catchDomain: validationErrorCatcher(MembershipValidationError),
-    })
-
-    if (isExpenseReceiptOcr) return handleJsonRoute({
-      endpoint:  'expense-receipt-ocr', body, cors, uid,
-      schema:    ExpenseReceiptOcrRequestSchema,
-      // Re-OCR an EXISTING expense receipt: Worker reads receipt.path from
-      // the doc (client can't name the object), mirrors /expense-update auth
-      // (owner/editor; settlement-locked ⇒ owner), reads the image from
-      // Storage, and runs the SAME extractReceiptItems core as /ocr.
-      handle:    data => expenseReceiptOcr(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET, env.GEMINI_API_KEY),
-      formatLog: (data, result) => `trip=${data.tripId} exp=${data.expenseId} items=${result.result.items.length}`,
-      catchDomain: e => e instanceof GeminiError
-        ? {
-            log:    `GeminiError status=${e.status} msg=${e.message}`,
-            body:   { error: e.message },
-            status: e.status,
-          }
-        : null,
-    })
-
-    return handleJsonRoute({
-      endpoint:  'ocr', body, cors, uid,
-      schema:    OcrRequestSchema,
-      handle:    data => extractReceiptItems(data.image, data.mimeType, data.currency, env.GEMINI_API_KEY),
-      formatLog: (_data, result) => `items=${result.items.length}`,
-      catchDomain: e => e instanceof GeminiError
-        ? {
-            log:    `GeminiError status=${e.status} msg=${e.message}`,
-            body:   { error: e.message },
-            status: e.status,
-          }
-        : null,
-    })
+    // ─── Dispatch ─────────────────────────────────────────────────────
+    // Per-route variation (schema / handle / formatLog / catchDomain /
+    // cascadePrecommit) lives in the descriptor; auth + rate-limit + body
+    // size were handled above. See route-dispatch.ts for the wrapper.
+    return route.dispatch({ body, cors, uid, traceId, env })
   },
 
   // ─── Cron: 10-day receipt purge ───────────────────────────────────
