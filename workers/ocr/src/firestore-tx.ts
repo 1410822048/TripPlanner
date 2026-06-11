@@ -310,14 +310,22 @@ export async function runFirestoreTransaction<T>(
       //     Firestore rejected the commit, so no write landed.
       //   - begin / read / runQuery RPC timeout: the failure is before
       //     the commit RPC, so no write landed either.
-      // Both are safe to re-run from a fresh tx. Bounded by BOTH the
-      // attempt cap AND a wall-clock deadline so the Worker surfaces
+      //   - begin / read / runQuery transient 5xx (Firestore 503/500):
+      //     same pre-commit guarantee — the commit hasn't run. A COMMIT
+      //     5xx is NOT here (isPrecommitTransient5xx excludes phase
+      //     'commit') because it's ambiguous, same as the commit timeout.
+      // All safe to re-run from a fresh tx. Bounded by BOTH the attempt
+      // cap AND a wall-clock deadline so the Worker surfaces
       // TxRetryExhausted (5xx) BEFORE the client's 30s write timeout
       // degrades into an ambiguous "did not receive response".
-      if (isAborted(e) || isRpcTimeout(e)) {
-        // Log to Worker console so `wrangler tail` surfaces contention
-        // patterns -- retry behaviour was otherwise a silent black box.
-        console.warn(`[firestore-tx] ${isRpcTimeout(e) ? 'RPC_TIMEOUT' : 'ABORTED'} attempt ${attempt + 1}/${MAX_RETRIES}: ${(e as Error)?.message ?? e}`)
+      if (isAborted(e) || isRpcTimeout(e) || isPrecommitTransient5xx(e)) {
+        // Log to Worker console so `wrangler tail` surfaces contention /
+        // transient-5xx patterns -- retry behaviour was otherwise a
+        // silent black box.
+        const kind = isRpcTimeout(e) ? 'RPC_TIMEOUT'
+                   : isPrecommitTransient5xx(e) ? 'PRECOMMIT_5XX'
+                   : 'ABORTED'
+        console.warn(`[firestore-tx] ${kind} attempt ${attempt + 1}/${MAX_RETRIES}: ${(e as Error)?.message ?? e}`)
         const elapsed = Date.now() - startMs
         if (attempt < MAX_RETRIES - 1 && elapsed < TX_TOTAL_DEADLINE_MS) {
           await sleep(backoffDelay(attempt))
@@ -386,7 +394,7 @@ async function beginTransaction(accessToken: string, projectId: string): Promise
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
-    throw new TxRestError(res.status, `beginTransaction → ${res.status}: ${detail.slice(0, 200)}`)
+    throw new TxRestError(res.status, 'begin', `beginTransaction → ${res.status}: ${detail.slice(0, 200)}`)
   }
   const data = await res.json() as { transaction: string }
   return data.transaction
@@ -419,7 +427,7 @@ async function readDocInTransaction(
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
-    throw new TxRestError(res.status, `tx.get ${path} → ${res.status}: ${detail.slice(0, 200)}`)
+    throw new TxRestError(res.status, 'read', `tx.get ${path} → ${res.status}: ${detail.slice(0, 200)}`)
   }
   const rows = await res.json() as Array<{
     found?:   { name: string; fields?: Record<string, FsValue>; updateTime?: string }
@@ -428,13 +436,13 @@ async function readDocInTransaction(
   }>
   const row = rows[0]
   if (!row) {
-    throw new TxRestError(500, `tx.get ${path} → empty batchGet response`)
+    throw new TxRestError(500, 'read', `tx.get ${path} → empty batchGet response`)
   }
   if (row.missing) {
     return { exists: false, fields: {}, name: row.missing, updateTime: null }
   }
   if (!row.found) {
-    throw new TxRestError(500, `tx.get ${path} → row has neither found nor missing`)
+    throw new TxRestError(500, 'read', `tx.get ${path} → row has neither found nor missing`)
   }
   return {
     exists:     true,
@@ -499,6 +507,7 @@ async function runQueryInTransaction(
     const detail = await res.text().catch(() => '')
     throw new TxRestError(
       res.status,
+      'query',
       `tx.runQuery ${query.parent}/${query.collection} → ${res.status}: ${detail.slice(0, 200)}`,
     )
   }
@@ -577,18 +586,26 @@ async function commitTransaction(
   }
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
-    throw new TxRestError(res.status, `commit → ${res.status}: ${detail.slice(0, 300)}`)
+    throw new TxRestError(res.status, 'commit', `commit → ${res.status}: ${detail.slice(0, 300)}`)
   }
 }
 
 // ─── Error classification ─────────────────────────────────────────
 
+/** Which RPC phase produced the error. Load-bearing for retry safety:
+ *  begin / read / query are PRE-COMMIT (nothing written → a 5xx there is
+ *  safe to retry), commit is AMBIGUOUS (the write may have applied → a
+ *  commit 5xx must NEVER be blind-retried). */
+type TxPhase = 'begin' | 'read' | 'query' | 'commit'
+
 class TxRestError extends Error {
   readonly status: number
-  constructor(status: number, message: string) {
+  readonly phase:  TxPhase
+  constructor(status: number, phase: TxPhase, message: string) {
     super(message)
     this.name = 'TxRestError'
     this.status = status
+    this.phase = phase
   }
 }
 
@@ -605,6 +622,20 @@ function isAborted(e: unknown): boolean {
 
 function isUnauthorized(e: unknown): boolean {
   return e instanceof TxRestError && e.status === 401
+}
+
+/** Transient Firestore 5xx (500/502/503/504) on a PRE-COMMIT RPC
+ *  (begin / read / runQuery). These are definitively nothing-written —
+ *  the commit hasn't run — so re-running the body from a fresh tx is
+ *  safe, exactly like an ABORTED conflict. A COMMIT-phase 5xx is
+ *  deliberately excluded: the write may have applied, so it stays
+ *  ambiguous (surfaced as a generic 5xx → client WorkerAmbiguous →
+ *  reconcile), NEVER blind-retried — same invariant as the commit
+ *  timeout (TxCommitAmbiguous). */
+function isPrecommitTransient5xx(e: unknown): boolean {
+  if (!(e instanceof TxRestError)) return false
+  if (e.phase === 'commit') return false
+  return e.status >= 500 && e.status <= 599
 }
 
 /** A Firestore REST call that overran its per-RPC AbortSignal.timeout.

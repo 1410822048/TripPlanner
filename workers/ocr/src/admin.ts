@@ -38,6 +38,68 @@ function parseServiceAccount(json: string): ServiceAccount {
   return parsed
 }
 
+// ─── Token-exchange resilience ────────────────────────────────────
+// The OAuth token endpoint is an external dependency on the cold-start
+// path of EVERY Worker-authoritative request (mint-on-first-call, or
+// after a 401 invalidation). A transient hiccup there (Google 5xx, a
+// network blip, a slow response) would otherwise throw straight to the
+// route's generic 500 -- the availability gap behind intermittent,
+// unreproducible 500s. So each attempt is bounded by a timeout and
+// transient failures retry a couple times. Permanent failures (4xx --
+// bad/rotated key, invalid_grant) throw immediately: retrying can't help.
+const TOKEN_EXCHANGE_TIMEOUT_MS   = 5_000
+const TOKEN_EXCHANGE_MAX_ATTEMPTS = 3
+
+function tokenBackoffMs(attempt: number): number {
+  return Math.min(150 * 2 ** attempt, 1_000)  // 150ms, 300ms, 600ms…
+}
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+interface TokenExchangeResponse { access_token: string; expires_in: number }
+
+/** POST the signed JWT assertion to the token endpoint, with per-attempt
+ *  timeout + transient retry. The JWT is signed ONCE by the caller and
+ *  reused across attempts (its 1h validity dwarfs the retry window). */
+async function exchangeToken(tokenUri: string, jwt: string): Promise<TokenExchangeResponse> {
+  let lastErr: unknown
+  for (let attempt = 0; attempt < TOKEN_EXCHANGE_MAX_ATTEMPTS; attempt++) {
+    let res: Response
+    try {
+      res = await fetch(tokenUri, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body:    new URLSearchParams({
+          grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+          assertion:  jwt,
+        }),
+        signal: AbortSignal.timeout(TOKEN_EXCHANGE_TIMEOUT_MS),
+      })
+    } catch (e) {
+      // Network failure / AbortSignal timeout -- transient, retry.
+      lastErr = e
+      if (attempt < TOKEN_EXCHANGE_MAX_ATTEMPTS - 1) { await sleep(tokenBackoffMs(attempt)); continue }
+      break
+    }
+    if (res.ok) {
+      return await res.json() as TokenExchangeResponse
+    }
+    const detail = await res.text().catch(() => '<unreadable>')
+    // 4xx is permanent (invalid_grant / bad key) -- fail fast, original
+    // message shape preserved so callers / logs read the same as before.
+    if (res.status < 500) {
+      throw new Error(`getAdminToken token exchange failed: ${res.status} ${detail.slice(0, 200)}`)
+    }
+    // 5xx -- Google token endpoint transient. Retry.
+    lastErr = new Error(`getAdminToken token exchange failed: ${res.status} ${detail.slice(0, 200)}`)
+    if (attempt < TOKEN_EXCHANGE_MAX_ATTEMPTS - 1) { await sleep(tokenBackoffMs(attempt)); continue }
+  }
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error(`getAdminToken token exchange failed: ${String(lastErr)}`)
+}
+
 /** Returns a Google OAuth 2.0 access token scoped for Firestore admin
  *  access. Reuses an in-process cache until ~60s before expiry. */
 export async function getAdminToken(serviceAccountJson: string): Promise<string> {
@@ -80,19 +142,7 @@ export async function getAdminToken(serviceAccountJson: string): Promise<string>
     .setExpirationTime(exp)
     .sign(key)
 
-  const res = await fetch(sa.token_uri, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body:    new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      assertion:  jwt,
-    }),
-  })
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '<unreadable>')
-    throw new Error(`getAdminToken token exchange failed: ${res.status} ${detail.slice(0, 200)}`)
-  }
-  const data = await res.json() as { access_token: string; expires_in: number }
+  const data = await exchangeToken(sa.token_uri, jwt)
   cached = {
     accessToken: data.access_token,
     expiresAtMs: now + data.expires_in * 1000,
