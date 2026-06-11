@@ -34,12 +34,8 @@ import { toLocalMidnightTimestamp } from '@/utils/dates'
 import { MUTATION_ACTION, type MutationMeta, type MutationOptions } from '@/services/queryClient'
 import { markPerf } from '@/utils/perf'
 import { useLastViewedStore } from '@/store/lastViewedStore'
+import { tripKeys } from '../queryKeys'
 import type { CreateTripInput, Trip } from '@/types'
-
-export const tripKeys = {
-  mine:  (uid: string) => ['trips', 'mine', uid] as const,
-  myIds: (uid: string) => ['trips', 'my-ids', uid] as const,
-}
 
 /**
  * Realtime trip-id list — collection-group listener on /members

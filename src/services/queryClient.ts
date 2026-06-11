@@ -35,6 +35,7 @@ export const MUTATION_ACTION = {
   // ── Specialty mutations ────────────────────────────────────────
   TOGGLE_VOTE:       '投票',
   CHANGE_ROLE:       '権限変更',
+  TRANSFER_OWNER:    'オーナー譲渡',
   RECORD_SETTLEMENT: '清算記録',
   CANCEL_SETTLEMENT: '清算取り消し',
   CREATE_INVITE:     '邀請連結作成',

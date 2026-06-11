@@ -4,8 +4,9 @@
 // roster live (rather than needing a manual refresh, which used to be
 // a confusing UX gap right after invite acceptance).
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { getMembersByTrip, subscribeToMembers, removeMember, updateMemberRole } from '../services/memberService'
+import { getMembersByTrip, subscribeToMembers, removeMember, updateMemberRole, transferOwnership } from '../services/memberService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
+import { tripKeys } from '@/features/trips/queryKeys'
 import { useUid } from '@/hooks/useAuth'
 import { MUTATION_ACTION, type MutationMeta } from '@/services/queryClient'
 import type { Member } from '@/types'
@@ -69,6 +70,33 @@ export function useUpdateMemberRole(tripId: string | undefined) {
     },
     onError: (_err, _vars, ctx) => {
       if (tripId && ctx?.prev !== undefined) qc.setQueryData(memberKeys.all(tripId, uid), ctx.prev)
+    },
+  })
+}
+
+/**
+ * Owner-only mutation to transfer trip ownership to another member. Worker
+ * atomically flips trip.ownerId + caller→editor + target→owner.
+ *
+ * NOT optimistic: the transfer touches two member-role rows AND the trip
+ * doc's ownerId across two separate caches; a half-optimistic patch reads
+ * worse than letting the realtime listeners (useMembers role + useMyTrips
+ * ownerId) reflect it. `onSettled` invalidates both so a lost HTTP response
+ * / listener race still reconciles to server truth — same reasoning as
+ * useDeleteTrip / useLeaveTrip. The MembersModal surfaces a success toast;
+ * failures go through the global MutationCache toast (meta.action).
+ */
+export function useTransferOwnership(tripId: string | undefined) {
+  const qc = useQueryClient()
+  const uid = useUid()
+  return useMutation({
+    mutationFn: (targetUid: string) => transferOwnership(tripId!, targetUid),
+    meta: { action: MUTATION_ACTION.TRANSFER_OWNER } satisfies MutationMeta,
+    onSettled: () => {
+      if (!tripId || !uid) return
+      qc.invalidateQueries({ queryKey: memberKeys.all(tripId, uid) })
+      qc.invalidateQueries({ queryKey: tripKeys.mine(uid) })
+      qc.invalidateQueries({ queryKey: tripKeys.myIds(uid) })
     },
   })
 }

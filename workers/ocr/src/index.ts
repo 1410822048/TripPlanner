@@ -108,12 +108,14 @@ import {
   memberRemove,
   memberLeave,
   memberRoleUpdate,
+  ownerTransfer,
   InviteCreateRequestSchema,
   InviteRevokeRequestSchema,
   InviteRedeemRequestSchema,
   MemberRemoveRequestSchema,
   MemberLeaveRequestSchema,
   MemberRoleUpdateRequestSchema,
+  OwnerTransferRequestSchema,
   MembershipValidationError,
 }                                                 from './membership-write'
 import {
@@ -263,8 +265,9 @@ export default {
     const isMemberRemove     = url.pathname === '/member-remove'     && request.method === 'POST'
     const isMemberLeave      = url.pathname === '/member-leave'      && request.method === 'POST'
     const isMemberRoleUpdate = url.pathname === '/member-role-update' && request.method === 'POST'
+    const isOwnerTransfer    = url.pathname === '/owner-transfer'    && request.method === 'POST'
     const isAttachmentUrl       = url.pathname === '/attachment-url'        && request.method === 'POST'
-    if (!isOcr && !isExpenseReceiptOcr && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents && !isWishCreate && !isWishUpdate && !isBookingCreate && !isBookingUpdate && !isSettlementCreate && !isSettlementDelete && !isInviteCreate && !isInviteRevoke && !isInviteRedeem && !isMemberRemove && !isMemberLeave && !isMemberRoleUpdate && !isAttachmentUrl) {
+    if (!isOcr && !isExpenseReceiptOcr && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents && !isWishCreate && !isWishUpdate && !isBookingCreate && !isBookingUpdate && !isSettlementCreate && !isSettlementDelete && !isInviteCreate && !isInviteRevoke && !isInviteRedeem && !isMemberRemove && !isMemberLeave && !isMemberRoleUpdate && !isOwnerTransfer && !isAttachmentUrl) {
       return json({ error: 'Not found' }, 404, cors)
     }
 
@@ -332,12 +335,12 @@ export default {
     // dedicated UPLOAD_INTENT_RATE_LIMITER binding was deferred so
     // this commit doesn't grow its deploy-failure surface area;
     // future tuning can split if observed metrics justify.
-    // /invite-redeem, /member-remove, /member-leave, /member-role-update
-    // reuse CASCADE_RATE_LIMITER + scope='cascade' (the default branch
-    // below) -- they share the same "rare per-user action, server-heavy"
-    // shape and the existing 10/min L2 cap is comfortably above realistic
-    // user behavior (one invite accept per visit, owner batch-kicks +
-    // self-leaves measured in single digits per session).
+    // /invite-redeem, /member-remove, /member-leave, /member-role-update,
+    // /owner-transfer reuse CASCADE_RATE_LIMITER + scope='cascade' (the
+    // default branch below) -- they share the same "rare per-user action,
+    // server-heavy" shape and the existing 10/min L2 cap is comfortably
+    // above realistic user behavior (one invite accept per visit, owner
+    // batch-kicks + self-leaves + the odd transfer, single digits/session).
     const limiter = isOcrCostRoute    ? env.OCR_RATE_LIMITER
                   : isTripCascade     ? env.TRIP_CASCADE_RATE_LIMITER
                   : isExpenseWrite    ? env.EXPENSE_RATE_LIMITER
@@ -597,6 +600,14 @@ export default {
       schema:      MemberRoleUpdateRequestSchema,
       handle:      data => memberRoleUpdate(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
       formatLog:   data => `trip=${data.tripId} member=${uidTag(data.memberUid)} role=${data.role}`,
+      catchDomain: validationErrorCatcher(MembershipValidationError),
+    })
+
+    if (isOwnerTransfer) return handleJsonRoute({
+      endpoint:    'owner-transfer', body, cors, uid,
+      schema:      OwnerTransferRequestSchema,
+      handle:      data => ownerTransfer(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog:   data => `trip=${data.tripId} target=${uidTag(data.targetUid)}`,
       catchDomain: validationErrorCatcher(MembershipValidationError),
     })
 

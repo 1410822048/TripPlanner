@@ -110,6 +110,15 @@ export const MemberRoleUpdateRequestSchema = z.object({
 }).strict()
 export type MemberRoleUpdateRequest = z.infer<typeof MemberRoleUpdateRequestSchema>
 
+/** /owner-transfer request. Current owner hands ownership to `targetUid`
+ *  (an existing editor/viewer member). Worker-only — trip.ownerId is
+ *  rules-immutable and member roles are `if false` for clients. */
+export const OwnerTransferRequestSchema = z.object({
+  tripId:    z.string().regex(TripIdRe),
+  targetUid: z.string().min(1).max(UID_MAX),
+}).strict()
+export type OwnerTransferRequest = z.infer<typeof OwnerTransferRequestSchema>
+
 /** Default invite lifetime when the client doesn't override. Mirrors the
  *  "5時間有効" copy in InviteModal. */
 const INVITE_DEFAULT_EXPIRY_MS = 5 * 60 * 60 * 1000
@@ -1017,6 +1026,91 @@ async function doMemberRoleUpdate(
       currentDocument: { exists: true },
     }
     return { writes: [write], result: undefined }
+  })
+
+  return { ok: true }
+}
+
+// ─── /owner-transfer ──────────────────────────────────────────────
+// Current owner hands ownership to an existing editor/viewer member. Three
+// docs change ATOMICALLY in one tx -- trip.ownerId, old-owner role→editor,
+// target role→owner -- so the trip never observes 0 or 2 owners. ownerId is
+// rules-immutable and member roles are client-`if false`, so this MUST be a
+// Worker admin write. Mirrors /member-role-update's authz shape.
+
+export async function ownerTransfer(
+  callerUid:          string,
+  req:                OwnerTransferRequest,
+  serviceAccountJson: string,
+): Promise<{ ok: true }> {
+  return withTokenRetry(() => doOwnerTransfer(callerUid, req, serviceAccountJson))
+}
+
+async function doOwnerTransfer(
+  callerUid:          string,
+  req:                OwnerTransferRequest,
+  serviceAccountJson: string,
+): Promise<{ ok: true }> {
+  const accessToken = await getAdminToken(serviceAccountJson)
+  const projectId   = getProjectId(serviceAccountJson)
+
+  await runFirestoreTransaction(accessToken, projectId, async (tx) => {
+    // Caller must be the CURRENT owner (also asserts trip exists + not
+    // deleting). requireTripOwner reads trip + caller member doc.
+    const { trip } = await requireTripOwner(tx, req.tripId, callerUid)
+
+    if (req.targetUid === callerUid) {
+      throw new MembershipValidationError('targetUid', 'already the owner')
+    }
+
+    const target = await tx.get(`trips/${req.tripId}/members/${req.targetUid}`)
+    if (!target.exists) {
+      throw new CascadeError(404, 'target member not found')
+    }
+    // Don't hand ownership to a member mid-removal (kick in flight).
+    if ('removingAt' in target.fields) {
+      throw new MembershipValidationError('targetUid', 'target is being removed')
+    }
+    const targetRole = readString(target.fields, 'role')
+    if (targetRole !== 'editor' && targetRole !== 'viewer') {
+      // Defensive: target.role already 'owner' (or malformed) is a
+      // data-at-rest disagreement; refuse rather than mint a second owner.
+      throw new MembershipValidationError('targetUid', 'target has an unexpected role')
+    }
+    // Single-source-of-truth guards: the uid we promote MUST be the member
+    // doc's own userId AND a genuine roster member -- ownerId must never
+    // point at someone not actually in the trip.
+    if (readString(target.fields, 'userId') !== req.targetUid) {
+      throw new MembershipValidationError('targetUid', 'target member uid mismatch')
+    }
+    if (!readTripRoster(trip).includes(req.targetUid)) {
+      throw new MembershipValidationError('targetUid', 'target is not in trip roster')
+    }
+
+    // Three atomic writes. updateMask scopes each so memberIds / other
+    // fields stay untouched. currentDocument.exists on all three is
+    // defense-in-depth against a concurrent delete between read and commit.
+    const writes: TxWrite[] = [
+      {
+        document:        docResourceName(projectId, `trips/${req.tripId}`),
+        fields:          { ownerId: { stringValue: req.targetUid } },
+        updateMask:      ['ownerId'],
+        currentDocument: { exists: true },
+      },
+      {
+        document:        docResourceName(projectId, `trips/${req.tripId}/members/${callerUid}`),
+        fields:          { role: { stringValue: 'editor' } },
+        updateMask:      ['role'],
+        currentDocument: { exists: true },
+      },
+      {
+        document:        docResourceName(projectId, `trips/${req.tripId}/members/${req.targetUid}`),
+        fields:          { role: { stringValue: 'owner' } },
+        updateMask:      ['role'],
+        currentDocument: { exists: true },
+      },
+    ]
+    return { writes, result: undefined }
   })
 
   return { ok: true }

@@ -132,6 +132,7 @@ import {
 	memberRemove,
 	memberLeave,
 	memberRoleUpdate,
+	ownerTransfer,
 	InviteCreateRequestSchema,
 	InviteRevokeRequestSchema,
 	MembershipValidationError,
@@ -171,9 +172,14 @@ function tripReadDoc(opts: { ownerId?: string; memberIds?: string[]; deleting?: 
 function memberReadDoc(
 	uid: string,
 	role: 'owner' | 'editor' | 'viewer' = 'editor',
-	opts: { removingAt?: string } = {},
+	opts: { removingAt?: string; userId?: string } = {},
 ): MockReadDoc {
-	const fields: Record<string, unknown> = { role: { stringValue: role } }
+	// userId mirrors the doc id by default (members/{uid}.userId === uid);
+	// opts.userId overrides to exercise the owner-transfer mismatch guard.
+	const fields: Record<string, unknown> = {
+		role:   { stringValue: role },
+		userId: { stringValue: opts.userId ?? uid },
+	}
 	if (opts.removingAt) {
 		fields.removingAt = { timestampValue: opts.removingAt }
 	}
@@ -1254,5 +1260,144 @@ describe('memberRoleUpdate endpoint', () => {
 		).catch(e => e)
 		expect(err).toBeInstanceOf(CascadeError)
 		expect((err as CascadeError).status).toBe(410)
+	})
+})
+
+// ─── /owner-transfer ─────────────────────────────────────────────
+
+describe('ownerTransfer endpoint', () => {
+	const TARGET = 'target-uid'
+
+	function seedTransfer(opts: {
+		targetRole?:      'owner' | 'editor' | 'viewer'
+		targetRemoving?:  boolean
+		targetExists?:    boolean
+		rosterHasTarget?: boolean   // default true
+		targetUserId?:    string    // override to exercise the uid-mismatch guard
+	} = {}): void {
+		txGetResponses.set(
+			`trips/${TRIP_ID}`,
+			tripReadDoc({
+				ownerId:   OWNER_UID,
+				memberIds: (opts.rosterHasTarget ?? true) ? [OWNER_UID, TARGET] : [OWNER_UID],
+			}),
+		)
+		txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`, memberReadDoc(OWNER_UID, 'owner'))
+		const targetPath = `trips/${TRIP_ID}/members/${TARGET}`
+		txGetResponses.set(
+			targetPath,
+			opts.targetExists === false
+				? notFoundReadDoc(targetPath)
+				: memberReadDoc(TARGET, opts.targetRole ?? 'editor', {
+						removingAt: opts.targetRemoving ? '2026-05-28T00:00:00Z' : undefined,
+						userId:     opts.targetUserId,
+					}),
+		)
+	}
+
+	it('happy path: 3 atomic writes — trip.ownerId + old-owner→editor + target→owner', async () => {
+		seedTransfer()
+
+		const result = await ownerTransfer(OWNER_UID, { tripId: TRIP_ID, targetUid: TARGET }, '{}')
+		expect(result).toEqual({ ok: true })
+
+		const writes = capturedTxResult!.writes as Array<{
+			document:        string
+			fields:          Record<string, unknown>
+			updateMask:      string[]
+			currentDocument?: { exists?: boolean }
+		}>
+		expect(writes).toHaveLength(3)
+
+		const tripWrite = writes.find(w => w.document.match(/\/documents\/trips\/trip-1$/))
+		expect(tripWrite!.updateMask).toEqual(['ownerId'])
+		expect(tripWrite!.fields.ownerId).toEqual({ stringValue: TARGET })
+		expect(tripWrite!.currentDocument).toEqual({ exists: true })
+
+		const oldOwnerWrite = writes.find(w => w.document.includes(`/members/${OWNER_UID}`))
+		expect(oldOwnerWrite!.updateMask).toEqual(['role'])
+		expect(oldOwnerWrite!.fields.role).toEqual({ stringValue: 'editor' })
+		expect(oldOwnerWrite!.currentDocument).toEqual({ exists: true })
+
+		const newOwnerWrite = writes.find(w => w.document.includes(`/members/${TARGET}`))
+		expect(newOwnerWrite!.updateMask).toEqual(['role'])
+		expect(newOwnerWrite!.fields.role).toEqual({ stringValue: 'owner' })
+		expect(newOwnerWrite!.currentDocument).toEqual({ exists: true })
+	})
+
+	it('transfer to a viewer also works (target becomes owner)', async () => {
+		seedTransfer({ targetRole: 'viewer' })
+
+		const result = await ownerTransfer(OWNER_UID, { tripId: TRIP_ID, targetUid: TARGET }, '{}')
+		expect(result).toEqual({ ok: true })
+		const writes = capturedTxResult!.writes as Array<{ document: string; fields: Record<string, unknown> }>
+		expect(writes.find(w => w.document.includes(`/members/${TARGET}`))!.fields.role).toEqual({ stringValue: 'owner' })
+	})
+
+	it('rejects: caller not owner → 403', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({ ownerId: OWNER_UID }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${INVITEE}`, memberReadDoc(INVITEE, 'editor'))
+
+		await expect(
+			ownerTransfer(INVITEE, { tripId: TRIP_ID, targetUid: TARGET }, '{}'),
+		).rejects.toMatchObject({ status: 403 })
+	})
+
+	it('rejects: target === caller → 400 (already owner)', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({ ownerId: OWNER_UID, memberIds: [OWNER_UID] }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`, memberReadDoc(OWNER_UID, 'owner'))
+
+		const err = await ownerTransfer(OWNER_UID, { tripId: TRIP_ID, targetUid: OWNER_UID }, '{}').catch(e => e)
+		expect(err).toBeInstanceOf(MembershipValidationError)
+		expect((err as MembershipValidationError).field).toBe('targetUid')
+	})
+
+	it('rejects: target not found → 404', async () => {
+		seedTransfer({ targetExists: false })
+
+		await expect(
+			ownerTransfer(OWNER_UID, { tripId: TRIP_ID, targetUid: TARGET }, '{}'),
+		).rejects.toMatchObject({ status: 404 })
+	})
+
+	it('rejects: target is being removed (removingAt) → 400', async () => {
+		seedTransfer({ targetRemoving: true })
+
+		const err = await ownerTransfer(OWNER_UID, { tripId: TRIP_ID, targetUid: TARGET }, '{}').catch(e => e)
+		expect(err).toBeInstanceOf(MembershipValidationError)
+		expect((err as MembershipValidationError).field).toBe('targetUid')
+	})
+
+	it('rejects: target.role already owner (data anomaly) → 400', async () => {
+		seedTransfer({ targetRole: 'owner' })
+
+		const err = await ownerTransfer(OWNER_UID, { tripId: TRIP_ID, targetUid: TARGET }, '{}').catch(e => e)
+		expect(err).toBeInstanceOf(MembershipValidationError)
+		expect((err as MembershipValidationError).field).toBe('targetUid')
+	})
+
+	it('rejects: trip deleting → 410', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({ ownerId: OWNER_UID, deleting: true, memberIds: [OWNER_UID, TARGET] }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`, memberReadDoc(OWNER_UID, 'owner'))
+
+		await expect(
+			ownerTransfer(OWNER_UID, { tripId: TRIP_ID, targetUid: TARGET }, '{}'),
+		).rejects.toMatchObject({ status: 410 })
+	})
+
+	it('rejects: target not in trip roster → 400 (single-source-of-truth guard)', async () => {
+		seedTransfer({ rosterHasTarget: false })
+
+		const err = await ownerTransfer(OWNER_UID, { tripId: TRIP_ID, targetUid: TARGET }, '{}').catch(e => e)
+		expect(err).toBeInstanceOf(MembershipValidationError)
+		expect((err as MembershipValidationError).field).toBe('targetUid')
+	})
+
+	it('rejects: target member doc userId mismatch → 400', async () => {
+		seedTransfer({ targetUserId: 'someone-else' })
+
+		const err = await ownerTransfer(OWNER_UID, { tripId: TRIP_ID, targetUid: TARGET }, '{}').catch(e => e)
+		expect(err).toBeInstanceOf(MembershipValidationError)
+		expect((err as MembershipValidationError).field).toBe('targetUid')
 	})
 })

@@ -14,7 +14,7 @@ import {
   type AcceptResult,
 } from './inviteService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
-import { tripKeys } from '@/features/trips/hooks/useTrips'
+import { tripKeys } from '@/features/trips/queryKeys'
 import { MUTATION_ACTION, type MutationMeta } from '@/services/queryClient'
 import type { Invite, Trip } from '@/types'
 

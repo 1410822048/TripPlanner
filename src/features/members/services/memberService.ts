@@ -72,7 +72,7 @@ export async function leaveMember(tripId: string): Promise<void> {
 
 /**
  * Update a member's role through the Worker. Only editor/viewer transitions
- * are allowed; ownership transfer remains intentionally out of scope.
+ * are allowed; ownership transfer goes through transferOwnership below.
  */
 export async function updateMemberRole(
   tripId: string,
@@ -85,5 +85,21 @@ export async function updateMemberRole(
     tripId,
     memberUid: memberId,
     role,
+  })
+}
+
+/**
+ * Transfer trip ownership to an existing editor/viewer member through the
+ * Worker. The Worker atomically flips trip.ownerId + demotes the caller to
+ * editor + promotes the target to owner in one transaction (ownerId is
+ * rules-immutable and member roles are client-`if false`, so this can only
+ * be a Worker admin write). `targetUid` is the member's Firebase uid.
+ */
+export async function transferOwnership(tripId: string, targetUid: string): Promise<void> {
+  const workerBase = requireWorkerWriteBase()
+  const idToken    = await preflightIdToken()
+  await workerFetch(workerBase, idToken, '/owner-transfer', {
+    tripId,
+    targetUid,
   })
 }
