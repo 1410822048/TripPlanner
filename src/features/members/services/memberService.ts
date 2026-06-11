@@ -58,6 +58,19 @@ export async function removeMember(tripId: string, memberId: string): Promise<vo
 }
 
 /**
+ * Leave a trip through the Worker (caller removes themselves). The Worker
+ * reads the caller uid from the verified token — no memberUid in the body —
+ * gates out the owner (single-owner invariant), then runs the SAME
+ * trip.memberIds strip + subcollection ACL cleanup + member doc delete as
+ * /member-remove. Owners can't use this; they transfer ownership or delete.
+ */
+export async function leaveMember(tripId: string): Promise<void> {
+  const workerBase = requireWorkerWriteBase()
+  const idToken    = await preflightIdToken()
+  await workerFetch(workerBase, idToken, '/member-leave', { tripId })
+}
+
+/**
  * Update a member's role through the Worker. Only editor/viewer transitions
  * are allowed; ownership transfer remains intentionally out of scope.
  */

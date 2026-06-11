@@ -24,6 +24,7 @@ import {
   updateTrip,
 } from '../services/tripService'
 import { deleteTrip } from '../services/tripCascade'
+import { leaveMember } from '@/features/members/services/memberService'
 import { copyTrip, type CopyTripInput, type CopyTripResult } from '../services/tripCopy'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
 import { captureError } from '@/services/sentry'
@@ -278,6 +279,56 @@ export function useDeleteTrip(uid: string | undefined) {
     // the UI as a ghost row. Invalidating on settled forces a fresh
     // query that re-syncs with server truth regardless of which path
     // (success / error / lost response) the mutation took.
+    onSettled: () => {
+      if (!uid) return
+      qc.invalidateQueries({ queryKey: tripKeys.mine(uid) })
+      qc.invalidateQueries({ queryKey: tripKeys.myIds(uid) })
+    },
+  })
+}
+
+/**
+ * Leave a trip (non-owner self-removal via the Worker /member-leave
+ * endpoint). The twin of useDeleteTrip from the trip-LIST cache's point
+ * of view: both make a trip disappear from MY world, so the optimistic
+ * patch + rollback + lastViewed cleanup + lost-response reconcile are
+ * identical. The only difference is which Worker endpoint runs and that
+ * the caller is the target (the Worker reads the uid from the token; the
+ * owner is gated out server-side, and the UI hides the affordance for
+ * owners anyway).
+ */
+export function useLeaveTrip(uid: string | undefined) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (tripId: string) => {
+      if (!uid) throw new Error('useLeaveTrip: uid is undefined')
+      return leaveMember(tripId)
+    },
+    meta: { action: MUTATION_ACTION.DELETE } satisfies MutationMeta,
+    onMutate: (tripId) => {
+      if (!uid) return { prevTrips: undefined as Trip[] | undefined, prevIds: undefined as string[] | undefined }
+      const tripsKey = tripKeys.mine(uid)
+      const idsKey   = tripKeys.myIds(uid)
+      const prevTrips = qc.getQueryData<Trip[]>(tripsKey)
+      const prevIds   = qc.getQueryData<string[]>(idsKey)
+      if (prevTrips) qc.setQueryData<Trip[]>(tripsKey, prevTrips.filter(t => t.id !== tripId))
+      if (prevIds)   qc.setQueryData<string[]>(idsKey, prevIds.filter(id => id !== tripId))
+      return { prevTrips, prevIds }
+    },
+    onSuccess: (_data, tripId) => {
+      useLastViewedStore.getState().clearTrip(tripId)
+    },
+    onError: (_err, _vars, ctx) => {
+      if (uid) {
+        if (ctx?.prevTrips !== undefined) qc.setQueryData(tripKeys.mine(uid), ctx.prevTrips)
+        if (ctx?.prevIds   !== undefined) qc.setQueryData(tripKeys.myIds(uid), ctx.prevIds)
+      }
+    },
+    // Same lost-response reconcile as useDeleteTrip: the /members
+    // collection-group listener pushes the leave to the cache, but a lost
+    // HTTP response would otherwise roll back to the pre-mutation snapshot
+    // and revive the trip as a ghost row. Invalidate forces a fresh query
+    // that re-syncs with server truth regardless of which path won.
     onSettled: () => {
       if (!uid) return
       qc.invalidateQueries({ queryKey: tripKeys.mine(uid) })

@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useFormModal, type UseFormModalResult } from '@/hooks/useFormModal'
 import { useSchedules, useCreateSchedule, useUpdateSchedule, useDeleteSchedule } from './useSchedules'
-import { useCopyTrip, useDeleteTrip, useMyTrips, useUpdateTrip } from '@/features/trips/hooks/useTrips'
+import { useCopyTrip, useDeleteTrip, useLeaveTrip, useMyTrips, useUpdateTrip } from '@/features/trips/hooks/useTrips'
 import { useCurrentTrip } from '@/features/trips/hooks/useCurrentTrip'
 import type { CopyTripInput } from '@/features/trips/services/tripCopy'
 import { useTripSelection } from '@/features/trips/hooks/useTripSelection'
@@ -71,6 +71,8 @@ export interface SchedulePageState {
   selectTrip:       (item: TripItem) => void
   saveTrip:         (data: TripItem) => void
   deleteTrip:       (deletedId: string) => void
+  /** Non-owner self-leave of the current trip (MembersModal footer). */
+  onLeaveTrip:      () => void
   reorderTrips:     (fromIdx: number, toIdx: number) => void
   handleMenuAction: (key: MenuActionKey) => void
 
@@ -241,6 +243,7 @@ export function useSchedulePageState(): SchedulePageState {
   const deleteMut     = useDeleteSchedule(tripId ?? '')
   const updateTripMut = useUpdateTrip(uid)
   const deleteTripMut = useDeleteTrip(uid)
+  const leaveTripMut  = useLeaveTrip(uid)
   const copyTripMut   = useCopyTrip()
   const isSaving      = createMut.isPending || updateMut.isPending
 
@@ -302,6 +305,27 @@ export function useSchedulePageState(): SchedulePageState {
     deleteTripMut.mutate(deletedId, {
       onSuccess: () => toast.success('旅程を削除しました'),
       onError:   () => { if (wasCurrent && restoreId) setSelectedTripId(restoreId) },
+    })
+  }
+
+  // Cloud-only: a non-owner leaves the current trip (MembersModal footer).
+  // Mirrors deleteTrip's "switch to the next surviving trip BEFORE the
+  // mutation" so the UI never renders against a trip vanishing under it.
+  // The modal is closed first — after the switch, currentTrip becomes a
+  // different trip (or null), and leaving the modal open would show the
+  // wrong trip's members. On failure we restore the selection (the user
+  // is still a member); the optimistic cache rollback + onSettled
+  // invalidate in useLeaveTrip re-sync the trip list.
+  function onLeaveTrip() {
+    const tripId = currentTrip?.id
+    if (!tripId) return
+    setMembersOpen(false)
+    const remaining = (myTrips ?? []).filter(t => t.id !== tripId)
+    setSelectedTripId(remaining[0]?.id ?? null)
+    setActiveDate(null)
+    leaveTripMut.mutate(tripId, {
+      onSuccess: () => toast.success('旅程から退出しました'),
+      onError:   () => setSelectedTripId(tripId),
     })
   }
 
@@ -432,7 +456,7 @@ export function useSchedulePageState(): SchedulePageState {
     trips, selectedTrip, dateRange, display, items, dayTotal,
     schedules, tripTotal, grouped, isLoading,
 
-    selectTrip, saveTrip, deleteTrip, reorderTrips, handleMenuAction,
+    selectTrip, saveTrip, deleteTrip, onLeaveTrip, reorderTrips, handleMenuAction,
     setActiveDate,
 
     scheduleModal,

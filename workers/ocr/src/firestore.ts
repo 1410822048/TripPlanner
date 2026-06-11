@@ -196,41 +196,51 @@ export async function batchArrayUnionMemberIds(
   }
 }
 
-/** arrayRemove `memberUid` from every doc's `memberIds` field. Symmetric
- *  to `batchArrayUnionMemberIds` -- same 500-per-commit chunking and
- *  error shape, but uses the REST `removeAllFromArray` transform which
- *  is the equivalent of arrayRemove in the SDKs. Idempotent: removing
- *  a uid that isn't present is a no-op.
+/** Strip a departed member (kicked via /member-remove, or self-left via
+ *  /member-leave) from a trip's docs in a SINGLE commit per chunk:
+ *  `removeAllFromArray(memberIds, memberUid)` on EVERY doc, plus
+ *  `removeAllFromArray(votes, memberUid)` carried as a SECOND fieldTransform
+ *  on the SAME write for wish docs. Symmetric to `batchArrayUnionMemberIds`
+ *  (the add side) -- same 500-writes-per-commit chunking + error shape.
  *
- *  Used by `/member-remove` to strip the kicked uid from
- *  `trips/{tripId}.memberIds` and from every `memberIds` array on
- *  trip-scoped subcollection docs BEFORE the members/{uid} doc itself
- *  is deleted. Order matters for correctness: leaving the ACL projection
- *  behind would let collection-group reads (PastLodgingPage etc.) still
- *  return docs to a kicked user; the only safe failure mode is
- *  "still member, retry the kick", not "member doc gone but reads leak". */
-export async function batchArrayRemoveMemberIds(
-  accessToken: string,
-  projectId:   string,
-  docNames:    string[],
-  memberUid:   string,
+ *  Why votes rides in this commit rather than a follow-up call: the
+ *  memberIds strip is the load-bearing ACL removal (must precede the
+ *  member-doc delete so collection-group reads can't leak to a departed
+ *  user). The wish-votes cleanup is only data-consistency (a departed
+ *  member's vote must stop inflating `votes.length`, the wish sort key) --
+ *  NOT a read-leak. Running it as its own commit AFTER the memberIds strip
+ *  would open a failure window between "ACL already stripped" and "member
+ *  doc deleted": a self-leaver who hit it would lose trip visibility (their
+ *  own member doc, one of these docs, has had memberIds stripped, so the
+ *  /members collection-group query no longer matches it) yet be unable to
+ *  retry from the UI, leaving an orphaned removingAt member doc. Same-commit
+ *  means votes either lands with the memberIds strip or the whole strip
+ *  fails and the caller's retry re-converges -- no new intermediate state.
+ *
+ *  Idempotent (removeAllFromArray of an absent value is a no-op). Caller
+ *  deletes the member doc LAST, after this returns. */
+export async function batchStripDepartedMember(
+  accessToken:  string,
+  projectId:    string,
+  docNames:     string[],
+  wishDocNames: string[],
+  memberUid:    string,
 ): Promise<void> {
   if (docNames.length === 0) return
+  const wishSet = new Set(wishDocNames)
+  const removeUid = (fieldPath: string) => ({
+    fieldPath,
+    removeAllFromArray: { values: [{ stringValue: memberUid }] },
+  })
   for (let i = 0; i < docNames.length; i += 500) {
     const chunk = docNames.slice(i, i + 500)
-    const writes = chunk.map(name => ({
-      transform: {
-        document: name,
-        fieldTransforms: [
-          {
-            fieldPath: 'memberIds',
-            removeAllFromArray: {
-              values: [{ stringValue: memberUid }],
-            },
-          },
-        ],
-      },
-    }))
+    const writes = chunk.map(name => {
+      const fieldTransforms = [removeUid('memberIds')]
+      // Wish docs get the votes strip as a second transform on the SAME
+      // write -- one touch per doc, atomic with its memberIds strip.
+      if (wishSet.has(name)) fieldTransforms.push(removeUid('votes'))
+      return { transform: { document: name, fieldTransforms } }
+    })
     const res = await fetch(
       `${BASE}/projects/${projectId}/databases/(default)/documents:commit`,
       {
@@ -244,7 +254,7 @@ export async function batchArrayRemoveMemberIds(
     )
     if (!res.ok) {
       const detail = await res.text().catch(() => '')
-      throw new Error(`batchArrayRemove → ${res.status}: ${detail.slice(0, 200)}`)
+      throw new Error(`batchStripDepartedMember → ${res.status}: ${detail.slice(0, 200)}`)
     }
   }
 }

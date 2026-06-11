@@ -36,12 +36,23 @@ export async function getMyTripIds(uid: string): Promise<string[]> {
 
 /** Extract unique parent trip ids from /members collection-group docs.
  *  Shared by the one-shot fetcher and the realtime listener so both
- *  produce identical output shapes. */
+ *  produce identical output shapes.
+ *
+ *  Skips docs carrying `removingAt`: this CG query matches on `userId`
+ *  (NOT `memberIds`), so a member doc mid-removal — the Worker stamps the
+ *  marker BEFORE stripping memberIds + deleting the doc, for both kick
+ *  (/member-remove) and self-leave (/member-leave) — would otherwise keep
+ *  its trip id in the list until the final delete lands, and a failed
+ *  delete would leave a permanent ghost. Marker present ⇒ already departed. */
 function memberDocsToTripIds(
-  docs: ReadonlyArray<{ ref: { parent: { parent: { id: string } | null } } }>,
+  docs: ReadonlyArray<{
+    data():  Record<string, unknown> | undefined
+    ref:     { parent: { parent: { id: string } | null } }
+  }>,
 ): string[] {
   return Array.from(new Set(
     docs
+      .filter(d => !d.data()?.removingAt)
       .map(d => d.ref.parent.parent?.id)
       .filter((id): id is string => !!id),
   ))
@@ -60,7 +71,11 @@ export const subscribeToMyTripIds = (
   buildQuery: ({ db, collectionGroup, query, where, limit }) =>
     query(collectionGroup(db, 'members'), where('userId', '==', uid), limit(TRIPS_LIMIT)),
   // We want trip ids, not Member objects — fromDoc extracts the parent id.
-  fromDoc:     d => d.ref.parent.parent?.id ?? '',
+  // A doc carrying `removingAt` is mid-removal (kick / self-leave); emit ''
+  // so postProcess's filter(Boolean) drops it — see memberDocsToTripIds for
+  // why the userId-based CG query needs this (else the trip lingers / ghosts
+  // until the final member-doc delete).
+  fromDoc:     d => d.data().removingAt ? '' : (d.ref.parent.parent?.id ?? ''),
   postProcess: ids => Array.from(new Set(ids.filter(Boolean))),
   source:      'subscribeToMyTripIds',
   limit:       TRIPS_LIMIT,

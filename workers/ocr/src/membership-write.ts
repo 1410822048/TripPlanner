@@ -45,7 +45,7 @@ import { getAdminToken, getProjectId }                      from './admin'
 import {
   readString,
   listDocNames,
-  batchArrayRemoveMemberIds,
+  batchStripDepartedMember,
   deleteDoc,
   type FsValue,
 }                                                           from './firestore'
@@ -94,6 +94,14 @@ export const MemberRemoveRequestSchema = z.object({
   memberUid: z.string().min(1).max(UID_MAX),
 }).strict()
 export type MemberRemoveRequest = z.infer<typeof MemberRemoveRequestSchema>
+
+/** /member-leave request. No memberUid: the caller removes THEMSELVES,
+ *  so the target uid is the verified token's sub, never client-supplied
+ *  (a memberUid field would just be an ignorable / spoofable no-op). */
+export const MemberLeaveRequestSchema = z.object({
+  tripId: z.string().regex(TripIdRe),
+}).strict()
+export type MemberLeaveRequest = z.infer<typeof MemberLeaveRequestSchema>
 
 export const MemberRoleUpdateRequestSchema = z.object({
   tripId:    z.string().regex(TripIdRe),
@@ -208,6 +216,111 @@ async function requireTripOwner(
 function encodeMemberIds(uids: string[]): FsValue {
   return {
     arrayValue: { values: uids.map(u => ({ stringValue: u })) },
+  }
+}
+
+// ─── Shared member-strip (member-remove + member-leave) ────────────
+// /member-remove (owner kicks someone) and /member-leave (member removes
+// themselves) share IDENTICAL strip mechanics -- only the authz/block
+// checks at each call site differ (owner-only + kick-target rules vs
+// member + owner-can't-leave). These two helpers hold the shared,
+// security-critical pieces so the LOAD-BEARING order lives in ONE place
+// and can't drift between the two endpoints.
+
+/** Build the small atomic writes that must land inside the authz tx
+ *  BEFORE the non-tx strip cascade begins, for removing `targetUid`
+ *  from `tripId`.
+ *
+ *  Write 1 -- `removingAt` on the target member doc (when it exists):
+ *    blocks the departing user from continuing to write during the
+ *    cascade phase (firestore.rules canWrite() refuses when present),
+ *    closing the addDoc-then-be-stripped race.
+ *  Write 2 -- `trip.memberIds := roster \ [targetUid]` (when the roster
+ *    still carries it): closes the OTHER race -- another editor reading a
+ *    stale roster AFTER the cascade's listDocNames snapshot and copying
+ *    targetUid onto a freshly created subcollection doc. Skipped when the
+ *    roster doesn't carry targetUid (data-at-rest inconsistency from a
+ *    prior partial removal); the marker still fires and the cascade still
+ *    converges.
+ *
+ *  Why these belong inside the authz tx (the caller wraps them): atomic
+ *  with the trip/member read, so a concurrent trip-cascade-delete either
+ *  ABORTs us (retry observes deletingAt → 410) or commits first (next
+ *  read observes deletingAt → 410) -- the marker/strip never lands on a
+ *  trip being torn down. Snapshot isolation also makes two concurrent
+ *  removals converge (loser retries on the committed roster).
+ *
+ *  `removingAt` uses a client-stamped Date (not REQUEST_TIME): the field
+ *  is consumed as exists/not-exists in rules, never compared by value;
+ *  and updateTransforms can't express the roster strip anyway, so both
+ *  writes stay on the plain-PATCH path. */
+function buildMemberStripWrites(
+  projectId: string,
+  tripId:    string,
+  targetUid: string,
+  target:    TxReadDoc,
+  trip:      TxReadDoc,
+): TxWrite[] {
+  const writes: TxWrite[] = []
+  if (target.exists) {
+    writes.push({
+      document:   docResourceName(projectId, `trips/${tripId}/members/${targetUid}`),
+      fields:     { removingAt: { timestampValue: new Date().toISOString() } },
+      updateMask: ['removingAt'],
+    })
+  }
+  const currentRoster = readTripRoster(trip)
+  if (currentRoster.includes(targetUid)) {
+    const newRoster = currentRoster.filter(u => u !== targetUid)
+    writes.push({
+      document:   docResourceName(projectId, `trips/${tripId}`),
+      fields:     { memberIds: encodeMemberIds(newRoster) },
+      updateMask: ['memberIds'],
+    })
+  }
+  return writes
+}
+
+/** The non-tx strip cascade. Order is LOAD-BEARING:
+ *    1. list every subcollection doc carrying memberIds
+ *    2. strip targetUid in ONE commit -- memberIds off every doc + wish
+ *       `votes` off wish docs (folded into the same commit, see
+ *       batchStripDepartedMember for why votes doesn't get its own call)
+ *    3. ONLY THEN delete members/{targetUid}
+ *  Mid-step failure between (2) and (3) leaves "still a member doc, ACL
+ *  projection gone" -- the user keeps formal membership but loses
+ *  subcollection visibility; a retry converges. The reverse (delete
+ *  first) would leave a departed user still reading via collection-group
+ *  array-contains queries -- a real exfiltration surface.
+ *
+ *  The trip doc's memberIds is stripped in the precheck tx
+ *  (buildMemberStripWrites), not here -- this batch covers subcollection
+ *  docs only. */
+async function runMemberStripCascade(
+  accessToken:  string,
+  projectId:    string,
+  tripId:       string,
+  targetUid:    string,
+  targetExists: boolean,
+): Promise<void> {
+  const lists = await mapWithConcurrency(TRIP_SUBCOLLECTIONS, 3, sub =>
+    listDocNames(accessToken, projectId, `trips/${tripId}/${sub}`),
+  )
+  // mapWithConcurrency preserves input order, so the wishes entry sits at
+  // the same index as in TRIP_SUBCOLLECTIONS; the >=0 guard degrades a
+  // future reorder/removal of that constant to "no wish docs" rather than
+  // mis-targeting the votes strip.
+  const wishIndex    = TRIP_SUBCOLLECTIONS.indexOf('wishes')
+  const wishDocNames = wishIndex >= 0 ? (lists[wishIndex] ?? []) : []
+  // memberIds strip (every doc) + wish-votes strip (wish docs) in ONE
+  // commit -- votes never becomes a separate post-ACL-strip failure window.
+  await batchStripDepartedMember(accessToken, projectId, lists.flat(), wishDocNames, targetUid)
+
+  // Member doc delete is the very last step: by now every subcollection +
+  // trip doc has had targetUid stripped from memberIds, so collection-group
+  // `array-contains targetUid` queries no longer match this trip's docs.
+  if (targetExists) {
+    await deleteDoc(accessToken, projectId, `trips/${tripId}/members/${targetUid}`)
   }
 }
 
@@ -746,75 +859,13 @@ async function doMemberRemove(
     // memberIds.
     const target = await tx.get(`trips/${req.tripId}/members/${req.memberUid}`)
 
-    // Removal-quiesce marker + trip-roster strip. Both writes commit
-    // atomically inside the same authz tx that read the owner /
-    // target / roster state, BEFORE the non-tx cascade phase begins.
-    //
-    // Write 1 -- `removingAt` on the target member doc. Blocks the
-    //   kicked user from continuing to write (firestore.rules'
-    //   canWrite() refuses when this field is present), closing the
-    //   race where they could addDoc-then-be-stripped during the
-    //   cascade phase.
-    //
-    // Write 2 -- `trip.memberIds := currentRoster \ [memberUid]`.
-    //   Closes the OTHER race window: any OTHER editor/owner that
-    //   creates a subcollection doc between (a) the cascade phase's
-    //   listDocNames snapshot and (b) the trip-roster strip would
-    //   otherwise read a stale trip.memberIds (still carrying
-    //   memberUid), copy that roster to the new doc, and slip past
-    //   the batch arrayRemove which only knows about docs in the
-    //   pre-list snapshot. By stripping trip.memberIds inside the
-    //   tx, any new-doc creation that lands AFTER tx commit sees the
-    //   roster already missing the target uid, so the new doc's
-    //   memberIds[] never carries the kicked user. Write 2 is
-    //   skipped when the roster doesn't actually contain memberUid
-    //   (data-at-rest inconsistency from a prior partial kick) --
-    //   the marker still fires when the target doc exists, and the
-    //   cascade still converges.
-    //
-    // Why inside the tx rather than as separate PATCHes:
-    // - Atomic with the owner-authz read above. A concurrent
-    //   trip-cascade-delete that mid-commits the trip doc would either
-    //   ABORT this tx (we retry, observe deletingAt, return 410) or
-    //   commit before ours (we observe deletingAt and return 410 on
-    //   the next read). Without atomic coupling the marker / strip
-    //   could land on a trip being torn down.
-    // - Snapshot isolation guarantees write 2's roster computation
-    //   sees the same trip.memberIds we read for the owner check --
-    //   two concurrent kicks each filter disjoint subsets, only one
-    //   commit lands, the loser ABORTs + retries + reads the now-
-    //   committed roster + reapplies. Idempotent and convergent.
-    //
-    // `removingAt` uses a client-stamped Date value (not REQUEST_TIME)
-    // because (a) the field is consumed as exists/not-exists in
-    // rules, value is never compared, and (b) any future cron cleanup
-    // using this timestamp tolerates CF/Firestore clock drift orders
-    // of magnitude wider than the few-second skew we'd see in
-    // practice. updateTransforms can't express the trip-roster strip
-    // anyway (only REQUEST_TIME), so we stay consistent on Date.now().
-    const writes: TxWrite[] = []
-    if (target.exists) {
-      const removingAtIso = new Date().toISOString()
-      const targetDocResource = docResourceName(
-        projectId,
-        `trips/${req.tripId}/members/${req.memberUid}`,
-      )
-      writes.push({
-        document:   targetDocResource,
-        fields:     { removingAt: { timestampValue: removingAtIso } },
-        updateMask: ['removingAt'],
-      })
-    }
-
-    const currentRoster = readTripRoster(trip)
-    if (currentRoster.includes(req.memberUid)) {
-      const newRoster = currentRoster.filter(u => u !== req.memberUid)
-      writes.push({
-        document:   docResourceName(projectId, `trips/${req.tripId}`),
-        fields:     { memberIds: encodeMemberIds(newRoster) },
-        updateMask: ['memberIds'],
-      })
-    }
+    // Removal-quiesce marker + trip-roster strip, built by the shared
+    // helper (see buildMemberStripWrites for the full race rationale).
+    // Both writes commit atomically inside this authz tx -- BEFORE the
+    // non-tx cascade -- coupled to the owner-authz read above so a
+    // concurrent trip-cascade-delete can never land them on a trip being
+    // torn down.
+    const writes = buildMemberStripWrites(projectId, req.tripId, req.memberUid, target, trip)
 
     return {
       writes,
@@ -822,43 +873,82 @@ async function doMemberRemove(
     }
   })
 
-  // Cascade phase. Order is LOAD-BEARING -- see file header rationale:
-  //   1. List every subcollection doc carrying memberIds.
-  //   2. arrayRemove memberUid from all of them (single batch via
-  //      the commit endpoint).
-  //   3. ONLY THEN delete the members/{memberUid} doc.
-  // Mid-step failure between (2) and (3) leaves "user still a member
-  // doc, ACL projection gone" -- they keep formally listed membership
-  // but lose subcollection visibility; a retry converges. The other
-  // direction (delete first, then strip) would leave a kicked user
-  // still able to read via collection-group queries that match on
-  // resource.data.memberIds -- a real exfiltration surface.
-  //
-  // Note: the trip doc's memberIds was already stripped in the
-  // precheck tx above (load-bearing -- closes the race where another
-  // editor reads stale trip.memberIds and creates a new subcollection
-  // doc carrying memberUid AFTER the listDocNames snapshot below).
-  // The batch here only covers subcollection docs.
-  //
-  // The removingAt marker (when the target member doc still exists)
-  // blocks the kicked user themselves from creating a doc during this
-  // phase: firestore.rules' canWrite() refuses when their member doc
-  // carries removingAt. If the member doc was already missing, this run
-  // is repairing stale projections left by a legacy partial kick, so
-  // there is no remaining member doc to gate.
-  const lists = await mapWithConcurrency(TRIP_SUBCOLLECTIONS, 3, sub =>
-    listDocNames(accessToken, projectId, `trips/${req.tripId}/${sub}`),
-  )
-  const docNames: string[] = lists.flat()
-  await batchArrayRemoveMemberIds(accessToken, projectId, docNames, req.memberUid)
+  // Strip cascade (shared with /member-leave). Order is LOAD-BEARING --
+  // ACL projection stripped before the member doc is deleted (see
+  // runMemberStripCascade). The trip doc's memberIds was already stripped
+  // in the precheck tx above; this covers subcollection docs + wish votes
+  // + the final member-doc delete. The removingAt marker (set above when
+  // the target doc exists) blocks the kicked user from creating docs
+  // during this phase via firestore.rules canWrite(); a missing member
+  // doc means this run is just repairing stale projections from a legacy
+  // partial kick.
+  await runMemberStripCascade(accessToken, projectId, req.tripId, req.memberUid, removePrecheck.targetExists)
 
-  // Member doc delete is the very last step. By this point every
-  // subcollection doc + trip doc has had memberUid stripped from
-  // memberIds, so collection-group queries that filter
-  // `array-contains memberUid` will no longer match this trip's docs.
-  if (removePrecheck.targetExists) {
-    await deleteDoc(accessToken, projectId, `trips/${req.tripId}/members/${req.memberUid}`)
-  }
+  return { ok: true }
+}
+
+// ─── /member-leave ────────────────────────────────────────────────
+// A non-owner member removes THEMSELVES from a trip. Same strip/cascade
+// machinery as /member-remove (shared helpers), but the authz inverts:
+//   - /member-remove: caller must be OWNER, target is someone else.
+//   - /member-leave:  caller IS the target; owner is the only role that
+//                     CANNOT use it (single-owner invariant -- an owner
+//                     must transfer ownership or delete the trip).
+// No idempotent-on-missing path: requireTripMember 403s when the caller's
+// own member doc is gone (= already left). Unlike /member-remove (which
+// continues-on-missing to repair an OTHER user's legacy partial kick),
+// a self-leaver can't even reach this UI once their member doc is gone
+// (their /members collection-group listener drops the trip), so there's
+// nothing to repair here.
+
+export async function memberLeave(
+  callerUid:          string,
+  req:                MemberLeaveRequest,
+  serviceAccountJson: string,
+): Promise<{ ok: true }> {
+  return withTokenRetry(() => doMemberLeave(callerUid, req, serviceAccountJson))
+}
+
+async function doMemberLeave(
+  callerUid:          string,
+  req:                MemberLeaveRequest,
+  serviceAccountJson: string,
+): Promise<{ ok: true }> {
+  const accessToken = await getAdminToken(serviceAccountJson)
+  const projectId   = getProjectId(serviceAccountJson)
+
+  // Tx phase: authz (caller is a member, trip not deleting) + the atomic
+  // removingAt / trip-roster strip writes that must precede the non-tx
+  // cascade. runFirestoreTransaction resolves to the body's `result`
+  // (writes are applied internally), so we only destructure targetExists.
+  const { targetExists } = await runFirestoreTransaction<{ targetExists: boolean }>(
+    accessToken, projectId, async (tx) => {
+      const { trip, member } = await requireTripMember(tx, req.tripId, callerUid)
+
+      // Owner cannot leave: it would orphan the trip (no remaining owner
+      // to manage / invite / delete). Transfer ownership or delete the
+      // trip instead. The client hides the leave affordance for owners;
+      // this is the server-side enforcement of that same constraint.
+      const ownerId = readString(trip.fields, 'ownerId')
+      if (ownerId === callerUid) {
+        throw new MembershipValidationError(
+          'tripId',
+          'owner cannot leave (transfer ownership or delete the trip instead)',
+        )
+      }
+
+      // requireTripMember already asserted member.exists (403 otherwise),
+      // so targetExists is invariably true -- but we route it through the
+      // same helper shape as /member-remove for a single code path.
+      const writes = buildMemberStripWrites(projectId, req.tripId, callerUid, member, trip)
+      return {
+        writes,
+        result: { targetExists: member.exists },
+      }
+    },
+  )
+
+  await runMemberStripCascade(accessToken, projectId, req.tripId, callerUid, targetExists)
 
   return { ok: true }
 }

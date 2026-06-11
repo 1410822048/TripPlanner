@@ -39,7 +39,7 @@ export default function TripModalsHost({ state }: Props) {
     inviteOpen,      setInviteOpen,
     membersOpen,     setMembersOpen,
     signInOpen,      setSignInOpen,
-    saveTrip,
+    saveTrip,        onLeaveTrip,
   } = state
 
   return (
@@ -119,6 +119,7 @@ export default function TripModalsHost({ state }: Props) {
             isOpen={membersOpen}
             onClose={() => setMembersOpen(false)}
             trip={currentTrip}
+            onLeave={onLeaveTrip}
           />
         </>
       )}

@@ -12,7 +12,7 @@ import BottomSheet from '@/components/ui/BottomSheet'
 import ConfirmSheet from '@/components/ui/ConfirmSheet'
 import LoadingText from '@/components/ui/LoadingText'
 import MemberAvatar from '@/components/ui/MemberAvatar'
-import { Trash2, ArrowLeftRight } from 'lucide-react'
+import { Trash2, ArrowLeftRight, LogOut } from 'lucide-react'
 import { useMembers, useRemoveMember, useUpdateMemberRole } from '@/features/members/hooks/useMembers'
 import { memberToTripMember } from '@/features/members/utils'
 import { useUid } from '@/hooks/useAuth'
@@ -23,9 +23,13 @@ interface Props {
   isOpen:  boolean
   onClose: () => void
   trip:    Trip
+  /** Non-owner self-leave. The parent (useSchedulePageState) owns the
+   *  trip-switch + optimistic leave mutation and closes this modal; we
+   *  just confirm intent and call up. */
+  onLeave: () => void
 }
 
-export default function MembersModal({ isOpen, onClose, trip }: Props) {
+export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) {
   const uid           = useUid(isOpen)
   const membersQ      = useMembers(isOpen ? trip.id : undefined)
   const removeMut     = useRemoveMember(trip.id)
@@ -33,8 +37,14 @@ export default function MembersModal({ isOpen, onClose, trip }: Props) {
 
   // Pending remove target — drives the ConfirmSheet. Null means no dialog.
   const [pendingRemove, setPendingRemove] = useState<Member | null>(null)
+  // Self-leave confirmation gate.
+  const [confirmLeave, setConfirmLeave] = useState(false)
 
   const isOwner = uid === trip.ownerId
+  // Only a signed-in non-owner member can leave (owner must transfer or
+  // delete). Guard on uid so a transient undefined-uid render doesn't flash
+  // the affordance before ownership is known.
+  const canLeave = !!uid && !isOwner
 
   async function handleConfirmRemove() {
     if (!pendingRemove) return
@@ -44,6 +54,20 @@ export default function MembersModal({ isOpen, onClose, trip }: Props) {
       toast.success(`${target.displayName} を削除しました`)
       setPendingRemove(null)
     } catch { /* hook onError already surfaced the toast */ }
+  }
+
+  // This component is `if (!isOpen) return null` rather than unmounted, so
+  // local state (confirmLeave / pendingRemove) persists across open/close.
+  // Reset explicitly on every close path so a reopen never shows a stale
+  // confirm sheet.
+  function handleConfirmLeave() {
+    setConfirmLeave(false)
+    onLeave()  // parent closes the modal + runs the optimistic leave
+  }
+  function handleClose() {
+    setConfirmLeave(false)
+    setPendingRemove(null)
+    onClose()
   }
 
   async function handleToggleRole(m: Member) {
@@ -58,7 +82,7 @@ export default function MembersModal({ isOpen, onClose, trip }: Props) {
   if (!isOpen) return null
 
   return (
-    <BottomSheet isOpen onClose={onClose} title="メンバー管理">
+    <BottomSheet isOpen onClose={handleClose} title="メンバー管理">
       <div className="flex flex-col gap-3">
         <p className="m-0 text-[12px] text-muted leading-[1.6] tracking-[0.02em]">
           この旅程のメンバー一覧です。
@@ -122,6 +146,21 @@ export default function MembersModal({ isOpen, onClose, trip }: Props) {
             })}
           </ul>
         )}
+
+        {/* Non-owner self-leave. Owners don't see this (single-owner
+            invariant — they transfer ownership or delete the trip). */}
+        {canLeave && (
+          <>
+            <div className="border-t border-dashed border-border" />
+            <button
+              onClick={() => setConfirmLeave(true)}
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border border-[#E9C5C5] bg-danger-pale text-[#A04040] text-[12.5px] font-semibold cursor-pointer transition-colors hover:brightness-95"
+            >
+              <LogOut size={14} strokeWidth={2} />
+              この旅程から退出
+            </button>
+          </>
+        )}
       </div>
 
       <ConfirmSheet
@@ -143,6 +182,26 @@ export default function MembersModal({ isOpen, onClose, trip }: Props) {
         loading={removeMut.isPending}
         onClose={() => setPendingRemove(null)}
         onConfirm={handleConfirmRemove}
+      />
+
+      <ConfirmSheet
+        isOpen={confirmLeave}
+        title="この旅程から退出しますか？"
+        description={
+          <>
+            退出すると、再度招待されるまでこの旅程にはアクセスできなくなります。<br />
+            未精算の費用がある場合も、記録は残ります。
+          </>
+        }
+        icon={
+          <div className="w-14 h-14 rounded-2xl bg-danger-pale flex items-center justify-center">
+            <LogOut size={22} strokeWidth={2} className="text-[#A04040]" />
+          </div>
+        }
+        confirmLabel="退出する"
+        tone="danger"
+        onClose={() => setConfirmLeave(false)}
+        onConfirm={handleConfirmLeave}
       />
     </BottomSheet>
   )

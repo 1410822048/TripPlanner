@@ -4,7 +4,7 @@
 // strategy: stub runFirestoreTransaction so each test seeds tx.get
 // responses per-path and captures the TxResult to assert on the writes
 // list. The non-tx REST helpers used by /member-remove
-// (listDocNames + batchArrayRemoveMemberIds + deleteDoc) and the
+// (listDocNames + batchStripDepartedMember + deleteDoc) and the
 // /invite-redeem post-tx cascade (cascadeMemberAdd) are mocked
 // separately so each can be asserted independently.
 //
@@ -75,6 +75,11 @@ vi.mock('../src/firestore-tx', () => ({
 // precheck tx instead).
 const restCallOrder: string[] = []
 let batchRemoveDocs: string[] = []
+// Captures for the wish-votes cleanup leg of the strip cascade (shared by
+// member-remove + member-leave): which docNames it received (must be the
+// wishes subcollection only) and which uid it stripped.
+let wishVotesDocs: string[] = []
+let wishVotesUid: string | null = null
 vi.mock('../src/firestore', async () => {
 	const actual = await vi.importActual<typeof import('../src/firestore')>('../src/firestore')
 	return {
@@ -87,9 +92,14 @@ vi.mock('../src/firestore', async () => {
 			// ordering assertion -- it just needs to be a plausible doc path.
 			return [`projects/demo/databases/(default)/documents/${parent}/doc-1`]
 		}),
-		batchArrayRemoveMemberIds: vi.fn(async (_t: string, _p: string, docNames: string[], uid: string) => {
-			restCallOrder.push(`batchArrayRemoveMemberIds:${docNames.length}:${uid}`)
+		batchStripDepartedMember: vi.fn(async (_t: string, _p: string, docNames: string[], wishDocNames: string[], uid: string) => {
+			// memberIds strip (all docs) + wish-votes strip (wish docs) land in
+			// ONE commit. Capture both arg lists so tests can assert the votes
+			// cleanup rides this same call rather than a separate one.
+			restCallOrder.push(`batchStripDepartedMember:${docNames.length}:${wishDocNames.length}:${uid}`)
 			batchRemoveDocs = [...docNames]
+			wishVotesDocs   = [...wishDocNames]
+			wishVotesUid    = uid
 		}),
 		deleteDoc: vi.fn(async (_t: string, _p: string, path: string) => {
 			restCallOrder.push(`deleteDoc:${path}`)
@@ -120,6 +130,7 @@ import {
 	inviteRevoke,
 	inviteRedeem,
 	memberRemove,
+	memberLeave,
 	memberRoleUpdate,
 	InviteCreateRequestSchema,
 	InviteRevokeRequestSchema,
@@ -217,6 +228,8 @@ beforeEach(() => {
 	txGetCalls.length      = 0
 	restCallOrder.length   = 0
 	batchRemoveDocs.length = 0
+	wishVotesDocs.length   = 0
+	wishVotesUid           = null
 	cascadeCalls.length    = 0
 	capturedTxResult       = null
 })
@@ -773,11 +786,11 @@ describe('memberRemove endpoint', () => {
 		// ordering between the parallel listDocNames calls (concurrency=3
 		// makes that non-deterministic).
 		const deleteIdx     = restCallOrder.findIndex(c => c.startsWith('deleteDoc:'))
-		const batchRemoveIdx = restCallOrder.findIndex(c => c.startsWith('batchArrayRemoveMemberIds:'))
+		const batchRemoveIdx = restCallOrder.findIndex(c => c.startsWith('batchStripDepartedMember:'))
 		expect(deleteIdx).toBeGreaterThan(-1)
 		expect(batchRemoveIdx).toBeGreaterThan(-1)
 		expect(batchRemoveIdx).toBeLessThan(deleteIdx)
-		// Every listDocNames must precede the batch remove (the cascade
+		// Every listDocNames must precede the strip commit (the cascade
 		// needs the full doc-name set before calling commit).
 		const listIndices = restCallOrder
 			.map((c, i) => c.startsWith('listDocNames:') ? i : -1)
@@ -789,6 +802,36 @@ describe('memberRemove endpoint', () => {
 		// The single deleteDoc call targets the member doc itself.
 		const deleteCall = restCallOrder[deleteIdx]
 		expect(deleteCall).toContain(`/members/${TARGET}`)
+	})
+
+	it('strips kicked uid from wish votes IN THE SAME commit as memberIds (no extra failure window)', async () => {
+		// Regression: before the shared cascade, a kicked member's vote stayed
+		// in wishes.votes[] -- and votes.length is the wish sort key, so a
+		// departed member kept inflating ranking/counts. The strip now also
+		// arrayRemoves the uid from the wishes subcollection's votes field --
+		// folded into the SAME batchStripDepartedMember commit (not a separate
+		// post-ACL-strip call that could fail between strip and delete).
+		seedAuthorizedRemove()
+
+		await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
+
+		// votes cleanup ran for the kicked uid...
+		expect(wishVotesUid).toBe(TARGET)
+		// ...against ONLY the wishes subcollection docs (the second arg),
+		// while the memberIds strip covers the full 6-collection set.
+		expect(wishVotesDocs).toHaveLength(1)
+		expect(wishVotesDocs[0]).toContain(`/trips/${TRIP_ID}/wishes/`)
+		expect(batchRemoveDocs).toHaveLength(6)
+
+		// Single strip commit, and it precedes the member-doc delete. There is
+		// NO separate votes call (would be a new failure point) -- exactly one
+		// batchStripDepartedMember in the call log.
+		const stripCalls = restCallOrder.filter(c => c.startsWith('batchStripDepartedMember:'))
+		expect(stripCalls).toHaveLength(1)
+		const stripIdx  = restCallOrder.findIndex(c => c.startsWith('batchStripDepartedMember:'))
+		const deleteIdx = restCallOrder.findIndex(c => c.startsWith('deleteDoc:'))
+		expect(stripIdx).toBeGreaterThan(-1)
+		expect(stripIdx).toBeLessThan(deleteIdx)
 	})
 
 	it('precheck tx commits BOTH removingAt marker AND trip.memberIds strip BEFORE the cascade phase begins', async () => {
@@ -893,7 +936,7 @@ describe('memberRemove endpoint', () => {
 		expect(result).toEqual({ ok: true })
 
 		const deleteIdx = restCallOrder.findIndex(c => c.startsWith('deleteDoc:'))
-		const batchRemoveIdx = restCallOrder.findIndex(c => c.startsWith('batchArrayRemoveMemberIds:'))
+		const batchRemoveIdx = restCallOrder.findIndex(c => c.startsWith('batchStripDepartedMember:'))
 		expect(deleteIdx).toBe(-1)
 		expect(batchRemoveIdx).toBeGreaterThan(-1)
 		expect(batchRemoveDocs.length).toBe(6)
@@ -925,7 +968,7 @@ describe('memberRemove endpoint', () => {
 		expect(capturedTxResult).not.toBeNull()
 		expect(capturedTxResult!.writes).toEqual([])
 		expect(restCallOrder.some(c => c.startsWith('deleteDoc:'))).toBe(false)
-		expect(restCallOrder.some(c => c.startsWith('batchArrayRemoveMemberIds:'))).toBe(true)
+		expect(restCallOrder.some(c => c.startsWith('batchStripDepartedMember:'))).toBe(true)
 		expect(batchRemoveDocs.length).toBe(6)
 	})
 
@@ -979,6 +1022,113 @@ describe('memberRemove endpoint', () => {
 			{ tripId: TRIP_ID, memberUid: TARGET },
 			'{}',
 		)).rejects.toMatchObject({ status: 410 })
+	})
+})
+
+// ─── /member-leave ───────────────────────────────────────────────
+
+describe('memberLeave endpoint', () => {
+	const LEAVER = 'leaver-uid'
+
+	// requireTripMember reads trip + members/{caller} (caller == leaver).
+	function seedLeave(opts: {
+		role?:           'editor' | 'viewer'
+		rosterIncludes?: boolean   // default true
+		deleting?:       boolean
+	} = {}): void {
+		const rosterIncludesLeaver = opts.rosterIncludes ?? true
+		txGetResponses.set(
+			`trips/${TRIP_ID}`,
+			tripReadDoc({
+				memberIds: rosterIncludesLeaver ? [OWNER_UID, LEAVER] : [OWNER_UID],
+				deleting:  opts.deleting,
+			}),
+		)
+		txGetResponses.set(
+			`trips/${TRIP_ID}/members/${LEAVER}`,
+			memberReadDoc(LEAVER, opts.role ?? 'editor'),
+		)
+	}
+
+	it('editor leaves: removingAt + roster strip, then ACL strip → wish votes → member delete', async () => {
+		seedLeave({ role: 'editor' })
+
+		const result = await memberLeave(LEAVER, { tripId: TRIP_ID }, '{}')
+		expect(result).toEqual({ ok: true })
+
+		// Precheck tx writes: removingAt marker on the leaver + roster strip.
+		const writes = capturedTxResult!.writes as Array<{
+			document:   string
+			fields:     Record<string, unknown>
+			updateMask: string[]
+		}>
+		expect(writes).toHaveLength(2)
+		const markerWrite = writes.find(w => w.document.includes(`/members/${LEAVER}`))
+		expect(markerWrite!.updateMask).toEqual(['removingAt'])
+		const rosterWrite = writes.find(w => w.document.match(/\/documents\/trips\/trip-1$/))
+		expect(rosterWrite!.updateMask).toEqual(['memberIds'])
+		expect(rosterWrite!.fields.memberIds).toEqual({
+			arrayValue: { values: [{ stringValue: OWNER_UID }] },  // LEAVER stripped
+		})
+
+		// Cascade order (load-bearing): every list → ONE strip commit
+		// (memberIds everywhere + wish votes) → member-doc delete.
+		const listIdxs  = restCallOrder.flatMap((c, i) => c.startsWith('listDocNames:') ? [i] : [])
+		const stripIdx  = restCallOrder.findIndex(c => c.startsWith('batchStripDepartedMember:'))
+		const deleteIdx = restCallOrder.findIndex(c => c.startsWith('deleteDoc:'))
+		expect(listIdxs.length).toBeGreaterThan(0)
+		for (const li of listIdxs) expect(li).toBeLessThan(stripIdx)
+		expect(stripIdx).toBeLessThan(deleteIdx)
+		// Exactly one strip commit -- votes is NOT a separate call.
+		expect(restCallOrder.filter(c => c.startsWith('batchStripDepartedMember:'))).toHaveLength(1)
+
+		// memberIds strip covers all 6 subcollections; the leaver is the target.
+		expect(batchRemoveDocs).toHaveLength(6)
+		// votes cleanup (same commit) targets only the wishes subcollection + leaver.
+		expect(wishVotesUid).toBe(LEAVER)
+		expect(wishVotesDocs).toHaveLength(1)
+		expect(wishVotesDocs[0]).toContain(`/trips/${TRIP_ID}/wishes/`)
+		// The final delete removes the leaver's own member doc.
+		expect(restCallOrder[deleteIdx]).toContain(`/members/${LEAVER}`)
+	})
+
+	it('viewer leaves: same strip cascade (viewer is a non-owner too)', async () => {
+		seedLeave({ role: 'viewer' })
+
+		const result = await memberLeave(LEAVER, { tripId: TRIP_ID }, '{}')
+		expect(result).toEqual({ ok: true })
+		expect(wishVotesUid).toBe(LEAVER)
+		expect(restCallOrder.some(c => c.startsWith('deleteDoc:'))).toBe(true)
+	})
+
+	it('rejects: owner cannot leave → 400 MembershipValidationError on tripId, no writes / no cascade', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({ ownerId: OWNER_UID, memberIds: [OWNER_UID] }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`, memberReadDoc(OWNER_UID, 'owner'))
+
+		const err = await memberLeave(OWNER_UID, { tripId: TRIP_ID }, '{}').catch(e => e)
+		expect(err).toBeInstanceOf(MembershipValidationError)
+		expect((err as MembershipValidationError).field).toBe('tripId')
+		// Bails inside the tx before any non-tx cascade work.
+		expect(restCallOrder).toEqual([])
+	})
+
+	it('rejects: caller not a member (already left) → 403', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({ memberIds: [OWNER_UID] }))
+		const path = `trips/${TRIP_ID}/members/${LEAVER}`
+		txGetResponses.set(path, notFoundReadDoc(path))
+
+		await expect(
+			memberLeave(LEAVER, { tripId: TRIP_ID }, '{}'),
+		).rejects.toMatchObject({ status: 403 })
+		expect(restCallOrder).toEqual([])
+	})
+
+	it('rejects: trip deleting → 410', async () => {
+		seedLeave({ deleting: true })
+
+		await expect(
+			memberLeave(LEAVER, { tripId: TRIP_ID }, '{}'),
+		).rejects.toMatchObject({ status: 410 })
 	})
 })
 
