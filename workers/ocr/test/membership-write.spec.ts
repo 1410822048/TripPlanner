@@ -39,8 +39,23 @@ vi.mock('../src/firestore-tx', () => ({
 			get: async (path: string) => {
 				txGetCalls.push(path)
 				const resp = txGetResponses.get(path)
-				if (!resp) throw new Error(`unexpected tx.get('${path}') -- not seeded`)
-				return resp
+				if (resp) return resp
+				// /invite-redeem reads inviteState/current on EVERY tx (the
+				// single-active gate). Default it to a valid pointer naming the
+				// happy-path token so the pre-existing redeem tests don't each
+				// need a 4th explicit seed; the gate-specific tests (missing /
+				// mismatched) and the create/revoke tests seed this path
+				// explicitly to override. Inline literal token ('a'×64 ==
+				// VALID_TOK) avoids a vi.mock-factory out-of-scope reference.
+				if (path.endsWith('/inviteState/current')) {
+					return {
+						exists:     true,
+						name:       `projects/demo/databases/(default)/documents/${path}`,
+						updateTime: '2026-05-28T00:00:00Z',
+						fields:     { token: { stringValue: 'a'.repeat(64) }, role: { stringValue: 'editor' } },
+					}
+				}
+				throw new Error(`unexpected tx.get('${path}') -- not seeded`)
 			},
 			runQuery: async () => [],
 		}
@@ -101,9 +116,13 @@ vi.mock('../src/cascade', async () => {
 })
 
 import {
+	inviteCreate,
+	inviteRevoke,
 	inviteRedeem,
 	memberRemove,
 	memberRoleUpdate,
+	InviteCreateRequestSchema,
+	InviteRevokeRequestSchema,
 	MembershipValidationError,
 } from '../src/membership-write'
 import { CascadeError } from '../src/cascade'
@@ -116,7 +135,7 @@ const DISPLAY    = 'Invitee'
 
 // ─── Fixture builders (REST `fields` shape) ───────────────────────
 
-function tripReadDoc(opts: { ownerId?: string; memberIds?: string[]; deleting?: boolean } = {}): MockReadDoc {
+function tripReadDoc(opts: { ownerId?: string; memberIds?: string[]; deleting?: boolean; title?: string; icon?: string } = {}): MockReadDoc {
 	const fields: Record<string, unknown> = {
 		ownerId: { stringValue: opts.ownerId ?? OWNER_UID },
 	}
@@ -125,6 +144,8 @@ function tripReadDoc(opts: { ownerId?: string; memberIds?: string[]; deleting?: 
 			arrayValue: { values: opts.memberIds.map(u => ({ stringValue: u })) },
 		}
 	}
+	if (opts.title !== undefined) fields.title = { stringValue: opts.title }
+	if (opts.icon  !== undefined) fields.icon  = { stringValue: opts.icon }
 	if (opts.deleting) {
 		fields.deletingAt = { timestampValue: '2026-05-28T00:00:00Z' }
 	}
@@ -172,6 +193,22 @@ function notFoundReadDoc(path: string): MockReadDoc {
 		name:       `projects/demo/databases/(default)/documents/${path}`,
 		fields:     {},
 		updateTime: null,
+	}
+}
+
+/** inviteState/current pointer fixture. Defaults to the happy-path token +
+ *  editor role; pass a different token to simulate a rotated/stale pointer. */
+function currentReadDoc(token: string = VALID_TOK, role: 'editor' | 'viewer' = 'editor'): MockReadDoc {
+	return {
+		exists:     true,
+		name:       `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/inviteState/current`,
+		updateTime: '2026-05-28T00:00:00Z',
+		fields: {
+			token:     { stringValue: token },
+			role:      { stringValue: role },
+			createdBy: { stringValue: OWNER_UID },
+			expiresAt: { timestampValue: new Date(Date.now() + 60_000).toISOString() },
+		},
 	}
 }
 
@@ -508,6 +545,188 @@ describe('inviteRedeem endpoint', () => {
 			{ tripId: TRIP_ID, token: VALID_TOK, displayName: DISPLAY },
 			'{}',
 		)).rejects.toMatchObject({ status: 410 })
+	})
+})
+
+// ─── single-active gate + /invite-create + /invite-revoke ────────
+
+describe('inviteRedeem single-active gate (inviteState/current)', () => {
+	it('rejects: pointer missing → 404 (treated as invite not found, no leak)', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({ memberIds: [OWNER_UID] }))
+		txGetResponses.set(`trips/${TRIP_ID}/invites/${VALID_TOK}`, inviteReadDoc())
+		txGetResponses.set(
+			`trips/${TRIP_ID}/members/${INVITEE}`,
+			notFoundReadDoc(`trips/${TRIP_ID}/members/${INVITEE}`),
+		)
+		// No active pointer -- redeem must 404 even though the invite doc
+		// still exists (e.g. a stale doc the rotate hadn't yet deleted).
+		txGetResponses.set(
+			`trips/${TRIP_ID}/inviteState/current`,
+			notFoundReadDoc(`trips/${TRIP_ID}/inviteState/current`),
+		)
+
+		await expect(inviteRedeem(
+			INVITEE,
+			{ tripId: TRIP_ID, token: VALID_TOK, displayName: DISPLAY },
+			'{}',
+		)).rejects.toMatchObject({ status: 404, name: 'CascadeError' })
+		expect(cascadeCalls).toEqual([])
+	})
+
+	it('rejects: pointer names a DIFFERENT token → 404 (stale redeem after rotation)', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({ memberIds: [OWNER_UID] }))
+		txGetResponses.set(`trips/${TRIP_ID}/invites/${VALID_TOK}`, inviteReadDoc())
+		txGetResponses.set(
+			`trips/${TRIP_ID}/members/${INVITEE}`,
+			notFoundReadDoc(`trips/${TRIP_ID}/members/${INVITEE}`),
+		)
+		// Owner rotated to a newer invite; the pointer no longer names the
+		// redeemer's token. Stale → 404, no member doc created, no cascade.
+		txGetResponses.set(`trips/${TRIP_ID}/inviteState/current`, currentReadDoc('f'.repeat(64)))
+
+		await expect(inviteRedeem(
+			INVITEE,
+			{ tripId: TRIP_ID, token: VALID_TOK, displayName: DISPLAY },
+			'{}',
+		)).rejects.toMatchObject({ status: 404 })
+		expect(cascadeCalls).toEqual([])
+	})
+})
+
+describe('inviteCreate endpoint', () => {
+	function seedOwner(opts: { current?: MockReadDoc } = {}): void {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({ title: 'Kyoto Trip', icon: '⛩️' }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`, memberReadDoc(OWNER_UID, 'owner'))
+		txGetResponses.set(
+			`trips/${TRIP_ID}/inviteState/current`,
+			opts.current ?? notFoundReadDoc(`trips/${TRIP_ID}/inviteState/current`),
+		)
+	}
+
+	it('first invite (no prior pointer): writes invite doc + current pointer, no delete', async () => {
+		seedOwner()
+
+		const result = await inviteCreate(OWNER_UID, { tripId: TRIP_ID, role: 'editor' }, '{}')
+
+		// Worker minted a 64-hex token + computed an ISO expiry.
+		expect(result.token).toMatch(/^[a-f0-9]{64}$/)
+		expect(Number.isFinite(Date.parse(result.expiresAt))).toBe(true)
+
+		const writes = capturedTxResult!.writes as Array<{
+			op?:               string
+			document:          string
+			fields?:           Record<string, unknown>
+			currentDocument?:  { exists?: boolean }
+			updateTransforms?: Array<{ fieldPath: string; setToServerValue: string }>
+		}>
+		// No prior pointer → no delete; invite doc + current pointer only.
+		expect(writes).toHaveLength(2)
+
+		const inviteWrite = writes[0]
+		expect(inviteWrite.document).toContain(`/invites/${result.token}`)
+		expect(inviteWrite.currentDocument).toEqual({ exists: false })
+		expect(inviteWrite.fields!.tripId).toEqual({ stringValue: TRIP_ID })
+		expect(inviteWrite.fields!.role).toEqual({ stringValue: 'editor' })
+		expect(inviteWrite.fields!.createdBy).toEqual({ stringValue: OWNER_UID })
+		// tripTitle / tripIcon read off the trip doc, NOT the client request.
+		expect(inviteWrite.fields!.tripTitle).toEqual({ stringValue: 'Kyoto Trip' })
+		expect(inviteWrite.fields!.tripIcon).toEqual({ stringValue: '⛩️' })
+		// createdAt via REQUEST_TIME -- client InviteDocSchema needs a server
+		// Timestamp, not Worker clock drift.
+		expect(inviteWrite.updateTransforms).toEqual([
+			{ fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' },
+		])
+
+		const pointerWrite = writes[1]
+		expect(pointerWrite.document).toContain('/inviteState/current')
+		expect(pointerWrite.fields!.token).toEqual({ stringValue: result.token })
+		expect(pointerWrite.fields!.role).toEqual({ stringValue: 'editor' })
+		expect(pointerWrite.fields!.createdBy).toEqual({ stringValue: OWNER_UID })
+	})
+
+	it('rotate (prior pointer present): deletes old invite doc + writes new invite + pointer', async () => {
+		const OLD_TOKEN = 'd'.repeat(64)
+		seedOwner({ current: currentReadDoc(OLD_TOKEN) })
+
+		const result = await inviteCreate(OWNER_UID, { tripId: TRIP_ID, role: 'viewer' }, '{}')
+
+		const writes = capturedTxResult!.writes as Array<{ op?: string; document: string }>
+		// delete old invite + new invite doc + pointer overwrite.
+		expect(writes).toHaveLength(3)
+		expect(writes[0].op).toBe('delete')
+		expect(writes[0].document).toContain(`/invites/${OLD_TOKEN}`)
+		expect(writes[1].document).toContain(`/invites/${result.token}`)
+		expect(writes[2].document).toContain('/inviteState/current')
+	})
+
+	it('non-owner cannot create → 403', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/editor-uid`, memberReadDoc('editor-uid', 'editor'))
+
+		await expect(
+			inviteCreate('editor-uid', { tripId: TRIP_ID, role: 'editor' }, '{}'),
+		).rejects.toMatchObject({ status: 403, name: 'CascadeError' })
+	})
+
+	it('schema: caps expiresInMs at 7 days + role allowlist', () => {
+		const base = { tripId: TRIP_ID, role: 'editor' as const }
+		// 8 days > 7-day cap → rejected at the Zod layer (route safeParse).
+		expect(InviteCreateRequestSchema.safeParse({ ...base, expiresInMs: 8 * 24 * 60 * 60_000 }).success).toBe(false)
+		// 6 days within cap → accepted.
+		expect(InviteCreateRequestSchema.safeParse({ ...base, expiresInMs: 6 * 24 * 60 * 60_000 }).success).toBe(true)
+		// role 'owner' rejected -- no co-owner invites.
+		expect(InviteCreateRequestSchema.safeParse({ tripId: TRIP_ID, role: 'owner' }).success).toBe(false)
+	})
+})
+
+describe('inviteRevoke endpoint', () => {
+	function seedOwner(current: MockReadDoc): void {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`, memberReadDoc(OWNER_UID, 'owner'))
+		txGetResponses.set(`trips/${TRIP_ID}/inviteState/current`, current)
+	}
+
+	it('active token: deletes invite doc + clears pointer', async () => {
+		seedOwner(currentReadDoc(VALID_TOK))
+
+		const result = await inviteRevoke(OWNER_UID, { tripId: TRIP_ID, token: VALID_TOK }, '{}')
+		expect(result).toEqual({ ok: true })
+
+		const writes = capturedTxResult!.writes as Array<{ op?: string; document: string }>
+		expect(writes).toHaveLength(2)
+		expect(writes[0].op).toBe('delete')
+		expect(writes[0].document).toContain(`/invites/${VALID_TOK}`)
+		expect(writes[1].op).toBe('delete')
+		expect(writes[1].document).toContain('/inviteState/current')
+	})
+
+	it('no active pointer: idempotent ok, deletes the (possibly-stale) invite doc only', async () => {
+		seedOwner(notFoundReadDoc(`trips/${TRIP_ID}/inviteState/current`))
+
+		const result = await inviteRevoke(OWNER_UID, { tripId: TRIP_ID, token: VALID_TOK }, '{}')
+		expect(result).toEqual({ ok: true })
+
+		const writes = capturedTxResult!.writes as Array<{ op?: string; document: string }>
+		expect(writes).toHaveLength(1)
+		expect(writes[0].op).toBe('delete')
+		expect(writes[0].document).toContain(`/invites/${VALID_TOK}`)
+	})
+
+	it('stale token (pointer names a newer invite) → 409', async () => {
+		seedOwner(currentReadDoc('e'.repeat(64)))
+
+		await expect(
+			inviteRevoke(OWNER_UID, { tripId: TRIP_ID, token: VALID_TOK }, '{}'),
+		).rejects.toMatchObject({ status: 409, name: 'CascadeError' })
+	})
+
+	it('non-owner cannot revoke → 403', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/editor-uid`, memberReadDoc('editor-uid', 'editor'))
+
+		await expect(
+			inviteRevoke('editor-uid', { tripId: TRIP_ID, token: VALID_TOK }, '{}'),
+		).rejects.toMatchObject({ status: 403 })
 	})
 })
 

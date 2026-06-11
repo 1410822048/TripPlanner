@@ -36,6 +36,11 @@ export const TRIP_SUBCOLLECTIONS = [
   'settlementPairLocks',
   '_purges',
   'invites',
+  // Single-active-invite pointer (inviteState/current) written by the
+  // Worker invite-create/revoke/redeem tx. Worker-only (rules deny all
+  // client access); listed so trip-cascade drains it like any other
+  // subcollection.
+  'inviteState',
   'members',
 ] as const
 export type TripSubcollection = typeof TRIP_SUBCOLLECTIONS[number]

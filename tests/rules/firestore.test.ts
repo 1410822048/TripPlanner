@@ -2186,8 +2186,15 @@ describe('/trips/{tripId}/invites rule guards', () => {
     ...overrides,
   })
 
-  test('owner can create an invite', async () => {
-    await assertSucceeds(
+  test('client cannot create an invite directly (mint is Worker-only)', async () => {
+    // invites create: if false. Minting moved to the Worker (/invite-create),
+    // which mints the token, reads tripTitle/tripIcon off the trip doc, caps
+    // the 7-day expiry, and rotates inviteState/current atomically — invariants
+    // rules can't express. Even the OWNER (the most-privileged caller) is denied
+    // at the rules layer with an otherwise well-formed payload; editor/viewer
+    // follow a fortiori. Payload-shape + role-allowlist + expiry-cap coverage
+    // now lives in workers/ocr/test/membership-write.spec.ts.
+    await assertFails(
       setDoc(
         doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'invites', TOKEN),
         validInvite(),
@@ -2195,52 +2202,7 @@ describe('/trips/{tripId}/invites rule guards', () => {
     )
   })
 
-  test('editor cannot create an invite (owner-only mint)', async () => {
-    await assertFails(
-      setDoc(
-        doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'invites', 'inv-edt'),
-        validInvite({ createdBy: EDITOR_UID }),
-      ),
-    )
-  })
-
-  test('viewer cannot create an invite', async () => {
-    await assertFails(
-      setDoc(
-        doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'invites', 'inv-vw'),
-        validInvite({ createdBy: VIEWER_UID }),
-      ),
-    )
-  })
-
-  test('invite with role="owner" is rejected (privilege escalation guard)', async () => {
-    // Role allowlist `['editor', 'viewer']` prevents an invite from
-    // minting a co-owner. A redeemer accepting such an invite would
-    // gain owner-only powers (trip delete, member moderation) — strict
-    // deny at rules layer matters because the redeem flow on the
-    // accept side trusts invite.role.
-    await assertFails(
-      setDoc(
-        doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'invites', 'inv-owner'),
-        validInvite({ role: 'owner' as never }),
-      ),
-    )
-  })
-
-  test('invite with backdated (already-expired) expiresAt is rejected', async () => {
-    // expiresAt > request.time enforces forward-dating. A backdated
-    // invite would be either useless (already expired) or evidence of
-    // a client trying something unsupported — rules-layer rejection
-    // catches it before the doc lands.
-    await assertFails(
-      setDoc(
-        doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'invites', 'inv-bd'),
-        validInvite({ expiresAt: Timestamp.fromMillis(Date.now() - 60_000) }),
-      ),
-    )
-  })
-
-  test('invite update is rejected (no update rule = immutable, rotate via delete+create)', async () => {
+  test('invite update is rejected (no update rule = immutable, rotate via Worker)', async () => {
     await env.withSecurityRulesDisabled(async ctx => {
       await setDoc(
         doc(ctx.firestore(), 'trips', TRIP_ID, 'invites', 'inv-imm'),
@@ -2252,7 +2214,7 @@ describe('/trips/{tripId}/invites rule guards', () => {
       )
     })
     // Owner attempts to extend expiry in-place — should fail; rotation
-    // goes through delete+create writeBatch in createInvite.
+    // goes through the Worker (/invite-create), never an in-place update.
     await assertFails(
       updateDoc(
         doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'invites', 'inv-imm'),
@@ -2303,12 +2265,11 @@ describe('/trips/{tripId}/invites rule guards', () => {
     )
   })
 
-  test('owner can delete an invite (revoke happy path)', async () => {
-    // Owner revoke is the second declared write surface. Without a
-    // happy-path test, a regression tightening `allow delete` to
-    // `false` would still pass the non-owner deny test below — both
-    // would assertFails — and we'd only catch it when an owner tries
-    // to rotate / revoke in prod.
+  test('owner cannot delete an invite directly (revoke is Worker-only)', async () => {
+    // invites delete: if false. Revoke moved to the Worker (/invite-revoke),
+    // which deletes the invite doc + clears inviteState/current atomically and
+    // 409s a stale token. Even the owner is denied a direct client delete;
+    // revoke-path coverage lives in workers/ocr/test/membership-write.spec.ts.
     await env.withSecurityRulesDisabled(async ctx => {
       await setDoc(
         doc(ctx.firestore(), 'trips', TRIP_ID, 'invites', 'inv-revoke'),
@@ -2319,12 +2280,12 @@ describe('/trips/{tripId}/invites rule guards', () => {
         },
       )
     })
-    await assertSucceeds(
+    await assertFails(
       deleteDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'invites', 'inv-revoke')),
     )
   })
 
-  test('non-owner cannot delete an invite (revoke is owner-only)', async () => {
+  test('non-owner also cannot delete an invite (whole delete surface closed)', async () => {
     await env.withSecurityRulesDisabled(async ctx => {
       await setDoc(
         doc(ctx.firestore(), 'trips', TRIP_ID, 'invites', 'inv-del'),
@@ -2349,6 +2310,42 @@ describe('/trips/{tripId}/invites rule guards', () => {
   test('owner can list invites (management UI happy path)', async () => {
     await assertSucceeds(
       getDocs(query(collection(asOwner(env).firestore(), 'trips', TRIP_ID, 'invites'))),
+    )
+  })
+
+  // ── inviteState/current — fully Worker-only pointer ──────────────
+  // { token, role, createdBy, createdAt, expiresAt }. The Worker reads +
+  // writes it via the admin SDK (bypassing rules) inside the invite
+  // create/revoke/redeem transactions. NO client may touch it — reading it
+  // would leak the active bearer token to non-redeemers, and there is no
+  // client write path. Even the owner is denied both read and write.
+
+  test('owner cannot read inviteState/current (Worker-only pointer)', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'inviteState', 'current'),
+        {
+          token: 'a'.repeat(64), role: 'editor', createdBy: OWNER_UID,
+          createdAt: Timestamp.now(),
+          expiresAt: Timestamp.fromMillis(Date.now() + 24 * 60 * 60_000),
+        },
+      )
+    })
+    await assertFails(
+      getDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'inviteState', 'current')),
+    )
+  })
+
+  test('owner cannot write inviteState/current (Worker-only pointer)', async () => {
+    await assertFails(
+      setDoc(
+        doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'inviteState', 'current'),
+        {
+          token: 'b'.repeat(64), role: 'editor', createdBy: OWNER_UID,
+          createdAt: Timestamp.now(),
+          expiresAt: Timestamp.fromMillis(Date.now() + 24 * 60 * 60_000),
+        },
+      ),
     )
   })
 })

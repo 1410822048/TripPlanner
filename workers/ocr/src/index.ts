@@ -2,10 +2,20 @@
 //
 // Endpoints:
 //   POST /ocr                  — Gemini receipt OCR (original endpoint)
+//   POST /invite-create        — owner mints a reusable invite link.
+//                                Worker mints the 256-bit token, caps the
+//                                expiry, and atomically rotates the
+//                                single-active pointer (inviteState/current)
+//                                so concurrent owner tabs can't leave two
+//                                live invites (see membership-write.ts).
+//   POST /invite-revoke        — owner revokes the active invite. 409s a
+//                                stale token (already rotated by a newer
+//                                /invite-create) instead of silent-ok.
 //   POST /invite-redeem        — invitee accepts a trip invite (atomic
 //                                member doc create + trip.memberIds
-//                                bump via Firestore REST tx), then
-//                                runs the ACL cascade.
+//                                bump via Firestore REST tx), gated on the
+//                                inviteState/current pointer, then runs the
+//                                ACL cascade.
 //   POST /member-remove        — owner kicks a member. ACL projection
 //                                stripped BEFORE the member doc is
 //                                deleted -- the order is load-bearing
@@ -92,9 +102,13 @@ import {
   SettlementValidationError,
 }                                                 from './settlement-write'
 import {
+  inviteCreate,
+  inviteRevoke,
   inviteRedeem,
   memberRemove,
   memberRoleUpdate,
+  InviteCreateRequestSchema,
+  InviteRevokeRequestSchema,
   InviteRedeemRequestSchema,
   MemberRemoveRequestSchema,
   MemberRoleUpdateRequestSchema,
@@ -241,11 +255,13 @@ export default {
     const isBookingUpdate = url.pathname === '/booking-file-update'  && request.method === 'POST'
     const isSettlementCreate = url.pathname === '/settlement-create' && request.method === 'POST'
     const isSettlementDelete = url.pathname === '/settlement-delete' && request.method === 'POST'
+    const isInviteCreate     = url.pathname === '/invite-create'     && request.method === 'POST'
+    const isInviteRevoke     = url.pathname === '/invite-revoke'     && request.method === 'POST'
     const isInviteRedeem     = url.pathname === '/invite-redeem'     && request.method === 'POST'
     const isMemberRemove     = url.pathname === '/member-remove'     && request.method === 'POST'
     const isMemberRoleUpdate = url.pathname === '/member-role-update' && request.method === 'POST'
     const isAttachmentUrl       = url.pathname === '/attachment-url'        && request.method === 'POST'
-    if (!isOcr && !isExpenseReceiptOcr && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents && !isWishCreate && !isWishUpdate && !isBookingCreate && !isBookingUpdate && !isSettlementCreate && !isSettlementDelete && !isInviteRedeem && !isMemberRemove && !isMemberRoleUpdate && !isAttachmentUrl) {
+    if (!isOcr && !isExpenseReceiptOcr && !isTripCascade && !isExpenseCreate && !isExpenseUpdate && !isUploadIntents && !isWishCreate && !isWishUpdate && !isBookingCreate && !isBookingUpdate && !isSettlementCreate && !isSettlementDelete && !isInviteCreate && !isInviteRevoke && !isInviteRedeem && !isMemberRemove && !isMemberRoleUpdate && !isAttachmentUrl) {
       return json({ error: 'Not found' }, 404, cors)
     }
 
@@ -522,6 +538,29 @@ export default {
       handle:         data => cascadeTripDelete(uid, data, env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET),
       formatLog:      (data, result) => `trip=${data.tripId} docs=${result.deletedDocs} objects=${result.deletedObjects}`,
       formatResponse: result => ({ ok: true, ...result }),
+    })
+
+    if (isInviteCreate) return handleJsonRoute({
+      endpoint:       'invite-create', body, cors, uid,
+      schema:         InviteCreateRequestSchema,
+      handle:         data => inviteCreate(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
+      // Token is a fresh bearer secret -- never logged (mirrors attachment-url
+      // "minted URL is never logged"). trip + role are enough to correlate.
+      formatLog:      (data) => `trip=${data.tripId} role=${data.role}`,
+      formatResponse: result => ({ ok: true, ...result }),
+      catchDomain:    validationErrorCatcher(MembershipValidationError),
+      // Whole body runs in one tx → every CascadeError is pre-commit; stamp
+      // precommit so a 5xx rolls the optimistic invite row back.
+      cascadePrecommit: true,
+    })
+
+    if (isInviteRevoke) return handleJsonRoute({
+      endpoint:    'invite-revoke', body, cors, uid,
+      schema:      InviteRevokeRequestSchema,
+      handle:      data => inviteRevoke(uid, data, env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog:   data => `trip=${data.tripId}`,
+      catchDomain: validationErrorCatcher(MembershipValidationError),
+      cascadePrecommit: true,
     })
 
     if (isInviteRedeem) return handleJsonRoute({

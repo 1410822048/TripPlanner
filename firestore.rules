@@ -368,25 +368,24 @@ service cloud.firestore {
         // lists their invites for the management UI.
         allow get:  if isSignedIn();
         allow list: if isTripOwner(tripId);
-        // Owner creates invites. Required fields shape + role allowlist; the
-        // invite must not be backdated past expiry.
-        allow create: if isTripOwner(tripId)
-                      && tripNotDeleting(tripId)
-                      && request.resource.data.tripId == tripId
-                      && request.resource.data.createdBy == uid()
-                      && request.resource.data.role in ['editor', 'viewer']
-                      && request.resource.data.tripTitle is string
-                      && request.resource.data.tripIcon is string
-                      && request.resource.data.expiresAt is timestamp
-                      && request.resource.data.expiresAt > request.time;
-        // No update path: invites are immutable once created. Owner rotates
-        // by delete+create (handled by createInvite's writeBatch). Default
-        // deny from the absence of `allow update` is the intended posture.
-        //
-        // Owner revokes by deleting. Also used implicitly by createInvite to
-        // clear older invites before writing the new one — reusable-link
-        // semantics: existing doc = valid, missing doc = invalid.
-        allow delete: if isTripOwner(tripId);
+        // Mint + revoke are Worker-authoritative (/invite-create,
+        // /invite-revoke). The Worker mints the token, reads tripTitle/
+        // tripIcon off the trip doc, enforces the 7-day expiry cap, and
+        // rotates the single-active pointer (inviteState/current) atomically
+        // — invariants rules can't express. No client write path of any kind.
+        allow create: if false;
+        allow update: if false;  // invites immutable; rotation is delete+create
+        allow delete: if false;
+      }
+
+      // Authoritative single-active-invite pointer
+      // (inviteState/current): { token, role, createdBy, createdAt,
+      // expiresAt }. Written + read ONLY by the Worker admin SDK inside the
+      // invite-create/revoke/redeem transactions. Fully Worker-only — it must
+      // never leak the active token to a non-redeemer, and nothing client-side
+      // reads it (the management UI lists /invites, not this doc).
+      match /inviteState/{stateId} {
+        allow read, write: if false;
       }
 
       match /schedules/{scheduleId} {

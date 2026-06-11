@@ -83,7 +83,7 @@ export type TripDeleteRequest = z.infer<typeof TripDeleteRequestSchema>
 const TRIP_SUBCOLLECTIONS = [
   'schedules', 'expenses', 'wishes', 'bookings',
   'planning', 'settlements', 'settlementPairLocks',
-  '_purges', 'invites', 'members',
+  '_purges', 'invites', 'inviteState', 'members',
 ] as const
 
 export interface CascadeTripResult {

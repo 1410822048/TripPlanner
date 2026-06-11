@@ -102,6 +102,36 @@ export const MemberRoleUpdateRequestSchema = z.object({
 }).strict()
 export type MemberRoleUpdateRequest = z.infer<typeof MemberRoleUpdateRequestSchema>
 
+/** Default invite lifetime when the client doesn't override. Mirrors the
+ *  "5時間有効" copy in InviteModal. */
+const INVITE_DEFAULT_EXPIRY_MS = 5 * 60 * 60 * 1000
+/** Hard upper bound on an invite's lifetime. The UI only ever issues the
+ *  5-hour default; the cap exists so neither a future longer-expiry UI nor
+ *  a crafted request can mint an effectively-permanent bearer link. This is
+ *  the authoritative cap now -- firestore.rules `invites create: if false`
+ *  means there is no client write path left to enforce it at the rules
+ *  layer. 7 days. */
+const INVITE_MAX_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000
+
+/** /invite-create request. Worker mints the token (client no longer does)
+ *  and reads tripTitle / tripIcon off the trip doc, so the only trusted
+ *  inputs are tripId + role + an optional capped expiry. */
+export const InviteCreateRequestSchema = z.object({
+  tripId:      z.string().regex(TripIdRe),
+  role:        z.enum(['editor', 'viewer']),
+  expiresInMs: z.number().int().positive().max(INVITE_MAX_EXPIRY_MS).optional(),
+}).strict()
+export type InviteCreateRequest = z.infer<typeof InviteCreateRequestSchema>
+
+/** /invite-revoke request. Token must be the 64-hex bearer token; the
+ *  Worker compares it against the authoritative inviteState/current
+ *  pointer and 409s a stale (already-rotated) token. */
+export const InviteRevokeRequestSchema = z.object({
+  tripId: z.string().regex(TripIdRe),
+  token:  z.string().regex(TokenRe),
+}).strict()
+export type InviteRevokeRequest = z.infer<typeof InviteRevokeRequestSchema>
+
 // ─── Validation error ─────────────────────────────────────────────
 
 /** Thrown for any membership validation failure. Same `{ field, message }`
@@ -226,16 +256,31 @@ async function doInviteRedeem(
     tripRosterIncludesCaller:   boolean
   }
   const result = await runFirestoreTransaction<InviteTxResult>(accessToken, projectId, async (tx) => {
-    const [trip, invite, existingMember] = await Promise.all([
+    const [trip, invite, existingMember, current] = await Promise.all([
       tx.get(`trips/${req.tripId}`),
       tx.get(`trips/${req.tripId}/invites/${req.token}`),
       tx.get(`trips/${req.tripId}/members/${callerUid}`),
+      tx.get(`trips/${req.tripId}/inviteState/current`),
     ])
 
     if (!trip.exists)   throw new CascadeError(404, 'trip not found')
     assertTripNotDeleting(trip)
 
     if (!invite.exists) throw new CascadeError(404, 'invite not found')
+
+    // Single-active-invite gate. inviteState/current is the authoritative
+    // pointer the owner's last /invite-create wrote. A missing pointer (no
+    // active invite) OR a mismatch (owner rotated to a newer invite, so this
+    // token is stale even though its doc may briefly linger before the
+    // best-effort delete) both mean THIS token is no longer redeemable.
+    // Surfaced as the SAME 404 as a missing invite doc so we never leak
+    // whether the doc still exists. Reading `current` inside the tx puts
+    // redeem in the same conflict domain as create/revoke: a concurrent
+    // rotation aborts this redeem, the retry re-reads, and the decision is
+    // taken against the committed pointer.
+    if (readString(current.fields, 'token') !== req.token) {
+      throw new CascadeError(404, 'invite not found')
+    }
 
     const invitedRole = readString(invite.fields, 'role')
     if (invitedRole !== 'editor' && invitedRole !== 'viewer') {
@@ -457,6 +502,186 @@ function buildInviteWrites(
     })
   }
   return writes
+}
+
+// ─── /invite-create + /invite-revoke ──────────────────────────────
+// Owner mints / revokes reusable invite links. Worker-authoritative
+// (firestore.rules `invites create/delete: if false`) so two invariants
+// rules can't express are enforced server-side:
+//   1. Single active invite. A fixed pointer doc inviteState/current is
+//      the transaction conflict point -- two owner tabs racing a create
+//      both read the same current, only one commit lands, the loser
+//      ABORTs + retries. Scanning the invites collection (the pre-Worker
+//      client batch) was NOT a reliable uniqueness lock.
+//   2. Capped expiry. INVITE_MAX_EXPIRY_MS bounds the bearer link's
+//      lifetime; there is no client write path left to forge a far-future
+//      expiresAt.
+// The token is minted HERE (client no longer does) and tripTitle/tripIcon
+// are read off the trip doc, so the only trusted client inputs are
+// tripId + role + an optional capped expiry.
+
+/** 256-bit crypto-random invite token, hex-encoded (64 chars). Matches the
+ *  `TokenRe` shape the redeem path validates. WebCrypto is in the CF
+ *  Workers global scope. */
+function generateInviteToken(): string {
+  const bytes = new Uint8Array(32)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
+}
+
+/** Result of /invite-create. Carries the Worker-minted token + computed
+ *  expiry (ISO) back so the client can build the optimistic Invite row
+ *  without re-reading; createdAt is server-stamped (REQUEST_TIME) and
+ *  arrives on the next realtime push, so the client uses a local sentinel
+ *  until then -- same pattern the old client createInvite used. */
+export interface InviteCreateResult {
+  token:     string
+  expiresAt: string
+}
+
+export async function inviteCreate(
+  callerUid:          string,
+  req:                InviteCreateRequest,
+  serviceAccountJson: string,
+): Promise<InviteCreateResult> {
+  return withTokenRetry(() => doInviteCreate(callerUid, req, serviceAccountJson))
+}
+
+async function doInviteCreate(
+  callerUid:          string,
+  req:                InviteCreateRequest,
+  serviceAccountJson: string,
+): Promise<InviteCreateResult> {
+  const accessToken = await getAdminToken(serviceAccountJson)
+  const projectId   = getProjectId(serviceAccountJson)
+
+  // Token + expiry computed once, OUTSIDE the tx body, so a retry reuses
+  // the same values (the body re-runs on ABORT; a fresh token per attempt
+  // would orphan the loser's not-yet-committed invite doc id). expiresAt is
+  // an absolute instant = now + window, capped by the Zod schema already.
+  const token        = generateInviteToken()
+  const expiresInMs   = req.expiresInMs ?? INVITE_DEFAULT_EXPIRY_MS
+  const expiresAtIso  = new Date(Date.now() + expiresInMs).toISOString()
+
+  await runFirestoreTransaction(accessToken, projectId, async (tx) => {
+    const { trip } = await requireTripOwner(tx, req.tripId, callerUid)
+    const current  = await tx.get(`trips/${req.tripId}/inviteState/current`)
+
+    const tripTitle = readString(trip.fields, 'title') ?? ''
+    const tripIcon  = readString(trip.fields, 'icon')  ?? '✈️'
+
+    const writes: TxWrite[] = []
+
+    // Drop the previous active invite doc so the invites collection holds
+    // exactly the current token. Redeem already gates on the pointer, so a
+    // lingering stale doc is harmless -- this is hygiene, kept atomic here
+    // because TxWrite supports `op: 'delete'`. Skip when the pointer somehow
+    // names the freshly-minted token (impossible collision) to avoid
+    // deleting the doc we're about to create.
+    const prevToken = readString(current.fields, 'token')
+    if (prevToken && prevToken !== token) {
+      writes.push({
+        op:       'delete',
+        document: docResourceName(projectId, `trips/${req.tripId}/invites/${prevToken}`),
+      })
+    }
+
+    // New invite doc (bearer lookup). createdAt via REQUEST_TIME so the
+    // client's InviteDocSchema sees a server-stamped Timestamp, not Worker
+    // clock drift. exists:false rejects the ~0-probability token collision.
+    const inviteFields: Record<string, FsValue> = {
+      tripId:    { stringValue: req.tripId },
+      tripTitle: { stringValue: tripTitle },
+      tripIcon:  { stringValue: tripIcon },
+      role:      { stringValue: req.role },
+      createdBy: { stringValue: callerUid },
+      expiresAt: { timestampValue: expiresAtIso },
+    }
+    writes.push({
+      document:         docResourceName(projectId, `trips/${req.tripId}/invites/${token}`),
+      fields:           inviteFields,
+      currentDocument:  { exists: false },
+      updateTransforms: [{ fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' }],
+    })
+
+    // Authoritative single-active pointer. Full overwrite (no updateMask)
+    // replaces the prior pointer wholesale, including its stale createdAt.
+    // Stores role/createdBy/expiresAt as well so revoke-stale detection +
+    // audit/debug never need to re-read the invite doc. Worker-only:
+    // firestore.rules deny all client access to inviteState.
+    const currentFields: Record<string, FsValue> = {
+      token:     { stringValue: token },
+      role:      { stringValue: req.role },
+      createdBy: { stringValue: callerUid },
+      expiresAt: { timestampValue: expiresAtIso },
+    }
+    writes.push({
+      document:         docResourceName(projectId, `trips/${req.tripId}/inviteState/current`),
+      fields:           currentFields,
+      updateTransforms: [{ fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' }],
+    })
+
+    return { writes, result: undefined }
+  })
+
+  return { token, expiresAt: expiresAtIso }
+}
+
+export async function inviteRevoke(
+  callerUid:          string,
+  req:                InviteRevokeRequest,
+  serviceAccountJson: string,
+): Promise<{ ok: true }> {
+  return withTokenRetry(() => doInviteRevoke(callerUid, req, serviceAccountJson))
+}
+
+async function doInviteRevoke(
+  callerUid:          string,
+  req:                InviteRevokeRequest,
+  serviceAccountJson: string,
+): Promise<{ ok: true }> {
+  const accessToken = await getAdminToken(serviceAccountJson)
+  const projectId   = getProjectId(serviceAccountJson)
+
+  await runFirestoreTransaction(accessToken, projectId, async (tx) => {
+    await requireTripOwner(tx, req.tripId, callerUid)
+    const current = await tx.get(`trips/${req.tripId}/inviteState/current`)
+
+    // No active invite. Idempotent ok -- also delete the named invite doc
+    // in case a stale doc lingers without a pointer (defensive; deleteDoc
+    // of a missing doc is a no-op at commit).
+    if (!current.exists) {
+      return {
+        writes: [{
+          op:       'delete' as const,
+          document: docResourceName(projectId, `trips/${req.tripId}/invites/${req.token}`),
+        }],
+        result: undefined,
+      }
+    }
+
+    // Stale token: the caller is revoking a token that is no longer the
+    // active one (another tab/owner already rotated the invite via
+    // /invite-create). Refuse with 409 rather than silently "succeeding" --
+    // a silent ok would let the stale UI report "current invite revoked"
+    // while a newer invite is in fact live. 409 ∈ client DEFINITIVE_REJECT
+    // → the revoke mutation rolls back + the realtime listener resyncs the
+    // owner to the actual active invite.
+    if (readString(current.fields, 'token') !== req.token) {
+      throw new CascadeError(409, 'invite token is stale; a newer invite is active')
+    }
+
+    // Active token: drop both the invite doc and the pointer atomically.
+    return {
+      writes: [
+        { op: 'delete' as const, document: docResourceName(projectId, `trips/${req.tripId}/invites/${req.token}`) },
+        { op: 'delete' as const, document: docResourceName(projectId, `trips/${req.tripId}/inviteState/current`) },
+      ],
+      result: undefined,
+    }
+  })
+
+  return { ok: true }
 }
 
 // ─── /member-remove ───────────────────────────────────────────────

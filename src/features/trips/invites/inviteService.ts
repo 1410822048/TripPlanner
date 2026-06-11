@@ -1,20 +1,25 @@
 // src/features/trips/invites/inviteService.ts
-// Invite model: an owner generates an unguessable 256-bit token → creates a
-// doc at /trips/{tripId}/invites/{token}. The invitee reaches the redeem URL
-// /invite/:tripId/:token, signs in, and POSTs to the Worker's /invite-redeem
-// endpoint. The Worker (admin token, bypasses rules) atomically validates
-// the invite doc, creates the member doc, bumps trip.memberIds, then runs
-// the ACL projection cascade — see workers/ocr/src/membership-write.ts
-// `doInviteRedeem`. The client never writes invite-flow member docs
-// directly; firestore.rules `members update: if false` / `delete: if false`
-// plus a narrowly-scoped owner-self-bootstrap-only `create` (gated by
-// getAfter trip-create batch) close every non-Worker membership write.
+// Invite model — every MUTATION is Worker-authoritative; the client only
+// READS invite docs:
+//   - createInvite → POST /invite-create. The Worker mints the 256-bit
+//     token, reads tripTitle/tripIcon off the trip doc, caps the expiry,
+//     and atomically rotates the single-active pointer inviteState/current
+//     (the transaction conflict point that makes "one live invite" a real
+//     invariant, not a client-batch convention).
+//   - revokeInvite → POST /invite-revoke. Deletes the active invite + clears
+//     the pointer; 409s a stale (already-rotated) token.
+//   - acceptInvite → POST /invite-redeem. Validates the invite, gates on
+//     inviteState/current.token === token, creates the member doc + bumps
+//     trip.memberIds, then runs the ACL projection cascade — see
+//     workers/ocr/src/membership-write.ts.
+// firestore.rules deny ALL client writes to /invites (create/update/delete:
+// if false) and ALL client access to /inviteState. Reads stay client-SDK:
+// the redeemer GETs the invite doc by its unguessable token, the owner LISTs
+// /invites for the management UI (listInvites / subscribeToInvites below).
 //
-// Reusable-link semantics: the invite doc's EXISTENCE is the validity gate.
-// Any number of users can redeem while the doc lives and `expiresAt` hasn't
-// passed. Owner invalidates by deleting (directly via revokeInvite, or
-// implicitly via createInvite which clears existing invites before writing
-// the new one). No client ever writes to an invite doc — only create+delete.
+// Reusable-link semantics: while the pointer names a token and its expiresAt
+// hasn't passed, any number of users can redeem it. Rotating (createInvite)
+// or revoking moves/clears the pointer, so older links fail the redeem gate.
 import type { User } from 'firebase/auth'
 import type { Timestamp } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
@@ -60,9 +65,6 @@ export interface AcceptResult {
   trip:    Trip | null
 }
 
-const DEFAULT_EXPIRY_MS = 5 * 60 * 60 * 1000   // 5 hours
-const TOKEN_BYTES       = 32                   // 256 bits → infeasible to guess
-
 /**
  * Render a human-readable countdown for an invite's `expiresAt`. Adapts to
  * the magnitude of the window — hour-scale expiries show "あと N 時間" /
@@ -80,20 +82,6 @@ export function formatInviteExpiry(expiresAt: Timestamp, now: number): string {
   const diffDay = Math.floor(diffHr / 24)
   if (diffDay < 1)     return `あと ${diffHr} 時間`
   return `あと ${diffDay} 日`
-}
-
-/**
- * Crypto-random token, hex-encoded (64 chars). Uses WebCrypto which is
- * available in every modern browser + every supported PWA surface.
- * Hex (not base64url) so the token is URL-safe without additional escaping
- * and readable in console logs during debugging.
- *
- * Exported for unit testing; treat as an internal helper otherwise.
- */
-export function generateToken(): string {
-  const bytes = new Uint8Array(TOKEN_BYTES)
-  crypto.getRandomValues(bytes)
-  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
 }
 
 function toInvite(id: string, data: Record<string, unknown>): Invite {
@@ -120,61 +108,41 @@ function toInvite(id: string, data: Record<string, unknown>): Invite {
 }
 
 /**
- * Owner creates a new invite. "One active invite at a time" semantics:
- * existing invite docs for the trip are deleted atomically with the new
- * create, so any in-flight links become not-found on next read. Token is
- * generated client-side; collision probability with 256-bit random is ~0,
- * so no pre-check getDoc. Defaults to a 7-day expiry.
+ * Owner creates a new invite via the Worker (/invite-create). The Worker
+ * mints the token, reads tripTitle/tripIcon off the trip doc, caps the
+ * expiry, and rotates the single-active pointer atomically — see
+ * membership-write.ts `inviteCreate`. The client passes only tripId + role.
  *
- * Race: if a redeemer's acceptInvite commits between this function's
- * read-existing-docs and batch-commit, their member doc still lands; this
- * create then proceeds with the delete+set. The invariant we care about —
- * "at most one unexpired invite at a time" — holds either way.
+ * The returned Invite is an OPTIMISTIC shape for the mutation cache: the
+ * Worker-minted `token` + computed `expiresAt` come back over the wire;
+ * tripTitle/tripIcon/role/createdBy are reconstructed from local inputs
+ * (they match what the Worker wrote), and `createdAt` uses a local
+ * Timestamp.now() sentinel — the real server value arrives on the next
+ * realtime push via subscribeToInvites.
  */
 export async function createInvite(
   trip: Trip,
   role: 'editor' | 'viewer',
   user: User,
-  expiresInMs: number = DEFAULT_EXPIRY_MS,
 ): Promise<Invite> {
-  const { db, doc, collection, getDocs, writeBatch, Timestamp, serverTimestamp } = await getFirebase()
+  const workerBase = requireWorkerWriteBase()
+  const idToken    = await preflightIdToken()
 
-  const invitesCol = collection(db, ...P.invites(trip.id))
-  const existing   = await getDocs(invitesCol)
-
-  const token   = generateToken()
-  const ref     = doc(invitesCol, token)
-  const expires = Timestamp.fromDate(new Date(Date.now() + expiresInMs))
-
-  const payload = {
-    tripId:    trip.id,
-    tripTitle: trip.title,
-    tripIcon:  trip.icon ?? '✈️',
+  const result = await workerFetch(workerBase, idToken, '/invite-create', {
+    tripId: trip.id,
     role,
-    createdBy: user.uid,
-    createdAt: serverTimestamp(),
-    expiresAt: expires,
-  }
+  }) as { ok: true; token: string; expiresAt: string }
 
-  // Batch cap is 500 ops — with the "one at a time" invariant held after
-  // this first deployment, existing.size is typically 0–1. If older data
-  // left more behind, we still stay well under the cap.
-  const batch = writeBatch(db)
-  existing.docs.forEach(d => batch.delete(d.ref))
-  batch.set(ref, payload)
-  await batch.commit()
-
-  // Local Timestamp as a sentinel for createdAt — the real server value
-  // arrives on the next read via listInvites / useInvites invalidation.
+  const { Timestamp } = await getFirebase()
   return {
-    id:        token,
+    id:        result.token,
     tripId:    trip.id,
     tripTitle: trip.title,
     tripIcon:  trip.icon ?? '✈️',
     role,
     createdBy: user.uid,
     createdAt: Timestamp.now(),
-    expiresAt: expires,
+    expiresAt: Timestamp.fromMillis(Date.parse(result.expiresAt)),
   }
 }
 
@@ -208,10 +176,17 @@ export const subscribeToInvites = (
   source:     'subscribeToInvites',
 }, onData, onError)
 
-/** Owner revokes an invite by deleting it. */
+/**
+ * Owner revokes an invite via the Worker (/invite-revoke). The Worker
+ * deletes the invite doc + clears the single-active pointer; a stale token
+ * (already rotated by a newer createInvite) comes back as a 409 →
+ * WorkerRejected, and the realtime listener resyncs the owner to the
+ * actual active invite.
+ */
 export async function revokeInvite(tripId: string, token: string): Promise<void> {
-  const { db, doc, deleteDoc } = await getFirebase()
-  await deleteDoc(doc(db, ...P.invite(tripId, token)))
+  const workerBase = requireWorkerWriteBase()
+  const idToken    = await preflightIdToken()
+  await workerFetch(workerBase, idToken, '/invite-revoke', { tripId, token })
 }
 
 /**
