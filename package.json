@@ -17,7 +17,7 @@
     "test:watch": "vitest",
     "test:rules": "firebase emulators:exec --project=demo-tripmate-rules --only firestore,storage \"vitest run --config vitest.rules.config.ts\"",
     "icons": "node scripts/generate-icons.mjs",
-    "deploy:pages": "npm run build && npx wrangler pages deploy dist --project-name=tripmate --branch=main --commit-message=\"Pages deploy\" --commit-dirty=true",
+    "deploy:pages": "node scripts/deploy-pages-prod.mjs",
     "deploy:pages:prod": "node scripts/deploy-pages-prod.mjs",
     "prepare": "husky"
   },

@@ -20,8 +20,8 @@ export default function BrandBand({ brand, provider, children }: Props) {
       style={{ background: brand.bg, color: brand.fg }}
     >
       <div className="flex items-center gap-2 min-w-0">
-        <span className="px-1.5 py-px rounded-sm bg-black/15 text-[10px] tracking-[0.06em] shrink-0">
-          {brand.label}
+        <span className="px-1.5 py-px rounded-sm bg-black/15 text-[10px] tracking-[0.06em] shrink-0 inline-flex items-center">
+          {brand.icon ? <brand.icon size={12} strokeWidth={2.2} /> : brand.label}
         </span>
         <span className="truncate opacity-90">{provider ?? brand.name}</span>
       </div>

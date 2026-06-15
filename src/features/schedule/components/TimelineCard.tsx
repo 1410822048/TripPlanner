@@ -1,19 +1,19 @@
 // src/features/schedule/components/TimelineCard.tsx
-import {
-  Clock, MapPin, Pencil,
-  Utensils, Bus, Hotel, ShoppingBag, Star,
-} from 'lucide-react'
+import { Clock, MapPin, Pencil } from 'lucide-react'
 import type { Schedule, ScheduleCategory } from '@/types'
 import { mapsSearchUrl } from '@/utils/maps'
 import { formatMinorAmount } from '@/utils/money'
+import { CATEGORY_ICON } from '@/shared/categoryMeta'
 
-const CAT: Record<ScheduleCategory, { bg: string; color: string; Icon: React.ElementType }> = {
-  transport:     { bg:'#E8EEF5', color:'#4A6FA0', Icon: Bus         },
-  accommodation: { bg:'#F5EDE6', color:'#9A6840', Icon: Hotel       },
-  food:          { bg:'#F5E8E8', color:'#9A4848', Icon: Utensils    },
-  activity:      { bg:'#E6F2EC', color:'#3A7858', Icon: Star        },
-  shopping:      { bg:'#F0E8F5', color:'#724888', Icon: ShoppingBag },
-  other:         { bg:'#EBEBEB', color:'#707070', Icon: MapPin      },
+// 色だけローカル(タイムラインの淡色トーン)。アイコンは shared の CATEGORY_ICON
+// を single source にして、フォーム picker / 費用リストと食い違わないようにする。
+const CAT_STYLE: Record<ScheduleCategory, { bg: string; color: string }> = {
+  transport:     { bg:'#E8EEF5', color:'#4A6FA0' },
+  accommodation: { bg:'#F5EDE6', color:'#9A6840' },
+  food:          { bg:'#F5E8E8', color:'#9A4848' },
+  activity:      { bg:'#E6F2EC', color:'#3A7858' },
+  shopping:      { bg:'#F0E8F5', color:'#724888' },
+  other:         { bg:'#EBEBEB', color:'#707070' },
 }
 
 interface Props {
@@ -24,8 +24,8 @@ interface Props {
 }
 
 export default function TimelineCard({ s, isLast, currency, onEdit }: Props) {
-  const cat  = CAT[s.category]
-  const Icon = cat.Icon
+  const cat  = CAT_STYLE[s.category]
+  const Icon = CATEGORY_ICON[s.category]
   // Inline maps link on the location label — keeps the meta row to one
   // line instead of stacking a separate chip below (which thickened the
   // timeline noticeably across many cards). The whole pin + name is the

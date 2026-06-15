@@ -22,16 +22,17 @@ import { MOCK_PLAN_ITEMS } from '../mocks'
 import type { PlanItem, PlanCategory, CreatePlanItemInput } from '@/types'
 import PlanningFormModal from './PlanningFormModal'
 import PlanningRow from './PlanningRow'
+import { PLAN_CATEGORY_ICON } from '../categories'
 
 // Section order — matches PlanCategory enum semantically. UI fixed even
 // when sections are empty so the page layout doesn't reshuffle as items
 // get added (less disorienting than dynamic section visibility).
-const SECTIONS: { category: PlanCategory; emoji: string; label: string }[] = [
-  { category: 'essentials', emoji: '🎒', label: '必備'   },
-  { category: 'documents',  emoji: '📄', label: '予約確認' },
-  { category: 'packing',    emoji: '👕', label: '荷物'   },
-  { category: 'todo',       emoji: '✅', label: '行前 todo' },
-  { category: 'other',      emoji: '📌', label: 'その他' },
+const SECTIONS: { category: PlanCategory; label: string }[] = [
+  { category: 'essentials', label: '必備'   },
+  { category: 'documents',  label: '予約確認' },
+  { category: 'packing',    label: '荷物'   },
+  { category: 'todo',       label: '行前 todo' },
+  { category: 'other',      label: 'その他' },
 ]
 
 export default function PlanningPage() {
@@ -171,11 +172,13 @@ export default function PlanningPage() {
             {SECTIONS.map(section => {
               const sectionItems = grouped[section.category]
               const sectionDone  = sectionItems.filter(i => i.done).length
+              const SectionIcon  = PLAN_CATEGORY_ICON[section.category]
               return (
                 <div key={section.category}>
                   <div className="flex items-center justify-between px-1 mb-2">
-                    <span className="text-[12px] font-bold text-ink tracking-[0.02em]">
-                      {section.emoji} {section.label}
+                    <span className="flex items-center gap-1.5 text-[12px] font-bold text-ink tracking-[0.02em]">
+                      <SectionIcon size={13} strokeWidth={2.2} className="text-muted" />
+                      {section.label}
                     </span>
                     {sectionItems.length > 0 && (
                       <span className="text-[11px] text-muted font-medium tabular-nums">

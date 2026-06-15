@@ -7,7 +7,7 @@ import FormField from '@/components/ui/FormField'
 import MemberAvatar from '@/components/ui/MemberAvatar'
 import AttachmentPreviewModal from '@/features/bookings/components/AttachmentPreviewModal'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
-import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
+import { CATEGORY_ICON } from '@/shared/categoryMeta'
 import { adjustmentSign } from '@tripmate/expense-materialize'
 import { fromLocalDateString } from '@/utils/dates'
 import { formatMinorAmount } from '@/utils/money'
@@ -30,6 +30,7 @@ export default function ExpenseReadonlyModal({
   isOpen, expense, members, currency, onClose,
 }: Props) {
   const [previewOpen, setPreviewOpen] = useState(false)
+  const CategoryIcon = CATEGORY_ICON[expense.category]
   const memberById = new Map(members.map(member => [member.id, member]))
   const payer = memberById.get(expense.paidBy)
   const receipt = expense.receipt
@@ -49,8 +50,8 @@ export default function ExpenseReadonlyModal({
 
       <div className="rounded-input border border-border bg-surface px-3 py-3">
         <div className="flex items-start gap-3">
-          <div className="w-10 h-10 rounded-input bg-tile shrink-0 flex items-center justify-center text-[18px]">
-            {CATEGORY_EMOJI[expense.category]}
+          <div className="w-10 h-10 rounded-input bg-tile shrink-0 flex items-center justify-center text-muted">
+            <CategoryIcon size={19} strokeWidth={1.8} />
           </div>
           <div className="flex-1 min-w-0">
             <div className="text-[15px] font-bold text-ink leading-6 break-words">

@@ -31,10 +31,15 @@
 // adding a new SHORT ASCII alias, sanity-check it against other entries'
 // long aliases to make sure substring collisions don't produce a stable
 // false-match (test/brandMeta.test.ts has a few sample cases).
+import { Plane, Hotel, TrainFront, type LucideIcon } from 'lucide-react'
 
 export interface Brand {
-  /** Short label rendered as the "logo" chip (e.g. ANA, JAL). */
+  /** Short label rendered as the "logo" chip (e.g. ANA, JAL). Empty on the
+   *  fallbacks, which render `icon` instead of text. */
   label: string
+  /** Fallback-only lucide icon shown in the chip when the provider wasn't
+   *  matched (matched brands carry a text `label`, not an icon). */
+  icon?: LucideIcon
   /** Full readable name, used for tooltips / accessibility. */
   name:  string
   /** Primary brand color — backgrounds the logo chip / hero band. */
@@ -50,9 +55,9 @@ export interface Brand {
  *  rather than rendering a blank band. Each fallback has empty aliases
  *  so it can never match (we return them only via `?? FALLBACKS.x`). */
 const FALLBACKS = {
-  airline: { label: '✈', name: 'Airline', bg: '#1F3D7A', fg: '#fff', aliases: [] },
-  hotel:   { label: '🏨', name: 'Hotel',   bg: '#7B5E3C', fg: '#fff', aliases: [] },
-  rail:    { label: '🚆', name: 'Rail',    bg: '#2C5F4D', fg: '#fff', aliases: [] },
+  airline: { label: '', icon: Plane,      name: 'Airline', bg: '#1F3D7A', fg: '#fff', aliases: [] },
+  hotel:   { label: '', icon: Hotel,      name: 'Hotel',   bg: '#7B5E3C', fg: '#fff', aliases: [] },
+  rail:    { label: '', icon: TrainFront, name: 'Rail',    bg: '#2C5F4D', fg: '#fff', aliases: [] },
 } as const satisfies Record<string, Brand>
 
 const AIRLINES: Brand[] = [

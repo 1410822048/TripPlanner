@@ -116,6 +116,12 @@ npm run build                          # tsc + vite build → dist/
 npm run deploy:pages                   # build + Cloudflare Pages deploy（主 host）
 ```
 
+Cloudflare Pages 上的 Firebase Auth redirect flow 走 same-origin helper：
+`functions/__/auth/[[path]].ts` 會代理 `/__/auth/*` 到 Firebase Hosting auth helper。
+production build 的 `VITE_FIREBASE_AUTH_DOMAIN` 必須是 Pages/custom domain
+（目前 `tripmate-2wg.pages.dev`），OAuth redirect URI 需允許
+`https://<domain>/__/auth/handler`。
+
 Rules / indexes（Firebase 那邊還在管 Firestore + Storage）：
 
 ```bash

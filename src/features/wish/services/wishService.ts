@@ -37,6 +37,7 @@ import {
 } from '@/services/workerBase'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
 import { createTripScopedListServices } from '@/services/tripScopedList'
+import { rankWishes } from '../utils'
 import { validateUpdateOrThrow } from '@/services/validateUpdate'
 import { auditUpdate } from '@/utils/audit'
 import { getTripMemberIds } from '@/services/tripMemberIds'
@@ -58,24 +59,18 @@ function wishFromDoc(d: QueryDocumentSnapshot): Wish {
   return firestoreDocFromSchema(WishDocSchema, d, 'wishFromDoc')
 }
 
-/** Stable comparator — votes.length desc, createdAt-desc tiebreak preserved
- *  because the upstream query already sorts by createdAt desc and JS
- *  Array.sort is stable. We can't `orderBy('votes', 'desc')` server-side
- *  because Firestore sorts arrays element-wise (lexicographic by uid),
- *  not by length. Denormalising voteCount would let us server-sort, but
- *  drifts under concurrent toggles. ≤100 wishes → client sort is fine. */
-function byVotesDesc(a: Wish, b: Wish): number {
-  return b.votes.length - a.votes.length
-}
-
 // ─── Read ─────────────────────────────────────────────────────────
+// orderBy createdAt-desc drives the LIST_LIMIT window (most-recent 100);
+// rankWishes re-orders to the votes-first leaderboard. We can't
+// `orderBy('votes', 'desc')` server-side because Firestore sorts arrays
+// element-wise (lexicographic by uid), not by length — see ../utils.
 const listServices = createTripScopedListServices<Wish>({
   path:    P.wishes,
   fromDoc: wishFromDoc,
   orderBy: [['createdAt', 'desc']],
   limit:   LIST_LIMIT,
   source:  'wishes',
-  postProcess: items => [...items].sort(byVotesDesc),
+  postProcess: rankWishes,
 })
 
 export const getWishesByTrip = listServices.fetch

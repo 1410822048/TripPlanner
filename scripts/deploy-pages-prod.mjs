@@ -35,7 +35,6 @@ import { loadEnv } from 'vite'
 //   2. src/services/workerBase.ts  FALLBACK 常數
 //   3. 本檔
 const WORKER_URL = 'https://tripmate-ocr.tripmate.workers.dev'
-
 // 防呆:有人把上面清空 / 改壞時直接中止,別 build 出壞 bundle。
 if (!/^https:\/\/\S+$/.test(WORKER_URL)) {
   console.error(`[deploy:pages:prod] ABORT: WORKER_URL 不合法: ${JSON.stringify(WORKER_URL)}`)
@@ -45,6 +44,34 @@ if (!/^https:\/\/\S+$/.test(WORKER_URL)) {
 // Worker URL 直接注入(確定值,不靠 .env)。先設進 process.env,讓底下的
 // loadEnv 與隨後的 build 都看得到。
 process.env.VITE_WORKER_BASE_URL = WORKER_URL
+
+// loadEnv = build 實際會看到的 merged env(.env* + process.env,後者優先)。
+// authDomain を決める前に読むことで、.env.production / CI が設定した
+// VITE_FIREBASE_AUTH_DOMAIN を尊重する。
+const resolved = { ...loadEnv('production', process.cwd(), 'VITE_'), ...process.env }
+
+// Firebase Auth redirect helper is proxied by /functions/__/auth/[[path]].ts.
+// Production must bake the Pages/custom domain into authDomain so the helper
+// iframe is same-origin instead of tripplanner-80a4f.firebaseapp.com.
+// 優先序:明示 override(TRIPMATE_PAGES_AUTH_DOMAIN)→ 設定済みの
+// VITE_FIREBASE_AUTH_DOMAIN(.env.production / CI)→ 既定の Pages host。
+// 以前は既定で無条件に上書きしていたため、custom domain への切替で authDomain
+// が壊れていた(P2 修正)。
+const PAGES_AUTH_DOMAIN =
+  process.env.TRIPMATE_PAGES_AUTH_DOMAIN?.trim()
+  || resolved.VITE_FIREBASE_AUTH_DOMAIN?.trim()
+  || 'tripmate-2wg.pages.dev'
+// host-only でなければ中止。scheme(https://)/ path / port を含むと、same-origin
+// auth helper iframe や OAuth redirect URI が不一致になり OAuth が壊れる。
+if (!/^[a-z0-9.-]+$/i.test(PAGES_AUTH_DOMAIN)) {
+  console.error(
+    `[deploy:pages:prod] ABORT: VITE_FIREBASE_AUTH_DOMAIN は host-only である必要が` +
+      `あります(https:// や /path / :port を含めない): ${JSON.stringify(PAGES_AUTH_DOMAIN)}`,
+  )
+  process.exit(1)
+}
+process.env.VITE_FIREBASE_AUTH_DOMAIN = PAGES_AUTH_DOMAIN
+resolved.VITE_FIREBASE_AUTH_DOMAIN = PAGES_AUTH_DOMAIN
 
 // build 前 env preflight。清單需與 src/services/firebase.ts 的
 // REQUIRED_FIREBASE_ENV 對齊(那邊缺值會在 PROD module-load throw),外加
@@ -61,7 +88,6 @@ const REQUIRED_CLIENT_ENV = [
   'VITE_FIREBASE_APP_ID',
 ]
 
-const resolved = loadEnv('production', process.cwd(), 'VITE_')
 const missing = REQUIRED_CLIENT_ENV.filter((k) => !resolved[k]?.trim())
 if (missing.length > 0) {
   console.error(
@@ -81,9 +107,13 @@ const run = (cmd, extraEnv) =>
 //    併入 import.meta.env 並 bake 進 bundle,不依賴本機 .env。
 console.log(
   `[deploy:pages:prod] env preflight OK (${REQUIRED_CLIENT_ENV.length} keys); ` +
-    `building with VITE_WORKER_BASE_URL=${WORKER_URL}`,
+    `building with VITE_WORKER_BASE_URL=${WORKER_URL}, ` +
+    `VITE_FIREBASE_AUTH_DOMAIN=${PAGES_AUTH_DOMAIN}`,
 )
-run('npm run build', { VITE_WORKER_BASE_URL: WORKER_URL })
+run('npm run build', {
+  VITE_WORKER_BASE_URL: WORKER_URL,
+  VITE_FIREBASE_AUTH_DOMAIN: PAGES_AUTH_DOMAIN,
+})
 
 // 2. deploy —— --commit-dirty=false 強制乾淨 worktree。
 run(

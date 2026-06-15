@@ -463,7 +463,7 @@ describe('/trips/{tripId}/bookings', () => {
     )
   })
 
-  test('booking create with address over 200 chars is rejected', async () => {
+  test('booking create with address over 500 chars is rejected', async () => {
     await assertFails(
       setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-cap-addr'), {
         tripId: TRIP_ID, type: 'hotel', title: 'X',
@@ -472,7 +472,7 @@ describe('/trips/{tripId}/bookings', () => {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         sortDate:  serverTimestamp(),
-        address: 'x'.repeat(201),
+        address: 'x'.repeat(501),
       }),
     )
   })
@@ -705,7 +705,7 @@ describe('/trips/{tripId}/wishes vote toggle', () => {
   // create/update is Worker-authoritative). Rules looser than client
   // Zod (`src/types/wish.ts`) lets a raw-SDK writer bypass the form
   // cap. Tightened 2026-05-27 to match Zod: title 100, description
-  // 500, address 200, link 500.
+  // 500, address 500, link 500.
   test('wish create with title over 100 chars is rejected', async () => {
     await assertFails(
       setDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-cap-title'), {
@@ -718,7 +718,7 @@ describe('/trips/{tripId}/wishes vote toggle', () => {
     )
   })
 
-  test('wish create with address over 200 chars is rejected', async () => {
+  test('wish create with address over 500 chars is rejected', async () => {
     await assertFails(
       setDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-cap-addr'), {
         tripId: TRIP_ID, category: 'place', title: 'X',
@@ -726,7 +726,7 @@ describe('/trips/{tripId}/wishes vote toggle', () => {
         memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-        address: 'x'.repeat(201),
+        address: 'x'.repeat(501),
       }),
     )
   })

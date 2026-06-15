@@ -15,7 +15,7 @@ import DeleteConfirm from '@/components/ui/DeleteConfirm'
 import { useTripCurrency } from '@/hooks/useTripCurrency'
 import { currencySymbol } from '@/utils/currency'
 import { formatMinorForInput, parseMoneyToMinor, MoneyParseError } from '@/utils/money'
-import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
+import { CATEGORY_ICON } from '@/shared/categoryMeta'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
 
@@ -166,6 +166,7 @@ export default function ScheduleFormModal({
       <FormField label="カテゴリ">
         <div className="flex gap-[7px] flex-wrap">
           {CATEGORIES.map(c => {
+            const CatIcon = CATEGORY_ICON[c.value]
             const active = state.category === c.value
             return (
               <button
@@ -179,7 +180,7 @@ export default function ScheduleFormModal({
                     : 'border-border bg-transparent text-muted font-normal hover:border-muted',
                 ].join(' ')}
               >
-                <span>{CATEGORY_EMOJI[c.value]}</span>{c.label}
+                <CatIcon size={13} strokeWidth={2} />{c.label}
               </button>
             )
           })}

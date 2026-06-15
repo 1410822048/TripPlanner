@@ -7,7 +7,7 @@
 // onDelete are omitted and the shell renders a plain non-swipeable
 // row. Tap-to-edit still works in that branch — viewers can read
 // details.
-import { Loader2, Lock } from 'lucide-react'
+import { Loader2, Lock, type LucideIcon } from 'lucide-react'
 import type { Expense } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import MemberAvatar from '@/components/ui/MemberAvatar'
@@ -19,7 +19,7 @@ export interface SwipeableExpenseItemProps {
   expense:      Expense
   payer:        TripMember | undefined
   summary:      string
-  categoryEmoji: string
+  categoryIcon: LucideIcon
   /** ISO currency code from the trip. Threaded as a prop (rather than
    *  read via useTripCurrency inside) so the memo comparator can
    *  invalidate when the user changes currency mid-trip. */
@@ -45,7 +45,7 @@ export interface SwipeableExpenseItemProps {
 }
 
 function SwipeableExpenseItem({
-  expense, payer, summary, categoryEmoji, currency,
+  expense, payer, summary, categoryIcon: CategoryIcon, currency,
   isOpen, isUpdating, isLocked, onSelect, onOpen, onClose, onDelete,
 }: SwipeableExpenseItemProps) {
   // Rows added via optimistic update carry a `temp-` prefixed id until
@@ -56,7 +56,7 @@ function SwipeableExpenseItem({
   const isPending = expense.id.startsWith('temp-') || !!isUpdating
 
   // Receipt thumbnail (if image + thumb exists) replaces the category
-  // emoji tile. PDFs without thumbnails keep the emoji — the file-type
+  // icon tile. PDFs without thumbnails keep the icon — the file-type
   // is still visible via the form modal's preview button when editing.
   // path-only: resolve the thumb path to a blob objectURL via Storage Rules.
   const thumb = useAttachmentUrl(expense.receipt?.thumbPath, { kind: 'thumb' })
@@ -75,9 +75,9 @@ function SwipeableExpenseItem({
         'flex items-center gap-3 px-3 py-2.5 transition-opacity',
         isPending ? 'opacity-55' : '',
       ].join(' ')}>
-        <div className="w-9 h-9 rounded-input bg-tile shrink-0 flex items-center justify-center text-[17px] overflow-hidden pointer-events-none"
+        <div className="w-9 h-9 rounded-input bg-tile shrink-0 flex items-center justify-center text-muted overflow-hidden pointer-events-none"
              style={thumb ? { backgroundImage: `url(${thumb})`, backgroundSize: 'cover', backgroundPosition: 'center' } : undefined}>
-          {thumb ? null : categoryEmoji}
+          {thumb ? null : <CategoryIcon size={18} strokeWidth={1.8} />}
         </div>
         <div className="flex-1 min-w-0 pointer-events-none">
           <div className="text-[13px] font-semibold text-ink -tracking-[0.1px] overflow-hidden text-ellipsis whitespace-nowrap">

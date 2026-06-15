@@ -21,14 +21,7 @@ import AttachmentPreviewModal from './AttachmentPreviewModal'
 import { useBookingFormState } from '../hooks/useBookingFormState'
 import { useAttachment, type AttachmentChange } from '@/hooks/useAttachment'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
-
-const TYPES: { value: Booking['type']; emoji: string; label: string }[] = [
-  { value: 'flight', emoji: '✈️', label: 'フライト' },
-  { value: 'hotel',  emoji: '🏨', label: 'ホテル'   },
-  { value: 'train',  emoji: '🚆', label: '電車'     },
-  { value: 'bus',    emoji: '🚌', label: 'バス'     },
-  { value: 'other',  emoji: '📌', label: 'その他'   },
-]
+import { BOOKING_TYPE_META, BOOKING_TYPE_ORDER } from '../utils'
 
 /** Transport types use origin → destination as the primary identifier;
  *  other types use a single title field. */
@@ -179,13 +172,14 @@ export default function BookingFormModal({
     >
       <FormField label="種類">
         <div className="flex gap-[7px] flex-wrap">
-          {TYPES.map(t => {
-            const active = state.type === t.value
+          {BOOKING_TYPE_ORDER.map(value => {
+            const { icon: TypeIcon, label } = BOOKING_TYPE_META[value]
+            const active = state.type === value
             return (
               <button
-                key={t.value}
+                key={value}
                 type="button"
-                onClick={() => setField('type', t.value)}
+                onClick={() => setField('type', value)}
                 className={[
                   'flex items-center gap-[5px] px-3 py-1.5 rounded-card text-[12px] cursor-pointer transition-all border-[1.5px]',
                   active
@@ -193,7 +187,7 @@ export default function BookingFormModal({
                     : 'border-border bg-transparent text-muted font-normal hover:border-muted',
                 ].join(' ')}
               >
-                <span>{t.emoji}</span>{t.label}
+                <TypeIcon size={13} strokeWidth={2} />{label}
               </button>
             )
           })}
@@ -307,12 +301,12 @@ export default function BookingFormModal({
           Google Maps treats it as a search query so anything from a
           street address to a venue name resolves cleanly. */}
       {!isTransport && (
-        <FormField label="住所（任意）">
+        <FormField label="住所 / Google Maps URL（任意）">
           <input
             value={state.address}
             onChange={e => setField('address', e.target.value)}
-            placeholder={state.type === 'hotel' ? '例：東京都台東区浅草 1-1-1' : '例：上野公園'}
-            maxLength={200}
+            placeholder={state.type === 'hotel' ? '例：東京都台東区浅草 1-1-1 / Google Maps の URL' : '例：上野公園 / Google Maps の URL'}
+            maxLength={500}
             className={inputClass(false)}
           />
         </FormField>

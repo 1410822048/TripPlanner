@@ -1,6 +1,7 @@
 // src/features/bookings/utils.ts
 // Shared display helpers — keeps the list, preview modal, and any future
 // booking renderer in lockstep when the schema gains optional fields.
+import { Plane, Hotel, TrainFront, Bus, MapPin, type LucideIcon } from 'lucide-react'
 import type { Booking, BookingAttachment } from '@/types'
 
 /** Thumbnail Storage PATH for getBlob (path-only model). The small WebP
@@ -20,18 +21,22 @@ export function isImageAttachment(att: BookingAttachment | undefined): boolean {
 }
 
 /**
- * Per-type display metadata — emoji shown in section headers / fallback
- * card thumbnails, label rendered as the section heading text. Single
- * source of truth so adding a new booking type is a one-file edit and
- * BookingsPage / GenericCard never disagree on the icon.
+ * Per-type display metadata — lucide icon shown in section headers /
+ * fallback card thumbnails / form picker, label rendered as the heading
+ * text. Single source of truth so adding a new booking type is a one-file
+ * edit and BookingsPage / GenericCard / BookingFormModal never disagree.
  */
-export const BOOKING_TYPE_META: Record<Booking['type'], { emoji: string; label: string }> = {
-  flight: { emoji: '✈️', label: 'フライト' },
-  hotel:  { emoji: '🏨', label: 'ホテル'   },
-  train:  { emoji: '🚆', label: '電車'     },
-  bus:    { emoji: '🚌', label: 'バス'     },
-  other:  { emoji: '📌', label: 'その他'   },
+export const BOOKING_TYPE_META: Record<Booking['type'], { icon: LucideIcon; label: string }> = {
+  flight: { icon: Plane,      label: 'フライト' },
+  hotel:  { icon: Hotel,      label: 'ホテル'   },
+  train:  { icon: TrainFront, label: '電車'     },
+  bus:    { icon: Bus,        label: 'バス'     },
+  other:  { icon: MapPin,     label: 'その他'   },
 }
+
+/** 表示順(section / form picker 共用)。BOOKING_TYPE_META と二重管理しないよう
+ *  並び順だけをここに持つ。 */
+export const BOOKING_TYPE_ORDER: Booking['type'][] = ['flight', 'hotel', 'train', 'bus', 'other']
 
 /**
  * Primary user-facing label for a booking. Transport types prefer the

@@ -16,14 +16,10 @@ import { useFormReducer } from '@/hooks/useFormReducer'
 import { useImageCropFlow } from '@/hooks/useImageCropFlow'
 import { useBlobUrl } from '@/hooks/useBlobUrl'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
+import { WISH_CATEGORIES } from '../categories'
 
 const ACCEPT_TYPES = 'image/*'
 const MAX_FILE_BYTES = 5 * 1024 * 1024
-
-const CATEGORIES: { value: WishCategory; emoji: string; label: string }[] = [
-  { value: 'place', emoji: '🗺️', label: '景點' },
-  { value: 'food',  emoji: '🍜', label: '餐廳' },
-]
 
 // `type` (not `interface`): TS won't widen interfaces to satisfy
 // `Record<string, unknown>` since interfaces are open for declaration
@@ -166,7 +162,7 @@ export default function WishFormModal({
     >
       <FormField label="カテゴリ">
         <div className="flex gap-[7px] flex-wrap">
-          {CATEGORIES.map(c => {
+          {WISH_CATEGORIES.map(c => {
             const active = state.category === c.value
             return (
               <button
@@ -180,7 +176,7 @@ export default function WishFormModal({
                     : 'border-border bg-transparent text-muted font-normal hover:border-muted',
                 ].join(' ')}
               >
-                <span>{c.emoji}</span>{c.label}
+                <c.icon size={13} strokeWidth={2} />{c.label}
               </button>
             )
           })}
@@ -207,27 +203,29 @@ export default function WishFormModal({
         />
       </FormField>
 
-      <FormField label="リンク（URL）" error={errors.link}>
+      <FormField label="住所 / Google Maps URL（任意）">
+        {/* 住所テキスト or Google Maps の URL。テキストは Google Maps の検索
+            クエリとして解決される(URL 整形は不要)、URL ならそのまま開く。
+            カードではサムネタップで地図が開く。 */}
+        <input
+          value={state.address}
+          onChange={e => setField('address', e.target.value)}
+          placeholder="例：東京都港区芝公園 4-2-8 / Google Maps の URL"
+          maxLength={500}
+          className={inputClass(false)}
+        />
+      </FormField>
+
+      <FormField label="リンク（公式・予約ページ等）" error={errors.link}>
+        {/* 地図ではなく、イベント/公式/予約などのページ URL。カードでは ⋮ 隣の
+            「網站」ボタンで開く。 */}
         <input
           type="url"
           inputMode="url"
           value={state.link}
           onChange={e => setField('link', e.target.value)}
-          placeholder="https://example.com/restaurant"
+          placeholder="https://example.com/event"
           className={inputClass(!!errors.link)}
-        />
-      </FormField>
-
-      <FormField label="住所（任意）">
-        {/* Free-text — Google Maps treats the value as a search query so
-            anything from "Shibuya Sky" to a full street address resolves.
-            No URL formatting required from the user. */}
-        <input
-          value={state.address}
-          onChange={e => setField('address', e.target.value)}
-          placeholder="例：東京都港区芝公園 4-2-8"
-          maxLength={200}
-          className={inputClass(false)}
         />
       </FormField>
 

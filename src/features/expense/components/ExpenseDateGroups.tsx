@@ -15,7 +15,7 @@ import type { Expense } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import type { useSwipeOpen } from '@/hooks/useSwipeOpen'
 import SwipeableExpenseItem from './SwipeableExpenseItem'
-import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
+import { CATEGORY_ICON } from '@/shared/categoryMeta'
 import { splitSummary } from '../utils'
 import { fromLocalDateString } from '@/utils/dates'
 import { formatMinorAmount } from '@/utils/money'
@@ -126,7 +126,7 @@ export default function ExpenseDateGroups({
                       expense={e}
                       payer={memberById.get(e.paidBy)}
                       summary={splitSummary(e, members.length)}
-                      categoryEmoji={CATEGORY_EMOJI[e.category]}
+                      categoryIcon={CATEGORY_ICON[e.category]}
                       currency={currency}
                       isUpdating={pendingUpdateIds.has(e.id)}
                       isLocked={isReadonly}

@@ -167,6 +167,12 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        // Firebase Auth redirect helper is served by Cloudflare Pages
+        // Functions at /__/auth/*. It must bypass Workbox's SPA navigation
+        // fallback; otherwise an existing PWA service worker can respond
+        // with index.html, React Router sees /__/auth/handler, and the
+        // login return path becomes a client-side 404.
+        navigateFallbackDenylist: [/^\/__\/auth\//],
         // Chunks excluded from the SW install-time precache. Each one
         // has a runtimeCaching rule below so signed-in users still get
         // a populated cache after first use; demo / first-visit /

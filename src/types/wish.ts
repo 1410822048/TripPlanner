@@ -99,7 +99,8 @@ export const CreateWishSchema = z.object({
   title:       z.string().min(1, '請輸入標題').max(100),
   description: z.string().max(500).optional(),
   link:        z.string().max(500).optional(),
-  address:     z.string().max(200).optional(),
+  // 住所テキスト or Google Maps URL を受けるため 500(URL は 200 を超え得る)。
+  address:     z.string().max(500).optional(),
 })
 export type CreateWishInput = z.infer<typeof CreateWishSchema>
 

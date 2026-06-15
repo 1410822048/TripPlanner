@@ -612,7 +612,7 @@ service cloud.firestore {
                       // a payload like `description: [1..500]` would pass
                       // the size cap while corrupting the doc shape.
                       // Caps mirror src/types/wish.ts (description 500 /
-                      // address 200 / link 500). Three-way lockstep:
+                      // address 500 / link 500). Three-way lockstep:
                       // even though Worker /wish-file-* paths only run
                       // for image-bearing writes, text-only updates go
                       // client setDoc → rules-as-only-gate. Looser rules
@@ -622,7 +622,7 @@ service cloud.firestore {
                                 && request.resource.data.description.size() <= 500))
                       && (!('address' in request.resource.data)
                             || (request.resource.data.address is string
-                                && request.resource.data.address.size() <= 200))
+                                && request.resource.data.address.size() <= 500))
                       && (!('link' in request.resource.data)
                             || (request.resource.data.link is string
                                 && request.resource.data.link.size() <= 500))
@@ -663,7 +663,7 @@ service cloud.firestore {
                         && request.resource.data.description.size() <= 500))
               && (!('address' in request.resource.data)
                     || (request.resource.data.address is string
-                        && request.resource.data.address.size() <= 200))
+                        && request.resource.data.address.size() <= 500))
               && (!('link' in request.resource.data)
                     || (request.resource.data.link is string
                         && request.resource.data.link.size() <= 500))
@@ -737,7 +737,7 @@ service cloud.firestore {
                                 && request.resource.data.provider.size() <= 60))
                       && (!('address' in request.resource.data)
                             || (request.resource.data.address is string
-                                && request.resource.data.address.size() <= 200))
+                                && request.resource.data.address.size() <= 500))
                       && (!('checkIn' in request.resource.data)
                             || (request.resource.data.checkIn is string
                                 && request.resource.data.checkIn.size() <= 32))
@@ -797,7 +797,7 @@ service cloud.firestore {
                     && request.resource.data.provider.size() <= 60))
           && (!('address' in request.resource.data)
                 || (request.resource.data.address is string
-                    && request.resource.data.address.size() <= 200))
+                    && request.resource.data.address.size() <= 500))
           && (!('checkIn' in request.resource.data)
                 || (request.resource.data.checkIn is string
                     && request.resource.data.checkIn.size() <= 32))

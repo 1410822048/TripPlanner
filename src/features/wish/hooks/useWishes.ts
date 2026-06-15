@@ -15,10 +15,11 @@ import {
 } from '../services/wishService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
 import { useTripListMutation } from '@/hooks/useTripListMutation'
+import { rankWishes } from '../utils'
 import { tempId } from '@/utils/tempId'
 import { auditUpdateMock } from '@/utils/audit'
 import type { CreateWishInput, Wish, WishImage } from '@/types'
-import { MOCK_TIMESTAMP } from '@/mocks/utils'
+import { mockTimestampNow } from '@/mocks/utils'
 import { MUTATION_ACTION, type MutationOptions } from '@/services/queryClient'
 
 export const wishKeys = {
@@ -42,7 +43,10 @@ export function useCreateWish(tripId: string, options?: MutationOptions) {
     tripId,
     keyFactory: wishKeys.all,
     mutate:     ({ input, file, proposedBy }) => createWish(tripId, input, file, proposedBy),
-    patch:      (prev, { input, proposedBy }) => [
+    // rankWishes で温存:temp row も votes/createdAt で正しい順位に挿入される。
+    // createdAt は mockTimestampNow()(epoch ではなく Date.now())なので自分の
+    // 票数グループの先頭(= server snapshot と同じ最新位置)に並び、保存完了で跳ねない。
+    patch:      (prev, { input, proposedBy }) => rankWishes([
       {
         id:        tempId(),
         tripId,
@@ -50,11 +54,11 @@ export function useCreateWish(tripId: string, options?: MutationOptions) {
         ...input,
         proposedBy,
         votes:     [proposedBy],
-        createdAt: MOCK_TIMESTAMP,
+        createdAt: mockTimestampNow(),
         ...auditUpdateMock(proposedBy),
       },
       ...prev,
-    ],
+    ]),
     action:     MUTATION_ACTION.CREATE_WISH,
     silent:     options?.silent,
     // Phase 3.7: no partial-create recovery needed. Worker-authoritative
@@ -108,14 +112,16 @@ export function useToggleWishVote(tripId: string) {
     tripId,
     keyFactory: wishKeys.all,
     mutate:     ({ wishId, uid, isVoting }) => toggleWishVote(tripId, wishId, uid, isVoting),
+    // votes を書き換えたら同じ rankWishes で並べ直す → 投票直後に rank/hero が
+    // 即座に正しくなり、listener snapshot 到着時も同じ並びなので跳ねない。
     patch:      (prev, { wishId, uid, isVoting }) =>
-      prev.map(w => {
+      rankWishes(prev.map(w => {
         if (w.id !== wishId) return w
         const next = isVoting
           ? w.votes.includes(uid) ? w.votes : [...w.votes, uid]
           : w.votes.filter(u => u !== uid)
         return { ...w, votes: next, ...auditUpdateMock(uid) }
-      }),
+      })),
     action:     MUTATION_ACTION.TOGGLE_VOTE,
   })
 }

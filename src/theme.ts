@@ -17,6 +17,7 @@ export const theme = {
   danger:     '#A05050',
   dangerPale: '#FDF0F0',
   dangerSoft: '#EDD0D0',
+  rose:       '#E04B5E',
   warn:       '#B8874A',
   warnBg:     '#F7EEDC',
   tile:       '#F0EDE8',

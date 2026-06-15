@@ -28,7 +28,7 @@ import type { Booking } from '@/types'
 import { hotelBrand } from './brandMeta'
 import { fmtDate, fmtTime, nightsBetween } from './dateFormat'
 import ActionChip from '@/components/ui/ActionChip'
-import { mapsSearchUrl } from '@/utils/maps'
+import { addressMapHref } from '@/utils/maps'
 import { attachmentThumbPath, isImageAttachment } from '../../utils'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 
@@ -50,7 +50,7 @@ export default function HotelCard({ booking }: Props) {
   // ambiguous to use as a fallback search query (multiple branches per
   // city), so we only surface the chip when the user explicitly
   // recorded an address.
-  const mapHref   = booking.address ? mapsSearchUrl(booking.address) : null
+  const mapHref   = addressMapHref(booking.address)
 
   return (
     <div className="relative bg-surface overflow-hidden">

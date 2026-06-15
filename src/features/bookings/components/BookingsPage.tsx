@@ -20,7 +20,7 @@ import BookingFormModal, { type BookingFormResult } from './BookingFormModal'
 import SwipeableBookingItem from './SwipeableBookingItem'
 import AttachmentPreviewModal from './AttachmentPreviewModal'
 import BookingsListSkeleton from './BookingsListSkeleton'
-import { bookingDisplayName, BOOKING_TYPE_META } from '../utils'
+import { bookingDisplayName, BOOKING_TYPE_META, BOOKING_TYPE_ORDER } from '../utils'
 import { toLocalDateString } from '@/utils/dates'
 
 /**
@@ -103,7 +103,7 @@ export default function BookingsPage() {
     flight: [], hotel: [], train: [], bus: [], other: [],
   }
   for (const b of bookings) grouped[b.type].push(b)
-  const typeOrder: Booking['type'][] = ['flight', 'hotel', 'train', 'bus', 'other']
+  const typeOrder = BOOKING_TYPE_ORDER
 
   function handleSave({ input, attachment }: BookingFormResult) {
     if (isDemo) { modal.close(); signIn.open(); return }
@@ -206,11 +206,14 @@ export default function BookingsPage() {
           <>
             {typeOrder
               .filter(t => grouped[t].length > 0)
-              .map(t => (
+              .map(t => {
+                const TypeIcon = BOOKING_TYPE_META[t].icon
+                return (
                 <div key={t} className="mb-4">
                   <div className="flex items-center justify-between px-1 mb-2">
-                    <span className="text-[12px] font-bold text-ink tracking-[0.02em]">
-                      {BOOKING_TYPE_META[t].emoji} {BOOKING_TYPE_META[t].label}
+                    <span className="flex items-center gap-1.5 text-[12px] font-bold text-ink tracking-[0.02em]">
+                      <TypeIcon size={13} strokeWidth={2.2} className="text-muted" />
+                      {BOOKING_TYPE_META[t].label}
                     </span>
                     <span className="text-[11px] text-muted font-medium tabular-nums">
                       {grouped[t].length} 件
@@ -240,7 +243,8 @@ export default function BookingsPage() {
                     })}
                   </div>
                 </div>
-              ))}
+                )
+              })}
 
             {canWrite && (
               <button

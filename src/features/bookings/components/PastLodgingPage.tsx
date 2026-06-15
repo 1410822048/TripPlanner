@@ -11,7 +11,7 @@
 // down — no bottom nav distractions. Back arrow uses navigate(-1) to return
 // to the previous route the user came from (/account in practice).
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Hotel } from 'lucide-react'
 import { useUid } from '@/hooks/useAuth'
 import { useMyHotelBookings } from '../hooks/useBookings'
 import { attachmentThumbPath } from '../utils'
@@ -114,15 +114,15 @@ export default function PastLodgingPage() {
 function BookingRow({ booking }: { booking: Booking }) {
   const range = formatRange(booking.checkIn, booking.checkOut)
   // path-only: resolve the thumb path via getBlob + Storage Rules. No thumb
-  // path (PDF / pre-thumbnail upload) → null → 🏨 emoji fallback shows.
+  // path (PDF / pre-thumbnail upload) → null → Hotel icon fallback shows.
   const thumb = useAttachmentUrl(attachmentThumbPath(booking.attachment), { kind: 'thumb' })
   return (
     <div className="flex items-center gap-3 bg-surface border border-border rounded-[18px] px-3 py-2.5 shadow-[0_2px_10px_rgba(0,0,0,0.05)]">
       <div
-        className="w-14 h-14 rounded-xl shrink-0 flex items-center justify-center text-[26px] bg-tile bg-cover bg-center border border-black/5"
+        className="w-14 h-14 rounded-xl shrink-0 flex items-center justify-center bg-tile bg-cover bg-center border border-black/5 text-muted"
         style={thumb ? { backgroundImage: `url(${thumb})` } : undefined}
       >
-        {thumb ? null : '🏨'}
+        {thumb ? null : <Hotel size={26} strokeWidth={1.8} />}
       </div>
       <div className="flex-1 min-w-0">
         <div className="text-[14px] font-bold text-ink truncate">
@@ -141,7 +141,7 @@ function BookingRow({ booking }: { booking: Booking }) {
 function EmptyState({ title, description }: { title: string; description: string }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-8 text-center gap-2">
-      <div className="text-[40px] leading-none mb-2">🏨</div>
+      <div className="mb-2 text-muted"><Hotel size={40} strokeWidth={1.5} /></div>
       <h2 className="m-0 text-[15px] font-bold text-ink tracking-[0.02em]">
         {title}
       </h2>

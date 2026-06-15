@@ -36,7 +36,7 @@ import ReceiptSection from './expenseForm/ReceiptSection'
 import CurrencySection from './expenseForm/CurrencySection'
 import SplitsSection from './expenseForm/SplitsSection'
 import LineItemsSection from './expenseForm/LineItemsSection'
-import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
+import { CATEGORY_ICON } from '@/shared/categoryMeta'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
 import { useAttachment, type AttachmentChange } from '@/hooks/useAttachment'
@@ -500,6 +500,7 @@ export default function ExpenseFormModal({
             allowed as a safety net (narrow phones / accessibility zoom). */}
         <div className="flex gap-1.5 flex-wrap">
           {CATEGORIES.map(c => {
+            const CatIcon = CATEGORY_ICON[c.value]
             const active = state.category === c.value
             return (
               <button
@@ -513,7 +514,7 @@ export default function ExpenseFormModal({
                     : 'border-border bg-transparent text-muted font-normal hover:border-muted',
                 ].join(' ')}
               >
-                <span className="text-[13px] leading-none">{CATEGORY_EMOJI[c.value]}</span>{c.label}
+                <CatIcon size={13} strokeWidth={2} />{c.label}
               </button>
             )
           })}

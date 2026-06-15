@@ -1,13 +1,14 @@
 // src/features/wish/components/WishPage.tsx
 // List of wish items for the current trip — server-sorted by votes
 // then createdAt. Heart-tap toggles the caller's vote optimistically;
-// tapping the row body opens edit (proposer) or read (others).
+// tapping the row body opens a read-first detail sheet; edit/delete live in
+// the overflow/menu surfaces.
 //
 // Two-tab layout (景點 / 餐廳) replaces the earlier flat list. Each
 // tab filters by `category`; new wishes default to whichever tab is
 // currently active so the user's intent is reflected without an extra
 // dropdown click.
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { Plus, Heart } from 'lucide-react'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
 import { toast } from '@/shared/toast'
@@ -28,16 +29,15 @@ import type { Wish, WishCategory } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import WishFormModal, { type WishFormResult } from './WishFormModal'
 import WishCard from './WishCard'
-
-const TABS: { value: WishCategory; emoji: string; label: string }[] = [
-  { value: 'place', emoji: '🗺️', label: '景點' },
-  { value: 'food',  emoji: '🍜', label: '餐廳' },
-]
+import WishDetailSheet from './WishDetailSheet'
+import { rankWishes, toConsensus } from '../utils'
+import { WISH_CATEGORIES } from '../categories'
 
 export default function WishPage() {
   const { ctx, uid, cloudTripId, mutationTripId, isDemo, isOwner, modal, signIn } =
     useFeatureListPage<Wish>()
   const [activeTab, setActiveTab] = useState<WishCategory>('place')
+  const [detailWishId, setDetailWishId] = useState<string | null>(null)
 
   const { data: cloudWishes, isLoading } = useWishes(cloudTripId)
   const { data: fbMembers } = useMembers(cloudTripId)
@@ -55,6 +55,9 @@ export default function WishPage() {
     ctx.status === 'cloud' ? membersToTripMembers(fbMembers ?? []) :
     []
   const memberById = new Map(members.map(m => [m.id, m]))
+  // members query は wishes より遅れて解決し得る(cloud は wishes が先)。確定
+  // 前は consensus の分母を出さないための ready フラグ。demo は同期的に揃う。
+  const membersReady = ctx.status === 'demo' || fbMembers !== undefined
 
   let placeCount = 0, foodCount = 0
   for (const w of wishes) {
@@ -63,7 +66,29 @@ export default function WishPage() {
   }
   const counts = { place: placeCount, food: foodCount }
 
-  const filteredWishes = wishes.filter(w => w.category === activeTab)
+  // ─ Wish board の派生データを 1 か所で生成 ───────────────────────────
+  // 順位(rank)/ 提案者(proposer)/ 投票者(voters)/ 賛成度の表示状態(consensus)を
+  // ここで確定し、WishCard は整形済み props を描画するだけにする(順位も分母も
+  // card 側で推導しない)。rankWishes は demo の MOCK もソートする。投票直後も
+  // 同じ rankWishes を通ったキャッシュなので、ここは並べ替え済みを map するだけ。
+  const boardRows = rankWishes(wishes.filter(w => w.category === activeTab))
+    .map((wish, index) => ({
+      wish,
+      rank:      index + 1,
+      proposer:  memberById.get(wish.proposedBy),
+      // votes[] 順(= arrayUnion 追加順)で uid → TripMember 解決。退会者など
+      // 未知の uid は落とす(+N は totalVotes=votes.length が担保)。
+      voters:    wish.votes.flatMap(uid => {
+        const m = memberById.get(uid)
+        return m ? [m] : []
+      }),
+      consensus: toConsensus(wish.votes.length, members.length, membersReady),
+    }))
+  const detailRow = detailWishId
+    ? boardRows.find(row => row.wish.id === detailWishId) ?? null
+    : null
+  // ラベルは WISH_CATEGORIES を single source に(分類追加/改名時の二重管理を避ける)。
+  const activeTabLabel = WISH_CATEGORIES.find(t => t.value === activeTab)?.label ?? ''
 
   // Optimistic close — modal closes immediately on save; failures route
   // to the global toast via MutationCache.onError + the hook rollback.
@@ -148,24 +173,41 @@ export default function WishPage() {
     deleteMut.mutate({ wishId: w.id, image: w.image })
   }
 
+  function handleEditFromDetail(w: Wish) {
+    setDetailWishId(null)
+    modal.openEdit(w)
+  }
+
   return (
-    <div className="bg-app min-h-full pb-8">
+    <div className="bg-app h-full flex flex-col overflow-hidden">
       {isDemo && <DemoBanner reason="投票を保存" onSignIn={signIn.open} />}
 
-      <div className="px-5 pt-4 pb-2">
-        <p className="m-0 mb-1 text-[10.5px] font-semibold text-muted tracking-[0.12em] uppercase">
-          ウィッシュ
-        </p>
-        <h1 className="m-0 text-[22px] font-black text-ink -tracking-[0.5px]">
-          {title}
-        </h1>
+      <div className="shrink-0 px-5 pt-4 pb-2 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="m-0 mb-1 text-[10.5px] font-semibold text-muted tracking-[0.12em] uppercase">
+            ウィッシュ
+          </p>
+          <h1 className="m-0 text-[22px] font-black text-ink -tracking-[0.5px] truncate">
+            {title}
+          </h1>
+        </div>
+
+        {/* 右側クラスタ:投票中の人数ピル。追加入口は分類タブ直下に固定し、
+            header の丸 + と一覧内 CTA の二重導線を解消する。 */}
+        <div className="flex items-center gap-2 shrink-0">
+          {members.length > 0 && (
+            <span className="inline-flex items-center gap-1.5 h-7 pl-2.5 pr-3 rounded-full text-[11.5px] font-semibold text-teal bg-teal-pale">
+              <span className="w-1.5 h-1.5 rounded-full bg-teal" />
+              {members.length}人投票
+            </span>
+          )}
+        </div>
       </div>
 
-      {/* Tab switcher: 景點 / 餐廳. The active tab drives both the list
-          filter (filteredWishes) and the form's defaultCategory below,
-          so adding from one tab pre-selects the matching category. */}
-      <div className="mx-4 mt-3 flex gap-1 p-1 rounded-card bg-app border border-border">
-        {TABS.map(t => {
+      {/* 固定上方フレーム ── 分類タブ。追加 CTA は次の固定ブロックに置く。 */}
+      <div className="shrink-0 px-4 pt-1 pb-2">
+        <div className="flex gap-1 p-1 rounded-card bg-app border border-border">
+        {WISH_CATEGORIES.map(t => {
           const active = activeTab === t.value
           return (
             <button
@@ -173,11 +215,14 @@ export default function WishPage() {
               type="button"
               onClick={() => setActiveTab(t.value)}
               className={[
-                'flex-1 h-9 rounded-[8px] text-[12.5px] font-semibold cursor-pointer transition-all flex items-center justify-center gap-1.5',
+                // 内側 pill の角丸は外枠(rounded-card=20px)− p-1(4px)= 16px に
+                // 合わせ、白い active 背景が外枠と同心になるようにする(角が四角く
+                // 見える違和感を解消)。
+                'flex-1 h-9 rounded-[16px] text-[12.5px] font-semibold cursor-pointer transition-all flex items-center justify-center gap-1.5',
                 active ? 'bg-surface text-ink shadow-[0_1px_3px_rgba(0,0,0,0.08)]' : 'bg-transparent text-muted',
               ].join(' ')}
             >
-              <span>{t.emoji}</span>
+              <t.icon size={14} strokeWidth={2} />
               <span>{t.label}</span>
               <span className={[
                 'text-[10.5px] font-medium tabular-nums',
@@ -188,79 +233,92 @@ export default function WishPage() {
             </button>
           )
         })}
+        </div>
       </div>
 
-      <div className="mt-4 px-4">
+      {/* 分類に紐づく追加入口。固定フレーム内に置くことで、リストの Y 軸は
+          このボタンの下から始まる。空タブでも高さが変わらずジャンプしない。 */}
+      <div className="shrink-0 px-4 pb-2">
+        <button
+          type="button"
+          onClick={modal.openAdd}
+          aria-label={`${activeTabLabel}の候補を追加`}
+          className="w-full h-11 rounded-[16px] border border-teal/20 bg-teal-pale text-teal text-[12.5px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors hover:bg-teal/15 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        >
+          <Plus size={15} strokeWidth={2.5} />
+          {activeTabLabel}の候補を追加
+        </button>
+      </div>
+
+      {/* 選項リスト ── 唯一スクロールする領域(独自 Y 軸)。relative ラッパーに
+          上下のフェード overlay を重ね、固定フレームとの境界の「鋭い切れ」を
+          和らげる。
+          ⚠ 以前は scroll 要素に mask-image を掛けていたが、mask は position:fixed
+          子孫の containing block を作るため、カードの ⋮ から開く BottomSheet
+          (fixed)が scroll 領域内にクリップされ「削除が押せない」不具合になった。
+          overlay 方式は fixed を閉じ込めないので解消する(relative は fixed の
+          containing block を作らない)。 */}
+      <div className="relative flex-1 min-h-0">
+        {/* overscroll-contain ── 端まで滑っても外側 main へスクロールチェーンを
+            伝播させない(整頁が連られて動く iOS の挙動を断つ)。 */}
+        <div className="h-full overflow-y-auto overscroll-contain px-4 pt-2 pb-6">
         {isLoading && !isDemo ? (
           <WishListSkeleton />
-        ) : filteredWishes.length === 0 ? (
-          <div className="text-center px-6 py-10 pb-8 bg-surface rounded-card border-[1.5px] border-dashed border-border">
+        ) : boardRows.length === 0 ? (
+          <div className="text-center px-6 py-12 bg-surface rounded-card border-[1.5px] border-dashed border-border">
             <div className="w-14 h-14 rounded-full bg-app flex items-center justify-center mx-auto mb-3 text-muted">
               <Heart size={24} strokeWidth={1.6} />
             </div>
             <p className="m-0 mb-1 text-[13.5px] font-semibold text-ink tracking-[0.02em]">
-              {activeTab === 'place' ? 'まだ景點がありません' : 'まだ餐廳がありません'}
+              まだ{activeTabLabel}がありません
             </p>
-            <p className="m-0 mb-[18px] text-[11.5px] text-muted tracking-[0.04em]">
+            <p className="m-0 text-[11.5px] text-muted tracking-[0.04em]">
               {activeTab === 'place'
                 ? '行きたい所をみんなで共有しましょう'
                 : '食べたいお店をみんなで共有しましょう'}
             </p>
-            <button
-              onClick={modal.openAdd}
-              className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-[24px] border-none bg-teal text-white text-[12.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
-              style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
-            >
-              <Plus size={14} strokeWidth={2.5} />
-              ウィッシュを追加
-            </button>
           </div>
         ) : (
-          <>
-            <div className="flex flex-col gap-3">
-              {filteredWishes.map((w, index) => {
-                // Resolve uid → TripMember in `votes[]` order (= first-
-                // voted first, since arrayUnion appends). Unknown uids
-                // (kicked / former members) are silently dropped — the
-                // card's totalVotes prop still feeds the heart count, so
-                // they show up as "+N" rather than vanishing.
-                const voters = w.votes.flatMap(uid => {
-                  const m = memberById.get(uid)
-                  return m ? [m] : []
-                })
-                return (
-                  <WishCard
-                    key={w.id}
-                    wish={w}
-                    isVoted={!!uid && w.votes.includes(uid)}
-                    voters={voters}
-                    isPreviewOnly={isDemo}
-                    canEdit={canEdit(w)}
-                    canDelete={canDelete(w)}
-                    onEdit={() => modal.openEdit(w)}
-                    onDelete={() => handleDeleteFromMenu(w)}
-                    onToggleVote={() => handleToggleVote(w)}
-                    // Layout is a single-column flex stack (above), so
-                    // index 0 = literal top card = LCP target on /wish
-                    // cold load. Eager loading skips the lazy round-trip
-                    // for that one image only; everything below stays
-                    // lazy so a long wish list doesn't fan-out network.
-                    eager={index === 0}
-                    isUpdating={pendingUpdateIds.has(w.id)}
-                  />
-                )
-              })}
-            </div>
-
-            <button
-              onClick={modal.openAdd}
-              className="mt-4 w-full h-11 rounded-chip border-[1.5px] border-dashed border-border bg-transparent text-muted text-[13px] font-medium flex items-center justify-center gap-1.5 cursor-pointer tracking-[0.04em] transition-all hover:bg-teal-pale hover:border-teal hover:text-teal"
-            >
-              <Plus size={14} strokeWidth={2} />
-              ウィッシュを追加
-            </button>
-          </>
+          <div className="flex flex-col gap-3">
+            {boardRows.map(({ wish: w, rank, proposer, consensus }) => (
+              <Fragment key={w.id}>
+                {/* 上位3件 = 行程候補。3 位と 4 位の間に候補ラインを引いて
+                    「ここまでが採用候補」を明示する(4 件以上ある時だけ)。 */}
+                {rank === 4 && (
+                  <div className="flex items-center gap-3 px-1 pt-1" aria-hidden>
+                    <div className="flex-1 h-px bg-border" />
+                    <span className="text-[10.5px] font-semibold text-muted tracking-[0.06em]">
+                      ここまでが上位3件
+                    </span>
+                    <div className="flex-1 h-px bg-border" />
+                  </div>
+                )}
+                <WishCard
+                  wish={w}
+                  isVoted={!!uid && w.votes.includes(uid)}
+                  proposer={proposer}
+                  isPreviewOnly={isDemo}
+                  canEdit={canEdit(w)}
+                  canDelete={canDelete(w)}
+                  onEdit={() => modal.openEdit(w)}
+                  onDelete={() => handleDeleteFromMenu(w)}
+                  onOpenDetails={() => setDetailWishId(w.id)}
+                  onToggleVote={() => handleToggleVote(w)}
+                  // 単一カラムの順位リスト → 先頭(rank 1, 本命 lead)が LCP 候補。
+                  eager={rank === 1}
+                  isUpdating={pendingUpdateIds.has(w.id)}
+                  rank={rank}
+                  consensus={consensus}
+                />
+              </Fragment>
+            ))}
+          </div>
         )}
+        </div>
+        {/* 上下フェード ── scroll を遮らない overlay(pointer-events-none)。
+            mask と違い fixed 子孫を閉じ込めないので ⋮ メニューは正常に開く。 */}
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-4 bg-gradient-to-b from-app to-transparent" />
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-5 bg-gradient-to-t from-app to-transparent" />
       </div>
 
       {modal.isOpen && (
@@ -278,6 +336,24 @@ export default function WishPage() {
               ? handleDelete
               : undefined
           }
+        />
+      )}
+
+      {detailRow && (
+        <WishDetailSheet
+          isOpen
+          wish={detailRow.wish}
+          rank={detailRow.rank}
+          voters={detailRow.voters}
+          proposer={detailRow.proposer}
+          consensus={detailRow.consensus}
+          isVoted={!!uid && detailRow.wish.votes.includes(uid)}
+          isPreviewOnly={isDemo}
+          canEdit={canEdit(detailRow.wish)}
+          isUpdating={pendingUpdateIds.has(detailRow.wish.id)}
+          onClose={() => setDetailWishId(null)}
+          onEdit={() => handleEditFromDetail(detailRow.wish)}
+          onToggleVote={() => handleToggleVote(detailRow.wish)}
         />
       )}
 

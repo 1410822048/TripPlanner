@@ -1,192 +1,193 @@
 // src/features/wish/components/WishCard.tsx
-// Pinterest-style card for the Wish list. Wish list is inspiration-driven
-// (places I want to visit, food I want to try) — not archival — so the
-// layout leans heavily on the cover image. When no image, a category-
-// tinted gradient + large emoji keeps the hero region from feeling empty.
+// 投票ボード(consensus leaderboard)の候補カード。Wish は「みんなで行き先を
+// 決める」投票システムなので、レイアウトは順位・賛成度・投票アクションを主役に
+// する(以前の Pinterest 風 image grid からの転換)。
 //
-// Card anatomy:
-//   - 16:9 hero region (image cover OR emoji + gradient) with overflow ⋮
-//     button overlaid at top-right when the viewer has actions available
-//   - Body: title + optional description (clamped 2 lines)
-//   - Action row: 🗺/🔗 chips + voter stack + heart vote
+// 単一の row レイアウト。サイズは全順位で統一(サムネ 56 / 賛成度バー / pill
+// 投票ボタン)。順位は寸法ではなく「左の順位インジケータ(本命 = 金の王冠、
+// 2・3 位 = 銀/銅の数字サークル、4 位以下 = 中立の数字)+ 本命のみカードに金
+// グロー」で示す。縦の並び順がそのまま順位。WishPage が 3 位と 4 位の間に候補
+// ラインを挿す。
 //
-// Tap-to-edit fires only when `canEdit` (proposer). For non-proposer
-// viewers the card body is read-only — no cursor, no tap. The ⋮ menu
-// is the sole entry to actions (edit / delete), gated per role to
-// mirror firestore.rules. Overflow-menu (not swipe) follows the card-
-// pattern convention (Pinterest / Instagram / Tumblr) — swipe is for
-// list rows, where the gesture's discoverability cost is acceptable.
+// 賛成度 = votes.length / memberCount。approval voting(各自が複数に賛成できる)
+// なので「絶対票数」より「メンバーの何人が行きたいか」が意味のある指標。
 //
-// Two map / link affordances:
-//   - `address` (free-form) → dedicated 🗺 chip pointing at
-//     google.com/maps/search/?query={address}. Canonical map source.
-//   - `link` → 🔗 サイト chip for the official URL. When `address` is
-//     empty, falls back to auto-detecting Maps URLs and surfaces them
-//     as 🗺 (legacy behaviour); once `address` is set, link is always
-//     サイト so the two chips don't both claim the map role.
+// インタラクション規約:
+//   - tap-to-detail は「カード全体」。カード全面を覆う透明 button を子要素の
+//     「下」(z-0)に敷き、操作要素(投票 / ⋮)だけ
+//     z-10 で上に出す stretched-overlay パターン(ネスト button 回避)。
+//   - 地図/網站などの外部アクションは detail sheet に集約。カードは比較・投票・
+//     詳細への入口だけを持ち、誤タップで外部遷移しない。
+//   - ⋮ メニューが edit/delete の唯一の入口、pending(temp- / isUpdating)中は
+//     tap・投票・swipe を無効化して 保存中… を出す。
 import { useState } from 'react'
-import { Heart, Map, ExternalLink, MoreVertical, Loader2 } from 'lucide-react'
+import { MoreVertical, Loader2, Crown } from 'lucide-react'
 import type { Wish } from '@/types'
 import type { TripMember } from '@/features/trips/types'
-import ActionChip from '@/components/ui/ActionChip'
 import MemberAvatar from '@/components/ui/MemberAvatar'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import WishActionMenu from './WishActionMenu'
-import { mapsSearchUrl } from '@/utils/maps'
-import { haptic } from '@/utils/haptics'
+import { WISH_CATEGORY_ICON } from '../categories'
+import type { Consensus } from '../utils'
+import WishConsensusBar from './WishConsensusBar'
+import WishVoteButton from './WishVoteButton'
 
-const MAX_AVATARS = 3
-
-/** Voter chip style 對策 iOS Safari PWA 在 translate3d 父層下的殘影
- *  bug:子層 mount/unmount 時,Safari 偶爾把 shadow + border 緩存進
- *  父層 raster 沒重畫,留下空心圓殘影。
- *
- *  雙保險:
- *   1. position: relative → 讓 zIndex 生效,並確立 chip 在 isolated
- *      context 內的層級
- *   2. translateZ(0) → promote 到獨立 GPU compositing layer,React
- *      unmount 時整個 layer 一起丟,Safari 不會跟父層混淆 */
+/** Avatar chip style 對策 iOS Safari PWA 在 translate3d 父層下的殘影 bug:
+ *  子層 mount/unmount 時 Safari 偶爾把 shadow + border 緩存進父層 raster 沒
+ *  重畫,留下空心圓殘影。relative + translateZ(0) 雙保險把 chip promote 到
+ *  獨立 GPU layer,unmount 時整層丟掉,不跟父層混淆。 */
 const AVATAR_LAYER_STYLE: React.CSSProperties = {
   position:  'relative',
   transform: 'translateZ(0)',
 }
 
-const CATEGORY_EMOJI: Record<Wish['category'], string> = {
-  place: '🗺️',
-  food:  '🍜',
-}
-
-/** Hero gradient when no image is uploaded — distinct per category so
+/** Thumbnail gradient when no image is uploaded — distinct per category so
  *  empty-state cards still feel intentional rather than blank. */
 const CATEGORY_GRADIENT: Record<Wish['category'], string> = {
   place: 'linear-gradient(135deg, #d4ecf6 0%, #8fb8d6 100%)',
   food:  'linear-gradient(135deg, #fde2cc 0%, #f0a87a 100%)',
 }
 
-/** Detect Google Maps URLs so the chip can surface a more meaningful
- *  「地図」 label instead of generic 「サイト」. Covers the four common
- *  shapes: web maps URL, mobile app deep links (maps.app.goo.gl /
- *  goo.gl/maps), and the legacy maps.google.com host. */
-function isMapsLink(url: string): boolean {
-  const u = url.toLowerCase()
-  return u.includes('google.com/maps')
-    || u.includes('maps.app.goo.gl')
-    || u.includes('goo.gl/maps')
-    || u.includes('maps.google')
+/** グラデーション上のアイコン色 — 各分類の深いトーンでコントラストを確保。 */
+const CATEGORY_ICON_COLOR: Record<Wish['category'], string> = {
+  place: '#33617f',
+  food:  '#b5652e',
+}
+
+/** 順位インジケータはカード左の gutter に出す(サムネ角の番号バッジではない):
+ *  本命(rank 1)= 金の王冠 + カードに金グロー、それ以外 = 中立の番号サークル +
+ *  プレーンなヘアライン。サイズは全順位で揃え、順位は左の指標(王冠/銀銅/数字)
+ *  と本命の金グローだけで示す。 */
+const GOLD = '#C29A3D'   // 金 — 王冠で使用
+const LEAD_RING = 'rgba(201,161,74,0.55)'  // 本命カードの金グロー(縁)
+const LEAD_GLOW = 'rgba(201,161,74,0.20)'  // 本命カードの金グロー(ぼかし)
+
+/** 2・3 位の番号サークル色 = 銀 / 銅。4 位以下は色を付けず中立(pale)に落とす。 */
+const RANK_COLOR: Record<number, string> = {
+  2: '#98A2AC',  // 銀
+  3: '#B87C4E',  // 銅
 }
 
 interface Props {
   wish:          Wish
   isVoted:       boolean
-  /** Voters who have hearted this wish, in `wish.votes[]` order (=
-   *  first-voted first). Parent resolves uids → TripMember so we don't
-   *  hold a member lookup here. Unknown uids (former members) are
-   *  omitted upstream; the heart count still reflects votes.length so
-   *  they show up as "+N" rather than vanishing. */
-  voters:        TripMember[]
-  /** True in demo mode — visually dim the heart so users sense it's
-   *  "not real yet", but the click still fires so the parent can
-   *  surface the sign-in prompt. */
+  /** Member who proposed this wish. Missing when member data is still loading
+   *  or when the proposer has left the trip. */
+  proposer?:     TripMember
+  /** Demo mode — dim the heart but keep the click (opens sign-in). */
   isPreviewOnly: boolean
-  /** Whether the viewer can edit (proposer-only in cloud mode; true in
-   *  demo so the signIn prompt is reachable). Drives card-body tap +
-   *  menu "編集" item visibility. */
   canEdit:       boolean
-  /** Whether the viewer can delete (proposer or trip owner). Drives the
-   *  menu "削除" item visibility. */
   canDelete:     boolean
   onEdit:        () => void
   onDelete:      () => void
+  onOpenDetails: () => void
   onToggleVote:  () => void
-  /** Caller-asserted "this card's image is a likely LCP candidate"
-   *  (typically the first visible card on /wish). Suppresses the
-   *  default `loading="lazy"` on the hero <img> so the browser
-   *  discovers the request during initial parse instead of after
-   *  layout — lazy loading the first card image was measurably
-   *  delaying LCP. Defaults to false → all subsequent cards stay
-   *  lazy. */
+  /** LCP hint for the lead card's thumbnail (rank 1, above the fold). */
   eager?:        boolean
-  /** True when this wish's UPDATE mutation is in-flight. Pages derive
-   *  the set via `usePendingMutationIds`. CREATE pending is detected
-   *  via the `temp-` id prefix; UPDATE preserves the real id and needs
-   *  this signal to surface the same 保存中… visual. */
+  /** This wish's UPDATE is in-flight (page derives via usePendingMutationIds). */
   isUpdating?:   boolean
+  /** 1-based 順位(投票数の降順)。1 = 本命 lead(強調)、2 以上 = 通常行。 */
+  rank:          number
+  /** 賛成度の表示状態(票数 + メンバー数 + ready)。WishPage が確定して渡す。 */
+  consensus:     Consensus
 }
 
 function WishCard({
-  wish, isVoted, voters, isPreviewOnly,
-  canEdit, canDelete, onEdit, onDelete, onToggleVote, eager, isUpdating,
+  wish, isVoted, proposer, isPreviewOnly, canEdit, canDelete,
+  onEdit, onDelete, onOpenDetails, onToggleVote, eager, isUpdating, rank, consensus,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false)
-
-  // CREATE pending → temp- id prefix. UPDATE preserves the real id, so
-  // the page also passes `isUpdating` (derived from `useMutationState`).
-  // Either signal disables tap-to-edit, hides ⋮ menu, dims the body,
-  // and shows 保存中… pill. Vote button is disabled inside WishActionRow
-  // to stop voting on a half-saved doc.
   const isPending = wish.id.startsWith('temp-') || !!isUpdating
-
   const hasMenu = !isPending && (canEdit || canDelete)
-  // Card body tap-to-edit only when the viewer can actually edit AND
-  // the row isn't pending. Read-only viewers / pending rows see no
-  // cursor / no tap feedback.
-  const tap = !isPending && canEdit ? onEdit : undefined
-
-  const heroBody = (
-    <>
-      <WishHero wish={wish} eager={eager} />
-      <WishBody wish={wish} />
-    </>
-  )
+  const tap = !isPending ? onOpenDetails : undefined
+  const isLead = rank === 1
+  // 順位差はサイズではなく左の順位インジケータ(王冠/銀銅/数字)+ 本命の金光で
+  // 示す。サムネ/フォント/バー/ボタンは全順位で揃える(4 位以下も同寸)。
+  // 本命の王冠 + 金グローは「実際にリードしている」時だけ(誰も投票してなければ
+  // 単なる先頭)。pending 中は順位が確定とは限らないので出さない。
+  const showCrown = isLead && !isPending && wish.votes.length > 0
+  // 載入時の staggered reveal:rank が下がるほど少し遅らせる(上限 350ms)。
+  const revealDelay = Math.min((rank - 1) * 50, 350)
+  // サムネ寸法は全順位で同寸(56)。
+  const thumbSizeCls  = 'w-14 h-14'
+  const thumbIconSize = 22
 
   return (
-    <div className="relative bg-surface border border-border rounded-[18px] shadow-[0_2px_10px_rgba(0,0,0,0.06)] overflow-hidden">
-      <div className={['transition-opacity', isPending ? 'opacity-55' : ''].join(' ')}>
-        {tap ? (
-          <button
-            type="button"
-            onClick={tap}
-            className="block w-full bg-transparent border-none p-0 text-left cursor-pointer"
-          >
-            {heroBody}
-          </button>
-        ) : (
-          heroBody
-        )}
-
-        <WishActionRow
-          wish={wish}
-          isVoted={isVoted}
-          voters={voters}
-          isPreviewOnly={isPreviewOnly || isPending}
-          onToggleVote={isPending ? () => {} : onToggleVote}
+    <article
+      className={[
+        'relative bg-surface overflow-hidden animate-wish-reveal rounded-[18px]',
+        // 本命のみ金グロー(下の boxShadow が ring を兼ねる);他は無色ヘアライン。
+        showCrown ? '' : 'ring-1 ring-black/[0.06]',
+      ].join(' ')}
+      style={{
+        animationDelay: `${revealDelay}ms`,
+        ...(showCrown ? { boxShadow: `0 0 0 1.5px ${LEAD_RING}, 0 3px 16px ${LEAD_GLOW}` } : {}),
+      }}
+    >
+      {/* 整卡 tap-to-detail。stretched overlay button:カード全体を
+          覆う透明ボタンを子要素の「下」(z-0)に敷く。z-0 の絶対配置は通常フローの
+          中身より上に描画される(= テキスト/サムネのタップを拾う)が、操作要素は
+          relative z-10 でさらに上に出すので投票/⋮ は素通りしない。これで
+          ネスト button を避けつつ「カードのどこを押しても詳細」を実現する。
+          pending 中は tap=undefined なので button は出ない。 */}
+      {tap && (
+        <button
+          type="button"
+          onClick={tap}
+          aria-label={`${wish.title}の詳細を見る`}
+          className="absolute inset-0 z-0 w-full bg-transparent border-none p-0 cursor-pointer"
         />
-      </div>
-
+      )}
       {hasMenu && (
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); setMenuOpen(true) }}
           aria-label="その他の操作"
-          // Visual is 32×32 (w-8 h-8) — looks balanced on the card.
-          // Hit area extended to 44×44 via the ::before pseudo-element
-          // (-inset-1.5 = 6px on every side) so the touch target meets
-          // iOS HIG / Material's min spec without an oversized disc.
-          // active: handles touch-down feedback (mobile has no hover).
-          className="absolute top-2 right-2 w-8 h-8 rounded-full bg-black/40 text-white flex items-center justify-center border-none cursor-pointer transition-colors active:bg-black/60 before:content-[''] before:absolute before:-inset-1.5"
-          style={{ backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
+          className="absolute top-1 right-2 z-10 w-8 h-8 rounded-full text-muted hover:bg-app flex items-center justify-center border-none bg-transparent cursor-pointer transition-colors"
         >
-          <MoreVertical size={16} strokeWidth={2.4} />
+          <MoreVertical size={16} strokeWidth={2.2} />
         </button>
       )}
 
-      {isPending && (
-        <div className="absolute top-2 right-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/60 text-white text-[10.5px] font-semibold backdrop-blur-sm">
-          <Loader2 size={11} strokeWidth={2.4} className="animate-spin" />
-          <span>保存中…</span>
+      <div className={['grid grid-cols-[20px_56px_minmax(0,1fr)] items-center gap-2.5 p-2.5 pr-2 transition-opacity', isPending ? 'opacity-55' : ''].join(' ')}>
+        {/* 順位インジケータ — pending 中は順位が確定とは限らないので中身だけ隠す
+            (同幅の placeholder は残し、temp→正式 row で横方向にジャンプさせない)。 */}
+        <RankIndicator rank={rank} showCrown={showCrown} pending={isPending} />
+        {/* サムネ。外部リンクにはせず、カード全体の詳細タップに通す。 */}
+        <div className="relative w-14 h-14 shrink-0">
+          <WishThumb
+            wish={wish}
+            sizeCls={thumbSizeCls}
+            iconSize={thumbIconSize}
+            eager={eager}
+          />
+          <ProposerAvatar proposer={proposer} />
         </div>
-      )}
 
+        <div className="min-w-0 flex flex-col gap-2">
+          {/* タイトル行。カードは詳細、右上は管理、下段は投票に役割を分ける。 */}
+          <div className={['truncate text-ink -tracking-[0.2px] text-[13.5px] font-black leading-[1.15]', hasMenu ? 'pr-8' : ''].join(' ')}>
+            {wish.title}
+          </div>
+
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="min-w-0 flex-1">
+              <WishConsensusBar consensus={consensus} size="sm" delay={revealDelay + 120} />
+            </div>
+            <div className="relative z-10 shrink-0">
+              <WishVoteButton
+                isVoted={isVoted}
+                isPreviewOnly={isPreviewOnly || isPending}
+                disabled={isPending}
+                onToggleVote={onToggleVote}
+                variant="pill"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {isPending && <PendingPill />}
       {menuOpen && (
         <WishActionMenu
           isOpen
@@ -198,204 +199,101 @@ function WishCard({
           onClose={() => setMenuOpen(false)}
         />
       )}
+    </article>
+  )
+}
+
+// ─── 共有サブコンポーネント ────────────────────────────────────────
+
+/** カード左の順位インジケータ。本命(showCrown)= 金の王冠、2・3 位 = 銀/銅の
+ *  ソリッド番号サークル(白数字)、4 位以下 = 中立の pale サークル(muted 数字)。
+ *  サイズは順位に依らず一定(順位差は色/王冠で示し、寸法では示さない)。 */
+function RankIndicator({ rank, showCrown, pending }: { rank: number; showCrown: boolean; pending?: boolean }) {
+  const medalColor = RANK_COLOR[rank]
+  // pending 中は順位未確定。同幅の枠だけ残して中身を空にする(レイアウト維持)。
+  if (pending) return <div className="shrink-0 w-5" aria-hidden />
+  return (
+    <div className="shrink-0 w-5 flex items-center justify-center" aria-label={`${rank}位`}>
+      {showCrown ? (
+        <Crown size={18} strokeWidth={2.2} style={{ color: GOLD }} fill="rgba(194,154,61,0.25)" />
+      ) : (
+        <span
+          className={[
+            'w-5 h-5 rounded-full text-[10.5px] font-black flex items-center justify-center tabular-nums',
+            medalColor ? 'text-white' : 'bg-app text-muted',
+          ].join(' ')}
+          style={medalColor ? { background: medalColor } : undefined}
+        >
+          {rank}
+        </span>
+      )}
     </div>
   )
 }
 
-// ─── Hero + body sub-components ──────────────────────────────────
-
-function WishHero({ wish, eager }: { wish: Wish; eager?: boolean }) {
-  // 16:9 ratio keeps the card from getting too tall on phones while
-  // leaving plenty of room for a meaningful image.
-  // path-only: resolve the thumb path to a blob objectURL (Storage Rules).
-  // Hero shows once the URL resolves; until then the gradient fallback below.
+/** 行のサムネ(正方形)。外部リンク化せず、タップはカード詳細に吸収させる。 */
+function WishThumb({
+  wish, sizeCls, iconSize, eager,
+}: {
+  wish: Wish; sizeCls: string; iconSize: number; eager?: boolean
+}) {
   const thumbUrl = useAttachmentUrl(wish.image?.thumbPath, { kind: 'thumb' })
-  if (wish.image && thumbUrl) {
-    return (
-      <div className="relative w-full aspect-[16/9] bg-tile pointer-events-none">
-        <img
-          src={thumbUrl}
-          alt={wish.title}
-          decoding="async"
-          // eager === true ONLY for the first card on /wish — that's
-          // the LCP candidate, blanket-lazy was delaying paint by 1
-          // round-trip. fetchPriority="high" tells the browser to
-          // hoist this image above other lazy candidates competing
-          // for bandwidth on cold load.
-          loading={eager ? 'eager' : 'lazy'}
-          fetchPriority={eager ? 'high' : undefined}
-          draggable={false}
-          className="absolute inset-0 w-full h-full object-cover"
-        />
-      </div>
-    )
-  }
-  return (
+  const CategoryIcon = WISH_CATEGORY_ICON[wish.category]
+
+  const visual = wish.image && thumbUrl ? (
+    <img
+      src={thumbUrl}
+      alt=""
+      decoding="async"
+      loading={eager ? 'eager' : 'lazy'}
+      fetchPriority={eager ? 'high' : undefined}
+      draggable={false}
+      className="absolute inset-0 w-full h-full object-cover"
+    />
+  ) : (
     <div
-      className="w-full aspect-[16/9] flex items-center justify-center text-[64px] pointer-events-none"
+      className="w-full h-full flex items-center justify-center"
       style={{ background: CATEGORY_GRADIENT[wish.category] }}
       aria-hidden
     >
-      {CATEGORY_EMOJI[wish.category]}
+      <CategoryIcon size={iconSize} strokeWidth={1.8} color={CATEGORY_ICON_COLOR[wish.category]} />
+    </div>
+  )
+
+  const boxCls = ['relative rounded-[14px] overflow-hidden shrink-0 bg-tile', sizeCls].join(' ')
+  return <div className={[boxCls, 'pointer-events-none'].join(' ')}>{visual}</div>
+}
+
+/** pending(保存中…)pill — 右上。 */
+function PendingPill() {
+  return (
+    <div className="absolute top-2.5 right-2.5 flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/60 text-white text-[10.5px] font-semibold backdrop-blur-sm">
+      <Loader2 size={11} strokeWidth={2.4} className="animate-spin" />
+      <span>保存中…</span>
     </div>
   )
 }
 
-function WishBody({ wish }: { wish: Wish }) {
+/** 提案者頭像。リストの avatar は「投票者」ではなく「誰が提案したか」を示す。
+ *  投票者一覧は detail sheet に集約する。 */
+function ProposerAvatar({ proposer }: { proposer?: TripMember }) {
+  if (!proposer) return null
   return (
-    <div className="px-3.5 pt-2.5 pb-1 pointer-events-none">
-      <div className="text-[14px] font-bold text-ink -tracking-[0.2px] truncate">
-        {wish.title}
-      </div>
-      {wish.description && (
-        <div className="text-[11.5px] text-muted mt-0.5 line-clamp-2 leading-[1.45]">
-          {wish.description}
-        </div>
-      )}
-    </div>
+    <span
+      role="img"
+      title={`提案者: ${proposer.label}`}
+      aria-label={`提案者: ${proposer.label}`}
+      className="pointer-events-none absolute -bottom-1 left-1/2 -translate-x-1/2 inline-flex rounded-full shadow-[0_1px_3px_rgba(0,0,0,0.10)]"
+      style={{ isolation: 'isolate' }}
+    >
+      <MemberAvatar
+        member={proposer}
+        size={20}
+        className="border-[1.5px] border-surface text-[8.5px]"
+        style={AVATAR_LAYER_STYLE}
+      />
+    </span>
   )
-}
-
-function WishActionRow({
-  wish, isVoted, voters, isPreviewOnly, onToggleVote,
-}: {
-  wish:          Wish
-  isVoted:       boolean
-  voters:        TripMember[]
-  isPreviewOnly: boolean
-  onToggleVote:  () => void
-}) {
-  // 「投票按下後的 pop 動畫」獨立 state — 點擊瞬間就觸發,不等
-  // mutation,因為視覺回饋必須在 100ms 內出現才有感。onAnimationEnd
-  // 自動 cleanup。
-  const [pulsing, setPulsing] = useState(false)
-
-  function handleClick(e: React.MouseEvent) {
-    e.stopPropagation()
-    // demo 模式只是開 sign-in modal,沒實際投票 — 跳過 celebration
-    // 以免「投了沒效果但有動畫」的錯覺。
-    if (!isPreviewOnly) {
-      haptic('light')
-      setPulsing(true)
-    }
-    onToggleVote()
-  }
-
-  return (
-    <div className="flex items-center gap-1.5 px-3 pb-2.5 pt-1.5">
-      {wish.address && <MapChip query={wish.address} />}
-      {wish.link    && <LinkChip url={wish.link} hasAddress={!!wish.address} />}
-      <VoterStack voters={voters} totalVotes={wish.votes.length} />
-      <button
-        onClick={handleClick}
-        aria-label={isVoted ? '投票を取り消す' : '投票する'}
-        aria-pressed={isVoted}
-        className={[
-          'flex items-center gap-1 h-8 px-2.5 rounded-full border bg-surface cursor-pointer transition-all active:scale-[0.97]',
-          voters.length === 0 ? 'ml-auto' : '',
-          isVoted
-            ? 'border-[#E04B5E] bg-[#FFF2F4]'
-            : 'border-border hover:bg-app',
-          isPreviewOnly ? 'opacity-60' : '',
-        ].join(' ')}
-      >
-        <span
-          className={pulsing ? 'animate-heart-pop inline-flex' : 'inline-flex'}
-          onAnimationEnd={() => setPulsing(false)}
-        >
-          <Heart
-            size={14}
-            strokeWidth={2.2}
-            className={isVoted ? 'text-[#E04B5E]' : 'text-muted'}
-            fill={isVoted ? '#E04B5E' : 'none'}
-          />
-        </span>
-        <span className={[
-          'text-[11.5px] font-bold tabular-nums',
-          isVoted ? 'text-[#E04B5E]' : 'text-muted',
-        ].join(' ')}>
-          {wish.votes.length}
-        </span>
-      </button>
-    </div>
-  )
-}
-
-/** Stacked voter avatars — first MAX_AVATARS shown overlapping, rest
- *  collapsed into a "+N" chip. ml-auto pushes the whole group to the
- *  right so the heart button stays at the row end.
- *
- *  totalVotes is passed separately so the +N math reflects the source
- *  of truth (`wish.votes.length`) even when some voters were dropped
- *  upstream (e.g. uid not in current members). */
-function VoterStack({ voters, totalVotes }: { voters: TripMember[]; totalVotes: number }) {
-  if (voters.length === 0) return null
-  const shown    = voters.slice(0, MAX_AVATARS)
-  const overflow = totalVotes - shown.length
-  return (
-    // `isolation: isolate` 建立獨立的 stacking context,把 chip 的
-    // mount/unmount 鎖在這個 subtree 內。配合 AVATAR_LAYER_STYLE 上的
-    // translateZ(0),為 iOS Safari PWA 修正取消投票後 voter chip
-    // 殘影空心圓的 bug。
-    <div className="ml-auto flex items-center mr-1" style={{ isolation: 'isolate' }}>
-      {shown.map((m, i) => (
-        <MemberAvatar
-          key={m.id}
-          member={m}
-          size={20}
-          className="border-[1.5px] border-surface text-[9.5px]"
-          style={{
-            ...AVATAR_LAYER_STYLE,
-            marginLeft: i === 0 ? 0 : -6,
-            zIndex:     shown.length - i,
-          }}
-        />
-      ))}
-      {overflow > 0 && (
-        <span
-          className="w-[20px] h-[20px] rounded-full flex items-center justify-center text-[9px] font-bold border-[1.5px] border-surface bg-app text-muted tabular-nums"
-          style={{ ...AVATAR_LAYER_STYLE, marginLeft: -6 }}
-        >
-          +{overflow}
-        </span>
-      )}
-    </div>
-  )
-}
-
-/** Smart "open link" chip — reads the link URL to decide whether the
- *  user's heading to a map (geographic intent) or a generic site, and
- *  swaps icon + label.
- *
- *  `<a target="_blank">` (not `<button>` + window.open) for two
- *  iOS-PWA-specific reasons:
- *  1. In iOS standalone mode, `window.open(url, '_blank')` navigates the
- *     PWA's own view — when the user returns from Maps the PWA looks
- *     stuck mid-navigation. `<a target="_blank">` triggers Safari's
- *     external-link handler instead.
- *  2. iOS Universal Links route google.com/maps anchor clicks straight
- *     into the native Maps app when installed, without bouncing through
- *     Safari at all — better deep-link UX. */
-function LinkChip({ url, hasAddress }: { url: string; hasAddress: boolean }) {
-  // When `address` is set, the dedicated map chip already covers the
-  // map role — collapse this to plain サイト so both chips don't claim
-  // 地図.
-  const isMaps = !hasAddress && isMapsLink(url)
-  return (
-    <ActionChip
-      href={url}
-      icon={isMaps ? Map : ExternalLink}
-      label={isMaps ? '地図' : 'サイト'}
-      ariaLabel={isMaps ? '地図で開く' : 'リンクを開く'}
-    />
-  )
-}
-
-/** Address-driven map chip. */
-function MapChip({ query }: { query: string }) {
-  const href = mapsSearchUrl(query)
-  if (!href) return null
-  return <ActionChip href={href} icon={Map} label="地図" ariaLabel="地図で開く" />
 }
 
 // React Compiler auto-memoises — no manual React.memo needed.

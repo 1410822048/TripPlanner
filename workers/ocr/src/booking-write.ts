@@ -106,7 +106,7 @@ export class BookingValidationError extends Error {
 /** Mirror of `CreateBookingSchema` in src/types/booking.ts. Duplicated
  *  here because the Worker can't import client-side modules -- the
  *  field caps (title 100 / origin 60 / destination 60 / confirmationCode
- *  64 / provider 60 / address 200 / checkIn 32 / checkOut 32 / note
+ *  64 / provider 60 / address 500 / checkIn 32 / checkOut 32 / note
  *  2000) and the type enum MUST stay in sync. The cap values pair-wise
  *  match firestore.rules booking create/update — the Worker uses admin
  *  SDK and bypasses rules, so any field rules cap but Worker doesn't
@@ -122,7 +122,8 @@ const CreateBookingBodySchema = z.object({
   provider:         z.string().max(60).optional(),
   checkIn:          z.string().max(32).optional(),
   checkOut:         z.string().max(32).optional(),
-  address:          z.string().max(200).optional(),
+  // 住所テキスト or Google Maps URL を受けるため 500(URL は 200 を超え得る)。
+  address:          z.string().max(500).optional(),
   note:             z.string().max(2000).optional(),
 })
 type CreateBookingBody = z.infer<typeof CreateBookingBodySchema>

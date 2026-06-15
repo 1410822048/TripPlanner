@@ -23,7 +23,7 @@ import ExpenseListSkeleton from './ExpenseListSkeleton'
 import ExpensePageSkeleton from './ExpensePageSkeleton'
 import ExpenseListEmpty from './ExpenseListEmpty'
 import ExpenseDateGroups from './ExpenseDateGroups'
-import { CATEGORY_EMOJI } from '@/shared/categoryMeta'
+import { CATEGORY_ICON } from '@/shared/categoryMeta'
 import SignInPromptModal from '@/features/auth/components/SignInPromptModal'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
 import DemoBanner from '@/components/ui/DemoBanner'
@@ -249,14 +249,17 @@ export default function ExpensePage() {
 
           {totalMinor > 0 && categoryStats.length > 0 && (
             <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted tabular-nums">
-              {categoryStats.slice(0, 5).map(([cat, amt], i) => (
+              {categoryStats.slice(0, 5).map(([cat, amt], i) => {
+                const CatIcon = CATEGORY_ICON[cat]
+                return (
                 <span key={cat} className="flex items-center">
                   {i > 0 && <span className="mr-2 text-border">·</span>}
-                  <span className="text-[13px] mr-1 leading-none">{CATEGORY_EMOJI[cat]}</span>
+                  <CatIcon size={12} strokeWidth={2} className="mr-1 text-muted" />
                   <span className="text-ink font-semibold">{Math.round((amt / totalMinor) * 100)}</span>
                   <span className="ml-px text-muted">%</span>
                 </span>
-              ))}
+                )
+              })}
             </div>
           )}
 

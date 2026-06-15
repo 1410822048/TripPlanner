@@ -6,6 +6,7 @@
 //   2. Cache invariants -- the WeakMap-backed `matchCache` must isolate
 //      per-table state so a hotel `provider` never returns an airline Brand.
 import { describe, expect, test } from 'vitest'
+import { Plane, Hotel } from 'lucide-react'
 import { airlineBrand, hotelBrand, railBrand } from './brandMeta'
 
 describe('airlineBrand', () => {
@@ -50,20 +51,20 @@ describe('airlineBrand', () => {
     // 'tr' (Scoot IATA) used to false-match in 'Trip'. With short-code
     // exact-token matching, both correctly fall through to fallback.
     expect(airlineBrand('hk express').label).toBe('UO')        // not PR
-    expect(airlineBrand('Atlantic Wormhole Express').label).toBe('✈')  // not PR
-    expect(airlineBrand('Trip.com').label).toBe('✈')           // not TR
+    expect(airlineBrand('Atlantic Wormhole Express').icon).toBe(Plane)  // not PR
+    expect(airlineBrand('Trip.com').icon).toBe(Plane)          // not TR
   })
 
   test('unknown provider returns fallback (empty aliases)', () => {
     const fallback = airlineBrand('Atlantic Wormhole Express')
     expect(fallback.aliases).toEqual([])
-    expect(fallback.label).toBe('✈')
+    expect(fallback.icon).toBe(Plane)
   })
 
   test('empty / undefined provider returns fallback', () => {
-    expect(airlineBrand(undefined).label).toBe('✈')
-    expect(airlineBrand('').label).toBe('✈')
-    expect(airlineBrand('   ').label).toBe('✈')
+    expect(airlineBrand(undefined).icon).toBe(Plane)
+    expect(airlineBrand('').icon).toBe(Plane)
+    expect(airlineBrand('   ').icon).toBe(Plane)
   })
 
   test('cache returns same Brand reference on repeat calls', () => {
@@ -106,8 +107,8 @@ describe('hotelBrand', () => {
     expect(hotelBrand('APAホテル').label).toBe('APA')
   })
 
-  test('fallback uses hotel emoji', () => {
-    expect(hotelBrand('Random Boutique Inn').label).toBe('🏨')
+  test('fallback uses hotel icon', () => {
+    expect(hotelBrand('Random Boutique Inn').icon).toBe(Hotel)
   })
 })
 
@@ -163,7 +164,7 @@ describe('short-alias token-match invariants', () => {
   test('"Express Air" with no real match falls back, not PR', () => {
     // Tokens are ['express', 'air']; alias 'pr' must NOT match because
     // it is not a whole token (it lives inside 'express').
-    expect(airlineBrand('Express Air').label).toBe('✈')
+    expect(airlineBrand('Express Air').icon).toBe(Plane)
   })
 
   test('hotelBrand("Trip.com") hits Trip.com platform, not any short code', () => {
@@ -181,7 +182,7 @@ describe('cache isolation across tables', () => {
     // "Trip.com" hits the hotel platform; airline table has no such alias
     // so the airline lookup falls back. Each table caches independently,
     // so the airline cache miss must not bleed into the hotel lookup.
-    expect(airlineBrand('Trip.com').label).toBe('✈')   // airline fallback
+    expect(airlineBrand('Trip.com').icon).toBe(Plane)  // airline fallback
     expect(hotelBrand('Trip.com').label).toBe('Trip')  // hotel hit
   })
 })

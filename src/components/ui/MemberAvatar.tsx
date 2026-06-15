@@ -21,6 +21,7 @@
 import { useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { TripMember } from '@/features/trips/types'
+import { crispAvatarUrl } from '@/utils/avatarUrl'
 
 interface Props {
   member:     TripMember
@@ -54,7 +55,7 @@ export default function MemberAvatar({ member, size, className, style }: Props) 
     >
       {showImg ? (
         <img
-          src={member.avatarUrl}
+          src={crispAvatarUrl(member.avatarUrl, size)}
           alt=""
           referrerPolicy="no-referrer"
           className="w-full h-full object-cover"

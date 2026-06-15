@@ -151,7 +151,7 @@ export const CreateBookingSchema = z.object({
   confirmationCode: z.string().max(64).optional(),
   provider:         z.string().max(60).optional(),
   // All string caps (title 100 / origin 60 / destination 60 /
-  // confirmationCode 64 / provider 60 / address 200 / checkIn 32 /
+  // confirmationCode 64 / provider 60 / address 500 / checkIn 32 /
   // checkOut 32 / note 2000) mirror firestore.rules booking
   // create/update AND workers/ocr/src/booking-write.ts. Three-way
   // lockstep is mandatory: the Worker uses admin SDK and bypasses
@@ -160,7 +160,8 @@ export const CreateBookingSchema = z.object({
   // no-file booking writing client-side past Worker cap).
   checkIn:          z.string().max(32).optional(),
   checkOut:         z.string().max(32).optional(),
-  address:          z.string().max(200).optional(),
+  // 住所テキスト or Google Maps URL を受けるため 500(URL は 200 を超え得る)。
+  address:          z.string().max(500).optional(),
   note:             z.string().max(2000).optional(),
 })
 export type CreateBookingInput = z.infer<typeof CreateBookingSchema>

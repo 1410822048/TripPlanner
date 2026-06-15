@@ -15,7 +15,7 @@ import {
   attachmentThumbPath, bookingDisplayName, bookingSubtitle, BOOKING_TYPE_META, isImageAttachment,
 } from '../../utils'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
-import { mapsSearchUrl } from '@/utils/maps'
+import { addressMapHref } from '@/utils/maps'
 
 interface Props {
   booking:   Booking
@@ -27,12 +27,13 @@ interface Props {
 }
 
 export default function GenericCard({ booking, whenLabel, onPreview }: Props) {
+  const TypeIcon = BOOKING_TYPE_META[booking.type].icon
   const isImage  = isImageAttachment(booking.attachment)
   const thumbSrc = useAttachmentUrl(isImage ? attachmentThumbPath(booking.attachment) : undefined, { kind: 'thumb' })
   const showImage = isImage && !!thumbSrc
   const subtitle = bookingSubtitle(booking)
   const address  = booking.address
-  const mapHref  = address ? mapsSearchUrl(address) : null
+  const mapHref  = addressMapHref(address)
   const hasMeta  = subtitle.length > 0 || whenLabel.length > 0 || !!address
   // path-only: a non-image attachment exists iff it has a filePath (the
   // bearer fileUrl no longer exists to gate on).
@@ -62,8 +63,8 @@ export default function GenericCard({ booking, whenLabel, onPreview }: Props) {
           className="w-12 h-12 rounded-xl shrink-0 object-cover bg-tile border border-black/5 pointer-events-none"
         />
       ) : (
-        <div className="w-12 h-12 rounded-xl shrink-0 flex items-center justify-center text-[22px] bg-tile border border-black/5 pointer-events-none">
-          {BOOKING_TYPE_META[booking.type].emoji}
+        <div className="w-12 h-12 rounded-xl shrink-0 flex items-center justify-center bg-tile border border-black/5 pointer-events-none text-muted">
+          <TypeIcon size={22} strokeWidth={1.8} />
         </div>
       )}
 

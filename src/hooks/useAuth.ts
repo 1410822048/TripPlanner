@@ -26,12 +26,12 @@ export interface UseAuthResult {
 // the state synchronously, and React handles tear-off + tearing-safety
 // across concurrent renders.
 
-// Synchronous "was the user signed in when they last closed the app?"
-// hint. Firebase Auth's own persistence lives in IndexedDB (async), so
-// during the initial-paint window we have no synchronous way to know
-// the real answer — the observer hasn't fired yet. We stash a tiny
-// localStorage marker on every onAuthStateChanged transition so the
-// next boot can answer the question without awaiting Firebase.
+// Synchronous "should Auth bootstrap before first paint?" hints.
+// Firebase Auth's own persistence lives in IndexedDB (async), so during
+// the initial-paint window we have no synchronous way to know the real
+// answer — the observer hasn't fired yet. We stash a tiny signed-in
+// marker on every onAuthStateChanged transition, plus a redirect-pending
+// marker before signInWithRedirect navigates away.
 //
 // Callers (SchedulePage's preview-first UX) use this to tell apart
 // "auth loading, expect a real user" (show spinner) from "auth loading,
@@ -40,6 +40,7 @@ export interface UseAuthResult {
 // - Hint=false but actually signed-in → brief demo flash, same as
 //   the pre-hint behaviour.
 const AUTH_HINT_KEY = 'tripmate.auth.hint'
+const AUTH_REDIRECT_PENDING_KEY = 'tripmate.auth.redirectPending'
 
 export function readAuthHint(): boolean {
   try { return typeof localStorage !== 'undefined' && localStorage.getItem(AUTH_HINT_KEY) === '1' }
@@ -51,8 +52,22 @@ function writeAuthHint(signedIn: boolean): void {
     else          localStorage.removeItem(AUTH_HINT_KEY)
   } catch { /* private mode / SSR — non-fatal */ }
 }
+function readAuthRedirectPending(): boolean {
+  try { return typeof localStorage !== 'undefined' && localStorage.getItem(AUTH_REDIRECT_PENDING_KEY) === '1' }
+  catch { return false }
+}
+function writeAuthRedirectPending(pending: boolean): void {
+  try {
+    if (pending) localStorage.setItem(AUTH_REDIRECT_PENDING_KEY, '1')
+    else         localStorage.removeItem(AUTH_REDIRECT_PENDING_KEY)
+  } catch { /* private mode / SSR — non-fatal */ }
+}
 
-let currentState: AuthState = { status: 'loading', wasSignedIn: readAuthHint() }
+export function readAuthBootstrapHint(): boolean {
+  return readAuthHint() || readAuthRedirectPending()
+}
+
+let currentState: AuthState = { status: 'loading', wasSignedIn: readAuthBootstrapHint() }
 const listeners = new Set<() => void>()
 let initPromise: Promise<void> | null = null
 // Track the last observed uid so an account switch / sign-out purges the
@@ -85,8 +100,18 @@ export function initAuth(): Promise<void> {
   initPromise = (async () => {
     try {
       markPerf('auth-sdk-loaded')
-      const { auth, onAuthStateChanged } = await getFirebaseAuth()
+      const { auth, onAuthStateChanged, getRedirectResult } = await getFirebaseAuth()
       markPerf('auth-bundle-resolved')
+      let redirectError: Error | null = null
+      if (readAuthRedirectPending()) {
+        try {
+          await getRedirectResult(auth)
+        } catch (e) {
+          redirectError = e instanceof Error ? e : new Error(String(e))
+        } finally {
+          writeAuthRedirectPending(false)
+        }
+      }
       // Wait for the initial auth state to be known before wiring the
       // observer. Firebase v9+ exposes `authStateReady()` for exactly
       // this — documented as "less invasive than getRedirectResult"
@@ -101,12 +126,11 @@ export function initAuth(): Promise<void> {
       // authStateReady resolves with — serialising keeps the
       // signed-in restore correct.
       //
-      // Redirect-return UX (rare): Firebase Auth processes pending
-      // redirect URLs as part of init itself; we don't need to call
-      // getRedirectResult to trigger it. If a redirect sign-in failed,
-      // authStateReady simply resolves with no user → page shows
-      // signed-out, same as current behaviour with the catch-and-
-      // ignore on getRedirectResult.
+      // Redirect-return UX (rare but important after storage clears):
+      // when popup fallback navigates away, the normal auth hint may still
+      // be false on return. The redirect-pending marker forces this boot,
+      // and getRedirectResult consumes the pending redirect before we wait
+      // for the settled currentUser.
       await auth.authStateReady()
       markPerf('auth-state-ready')
       onAuthStateChanged(auth, u => {
@@ -120,6 +144,11 @@ export function initAuth(): Promise<void> {
         if (nextUid !== lastObservedUid) {
           if (lastObservedUid !== null) clearAttachmentUrlCache()
           lastObservedUid = nextUid
+        }
+        if (!u && redirectError) {
+          setGlobal({ status: 'error', error: redirectError })
+          redirectError = null
+          return
         }
         setGlobal(u ? { status: 'signed-in', user: u } : { status: 'signed-out' })
       })
@@ -135,9 +164,11 @@ export function initAuth(): Promise<void> {
  * for external singletons.
  *
  * The `enabled` parameter gates whether this call boots the auth observer.
- * When omitted, it defaults to the localStorage auth hint:
+ * When omitted, it defaults to the localStorage bootstrap hint:
  *   - hint=true  (returning user, previously signed in) → trigger SDK load
- *   - hint=false (never signed in) → defer until a caller passes `true`
+ *   - redirect-pending=true (returning from signInWithRedirect) → trigger
+ *     SDK load even if Clear Site Data removed the normal signed-in hint
+ *   - both false (never signed in) → defer until a caller passes `true`
  *     explicitly (typically SignInPromptModal opening)
  * This keeps the ~45 KB gz Auth SDK chunk off the cold-start path for
  * demo-only sessions. Callers that always need auth (sign-out screen,
@@ -151,7 +182,7 @@ export function useAuth(enabled?: boolean): UseAuthResult {
   // Boot the observer on first use. Idempotent — multiple calls share the
   // same promise. Kick off synchronously during render so subscribers hook
   // into the global state before any effect runs.
-  const effectiveEnabled = enabled ?? readAuthHint()
+  const effectiveEnabled = enabled ?? readAuthBootstrapHint()
   if (effectiveEnabled && !initPromise) void initAuth()
 
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
@@ -169,7 +200,13 @@ export function useAuth(enabled?: boolean): UseAuthResult {
       if (code === 'auth/popup-blocked'
         || code === 'auth/operation-not-supported-in-this-environment'
         || code === 'auth/cancelled-popup-request') {
-        await signInWithRedirect(auth, provider)
+        writeAuthRedirectPending(true)
+        try {
+          await signInWithRedirect(auth, provider)
+        } catch (redirectError) {
+          writeAuthRedirectPending(false)
+          throw redirectError
+        }
         return
       }
       throw e

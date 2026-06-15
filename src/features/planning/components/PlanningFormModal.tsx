@@ -9,13 +9,14 @@ import DeleteConfirm from '@/components/ui/DeleteConfirm'
 import { inputClass } from '@/components/ui/inputStyle'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
+import { PLAN_CATEGORY_ICON } from '../categories'
 
-const CATEGORIES: { value: PlanCategory; emoji: string; label: string }[] = [
-  { value: 'essentials', emoji: '🎒', label: '必備'   },
-  { value: 'documents',  emoji: '📄', label: '予約'   },
-  { value: 'packing',    emoji: '👕', label: '荷物'   },
-  { value: 'todo',       emoji: '✅', label: '行前'   },
-  { value: 'other',      emoji: '📌', label: 'その他' },
+const CATEGORIES: { value: PlanCategory; label: string }[] = [
+  { value: 'essentials', label: '必備'   },
+  { value: 'documents',  label: '予約'   },
+  { value: 'packing',    label: '荷物'   },
+  { value: 'todo',       label: '行前'   },
+  { value: 'other',      label: 'その他' },
 ]
 
 // `type` (not `interface`): TS won't widen interfaces to satisfy
@@ -83,6 +84,7 @@ export default function PlanningFormModal({
       <FormField label="カテゴリ">
         <div className="flex gap-[7px] flex-wrap">
           {CATEGORIES.map(c => {
+            const CatIcon = PLAN_CATEGORY_ICON[c.value]
             const active = state.category === c.value
             return (
               <button
@@ -96,7 +98,7 @@ export default function PlanningFormModal({
                     : 'border-border bg-transparent text-muted font-normal hover:border-muted',
                 ].join(' ')}
               >
-                <span>{c.emoji}</span>{c.label}
+                <CatIcon size={13} strokeWidth={2} />{c.label}
               </button>
             )
           })}

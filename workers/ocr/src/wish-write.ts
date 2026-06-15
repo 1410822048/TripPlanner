@@ -84,7 +84,7 @@ export class WishValidationError extends Error {
 
 /** Mirror of `CreateWishSchema` in src/types/wish.ts. Duplicated here
  *  because the Worker can't import client-side modules — the field
- *  caps (title 100 / description 500 / link 500 / address 200) and
+ *  caps (title 100 / description 500 / link 500 / address 500) and
  *  the category enum MUST stay in sync; CLAUDE.md's wish section is
  *  the single source of truth at the design level. Field-cap drift
  *  would surface as a "client says OK / Worker says 400" mismatch
@@ -94,7 +94,7 @@ const CreateWishBodySchema = z.object({
   title:       z.string().min(1).max(100),
   description: z.string().max(500).optional(),
   link:        z.string().max(500).optional(),
-  address:     z.string().max(200).optional(),
+  address:     z.string().max(500).optional(),
 })
 type CreateWishBody = z.infer<typeof CreateWishBodySchema>
 
@@ -317,7 +317,7 @@ const UpdateWishBodySchema = z.object({
   title:       z.string().min(1).max(100).optional(),
   description: z.string().max(500).optional(),
   link:        z.string().max(500).optional(),
-  address:     z.string().max(200).optional(),
+  address:     z.string().max(500).optional(),
 })
 type UpdateWishBody = z.infer<typeof UpdateWishBodySchema>
 

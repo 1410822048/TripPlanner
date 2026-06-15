@@ -1076,14 +1076,14 @@ describe('bookingFileUpdate: body validation', () => {
 		)).rejects.toBeInstanceOf(BookingValidationError)
 	})
 
-	it('rejects when address exceeds rules cap (200 chars)', async () => {
+	it('rejects when address exceeds rules cap (500 chars)', async () => {
 		seedUpdateAuth()
 		await expect(bookingFileUpdate(
 			CALLER_UID,
 			{
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
-				patch:               { address: 'x'.repeat(201) },
+				patch:               { address: 'x'.repeat(501) },
 				intentIds:           [FULL_INTENT_ID],
 				expectedCurrentPath: FULL_PATH,
 			},
