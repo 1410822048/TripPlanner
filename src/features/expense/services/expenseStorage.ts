@@ -14,12 +14,12 @@
 // still address each blob for purge without re-deriving the path
 // from the (rejected) intent.
 //
-// compressImage still runs client-side -- the Worker doesn't touch
+// compressReceiptImage still runs client-side -- the Worker doesn't touch
 // bytes, it only mints policy. PDF receipts skip thumbnail generation
-// (compressImage returns `{ full }` only); image receipts produce
+// (compressReceiptImage returns `{ full }` only); image receipts produce
 // both full + thumb and upload in parallel.
 
-import { compressImage } from '@/utils/image'
+import { compressReceiptImage } from '@/utils/image'
 import { mintAndUploadEntityIntents } from '@/services/uploadIntentEntity'
 import { type UploadIntent } from '@/services/uploadIntent'
 import { deleteStorageObject } from '@/services/storageDelete'
@@ -50,7 +50,7 @@ export async function uploadReceipt(
   expenseId: string,
   file:      File,
 ): Promise<UploadedReceiptIntents> {
-  const compressed = await compressImage(file)
+  const compressed = await compressReceiptImage(file)
   return await mintAndUploadEntityIntents({
     tripId, entityType: 'expense', entityId: expenseId, compressed,
   })

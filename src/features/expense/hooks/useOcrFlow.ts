@@ -6,7 +6,7 @@
 //   - lastFile           : the most recent File the user picked (camera or
 //                          upload). Lets the manual "再讀取" button re-run
 //                          OCR without re-uploading.
-//   - loading            : true while compressImage + worker call are in flight
+//   - loading            : true while the worker call is in flight
 //   - error              : Japanese-localised error string (already mapped
 //                          via OcrError kind → copy table). null on success
 //                          or idle.
@@ -15,14 +15,18 @@
 //   - The picked File's attachment lifecycle — that's `useAttachment`'s job
 //     (Storage upload, blob URL, preview). This hook is purely about
 //     "image bytes → items[]".
-//   - Image compression — caller compresses the File before handing it in.
-//     The form modal already pre-compresses at pick-time so the OCR upload
-//     and the Storage upload share one small WebP, avoiding a duplicate
-//     2-4s canvas re-encode on save.
+//   - Image preparation — caller hands in the OCR-grade receipt File.
 //   - Where the result goes — caller's onSuccess populates form state.
 //     Keeps the hook agnostic to which fields the OCR result maps to.
 import { useEffect, useRef, useState } from 'react'
-import { ocrReceipt, ocrExistingExpenseReceipt, OcrError, type OcrResult } from '../services/ocrService'
+import {
+  ocrReceipt,
+  ocrFallbackReceipt,
+  ocrExistingExpenseReceipt,
+  ocrExistingExpenseReceiptFallback,
+  OcrError,
+  type OcrResult,
+} from '../services/ocrService'
 
 interface UseOcrFlowOptions {
   /** ISO 4217 currency code. Passed to Gemini as a hint when receipt
@@ -45,12 +49,19 @@ export interface UseOcrFlowResult {
    *  smooth-feeling "(3.2s)" counter, coarse enough to avoid wasted
    *  renders. Zero when idle. */
   elapsedMs: number
+  /** Cancel any in-flight OCR without applying a result. Used as soon as
+   *  the user picks a replacement receipt, before local image preparation
+   *  finishes, so the old OCR cannot land during that window. */
+  cancel:   () => void
   /** Stash a file WITHOUT running OCR — used by the upload path which
    *  defers OCR to a manual button. */
   setFile:  (file: File | null) => void
   /** Compress (1920px WebP) → call worker → call onSuccess. Updates
    *  loading + error along the way. */
   run:      (file: File) => Promise<void>
+  /** Explicit backup OCR. Same race guards as `run()`, but hits the
+   *  Worker fallback route so cost/latency stay user-triggered. */
+  runFallback: (file: File) => Promise<void>
   /** Re-OCR an EXISTING expense receipt (no freshly-picked File — the old
    *  receipt is only a URL). Worker reads receipt.path from the doc. Does
    *  NOT set `lastFile`, so the button keeps using this path on repeat
@@ -61,6 +72,7 @@ export interface UseOcrFlowResult {
     tripId:           string
     expenseId:        string
     currencyHint?:    string
+    useFallback?:     boolean
     isStillApplicable: (sourceReceiptPath: string, expenseUpdatedAt?: string) => boolean
   }) => Promise<void>
   /** Reset everything — called when the user clears the receipt. */
@@ -137,7 +149,10 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
     abortRef.current = null
   }, [])
 
-  const run = async (file: File): Promise<void> => {
+  const runWithFile = async (
+    file: File,
+    request: (file: File, currency?: string, signal?: AbortSignal) => Promise<OcrResult>,
+  ): Promise<void> => {
     const seq = ++requestSeqRef.current
     abortRef.current?.abort()           // cancel any prior in-flight OCR
     const ac = new AbortController()
@@ -148,7 +163,7 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
     setLoading(true)
     setError(null)
     try {
-      const result = await ocrReceipt(file, currency, ac.signal)
+      const result = await request(file, currency, ac.signal)
       // Superseded by a newer run / setFile / reset → drop silently; the
       // current owner of `loading` will release it.
       if (seq !== requestSeqRef.current) return
@@ -171,6 +186,9 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
     }
   }
 
+  const run = (file: File): Promise<void> => runWithFile(file, ocrReceipt)
+  const runFallback = (file: File): Promise<void> => runWithFile(file, ocrFallbackReceipt)
+
   const runExisting: UseOcrFlowResult['runExisting'] = async (opts) => {
     const seq = ++requestSeqRef.current
     abortRef.current?.abort()           // cancel any prior in-flight OCR
@@ -182,7 +200,12 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
     setError(null)
     try {
       const { result, sourceReceiptPath, expenseUpdatedAt } =
-        await ocrExistingExpenseReceipt(opts.tripId, opts.expenseId, opts.currencyHint, ac.signal)
+        await (opts.useFallback ? ocrExistingExpenseReceiptFallback : ocrExistingExpenseReceipt)(
+          opts.tripId,
+          opts.expenseId,
+          opts.currencyHint,
+          ac.signal,
+        )
       // Superseded locally (new file picked / cleared) → drop. The persisted
       // receipt path may be UNCHANGED, so isStillApplicable below can't catch
       // this; only the seq can.
@@ -218,6 +241,16 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
     setLoading(false)
   }
 
+  const cancel = () => {
+    requestSeqRef.current++
+    abortRef.current?.abort()
+    abortRef.current = null
+    setLastFile(null)
+    setLoading(false)
+    setError(null)
+    setElapsedMs(0)
+  }
+
   const reset = () => {
     requestSeqRef.current++
     abortRef.current?.abort()
@@ -228,5 +261,5 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
     setElapsedMs(0)
   }
 
-  return { loading, error, lastFile, elapsedMs, setFile, run, runExisting, reset }
+  return { loading, error, lastFile, elapsedMs, cancel, setFile, run, runFallback, runExisting, reset }
 }

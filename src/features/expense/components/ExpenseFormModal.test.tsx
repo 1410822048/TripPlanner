@@ -11,7 +11,7 @@
 // (useTripCurrency/useTripId/useFxPreview/useOcrFlow) are mocked, and leaf
 // widgets are stubbed so the test isn't coupled to their internals.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import type { Timestamp } from 'firebase/firestore'
 
@@ -35,16 +35,24 @@ vi.mock('@/hooks/useFxPreview', () => ({
   useFxPreview: () => ({ rateDecimal: null, rateDate: undefined, isLoading: false, isError: false, disabledReason: undefined }),
 }))
 const ocrApi = vi.hoisted(() => ({
-  run: vi.fn(), runExisting: vi.fn(), setFile: vi.fn(), reset: vi.fn(),
+  run: vi.fn(), runFallback: vi.fn(), runExisting: vi.fn(), cancel: vi.fn(), setFile: vi.fn(), reset: vi.fn(),
   lastFile: null as File | null,
+}))
+const imageApi = vi.hoisted(() => ({
+  compressReceiptImage: vi.fn(async (file: File) => ({ full: file })),
 }))
 vi.mock('../hooks/useOcrFlow', () => ({
   useOcrFlow: () => ({
     loading: false, error: null, elapsedMs: 0,
-    run: ocrApi.run, runExisting: ocrApi.runExisting, setFile: ocrApi.setFile, reset: ocrApi.reset,
+    run: ocrApi.run, runFallback: ocrApi.runFallback, runExisting: ocrApi.runExisting,
+    cancel: ocrApi.cancel, setFile: ocrApi.setFile, reset: ocrApi.reset,
     lastFile: ocrApi.lastFile,
   }),
 }))
+vi.mock('@/utils/image', async () => {
+  const actual = await vi.importActual<typeof import('@/utils/image')>('@/utils/image')
+  return { ...actual, compressReceiptImage: imageApi.compressReceiptImage }
+})
 
 import ExpenseFormModal from './ExpenseFormModal'
 import type { Expense } from '@/types'
@@ -74,7 +82,7 @@ function foreignExpense(): Expense {
 }
 
 function renderModal(editTarget: Expense) {
-  render(
+  return render(
     <ExpenseFormModal
       editTarget={editTarget} defaultDate="2026-06-04" members={members}
       isOpen isSaving={false} onClose={() => {}} onSave={vi.fn()}
@@ -84,8 +92,14 @@ function renderModal(editTarget: Expense) {
 
 beforeEach(() => {
   ocrApi.run.mockReset()
+  ocrApi.runFallback.mockReset()
   ocrApi.runExisting.mockReset()
+  ocrApi.cancel.mockReset()
+  ocrApi.setFile.mockReset()
+  ocrApi.reset.mockReset()
   ocrApi.lastFile = null
+  imageApi.compressReceiptImage.mockReset()
+  imageApi.compressReceiptImage.mockImplementation(async (file: File) => ({ full: file }))
 })
 
 describe('ExpenseFormModal — re-OCR dispatch', () => {
@@ -104,13 +118,103 @@ describe('ExpenseFormModal — re-OCR dispatch', () => {
     expect(typeof ocrApi.runExisting.mock.calls[0]![0].isStillApplicable).toBe('function')
   })
 
-  it('a freshly-picked File present → run(file), never runExisting', () => {
-    ocrApi.lastFile = new File(['x'], 'new.jpg', { type: 'image/jpeg' })
-    renderModal(foreignExpense())
+  it('a freshly-picked File present → run(file), never runExisting', async () => {
+    const { container } = renderModal(foreignExpense())
+    const uploadInput = container.querySelectorAll('input[type="file"]')[1] as HTMLInputElement
+    const file = new File(['x'], 'new.jpg', { type: 'image/jpeg' })
+    const receipt = new File(['prepared'], 'new.receipt.webp', { type: 'image/webp' })
+    imageApi.compressReceiptImage.mockResolvedValueOnce({ full: receipt })
+
+    fireEvent.change(uploadInput, { target: { files: [file] } })
+    await waitFor(() => expect(ocrApi.setFile).toHaveBeenCalledWith(receipt))
+
     fireEvent.click(screen.getByRole('button', { name: /明細を読み取る/ }))
 
     expect(ocrApi.runExisting).not.toHaveBeenCalled()
     expect(ocrApi.run).toHaveBeenCalledTimes(1)
-    expect(ocrApi.run).toHaveBeenCalledWith(ocrApi.lastFile)
+    expect(ocrApi.run).toHaveBeenCalledWith(receipt)
+  })
+
+  it('drops a stale camera prepare result when a newer file finishes first', async () => {
+    const { container } = renderModal(foreignExpense())
+    const input = container.querySelector('input[capture="environment"]') as HTMLInputElement
+    const fileA = new File(['a'], 'a.jpg', { type: 'image/jpeg' })
+    const fileB = new File(['b'], 'b.jpg', { type: 'image/jpeg' })
+    const receiptA = new File(['a-prepared'], 'a.receipt.webp', { type: 'image/webp' })
+    const receiptB = new File(['b-prepared'], 'b.receipt.webp', { type: 'image/webp' })
+    let resolveA!: (value: { full: File }) => void
+    imageApi.compressReceiptImage
+      .mockImplementationOnce(() => new Promise(resolve => { resolveA = resolve }))
+      .mockResolvedValueOnce({ full: receiptB })
+
+    fireEvent.change(input, { target: { files: [fileA] } })
+    fireEvent.change(input, { target: { files: [fileB] } })
+
+    expect(ocrApi.cancel).toHaveBeenCalledTimes(2)
+    expect(ocrApi.run).not.toHaveBeenCalled()
+
+    await waitFor(() => expect(ocrApi.run).toHaveBeenCalledWith(receiptB))
+    expect(ocrApi.run).toHaveBeenCalledTimes(1)
+    expect(ocrApi.run.mock.calls[0]![0]).toBe(receiptB)
+
+    await act(async () => {
+      resolveA({ full: receiptA })
+      await Promise.resolve()
+    })
+
+    expect(ocrApi.run).toHaveBeenCalledTimes(1)
+    expect(ocrApi.run.mock.calls[0]![0]).not.toBe(receiptA)
+  })
+
+  it('hides existing-receipt OCR actions while a replacement upload is preparing', async () => {
+    const { container } = renderModal(foreignExpense())
+    const uploadInput = container.querySelectorAll('input[type="file"]')[1] as HTMLInputElement
+    const file = new File(['replacement'], 'replacement.jpg', { type: 'image/jpeg' })
+    const receipt = new File(['prepared'], 'replacement.receipt.webp', { type: 'image/webp' })
+    let resolvePrepare!: (value: { full: File }) => void
+    imageApi.compressReceiptImage.mockImplementationOnce(() => new Promise(resolve => { resolvePrepare = resolve }))
+
+    expect(screen.getByRole('button', { name: /明細を読み取る/ })).toBeTruthy()
+
+    fireEvent.change(uploadInput, { target: { files: [file] } })
+
+    expect(ocrApi.cancel).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('button', { name: /明細を読み取る/ })).toBeNull()
+    expect(ocrApi.runExisting).not.toHaveBeenCalled()
+
+    await act(async () => {
+      resolvePrepare({ full: receipt })
+      await Promise.resolve()
+    })
+
+    expect(ocrApi.setFile).toHaveBeenCalledWith(receipt)
+    expect(ocrApi.runExisting).not.toHaveBeenCalled()
+  })
+
+  it('does not OCR a replacement receipt rejected by attachment validation', async () => {
+    const { container } = renderModal(foreignExpense())
+    const uploadInput = container.querySelectorAll('input[type="file"]')[1] as HTMLInputElement
+    const file = new File(['replacement'], 'replacement.jpg', { type: 'image/jpeg' })
+    const tooLargeReceipt = new File(
+      [new Uint8Array(5 * 1024 * 1024 + 1)],
+      'replacement.receipt.webp',
+      { type: 'image/webp' },
+    )
+    imageApi.compressReceiptImage.mockResolvedValueOnce({ full: tooLargeReceipt })
+
+    fireEvent.change(uploadInput, { target: { files: [file] } })
+
+    await waitFor(() => expect(ocrApi.cancel).toHaveBeenCalledTimes(1))
+    expect(ocrApi.setFile).not.toHaveBeenCalled()
+    expect(ocrApi.run).not.toHaveBeenCalled()
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /明細を読み取る/ })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /明細を読み取る/ }))
+
+    expect(ocrApi.runExisting).toHaveBeenCalledTimes(1)
+    expect(ocrApi.runExisting).toHaveBeenCalledWith(expect.objectContaining({
+      tripId: 'trip-1',
+      expenseId: 'e1',
+    }))
   })
 })

@@ -174,7 +174,7 @@ describe('buildOcrExpenseDraft — adjustments', () => {
     expect(draft.adjustmentText).toEqual({ 'id-3': '50' })
   })
 
-  it('downgrades an out-of-range ITEM index to EXPENSE scope', () => {
+  it('drops an out-of-range ITEM target instead of making it receipt-wide', () => {
     const draft = buildOcrExpenseDraft(
       ocrResult({
         items:       [ocrItem('A', '100')],
@@ -186,11 +186,11 @@ describe('buildOcrExpenseDraft — adjustments', () => {
       ctx({ tripCurrency: 'JPY' }),
       makeNewId(),
     )
-    expect(draft.adjustments[0]!.scope).toBe('EXPENSE')
-    expect(draft.adjustments[0]).not.toHaveProperty('targetItemId')
+    expect(draft.adjustments).toEqual([])
+    expect(draft.adjustmentText).toEqual({})
   })
 
-  it('downgrades an ITEM scope with no index to EXPENSE', () => {
+  it('drops an ITEM scope with no target index', () => {
     const draft = buildOcrExpenseDraft(
       ocrResult({
         items:       [ocrItem('A', '100')],
@@ -200,10 +200,11 @@ describe('buildOcrExpenseDraft — adjustments', () => {
       ctx(),
       makeNewId(),
     )
-    expect(draft.adjustments[0]!.scope).toBe('EXPENSE')
+    expect(draft.adjustments).toEqual([])
+    expect(draft.adjustmentText).toEqual({})
   })
 
-  it('treats UNKNOWN scope as EXPENSE', () => {
+  it('drops UNKNOWN scope so the form surfaces a total mismatch for review', () => {
     const draft = buildOcrExpenseDraft(
       ocrResult({
         items:       [ocrItem('A', '100')],
@@ -213,7 +214,8 @@ describe('buildOcrExpenseDraft — adjustments', () => {
       ctx(),
       makeNewId(),
     )
-    expect(draft.adjustments[0]!.scope).toBe('EXPENSE')
+    expect(draft.adjustments).toEqual([])
+    expect(draft.adjustmentText).toEqual({})
   })
 
   it('maps a zero-amount adjustment to an empty inflight text', () => {

@@ -21,8 +21,12 @@ vi.mock('@/services/workerBase', () => ({
 }))
 
 import {
+  ocrCompareReceipt,
+  ocrFallbackReceipt,
   ocrResultStillApplicable,
   ocrExistingExpenseReceipt,
+  ocrExistingExpenseReceiptFallback,
+  isOcrSupportedImageMimeType,
   OcrError,
 } from './ocrService'
 
@@ -100,6 +104,20 @@ describe('ocrExistingExpenseReceipt', () => {
     expect(sent).not.toHaveProperty('url')
   })
 
+  it('fallback existing receipt posts to /expense-receipt-ocr-fallback', async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(new Response(
+        JSON.stringify({ result: { items: [], adjustments: [], ignoredLines: [], totalText: '0' }, sourceReceiptPath: 'p' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )),
+    )
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+
+    await ocrExistingExpenseReceiptFallback('trip-1', 'exp-1', 'JPY')
+
+    expect(fetchMock.mock.calls[0]![0]).toBe('https://worker.example.dev/expense-receipt-ocr-fallback')
+  })
+
   it('maps statuses → OcrError kinds (401 auth / 403 forbidden / 429 rate-limit / 409 stale / 422·415 parse)', async () => {
     stubFetch(401, { error: 'x' })
     await expect(ocrExistingExpenseReceipt('t', 'e')).rejects.toMatchObject({ kind: 'auth' })
@@ -162,5 +180,93 @@ describe('ocrExistingExpenseReceipt', () => {
     expect(captured?.aborted).toBe(false)
     ac.abort()
     expect(captured?.aborted).toBe(true)
+  })
+})
+
+describe('ocrCompareReceipt', () => {
+  const realFetch = globalThis.fetch
+  afterEach(() => { globalThis.fetch = realFetch })
+  beforeEach(() => {
+    getIdToken.mockClear()
+  })
+
+  it('posts the same image envelope to /ocr-compare and returns both provider results', async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(new Response(
+        JSON.stringify({
+          claude: {
+            provider: 'claude', ok: true, elapsedMs: 1200,
+            result: { items: [{ name: 'A', amountText: '100' }], adjustments: [], ignoredLines: [], totalText: '100' },
+          },
+          qwen: {
+            provider: 'qwen', ok: false, elapsedMs: 900,
+            error: { message: 'bad', status: 422 },
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )),
+    )
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+
+    const out = await ocrCompareReceipt(new File(['img'], 'receipt.webp', { type: 'image/webp' }), 'JPY')
+    expect(out.claude.ok).toBe(true)
+    expect(out.qwen.ok).toBe(false)
+    const call = fetchMock.mock.calls[0]!
+    expect(call[0]).toBe('https://worker.example.dev/ocr-compare')
+    const sent = JSON.parse(call[1]!.body as string)
+    expect(sent).toMatchObject({ mimeType: 'image/webp', currency: 'JPY' })
+    expect(typeof sent.image).toBe('string')
+    expect(sent.image.length).toBeGreaterThan(0)
+  })
+
+  it('maps request-level auth/rate/upstream failures to OcrError kinds', async () => {
+    const stubFetch = (status: number) => {
+      globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ error: 'x' }), {
+        status, headers: { 'Content-Type': 'application/json' },
+      })) as typeof fetch
+    }
+
+    stubFetch(401)
+    await expect(ocrCompareReceipt(new File(['x'], 'r.webp', { type: 'image/webp' }))).rejects.toMatchObject({ kind: 'auth' })
+    stubFetch(429)
+    await expect(ocrCompareReceipt(new File(['x'], 'r.webp', { type: 'image/webp' }))).rejects.toMatchObject({ kind: 'rate-limit' })
+    stubFetch(503)
+    await expect(ocrCompareReceipt(new File(['x'], 'r.webp', { type: 'image/webp' }))).rejects.toMatchObject({ kind: 'unavailable' })
+  })
+})
+
+describe('ocrFallbackReceipt', () => {
+  const realFetch = globalThis.fetch
+  afterEach(() => { globalThis.fetch = realFetch })
+  beforeEach(() => {
+    getIdToken.mockClear()
+  })
+
+  it('posts caller-supplied image bytes to /ocr-fallback', async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(new Response(
+        JSON.stringify({ items: [{ name: 'A', amountText: '100' }], adjustments: [], ignoredLines: [], totalText: '100' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )),
+    )
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+
+    const out = await ocrFallbackReceipt(new File(['img'], 'receipt.webp', { type: 'image/webp' }), 'JPY')
+
+    expect(out.totalText).toBe('100')
+    const call = fetchMock.mock.calls[0]!
+    expect(call[0]).toBe('https://worker.example.dev/ocr-fallback')
+    const sent = JSON.parse(call[1]!.body as string)
+    expect(sent).toMatchObject({ mimeType: 'image/webp', currency: 'JPY' })
+  })
+})
+
+describe('OCR media type support', () => {
+  it('keeps provider-readable OCR media types narrower than receipt attachments', () => {
+    expect(isOcrSupportedImageMimeType('image/webp')).toBe(true)
+    expect(isOcrSupportedImageMimeType('image/jpeg')).toBe(true)
+    expect(isOcrSupportedImageMimeType('image/png')).toBe(true)
+    expect(isOcrSupportedImageMimeType('image/heic')).toBe(false)
+    expect(isOcrSupportedImageMimeType('application/pdf')).toBe(false)
   })
 })

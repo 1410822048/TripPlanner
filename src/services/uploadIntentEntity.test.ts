@@ -95,7 +95,7 @@ describe('mintAndUploadEntityIntents', () => {
 	})
 
 	it('uses kind=pdf as the primary when full.type is application/pdf', async () => {
-		// PDF receipts skip thumb (compressImage returns { full } only).
+		// PDF receipts skip thumb (image compression returns { full } only).
 		// Pairing must look up by `pdf`, not `full`, to find the intent.
 		const pdfFile = new File(['%PDF-1.4'], 'receipt.pdf', { type: 'application/pdf' })
 

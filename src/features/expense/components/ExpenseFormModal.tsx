@@ -18,7 +18,7 @@
 //   - useAttachment    — receipt file lifecycle (existing/new/cleared)
 //   - useExpenseItems  — by-item state + mutators
 //   - useOcrFlow       — OCR pipeline (compress + worker + error copy)
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   type Expense,
   type ExpenseCategory,
@@ -46,7 +46,19 @@ import { useExpenseItems } from '../hooks/useExpenseItems'
 import { useExpenseMoneyDraft } from '../hooks/useExpenseMoneyDraft'
 import { useFxPreview } from '@/hooks/useFxPreview'
 import { useOcrFlow } from '../hooks/useOcrFlow'
-import { ocrResultStillApplicable } from '../services/ocrService'
+import {
+  ocrCompareReceipt,
+  ocrResultStillApplicable,
+  OcrError,
+  type OcrCompareResult,
+  type OcrResult,
+} from '../services/ocrService'
+import { OCR_COMPARE_UI_ENABLED, OCR_FALLBACK_UI_ENABLED } from '../services/ocrFeatures'
+import {
+  deriveReceiptOcrCapabilities,
+  useReceiptOcrSource,
+  type ExistingReceiptOcrSource,
+} from '../hooks/useReceiptOcrSource'
 import { buildExpenseFormResult } from '../services/buildExpenseFormResult'
 import { buildOcrExpenseDraft } from '../services/buildOcrExpenseDraft'
 import { buildForeignLinePreview } from '../services/buildForeignLinePreview'
@@ -61,7 +73,7 @@ import {
   formatMinorForInput,
   currencyFractionDigits,
 } from '@/utils/money'
-import { compressImage } from '@/utils/image'
+import { compressReceiptImage } from '@/utils/image'
 import AttachmentPreviewModal from '@/features/bookings/components/AttachmentPreviewModal'
 
 
@@ -182,6 +194,13 @@ export default function ExpenseFormModal({
     fullPath:    editTarget?.receipt?.path      ?? null,
     type:        editTarget?.receipt?.type      ?? null,
   })
+  const receiptOcr = useReceiptOcrSource({
+    tripId,
+    expenseId:       editTarget?.id,
+    receiptPath:     editTarget?.receipt?.path,
+    receiptType:     editTarget?.receipt?.type,
+    updatedAtMillis: editTarget?.updatedAt?.toMillis?.(),
+  })
   // Full-size receipt preview: new file → its local blob; existing →
   // resolve fullPath via getBlob only while the modal is open (path-driven).
   const previewFullUrl  = useAttachmentUrl(previewOpen && !att.hasNewFile ? att.fullPath : null, { kind: 'full' })
@@ -226,7 +245,7 @@ export default function ExpenseFormModal({
   //
   // A parse failure throws OUT of buildOcrExpenseDraft before it returns a
   // draft (FAIL-FAST: Worker schema validates only a currency-agnostic
-  // decimal shape, so e.g. Gemini emitting "12.34" for JPY breaks
+  // decimal shape, so e.g. OCR emitting "12.34" for JPY breaks
   // parseMoneyToMinor). useOcrFlow.run catches the throw → receiptErrText
   // banner; no state was mutated, so partial application is never visible.
   const ocr = useOcrFlow({
@@ -238,7 +257,7 @@ export default function ExpenseFormModal({
           tripCurrency,
           // FRESH captures fall back to tripCurrency (don't inherit an
           // ephemeral picker); EXISTING foreign expenses keep their
-          // PERSISTED authoritative currency when Gemini can't detect one.
+          // PERSISTED authoritative currency when OCR can't detect one.
           persistedSourceCurrency: editTarget?.sourceCurrency,
           isEdit:                  editTarget !== null,
           currentTitle:            state.title,
@@ -264,6 +283,78 @@ export default function ExpenseFormModal({
     },
   })
 
+  const [compareLoading, setCompareLoading] = useState(false)
+  const [compareError, setCompareError] = useState<string | null>(null)
+  const [compareResult, setCompareResult] = useState<OcrCompareResult | null>(null)
+  const compareSeqRef = useRef(0)
+  const compareAbortRef = useRef<AbortController | null>(null)
+
+  useEffect(() => () => {
+    compareSeqRef.current++
+    compareAbortRef.current?.abort()
+    compareAbortRef.current = null
+  }, [])
+
+  function resetOcrCompare() {
+    compareSeqRef.current++
+    compareAbortRef.current?.abort()
+    compareAbortRef.current = null
+    setCompareLoading(false)
+    setCompareError(null)
+    setCompareResult(null)
+  }
+
+  function applyComparedOcrResult(result: OcrResult) {
+    try {
+      const draft = buildOcrExpenseDraft(
+        result,
+        {
+          tripCurrency,
+          persistedSourceCurrency: editTarget?.sourceCurrency,
+          isEdit:                  editTarget !== null,
+          currentTitle:            state.title,
+        },
+        () => crypto.randomUUID(),
+      )
+      if (draft.ocrCurrency !== sourceCurrency) {
+        applyCurrencySwitch(draft.ocrCurrency)
+      }
+      items.reset(draft.items)
+      resetAdjustments(draft.adjustments, draft.adjustmentText)
+      setAmountText(draft.amountText)
+      if (draft.title !== undefined) setField('title', draft.title)
+      if (draft.category !== undefined) setField('category', draft.category)
+      setErrors(prev => ({ ...prev, items: '' }))
+      setCompareError(null)
+      setCompareResult(null)
+    } catch (e) {
+      setCompareError(e instanceof Error ? e.message : 'OCR結果を適用できませんでした')
+    }
+  }
+
+  async function runOcrCompare() {
+    if (receiptOcr.source.kind !== 'fresh') return
+    const file = receiptOcr.source.file
+    const seq = ++compareSeqRef.current
+    compareAbortRef.current?.abort()
+    const ac = new AbortController()
+    compareAbortRef.current = ac
+    setCompareLoading(true)
+    setCompareError(null)
+    setCompareResult(null)
+    try {
+      const result = await ocrCompareReceipt(file, effectiveCurrency, ac.signal)
+      if (seq !== compareSeqRef.current) return
+      setCompareResult(result)
+    } catch (e) {
+      if (seq !== compareSeqRef.current) return
+      setCompareError(e instanceof OcrError ? e.message : (e as Error).message)
+    } finally {
+      if (seq === compareSeqRef.current) setCompareLoading(false)
+      if (compareAbortRef.current === ac) compareAbortRef.current = null
+    }
+  }
+
   // Two separate <input>s. We CAN'T detect "camera vs gallery" from a
   // single input — the browser doesn't tell us which option the user
   // picked. So the UX branches on which button was tapped:
@@ -272,20 +363,17 @@ export default function ExpenseFormModal({
   const titleRef  = useRef<HTMLInputElement>(null)
   useAutoFocus(titleRef, isOpen)
 
-  // Pre-compress at pick-time so both the OCR worker call AND the eventual
-  // Storage upload share the same already-small WebP. Without this we ran
-  // compressImage TWICE per save (once in OCR pipeline, once in
-  // uploadReceipt), which on a 12MP camera capture meant 2-4s of canvas
-  // re-encoding stacked on the save path — felt indistinguishable from
-  // "stuck on saving" to the user.
+  // Pre-compress receipt images at pick-time into the same OCR-grade full
+  // image that will be stored. Fresh OCR and future re-OCR then read the same
+  // authoritative bytes instead of a low-quality preview derivative.
   //
-  // HEIC / PDF / decode failures fall through compressImage unchanged, so
+  // HEIC / PDF / decode failures fall through compressReceiptImage unchanged, so
   // the original File flows on. catch() swallows any unexpected throw and
   // falls back to the original — we never want a quirky image format to
   // block the user from attaching anything.
-  async function compressForUpload(f: File): Promise<File> {
+  async function prepareReceiptImage(f: File): Promise<File> {
     try {
-      const { full } = await compressImage(f)
+      const { full } = await compressReceiptImage(f)
       return full
     } catch {
       return f
@@ -296,22 +384,43 @@ export default function ExpenseFormModal({
     const f = e.target.files?.[0]
     e.target.value = ''
     if (!f) return
-    const small = await compressForUpload(f)
-    att.pickFile(small)
-    void ocr.run(small)
+    const requestId = receiptOcr.beginPreparing()
+    resetOcrCompare()
+    ocr.cancel()
+    const receipt = await prepareReceiptImage(f)
+    if (!receiptOcr.isCurrent(requestId)) return
+    if (!att.pickFile(receipt)) {
+      receiptOcr.rejectPreparedFile(requestId)
+      return
+    }
+    const source = receiptOcr.commitPreparedFile(requestId, receipt)
+    if (!source) return
+    if (source.kind === 'fresh') void ocr.run(source.file)
+    else ocr.setFile(null)
   }
   async function onUploadPicked(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]
     e.target.value = ''
     if (!f) return
-    const small = await compressForUpload(f)
-    att.pickFile(small)
-    ocr.setFile(small)
+    const requestId = receiptOcr.beginPreparing()
+    resetOcrCompare()
+    ocr.cancel()
+    const receipt = await prepareReceiptImage(f)
+    if (!receiptOcr.isCurrent(requestId)) return
+    if (!att.pickFile(receipt)) {
+      receiptOcr.rejectPreparedFile(requestId)
+      return
+    }
+    const source = receiptOcr.commitPreparedFile(requestId, receipt)
+    if (!source) return
+    ocr.setFile(source.kind === 'fresh' ? source.file : null)
   }
   function handleClearReceipt() {
+    receiptOcr.clear()
     att.clear()
     items.clear()
     clearAdjustments()
+    resetOcrCompare()
     ocr.reset()
   }
 
@@ -432,48 +541,49 @@ export default function ExpenseFormModal({
 
   // ─── Receipt section helpers ────────────────────────────────────────
   const receiptErrText = att.error ?? ocr.error ?? undefined
-  // Re-OCR has two sources: a freshly-picked File (camera/upload → compress
-  // → /ocr) or an EXISTING saved receipt (edit; only a URL → the Worker
-  // /expense-receipt-ocr route reads receipt.path from the doc). Both feed
-  // the same onSuccess. Existing-receipt is cloud-only (needs a real tripId)
-  // and only for image receipts.
-  const existingImageReceipt =
-    !ocr.lastFile &&
-    !!tripId &&
-    !!editTarget?.id &&
-    !!editTarget.receipt?.path &&
-    (editTarget.receipt?.type.startsWith('image/') ?? false)
-  const hasOcrSource = !!ocr.lastFile || existingImageReceipt
+  const receiptOcrCaps = deriveReceiptOcrCapabilities({
+    source:          receiptOcr.source,
+    hasAttachment:   att.hasAttachment,
+    previewIsImage:  att.previewIsImage,
+    ocrLoading:      ocr.loading,
+    hasItems:        items.hasItems,
+    ocrError:        ocr.error,
+    fallbackEnabled: OCR_FALLBACK_UI_ENABLED,
+    compareEnabled:  OCR_COMPARE_UI_ENABLED,
+  })
 
-  function runReceiptOcr() {
-    if (ocr.lastFile) { void ocr.run(ocr.lastFile); return }
-    if (!tripId || !editTarget?.id || !editTarget.receipt?.path) return
-    // Race snapshot captured at click time. The result is discarded unless,
-    // when it returns, the Worker OCR'd the SAME receipt path AND (when both
-    // sides carry it) the expense's updatedAt is unchanged — i.e. the
-    // receipt wasn't swapped and the expense wasn't edited elsewhere while
-    // the request was in flight. Worker re-OCR never re-uploads; only the
-    // draft fields change, so SAVE still routes through /expense-update.
-    const capturedPath   = editTarget.receipt.path
-    const capturedMillis = editTarget.updatedAt?.toMillis?.()
+  function runExistingReceiptOcr(source: ExistingReceiptOcrSource, useFallback: boolean) {
+    // Race snapshot captured in receiptOcr.source. The result is discarded
+    // unless the Worker OCR'd the SAME receipt path AND, when both sides
+    // carry it, the expense's updatedAt is unchanged.
     void ocr.runExisting({
-      tripId,
-      expenseId:    editTarget.id,
+      tripId:       source.tripId,
+      expenseId:    source.expenseId,
       // Hint the draft's CURRENT currency (foreign code when this is a
       // foreign expense), not tripCurrency — re-OCRing a saved foreign
-      // receipt should bias Gemini toward the known currency rather than
+      // receipt should bias OCR toward the known currency rather than
       // risk it being reparsed as the trip currency.
       currencyHint: effectiveCurrency,
+      useFallback,
       isStillApplicable: (sourceReceiptPath, expenseUpdatedAt) =>
         ocrResultStillApplicable(
-          { receiptPath: capturedPath, updatedAtMillis: capturedMillis },
+          { receiptPath: source.receiptPath, updatedAtMillis: source.updatedAtMillis },
           { sourceReceiptPath, expenseUpdatedAt },
         ),
     })
   }
 
-  const canAnalyze   = att.hasAttachment && att.previewIsImage && !ocr.loading && !items.hasItems && hasOcrSource
-  const canReanalyze = att.hasAttachment && att.previewIsImage && !ocr.loading && items.hasItems  && hasOcrSource
+  function runReceiptOcr() {
+    const source = receiptOcr.source
+    if (source.kind === 'fresh') { void ocr.run(source.file); return }
+    if (source.kind === 'existing') runExistingReceiptOcr(source, false)
+  }
+
+  function runReceiptFallbackOcr() {
+    const source = receiptOcr.source
+    if (source.kind === 'fresh') { void ocr.runFallback(source.file); return }
+    if (source.kind === 'existing') runExistingReceiptOcr(source, true)
+  }
 
   return (
     <FormModalShell
@@ -530,12 +640,20 @@ export default function ExpenseFormModal({
         canPreview={att.hasNewFile || !!att.fullPath}
         ocrLoading={ocr.loading}
         ocrElapsedMs={ocr.elapsedMs}
-        canAnalyze={canAnalyze}
-        canReanalyze={canReanalyze}
+        canAnalyze={receiptOcrCaps.canAnalyze}
+        canReanalyze={receiptOcrCaps.canReanalyze}
+        canFallback={receiptOcrCaps.canFallback}
+        canCompare={receiptOcrCaps.canCompare}
+        compareLoading={compareLoading}
+        compareError={compareError}
+        compareResult={compareResult}
         onCameraPicked={onCameraPicked}
         onUploadPicked={onUploadPicked}
         onClear={handleClearReceipt}
         onAnalyze={runReceiptOcr}
+        onFallback={runReceiptFallbackOcr}
+        onCompare={() => { void runOcrCompare() }}
+        onApplyCompareResult={applyComparedOcrResult}
         onPreview={() => (att.hasNewFile || att.fullPath) && setPreviewOpen(true)}
       />
 

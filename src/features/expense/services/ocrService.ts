@@ -83,15 +83,27 @@ export interface OcrResult {
   totalText: string
   currency?: string
   /** Store / venue name from the receipt header. Optional — present
-   *  when Gemini can confidently identify a single store name. */
+   *  when the OCR model can confidently identify a single store name. */
   storeName?: string
-  /** Inferred expense category. Optional — Gemini may omit when the
+  /** Inferred expense category. Optional — the OCR model may omit when the
    *  receipt is ambiguous. Caller applies only on new expenses to
    *  avoid clobbering an edit. */
   category?: OcrCategory
 }
 
+export type OcrCompareProvider = 'claude' | 'qwen'
+export type OcrCompareProviderResult =
+  | { provider: OcrCompareProvider; ok: true; elapsedMs: number; result: OcrResult }
+  | { provider: OcrCompareProvider; ok: false; elapsedMs: number; error: { message: string; status: number } }
+
+export interface OcrCompareResult {
+  claude: OcrCompareProviderResult
+  qwen:   OcrCompareProviderResult
+}
+
 import { WORKER_BASE_URL, requireWorkerWriteBase } from '@/services/workerBase'
+
+const OCR_SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 
 export type OcrErrorKind =
   | 'auth'
@@ -149,32 +161,37 @@ function ocrFetchSignal(external?: AbortSignal): AbortSignal {
   return AbortSignal.any([timeout, external])
 }
 
-/**
- * Extract receipt line items from an image. Throws OcrError with a `kind`
- * the UI can render distinct copy for ("登入逾時 / 速率限制 / 無法辨識...").
- *
- * `currency` is a hint, not a constraint — when omitted, Gemini guesses
- * from receipt symbols. Pass the trip currency for better accuracy on
- * ambiguous receipts (e.g. a "$" that could be USD/TWD/CAD).
- */
-export async function ocrReceipt(file: File, currency?: string, signal?: AbortSignal): Promise<OcrResult> {
-  // Auth — fail early before doing the (potentially slow) base64 encode.
+export function isOcrSupportedImageMimeType(type: string | undefined): boolean {
+  const normalized = type?.split(';', 1)[0]?.trim().toLowerCase()
+  return !!normalized && OCR_SUPPORTED_IMAGE_MIME_TYPES.has(normalized)
+}
+
+export function isOcrSupportedImageFile(file: File | null | undefined): boolean {
+  return !!file && isOcrSupportedImageMimeType(file.type)
+}
+
+async function postOcrImage<T>(
+  endpoint: string,
+  file:     File,
+  currency: string | undefined,
+  signal:   AbortSignal | undefined,
+  copy:     { timeout: string; failed: string },
+): Promise<T> {
+  if (!isOcrSupportedImageFile(file)) {
+    throw new OcrError('OCR supports JPEG, PNG, or WebP receipt images', 'parse')
+  }
+
   const { auth } = await getFirebaseAuth()
   const user = auth.currentUser
   if (!user) {
     throw new OcrError('Not signed in', 'auth')
   }
   const token = await user.getIdToken()
-
   const image = await fileToBase64(file)
 
   let res: Response
   try {
-    // 60s hard timeout (so a hung worker / DNS blackhole can't pin the
-    // "解析中…" spinner up forever; Worker p99 is ~5s) combined with the
-    // optional caller abort (cancel when the user swaps / clears the
-    // receipt). See ocrFetchSignal.
-    res = await fetch(`${WORKER_BASE_URL}/ocr`, {
+    res = await fetch(`${WORKER_BASE_URL}${endpoint}`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -188,29 +205,61 @@ export async function ocrReceipt(file: File, currency?: string, signal?: AbortSi
       signal: ocrFetchSignal(signal),
     })
   } catch (e) {
-    // AbortError comes out as DOMException with name='TimeoutError' when
-    // the AbortSignal.timeout fires. Map both flavours to our 'network'
-    // kind so the UI shows the consistent "ネットワークエラー" message.
     const err = e as Error
     if (err.name === 'TimeoutError' || err.name === 'AbortError') {
-      throw new OcrError('OCR request timed out', 'network')
+      throw new OcrError(copy.timeout, 'network')
     }
     throw new OcrError(`Network error: ${err.message}`, 'network')
   }
 
-  if (res.status === 401) throw new OcrError('Session expired',     'auth')
-  if (res.status === 429) throw new OcrError('Rate limit reached',  'rate-limit')
+  if (res.status === 401) throw new OcrError('Session expired', 'auth')
+  if (res.status === 429) throw new OcrError('Rate limit reached', 'rate-limit')
   if (res.status === 422) throw new OcrError('Could not read receipt', 'parse')
   if (res.status === 502 || res.status === 503 || res.status === 504) {
     throw new OcrError('OCR service is temporarily unavailable', 'unavailable')
   }
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
-    throw new OcrError(`OCR failed (${res.status}): ${detail.slice(0, 120)}`, 'unknown')
+    throw new OcrError(`${copy.failed} (${res.status}): ${detail.slice(0, 120)}`, 'unknown')
   }
 
-  const data = await res.json() as OcrResult
-  return data
+  return await res.json() as T
+}
+
+/**
+ * Extract receipt line items from an image. Throws OcrError with a `kind`
+ * the UI can render distinct copy for ("登入逾時 / 速率限制 / 無法辨識...").
+ *
+ * `currency` is a hint, not a constraint — when omitted, the OCR model guesses
+ * from receipt symbols. Pass the trip currency for better accuracy on
+ * ambiguous receipts (e.g. a "$" that could be USD/TWD/CAD).
+ */
+export async function ocrReceipt(file: File, currency?: string, signal?: AbortSignal): Promise<OcrResult> {
+  return postOcrImage<OcrResult>('/ocr', file, currency, signal, {
+    timeout: 'OCR request timed out',
+    failed:  'OCR failed',
+  })
+}
+
+/** Explicit backup path. This is user-triggered; the product path does not
+ *  silently double-run models and hide the latency/cost from the user. */
+export async function ocrFallbackReceipt(file: File, currency?: string, signal?: AbortSignal): Promise<OcrResult> {
+  return postOcrImage<OcrResult>('/ocr-fallback', file, currency, signal, {
+    timeout: 'OCR fallback timed out',
+    failed:  'OCR fallback failed',
+  })
+}
+
+/**
+ * Dev/QA comparison path: sends the same prepared receipt image to Claude and
+ * Qwen through the Worker, returning both results. It does NOT apply anything
+ * to the form; callers decide whether to use one provider's result.
+ */
+export async function ocrCompareReceipt(file: File, currency?: string, signal?: AbortSignal): Promise<OcrCompareResult> {
+  return postOcrImage<OcrCompareResult>('/ocr-compare', file, currency, signal, {
+    timeout: 'OCR comparison timed out',
+    failed:  'OCR comparison failed',
+  })
 }
 
 /** Response envelope for the re-OCR-existing-receipt endpoint. Carries the
@@ -224,7 +273,9 @@ export interface ExpenseReceiptOcrResponse {
 }
 
 /**
- * Re-run OCR against an EXISTING expense's stored receipt. The client never
+ * Re-run OCR against an EXISTING expense's stored receipt. This is a user
+ * refresh action, so the Worker runs the model again instead of replaying a
+ * previous OCR result. The client never
  * names the object — the Worker reads receipt.path from the Firestore doc
  * (BOLA-safe) and enforces /expense-update permissions (owner/editor;
  * settlement-locked ⇒ owner). Used by the edit-modal "再読み取り" button
@@ -234,7 +285,8 @@ export interface ExpenseReceiptOcrResponse {
  * still applies to the open modal (receipt path unchanged, expense not
  * edited mid-flight) before applying it.
  */
-export async function ocrExistingExpenseReceipt(
+async function ocrExistingExpenseReceiptEndpoint(
+  endpoint:     '/expense-receipt-ocr' | '/expense-receipt-ocr-fallback',
   tripId:       string,
   expenseId:    string,
   currencyHint?: string,
@@ -256,7 +308,7 @@ export async function ocrExistingExpenseReceipt(
 
   let res: Response
   try {
-    res = await fetch(`${base}/expense-receipt-ocr`, {
+    res = await fetch(`${base}${endpoint}`, {
       method:  'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       // ONLY identifiers cross the wire — never the receipt path.
@@ -280,9 +332,9 @@ export async function ocrExistingExpenseReceipt(
   // actionable message, not a raw "OCR failed (403)".
   if (res.status === 403) throw new OcrError('Forbidden: cannot edit this expense', 'forbidden')
   // 409 = the Worker's post-OCR revalidation found the receipt/expense
-  // changed while Gemini was running → the result is for a stale image.
+  // changed while OCR was running → the result is for a stale image.
   if (res.status === 409) throw new OcrError('Expense changed during OCR', 'stale')
-  // 422 = Gemini couldn't read; 415 = stored object isn't an image
+  // 422 = model couldn't read; 415 = stored object isn't a provider-readable image
   // (shouldn't reach here — the button gates on image receipts — but map
   // it to the same "couldn't read" copy rather than a raw status).
   if (res.status === 422 || res.status === 415) throw new OcrError('Could not read receipt', 'parse')
@@ -295,6 +347,24 @@ export async function ocrExistingExpenseReceipt(
   }
 
   return await res.json() as ExpenseReceiptOcrResponse
+}
+
+export function ocrExistingExpenseReceipt(
+  tripId:       string,
+  expenseId:    string,
+  currencyHint?: string,
+  signal?:      AbortSignal,
+): Promise<ExpenseReceiptOcrResponse> {
+  return ocrExistingExpenseReceiptEndpoint('/expense-receipt-ocr', tripId, expenseId, currencyHint, signal)
+}
+
+export function ocrExistingExpenseReceiptFallback(
+  tripId:       string,
+  expenseId:    string,
+  currencyHint?: string,
+  signal?:      AbortSignal,
+): Promise<ExpenseReceiptOcrResponse> {
+  return ocrExistingExpenseReceiptEndpoint('/expense-receipt-ocr-fallback', tripId, expenseId, currencyHint, signal)
 }
 
 /**

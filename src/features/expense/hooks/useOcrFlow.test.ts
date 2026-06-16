@@ -232,6 +232,20 @@ describe('useOcrFlow — aborts in-flight requests (UX A)', () => {
     expect(s?.aborted).toBe(true)
   })
 
+  it('cancel aborts the in-flight run before a replacement file is ready', async () => {
+    vi.mocked(ocrReceipt).mockReturnValueOnce(deferred<OcrResult>().promise)
+    const { view } = setup()
+    act(() => { void view.result.current.run(file('a.jpg')) })
+    const s = runSignal(0)
+
+    act(() => { view.result.current.cancel() })
+
+    expect(s?.aborted).toBe(true)
+    expect(view.result.current.lastFile).toBeNull()
+    expect(view.result.current.loading).toBe(false)
+    expect(view.result.current.error).toBeNull()
+  })
+
   it('reset aborts the in-flight run', async () => {
     vi.mocked(ocrReceipt).mockReturnValueOnce(deferred<OcrResult>().promise)
     const { view } = setup()

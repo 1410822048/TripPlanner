@@ -105,10 +105,11 @@ export function buildOcrExpenseDraft(
     assignees:   [],
   }))
 
-  // OCR adjustment draft → 持久化形狀。UNKNOWN scope 預設 EXPENSE(Phase B
-  // 契約:持久 scope 二元);ITEM scope 在 target index 缺失 / 越界時退回
-  // EXPENSE —— 防 OCR 吐出部分 / 壞掉的 adjustment payload。
-  const adjustments: ExpenseAdjustment[] = result.adjustments.map((adj, i) => {
+  // OCR adjustment draft → persisted shape. Only explicit EXPENSE stays
+  // receipt-wide; only ITEM with a valid target index stays item-scoped.
+  // UNKNOWN / broken ITEM targets are dropped so the item-total mismatch
+  // forces manual review instead of silently spreading a discount globally.
+  const adjustments: ExpenseAdjustment[] = result.adjustments.flatMap((adj, i): ExpenseAdjustment[] => {
     const idx = adj.suggestedTargetItemIndex
     const itemTarget =
       adj.suggestedScope === 'ITEM' &&
@@ -118,22 +119,26 @@ export function buildOcrExpenseDraft(
         ? mintedItemIds[idx]
         : undefined
     const minor = adjustmentMinors[i]!
-    return itemTarget
-      ? {
-          id:           newId(),
-          label:        adj.label,
-          kind:         adj.kind,
-          scope:        'ITEM' as const,
-          amountMinor:  minor,
-          targetItemId: itemTarget,
-        }
-      : {
-          id:          newId(),
-          label:       adj.label,
-          kind:        adj.kind,
-          scope:       'EXPENSE' as const,
-          amountMinor: minor,
-        }
+    if (itemTarget) {
+      return [{
+        id:           newId(),
+        label:        adj.label,
+        kind:         adj.kind,
+        scope:        'ITEM' as const,
+        amountMinor:  minor,
+        targetItemId: itemTarget,
+      }]
+    }
+    if (adj.suggestedScope === 'EXPENSE') {
+      return [{
+        id:          newId(),
+        label:       adj.label,
+        kind:        adj.kind,
+        scope:       'EXPENSE' as const,
+        amountMinor: minor,
+      }]
+    }
+    return []
   })
 
   const adjustmentText = Object.fromEntries(

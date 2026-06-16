@@ -63,7 +63,7 @@ export interface UseAttachmentResult {
   attachmentName: string
   error:          string | null
   hasNewFile:     boolean
-  pickFile:       (file: File) => void
+  pickFile:       (file: File) => boolean
   clear:          () => void
   /** Diff to send to the service. No args needed — the hook snapshots
    *  the original path at mount so it can detect "user removed what
@@ -97,13 +97,14 @@ export function useAttachment(initial: ExistingAttachment): UseAttachmentResult 
   // Compiler memoises these. The useMemo above for blob URL stays
   // because it's paired with a cleanup effect (URL.revokeObjectURL) —
   // that's functional ownership, not just optimisation.
-  const pickFile = (file: File) => {
+  const pickFile = (file: File): boolean => {
     if (file.size > MAX_FILE_BYTES) {
       setError('ファイルサイズは 5MB 以下にしてください')
-      return
+      return false
     }
     setError(null)
     setNewFile(file)
+    return true
   }
 
   const clear = () => {
