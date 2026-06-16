@@ -2,14 +2,14 @@
 // EXISTING receipt" endpoint. The security surface (BOLA path, MIME, size,
 // settlement-lock ⇒ owner, membership) is the whole point of routing this
 // through the server, so it's exercised exhaustively here. All external
-// deps (admin token, Firestore reads, Storage, Gemini) are mocked; the
+// deps (admin token, Firestore reads, Storage, the OCR model) are mocked; the
 // REAL expenseIsSettlementLocked + readString run against the fixtures.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const { docFields, storageState, geminiCalls } = vi.hoisted(() => ({
+const { docFields, storageState, ocrCalls } = vi.hoisted(() => ({
   docFields:    new Map<string, Record<string, unknown> | null>(),
   storageState: { meta: null as unknown, bytes: null as unknown, metaThrows: false, bytesThrows: false },
-  geminiCalls:  [] as Array<{ mimeType: string; currency?: string }>,
+  ocrCalls:     [] as Array<{ mimeType: string; currency?: string }>,
 }))
 
 vi.mock('../src/admin', () => ({
@@ -36,19 +36,20 @@ vi.mock('../src/storage', () => ({
   }),
 }))
 
-vi.mock('../src/gemini', () => ({
+vi.mock('../src/claude', () => ({
+  OCR_PROMPT_VERSION: 'claude-receipt-v3',
   extractReceiptItems: vi.fn(async (_b64: string, mimeType: string, currency: string | undefined) => {
-    geminiCalls.push({ mimeType, currency })
+    ocrCalls.push({ mimeType, currency })
     return { items: [{ name: 'コーヒー', amountText: '380' }], adjustments: [], ignoredLines: [], totalText: '380' }
   }),
-  GeminiError: class GeminiError extends Error {
+  OcrError: class OcrError extends Error {
     constructor(message: string, public readonly status: number) { super(message) }
   },
 }))
 
 import { expenseReceiptOcr, ExpenseReceiptOcrRequestSchema } from '../src/expense-receipt-ocr'
 import { CascadeError } from '../src/cascade'
-import { extractReceiptItems } from '../src/gemini'
+import { extractReceiptItems } from '../src/claude'
 
 const TRIP = 'trip-1'
 const EXP  = 'exp-1'
@@ -94,7 +95,9 @@ function run(reqOverrides: Record<string, unknown> = {}, caller = CALLER) {
   return expenseReceiptOcr(
     caller,
     { tripId: TRIP, expenseId: EXP, ...reqOverrides } as never,
-    '{}', 'demo-bucket', 'gemini-key',
+    '{}', 'demo-bucket',
+    (image, mimeType, currency) =>
+      extractReceiptItems(image, mimeType, currency, { apiKey: 'k', resource: 'aic-claude-eus2', model: 'claude-sonnet-4-6' }),
   )
 }
 
@@ -104,7 +107,8 @@ beforeEach(() => {
   storageState.bytes = null
   storageState.metaThrows = false
   storageState.bytesThrows = false
-  geminiCalls.length = 0
+  ocrCalls.length = 0
+  vi.mocked(extractReceiptItems).mockClear()
 })
 
 describe('expenseReceiptOcr — happy paths', () => {
@@ -118,8 +122,8 @@ describe('expenseReceiptOcr — happy paths', () => {
     expect(out.result.items.length).toBeGreaterThan(0)
     expect(out.sourceReceiptPath).toBe(RECEIPT_PATH)
     expect(out.expenseUpdatedAt).toBe('2026-06-04T08:00:00Z')
-    // Gemini is handed the GCS contentType (authoritative), not a client mime.
-    expect(geminiCalls[0].mimeType).toBe('image/webp')
+    // The OCR core is handed the GCS contentType (authoritative), not a client mime.
+    expect(ocrCalls[0].mimeType).toBe('image/webp')
   })
 
   it('owner + LOCKED image receipt → 200 (owner override)', async () => {
@@ -135,7 +139,18 @@ describe('expenseReceiptOcr — happy paths', () => {
   it('passes currencyHint through to the OCR core', async () => {
     seedTrip({ ownerId: 'x' }); seedMember(CALLER); seedExpense({ receipt: { path: RECEIPT_PATH, type: 'image/webp' } }); seedStorageOk()
     await run({ currencyHint: 'TWD' })
-    expect(geminiCalls[0].currency).toBe('TWD')
+    expect(ocrCalls[0].currency).toBe('TWD')
+  })
+
+  it('re-runs OCR against the stored receipt image', async () => {
+    seedTrip({ ownerId: 'x' })
+    seedMember(CALLER)
+    seedExpense({ receipt: { path: RECEIPT_PATH, type: 'image/webp' } })
+    seedStorageOk()
+
+    await run({ currencyHint: 'TWD' })
+
+    expect(extractReceiptItems).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -193,6 +208,13 @@ describe('expenseReceiptOcr — receipt + storage validation', () => {
     await expect(run()).rejects.toMatchObject({ status: 415 })
   })
 
+  it('HEIC receipt is stored as an attachment but rejected for OCR', async () => {
+    seedTrip({ ownerId: 'x' }); seedMember(CALLER)
+    seedExpense({ receipt: { path: `trips/${TRIP}/expenses/${EXP}/receipt.heic`, type: 'image/heic' } })
+    await expect(run()).rejects.toMatchObject({ status: 415 })
+    expect(extractReceiptItems).not.toHaveBeenCalled()
+  })
+
   it('receipt.path not under trips/{tripId}/expenses/{expenseId}/ → 400 (BOLA)', async () => {
     seedTrip({ ownerId: 'x' }); seedMember(CALLER)
     seedExpense({ receipt: { path: 'trips/other-trip/expenses/x/receipt.webp', type: 'image/webp' } })
@@ -226,10 +248,17 @@ describe('expenseReceiptOcr — receipt + storage validation', () => {
     storageState.meta = { name: RECEIPT_PATH, size: 1000, contentType: 'application/octet-stream' }
     await expect(run()).rejects.toMatchObject({ status: 415 })
   })
+
+  it('stored object contentType image but unsupported by OCR provider', async () => {
+    seedTrip({ ownerId: 'x' }); seedMember(CALLER)
+    seedExpense({ receipt: { path: RECEIPT_PATH, type: 'image/webp' } })
+    storageState.meta = { name: RECEIPT_PATH, size: 1000, contentType: 'image/heif' }
+    await expect(run()).rejects.toMatchObject({ status: 415 })
+  })
 })
 
 describe('expenseReceiptOcr — post-OCR revalidation (mid-OCR race)', () => {
-  it('receipt swapped while Gemini runs → 409', async () => {
+  it('receipt swapped while OCR runs → 409', async () => {
     seedTrip({ ownerId: 'x' }); seedMember(CALLER)
     seedExpense({ receipt: { path: RECEIPT_PATH, type: 'image/webp' }, updatedAt: '2026-06-04T08:00:00Z' })
     seedStorageOk()
@@ -241,7 +270,7 @@ describe('expenseReceiptOcr — post-OCR revalidation (mid-OCR race)', () => {
     await expect(run()).rejects.toMatchObject({ status: 409 })
   })
 
-  it('expense edited (updatedAt advanced) while Gemini runs → 409', async () => {
+  it('expense edited (updatedAt advanced) while OCR runs → 409', async () => {
     seedTrip({ ownerId: 'x' }); seedMember(CALLER)
     seedExpense({ receipt: { path: RECEIPT_PATH, type: 'image/webp' }, updatedAt: '2026-06-04T08:00:00Z' })
     seedStorageOk()
@@ -261,7 +290,7 @@ describe('expenseReceiptOcr — post-OCR revalidation (mid-OCR race)', () => {
     expect(out.expenseUpdatedAt).toBe('2026-06-04T08:00:00Z')
   })
 
-  it('expense becomes settlement-locked (non-owner) while Gemini runs → 403', async () => {
+  it('expense becomes settlement-locked (non-owner) while OCR runs → 403', async () => {
     // The whole point of the FULL re-run post-check: someone records 済み
     // mid-OCR → settlementLockIds set, but the lock write does NOT bump
     // updatedAt. A path/updatedAt-only check would PASS and the non-owner's
@@ -288,7 +317,7 @@ describe('expenseReceiptOcr — post-OCR revalidation (mid-OCR race)', () => {
     expect(out.result.items.length).toBeGreaterThan(0)
   })
 
-  it('caller role downgraded to viewer while Gemini runs → 403', async () => {
+  it('caller role downgraded to viewer while OCR runs → 403', async () => {
     seedTrip({ ownerId: 'someone-else' }); seedMember(CALLER, 'editor')
     seedExpense({ receipt: { path: RECEIPT_PATH, type: 'image/webp' }, updatedAt: '2026-06-04T08:00:00Z' })
     seedStorageOk()
@@ -304,6 +333,7 @@ describe('ExpenseReceiptOcrRequestSchema — strict', () => {
   it('rejects any client-supplied path / url / receipt', async () => {
     expect(ExpenseReceiptOcrRequestSchema.safeParse({ tripId: TRIP, expenseId: EXP }).success).toBe(true)
     expect(ExpenseReceiptOcrRequestSchema.safeParse({ tripId: TRIP, expenseId: EXP, currencyHint: 'JPY' }).success).toBe(true)
+    expect(ExpenseReceiptOcrRequestSchema.safeParse({ tripId: TRIP, expenseId: EXP, cacheMode: 'reuse' }).success).toBe(false)
     expect(ExpenseReceiptOcrRequestSchema.safeParse({ tripId: TRIP, expenseId: EXP, path: 'x' }).success).toBe(false)
     expect(ExpenseReceiptOcrRequestSchema.safeParse({ tripId: TRIP, expenseId: EXP, url: 'https://x' }).success).toBe(false)
     expect(ExpenseReceiptOcrRequestSchema.safeParse({ tripId: TRIP, expenseId: EXP, receipt: {} }).success).toBe(false)

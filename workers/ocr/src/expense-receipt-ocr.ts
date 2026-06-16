@@ -9,27 +9,27 @@
 //   - Permission mirrors /expense-update (owner/editor; settlement-locked ⇒
 //     owner-only), because the OCR result overwrites the items / amount /
 //     splits edit draft — it is "preparing an update", not a plain read.
-//   - MIME / size / rate-limit / Gemini cost all collapse to one server
+//   - MIME / size / rate-limit / OCR-model cost all collapse to one server
 //     boundary instead of being scattered across the front end.
 //
-// This endpoint is READ-ONLY (no Firestore / Storage write). It returns the
-// OCR candidate; the user still confirms in the editable modal and SAVE is
-// what actually mutates the expense (via /expense-update).
+// This endpoint never mutates the expense. It always re-runs the model; the
+// user still confirms in the editable modal and SAVE is what actually mutates
+// the expense (via /expense-update).
 import { z }                                  from 'zod'
 import { getAdminToken, getProjectId }        from './admin'
 import { getDocFields, readString }           from './firestore'
 import type { FsValue }                       from './firestore'
 import { getObjectMetadata, downloadObject }  from './storage'
-import { extractReceiptItems }                from './gemini'
 import { expenseIsSettlementLocked }          from './expense-write'
 import { CascadeError }                       from './cascade'
-import type { OcrResponse }                   from './schema'
+import { OCR_SUPPORTED_IMAGE_MIME_TYPES, type OcrResponse, type OcrSupportedImageMimeType } from './schema'
 
 const TripIdRe = /^[A-Za-z0-9_-]{1,60}$/
 
 /** Hard ceiling on the receipt object we'll pull into memory + hand to
- *  Gemini. Mirrors storage.rules' 5MB expense-receipt cap. */
+ *  the OCR model. Mirrors storage.rules' 5MB expense-receipt cap. */
 const MAX_RECEIPT_BYTES = 5 * 1024 * 1024
+const SUPPORTED_OCR_IMAGE_TYPES = new Set<string>(OCR_SUPPORTED_IMAGE_MIME_TYPES)
 
 /** Strict request body. ONLY identifiers + a currency hint cross the wire —
  *  the client is NEVER allowed to supply the receipt path (the Worker reads
@@ -57,9 +57,22 @@ export interface ExpenseReceiptOcrResult {
   expenseUpdatedAt?: string
 }
 
+export type ReceiptOcrExtractor = (
+  imageBase64: string,
+  mimeType:    string,
+  currency:    string | undefined,
+) => Promise<OcrResponse>
+
 /** mapValue → inner fields, or undefined when the field is absent / not a map. */
 function readMap(fields: Record<string, FsValue>, key: string): Record<string, FsValue> | undefined {
   return (fields[key] as { mapValue?: { fields?: Record<string, FsValue> } } | undefined)?.mapValue?.fields
+}
+
+function supportedOcrMimeType(contentType: string | undefined): OcrSupportedImageMimeType | null {
+  const normalized = contentType?.split(';', 1)[0]?.trim().toLowerCase()
+  return normalized && SUPPORTED_OCR_IMAGE_TYPES.has(normalized)
+    ? normalized as OcrSupportedImageMimeType
+    : null
 }
 
 /** RFC3339 timestampValue, or undefined when absent / not a timestamp. */
@@ -84,7 +97,7 @@ function arrayBufferToBase64(buf: ArrayBuffer): string {
 /** The mutable authorization + applicability state of a re-OCR target,
  *  resolved from a FRESH read of trip / member / expense. Run twice: once
  *  before OCR (to authorize the caller + locate the receipt) and once after
- *  (to confirm nothing that changes the answer shifted while Gemini ran).
+ *  (to confirm nothing that changes the answer shifted while OCR ran).
  *
  *  Throws CascadeError for any authz/existence failure (trip/member/expense
  *  gone, role downgraded, settlement-locked for a non-owner, bad receipt) —
@@ -143,9 +156,10 @@ async function authorizeAndLocateReceipt(
   const receiptPath = readString(receipt, 'path')
   const receiptType = readString(receipt, 'type')
   if (!receiptPath) throw new CascadeError(404, 'expense receipt has no path')
-  if (!receiptType || !receiptType.startsWith('image/')) {
-    // PDFs / unsupported land here. OCR supports images only.
-    throw new CascadeError(415, 'receipt is not an image; OCR supports images only')
+  if (!receiptType || !supportedOcrMimeType(receiptType)) {
+    // PDFs / HEIC / unsupported images land here. Attachment storage may keep
+    // them, but OCR providers only accept JPEG / PNG / WebP.
+    throw new CascadeError(415, 'receipt image type is not supported for OCR')
   }
   // BOLA defence in depth: even though the path came from the doc, assert it
   // lives under this trip+expense before reading Storage with the admin
@@ -162,7 +176,7 @@ export async function expenseReceiptOcr(
   req:                ExpenseReceiptOcrRequest,
   serviceAccountJson: string,
   bucket:             string,
-  geminiApiKey:       string,
+  extract:            ReceiptOcrExtractor,
 ): Promise<ExpenseReceiptOcrResult> {
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
@@ -182,8 +196,8 @@ export async function expenseReceiptOcr(
   if (meta.size > MAX_RECEIPT_BYTES) {
     throw new CascadeError(413, 'receipt exceeds the 5MB OCR limit')
   }
-  if (!meta.contentType.startsWith('image/')) {
-    throw new CascadeError(415, 'stored receipt object is not an image')
+  if (!supportedOcrMimeType(meta.contentType)) {
+    throw new CascadeError(415, 'stored receipt image type is not supported for OCR')
   }
 
   let downloaded
@@ -196,16 +210,17 @@ export async function expenseReceiptOcr(
   if (downloaded.bytes.byteLength > MAX_RECEIPT_BYTES) {
     throw new CascadeError(413, 'receipt exceeds the 5MB OCR limit')
   }
-  if (!downloaded.contentType.startsWith('image/')) {
-    throw new CascadeError(415, 'downloaded receipt object is not an image')
+  const downloadedMimeType = supportedOcrMimeType(downloaded.contentType)
+  if (!downloadedMimeType) {
+    throw new CascadeError(415, 'downloaded receipt image type is not supported for OCR')
   }
 
   // ── OCR (shared core; GCS contentType is the authoritative MIME) ─
   const imageBase64 = arrayBufferToBase64(downloaded.bytes)
-  const result = await extractReceiptItems(imageBase64, downloaded.contentType, req.currencyHint, geminiApiKey)
+  const result = await extract(imageBase64, downloadedMimeType, req.currencyHint)
 
   // ── Post-OCR revalidation ────────────────────────────────────────
-  // Gemini runs for several seconds; anything that changes the answer can
+  // OCR runs for several seconds; anything that changes the answer can
   // shift in that window. RE-RUN the full authorization (not just a
   // path/updatedAt diff): it catches a role downgrade, a deleted expense/trip,
   // AND — crucially — a mid-OCR settlement lock for a non-owner, which the

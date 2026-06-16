@@ -1,5 +1,5 @@
 // Smoke tests for routing + CORS + auth gating.
-// These don't exercise the Gemini call (we'd need either a mock or a real
+// These don't exercise the OCR-model call (we'd need either a mock or a real
 // API key + image) — they cover the layers above it so we can refactor
 // auth / CORS without breaking core wiring.
 import {
@@ -94,6 +94,23 @@ describe('OCR worker routing', () => {
 		const body = await res.json() as { error: string }
 		expect(body.error).toContain('Body too large')
 	})
+
+	it('normal OCR domain errors are masked in client responses', async () => {
+		const route = ROUTES.find(r => r.path === '/ocr')
+		expect(route).toBeDefined()
+
+		const res = await route!.dispatch({
+			body: { image: 'a'.repeat(128), mimeType: 'image/webp' },
+			cors: {},
+			uid:  'user-1',
+			env:  { OCR_PRIMARY_PROVIDER: 'gemini' },
+		} as never)
+		const body = await res.json() as { error: string }
+
+		expect(res.status).toBe(502)
+		expect(body.error).toBe('OCR provider failed')
+		expect(body.error).not.toContain('OCR_PRIMARY_PROVIDER')
+	})
 })
 
 describe('route descriptor table (rate-limit classification)', () => {
@@ -105,7 +122,10 @@ describe('route descriptor table (rate-limit classification)', () => {
 	// so any future table edit that re-buckets an endpoint fails loudly.
 	const EXPECTED: Record<string, { limiter: string; scope: string; globalLimit: number }> = {
 		'/ocr':                 { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
+		'/ocr-fallback':        { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
+		'/ocr-compare':         { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
 		'/expense-receipt-ocr': { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
+		'/expense-receipt-ocr-fallback': { limiter: 'OCR_RATE_LIMITER',    scope: 'ocr',              globalLimit: 60 },
 		'/cascade-trip-delete': { limiter: 'TRIP_CASCADE_RATE_LIMITER',   scope: 'trip-cascade',     globalLimit: 2 },
 		'/expense-create':      { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'expense',          globalLimit: 60 },
 		'/expense-update':      { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'expense',          globalLimit: 60 },

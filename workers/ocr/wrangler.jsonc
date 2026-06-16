@@ -28,7 +28,35 @@
 		// inside the envelope (see sentry.ts) lets us filter Worker
 		// events from frontend events in the Sentry UI. Empty string
 		// disables telemetry cleanly (sentry.ts parseDsn returns null).
-		"SENTRY_DSN": ""
+		"SENTRY_DSN": "",
+		// Claude OCR via Microsoft Foundry (Azure AI Foundry). Non-secret:
+		// the resource name is a URL host component (not a credential) and the
+		// deployment name is a routing label. The API key is a SECRET
+		// (ANTHROPIC_FOUNDRY_API_KEY via `wrangler secret put`).
+		// Endpoint = https://{RESOURCE}.services.ai.azure.com/anthropic/v1/messages
+		//   RESOURCE:   Foundry resource name (East US2 / Sweden Central only).
+		//   DEPLOYMENT: the Claude deployment name in the Foundry portal. Now
+		//               Sonnet 4.6 (Haiku 4.5 read receipt amounts poorly). Swap
+		//               tier = change this one var to that deployment's name.
+		"ANTHROPIC_FOUNDRY_RESOURCE": "aic-claude-eus2",
+		"CLAUDE_DEPLOYMENT": "claude-sonnet-4-6",
+		// Qwen OCR provider. API key is a SECRET (QWEN_API_KEY via
+		// `wrangler secret put`). Required whenever OCR_PRIMARY_PROVIDER or
+		// OCR_FALLBACK_PROVIDER is qwen; /ocr-compare also uses it when enabled.
+		// This uses Alibaba Cloud Model Studio Singapore's workspace-scoped
+		// OpenAI-compatible endpoint; the older dashscope-intl.aliyuncs.com
+		// domain is legacy.
+		"QWEN_BASE_URL": "https://ws-g7wwlr6k1kgzbizw.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+		"QWEN_MODEL": "qwen3.6-flash",
+		// Clean OCR routing:
+		//   /ocr                     -> OCR_PRIMARY_PROVIDER
+		//   /ocr-fallback            -> OCR_FALLBACK_PROVIDER
+		//   /ocr-compare             -> only when OCR_COMPARE_ENABLED=true
+		// Default product path is Qwen because receipt preprocessing made it
+		// faster with acceptable quality; Claude remains an explicit backup.
+		"OCR_PRIMARY_PROVIDER": "qwen",
+		"OCR_FALLBACK_PROVIDER": "claude",
+		"OCR_COMPARE_ENABLED": "false"
 	},
 	// Cron: daily UTC 03:00 receipt purge — globally low-traffic hour.
 	// Scoped to ~14min via SOFT_DEADLINE_MS in receipt-purge.ts; under
@@ -40,7 +68,7 @@
 	// location (eventually consistent) — fine for abuse prevention,
 	// not a hard quota. namespace_id is account-scoped and arbitrary
 	// (just unique); we use 1001-1005 to keep human-readable.
-	//   /ocr                  expensive path (Gemini quota)         → 30/min
+	//   /ocr                  expensive path (OCR provider quota)      → 30/min
 	//   membership endpoints  rare server-heavy writes               → 5/min
 	//   /cascade-trip-delete  HEAVY (full trip cascade + storage)    → 1/min
 	//                         tighter than member cascade because
@@ -53,7 +81,7 @@
 	//                         tighter cap reflects "this is a clicked
 	//                         button, not a typed-keystroke flow".
 	//   /attachment-*-url[s]  signed-URL minting (local RSA sign,      → 120/min
-	//                         no Gemini / no Firestore write). Looser:
+	//                         no OCR / no Firestore write). Looser:
 	//                         a list screen issues a few thumb batches.
 	"ratelimits": [
 		{
@@ -106,6 +134,7 @@
 		}
 	]
 	// Secrets are set via `wrangler secret put`:
-	//   GEMINI_API_KEY            ← Google AI Studio API key
+	//   ANTHROPIC_FOUNDRY_API_KEY ← Microsoft Foundry (Azure AI Foundry) Claude API key
+	//   QWEN_API_KEY               ← Qwen/OpenAI-compatible provider API key
 	//   FIREBASE_SERVICE_ACCOUNT  ← service account JSON for Firestore/GCS admin REST
 }

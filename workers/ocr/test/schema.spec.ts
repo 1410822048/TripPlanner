@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { OcrResponseSchema, GEMINI_RESPONSE_SCHEMA } from '../src/schema'
+import { OcrRequestSchema, OcrResponseSchema, OCR_RESPONSE_JSON_SCHEMA } from '../src/schema'
+
+describe('OCR request schema - supported provider media types', () => {
+	it('accepts only provider-readable image formats for direct OCR', () => {
+		const base = { image: 'a'.repeat(128), mimeType: 'image/webp' }
+		expect(OcrRequestSchema.safeParse(base).success).toBe(true)
+		expect(OcrRequestSchema.safeParse({ ...base, mimeType: 'image/heic' }).success).toBe(false)
+		expect(OcrRequestSchema.safeParse({ ...base, mimeType: 'image/heif' }).success).toBe(false)
+		expect(OcrRequestSchema.safeParse({ ...base, mimeType: 'application/pdf' }).success).toBe(false)
+	})
+})
 
 describe('OCR response schema - adjustment buckets', () => {
 	it('requires ignoredLines so informational receipt rows have a non-financial bucket', () => {
@@ -71,8 +81,8 @@ describe('OCR response schema - adjustment buckets', () => {
 		}
 	})
 
-	it('keeps Gemini JSON schema required fields in sync with Zod schema', () => {
-		expect(GEMINI_RESPONSE_SCHEMA.required).toEqual([
+	it('keeps the OCR JSON schema required fields in sync with Zod schema', () => {
+		expect(OCR_RESPONSE_JSON_SCHEMA.required).toEqual([
 			'items',
 			'adjustments',
 			'ignoredLines',

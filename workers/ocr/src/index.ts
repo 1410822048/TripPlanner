@@ -1,7 +1,7 @@
 // TripMate OCR Worker — entry point.
 //
 // Endpoints:
-//   POST /ocr                  — Gemini receipt OCR (original endpoint)
+//   POST /ocr                  — primary configured receipt OCR provider
 //   POST /invite-create        — owner mints a reusable invite link.
 //                                Worker mints the 256-bit token, caps the
 //                                expiry, and atomically rotates the
@@ -67,8 +67,16 @@
 // Cascade / OCR endpoints don't set the header; their log lines omit
 // the suffix.
 import { verifyFirebaseToken, extractBearerToken } from './auth'
-import { extractReceiptItems, GeminiError }       from './gemini'
-import { OcrRequestSchema }                       from './schema'
+import { OcrError }                               from './claude'
+import { OcrRequestSchema, type OcrRequest, type OcrResponse } from './schema'
+import {
+  parseBooleanEnv,
+  parseOcrProvider,
+  parseOptionalOcrProvider,
+  runOcrProvider,
+  type OcrProvider,
+  type OcrProviderConfig,
+}                                                 from './ocr-providers'
 import { expenseReceiptOcr, ExpenseReceiptOcrRequestSchema } from './expense-receipt-ocr'
 import { cascadeTripDelete, TripDeleteRequestSchema } from './trip-cascade'
 import { purgeExpiredReceipts }                   from './receipt-purge'
@@ -145,8 +153,16 @@ interface WorkerEnv {
   FIREBASE_PROJECT_ID:      string
   FIREBASE_STORAGE_BUCKET:  string
   ALLOWED_ORIGINS:          string  // comma-separated
-  GEMINI_API_KEY:           string  // secret
+  ANTHROPIC_FOUNDRY_API_KEY: string // secret — Microsoft Foundry (Azure AI Foundry) Claude API key
+  ANTHROPIC_FOUNDRY_RESOURCE: string // var — Foundry resource name (e.g. aic-claude-eus2)
+  CLAUDE_DEPLOYMENT:        string  // var — Foundry deployment name (e.g. claude-haiku-4-5-2)
   FIREBASE_SERVICE_ACCOUNT: string  // secret — JSON string of service account key
+  QWEN_API_KEY:             string  // secret; OpenAI-compatible Qwen provider API key
+  QWEN_BASE_URL:            string  // var; without /chat/completions
+  QWEN_MODEL:               string  // var; e.g. qwen3-vl-flash / qwen3.6-flash
+  OCR_PRIMARY_PROVIDER?:    string  // var; qwen | claude, default qwen
+  OCR_FALLBACK_PROVIDER?:   string  // var; claude | qwen | none, default claude
+  OCR_COMPARE_ENABLED?:     string  // var; true only for dev / QA environments
   /** Sentry DSN for Worker-side telemetry (abuse alerts, future error
    *  reporting). Same DSN as the frontend's VITE_SENTRY_DSN -- events
    *  land in the same project, filterable by `server_name: 'tripmate-ocr'`.
@@ -174,7 +190,7 @@ interface WorkerEnv {
   SETTLEMENT_RATE_LIMITER:  RateLimit
   /** Per-PoP per-uid rate limiter for the attachment signed-URL endpoint
    *  (/attachment-url, full/pdf entity-ref). Looser (120/min) than expense
-   *  -- the work is a local RSA sign (no Gemini / no Firestore write). */
+   *  -- the work is a local RSA sign (no OCR / no Firestore write). */
   ATTACHMENT_URL_RATE_LIMITER: RateLimit
   /** Cross-PoP global rate limiter. Durable Object — strongly
    *  consistent counter per-uid that catches multi-PoP abuse that
@@ -295,6 +311,94 @@ interface RouteDescriptor {
   rate:     RateClassKey
   /** Per-route parse → handle → catch, wrapped by handleJsonRoute. */
   dispatch: (c: DispatchCtx) => Response | Promise<Response>
+}
+
+type OcrCompareResult =
+  | { provider: OcrProvider; ok: true;  elapsedMs: number; result: OcrResponse }
+  | { provider: OcrProvider; ok: false; elapsedMs: number; error: { message: string; status: number } }
+
+function ocrProviderConfig(env: WorkerEnv): OcrProviderConfig {
+  return {
+    claude: {
+      apiKey:   env.ANTHROPIC_FOUNDRY_API_KEY,
+      resource: env.ANTHROPIC_FOUNDRY_RESOURCE,
+      model:    env.CLAUDE_DEPLOYMENT,
+    },
+    qwen: {
+      apiKey:  env.QWEN_API_KEY,
+      baseUrl: env.QWEN_BASE_URL,
+      model:   env.QWEN_MODEL,
+    },
+  }
+}
+
+function primaryOcrProvider(env: WorkerEnv): OcrProvider {
+  return parseOcrProvider(env.OCR_PRIMARY_PROVIDER, 'OCR_PRIMARY_PROVIDER', 'qwen')
+}
+
+function fallbackOcrProvider(env: WorkerEnv): OcrProvider | 'none' {
+  return parseOptionalOcrProvider(env.OCR_FALLBACK_PROVIDER, 'OCR_FALLBACK_PROVIDER', 'claude')
+}
+
+function compareEnabled(env: WorkerEnv): boolean {
+  return parseBooleanEnv(env.OCR_COMPARE_ENABLED, false)
+}
+
+function runConfiguredOcrProvider(env: WorkerEnv, provider: OcrProvider, data: OcrRequest): Promise<OcrResponse> {
+  return runOcrProvider(provider, data.image, data.mimeType, data.currency, ocrProviderConfig(env))
+}
+
+function clientSafeOcrError(status: number): string {
+  if (status === 400) return 'OCR request was rejected'
+  if (status === 404) return 'OCR route is disabled'
+  if (status === 429) return 'OCR provider is rate limited'
+  if (status === 422) return 'OCR provider could not parse this receipt'
+  if (status === 503 || status === 504) return 'OCR provider is temporarily unavailable'
+  return 'OCR provider failed'
+}
+
+function ocrErrorCatcher(e: unknown) {
+  return e instanceof OcrError
+    ? {
+        log:    `OcrError status=${e.status} msg=${e.message}`,
+        body:   { error: clientSafeOcrError(e.status) },
+        status: e.status,
+      }
+    : null
+}
+
+function clientSafeCompareError(status: number): string {
+  return clientSafeOcrError(status)
+}
+
+async function timedOcrProvider(
+  provider: OcrProvider,
+  run: () => Promise<OcrResponse>,
+): Promise<OcrCompareResult> {
+  const started = Date.now()
+  try {
+    const result = await run()
+    return { provider, ok: true, elapsedMs: Date.now() - started, result }
+  } catch (e) {
+    const err = e as Error
+    const status = e instanceof OcrError ? e.status : 500
+    console.error(`[ocr-compare] ${provider} failed: status=${status} msg=${err.message}`)
+    return {
+      provider,
+      ok: false,
+      elapsedMs: Date.now() - started,
+      error: {
+        message: clientSafeCompareError(status),
+        status,
+      },
+    }
+  }
+}
+
+function formatCompareResult(r: OcrCompareResult): string {
+  return r.ok
+    ? `${r.provider}:ok items=${r.result.items.length} adjustments=${r.result.adjustments.length} ignored=${r.result.ignoredLines.length} ms=${r.elapsedMs}`
+    : `${r.provider}:err status=${r.error.status} ms=${r.elapsedMs}`
 }
 
 export const ROUTES: RouteDescriptor[] = [
@@ -543,15 +647,40 @@ export const ROUTES: RouteDescriptor[] = [
       // the doc (client can't name the object), mirrors /expense-update auth
       // (owner/editor; settlement-locked ⇒ owner), reads the image from
       // Storage, and runs the SAME extractReceiptItems core as /ocr.
-      handle:    data => expenseReceiptOcr(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_STORAGE_BUCKET, c.env.GEMINI_API_KEY),
+      handle:    data => {
+        const provider = primaryOcrProvider(c.env)
+        return expenseReceiptOcr(
+          c.uid,
+          data,
+          c.env.FIREBASE_SERVICE_ACCOUNT,
+          c.env.FIREBASE_STORAGE_BUCKET,
+          (image, mimeType, currency) =>
+            runOcrProvider(provider, image, mimeType, currency, ocrProviderConfig(c.env)),
+        )
+      },
       formatLog: (data, result) => `trip=${data.tripId} exp=${data.expenseId} items=${result.result.items.length}`,
-      catchDomain: e => e instanceof GeminiError
-        ? {
-            log:    `GeminiError status=${e.status} msg=${e.message}`,
-            body:   { error: e.message },
-            status: e.status,
-          }
-        : null,
+      catchDomain: ocrErrorCatcher,
+    }),
+  },
+  {
+    path: '/expense-receipt-ocr-fallback', rate: 'ocr',
+    dispatch: c => handleJsonRoute({
+      endpoint:  'expense-receipt-ocr-fallback', body: c.body, cors: c.cors, uid: c.uid,
+      schema:    ExpenseReceiptOcrRequestSchema,
+      handle:    data => {
+        const provider = fallbackOcrProvider(c.env)
+        if (provider === 'none') throw new OcrError('OCR fallback is disabled', 404)
+        return expenseReceiptOcr(
+          c.uid,
+          data,
+          c.env.FIREBASE_SERVICE_ACCOUNT,
+          c.env.FIREBASE_STORAGE_BUCKET,
+          (image, mimeType, currency) =>
+            runOcrProvider(provider, image, mimeType, currency, ocrProviderConfig(c.env)),
+        )
+      },
+      formatLog: (data, result) => `trip=${data.tripId} exp=${data.expenseId} items=${result.result.items.length}`,
+      catchDomain: ocrErrorCatcher,
     }),
   },
   {
@@ -559,15 +688,42 @@ export const ROUTES: RouteDescriptor[] = [
     dispatch: c => handleJsonRoute({
       endpoint:  'ocr', body: c.body, cors: c.cors, uid: c.uid,
       schema:    OcrRequestSchema,
-      handle:    data => extractReceiptItems(data.image, data.mimeType, data.currency, c.env.GEMINI_API_KEY),
+      handle:    data => runConfiguredOcrProvider(c.env, primaryOcrProvider(c.env), data),
       formatLog: (_data, result) => `items=${result.items.length}`,
-      catchDomain: e => e instanceof GeminiError
-        ? {
-            log:    `GeminiError status=${e.status} msg=${e.message}`,
-            body:   { error: e.message },
-            status: e.status,
-          }
-        : null,
+      catchDomain: ocrErrorCatcher,
+    }),
+  },
+  {
+    path: '/ocr-fallback', rate: 'ocr',
+    dispatch: c => handleJsonRoute({
+      endpoint:  'ocr-fallback', body: c.body, cors: c.cors, uid: c.uid,
+      schema:    OcrRequestSchema,
+      handle:    data => {
+        const provider = fallbackOcrProvider(c.env)
+        if (provider === 'none') throw new OcrError('OCR fallback is disabled', 404)
+        return runConfiguredOcrProvider(c.env, provider, data)
+      },
+      formatLog: (_data, result) => `items=${result.items.length}`,
+      catchDomain: ocrErrorCatcher,
+    }),
+  },
+  {
+    path: '/ocr-compare', rate: 'ocr',
+    dispatch: c => handleJsonRoute({
+      endpoint:  'ocr-compare', body: c.body, cors: c.cors, uid: c.uid,
+      schema:    OcrRequestSchema,
+      handle:    async data => {
+        if (!compareEnabled(c.env)) throw new OcrError('OCR comparison is disabled', 404)
+        const cfg = ocrProviderConfig(c.env)
+        const [claude, qwen] = await Promise.all([
+          timedOcrProvider('claude', () => runOcrProvider('claude', data.image, data.mimeType, data.currency, cfg)),
+          timedOcrProvider('qwen', () => runOcrProvider('qwen', data.image, data.mimeType, data.currency, cfg)),
+        ])
+        return { claude, qwen }
+      },
+      formatLog: (_data, result) =>
+        `${formatCompareResult(result.claude)} ${formatCompareResult(result.qwen)}`,
+      catchDomain: ocrErrorCatcher,
     }),
   },
 ]

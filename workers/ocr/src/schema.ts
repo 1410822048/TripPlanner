@@ -2,10 +2,10 @@
 //
 // Two layers:
 //   - Request: what the client posts to /ocr
-//   - Response: what we promise to return (also matches what Gemini is
-//     instructed to produce via responseJsonSchema)
+//   - Response: what we promise to return (also matches the JSON Schema the
+//     OCR model is instructed to produce via response_format)
 //
-// Gemini's structured-output feature lets us send a JSON Schema and the
+// The model's structured-output feature lets us send a JSON Schema and the
 // model is forced to match it; we still re-parse with Zod on our side
 // because (a) the model occasionally returns extra fields, (b) we want
 // runtime type safety, (c) we want to coerce / clean (e.g. amount → int).
@@ -25,19 +25,22 @@
 // `amountText` / `totalText` decimal string (e.g. "12.34", "500"). The
 // client parses to integer minor units via `parseMoneyToMinor` at the
 // form→Firestore boundary, so the wire never carries a float subject
-// to IEEE-754 drift. Gemini is instructed to emit raw decimal strings
+// to IEEE-754 drift. The model is instructed to emit raw decimal strings
 // matching the currency's fraction digits.
 import { z } from 'zod'
 
 // ─── Request ─────────────────────────────────────────────────────────────
 
-// Max base64 payload: 8MB ≈ 6MB raw image. Client compresses to
-// ~200KB WebP via compressImage(), so this is ~30× headroom for
-// edge cases (e.g. user bypasses compress path) while keeping a
-// hard ceiling on Gemini quota / CPU burn from a forged client.
+// Max base64 payload: 8MB ≈ 6MB raw image. Client receipts are compressed to
+// OCR-grade WebP before upload, so this leaves headroom for high-quality
+// receipt images and forged-client edge cases while keeping a
+// hard ceiling on OCR-model quota / CPU burn from a forged client.
 // Cloudflare's plan-level limit is 100MB so without this an
-// authenticated attacker could DoS our Gemini budget.
+// authenticated attacker could DoS our OCR-model budget.
 const MAX_IMAGE_BASE64_BYTES = 8 * 1024 * 1024
+
+export const OCR_SUPPORTED_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const
+export type OcrSupportedImageMimeType = typeof OCR_SUPPORTED_IMAGE_MIME_TYPES[number]
 
 export const OcrRequestSchema = z.object({
   /** base64-encoded image bytes (no data: prefix). */
@@ -45,11 +48,11 @@ export const OcrRequestSchema = z.object({
               .min(100, 'image too small')
               .max(MAX_IMAGE_BASE64_BYTES, 'image too large'),
   /** MIME type of the image. We only allow common photo formats — PDFs
-   *  are intentionally rejected (Gemini can read PDFs but receipts as
+   *  are intentionally rejected (the model can read PDFs but receipts as
    *  PDFs are rare and we want to limit attack surface). Mirrors the
-   *  client-side BOOKING_ATTACHMENT_MIME_TYPES + EXPENSE_RECEIPT_MIME_TYPES
-   *  (minus PDF). */
-  mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif']),
+   *  receipt attachment set, because Claude/Qwen OCR paths cannot reliably
+   *  consume HEIC/HEIF or PDFs. */
+  mimeType: z.enum(OCR_SUPPORTED_IMAGE_MIME_TYPES),
   /** ISO 4217 currency code hint (e.g. 'JPY', 'TWD'). The LLM uses this
    *  as a hint when the receipt itself doesn't show a currency symbol.
    *  Regex enforces the ISO 4217 shape (three uppercase letters) without
@@ -65,7 +68,7 @@ export type OcrRequest = z.infer<typeof OcrRequestSchema>
 // "500"); the client parses via parseMoneyToMinor(amountText, currency) at
 // the form→Firestore boundary so the lossy float round-trip never happens
 // on the wire. Canonical contract is `\d+(?:\.\d+)?` (no symbols, no group
-// separators) — see buildPrompt() in gemini.ts. The preprocess strips
+// separators) — see buildPrompt() in claude.ts. The preprocess strips
 // ASCII commas, full-width commas (FF0C), and spaces as a defensive
 // self-heal against LLM drift on receipts with printed thousand separators
 // like "¥10,276"; anything else (sign, scientific notation, trailing dot,
@@ -89,7 +92,7 @@ export type OcrItem = z.infer<typeof OcrItemSchema>
 // If you add a value here, mirror it in:
 //   - src/types/expense.ts ExpenseCategory
 //   - src/features/expense/components/ExpenseFormModal.tsx CATEGORIES
-//   - GEMINI_RESPONSE_SCHEMA below
+//   - OCR_RESPONSE_JSON_SCHEMA below
 export const OcrCategorySchema = z.enum([
   'food',
   'transport',
@@ -110,7 +113,7 @@ export const OcrAdjustmentKindSchema = z.enum([
 export type OcrAdjustmentKind = z.infer<typeof OcrAdjustmentKindSchema>
 
 /** OCR-only scope hint. Persisted adjustments only carry `ITEM` /
- *  `EXPENSE`; `UNKNOWN` here signals "Gemini saw an adjustment but
+ *  `EXPENSE`; `UNKNOWN` here signals "the model saw an adjustment but
  *  couldn't confidently decide if it targets a single line or the whole
  *  receipt". The client form downgrades UNKNOWN to EXPENSE by default
  *  and exposes the adjustment row so the user can switch to ITEM when
@@ -131,7 +134,7 @@ export const OcrAdjustmentSchema = z.object({
   /** Hint for the persisted scope: ITEM if the line clearly belongs to a
    *  single item (e.g. an itemised discount immediately under that item),
    *  EXPENSE if it's a receipt-wide line (subtotal-level tax, receipt-wide
-   *  service charge), UNKNOWN if Gemini can't tell. */
+   *  service charge), UNKNOWN if the model can't tell. */
   suggestedScope: OcrAdjustmentScopeSchema,
   /** Index into `items[]` when scope is ITEM. Omitted otherwise (the
    *  client resolves UNKNOWN scope to EXPENSE by default in Phase B). */
@@ -142,7 +145,7 @@ export type OcrAdjustment = z.infer<typeof OcrAdjustmentSchema>
 export const OcrIgnoredLineSchema = z.string().min(1).max(200)
 export type OcrIgnoredLine = z.infer<typeof OcrIgnoredLineSchema>
 
-// items can legitimately be empty when Gemini decides the image is
+// items can legitimately be empty when the model decides the image is
 // unreadable (per our prompt: "if unreadable, return items: [] and
 // total: 0"). The worker layer maps the empty case to a distinct error
 // so the client can show a "couldn't read" message instead of a
@@ -170,17 +173,26 @@ export const OcrResponseSchema = z.object({
    *  is still empty. */
   storeName: z.string().max(120).optional(),
   /** Inferred expense category based on store type / items. Optional —
-   *  Gemini may omit when the receipt is ambiguous. Client only applies
+   *  the model may omit when the receipt is ambiguous. Client only applies
    *  on new expenses (not edits) and only when present. */
   category: OcrCategorySchema.optional(),
 })
 export type OcrResponse = z.infer<typeof OcrResponseSchema>
 
-// JSON Schema (OpenAPI subset) we hand to Gemini's responseJsonSchema.
-// Kept separate from the Zod schema because Gemini wants plain JSON Schema,
-// not Zod. The shape mirrors OcrResponseSchema — if you add a field here,
-// add it there too.
-export const GEMINI_RESPONSE_SCHEMA = {
+// JSON Schema we hand to Claude's structured-output mode
+// (`output_config.format.json_schema.schema`). Kept separate from the Zod
+// schema because the model wants plain JSON Schema, not Zod. The shape mirrors
+// OcrResponseSchema — if you add a field here, add it there too.
+//
+// Claude structured-output rules (load-bearing):
+//   - EVERY object must carry `additionalProperties: false` (required).
+//   - Optional fields are simply omitted from `required` — NOT made nullable,
+//     and the model may omit them from the response (matches the Zod
+//     `.optional()` fields). No `null` is emitted, so Zod `.optional()` is fine.
+//   - NO `propertyOrdering` / min-max / length constraints (unsupported); the
+//     model emits required fields first, then optional — order doesn't matter
+//     to our Zod parse.
+export const OCR_RESPONSE_JSON_SCHEMA = {
   type: 'object',
   properties: {
     items: {
@@ -192,7 +204,7 @@ export const GEMINI_RESPONSE_SCHEMA = {
           amountText: { type: 'string' },
         },
         required: ['name', 'amountText'],
-        propertyOrdering: ['name', 'amountText'],
+        additionalProperties: false,
       },
     },
     adjustments: {
@@ -213,7 +225,7 @@ export const GEMINI_RESPONSE_SCHEMA = {
           suggestedTargetItemIndex: { type: 'number' },
         },
         required: ['label', 'kind', 'amountText', 'suggestedScope'],
-        propertyOrdering: ['label', 'kind', 'amountText', 'suggestedScope', 'suggestedTargetItemIndex'],
+        additionalProperties: false,
       },
     },
     ignoredLines: {
@@ -229,5 +241,5 @@ export const GEMINI_RESPONSE_SCHEMA = {
     },
   },
   required: ['items', 'adjustments', 'ignoredLines', 'totalText'],
-  propertyOrdering: ['items', 'adjustments', 'ignoredLines', 'totalText', 'currency', 'storeName', 'category'],
+  additionalProperties: false,
 } as const

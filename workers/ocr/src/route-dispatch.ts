@@ -68,7 +68,7 @@ export function json(body: unknown, status: number, headers: Record<string, stri
 }
 
 /** Per-route domain-error mapping (e.g. ExpenseValidationError →
- *  400 { error, field }, GeminiError → e.status { error }). Return
+ *  400 { error, field }, OcrError → e.status { error }). Return
  *  `null` if the thrown value isn't of the expected domain type; the
  *  dispatcher then falls through to the shared CascadeError + 500
  *  catches. `log` is the suffix appended after `[endpoint] ` in the
