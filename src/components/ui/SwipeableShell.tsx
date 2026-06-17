@@ -13,17 +13,30 @@
 // two separately-wrapped buttons (checkbox + tap-to-edit) and the
 // children-as-body shape doesn't fit that layout.
 import { Trash2 } from 'lucide-react'
-import type { ReactNode } from 'react'
+import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react'
 import {
   useSwipeRow, SWIPE_WIDTH, BG_TRANSITION, FG_TRANSITION,
 } from '@/hooks/useSwipeRow'
+
+export interface SwipeableShellRenderProps {
+  clickable: boolean
+  selectButtonProps: {
+    type: 'button'
+    disabled: boolean
+    onClick?: (e: ReactMouseEvent<HTMLButtonElement>) => void
+  }
+}
+
+type SwipeableShellChildren =
+  | ReactNode
+  | ((props: SwipeableShellRenderProps) => ReactNode)
 
 export interface SwipeableShellProps {
   /** Outer wrapper extra classes — pass the radius / border / shadow
    *  the calling feature wants (e.g. `rounded-xl border border-border`). */
   className?: string
-  /** Whole-row tap — opens edit modal. Optional: viewers omit, the row
-   *  then renders with no cursor / no click. */
+  /** Whole-row tap for legacy row bodies, or the select action exposed
+   *  to render-prop children that need a nested native button. */
   onSelect?: () => void
   /** Swipe-state controlled by parent (useSwipeOpen). When any of
    *  these are absent OR `disabled` is true, the row renders without
@@ -37,7 +50,7 @@ export interface SwipeableShellProps {
    *  rows in the expense list while the Firestore + Storage round-trip
    *  is in flight. */
   disabled?: boolean
-  children: ReactNode
+  children: SwipeableShellChildren
 }
 
 function SwipeableShell({
@@ -50,11 +63,26 @@ function SwipeableShell({
   } = useSwipeRow({ isOpen: !!isOpen, onOpen, onClose, onDelete, enabled: swipeable })
 
   const wrapperBase = 'relative overflow-hidden bg-surface'
+  const childOwnsSelect = typeof children === 'function'
+  const plainSelect = (e: ReactMouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation()
+    onSelect?.()
+  }
+  const selectButtonProps: SwipeableShellRenderProps['selectButtonProps'] = {
+    type: 'button',
+    disabled: !clickable,
+    onClick: clickable
+      ? (swipeable ? wrapTap(onSelect!) : plainSelect)
+      : undefined,
+  }
+  const content = childOwnsSelect
+    ? children({ clickable, selectButtonProps })
+    : children
 
   if (!swipeable) {
     return (
       <div
-        onClick={clickable ? onSelect : undefined}
+        onClick={!childOwnsSelect && clickable ? onSelect : undefined}
         className={[
           wrapperBase,
           'select-none',
@@ -62,7 +90,7 @@ function SwipeableShell({
           clickable ? 'cursor-pointer' : '',
         ].join(' ')}
       >
-        {children}
+        {content}
       </div>
     )
   }
@@ -100,7 +128,7 @@ function SwipeableShell({
       <div
         ref={bindFg}
         {...pointerProps}
-        onClick={clickable ? wrapTap(onSelect!) : undefined}
+        onClick={!childOwnsSelect && clickable ? wrapTap(onSelect!) : undefined}
         className={[
           'relative select-none bg-surface',
           clickable ? 'cursor-pointer' : '',
@@ -113,7 +141,7 @@ function SwipeableShell({
           WebkitTapHighlightColor: 'transparent',
         }}
       >
-        {children}
+        {content}
       </div>
     </div>
   )

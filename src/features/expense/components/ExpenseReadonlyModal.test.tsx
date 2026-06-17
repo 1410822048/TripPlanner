@@ -1,7 +1,7 @@
 // Render test for ExpenseReadonlyModal — proves the settlement-locked detail
 // view is genuinely READ-ONLY (no editable inputs / save button) and surfaces
 // the key fields incl. the foreign source amount. BottomSheet (portal/anim)
-// and AttachmentPreviewModal are stubbed; everything else renders for real.
+// is stubbed; everything else renders for real.
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
@@ -11,7 +11,6 @@ vi.mock('@/components/ui/BottomSheet', () => ({
   default: ({ isOpen, title, children }: { isOpen: boolean; title: string; children: ReactNode }) =>
     (isOpen ? <div><h2>{title}</h2>{children}</div> : null),
 }))
-vi.mock('@/features/bookings/components/AttachmentPreviewModal', () => ({ default: () => null }))
 
 import ExpenseReadonlyModal from './ExpenseReadonlyModal'
 import type { Expense } from '@/types'
@@ -40,7 +39,7 @@ function expense(overrides: Partial<Expense> = {}): Expense {
 
 describe('ExpenseReadonlyModal', () => {
   it('renders the settlement-locked detail with NO editable inputs / save button', () => {
-    render(<ExpenseReadonlyModal isOpen expense={expense()} members={members} currency="JPY" onClose={() => {}} />)
+    render(<ExpenseReadonlyModal isOpen isLocked expense={expense()} members={members} currency="JPY" onClose={() => {}} />)
     expect(screen.getByText('清算済み')).toBeTruthy()    // lock banner
     expect(screen.getByText('寿司ランチ')).toBeTruthy()  // title
     // Alice is both the payer and a split member, so she appears more than
@@ -62,5 +61,35 @@ describe('ExpenseReadonlyModal', () => {
     // Use the (separately-tested) formatter as the oracle — assert the modal
     // renders exactly what it produces for the source amount.
     expect(screen.getByText(formatMinorAmount(110000, 'TWD'))).toBeTruthy()
+  })
+
+  it('shows the target item for item-scoped adjustments', () => {
+    render(
+      <ExpenseReadonlyModal
+        isOpen currency="JPY" members={members} onClose={() => {}}
+        expense={expense({
+          items: [
+            {
+              id: 'i1',
+              name: 'サンドイッチ',
+              amountMinor: 600,
+              allocations: [{ memberId: 'a', shares: 1 }],
+            },
+          ],
+          adjustments: [
+            {
+              id: 'adj1',
+              label: 'クーポン値引',
+              kind: 'COUPON',
+              scope: 'ITEM',
+              amountMinor: 100,
+              targetItemId: 'i1',
+            },
+          ],
+        })}
+      />,
+    )
+    expect(screen.getByText('クーポン値引')).toBeTruthy()
+    expect(screen.getByText('対象: サンドイッチ')).toBeTruthy()
   })
 })

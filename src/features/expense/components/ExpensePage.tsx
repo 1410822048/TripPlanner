@@ -16,6 +16,7 @@ import { toast } from '@/shared/toast'
 import type { Expense, ExpenseCategory } from '@/types'
 import ExpenseFormModal, { type ExpenseFormResult } from './ExpenseFormModal'
 import ExpenseReadonlyModal from './ExpenseReadonlyModal'
+import AttachmentPreviewModal from '@/features/bookings/components/AttachmentPreviewModal'
 import SettlementSummary from './SettlementSummary'
 import SettlementRecordSheet, { type SettlementRecordSubmit } from './SettlementRecordSheet'
 import { useState } from 'react'
@@ -28,8 +29,14 @@ import SignInPromptModal from '@/features/auth/components/SignInPromptModal'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
 import DemoBanner from '@/components/ui/DemoBanner'
 import { useTripCurrency } from '@/hooks/useTripCurrency'
+import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { currencySymbol } from '@/utils/currency'
 import { formatMinorAmount, formatMinorNumber } from '@/utils/money'
+
+type ExpenseOverlay =
+  | { kind: 'detail'; expenseId: string }
+  | { kind: 'receipt'; expenseId: string; returnTo?: 'detail' }
+  | null
 
 export default function ExpensePage() {
   const { ctx, uid, cloudTripId, mutationTripId, isDemo, canWrite, modal, signIn } =
@@ -52,6 +59,7 @@ export default function ExpensePage() {
   const [recordTarget, setRecordTarget] = useState<
     { fromUid: string; toUid: string; amountMinor: number } | null
   >(null)
+  const [expenseOverlay, setExpenseOverlay] = useState<ExpenseOverlay>(null)
 
   // Plain derivations — React Compiler auto-memoises based on inferred
   // deps. The aggregation chain (expenses → total / categoryStats /
@@ -119,16 +127,47 @@ export default function ExpensePage() {
     for (const id of settlement.appliedExpenseIds ?? []) lockedExpenseIds.add(id)
     for (const source of settlement.appliedSources ?? []) lockedExpenseIds.add(source.expenseId)
   }
+  const expenseById = new Map(expenses.map(e => [e.id, e]))
+  const overlayExpense = expenseOverlay ? expenseById.get(expenseOverlay.expenseId) ?? null : null
+  const detailExpense = expenseOverlay?.kind === 'detail' ? overlayExpense : null
+  const detailExpenseLocked = detailExpense ? lockedExpenseIds.has(detailExpense.id) : false
+  const receiptPreviewExpense = expenseOverlay?.kind === 'receipt' ? overlayExpense : null
+  const receiptPreview = receiptPreviewExpense?.receipt
+  const receiptPreviewUrl = useAttachmentUrl(receiptPreview?.path, { kind: 'full' })
 
   if (ctx.status === 'loading') return <ExpensePageSkeleton />
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Receipt} reason="費用を記録" />
 
   const title = ctx.trip.title
   const perPersonMinor = members.length > 0 ? Math.round(totalMinor / members.length) : 0
-  const readonlyEditTarget =
-    modal.editTarget && !isOwner && lockedExpenseIds.has(modal.editTarget.id)
-      ? modal.editTarget
-      : null
+
+  function handleOpenExpenseDetail(expense: Expense) {
+    swipe.closeAll()
+    setExpenseOverlay({ kind: 'detail', expenseId: expense.id })
+  }
+
+  function handlePreviewExpenseReceipt(expense: Expense, opts?: { returnToDetail?: boolean }) {
+    if (!expense.receipt?.path) return
+    swipe.closeAll()
+    setExpenseOverlay({
+      kind: 'receipt',
+      expenseId: expense.id,
+      returnTo: opts?.returnToDetail ? 'detail' : undefined,
+    })
+  }
+
+  function handleCloseReceiptPreview() {
+    if (expenseOverlay?.kind === 'receipt' && expenseOverlay.returnTo === 'detail') {
+      setExpenseOverlay({ kind: 'detail', expenseId: expenseOverlay.expenseId })
+      return
+    }
+    setExpenseOverlay(null)
+  }
+
+  function handleEditExpenseFromDetail(expense: Expense) {
+    setExpenseOverlay(null)
+    modal.openEdit(expense)
+  }
 
   function handleSave({ input, attachment }: ExpenseFormResult) {
     if (isDemo) { modal.close(); signIn.open(); return }
@@ -337,7 +376,8 @@ export default function ExpensePage() {
             swipe={swipe}
             pendingUpdateIds={pendingUpdateIds}
             readonlyExpenseIds={isOwner ? undefined : lockedExpenseIds}
-            onSelect={canWrite ? modal.openEdit : undefined}
+            onSelect={handleOpenExpenseDetail}
+            onPreviewReceipt={handlePreviewExpenseReceipt}
             onSwipeDelete={handleSwipeDelete}
           />
         )}
@@ -350,27 +390,41 @@ export default function ExpensePage() {
           from useEffect; migrating to the key+unmount pattern removed the
           last setState-in-effect smell here. */}
       {modal.isOpen && (
-        readonlyEditTarget ? (
-          <ExpenseReadonlyModal
-            key={modal.key}
-            isOpen
-            expense={readonlyEditTarget}
-            members={members}
-            currency={currency}
-            onClose={modal.close}
-          />
-        ) : (
-          <ExpenseFormModal
-            key={modal.key}
-            isOpen
-            editTarget={modal.editTarget}
-            defaultDate={new Date().toISOString().slice(0, 10)}
-            members={members}
-            isSaving={false}
-            onClose={modal.close}
-            onSave={handleSave}
-          />
-        )
+        <ExpenseFormModal
+          key={modal.key}
+          isOpen
+          editTarget={modal.editTarget}
+          defaultDate={new Date().toISOString().slice(0, 10)}
+          members={members}
+          isSaving={false}
+          onClose={modal.close}
+          onSave={handleSave}
+        />
+      )}
+
+      {detailExpense && (
+        <ExpenseReadonlyModal
+          key={`detail-${detailExpense.id}`}
+          isOpen
+          expense={detailExpense}
+          members={members}
+          currency={currency}
+          isLocked={detailExpenseLocked}
+          onClose={() => setExpenseOverlay(null)}
+          onPreviewReceipt={expense => handlePreviewExpenseReceipt(expense, { returnToDetail: true })}
+          onEdit={canWrite && (isOwner || !detailExpenseLocked)
+            ? () => handleEditExpenseFromDetail(detailExpense)
+            : undefined}
+        />
+      )}
+
+      {receiptPreview && (
+        <AttachmentPreviewModal
+          url={receiptPreviewUrl}
+          fileType={receiptPreview.type}
+          fileName={receiptPreview.path.split('/').pop() ?? 'receipt'}
+          onClose={handleCloseReceiptPreview}
+        />
       )}
 
       {/* Settlement record sheet — opens when the receiver taps「済み」

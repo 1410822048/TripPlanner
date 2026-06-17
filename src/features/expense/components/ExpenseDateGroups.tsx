@@ -42,14 +42,14 @@ interface Props {
   pendingUpdateIds: Set<string>
   /** Settled-source expenses are view-only for non-owner editors. */
   readonlyExpenseIds?: Set<string>
-  /** Tap on an expense row. Optional — viewers omit it (the page gates
-   *  on canWrite) so SwipeableExpenseItem renders read-only. */
+  /** Tap on an expense row. Usually opens the read-first detail sheet. */
   onSelect?:     (e: Expense) => void
+  onPreviewReceipt?: (e: Expense) => void
   onSwipeDelete: (e: Expense) => void
 }
 
 export default function ExpenseDateGroups({
-  expenses, members, currency, canWrite, swipe, pendingUpdateIds, readonlyExpenseIds, onSelect, onSwipeDelete,
+  expenses, members, currency, canWrite, swipe, pendingUpdateIds, readonlyExpenseIds, onSelect, onPreviewReceipt, onSwipeDelete,
 }: Props) {
   const grouped = groupBy(expenses, e => e.date)
   const dates = Object.keys(grouped).sort((a, b) => (a < b ? 1 : -1))
@@ -114,10 +114,10 @@ export default function ExpenseDateGroups({
             {open && (
               <div className="flex flex-col gap-1.5">
                 {items.map(e => {
-                  // Viewer mode skips swipe affordance + delete callback so
-                  // SwipeableExpenseItem renders a plain tap-to-edit row.
+                  // Viewer mode skips swipe affordance + delete callback but
+                  // still allows row tap for read-only details.
                   const isReadonly = readonlyExpenseIds?.has(e.id) ?? false
-                  const canSelectRow = canWrite && !!onSelect
+                  const canSelectRow = !!onSelect
                   const canMutateRow = canWrite && !isReadonly
                   const swipeProps = canMutateRow ? swipe.bindRow(e.id) : {}
                   return (
@@ -132,6 +132,7 @@ export default function ExpenseDateGroups({
                       isLocked={isReadonly}
                       {...swipeProps}
                       onSelect={canSelectRow ? () => { swipe.closeAll(); onSelect(e) } : undefined}
+                      onPreviewReceipt={e.receipt?.path && onPreviewReceipt ? () => { swipe.closeAll(); onPreviewReceipt(e) } : undefined}
                       onDelete={canMutateRow ? () => onSwipeDelete(e) : undefined}
                     />
                   )

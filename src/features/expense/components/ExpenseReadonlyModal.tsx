@@ -1,11 +1,9 @@
-import { useState } from 'react'
-import { FileText, Image as ImageIcon, Lock } from 'lucide-react'
+import { FileText, Image as ImageIcon, Lock, Pencil } from 'lucide-react'
 import type { Expense } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import BottomSheet from '@/components/ui/BottomSheet'
 import FormField from '@/components/ui/FormField'
 import MemberAvatar from '@/components/ui/MemberAvatar'
-import AttachmentPreviewModal from '@/features/bookings/components/AttachmentPreviewModal'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { CATEGORY_ICON } from '@/shared/categoryMeta'
 import { adjustmentSign } from '@tripmate/expense-materialize'
@@ -18,7 +16,10 @@ interface Props {
   expense:  Expense
   members:  TripMember[]
   currency: string
+  isLocked?: boolean
   onClose:  () => void
+  onEdit?:   () => void
+  onPreviewReceipt?: (expense: Expense) => void
 }
 
 function formatExpenseDate(date: string): string {
@@ -27,26 +28,42 @@ function formatExpenseDate(date: string): string {
 }
 
 export default function ExpenseReadonlyModal({
-  isOpen, expense, members, currency, onClose,
+  isOpen, expense, members, currency, isLocked = false, onClose, onEdit, onPreviewReceipt,
 }: Props) {
-  const [previewOpen, setPreviewOpen] = useState(false)
   const CategoryIcon = CATEGORY_ICON[expense.category]
   const memberById = new Map(members.map(member => [member.id, member]))
+  const itemNameById = new Map((expense.items ?? []).map(item => [item.id, item.name]))
   const payer = memberById.get(expense.paidBy)
   const receipt = expense.receipt
   // path-only: row thumbnail reads ONLY thumbPath (no full-path fallback —
   // a PDF / thumb-less receipt shows the icon, never pulls the full blob
-  // into the thumb LRU). The full path resolves only while the preview
-  // modal is open, via kind:'full'.
+  // into the thumb LRU). Full-size preview is owned by ExpensePage so row
+  // thumbnails and this detail surface share one overlay state machine.
   const receiptPreviewUrl = useAttachmentUrl(receipt?.thumbPath, { kind: 'thumb' })
-  const receiptFullUrl    = useAttachmentUrl(previewOpen ? receipt?.path : undefined, { kind: 'full' })
 
   return (
-    <BottomSheet isOpen={isOpen} onClose={onClose} title="費用詳細">
-      <div className="flex items-center gap-2 rounded-input border border-border bg-app px-3 py-2 text-[12px] font-semibold text-muted">
-        <Lock size={13} strokeWidth={2.2} className="shrink-0" />
-        <span>清算済み</span>
-      </div>
+    <BottomSheet
+      isOpen={isOpen}
+      onClose={onClose}
+      title="費用詳細"
+      footer={onEdit ? (
+        <button
+          type="button"
+          onClick={onEdit}
+          className="w-full h-12 rounded-chip border-none bg-teal text-white text-[14px] font-bold tracking-[0.04em] flex items-center justify-center gap-2 cursor-pointer transition-transform active:scale-[0.99]"
+          style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
+        >
+          <Pencil size={15} strokeWidth={2.3} />
+          編集
+        </button>
+      ) : undefined}
+    >
+      {isLocked && (
+        <div className="flex items-center gap-2 rounded-input border border-border bg-app px-3 py-2 text-[12px] font-semibold text-muted">
+          <Lock size={13} strokeWidth={2.2} className="shrink-0" />
+          <span>清算済み</span>
+        </div>
+      )}
 
       <div className="rounded-input border border-border bg-surface px-3 py-3">
         <div className="flex items-start gap-3">
@@ -137,11 +154,22 @@ export default function ExpenseReadonlyModal({
           <div className="rounded-input border border-border bg-surface overflow-hidden divide-y divide-border">
             {expense.adjustments.map(adjustment => {
               const sign = adjustmentSign(adjustment.kind)
+              const targetItemName =
+                adjustment.scope === 'ITEM' && adjustment.targetItemId
+                  ? itemNameById.get(adjustment.targetItemId) ?? '品目不明'
+                  : null
               return (
-                <div key={adjustment.id} className="flex items-center gap-2 px-3 py-2">
-                  <span className="flex-1 min-w-0 text-[13px] font-medium text-ink truncate">
-                    {adjustment.label}
-                  </span>
+                <div key={adjustment.id} className="flex items-start gap-2 px-3 py-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] font-medium text-ink truncate">
+                      {adjustment.label}
+                    </div>
+                    {targetItemName && (
+                      <div className="mt-0.5 text-[10.5px] font-semibold text-muted truncate">
+                        対象: {targetItemName}
+                      </div>
+                    )}
+                  </div>
                   <span className="text-[13px] font-bold text-ink tabular-nums">
                     {sign < 0 ? '-' : '+'}{formatMinorAmount(adjustment.amountMinor, currency)}
                   </span>
@@ -156,8 +184,8 @@ export default function ExpenseReadonlyModal({
         <FormField label="レシート">
           <button
             type="button"
-            onClick={() => receipt.path && setPreviewOpen(true)}
-            disabled={!receipt.path}
+            onClick={() => receipt.path && onPreviewReceipt?.(expense)}
+            disabled={!receipt.path || !onPreviewReceipt}
             className="w-full flex items-center gap-3 rounded-input border border-border bg-app px-3 py-2 text-left cursor-pointer disabled:cursor-default disabled:opacity-70 hover:border-muted transition-colors"
           >
             <div className="w-10 h-10 rounded-md bg-tile shrink-0 overflow-hidden flex items-center justify-center">
@@ -184,14 +212,6 @@ export default function ExpenseReadonlyModal({
         </FormField>
       )}
 
-      {previewOpen && receipt?.path && (
-        <AttachmentPreviewModal
-          url={receiptFullUrl}
-          fileType={receipt.type}
-          fileName={receipt.path.split('/').pop() ?? 'receipt'}
-          onClose={() => setPreviewOpen(false)}
-        />
-      )}
     </BottomSheet>
   )
 }
