@@ -41,7 +41,7 @@ export default function SplitsSection({
     <FormField label="割り勘" error={error}>
       <div className="flex flex-col gap-2">
         {/* 割勘方式切換 */}
-        <div className="flex gap-1 p-1 rounded-card bg-app border border-border">
+        <div className="flex gap-1 p-1 rounded-full bg-app border border-border">
           {([
             { value: 'equal',  label: '均等' },
             { value: 'custom', label: 'カスタム' },
@@ -53,7 +53,7 @@ export default function SplitsSection({
                 type="button"
                 onClick={() => onSwitchMode(m.value)}
                 className={[
-                  'flex-1 h-8 rounded-[8px] text-[12px] font-semibold cursor-pointer transition-all',
+                  'flex-1 h-8 rounded-full text-[12px] font-semibold cursor-pointer transition-all',
                   active ? 'bg-surface text-ink shadow-[0_1px_3px_rgba(0,0,0,0.08)]' : 'bg-transparent text-muted',
                 ].join(' ')}
               >
