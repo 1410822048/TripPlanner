@@ -138,7 +138,8 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 | `useAttachment` | 單一附件(file + existing url)的 tri-state lifecycle |
 | `useBlobUrl` | 唯一一個合理用 useEffect+useState 的 blob URL 生命週期 hook |
 | `useSwipeRow` / `useSwipeOpen` | 滑刪 row 手勢 + list-level 「目前打開的 row」狀態(haptic light/medium/success 觸發) |
-| `useOcrFlow` | OCR pipeline(compressImage → worker → onSuccess);loading 顯示 elapsed seconds + 8s 慢路徑切換文案 |
+| `useOcrFlow` | OCR pipeline(compressImage → worker → onSuccess);loading 顯示 elapsed seconds + 8s 慢路徑切換文案。被 `useReceiptOcr` 包覆 |
+| `useReceiptOcr` | ExpenseFormModal 的 OCR 編排層:組合 `useOcrFlow` + receipt source machine(`sourceKey`/`analyzedSourceKey` 驅動「明細を読み取る↔もう一度読み取る」CTA)+ compare 子功能 + camera/upload pick handlers + `pendingSourceKey` 記帳。回傳分層 `{ status, caps, compare, handlers }`。form-apply(`applyOcrResultToForm`)與 sibling clear(att/items/adjustments)留在 component |
 | `useExpenseItems` | items state machine + chip 分擔者 |
 | `useSettlements` / `useCreateSettlement` / `useDeleteSettlement` | Settlement 記錄 CRUD + realtime listener。**受取人(toUid)唯一可建立**(rule + UI 雙層 gate);delete 由 `settledBy` 或 trip owner 觸發。算法層在 `services/settlement.ts` 的 `computeBalancesFull` 回 `{ balances, orphans }` |
 | `useFeatureBadges` | **AppLayout 內 5 個 always-on Firestore listener**,對比 `lastViewedStore` 算 unread,驅動 BottomNav 紅點 |
@@ -422,7 +423,7 @@ cd workers/ocr && npx wrangler tail        # Worker 即時 log
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **TripPlanner** (3956 symbols, 10077 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **TripPlanner** (3980 symbols, 10112 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
