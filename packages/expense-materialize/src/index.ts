@@ -58,6 +58,11 @@ export type AdjustmentKind =
  *  wrong scope. */
 export type AdjustmentScope = 'ITEM' | 'EXPENSE'
 
+export interface MaterializeItemAllocation {
+  memberId: string
+  shares:   number
+}
+
 /** Minimum item shape the materializer needs. `id` is required at
  *  this layer — ITEM-scope adjustments target by id, and per-item
  *  effective amounts (after step 2) are keyed by id. Phase B made
@@ -67,7 +72,7 @@ export type AdjustmentScope = 'ITEM' | 'EXPENSE'
 export interface MaterializeItem {
   id:          string
   amountMinor: number   // positive integer minor units
-  assignees:   string[] // memberIds; ≥1
+  allocations: MaterializeItemAllocation[] // memberIds + positive integer weights; >=1
 }
 
 /** Minimum adjustment shape. `targetItemId` is required iff
@@ -82,9 +87,9 @@ export interface MaterializeAdjustment {
 }
 
 /** Member uids participating in this expense's split universe. The
- *  materializer rejects any assignee not in this list — callers
+ *  materializer rejects any allocation member not in this list — callers
  *  (client form / Worker validation) hand in the active trip members
- *  so the materializer can catch stale-assignee bugs. */
+ *  so the materializer can catch stale allocation bugs. */
 export interface MaterializeInput {
   items:       MaterializeItem[]
   adjustments: MaterializeAdjustment[]
@@ -115,9 +120,10 @@ export interface MaterializeSplitContribution {
  *  messages without parsing free-form `message` strings. */
 export type MaterializeErrorCode =
   | 'ITEM_NOT_POSITIVE_INTEGER'
-  | 'ITEM_NO_ASSIGNEES'
-  | 'NON_MEMBER_ASSIGNEE'
-  | 'DUPLICATE_ITEM_ASSIGNEE'
+  | 'ITEM_NO_ALLOCATIONS'
+  | 'ITEM_ALLOCATION_NOT_POSITIVE_INTEGER'
+  | 'NON_MEMBER_ALLOCATION'
+  | 'DUPLICATE_ITEM_ALLOCATION_MEMBER'
   | 'DUPLICATE_ITEM_ID'
   | 'ADJUSTMENT_NOT_POSITIVE_INTEGER'
   | 'ADJUSTMENT_UNKNOWN_KIND'
@@ -245,27 +251,22 @@ function apportionByWeight(
   return base
 }
 
-/** Deterministic equal split for integer minor-unit amounts. Mirrors
- *  `src/features/expense/utils.ts::splitEqually` exactly — same
- *  Math.floor + abs + sign-multiplication idiom — so Phase B can
- *  retire the client-side copy without behavioral drift.
+/** Deterministic weighted split for integer minor-unit amounts.
  *
- *  Remainder lands on the FIRST `rem` members of the input array,
- *  not on a sorted view. Caller-provided assignee ordering is the
- *  tie-break; both client form and Worker decode hand assignees in
- *  the same order (the order they were minted into the doc), so
- *  client preview and Worker recompute land on the same byte. */
-function splitEqually(total: number, memberIds: string[]): MaterializeSplit[] {
-  if (!memberIds.length) return []
+ *  `shares=1` for every member is the old equal split. `shares=3/1`
+ *  models quantity allocation without duplicating member ids. Remainder
+ *  uses largest-remainder apportionment with allocation order as the
+ *  tie-break, so client preview and Worker recompute stay byte-stable. */
+function splitByAllocations(total: number, allocations: MaterializeItemAllocation[]): MaterializeSplit[] {
+  if (!allocations.length) return []
   const intTotal = Math.round(total)
   if (intTotal === 0) return []
   const sign     = intTotal < 0 ? -1 : 1
   const absTotal = Math.abs(intTotal)
-  const base     = Math.floor(absTotal / memberIds.length)
-  const rem      = absTotal - base * memberIds.length
-  return memberIds.map((id, i) => ({
-    memberId:    id,
-    amountMinor: sign * (base + (i < rem ? 1 : 0)),
+  const parts    = apportionByWeight(absTotal, allocations.map(a => a.shares))
+  return allocations.map((allocation, i) => ({
+    memberId:    allocation.memberId,
+    amountMinor: sign * parts[i]!,
   }))
 }
 
@@ -275,8 +276,9 @@ function splitEqually(total: number, memberIds: string[]): MaterializeSplit[] {
  * Convert (items, adjustments, members) into per-member splits.
  *
  * Pipeline:
- *   1. Validate inputs (positive items, non-empty assignees, member
- *      membership, no duplicate item ids, adjustment shape).
+ *   1. Validate inputs (positive items, non-empty allocations, member
+ *      membership, positive shares, no duplicate item ids, adjustment
+ *      shape).
  *   2. Apply ITEM-scope adjustments to per-item effective amounts.
  *      Throws OVER_DISCOUNT_ITEM if any item's effective < 0.
  *   3. Compute the net EXPENSE-scope delta and apportion it across
@@ -287,11 +289,11 @@ function splitEqually(total: number, memberIds: string[]): MaterializeSplit[] {
  *      a negative aggregate exceeding total weight throws
  *      OVER_DISCOUNT_EXPENSE upfront. Positive deltas (surcharges)
  *      have no per-item cap.
- *   4. Equal-split each item's effective amount across its assignees
+ *   4. Weighted-split each item's effective amount across its allocations
  *      and aggregate per-member.
  *   5. Drop zero-amount members, return.
  *
- * Determinism: input order of items and assignees is preserved
+ * Determinism: input order of items and allocations is preserved
  * through apportionment and per-item split, so client preview and
  * Worker recompute produce identical byte sequences given identical
  * inputs.
@@ -307,7 +309,7 @@ export function materializeExpenseSplitContributions(input: MaterializeInput): M
   // require `Number.isInteger` so a payload that ships fractional
   // values (a Phase-B bug, a hand-edited Firestore doc, a botched
   // currency conversion) fails loudly here instead of being silently
-  // rounded inside `splitEqually`.
+  // rounded inside split math.
   const itemById = new Map<string, MaterializeItem>()
   const memberSet = new Set(members)
   for (const item of items) {
@@ -317,34 +319,33 @@ export function materializeExpenseSplitContributions(input: MaterializeInput): M
         `item ${item.id}: amountMinor must be a positive integer minor-unit amount, got ${item.amountMinor}`,
       )
     }
-    if (item.assignees.length === 0) {
+    if (item.allocations.length === 0) {
       throw new MaterializeError(
-        'ITEM_NO_ASSIGNEES',
-        `item ${item.id}: at least one assignee required`,
+        'ITEM_NO_ALLOCATIONS',
+        `item ${item.id}: at least one allocation required`,
       )
     }
-    // Same-uid twice in one item's assignees would let `splitEqually`
-    // treat the duplicate as a second seat — that member's effective
-    // share grows by `amountMinor / assignees.length` per duplicate,
-    // biasing allocation while still passing the member-membership
-    // check. The Worker authoritative recompute makes that bias
-    // server-canonical, so the gate has to live here before split math
-    // runs.
-    const seenAssignee = new Set<string>()
-    for (const uid of item.assignees) {
-      if (!memberSet.has(uid)) {
+    const seenAllocationMember = new Set<string>()
+    for (const allocation of item.allocations) {
+      if (!Number.isSafeInteger(allocation.shares) || allocation.shares <= 0) {
         throw new MaterializeError(
-          'NON_MEMBER_ASSIGNEE',
-          `item ${item.id}: assignee ${uid} is not a trip member`,
+          'ITEM_ALLOCATION_NOT_POSITIVE_INTEGER',
+          `item ${item.id}: allocation shares must be a positive integer, got ${allocation.shares}`,
         )
       }
-      if (seenAssignee.has(uid)) {
+      if (!memberSet.has(allocation.memberId)) {
         throw new MaterializeError(
-          'DUPLICATE_ITEM_ASSIGNEE',
-          `item ${item.id}: assignee ${uid} listed more than once`,
+          'NON_MEMBER_ALLOCATION',
+          `item ${item.id}: allocation member ${allocation.memberId} is not a trip member`,
         )
       }
-      seenAssignee.add(uid)
+      if (seenAllocationMember.has(allocation.memberId)) {
+        throw new MaterializeError(
+          'DUPLICATE_ITEM_ALLOCATION_MEMBER',
+          `item ${item.id}: allocation member ${allocation.memberId} listed more than once`,
+        )
+      }
+      seenAllocationMember.add(allocation.memberId)
     }
     if (itemById.has(item.id)) {
       throw new MaterializeError(
@@ -458,14 +459,14 @@ export function materializeExpenseSplitContributions(input: MaterializeInput): M
     }
   }
 
-  // Step 4: split each item's effective amount across its assignees,
+  // Step 4: split each item's effective amount across its allocations,
   // aggregate per-member. Preserve `members` order in the output so
   // both sides serialize identically.
   const contributions: MaterializeSplitContribution[] = []
   for (const item of items) {
     const effective = itemEffective.get(item.id) ?? 0
     if (effective === 0) continue
-    const splits = splitEqually(effective, item.assignees)
+    const splits = splitByAllocations(effective, item.allocations)
     for (const { memberId, amountMinor } of splits) {
       contributions.push({ itemId: item.id, memberId, amountMinor })
     }
@@ -515,7 +516,7 @@ export function canonicalizeSplits(splits: MaterializeSplit[]): string {
 // create + money/date update. Keeping per-line allocation here keeps
 // the financial attribution boundary Worker-authoritative — a
 // totals-only validation would let an attacker rearrange
-// item→assignee mapping while keeping the source total constant,
+// item→allocation mapping while keeping the source total constant,
 // biasing settlement debt edges.
 // See memory: per-line-authority-over-totals-only-validation.
 
@@ -525,7 +526,7 @@ export function canonicalizeSplits(splits: MaterializeSplit[]): string {
 export interface ConvertAndMaterializeSourceItem {
   id:          string
   amountMinor: number   // positive integer source-currency minor units
-  assignees:   string[]
+  allocations: MaterializeItemAllocation[]
 }
 
 /** Adjustment shape in source currency. Sign comes from `kind` exactly
@@ -871,7 +872,7 @@ export function convertAndMaterializeFromSource(
   const tripItems: MaterializeItem[] = converted.items.map((item, i) => ({
     id:          item.id,
     amountMinor: item.amountMinor,
-    assignees:   input.sourceItems[i]!.assignees,
+    allocations: input.sourceItems[i]!.allocations,
   }))
   const tripAdjustments: MaterializeAdjustment[] = converted.adjustments.map(adj => ({
     id:           adj.id,

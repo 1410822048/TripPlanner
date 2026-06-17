@@ -53,7 +53,8 @@ interface LineItemsSectionProps {
   onRemoveItem:          (index: number) => void
   onSetItemName:         (index: number, value: string) => void
   onSetItemAmount:       (index: number, value: string) => void
-  onToggleItemAssignee:  (index: number, memberId: string) => void
+  onToggleItemAllocation:    (index: number, memberId: string) => void
+  onSetItemAllocationShares: (index: number, memberId: string, shares: number) => void
   onAddAdjustment:       () => void
   onRemoveAdjustment:    (id: string) => void
   onSetAdjustmentLabel:  (id: string, value: string) => void
@@ -67,7 +68,7 @@ export default function LineItemsSection({
   error, members, currency, tripCurrency, symbol,
   items, adjustments, amountMinor, effectiveItemsTotal, itemsDiff,
   foreignLinePreview, adjustmentAmountValue,
-  onAddItem, onRemoveItem, onSetItemName, onSetItemAmount, onToggleItemAssignee,
+  onAddItem, onRemoveItem, onSetItemName, onSetItemAmount, onToggleItemAllocation, onSetItemAllocationShares,
   onAddAdjustment, onRemoveAdjustment, onSetAdjustmentLabel, onSetAdjustmentAmount,
   onSetAdjustmentKind, onSetAdjustmentScope, onSetAdjustmentTarget,
 }: LineItemsSectionProps) {
@@ -91,7 +92,8 @@ export default function LineItemsSection({
               convertedItemAmount={foreignLinePreview?.itemAmountById.get(it.id)}
               onSetName={onSetItemName}
               onSetAmount={onSetItemAmount}
-              onToggleAssignee={onToggleItemAssignee}
+              onToggleAllocation={onToggleItemAllocation}
+              onSetAllocationShares={onSetItemAllocationShares}
               onRemove={onRemoveItem}
             />
           ))}

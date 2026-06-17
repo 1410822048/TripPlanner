@@ -2,8 +2,7 @@
 // Selectable chip showing a member's avatar + label. Used wherever a
 // form needs the user to pick one or many trip members:
 //   - paidBy picker on expense form (single-select, size='md')
-//   - item-assignee chip strip on by-item split mode (multi-select,
-//     size='sm', within a card)
+//   - compact member picker rows (multi-select, size='sm', within a card)
 //
 // Two sizes encode visual hierarchy:
 //   - md: primary form decision, transparent background, prominent text
@@ -32,7 +31,7 @@ const SIZES = {
   sm: {
     btn:    'gap-1 pl-0.5 pr-2 py-0.5 text-[11px]',
     avatar: 'w-[18px] h-[18px] text-[9px]',
-    // Item-assignee chips sit inside a card → tint the inactive bg so
+    // Compact member chips sit inside a card → tint the inactive bg so
     // they read as "interactive within container" rather than ghosted.
     inactive: 'bg-app text-muted',
   },

@@ -21,6 +21,7 @@ import {
   type ExpenseAdjustment,
   type ExpenseCategory,
   type ExpenseItem,
+  type ExpenseItemAllocation,
   type ExpenseSplit,
   type SourceExpenseAdjustment,
   type SourceExpenseItem,
@@ -52,7 +53,7 @@ export interface ExpenseFormDraftItem {
   id:          string
   name:        string
   amountMinor: number
-  assignees:   string[]
+  allocations: ExpenseItemAllocation[]
 }
 
 /** buildExpenseFormResult 的純輸入 —— 對應舊 validate() 從 component scope
@@ -101,14 +102,15 @@ export type BuildExpenseFormResult =
  *  EXHAUSTIVE — when @tripmate/expense-materialize adds a code, TypeScript
  *  forces a copy entry here rather than letting a new error get swallowed by a
  *  default. Most codes are gated by the form's own validation before
- *  materialize runs (no-assignee / zero amounts / dangling target / sum
+ *  materialize runs (no-allocation / zero amounts / dangling target / sum
  *  mismatch); the genuinely form-reachable one is OVER_DISCOUNT_ITEM, the rest
  *  are defense-in-depth. Kept local — only buildExpenseFormResult consumes it. */
 const MATERIALIZE_ERROR_COPY = {
   ITEM_NOT_POSITIVE_INTEGER:              '明細金額を確認してください',
-  ITEM_NO_ASSIGNEES:                      '明細の割り当て先を選択してください',
-  NON_MEMBER_ASSIGNEE:                    '明細の割り当て先に参加者以外が含まれています',
-  DUPLICATE_ITEM_ASSIGNEE:                '同じ参加者が重複しています',
+  ITEM_NO_ALLOCATIONS:                    '明細の割り当て先を選択してください',
+  ITEM_ALLOCATION_NOT_POSITIVE_INTEGER:   '明細の分担数を確認してください',
+  NON_MEMBER_ALLOCATION:                  '明細の割り当て先に参加者以外が含まれています',
+  DUPLICATE_ITEM_ALLOCATION_MEMBER:       '同じ参加者が重複しています',
   DUPLICATE_ITEM_ID:                      '明細IDが重複しています',
   ADJUSTMENT_NOT_POSITIVE_INTEGER:        '割引・調整額を確認してください',
   ADJUSTMENT_UNKNOWN_KIND:                '割引・調整の種類を確認してください',
@@ -192,7 +194,7 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
   // 永遠送 `items`(即使空陣列)以覆寫先前存的 items。在外幣模式這些是
   // SOURCE 幣別 minor;下方 convert-and-materialize 會升格成 trip-currency。
   let resultItems: ExpenseItem[] = items.map(it => ({
-    id: it.id, name: it.name, amountMinor: it.amountMinor, assignees: it.assignees,
+    id: it.id, name: it.name, amountMinor: it.amountMinor, allocations: it.allocations,
   }))
   let resultSourceSplits: SourceExpenseSplit[] = []
   const resultAdjustments: ExpenseAdjustment[] = hasItems
@@ -214,7 +216,7 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
   if (hasItems) {
     // 嚴格 by-item 驗證:每行需有分擔者 + 名稱 + 正金額,調整需有標籤 +
     // 正金額 + ITEM scope 需指到存在的行,且 effective 合計 === 請求書合計。
-    const noAssigneeIdx = items.findIndex(it => it.assignees.length === 0)
+    const noAllocationIdx = items.findIndex(it => it.allocations.length === 0)
     const blankNameIdx  = items.findIndex(it => !it.name.trim())
     const zeroAmountIdx = items.findIndex(it => it.amountMinor <= 0)
     const blankAdjustmentIdx = resultAdjustments.findIndex(adj => !adj.label)
@@ -222,8 +224,8 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
     const danglingAdjustmentIdx = resultAdjustments.findIndex(adj =>
       adj.scope === 'ITEM' && !items.some(it => it.id === adj.targetItemId),
     )
-    if (noAssigneeIdx >= 0) {
-      e.items = `行 ${noAssigneeIdx + 1}：分担者を選択してください`
+    if (noAllocationIdx >= 0) {
+      e.items = `行 ${noAllocationIdx + 1}：分担者を選択してください`
     } else if (blankNameIdx >= 0) {
       e.items = `行 ${blankNameIdx + 1}：項目名を入力してください`
     } else if (zeroAmountIdx >= 0) {
@@ -333,7 +335,7 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
     const sourceItemsForMaterialize: ConvertAndMaterializeSourceItem[] = resultItems.map(it => ({
       id:          it.id,
       amountMinor: it.amountMinor,
-      assignees:   it.assignees,
+      allocations: it.allocations,
     }))
     const sourceAdjustmentsForMaterialize: ConvertAndMaterializeSourceAdjustment[] = resultAdjustments.map(a => ({
       id:           a.id,
@@ -376,7 +378,7 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
       id:          mi.id,
       name:        resultItems[i]!.name,
       amountMinor: mi.amountMinor,
-      assignees:   mi.assignees,
+      allocations: mi.allocations,
     }))
     const tripAdjustments: ExpenseAdjustment[] = converted.adjustments.map((ma, i) => {
       const srcLabel = resultAdjustments[i]!.label
@@ -404,7 +406,7 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
       id:                it.id,
       name:              it.name,
       sourceAmountMinor: it.amountMinor,
-      assignees:         it.assignees,
+      allocations:       it.allocations,
     }))
     const sourceAdjustmentsOut: SourceExpenseAdjustment[] = resultAdjustments.map(a =>
       a.scope === 'ITEM'

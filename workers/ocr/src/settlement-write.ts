@@ -219,23 +219,25 @@ function parseCreatedAtMs(fields: Record<string, FsValue>): number {
   return Number.isFinite(ms) ? ms : 0
 }
 
-function readStringArray(value: FsValue | undefined): string[] {
-  const values = (value as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []
-  return values
-    .map(v => v.stringValue)
-    .filter((s): s is string => typeof s === 'string' && s !== '')
-}
-
 function decodePairExpenseForSettlement(doc: TxReadDoc): PairExpenseForSettlement {
   const core = decodeExpenseForDomain(doc.fields)
   const itemArr = (doc.fields.items as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values
   const items = itemArr?.map(v => {
     const inner = v.mapValue?.fields ?? {}
+    const allocationArr = (inner.allocations as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []
     return {
       id:          readString(inner, 'id') ?? '',
       name:        readString(inner, 'name') ?? '',
       amountMinor: Number(inner.amountMinor?.integerValue ?? 0),
-      assignees:   readStringArray(inner.assignees),
+      allocations: allocationArr
+        .map(allocation => {
+          const fields = allocation.mapValue?.fields ?? {}
+          return {
+            memberId: readString(fields, 'memberId') ?? '',
+            shares:   Number((fields.shares as { integerValue?: string } | undefined)?.integerValue ?? 0),
+          }
+        })
+        .filter(allocation => allocation.memberId !== ''),
     }
   })
   const adjArr = (doc.fields.adjustments as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []

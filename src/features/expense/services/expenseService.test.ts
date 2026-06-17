@@ -490,10 +490,10 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
       amountMinor: 1570,
       currency:    'JPY',
       splits:      [{ memberId: 'editor-uid', amountMinor: 1570 }],
-      items:       [{ id: 'item-1', name: 'Coffee', amountMinor: 1570, assignees: ['editor-uid'] }],
+      items:       [{ id: 'item-1', name: 'Coffee', amountMinor: 1570, allocations: [{ memberId: 'editor-uid', shares: 1 }] }],
       sourceCurrency:    'USD',
       sourceAmountMinor: 1000,
-      sourceItems:       [{ id: 'item-1', name: 'Coffee', sourceAmountMinor: 1000, assignees: ['editor-uid'] }],
+      sourceItems:       [{ id: 'item-1', name: 'Coffee', sourceAmountMinor: 1000, allocations: [{ memberId: 'editor-uid', shares: 1 }] }],
       sourceAdjustments: [],
     } satisfies CreateExpenseInput
 

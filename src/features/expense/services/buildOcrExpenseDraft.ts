@@ -94,7 +94,7 @@ export function buildOcrExpenseDraft(
 
   // Phase 2:全部 parse 成功 —— 組裝草稿。先 mint item id,讓 OCR 帶的
   // ITEM-scope adjustment 能在同一輪把 suggestedTargetItemIndex →
-  // targetItemId 解析掉。items 一律 assignees=[](Phase B 契約:分擔者
+  // targetItemId 解析掉。items 一律 allocations=[](分擔者/份數
   // 是使用者刻意動作)。
   const mintedItemIds = result.items.map(() => newId())
   const items: FormItem[] = result.items.map((it, idx) => ({
@@ -102,7 +102,7 @@ export function buildOcrExpenseDraft(
     name:        it.name,
     amountMinor: itemMinors[idx]!,
     amountText:  formatMinorForInput(itemMinors[idx]!, ocrCurrency),
-    assignees:   [],
+    allocations: [],
   }))
 
   // OCR adjustment draft → persisted shape. Only explicit EXPENSE stays

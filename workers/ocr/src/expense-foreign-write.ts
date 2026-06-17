@@ -435,8 +435,17 @@ export async function buildForeignUpdateWrite(args: {
                 id:          { stringValue:  item.id },
                 name:        { stringValue:  item.name },
                 amountMinor: { integerValue: String(item.amountMinor) },
-                assignees: {
-                  arrayValue: { values: item.assignees.map(uid => ({ stringValue: uid })) },
+                allocations: {
+                  arrayValue: {
+                    values: item.allocations.map(allocation => ({
+                      mapValue: {
+                        fields: {
+                          memberId: { stringValue: allocation.memberId },
+                          shares:   { integerValue: String(allocation.shares) },
+                        },
+                      },
+                    })),
+                  },
                 },
               },
             },

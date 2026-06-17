@@ -78,7 +78,7 @@ export interface SettlementLineage {
 }
 
 /** Every uid that participates in an expense (payer + split members + item
- *  assignees), de-duped in first-seen order. Feeds the per-line
+ *  allocation members), de-duped in first-seen order. Feeds the per-line
  *  materializer's `members` roster. */
 function membersForExpense(expense: PairExpenseForSettlement): string[] {
   const out: string[] = []
@@ -91,7 +91,7 @@ function membersForExpense(expense: PairExpenseForSettlement): string[] {
   add(expense.paidBy)
   for (const split of expense.splits) add(split.memberId)
   for (const item of expense.items ?? []) {
-    for (const uid of item.assignees) add(uid)
+    for (const allocation of item.allocations) add(allocation.memberId)
   }
   return out
 }
@@ -122,7 +122,7 @@ export function sourceUnitsForDirection(
           items: items.map(item => ({
             id:          item.id,
             amountMinor: item.amountMinor,
-            assignees:   item.assignees,
+            allocations: item.allocations,
           })),
           adjustments: expense.adjustments.map(adj => {
             const out: MaterializeAdjustment = {

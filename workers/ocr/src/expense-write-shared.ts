@@ -28,7 +28,7 @@ export function decodeExpense(fields: Record<string, FsValue>): {
   currency:     string
   paidBy:       string
   splits:       { memberId: string; amountMinor: number }[]
-  items?:       { id: string; amountMinor: number; assignees: string[] }[]
+  items?:       { id: string; amountMinor: number; allocations: { memberId: string; shares: number }[] }[]
   adjustments?: { id: string; kind: string; scope: string; amountMinor: number; targetItemId?: string }[]
 } {
   const amountMinor = Number(fields.amountMinor?.integerValue ?? 0)
@@ -45,11 +45,19 @@ export function decodeExpense(fields: Record<string, FsValue>): {
   const itemArr = (fields.items as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values
   const items = itemArr ? itemArr.map(v => {
     const inner = v.mapValue?.fields ?? {}
-    const aArr = (inner.assignees as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []
+    const allocationArr = (inner.allocations as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []
     return {
       id:          readString(inner, 'id') ?? '',
       amountMinor: Number(inner.amountMinor?.integerValue ?? 0),
-      assignees:   aArr.map(a => a.stringValue ?? '').filter(s => s !== ''),
+      allocations: allocationArr
+        .map(v => {
+          const allocationFields = v.mapValue?.fields ?? {}
+          return {
+            memberId: readString(allocationFields, 'memberId') ?? '',
+            shares:   Number((allocationFields.shares as { integerValue?: string } | undefined)?.integerValue ?? 0),
+          }
+        })
+        .filter(a => a.memberId !== ''),
     }
   }) : undefined
   const adjArr = (fields.adjustments as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values

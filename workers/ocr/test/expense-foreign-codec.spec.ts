@@ -26,8 +26,8 @@ import type { FxSnapshot } from '../src/fx-rate'
 
 describe('encode/decode sourceItems', () => {
   const items: ForeignSourceItem[] = [
-    { id: 'i1', name: 'コーヒー', sourceAmountMinor: 1234, assignees: ['u1', 'u2'] },
-    { id: 'i2', name: 'ケーキ',   sourceAmountMinor: 500,  assignees: ['u1'] },
+    { id: 'i1', name: 'コーヒー', sourceAmountMinor: 1234, allocations: [{ memberId: 'u1', shares: 1 }, { memberId: 'u2', shares: 1 }] },
+    { id: 'i2', name: 'ケーキ',   sourceAmountMinor: 500,  allocations: [{ memberId: 'u1', shares: 1 }] },
   ]
 
   it('encodes to the Firestore REST array-of-maps shape', () => {
@@ -38,13 +38,18 @@ describe('encode/decode sourceItems', () => {
             id:                { stringValue:  'i1' },
             name:              { stringValue:  'コーヒー' },
             sourceAmountMinor: { integerValue: '1234' },
-            assignees:         { arrayValue: { values: [{ stringValue: 'u1' }, { stringValue: 'u2' }] } },
+            allocations:         { arrayValue: { values: [
+              { mapValue: { fields: { memberId: { stringValue: 'u1' }, shares: { integerValue: '1' } } } },
+              { mapValue: { fields: { memberId: { stringValue: 'u2' }, shares: { integerValue: '1' } } } },
+            ] } },
           } } },
           { mapValue: { fields: {
             id:                { stringValue:  'i2' },
             name:              { stringValue:  'ケーキ' },
             sourceAmountMinor: { integerValue: '500' },
-            assignees:         { arrayValue: { values: [{ stringValue: 'u1' }] } },
+            allocations:         { arrayValue: { values: [
+              { mapValue: { fields: { memberId: { stringValue: 'u1' }, shares: { integerValue: '1' } } } },
+            ] } },
           } } },
         ],
       },

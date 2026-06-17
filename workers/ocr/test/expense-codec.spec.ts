@@ -104,7 +104,7 @@ describe('encodeExpense', () => {
   it('encodes note, items and ITEM-vs-EXPENSE-scope adjustments', () => {
     const fields = encodeExpense(createPayload({
       note:  'tip included',
-      items: [{ id: 'i1', name: 'Coffee', amountMinor: 1200, assignees: ['u1', 'u2'] }],
+      items: [{ id: 'i1', name: 'Coffee', amountMinor: 1200, allocations: [{ memberId: 'u1', shares: 1 }, { memberId: 'u2', shares: 1 }] }],
       adjustments: [
         { id: 'a1', label: '割引', kind: 'DISCOUNT', scope: 'EXPENSE', amountMinor: 100 },
         { id: 'a2', label: '項目割', kind: 'COUPON', scope: 'ITEM', amountMinor: 50, targetItemId: 'i1' },
@@ -119,7 +119,10 @@ describe('encodeExpense', () => {
             id:          { stringValue: 'i1' },
             name:        { stringValue: 'Coffee' },
             amountMinor: { integerValue: '1200' },
-            assignees:   { arrayValue: { values: [{ stringValue: 'u1' }, { stringValue: 'u2' }] } },
+            allocations:   { arrayValue: { values: [
+              { mapValue: { fields: { memberId: { stringValue: 'u1' }, shares: { integerValue: '1' } } } },
+              { mapValue: { fields: { memberId: { stringValue: 'u2' }, shares: { integerValue: '1' } } } },
+            ] } },
           } } },
         ],
       },
@@ -181,7 +184,7 @@ describe('encodeExpense foreign mirror', () => {
     const foreign: ForeignArtifacts = {
       sourceCurrency:    'USD',
       sourceAmountMinor: 10_000,
-      sourceItems:       [{ id: 'i1', name: 'A', sourceAmountMinor: 10_000, assignees: ['u1'] }],
+      sourceItems:       [{ id: 'i1', name: 'A', sourceAmountMinor: 10_000, allocations: [{ memberId: 'u1', shares: 1 }] }],
       sourceAdjustments: [],
       fxSnapshot:        FX,
     }

@@ -199,10 +199,10 @@ export default function ExpenseFormModal({
         id:          si.id,
         name:        si.name,
         amountMinor: si.sourceAmountMinor,
-        assignees:   si.assignees,
+        allocations: si.allocations,
       }))
     : (editTarget?.items ?? [])
-  const items = useExpenseItems(initialItems, effectiveCurrency)
+  const items = useExpenseItems(initialItems, effectiveCurrency, members.map(m => m.id))
 
   // Single 「切換幣別」 entry point. The money hook renormalizes its owned
   // slices in ONE dispatch (see useExpenseMoneyDraft.switchCurrency +
@@ -392,7 +392,7 @@ export default function ExpenseFormModal({
         id:          it.id,
         name:        it.name,
         amountMinor: it.amountMinor,
-        assignees:   it.assignees,
+        allocations: it.allocations,
       })),
       adjustments,
       splitMode:     splits.state.mode,
@@ -558,7 +558,8 @@ export default function ExpenseFormModal({
           onRemoveItem={removeItemRow}
           onSetItemName={items.setName}
           onSetItemAmount={items.setAmount}
-          onToggleItemAssignee={items.toggleAssignee}
+          onToggleItemAllocation={items.toggleAllocation}
+          onSetItemAllocationShares={items.setAllocationShares}
           onAddAdjustment={addAdjustment}
           onRemoveAdjustment={removeAdjustment}
           onSetAdjustmentLabel={setAdjustmentLabel}

@@ -37,7 +37,7 @@ export interface TripItem {
   id:          string
   name:        string
   amountMinor: number
-  assignees:   string[]
+  allocations: { memberId: string; shares: number }[]
 }
 
 /** Trip-currency adjustment, materializer output re-joined with the
@@ -77,15 +77,17 @@ function mapMaterializeErrorField(code: MaterializeErrorCode): string {
     case 'SOURCE_ADJUSTMENT_NOT_POSITIVE_INTEGER':
       return 'sourceAdjustments'
     case 'SOURCE_ITEM_NOT_POSITIVE_INTEGER':
-    case 'NON_MEMBER_ASSIGNEE':
+    case 'NON_MEMBER_ALLOCATION':
     case 'DUPLICATE_ITEM_ID':
-    case 'DUPLICATE_ITEM_ASSIGNEE':
+    case 'DUPLICATE_ITEM_ALLOCATION_MEMBER':
     case 'ITEM_NOT_POSITIVE_INTEGER':
+    case 'ITEM_NO_ALLOCATIONS':
+    case 'ITEM_ALLOCATION_NOT_POSITIVE_INTEGER':
     case 'OVER_DISCOUNT_ITEM':
       return 'sourceItems'
     default:
       // Catch-all for shape errors the materializer can raise from the
-      // converted trip-currency inputs (ITEM_NO_ASSIGNEES, UNKNOWN_SCOPE,
+      // converted trip-currency inputs (UNKNOWN_SCOPE,
       // ITEM_SCOPE_NO_TARGET, EXPENSE_SCOPE_HAS_TARGET, TARGET_ITEM_NOT_
       // FOUND, OVER_DISCOUNT_EXPENSE, ADJUSTMENT_UNKNOWN_KIND,
       // ADJUSTMENT_NOT_POSITIVE_INTEGER, EXPENSE_SCOPE_NO_WEIGHT). All
@@ -115,7 +117,7 @@ export function materializeForeignLineDomain(input: {
       sourceItems: input.sourceItems.map(i => ({
         id:          i.id,
         amountMinor: i.sourceAmountMinor,
-        assignees:   i.assignees,
+        allocations: i.allocations,
       })),
       sourceAdjustments: input.sourceAdjustments.map(a => {
         const out: {
@@ -150,7 +152,7 @@ export function materializeForeignLineDomain(input: {
     id:          mi.id,
     name:        input.sourceItems[i]!.name,
     amountMinor: mi.amountMinor,
-    assignees:   mi.assignees,
+    allocations: mi.allocations,
   }))
   const tripAdjustments = materialized.adjustments.map((ma: MaterializeAdjustment, i: number) => {
     const out: TripAdjustment = {

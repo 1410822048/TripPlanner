@@ -15,7 +15,7 @@ import type { Expense } from '@/types'
 import type { FormItem } from './useExpenseItems'
 
 function item(over: Partial<FormItem> = {}): FormItem {
-  return { id: 'i1', name: 'Coffee', amountMinor: 1200, amountText: '1200', assignees: ['x'], ...over }
+  return { id: 'i1', name: 'Coffee', amountMinor: 1200, amountText: '1200', allocations: [{ memberId: 'x', shares: 1 }], ...over }
 }
 
 describe('renormalizeMoneyDraftForCurrency', () => {

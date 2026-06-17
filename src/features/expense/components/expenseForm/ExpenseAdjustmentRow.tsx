@@ -62,13 +62,13 @@ export default function ExpenseAdjustmentRow({
 }: ExpenseAdjustmentRowProps) {
   const sign = adjustmentSign(adj.kind)
   // UX B — who this adjustment hits: 全体 for EXPENSE scope, the target
-  // item + its assignees for ITEM scope. Makes 「クーポン −¥30」legible
+  // item + its allocated members for ITEM scope. Makes 「クーポン −¥30」legible
   // (扣哪個項目 / 影響誰).
   const targetItem = adj.scope === 'ITEM'
     ? items.find(it => it.id === adj.targetItemId)
     : undefined
-  const targetAssignees = targetItem
-    ? members.filter(m => targetItem.assignees.includes(m.id))
+  const targetAllocationMembers = targetItem
+    ? members.filter(m => targetItem.allocations.some(a => a.memberId === m.id))
     : []
   return (
     <div className="flex flex-col gap-2 px-2.5 py-2.5">
@@ -149,7 +149,7 @@ export default function ExpenseAdjustmentRow({
       )}
 
       {/* UX B — 「誰に効くか」 summary. EXPENSE = 全体; ITEM = target item
-          name + its assignee avatars. */}
+          name + its allocation member avatars. */}
       {adj.scope === 'EXPENSE' ? (
         <div className="text-[10.5px] text-muted">対象: 全体</div>
       ) : targetItem ? (
@@ -158,9 +158,9 @@ export default function ExpenseAdjustmentRow({
           <span className="truncate font-medium text-ink">
             {targetItem.name.trim() || '項目'}
           </span>
-          {targetAssignees.length > 0 && (
+          {targetAllocationMembers.length > 0 && (
             <span className="flex items-center gap-0.5 shrink-0">
-              {targetAssignees.map(m => (
+              {targetAllocationMembers.map(m => (
                 <MemberAvatar key={m.id} member={m} size={16} />
               ))}
             </span>

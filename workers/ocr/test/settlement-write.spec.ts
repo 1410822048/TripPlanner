@@ -213,7 +213,7 @@ function expenseReadDoc(opts: {
 	splits: Array<[string, number]>
 	title?: string
 	createdAt?: string
-	items?: Array<{ id: string; name: string; amountMinor: number; assignees: string[] }>
+	items?: Array<{ id: string; name: string; amountMinor: number; allocations: Array<{ memberId: string; shares: number }> }>
 	adjustments?: Array<{ id: string; label: string; kind: string; scope: string; amountMinor: number; targetItemId?: string }>
 }): MockReadDoc {
 	const fields: Record<string, unknown> = {
@@ -243,8 +243,17 @@ function expenseReadDoc(opts: {
 							id:          { stringValue: item.id },
 							name:        { stringValue: item.name },
 							amountMinor: { integerValue: String(item.amountMinor) },
-							assignees: {
-								arrayValue: { values: item.assignees.map(uid => ({ stringValue: uid })) },
+							allocations: {
+								arrayValue: {
+									values: item.allocations.map(allocation => ({
+										mapValue: {
+											fields: {
+												memberId: { stringValue: allocation.memberId },
+												shares:   { integerValue: String(allocation.shares) },
+											},
+										},
+									})),
+								},
 							},
 						},
 					},
@@ -497,9 +506,9 @@ describe('settlementCreate endpoint', () => {
 				amountMinor: 300,
 				splits:      [[FROM_UID, 150], [TO_UID, 150]],
 				items: [
-					{ id: 'item-noodles', name: 'Noodles', amountMinor: 100, assignees: [FROM_UID] },
-					{ id: 'item-soup',    name: 'Soup',    amountMinor: 100, assignees: [FROM_UID, TO_UID] },
-					{ id: 'item-tea',     name: 'Tea',     amountMinor: 100, assignees: [TO_UID] },
+					{ id: 'item-noodles', name: 'Noodles', amountMinor: 100, allocations: [{ memberId: FROM_UID, shares: 1 }] },
+					{ id: 'item-soup',    name: 'Soup',    amountMinor: 100, allocations: [{ memberId: FROM_UID, shares: 1 }, { memberId: TO_UID, shares: 1 }] },
+					{ id: 'item-tea',     name: 'Tea',     amountMinor: 100, allocations: [{ memberId: TO_UID, shares: 1 }] },
 				],
 				adjustments: [],
 			}),

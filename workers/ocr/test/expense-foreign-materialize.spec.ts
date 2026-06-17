@@ -32,8 +32,8 @@ function splitsMap(splits: { memberId: string; amountMinor: number }[]): Record<
 describe('materializeForeignLineDomain', () => {
   it('converts items + materializes splits, re-joining source names', () => {
     const sourceItems: ForeignSourceItem[] = [
-      { id: 'i1', name: 'A', sourceAmountMinor: 1000, assignees: ['u1'] },
-      { id: 'i2', name: 'B', sourceAmountMinor: 2000, assignees: ['u2'] },
+      { id: 'i1', name: 'A', sourceAmountMinor: 1000, allocations: [{ memberId: 'u1', shares: 1 }] },
+      { id: 'i2', name: 'B', sourceAmountMinor: 2000, allocations: [{ memberId: 'u2', shares: 1 }] },
     ]
     const out = materializeForeignLineDomain({
       sourceItems,
@@ -44,8 +44,8 @@ describe('materializeForeignLineDomain', () => {
     })
     expect(out.amountMinor).toBe(3000)                          // $30.00 → ¥3000
     expect(out.tripItems).toEqual([
-      { id: 'i1', name: 'A', amountMinor: 1000, assignees: ['u1'] },
-      { id: 'i2', name: 'B', amountMinor: 2000, assignees: ['u2'] },
+      { id: 'i1', name: 'A', amountMinor: 1000, allocations: [{ memberId: 'u1', shares: 1 }] },
+      { id: 'i2', name: 'B', amountMinor: 2000, allocations: [{ memberId: 'u2', shares: 1 }] },
     ])
     expect(out.tripAdjustments).toEqual([])
     expect(splitsMap(out.splits)).toEqual({ u1: 1000, u2: 2000 })
@@ -53,7 +53,7 @@ describe('materializeForeignLineDomain', () => {
 
   it('re-joins the source-side label onto the converted adjustment', () => {
     const out = materializeForeignLineDomain({
-      sourceItems:       [{ id: 'i1', name: 'A', sourceAmountMinor: 1000, assignees: ['u1', 'u2'] }],
+      sourceItems:       [{ id: 'i1', name: 'A', sourceAmountMinor: 1000, allocations: [{ memberId: 'u1', shares: 1 }, { memberId: 'u2', shares: 1 }] }],
       sourceAdjustments: [{ id: 'a1', label: 'クーポン', kind: 'DISCOUNT', scope: 'EXPENSE', sourceAmountMinor: 200 }],
       sourceAmountMinor: 800,                                   // 1000 − 200
       members:           ['u1', 'u2'],
@@ -73,7 +73,7 @@ describe('materializeForeignLineDomain', () => {
     expect.assertions(2)
     try {
       materializeForeignLineDomain({
-        sourceItems:       [{ id: 'i1', name: 'A', sourceAmountMinor: 1000, assignees: ['u1'] }],
+        sourceItems:       [{ id: 'i1', name: 'A', sourceAmountMinor: 1000, allocations: [{ memberId: 'u1', shares: 1 }] }],
         sourceAdjustments: [],
         sourceAmountMinor: 5000,                                // items sum 1000 ≠ 5000
         members:           ['u1'],
@@ -89,7 +89,7 @@ describe('materializeForeignLineDomain', () => {
     expect.assertions(2)
     try {
       materializeForeignLineDomain({
-        sourceItems:       [{ id: 'i1', name: 'A', sourceAmountMinor: 0, assignees: ['u1'] }],
+        sourceItems:       [{ id: 'i1', name: 'A', sourceAmountMinor: 0, allocations: [{ memberId: 'u1', shares: 1 }] }],
         sourceAdjustments: [],
         sourceAmountMinor: 1,
         members:           ['u1'],

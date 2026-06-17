@@ -92,7 +92,7 @@ function foreignExpenseWithItems(): Expense {
   return {
     ...foreignExpense(),
     items: [
-      { id: 'item-1', name: 'Old receipt item', amountMinor: 4500, assignees: ['a', 'b'] },
+      { id: 'item-1', name: 'Old receipt item', amountMinor: 4500, allocations: [{ memberId: 'a', shares: 1 }, { memberId: 'b', shares: 1 }] },
     ],
   } as Expense
 }

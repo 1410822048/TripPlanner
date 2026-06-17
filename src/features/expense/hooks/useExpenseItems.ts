@@ -1,7 +1,7 @@
 // src/features/expense/hooks/useExpenseItems.ts
 // State machine for the by-item split mode. Owns the items[] array
 // and every mutator the form needs — add / remove / setName /
-// setAmount / toggleAssignee — plus derived state (sum, hasItems).
+// setAmount / item allocation — plus derived state (sum, hasItems).
 //
 // Money domain note: each row carries BOTH `amountText` (raw user
 // input / OCR string) AND `amountMinor` (integer minor units, the
@@ -46,12 +46,26 @@ export interface UseExpenseItemsResult {
   remove:   (i: number) => void
   setName:  (i: number, value: string) => void
   setAmount: (i: number, value: string) => void
-  toggleAssignee: (i: number, memberId: string) => void
+  toggleAllocation:  (i: number, memberId: string) => void
+  setAllocationShares: (i: number, memberId: string, shares: number) => void
 }
 
-function seedFormItems(initial: ExpenseItem[], currency: string): FormItem[] {
+function orderAllocations<T extends ExpenseItem['allocations'][number]>(
+  allocations: T[],
+  memberIds: string[],
+): T[] {
+  if (memberIds.length === 0) return allocations
+  const order = new Map(memberIds.map((id, idx) => [id, idx]))
+  return [...allocations].sort((a, b) =>
+    (order.get(a.memberId) ?? Number.MAX_SAFE_INTEGER) -
+    (order.get(b.memberId) ?? Number.MAX_SAFE_INTEGER),
+  )
+}
+
+function seedFormItems(initial: ExpenseItem[], currency: string, memberIds: string[]): FormItem[] {
   return initial.map(it => ({
     ...it,
+    allocations: orderAllocations(it.allocations, memberIds),
     amountText: formatMinorForInput(it.amountMinor, currency),
   }))
 }
@@ -59,8 +73,9 @@ function seedFormItems(initial: ExpenseItem[], currency: string): FormItem[] {
 export function useExpenseItems(
   initial: ExpenseItem[] = [],
   currency: string,
+  memberIds: string[] = [],
 ): UseExpenseItemsResult {
-  const [items, setItems] = useState<FormItem[]>(() => seedFormItems(initial, currency))
+  const [items, setItems] = useState<FormItem[]>(() => seedFormItems(initial, currency, memberIds))
 
   // No useCallback / useMemo — React Compiler auto-memoises this hook's
   // returned values and functions. reduce() over 4-20 items is trivial
@@ -75,7 +90,7 @@ export function useExpenseItems(
       name:        '',
       amountMinor: 0,
       amountText:  '',
-      assignees:   [],
+      allocations: [],
     }])
   }
 
@@ -103,13 +118,29 @@ export function useExpenseItems(
     ))
   }
 
-  const toggleAssignee = (i: number, memberId: string) => {
+  const toggleAllocation = (i: number, memberId: string) => {
     setItems(prev => prev.map((it, idx) => {
       if (idx !== i) return it
-      const has = it.assignees.includes(memberId)
+      const has = it.allocations.some(a => a.memberId === memberId)
       return {
         ...it,
-        assignees: has ? it.assignees.filter(id => id !== memberId) : [...it.assignees, memberId],
+        allocations: has
+          ? it.allocations.filter(a => a.memberId !== memberId)
+          : orderAllocations([...it.allocations, { memberId, shares: 1 }], memberIds),
+      }
+    }))
+  }
+
+  const setAllocationShares = (i: number, memberId: string, shares: number) => {
+    const intShares = Number.isFinite(shares) ? Math.trunc(shares) : 1
+    const nextShares = Math.max(1, Math.min(999, intShares))
+    setItems(prev => prev.map((it, idx) => {
+      if (idx !== i) return it
+      return {
+        ...it,
+        allocations: it.allocations.map(a =>
+          a.memberId === memberId ? { ...a, shares: nextShares } : a,
+        ),
       }
     }))
   }
@@ -127,6 +158,7 @@ export function useExpenseItems(
     remove,
     setName,
     setAmount,
-    toggleAssignee,
+    toggleAllocation,
+    setAllocationShares,
   }
 }

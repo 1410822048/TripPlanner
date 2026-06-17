@@ -48,9 +48,12 @@ function encodeSplits(splits: { memberId: string; amountMinor: number }[]): FsVa
   }
 }
 
-/** items[] → Firestore REST array-of-maps (id / name / amount / assignees). */
+/** items[] → Firestore REST array-of-maps (id / name / amount / allocations). */
 function encodeItems(
-  items: { id: string; name: string; amountMinor: number; assignees: string[] }[],
+  items: {
+    id: string; name: string; amountMinor: number
+    allocations: { memberId: string; shares: number }[]
+  }[],
 ): FsValue {
   return {
     arrayValue: {
@@ -60,9 +63,16 @@ function encodeItems(
             id:          { stringValue: item.id },
             name:        { stringValue: item.name },
             amountMinor: { integerValue: String(item.amountMinor) },
-            assignees: {
+            allocations: {
               arrayValue: {
-                values: item.assignees.map(uid => ({ stringValue: uid })),
+                values: item.allocations.map(allocation => ({
+                  mapValue: {
+                    fields: {
+                      memberId: { stringValue: allocation.memberId },
+                      shares:   { integerValue: String(allocation.shares) },
+                    },
+                  },
+                })),
               },
             },
           },
@@ -204,7 +214,7 @@ export function mergeExpense(
   currency:     string
   paidBy:       string
   splits:       { memberId: string; amountMinor: number }[]
-  items?:       { id: string; amountMinor: number; assignees: string[] }[]
+  items?:       { id: string; amountMinor: number; allocations: { memberId: string; shares: number }[] }[]
   adjustments?: { id: string; kind: string; scope: string; amountMinor: number; targetItemId?: string }[]
 } {
   const decoded = decodeExpense(current)

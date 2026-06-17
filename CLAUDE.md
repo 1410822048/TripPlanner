@@ -158,7 +158,7 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 |---|---|
 | `BottomSheet` + `FormModalShell` | 5 個 form modal(Schedule/Booking/Expense/Wish/Planning)共用 wrapper。FormModalShell 內建 `saveError` 紅色 banner(AlertCircle + danger-pale) |
 | `MemberAvatar` | 純圓 avatar(read-only)— SettlementSummary、voter stack、ExpenseFormModal 的 paidBy / split picker 都用這個。內建 Google photo `<img>` + onError 退回 label fallback |
-| `MemberChip` | Selectable button + label avatar — Items 模式的 assignee chip strip 用 |
+| `MemberChip` | Selectable button + label avatar — paidBy / compact member picker 用 |
 | `CurrencyInput` | 帶幣值前綴的 number input。**Flex layout 而非 absolute span**,任意 symbol 寬度都不會跟 placeholder「0」重疊(NT$ / CN¥ / HK$ 等多字元 symbol 用這個解)。`size='default'`(42px 主欄)/ `'compact'`(36px row 用)兩種變體 |
 | `SkeletonBar` / `SkeletonContainer` / `PageHeaderSkeleton` / `PageSkeletonShell` | Skeleton primitives;Container 支援 `embedded` prop 避免 nested animate-pulse |
 | `OfflineBanner` | 離線時頂部 amber 細條,回線後 2s「同期しました」綠條 |
@@ -271,15 +271,15 @@ onCameraPicked:
                 → OCR provider (Qwen primary / Claude fallback)
                 → return { items[], total, storeName? }
   ↓ onSuccess:
-items.reset(result.items.map(i => ({ name, amount, assignees: [] })))  ← 預設無人指派
+items.reset(result.items.map(i => ({ name, amount, allocations: [] })))  ← 預設無人指派
 setField('amount', String(result.total))                                  ← 自動填總額
 if (result.storeName && !title) setField('title', result.storeName)       ← 標題空才填
 
-使用者:點每個 item 的 chip 指派分擔者(必填)→ 按存
+使用者:點每個 item 的 chip 指派分擔者,用 +/- 設定份數(必填)→ 按存
   ↓
-validate(): items.every(i => i.assignees.length > 0) && sum(items) === total
+validate(): items.every(i => i.allocations.length > 0) && sum(items) === total
   ↓ pass
-splitsFromItems(items) → ExpenseSplit[] → 進 Firestore
+materializeExpenseSplits(items, adjustments, members) → ExpenseSplit[] → 進 Firestore
 ```
 
 **「📎 ファイルから追加」差別**: 同樣的 compressImage → pickFile,但**不**自動跑 OCR,改顯示「✨ 明細を読み取る」按鈕,使用者點才 ocr.run。

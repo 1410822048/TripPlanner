@@ -116,11 +116,12 @@ export default function ExpenseReadonlyModal({
                   </span>
                 </div>
                 <div className="mt-1 flex flex-wrap gap-1">
-                  {item.assignees.map(uid => {
-                    const member = memberById.get(uid)
+                  {item.allocations.map(allocation => {
+                    const member = memberById.get(allocation.memberId)
                     return (
-                      <span key={uid} className="text-[10.5px] font-semibold text-muted">
-                        {member?.label ?? uid}
+                      <span key={allocation.memberId} className="text-[10.5px] font-semibold text-muted">
+                        {member?.label ?? allocation.memberId}
+                        {allocation.shares > 1 ? ` x${allocation.shares}` : ''}
                       </span>
                     )
                   })}

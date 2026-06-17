@@ -127,7 +127,7 @@ describe('expense schema (per-field) - makeExpenseCreateSchema', () => {
 
 	it('rejects items[] exceeding the DoS cap (100)', () => {
 		const huge = Array.from({ length: 101 }, (_, i) => ({
-			id: `it-${i}`, name: 'x', amountMinor: 1, assignees: ['editor-uid'],
+			id: `it-${i}`, name: 'x', amountMinor: 1, allocations: [{ memberId: 'editor-uid', shares: 1 }],
 		}))
 		const res = schema.safeParse(basePayload({ items: huge }))
 		expect(res.success).toBe(false)
@@ -150,10 +150,10 @@ describe('expense schema (per-field) - makeExpenseCreateSchema', () => {
 		expect(res.success).toBe(false)
 	})
 
-	it('rejects items[].assignees[] exceeding 128-char cap', () => {
+	it('rejects items[].allocations[].memberId exceeding 128-char cap', () => {
 		const longUid = 'x'.repeat(300)
 		const res = schema.safeParse(basePayload({
-			items: [{ id: 'it1', name: 'x', amountMinor: 1, assignees: [longUid] }],
+			items: [{ id: 'it1', name: 'x', amountMinor: 1, allocations: [{ memberId: longUid, shares: 1 }] }],
 		}))
 		expect(res.success).toBe(false)
 	})
@@ -169,10 +169,10 @@ describe('expense schema (per-field) - makeExpenseCreateSchema', () => {
 		expect(res.success).toBe(true)
 	})
 
-	it('rejects items[i].assignees exceeding cap (50)', () => {
-		const tooManyAssignees = Array.from({ length: 51 }, (_, i) => `uid-${i}`)
+	it('rejects items[i].allocations exceeding cap (50)', () => {
+		const tooManyAllocations = Array.from({ length: 51 }, (_, i) => ({ memberId: `uid-${i}`, shares: 1 }))
 		const res = schema.safeParse(basePayload({
-			items: [{ id: 'it1', name: 'x', amountMinor: 1, assignees: tooManyAssignees }],
+			items: [{ id: 'it1', name: 'x', amountMinor: 1, allocations: tooManyAllocations }],
 		}))
 		expect(res.success).toBe(false)
 	})
@@ -181,7 +181,7 @@ describe('expense schema (per-field) - makeExpenseCreateSchema', () => {
 
 	it('rejects items[] missing id (Phase B: id is required)', () => {
 		const res = schema.safeParse(basePayload({
-			items: [{ name: 'Coffee', amountMinor: 500, assignees: ['editor-uid'] }],
+			items: [{ name: 'Coffee', amountMinor: 500, allocations: [{ memberId: 'editor-uid', shares: 1 }] }],
 		}))
 		expect(res.success).toBe(false)
 	})
@@ -190,21 +190,21 @@ describe('expense schema (per-field) - makeExpenseCreateSchema', () => {
 		// Discounts/surcharges now live in adjustments[], not as
 		// negative items.
 		const res = schema.safeParse(basePayload({
-			items: [{ id: 'it1', name: 'Discount', amountMinor: -100, assignees: ['editor-uid'] }],
+			items: [{ id: 'it1', name: 'Discount', amountMinor: -100, allocations: [{ memberId: 'editor-uid', shares: 1 }] }],
 		}))
 		expect(res.success).toBe(false)
 	})
 
 	it('rejects items[i].amountMinor that is zero (Phase B: strictly positive)', () => {
 		const res = schema.safeParse(basePayload({
-			items: [{ id: 'it1', name: 'Free', amountMinor: 0, assignees: ['editor-uid'] }],
+			items: [{ id: 'it1', name: 'Free', amountMinor: 0, allocations: [{ memberId: 'editor-uid', shares: 1 }] }],
 		}))
 		expect(res.success).toBe(false)
 	})
 
 	it('rejects items[i].amountMinor that is non-integer (.int() guard)', () => {
 		const res = schema.safeParse(basePayload({
-			items: [{ id: 'it1', name: 'Coffee', amountMinor: 100.5, assignees: ['editor-uid'] }],
+			items: [{ id: 'it1', name: 'Coffee', amountMinor: 100.5, allocations: [{ memberId: 'editor-uid', shares: 1 }] }],
 		}))
 		expect(res.success).toBe(false)
 	})
@@ -394,7 +394,7 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 	// disagrees with the Worker's authoritative recompute.
 
 	it('accepts items-mode payload where splits match the materializer output', () => {
-		// 900 / 3 assignees = 300/300/300, no adjustments
+		// 900 / 3 allocations = 300/300/300, no adjustments
 		expect(() => validateExpenseCrossField({
 			amountMinor: 900, currency: 'JPY',
 			paidBy: 'editor-uid',
@@ -404,7 +404,7 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 				{ memberId: 'viewer-uid', amountMinor: 300 },
 			],
 			items: [
-				{ id: 'it1', amountMinor: 900, assignees: ['owner-uid', 'editor-uid', 'viewer-uid'] },
+				{ id: 'it1', amountMinor: 900, allocations: [{ memberId: 'owner-uid', shares: 1 }, { memberId: 'editor-uid', shares: 1 }, { memberId: 'viewer-uid', shares: 1 }] },
 			],
 			adjustments: [],
 		}, MEMBERS)).not.toThrow()
@@ -417,13 +417,13 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 			amountMinor: 1000, currency: 'JPY',
 			paidBy: 'editor-uid',
 			splits: [{ memberId: 'owner-uid', amountMinor: 1000 }],
-			items:  [{ id: 'it1', amountMinor: 1000, assignees: ['viewer-uid'] }],
+			items:  [{ id: 'it1', amountMinor: 1000, allocations: [{ memberId: 'viewer-uid', shares: 1 }] }],
 			adjustments: [],
 		}, MEMBERS)).toThrow(/SPLIT_PREVIEW_DRIFT/)
 	})
 
 	it('rejects when splits drops a member that items derive', () => {
-		// items name 3 assignees but splits only lists 2.
+		// items name 3 allocations but splits only lists 2.
 		expect(() => validateExpenseCrossField({
 			amountMinor: 900, currency: 'JPY',
 			paidBy: 'editor-uid',
@@ -432,7 +432,7 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 				{ memberId: 'editor-uid', amountMinor: 450 },   // missing viewer-uid
 			],
 			items: [
-				{ id: 'it1', amountMinor: 900, assignees: ['owner-uid', 'editor-uid', 'viewer-uid'] },
+				{ id: 'it1', amountMinor: 900, allocations: [{ memberId: 'owner-uid', shares: 1 }, { memberId: 'editor-uid', shares: 1 }, { memberId: 'viewer-uid', shares: 1 }] },
 			],
 			adjustments: [],
 		}, MEMBERS)).toThrow(/SPLIT_PREVIEW_DRIFT/)
@@ -450,14 +450,14 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 				{ memberId: 'viewer-uid', amountMinor: 200 },   // materializer: 300
 			],
 			items: [
-				{ id: 'it1', amountMinor: 900, assignees: ['owner-uid', 'editor-uid', 'viewer-uid'] },
+				{ id: 'it1', amountMinor: 900, allocations: [{ memberId: 'owner-uid', shares: 1 }, { memberId: 'editor-uid', shares: 1 }, { memberId: 'viewer-uid', shares: 1 }] },
 			],
 			adjustments: [],
 		}, MEMBERS)).toThrow(/SPLIT_PREVIEW_DRIFT/)
 	})
 
 	it('accepts items remainder distribution (¥1 / 3 → [1, 0, 0]) preserved by materializer', () => {
-		// item amountMinor 1 with 3 assignees: splitEqually gives [1, 0, 0];
+		// item amountMinor 1 with 3 allocations: splitEqually gives [1, 0, 0];
 		// materializer drops zero-amount members from the output, so
 		// splits must drop them too.
 		expect(() => validateExpenseCrossField({
@@ -467,7 +467,7 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 				{ memberId: 'owner-uid', amountMinor: 1 },
 			],
 			items: [
-				{ id: 'it1', amountMinor: 1, assignees: ['owner-uid', 'editor-uid', 'viewer-uid'] },
+				{ id: 'it1', amountMinor: 1, allocations: [{ memberId: 'owner-uid', shares: 1 }, { memberId: 'editor-uid', shares: 1 }, { memberId: 'viewer-uid', shares: 1 }] },
 			],
 			adjustments: [],
 		}, MEMBERS)).not.toThrow()
@@ -486,8 +486,8 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 				{ memberId: 'viewer-uid', amountMinor: 400 },
 			],
 			items: [
-				{ id: 'it1', amountMinor: 600, assignees: ['owner-uid', 'editor-uid'] },
-				{ id: 'it2', amountMinor: 400, assignees: ['viewer-uid'] },
+				{ id: 'it1', amountMinor: 600, allocations: [{ memberId: 'owner-uid', shares: 1 }, { memberId: 'editor-uid', shares: 1 }] },
+				{ id: 'it2', amountMinor: 400, allocations: [{ memberId: 'viewer-uid', shares: 1 }] },
 			],
 			adjustments: [
 				{ id: 'a1', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: 200, targetItemId: 'it1' },
@@ -509,8 +509,8 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 				{ memberId: 'viewer-uid', amountMinor: 440 },
 			],
 			items: [
-				{ id: 'it1', amountMinor: 600, assignees: ['owner-uid', 'editor-uid'] },
-				{ id: 'it2', amountMinor: 400, assignees: ['viewer-uid'] },
+				{ id: 'it1', amountMinor: 600, allocations: [{ memberId: 'owner-uid', shares: 1 }, { memberId: 'editor-uid', shares: 1 }] },
+				{ id: 'it2', amountMinor: 400, allocations: [{ memberId: 'viewer-uid', shares: 1 }] },
 			],
 			adjustments: [
 				{ id: 'a1', kind: 'TAX', scope: 'EXPENSE', amountMinor: 100 },
@@ -524,7 +524,7 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 			paidBy: 'editor-uid',
 			splits: [{ memberId: 'editor-uid', amountMinor: 800 }],
 			items: [
-				{ id: 'it1', amountMinor: 1000, assignees: ['editor-uid'] },
+				{ id: 'it1', amountMinor: 1000, allocations: [{ memberId: 'editor-uid', shares: 1 }] },
 			],
 			adjustments: [
 				{ id: 'a1', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: 200, targetItemId: 'nonexistent' },
@@ -539,7 +539,7 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 			paidBy: 'editor-uid',
 			splits: [{ memberId: 'editor-uid', amountMinor: 0 }],
 			items: [
-				{ id: 'it1', amountMinor: 500, assignees: ['editor-uid'] },
+				{ id: 'it1', amountMinor: 500, allocations: [{ memberId: 'editor-uid', shares: 1 }] },
 			],
 			adjustments: [
 				{ id: 'a1', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: 800, targetItemId: 'it1' },
@@ -547,16 +547,16 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 		}, MEMBERS)).toThrow(/OVER_DISCOUNT_ITEM/)
 	})
 
-	it('rejects items with non-member assignees (via materializer NON_MEMBER_ASSIGNEE)', () => {
+	it('rejects items with non-member allocations (via materializer NON_MEMBER_ALLOCATION)', () => {
 		expect(() => validateExpenseCrossField({
 			amountMinor: 100, currency: 'JPY',
 			paidBy: 'editor-uid',
 			splits: [{ memberId: 'editor-uid', amountMinor: 100 }],
 			items: [
-				{ id: 'it1', amountMinor: 100, assignees: ['editor-uid', 'stranger-uid'] },
+				{ id: 'it1', amountMinor: 100, allocations: [{ memberId: 'editor-uid', shares: 1 }, { memberId: 'stranger-uid', shares: 1 }] },
 			],
 			adjustments: [],
-		}, MEMBERS)).toThrow(/NON_MEMBER_ASSIGNEE/)
+		}, MEMBERS)).toThrow(/NON_MEMBER_ALLOCATION/)
 	})
 
 	it('rejects adjustments[] when items[] is empty (manual-entry constraint)', () => {
@@ -678,8 +678,8 @@ describe('makeForeignExpenseCreateSchema', () => {
 			paidBy:            'editor-uid',
 			date:              '2026-05-30',
 			sourceItems: [
-				{ id: 'i1', name: 'Burger',  sourceAmountMinor: 800, assignees: ['editor-uid'] },
-				{ id: 'i2', name: 'Soda',    sourceAmountMinor: 434, assignees: ['editor-uid'] },
+				{ id: 'i1', name: 'Burger',  sourceAmountMinor: 800, allocations: [{ memberId: 'editor-uid', shares: 1 }] },
+				{ id: 'i2', name: 'Soda',    sourceAmountMinor: 434, allocations: [{ memberId: 'editor-uid', shares: 1 }] },
 			],
 			sourceAdjustments: [] as unknown[],
 			...overrides,
@@ -719,21 +719,21 @@ describe('makeForeignExpenseCreateSchema', () => {
 
 	it('rejects sourceItems[] above the 100-item cap', () => {
 		const items = Array.from({ length: 101 }, (_, i) => ({
-			id: `i${i}`, name: `item-${i}`, sourceAmountMinor: 100, assignees: ['editor-uid'],
+			id: `i${i}`, name: `item-${i}`, sourceAmountMinor: 100, allocations: [{ memberId: 'editor-uid', shares: 1 }],
 		}))
 		expect(schema.safeParse(baseForeignPayload({ sourceItems: items })).success).toBe(false)
 	})
 
 	it('rejects sourceItems[].sourceAmountMinor 0 / negative', () => {
 		const res = schema.safeParse(baseForeignPayload({
-			sourceItems: [{ id: 'i1', name: 'x', sourceAmountMinor: 0, assignees: ['editor-uid'] }],
+			sourceItems: [{ id: 'i1', name: 'x', sourceAmountMinor: 0, allocations: [{ memberId: 'editor-uid', shares: 1 }] }],
 		}))
 		expect(res.success).toBe(false)
 	})
 
-	it('rejects sourceItems[] entry missing assignees', () => {
+	it('rejects sourceItems[] entry missing allocations', () => {
 		const res = schema.safeParse(baseForeignPayload({
-			sourceItems: [{ id: 'i1', name: 'x', sourceAmountMinor: 100, assignees: [] }],
+			sourceItems: [{ id: 'i1', name: 'x', sourceAmountMinor: 100, allocations: [] }],
 		}))
 		expect(res.success).toBe(false)
 	})
@@ -837,7 +837,7 @@ describe('makeForeignExpenseUpdateSchema', () => {
 			sourceCurrency:    'USD',
 			sourceAmountMinor: 1234,
 			sourceItems: [
-				{ id: 'i1', name: 'Burger', sourceAmountMinor: 1234, assignees: ['editor-uid'] },
+				{ id: 'i1', name: 'Burger', sourceAmountMinor: 1234, allocations: [{ memberId: 'editor-uid', shares: 1 }] },
 			],
 			sourceAdjustments: [],
 			...overrides,
@@ -884,7 +884,7 @@ describe('makeForeignExpenseUpdateSchema', () => {
 
 	it('rejects partial money-group patch — only sourceItems', () => {
 		expect(schema.safeParse({
-			sourceItems: [{ id: 'i1', name: 'x', sourceAmountMinor: 100, assignees: ['u'] }],
+			sourceItems: [{ id: 'i1', name: 'x', sourceAmountMinor: 100, allocations: [{ memberId: 'u', shares: 1 }] }],
 		}).success).toBe(false)
 	})
 

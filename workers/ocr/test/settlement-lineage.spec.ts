@@ -181,7 +181,7 @@ describe('sourceUnitsForDirection', () => {
         id:     'ei',
         paidBy: 'B',
         splits: [{ memberId: 'A', amountMinor: 100 }],
-        items:  [{ id: 'i1', name: 'Coffee', amountMinor: 100, assignees: ['A'] }],
+        items:  [{ id: 'i1', name: 'Coffee', amountMinor: 100, allocations: [{ memberId: 'A', shares: 1 }] }],
       }),
     ]
     const units = sourceUnitsForDirection(expenses, 'A', 'B')

@@ -7,7 +7,7 @@
 //      rules language can't express.
 //   2. paidBy-in-roster check needs to read trip member list; rules
 //      can do same-doc memberIds lookup but the combined surface
-//      of splits + paidBy + items.assignees all referencing the
+//      of splits + paidBy + items.allocations all referencing the
 //      roster is cleaner in one place.
 //   3. Settlement-engine inputs (amount, splits, currency, paidBy)
 //      reach computeBalancesFull directly; bad data here causes

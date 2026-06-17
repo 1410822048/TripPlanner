@@ -59,13 +59,19 @@ export interface ExpenseReceipt {
  *      pre-discount subtotal.
  *      Discount / surcharge / tax / tip live in the sibling
  *      `Expense.adjustments[]` array. */
+export interface ExpenseItemAllocation {
+  memberId: string
+  /** Positive integer weight. Equal split is shares=1 for each member;
+   *  quantity allocation uses the purchased quantity as shares. */
+  shares:   number
+}
+
 export interface ExpenseItem {
   id:          string
   name:        string
   amountMinor: number
-  /** memberIds — non-empty. An item shared by N people splits its
-   *  amount equally across them. */
-  assignees: string[]
+  /** Non-empty weighted allocation. */
+  allocations: ExpenseItemAllocation[]
 }
 
 /** Adjustment kind — drives the +/- sign in the materializer pure fn
@@ -121,7 +127,7 @@ export interface ExpenseAdjustment {
  *  Invariant (enforced via ExpenseDocSchema.superRefine):
  *    - present iff parent `items` is present (length + id pair-wise)
  *    - sourceItems[i].id === items[i].id
- *  Anything else (name, assignees) is the source-of-truth on the
+ *  Anything else (name, allocations) is the source-of-truth on the
  *  source side and trip-side fields are derived by the Worker; the
  *  schema does not lock those to be equal (lets Phase 3c surface
  *  source-domain editing without an extra schema migration). */
@@ -129,7 +135,7 @@ export interface SourceExpenseItem {
   id:                string
   name:              string
   sourceAmountMinor: number
-  assignees:         string[]
+  allocations:       ExpenseItemAllocation[]
 }
 
 /** Phase 3b — source-currency mirror of `ExpenseAdjustment`. Same
@@ -292,10 +298,10 @@ export const ExpenseItemSchema = z.object({
   // (Worker authoritative split gate) rejects non-positive items with
   // ITEM_NOT_POSITIVE_INTEGER.
   amountMinor: z.number().int().positive(),
-  // Every item must have at least one assignee — enforced both client-
-  // side (form validation) and at the schema level so any future code
-  // path that tries to write a "dangling" item gets rejected.
-  assignees: z.array(z.string().min(1)).min(1, '至少需要一位分攤者'),
+  allocations: z.array(z.object({
+    memberId: z.string().min(1).max(128),
+    shares:   z.number().int().positive().max(999),
+  })).min(1, '至少需要一位分攤者').max(50),
 })
 
 /** Adjustment kind / scope literals — mirror of
@@ -336,13 +342,16 @@ export const ExpenseAdjustmentSchema = z.object({
 
 /** Phase 3b — source-currency item shape. Mirrors ExpenseItemSchema but
  *  with `sourceAmountMinor` in source-currency minor units. Same id /
- *  name / assignees constraints (the materializer reuses these on the
+ *  name / allocations constraints (the materializer reuses these on the
  *  trip-domain side). */
 export const SourceExpenseItemSchema = z.object({
   id:                z.string().min(1).max(64),
   name:              z.string().min(1).max(200),
   sourceAmountMinor: z.number().int().positive(),
-  assignees:         z.array(z.string().min(1)).min(1, '至少需要一位分攤者'),
+  allocations:       z.array(z.object({
+    memberId: z.string().min(1).max(128),
+    shares:   z.number().int().positive().max(999),
+  })).min(1, '至少需要一位分攤者').max(50),
 })
 
 /** Phase 3b — source-currency adjustment shape. Mirrors

@@ -13,10 +13,10 @@
 //   8. over-discount rejection (ITEM scope)
 //   9. over-discount rejection (EXPENSE scope aggregate)
 //  10. zero items + EXPENSE adjustment → EXPENSE_SCOPE_NO_WEIGHT
-//  11. non-member assignee rejection
-//  12. empty item assignees rejection
+//  11. non-member allocation member rejection
+//  12. empty item allocations rejection
 //  13. non-positive / non-integer item amount rejection
-//  14. duplicate assignee per item rejection
+//  14. duplicate allocation member per item rejection
 //  15. UNKNOWN / invalid scope rejection
 //  16. ADJUSTMENT_UNKNOWN_KIND rejection (runtime gate)
 //  17. duplicate item id rejection
@@ -74,9 +74,9 @@ describe('materializeExpenseSplits — degenerate input', () => {
 })
 
 describe('materializeExpenseSplits — item-only splits (Phase B baseline)', () => {
-  it('splits a single equal item across all assignees', () => {
+  it('splits a single equal item across all allocations', () => {
     const out = materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: 300, assignees: ['alice', 'bob', 'carol'] }],
+      items: [{ id: 'i1', amountMinor: 300, allocations: [{ memberId: 'alice', shares: 1 }, { memberId: 'bob', shares: 1 }, { memberId: 'carol', shares: 1 }] }],
     }))
     expect(out).toEqual([
       { memberId: 'alice', amountMinor: 100 },
@@ -85,9 +85,19 @@ describe('materializeExpenseSplits — item-only splits (Phase B baseline)', () 
     ])
   })
 
-  it('distributes remainder to the first assignees deterministically', () => {
+  it('splits one item by positive integer shares', () => {
     const out = materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: 100, assignees: ['alice', 'bob', 'carol'] }],
+      items: [{ id: 'i1', amountMinor: 400, allocations: [{ memberId: 'alice', shares: 3 }, { memberId: 'bob', shares: 1 }] }],
+    }))
+    expect(out).toEqual([
+      { memberId: 'alice', amountMinor: 300 },
+      { memberId: 'bob',   amountMinor: 100 },
+    ])
+  })
+
+  it('distributes remainder to the first allocations deterministically', () => {
+    const out = materializeExpenseSplits(input({
+      items: [{ id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }, { memberId: 'bob', shares: 1 }, { memberId: 'carol', shares: 1 }] }],
     }))
     // 100 / 3 = 34 + 33 + 33
     expect(out).toEqual([
@@ -100,8 +110,8 @@ describe('materializeExpenseSplits — item-only splits (Phase B baseline)', () 
   it('aggregates across multiple items', () => {
     const out = materializeExpenseSplits(input({
       items: [
-        { id: 'i1', amountMinor: 100, assignees: ['alice'] },
-        { id: 'i2', amountMinor: 60,  assignees: ['alice', 'bob'] },
+        { id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] },
+        { id: 'i2', amountMinor: 60,  allocations: [{ memberId: 'alice', shares: 1 }, { memberId: 'bob', shares: 1 }] },
       ],
     }))
     expect(out).toEqual([
@@ -112,7 +122,7 @@ describe('materializeExpenseSplits — item-only splits (Phase B baseline)', () 
 
   it('omits members whose split totals zero', () => {
     const out = materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: 50, assignees: ['alice'] }],
+      items: [{ id: 'i1', amountMinor: 50, allocations: [{ memberId: 'alice', shares: 1 }] }],
     }))
     expect(out).toEqual([{ memberId: 'alice', amountMinor: 50 }])
   })
@@ -122,8 +132,8 @@ describe('materializeExpenseSplits — ITEM-scope adjustments', () => {
   it('subtracts a DISCOUNT from the target item before splitting', () => {
     const out = materializeExpenseSplits(input({
       items: [
-        { id: 'i1', amountMinor: 200, assignees: ['alice', 'bob'] },
-        { id: 'i2', amountMinor: 100, assignees: ['carol'] },
+        { id: 'i1', amountMinor: 200, allocations: [{ memberId: 'alice', shares: 1 }, { memberId: 'bob', shares: 1 }] },
+        { id: 'i2', amountMinor: 100, allocations: [{ memberId: 'carol', shares: 1 }] },
       ],
       adjustments: [
         { id: 'a1', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: 50, targetItemId: 'i1' },
@@ -139,7 +149,7 @@ describe('materializeExpenseSplits — ITEM-scope adjustments', () => {
 
   it('COUPON behaves like DISCOUNT', () => {
     const out = materializeExpenseSplits(input({
-      items:       [{ id: 'i1', amountMinor: 100, assignees: ['alice'] }],
+      items:       [{ id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] }],
       adjustments: [{ id: 'a1', kind: 'COUPON', scope: 'ITEM', amountMinor: 30, targetItemId: 'i1' }],
     }))
     expect(out).toEqual([{ memberId: 'alice', amountMinor: 70 }])
@@ -150,8 +160,8 @@ describe('materializeExpenseSplits — EXPENSE-scope proportional', () => {
   it('apportions a DISCOUNT proportional to item effective amounts', () => {
     const out = materializeExpenseSplits(input({
       items: [
-        { id: 'i1', amountMinor: 800, assignees: ['alice'] },
-        { id: 'i2', amountMinor: 200, assignees: ['bob'] },
+        { id: 'i1', amountMinor: 800, allocations: [{ memberId: 'alice', shares: 1 }] },
+        { id: 'i2', amountMinor: 200, allocations: [{ memberId: 'bob', shares: 1 }] },
       ],
       adjustments: [
         { id: 'a1', kind: 'DISCOUNT', scope: 'EXPENSE', amountMinor: 100 },
@@ -171,9 +181,9 @@ describe('materializeExpenseSplits — EXPENSE-scope proportional', () => {
     // alloc=[4,3,3], item effectives=[96, 97, 97].
     const out = materializeExpenseSplits(input({
       items: [
-        { id: 'i1', amountMinor: 100, assignees: ['alice'] },
-        { id: 'i2', amountMinor: 100, assignees: ['bob'] },
-        { id: 'i3', amountMinor: 100, assignees: ['carol'] },
+        { id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] },
+        { id: 'i2', amountMinor: 100, allocations: [{ memberId: 'bob', shares: 1 }] },
+        { id: 'i3', amountMinor: 100, allocations: [{ memberId: 'carol', shares: 1 }] },
       ],
       adjustments: [
         { id: 'a1', kind: 'DISCOUNT', scope: 'EXPENSE', amountMinor: 10 },
@@ -189,8 +199,8 @@ describe('materializeExpenseSplits — EXPENSE-scope proportional', () => {
   it('handles SURCHARGE (positive sign)', () => {
     const out = materializeExpenseSplits(input({
       items: [
-        { id: 'i1', amountMinor: 500, assignees: ['alice'] },
-        { id: 'i2', amountMinor: 500, assignees: ['bob'] },
+        { id: 'i1', amountMinor: 500, allocations: [{ memberId: 'alice', shares: 1 }] },
+        { id: 'i2', amountMinor: 500, allocations: [{ memberId: 'bob', shares: 1 }] },
       ],
       adjustments: [
         { id: 'a1', kind: 'SURCHARGE', scope: 'EXPENSE', amountMinor: 100 },
@@ -212,9 +222,9 @@ describe('materializeExpenseSplits — EXPENSE-scope apportion boundaries', () =
   it('three ¥1 items + ¥2 EXPENSE discount allocates safely (capped alloc)', () => {
     const out = materializeExpenseSplits(input({
       items: [
-        { id: 'i1', amountMinor: 1, assignees: ['alice'] },
-        { id: 'i2', amountMinor: 1, assignees: ['bob']   },
-        { id: 'i3', amountMinor: 1, assignees: ['carol'] },
+        { id: 'i1', amountMinor: 1, allocations: [{ memberId: 'alice', shares: 1 }] },
+        { id: 'i2', amountMinor: 1, allocations: [{ memberId: 'bob', shares: 1 }]   },
+        { id: 'i3', amountMinor: 1, allocations: [{ memberId: 'carol', shares: 1 }] },
       ],
       adjustments: [
         { id: 'a1', kind: 'DISCOUNT', scope: 'EXPENSE', amountMinor: 2 },
@@ -226,7 +236,7 @@ describe('materializeExpenseSplits — EXPENSE-scope apportion boundaries', () =
 
   it('single ¥1 item + ¥1 EXPENSE discount → fully discounted, empty splits', () => {
     const out = materializeExpenseSplits(input({
-      items:       [{ id: 'i1', amountMinor: 1, assignees: ['alice'] }],
+      items:       [{ id: 'i1', amountMinor: 1, allocations: [{ memberId: 'alice', shares: 1 }] }],
       adjustments: [{ id: 'a1', kind: 'DISCOUNT', scope: 'EXPENSE', amountMinor: 1 }],
     }))
     expect(out).toEqual([])
@@ -238,8 +248,8 @@ describe('materializeExpenseSplits — EXPENSE-scope apportion boundaries', () =
     // collapse to [0, 0] and no splits are emitted.
     const out = materializeExpenseSplits(input({
       items: [
-        { id: 'i1', amountMinor: 60, assignees: ['alice'] },
-        { id: 'i2', amountMinor: 40, assignees: ['bob']   },
+        { id: 'i1', amountMinor: 60, allocations: [{ memberId: 'alice', shares: 1 }] },
+        { id: 'i2', amountMinor: 40, allocations: [{ memberId: 'bob', shares: 1 }]   },
       ],
       adjustments: [
         { id: 'a1', kind: 'DISCOUNT', scope: 'EXPENSE', amountMinor: 100 },
@@ -254,8 +264,8 @@ describe('materializeExpenseSplits — EXPENSE-scope apportion boundaries', () =
     // effectives [925, 925]; per-member [925, 925].
     const out = materializeExpenseSplits(input({
       items: [
-        { id: 'i1', amountMinor: 1000, assignees: ['alice'] },
-        { id: 'i2', amountMinor: 1000, assignees: ['bob']   },
+        { id: 'i1', amountMinor: 1000, allocations: [{ memberId: 'alice', shares: 1 }] },
+        { id: 'i2', amountMinor: 1000, allocations: [{ memberId: 'bob', shares: 1 }]   },
       ],
       adjustments: [
         { id: 'a1', kind: 'COUPON',   scope: 'EXPENSE', amountMinor: 100 },
@@ -276,8 +286,8 @@ describe('materializeExpenseSplits — EXPENSE-scope apportion boundaries', () =
     // Frac [0.66, 0.33] → idx 0 wins. alloc=[17, 33]. effectives=[83, 167].
     const out = materializeExpenseSplits(input({
       items: [
-        { id: 'i1', amountMinor: 500, assignees: ['alice'] },
-        { id: 'i2', amountMinor: 200, assignees: ['bob']   },
+        { id: 'i1', amountMinor: 500, allocations: [{ memberId: 'alice', shares: 1 }] },
+        { id: 'i2', amountMinor: 200, allocations: [{ memberId: 'bob', shares: 1 }]   },
       ],
       adjustments: [
         { id: 'a1', kind: 'DISCOUNT', scope: 'ITEM',    amountMinor: 400, targetItemId: 'i1' },
@@ -295,8 +305,8 @@ describe('materializeExpenseSplits — multi-adjustment ordering', () => {
   it('applies ITEM-scope first, then EXPENSE-scope to the post-ITEM effectives', () => {
     const out = materializeExpenseSplits(input({
       items: [
-        { id: 'i1', amountMinor: 1000, assignees: ['alice'] },
-        { id: 'i2', amountMinor: 1000, assignees: ['bob'] },
+        { id: 'i1', amountMinor: 1000, allocations: [{ memberId: 'alice', shares: 1 }] },
+        { id: 'i2', amountMinor: 1000, allocations: [{ memberId: 'bob', shares: 1 }] },
       ],
       adjustments: [
         // Step 1: ITEM scope drops i1 to 500.
@@ -319,8 +329,8 @@ describe('materializeExpenseSplitContributions', () => {
   it('keeps item identity before member aggregation', () => {
     const out = materializeExpenseSplitContributions(input({
       items: [
-        { id: 'i1', amountMinor: 100, assignees: ['alice', 'bob'] },
-        { id: 'i2', amountMinor: 90,  assignees: ['alice'] },
+        { id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }, { memberId: 'bob', shares: 1 }] },
+        { id: 'i2', amountMinor: 90,  allocations: [{ memberId: 'alice', shares: 1 }] },
       ],
     }))
     expect(out).toEqual([
@@ -333,8 +343,8 @@ describe('materializeExpenseSplitContributions', () => {
   it('uses the same adjustment math as materializeExpenseSplits', () => {
     const fixture = input({
       items: [
-        { id: 'i1', amountMinor: 800, assignees: ['alice'] },
-        { id: 'i2', amountMinor: 200, assignees: ['bob'] },
+        { id: 'i1', amountMinor: 800, allocations: [{ memberId: 'alice', shares: 1 }] },
+        { id: 'i2', amountMinor: 200, allocations: [{ memberId: 'bob', shares: 1 }] },
       ],
       adjustments: [
         { id: 'a1', kind: 'DISCOUNT', scope: 'EXPENSE', amountMinor: 100 },
@@ -370,7 +380,7 @@ describe('adjustmentSign — kind-to-sign mapping', () => {
 describe('materializeExpenseSplits — invariant rejections', () => {
   it('rejects ITEM-scope over-discount', () => {
     expectThrows(() => materializeExpenseSplits(input({
-      items:       [{ id: 'i1', amountMinor: 100, assignees: ['alice'] }],
+      items:       [{ id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] }],
       adjustments: [{ id: 'a1', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: 150, targetItemId: 'i1' }],
     })), 'OVER_DISCOUNT_ITEM')
   })
@@ -379,8 +389,8 @@ describe('materializeExpenseSplits — invariant rejections', () => {
     // Total 100, discount 200 → would drive items below zero
     expectThrows(() => materializeExpenseSplits(input({
       items: [
-        { id: 'i1', amountMinor: 50, assignees: ['alice'] },
-        { id: 'i2', amountMinor: 50, assignees: ['bob'] },
+        { id: 'i1', amountMinor: 50, allocations: [{ memberId: 'alice', shares: 1 }] },
+        { id: 'i2', amountMinor: 50, allocations: [{ memberId: 'bob', shares: 1 }] },
       ],
       adjustments: [
         { id: 'a1', kind: 'DISCOUNT', scope: 'EXPENSE', amountMinor: 200 },
@@ -395,51 +405,57 @@ describe('materializeExpenseSplits — invariant rejections', () => {
     })), 'EXPENSE_SCOPE_NO_WEIGHT')
   })
 
-  it('rejects non-member assignee', () => {
+  it('rejects non-member allocation member', () => {
     expectThrows(() => materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: 100, assignees: ['stranger'] }],
-    })), 'NON_MEMBER_ASSIGNEE')
+      items: [{ id: 'i1', amountMinor: 100, allocations: [{ memberId: 'stranger', shares: 1 }] }],
+    })), 'NON_MEMBER_ALLOCATION')
   })
 
-  it('rejects empty item assignees', () => {
+  it('rejects empty item allocations', () => {
     expectThrows(() => materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: 100, assignees: [] }],
-    })), 'ITEM_NO_ASSIGNEES')
+      items: [{ id: 'i1', amountMinor: 100, allocations: [] }],
+    })), 'ITEM_NO_ALLOCATIONS')
   })
 
   it('rejects zero item amount', () => {
     expectThrows(() => materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: 0, assignees: ['alice'] }],
+      items: [{ id: 'i1', amountMinor: 0, allocations: [{ memberId: 'alice', shares: 1 }] }],
     })), 'ITEM_NOT_POSITIVE_INTEGER')
   })
 
   it('rejects negative item amount', () => {
     expectThrows(() => materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: -10, assignees: ['alice'] }],
+      items: [{ id: 'i1', amountMinor: -10, allocations: [{ memberId: 'alice', shares: 1 }] }],
     })), 'ITEM_NOT_POSITIVE_INTEGER')
   })
 
   it('rejects non-finite item amount', () => {
     expectThrows(() => materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: NaN, assignees: ['alice'] }],
+      items: [{ id: 'i1', amountMinor: NaN, allocations: [{ memberId: 'alice', shares: 1 }] }],
     })), 'ITEM_NOT_POSITIVE_INTEGER')
   })
 
   it('rejects fractional item amount (minor units must be integer)', () => {
     expectThrows(() => materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: 1.5, assignees: ['alice'] }],
+      items: [{ id: 'i1', amountMinor: 1.5, allocations: [{ memberId: 'alice', shares: 1 }] }],
     })), 'ITEM_NOT_POSITIVE_INTEGER')
   })
 
-  it('rejects duplicate assignee in same item', () => {
+  it('rejects duplicate allocation member in same item', () => {
     expectThrows(() => materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: 100, assignees: ['alice', 'alice', 'bob'] }],
-    })), 'DUPLICATE_ITEM_ASSIGNEE')
+      items: [{ id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }, { memberId: 'alice', shares: 1 }, { memberId: 'bob', shares: 1 }] }],
+    })), 'DUPLICATE_ITEM_ALLOCATION_MEMBER')
+  })
+
+  it('rejects zero allocation shares', () => {
+    expectThrows(() => materializeExpenseSplits(input({
+      items: [{ id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 0 }] }],
+    })), 'ITEM_ALLOCATION_NOT_POSITIVE_INTEGER')
   })
 
   it('rejects UNKNOWN / invalid scope', () => {
     expectThrows(() => materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: 100, assignees: ['alice'] }],
+      items: [{ id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] }],
       adjustments: [
         // @ts-expect-error — intentional invalid scope at runtime
         { id: 'a1', kind: 'DISCOUNT', scope: 'UNKNOWN', amountMinor: 10 },
@@ -449,7 +465,7 @@ describe('materializeExpenseSplits — invariant rejections', () => {
 
   it('rejects unknown adjustment kind at runtime (JSON/Firestore guard)', () => {
     expectThrows(() => materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: 100, assignees: ['alice'] }],
+      items: [{ id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] }],
       adjustments: [
         // @ts-expect-error — intentional invalid kind at runtime; mimics
         // a Firestore doc that escaped the Zod boundary.
@@ -461,15 +477,15 @@ describe('materializeExpenseSplits — invariant rejections', () => {
   it('rejects duplicate item ids', () => {
     expectThrows(() => materializeExpenseSplits(input({
       items: [
-        { id: 'i1', amountMinor: 100, assignees: ['alice'] },
-        { id: 'i1', amountMinor: 50,  assignees: ['bob'] },
+        { id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] },
+        { id: 'i1', amountMinor: 50,  allocations: [{ memberId: 'bob', shares: 1 }] },
       ],
     })), 'DUPLICATE_ITEM_ID')
   })
 
   it('rejects ITEM scope missing targetItemId', () => {
     expectThrows(() => materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: 100, assignees: ['alice'] }],
+      items: [{ id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] }],
       adjustments: [
         { id: 'a1', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: 10 },
       ],
@@ -478,7 +494,7 @@ describe('materializeExpenseSplits — invariant rejections', () => {
 
   it('rejects EXPENSE scope carrying targetItemId', () => {
     expectThrows(() => materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: 100, assignees: ['alice'] }],
+      items: [{ id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] }],
       adjustments: [
         { id: 'a1', kind: 'DISCOUNT', scope: 'EXPENSE', amountMinor: 10, targetItemId: 'i1' },
       ],
@@ -487,7 +503,7 @@ describe('materializeExpenseSplits — invariant rejections', () => {
 
   it('rejects target item id that does not exist', () => {
     expectThrows(() => materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: 100, assignees: ['alice'] }],
+      items: [{ id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] }],
       adjustments: [
         { id: 'a1', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: 10, targetItemId: 'ghost' },
       ],
@@ -496,7 +512,7 @@ describe('materializeExpenseSplits — invariant rejections', () => {
 
   it('rejects negative adjustment amount', () => {
     expectThrows(() => materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: 100, assignees: ['alice'] }],
+      items: [{ id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] }],
       adjustments: [
         { id: 'a1', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: -5, targetItemId: 'i1' },
       ],
@@ -505,7 +521,7 @@ describe('materializeExpenseSplits — invariant rejections', () => {
 
   it('rejects zero adjustment amount', () => {
     expectThrows(() => materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: 100, assignees: ['alice'] }],
+      items: [{ id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] }],
       adjustments: [
         { id: 'a1', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: 0, targetItemId: 'i1' },
       ],
@@ -514,7 +530,7 @@ describe('materializeExpenseSplits — invariant rejections', () => {
 
   it('rejects non-integer (Infinity) adjustment amount', () => {
     expectThrows(() => materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: 100, assignees: ['alice'] }],
+      items: [{ id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] }],
       adjustments: [
         { id: 'a1', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: Infinity, targetItemId: 'i1' },
       ],
@@ -523,7 +539,7 @@ describe('materializeExpenseSplits — invariant rejections', () => {
 
   it('rejects fractional adjustment amount', () => {
     expectThrows(() => materializeExpenseSplits(input({
-      items: [{ id: 'i1', amountMinor: 100, assignees: ['alice'] }],
+      items: [{ id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] }],
       adjustments: [
         { id: 'a1', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: 2.5, targetItemId: 'i1' },
       ],
@@ -558,8 +574,8 @@ describe('materializeExpenseSplits — determinism', () => {
   it('same input twice ⇒ same output ⇒ same canonical string', () => {
     const fixture = input({
       items: [
-        { id: 'i1', amountMinor: 333, assignees: ['alice', 'bob', 'carol'] },
-        { id: 'i2', amountMinor: 100, assignees: ['alice'] },
+        { id: 'i1', amountMinor: 333, allocations: [{ memberId: 'alice', shares: 1 }, { memberId: 'bob', shares: 1 }, { memberId: 'carol', shares: 1 }] },
+        { id: 'i2', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] },
       ],
       adjustments: [
         { id: 'a1', kind: 'DISCOUNT', scope: 'EXPENSE', amountMinor: 50 },
@@ -612,14 +628,14 @@ describe('convertAndMaterializeFromSource — USD → JPY exact-multiple receipt
     //   num = 1000 * 100 * 10^0 = 100000; den = 10^(2+0) = 100; 100000/100 = 1000 → ¥1000
     const result = convertAndMaterializeFromSource(sourceInput({
       sourceItems: [
-        { id: 'i1', amountMinor: 1000, assignees: ['alice', 'bob'] },
+        { id: 'i1', amountMinor: 1000, allocations: [{ memberId: 'alice', shares: 1 }, { memberId: 'bob', shares: 1 }] },
       ],
       sourceAmountMinor: 1000,
       rateDecimal:       '100',
     }))
     expect(result.amountMinor).toBe(1000)
     expect(result.items).toEqual([
-      { id: 'i1', amountMinor: 1000, assignees: ['alice', 'bob'] },
+      { id: 'i1', amountMinor: 1000, allocations: [{ memberId: 'alice', shares: 1 }, { memberId: 'bob', shares: 1 }] },
     ])
     expect(result.adjustments).toEqual([])
     expect(result.splits).toEqual([
@@ -630,7 +646,7 @@ describe('convertAndMaterializeFromSource — USD → JPY exact-multiple receipt
 })
 
 describe('convertAndMaterializeFromSource — USD → JPY residual on largest item', () => {
-  it('exposes the same line conversion without requiring assignees', () => {
+  it('exposes the same line conversion without requiring allocations', () => {
     const result = convertSourceLinesToTarget({
       sourceItems: [
         { id: 'i1', amountMinor: 1 },
@@ -659,9 +675,9 @@ describe('convertAndMaterializeFromSource — USD → JPY residual on largest it
     // raw items: [1, 1, 3] sum=5, expected=6 → residual +1 to largest (3) → [1,1,4]
     const result = convertAndMaterializeFromSource(sourceInput({
       sourceItems: [
-        { id: 'i1', amountMinor: 1, assignees: ['alice'] },
-        { id: 'i2', amountMinor: 1, assignees: ['bob'] },
-        { id: 'i3', amountMinor: 2, assignees: ['carol'] },
+        { id: 'i1', amountMinor: 1, allocations: [{ memberId: 'alice', shares: 1 }] },
+        { id: 'i2', amountMinor: 1, allocations: [{ memberId: 'bob', shares: 1 }] },
+        { id: 'i3', amountMinor: 2, allocations: [{ memberId: 'carol', shares: 1 }] },
       ],
       sourceAmountMinor: 4,
       rateDecimal:       '146.2',
@@ -686,8 +702,8 @@ describe('convertAndMaterializeFromSource — USD → JPY positive adjustment (T
     // splits: i1 1100 / [alice,bob] = 550 each; i2 550 / [carol] = 550.
     const result = convertAndMaterializeFromSource(sourceInput({
       sourceItems: [
-        { id: 'i1', amountMinor: 1000, assignees: ['alice', 'bob'] },
-        { id: 'i2', amountMinor: 500,  assignees: ['carol'] },
+        { id: 'i1', amountMinor: 1000, allocations: [{ memberId: 'alice', shares: 1 }, { memberId: 'bob', shares: 1 }] },
+        { id: 'i2', amountMinor: 500,  allocations: [{ memberId: 'carol', shares: 1 }] },
       ],
       sourceAdjustments: [
         { id: 'a1', kind: 'TAX', scope: 'EXPENSE', amountMinor: 150 },
@@ -714,8 +730,8 @@ describe('convertAndMaterializeFromSource — USD → JPY negative adjustment (D
     // Materializer DISCOUNT 150 apportions -100/-50 → effective [900, 450].
     const result = convertAndMaterializeFromSource(sourceInput({
       sourceItems: [
-        { id: 'i1', amountMinor: 1000, assignees: ['alice', 'bob'] },
-        { id: 'i2', amountMinor: 500,  assignees: ['carol'] },
+        { id: 'i1', amountMinor: 1000, allocations: [{ memberId: 'alice', shares: 1 }, { memberId: 'bob', shares: 1 }] },
+        { id: 'i2', amountMinor: 500,  allocations: [{ memberId: 'carol', shares: 1 }] },
       ],
       sourceAdjustments: [
         { id: 'a1', kind: 'DISCOUNT', scope: 'EXPENSE', amountMinor: 150 },
@@ -743,8 +759,8 @@ describe('convertAndMaterializeFromSource — USD → TWD', () => {
     // raw: 32 + 65 = 97, expected 98 → residual +1 on largest (65) → [32, 66]
     const result = convertAndMaterializeFromSource(sourceInput({
       sourceItems: [
-        { id: 'i1', amountMinor: 100, assignees: ['alice'] },
-        { id: 'i2', amountMinor: 200, assignees: ['bob'] },
+        { id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] },
+        { id: 'i2', amountMinor: 200, allocations: [{ memberId: 'bob', shares: 1 }] },
       ],
       sourceAmountMinor: 300,
       rateDecimal:       '32.5',
@@ -764,14 +780,14 @@ describe('convertAndMaterializeFromSource — USD → VND wide-magnitude', () =>
     //   num = 100 * 23500 * 10^0 = 2_350_000; den = 10^(2+0) = 100; → 23500
     const result = convertAndMaterializeFromSource(sourceInput({
       sourceItems: [
-        { id: 'i1', amountMinor: 100, assignees: ['alice', 'bob'] },
+        { id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }, { memberId: 'bob', shares: 1 }] },
       ],
       sourceAmountMinor: 100,
       rateDecimal:       '23500',
     }))
     expect(result.amountMinor).toBe(23500)
     expect(result.items).toEqual([
-      { id: 'i1', amountMinor: 23500, assignees: ['alice', 'bob'] },
+      { id: 'i1', amountMinor: 23500, allocations: [{ memberId: 'alice', shares: 1 }, { memberId: 'bob', shares: 1 }] },
     ])
     expect(result.splits).toEqual([
       { memberId: 'alice', amountMinor: 11750 },
@@ -791,8 +807,8 @@ describe('convertAndMaterializeFromSource — USD → IDR wide-magnitude', () =>
     // raw 437+291=728, expected 728 → residual 0 → items stay [437, 291]
     const result = convertAndMaterializeFromSource(sourceInput({
       sourceItems: [
-        { id: 'i1', amountMinor: 3, assignees: ['alice'] },
-        { id: 'i2', amountMinor: 2, assignees: ['bob'] },
+        { id: 'i1', amountMinor: 3, allocations: [{ memberId: 'alice', shares: 1 }] },
+        { id: 'i2', amountMinor: 2, allocations: [{ memberId: 'bob', shares: 1 }] },
       ],
       sourceAmountMinor: 5,
       rateDecimal:       '14567',
@@ -810,8 +826,8 @@ describe('convertAndMaterializeFromSource — source-domain validation', () => {
   it('rejects when items sum ≠ sourceAmountMinor (no adjustments)', () => {
     expect(() => convertAndMaterializeFromSource(sourceInput({
       sourceItems: [
-        { id: 'i1', amountMinor: 100, assignees: ['alice'] },
-        { id: 'i2', amountMinor: 200, assignees: ['bob'] },
+        { id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] },
+        { id: 'i2', amountMinor: 200, allocations: [{ memberId: 'bob', shares: 1 }] },
       ],
       sourceAmountMinor: 500, // claims 500 but items sum is 300
       rateDecimal:       '100',
@@ -820,8 +836,8 @@ describe('convertAndMaterializeFromSource — source-domain validation', () => {
     try {
       convertAndMaterializeFromSource(sourceInput({
         sourceItems: [
-          { id: 'i1', amountMinor: 100, assignees: ['alice'] },
-          { id: 'i2', amountMinor: 200, assignees: ['bob'] },
+          { id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] },
+          { id: 'i2', amountMinor: 200, allocations: [{ memberId: 'bob', shares: 1 }] },
         ],
         sourceAmountMinor: 500,
         rateDecimal:       '100',
@@ -834,8 +850,8 @@ describe('convertAndMaterializeFromSource — source-domain validation', () => {
     // items 1000 + 500 = 1500; TAX +150 → expected 1650; client claims 1700
     expectThrows(() => convertAndMaterializeFromSource(sourceInput({
       sourceItems: [
-        { id: 'i1', amountMinor: 1000, assignees: ['alice'] },
-        { id: 'i2', amountMinor: 500,  assignees: ['bob'] },
+        { id: 'i1', amountMinor: 1000, allocations: [{ memberId: 'alice', shares: 1 }] },
+        { id: 'i2', amountMinor: 500,  allocations: [{ memberId: 'bob', shares: 1 }] },
       ],
       sourceAdjustments: [
         { id: 'a1', kind: 'TAX', scope: 'EXPENSE', amountMinor: 150 },
@@ -856,7 +872,7 @@ describe('convertAndMaterializeFromSource — source-domain validation', () => {
   it('rejects sourceAmountMinor non-integer', () => {
     expectThrows(() => convertAndMaterializeFromSource(sourceInput({
       sourceItems: [
-        { id: 'i1', amountMinor: 100, assignees: ['alice'] },
+        { id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] },
       ],
       sourceAmountMinor: 100.5,
       rateDecimal:       '100',
@@ -866,7 +882,7 @@ describe('convertAndMaterializeFromSource — source-domain validation', () => {
   it('rejects source item amountMinor 0', () => {
     expectThrows(() => convertAndMaterializeFromSource(sourceInput({
       sourceItems: [
-        { id: 'i1', amountMinor: 0, assignees: ['alice'] },
+        { id: 'i1', amountMinor: 0, allocations: [{ memberId: 'alice', shares: 1 }] },
       ],
       sourceAmountMinor: 100,
       rateDecimal:       '100',
@@ -876,7 +892,7 @@ describe('convertAndMaterializeFromSource — source-domain validation', () => {
   it('rejects source adjustment amountMinor 0', () => {
     expectThrows(() => convertAndMaterializeFromSource(sourceInput({
       sourceItems: [
-        { id: 'i1', amountMinor: 100, assignees: ['alice'] },
+        { id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] },
       ],
       sourceAdjustments: [
         { id: 'a1', kind: 'TAX', scope: 'EXPENSE', amountMinor: 0 },
@@ -892,7 +908,7 @@ describe('convertAndMaterializeFromSource — fx-core error propagation', () => 
     // fx-core throws plain Error for non-canonical rate (not MaterializeError)
     expect(() => convertAndMaterializeFromSource(sourceInput({
       sourceItems: [
-        { id: 'i1', amountMinor: 100, assignees: ['alice'] },
+        { id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] },
       ],
       sourceAmountMinor: 100,
       rateDecimal:       '1.20',  // trailing zero — non-canonical
@@ -902,7 +918,7 @@ describe('convertAndMaterializeFromSource — fx-core error propagation', () => 
   it('propagates NaN-ish rate from fx-core (zero rejected)', () => {
     expect(() => convertAndMaterializeFromSource(sourceInput({
       sourceItems: [
-        { id: 'i1', amountMinor: 100, assignees: ['alice'] },
+        { id: 'i1', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] },
       ],
       sourceAmountMinor: 100,
       rateDecimal:       '0',
@@ -918,7 +934,7 @@ describe('convertAndMaterializeFromSource — materializer error propagation', (
     // to ExpenseValidationError so the operator sees one error class.
     expectThrows(() => convertAndMaterializeFromSource(sourceInput({
       sourceItems: [
-        { id: 'i1', amountMinor: 1, assignees: ['alice'] },
+        { id: 'i1', amountMinor: 1, allocations: [{ memberId: 'alice', shares: 1 }] },
       ],
       sourceAmountMinor: 1,
       rateDecimal:       '0.00001',
@@ -930,8 +946,8 @@ describe('convertAndMaterializeFromSource — determinism', () => {
   it('identical input produces identical output', () => {
     const fixture = sourceInput({
       sourceItems: [
-        { id: 'i1', amountMinor: 333, assignees: ['alice', 'bob', 'carol'] },
-        { id: 'i2', amountMinor: 100, assignees: ['alice'] },
+        { id: 'i1', amountMinor: 333, allocations: [{ memberId: 'alice', shares: 1 }, { memberId: 'bob', shares: 1 }, { memberId: 'carol', shares: 1 }] },
+        { id: 'i2', amountMinor: 100, allocations: [{ memberId: 'alice', shares: 1 }] },
       ],
       sourceAdjustments: [
         { id: 'a1', kind: 'TAX', scope: 'EXPENSE', amountMinor: 50 },

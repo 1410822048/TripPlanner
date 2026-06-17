@@ -113,14 +113,18 @@ const ExpenseSplitSchema = z.object({
 // ITEM_NOT_POSITIVE_INTEGER -- this schema rejects the same set at the
 // request boundary so we get a clean Zod error path before the
 // materializer runs in cross-field validation.
+const ExpenseItemAllocationSchema = z.object({
+  memberId: z.string().min(1).max(UID_MAX),
+  shares:   z.number().int().positive().max(999),
+})
+
 const ExpenseItemSchema = z.object({
   id:          z.string().min(1).max(64),
   name:        z.string().min(1).max(200),
   amountMinor: z.number().int().positive().max(1_000_000_000),
-  // Items use `assignees` (list of uids); the inner validation that
-  // every assignee is a trip member is checked in the cross-field
-  // pass below where we have memberIds in scope.
-  assignees:   z.array(z.string().min(1).max(UID_MAX)).min(1),
+  // Items use weighted allocations. Member membership is checked in
+  // the cross-field pass where we have memberIds in scope.
+  allocations: z.array(ExpenseItemAllocationSchema).min(1),
 })
 
 // Phase B adjustment shape. amountMinor is POSITIVE integer minor units;
@@ -151,9 +155,9 @@ const ExpenseAdjustmentSchema = z.object({
  *  timestamps, memberIds, and (post-4c) `receipt` are server-supplied
  *  and NOT in this schema.
  *
- *  Items + items[].assignees carry DoS caps -- items array <=100,
- *  each item's assignees <= MEMBERS roster size (enforced in the
- *  cross-field pass), and the per-assignee uid is the standard
+ *  Items + items[].allocations carry DoS caps -- items array <=100,
+ *  each item's allocations <= MEMBERS roster size (enforced in the
+ *  cross-field pass), and each allocation member uid is the standard
  *  Firebase uid length cap of 128 chars (via z.string().min(1)
  *  with implicit upper bound from memberIds.includes check). */
 export function makeExpenseCreateSchema() {
@@ -174,12 +178,12 @@ export function makeExpenseCreateSchema() {
     splits:      z.array(ExpenseSplitSchema).min(1).max(50),
     date:        z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
     note:        z.string().max(1000).optional(),
-    // Items + assignees caps: OCR receipts rarely exceed ~30 line
+    // Items + allocations caps: OCR receipts rarely exceed ~30 line
     // items; 100 buys 3× headroom while bounding the worst-case
-    // validation cost. Assignees per item caps at 50 to mirror the
+    // validation cost. Allocations per item caps at 50 to mirror the
     // splits cap (same per-item semantic -- N members on a line).
     items:       z.array(ExpenseItemSchema.extend({
-      assignees: z.array(z.string().min(1).max(UID_MAX)).min(1).max(50),
+      allocations: z.array(ExpenseItemAllocationSchema).min(1).max(50),
     })).max(100).optional(),
     // Phase B: persisted adjustments. Required (default empty array) so
     // every doc carries the field; legacy docs missing it fail
@@ -217,7 +221,7 @@ export type ExpenseReceiptOut = z.infer<ReturnType<typeof makeReceiptSchema>>
 //
 // Worker-authoritative: per-line allocation is the financial
 // attribution boundary; a totals-only validation phase would let an
-// attacker rearrange item→assignee mapping while keeping the source
+// attacker rearrange item→allocation mapping while keeping the source
 // total constant, biasing settlement debt edges. The cross-field
 // gate `sourceCurrency !== tripContext.currency` lives in the
 // router (same-currency must use the trip-currency path, not foreign).
@@ -231,7 +235,7 @@ const ForeignExpenseItemSchema = z.object({
   id:                z.string().min(1).max(64),
   name:              z.string().min(1).max(200),
   sourceAmountMinor: z.number().int().positive().max(1_000_000_000),
-  assignees:         z.array(z.string().min(1).max(UID_MAX)).min(1).max(50),
+  allocations:       z.array(ExpenseItemAllocationSchema).min(1).max(50),
 })
 
 /** Source-currency adjustment shape. Sign comes from `kind` (matches
@@ -413,8 +417,8 @@ export type ExpenseForeignUpdateInput = z.infer<ReturnType<typeof makeForeignExp
  *     old splitsFromItemsMirror per-member check guarded, but with
  *     the canonical pure-fn shared by client preview + Worker
  *     authoritative recompute so there's no second impl to drift.
- *   - every items[i].assignees[j] ∈ memberIds (handled by the
- *     materializer's NON_MEMBER_ASSIGNEE guard, re-thrown as
+ *   - every items[i].allocations[j].memberId ∈ memberIds (handled by the
+ *     materializer's NON_MEMBER_ALLOCATION guard, re-thrown as
  *     ExpenseValidationError below).
  *
  * Per-field minor-unit-grid checks (formerly `isMinorUnitAmount` +
@@ -431,7 +435,7 @@ export function validateExpenseCrossField(
     currency:     string
     paidBy:       string
     splits:       { memberId: string; amountMinor: number }[]
-    items?:       { id: string; amountMinor: number; assignees: string[] }[]
+    items?:       { id: string; amountMinor: number; allocations: { memberId: string; shares: number }[] }[]
     adjustments?: {
       id:            string
       kind:          string
@@ -467,7 +471,7 @@ export function validateExpenseCrossField(
   // SPLIT_PREVIEW_DRIFT signal -- caller's client-preview disagrees
   // with the Worker's authoritative recompute. The materializer also
   // enforces the items/adjustments cross-field invariants (positive-
-  // int items, member-in-roster assignees, ITEM/EXPENSE scope shape,
+  // int items, member-in-roster allocations, ITEM/EXPENSE scope shape,
   // over-discount guards) so the items-mode path doesn't need
   // duplicate Zod-level checks.
   //
@@ -490,7 +494,7 @@ export function validateExpenseCrossField(
   const matItems: MaterializeItem[] = items.map(i => ({
     id:          i.id,
     amountMinor: i.amountMinor,
-    assignees:   i.assignees,
+    allocations: i.allocations,
   }))
   const matAdjustments: MaterializeAdjustment[] = adjustments.map(a => ({
     id:           a.id,
@@ -514,8 +518,8 @@ export function validateExpenseCrossField(
       // materializer's `code` is the canonical handle; the dotted
       // field path is for form-level UI -- it picks the parent
       // collection that's most likely to surface the issue.
-      const field = e.code.startsWith('ITEM_') || e.code === 'NON_MEMBER_ASSIGNEE' ||
-                    e.code === 'DUPLICATE_ITEM_ASSIGNEE' || e.code === 'DUPLICATE_ITEM_ID' ||
+      const field = e.code.startsWith('ITEM_') || e.code === 'NON_MEMBER_ALLOCATION' ||
+                    e.code === 'DUPLICATE_ITEM_ALLOCATION_MEMBER' || e.code === 'DUPLICATE_ITEM_ID' ||
                     e.code === 'OVER_DISCOUNT_ITEM'
         ? 'items'
         : 'adjustments'

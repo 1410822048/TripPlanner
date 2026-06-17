@@ -25,7 +25,7 @@ export interface ForeignSourceItem {
   id:                string
   name:              string
   sourceAmountMinor: number
-  assignees:         string[]
+  allocations:       { memberId: string; shares: number }[]
 }
 
 export interface ForeignSourceAdjustment {
@@ -55,8 +55,17 @@ export function encodeSourceItems(
             id:                { stringValue:  item.id },
             name:              { stringValue:  item.name },
             sourceAmountMinor: { integerValue: String(item.sourceAmountMinor) },
-            assignees: {
-              arrayValue: { values: item.assignees.map(uid => ({ stringValue: uid })) },
+            allocations: {
+              arrayValue: {
+                values: item.allocations.map(allocation => ({
+                  mapValue: {
+                    fields: {
+                      memberId: { stringValue: allocation.memberId },
+                      shares:   { integerValue: String(allocation.shares) },
+                    },
+                  },
+                })),
+              },
             },
           },
         },
@@ -150,14 +159,20 @@ export function decodeSourceItemsField(
   if (!arr) return undefined
   return arr.map(v => {
     const inner = v.mapValue?.fields ?? {}
-    const aArr = (inner.assignees as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []
+    const allocationArr = (inner.allocations as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []
     return {
       id:                readString(inner, 'id')   ?? '',
       name:              readString(inner, 'name') ?? '',
       sourceAmountMinor: Number((inner.sourceAmountMinor as { integerValue?: string } | undefined)?.integerValue ?? 0),
-      assignees:         aArr
-        .map(a => (a as { stringValue?: string }).stringValue ?? '')
-        .filter(s => s !== ''),
+      allocations:       allocationArr
+        .map(v => {
+          const allocationFields = v.mapValue?.fields ?? {}
+          return {
+            memberId: readString(allocationFields, 'memberId') ?? '',
+            shares:   Number((allocationFields.shares as { integerValue?: string } | undefined)?.integerValue ?? 0),
+          }
+        })
+        .filter(a => a.memberId !== ''),
     }
   })
 }

@@ -100,17 +100,30 @@ describe('buildExpenseFormResult — trip currency manual', () => {
 
 describe('buildExpenseFormResult — by-item (OCR) same currency', () => {
   const items = [
-    { id: 'i1', name: 'Coffee', amountMinor: 1000, assignees: ['a'] },
-    { id: 'i2', name: 'Cake',   amountMinor: 2000, assignees: ['b'] },
+    { id: 'i1', name: 'Coffee', amountMinor: 1000, allocations: [{ memberId: 'a', shares: 1 }] },
+    { id: 'i2', name: 'Cake',   amountMinor: 2000, allocations: [{ memberId: 'b', shares: 1 }] },
   ]
 
-  it('materializes per-assignee splits from items', () => {
+  it('materializes per-allocation member splits from items', () => {
     const input = expectOk(buildExpenseFormResult(baseInput({ items, amountText: '3000' })))
     expect(input.items).toEqual(items)
     expect(input.adjustments).toEqual([])
     expect(input.splits).toEqual([
       { memberId: 'a', amountMinor: 1000 },
       { memberId: 'b', amountMinor: 2000 },
+    ])
+  })
+
+  it('uses allocation shares for quantity-based item splits', () => {
+    const input = expectOk(buildExpenseFormResult(baseInput({
+      items: [
+        { id: 'i1', name: 'Dumplings', amountMinor: 4000, allocations: [{ memberId: 'a', shares: 3 }, { memberId: 'b', shares: 1 }] },
+      ],
+      amountText: '4000',
+    })))
+    expect(input.splits).toEqual([
+      { memberId: 'a', amountMinor: 3000 },
+      { memberId: 'b', amountMinor: 1000 },
     ])
   })
 
@@ -178,8 +191,8 @@ describe('buildExpenseFormResult — foreign currency (USD → JPY @ 100)', () =
 
   it('line-mode (by-item) emits both trip + source items', () => {
     const items = [
-      { id: 'i1', name: 'Coffee', amountMinor: 1000, assignees: ['a'] }, // $10.00
-      { id: 'i2', name: 'Cake',   amountMinor: 2000, assignees: ['b'] }, // $20.00
+      { id: 'i1', name: 'Coffee', amountMinor: 1000, allocations: [{ memberId: 'a', shares: 1 }] }, // $10.00
+      { id: 'i2', name: 'Cake',   amountMinor: 2000, allocations: [{ memberId: 'b', shares: 1 }] }, // $20.00
     ]
     const input = expectOk(buildExpenseFormResult(baseInput({
       sourceCurrency: 'USD',
@@ -190,12 +203,12 @@ describe('buildExpenseFormResult — foreign currency (USD → JPY @ 100)', () =
     expect(input.mode).toBe('FOREIGN_CURRENCY')
     expect(input.amountMinor).toBe(3000)
     expect(input.items).toEqual([
-      { id: 'i1', name: 'Coffee', amountMinor: 1000, assignees: ['a'] },
-      { id: 'i2', name: 'Cake',   amountMinor: 2000, assignees: ['b'] },
+      { id: 'i1', name: 'Coffee', amountMinor: 1000, allocations: [{ memberId: 'a', shares: 1 }] },
+      { id: 'i2', name: 'Cake',   amountMinor: 2000, allocations: [{ memberId: 'b', shares: 1 }] },
     ])
     expect(input.sourceItems).toEqual([
-      { id: 'i1', name: 'Coffee', sourceAmountMinor: 1000, assignees: ['a'] },
-      { id: 'i2', name: 'Cake',   sourceAmountMinor: 2000, assignees: ['b'] },
+      { id: 'i1', name: 'Coffee', sourceAmountMinor: 1000, allocations: [{ memberId: 'a', shares: 1 }] },
+      { id: 'i2', name: 'Cake',   sourceAmountMinor: 2000, allocations: [{ memberId: 'b', shares: 1 }] },
     ])
     expect(input.sourceAdjustments).toEqual([])
     expect(input.splits).toEqual([
@@ -291,11 +304,11 @@ describe('buildExpenseFormResult — foreign FX gate (no rate yet)', () => {
 })
 
 describe('buildExpenseFormResult — by-item validation surfaces', () => {
-  const ok = { id: 'i1', name: 'Coffee', amountMinor: 1000, assignees: ['a'] }
+  const ok = { id: 'i1', name: 'Coffee', amountMinor: 1000, allocations: [{ memberId: 'a', shares: 1 }] }
 
-  it('flags an item with no assignee', () => {
+  it('flags an item with no allocation member', () => {
     expect(expectErr(buildExpenseFormResult(baseInput({
-      items: [{ ...ok, assignees: [] }], amountText: '1000',
+      items: [{ ...ok, allocations: [] }], amountText: '1000',
     }))).items).toBe('行 1：分担者を選択してください')
   })
 
@@ -338,8 +351,8 @@ describe('buildExpenseFormResult — by-item validation surfaces', () => {
 
   it('surfaces a materializer error (ITEM discount drives the item below zero)', () => {
     const items = [
-      { id: 'i1', name: 'Coffee', amountMinor: 100,  assignees: ['a'] },
-      { id: 'i2', name: 'Cake',   amountMinor: 2000, assignees: ['b'] },
+      { id: 'i1', name: 'Coffee', amountMinor: 100,  allocations: [{ memberId: 'a', shares: 1 }] },
+      { id: 'i2', name: 'Cake',   amountMinor: 2000, allocations: [{ memberId: 'b', shares: 1 }] },
     ]
     const adjustments: ExpenseAdjustment[] = [
       { id: 'adj1', label: '値引', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: 200, targetItemId: 'i1' },
@@ -374,8 +387,8 @@ describe('buildExpenseFormResult — split validation surfaces', () => {
 describe('buildExpenseFormResult — foreign conversion error surface', () => {
   it('surfaces the friendly over-discount copy for a foreign ITEM discount', () => {
     const items = [
-      { id: 'i1', name: 'Coffee', amountMinor: 100,  assignees: ['a'] }, // $1.00
-      { id: 'i2', name: 'Cake',   amountMinor: 2000, assignees: ['b'] }, // $20.00
+      { id: 'i1', name: 'Coffee', amountMinor: 100,  allocations: [{ memberId: 'a', shares: 1 }] }, // $1.00
+      { id: 'i2', name: 'Cake',   amountMinor: 2000, allocations: [{ memberId: 'b', shares: 1 }] }, // $20.00
     ]
     const adjustments: ExpenseAdjustment[] = [
       { id: 'adj1', label: '値引', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: 200, targetItemId: 'i1' },

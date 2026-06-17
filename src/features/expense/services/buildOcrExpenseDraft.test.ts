@@ -132,10 +132,10 @@ describe('buildOcrExpenseDraft — fail-fast parse', () => {
   })
 })
 
-// ─── Item minting + assignees ─────────────────────────────────────
+// ─── Item minting + allocations ─────────────────────────────────────
 
 describe('buildOcrExpenseDraft — items', () => {
-  it('mints ids in order and resets assignees to empty (Phase B contract)', () => {
+  it('mints ids in order and resets allocations to empty (Phase B contract)', () => {
     const draft = buildOcrExpenseDraft(
       ocrResult({
         items:     [ocrItem('A', '100'), ocrItem('B', '200')],
@@ -145,8 +145,8 @@ describe('buildOcrExpenseDraft — items', () => {
       makeNewId(),
     )
     expect(draft.items).toEqual([
-      { id: 'id-1', name: 'A', amountMinor: 100, amountText: '100', assignees: [] },
-      { id: 'id-2', name: 'B', amountMinor: 200, amountText: '200', assignees: [] },
+      { id: 'id-1', name: 'A', amountMinor: 100, amountText: '100', allocations: [] },
+      { id: 'id-2', name: 'B', amountMinor: 200, amountText: '200', allocations: [] },
     ])
   })
 })

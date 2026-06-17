@@ -82,16 +82,16 @@ function foreignDoc(overrides: Record<string, unknown> = {}): Record<string, unk
 /** Aligned items[] + sourceItems[] pair for OCR-path tests. The trip-
  *  domain `items` is what the Worker will materialize from the source-
  *  domain `sourceItems` on every money / date update; the schema only
- *  enforces id pair-wise alignment (name / assignees may diverge across
+ *  enforces id pair-wise alignment (name / allocations may diverge across
  *  sides since the Worker re-derives the trip side). */
 const baseItems = [
-  { id: 'item-1', name: 'Coffee',    amountMinor: 700,  assignees: ['editor-uid'] },
-  { id: 'item-2', name: 'Sandwich',  amountMinor: 1150, assignees: ['editor-uid'] },
+  { id: 'item-1', name: 'Coffee',    amountMinor: 700,  allocations: [{ memberId: 'editor-uid', shares: 1 }] },
+  { id: 'item-2', name: 'Sandwich',  amountMinor: 1150, allocations: [{ memberId: 'editor-uid', shares: 1 }] },
 ] as const
 
 const baseSourceItems = [
-  { id: 'item-1', name: 'Coffee',    sourceAmountMinor: 467, assignees: ['editor-uid'] },
-  { id: 'item-2', name: 'Sandwich',  sourceAmountMinor: 767, assignees: ['editor-uid'] },
+  { id: 'item-1', name: 'Coffee',    sourceAmountMinor: 467, allocations: [{ memberId: 'editor-uid', shares: 1 }] },
+  { id: 'item-2', name: 'Sandwich',  sourceAmountMinor: 767, allocations: [{ memberId: 'editor-uid', shares: 1 }] },
 ] as const
 
 const baseAdjustments = [
