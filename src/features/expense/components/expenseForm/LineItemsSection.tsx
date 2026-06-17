@@ -87,6 +87,7 @@ export default function LineItemsSection({
               index={i}
               item={it}
               members={members}
+              currency={currency}
               symbol={symbol}
               tripCurrency={tripCurrency}
               convertedItemAmount={foreignLinePreview?.itemAmountById.get(it.id)}

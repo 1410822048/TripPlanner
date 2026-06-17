@@ -4,18 +4,22 @@
 // Pure presentational — all state lives in the modal / useExpenseItems; this
 // only renders and calls index-based callbacks. Split out of LineItemsSection
 // to shorten the .map() body.
-import { Minus, Plus, Trash2 } from 'lucide-react'
+import { useState } from 'react'
+import { ChevronRight, Trash2, Users } from 'lucide-react'
 import CurrencyInput from '@/components/ui/CurrencyInput'
 import MemberAvatar from '@/components/ui/MemberAvatar'
 import { compactInputClass } from '@/components/ui/inputStyle'
 import { formatMinorAmount } from '@/utils/money'
 import type { TripMember } from '@/features/trips/types'
 import type { FormItem } from '../../hooks/useExpenseItems'
+import ExpenseItemAllocationSheet from './ExpenseItemAllocationSheet'
 
 interface ExpenseItemRowProps {
   index:        number
   item:         FormItem
   members:      TripMember[]
+  /** Effective currency (source currency when foreign-open, else trip). */
+  currency:     string
   symbol:       string
   tripCurrency: string
   /** Trip-currency per-line FX preview for this row (undefined when not
@@ -29,10 +33,18 @@ interface ExpenseItemRowProps {
 }
 
 export default function ExpenseItemRow({
-  index, item, members, symbol, tripCurrency, convertedItemAmount,
+  index, item, members, currency, symbol, tripCurrency, convertedItemAmount,
   onSetName, onSetAmount, onToggleAllocation, onSetAllocationShares, onRemove,
 }: ExpenseItemRowProps) {
-  const allocationByMember = new Map(item.allocations.map(a => [a.memberId, a]))
+  const [allocationOpen, setAllocationOpen] = useState(false)
+  const memberById = new Map(members.map(member => [member.id, member]))
+  const allocatedMembers = item.allocations
+    .map(allocation => memberById.get(allocation.memberId))
+    .filter((member): member is TripMember => !!member)
+  const totalShares = item.allocations.reduce((sum, allocation) => sum + allocation.shares, 0)
+  const allocationLabel = item.allocations.length === 0
+    ? '分担者を選択'
+    : `${item.allocations.length}人 / ${totalShares}份`
 
   return (
     <div className="flex flex-col gap-1.5 px-2.5 py-2.5">
@@ -67,65 +79,41 @@ export default function ExpenseItemRow({
         </div>
       </div>
 
-      {/* Row 2: allocation chips + delete trailing.
-          Splitwise-style "primary action area / cleanup tail". */}
+      {/* Row 2: allocation summary + delete trailing. Detailed per-member
+          shares live in a sheet so rows stay stable when trips have many
+          members. */}
       <div className="flex items-center gap-1.5">
-        <div className="flex gap-1 flex-wrap flex-1 min-w-0">
-          {members.map(m => {
-            const allocation = allocationByMember.get(m.id)
-            if (!allocation) {
-              return (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => onToggleAllocation(index, m.id)}
-                  className="min-h-8 inline-flex items-center gap-1 rounded-full border border-border bg-app pl-1 pr-2 text-[11px] text-muted transition-colors hover:border-muted"
-                >
-                  <MemberAvatar member={m} size={20} />
-                  <span className="max-w-[5rem] truncate">{m.label}</span>
-                </button>
-              )
-            }
-
-            return (
-              <div
-                key={m.id}
-                className="min-h-8 inline-flex items-center gap-1 rounded-full border border-accent/35 bg-teal-pale pl-1 pr-1 text-[11px] font-semibold text-teal"
-              >
-                <button
-                  type="button"
-                  onClick={() => onToggleAllocation(index, m.id)}
-                  className="inline-flex min-w-0 items-center gap-1"
-                  aria-label={`${m.label} を分担から外す`}
-                >
-                  <MemberAvatar member={m} size={20} />
-                  <span className="max-w-[4rem] truncate">{m.label}</span>
-                  <span className="tabular-nums">x{allocation.shares}</span>
-                </button>
-                <span className="h-4 w-px bg-accent/20" aria-hidden="true" />
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (allocation.shares <= 1) onToggleAllocation(index, m.id)
-                    else onSetAllocationShares(index, m.id, allocation.shares - 1)
-                  }}
-                  aria-label={`${m.label} の分担数を減らす`}
-                  className="grid h-6 w-6 place-items-center rounded-full hover:bg-white/60"
-                >
-                  <Minus size={12} strokeWidth={2.4} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onSetAllocationShares(index, m.id, allocation.shares + 1)}
-                  aria-label={`${m.label} の分担数を増やす`}
-                  className="grid h-6 w-6 place-items-center rounded-full hover:bg-white/60"
-                >
-                  <Plus size={12} strokeWidth={2.4} />
-                </button>
-              </div>
-            )
-          })}
-        </div>
+        <button
+          type="button"
+          onClick={() => setAllocationOpen(true)}
+          className={[
+            'flex min-h-9 flex-1 items-center gap-2 rounded-[14px] border px-2 py-1.5 text-left transition-colors',
+            item.allocations.length > 0
+              ? 'border-accent/30 bg-teal-pale text-teal'
+              : 'border-border bg-app text-muted hover:border-muted',
+          ].join(' ')}
+        >
+          {allocatedMembers.length > 0 ? (
+            <span className="flex shrink-0 -space-x-1">
+              {allocatedMembers.slice(0, 3).map(member => (
+                <MemberAvatar
+                  key={member.id}
+                  member={member}
+                  size={22}
+                  className="border-[1.5px] border-surface"
+                />
+              ))}
+            </span>
+          ) : (
+            <span className="grid h-[22px] w-[22px] shrink-0 place-items-center rounded-full bg-surface text-muted">
+              <Users size={13} strokeWidth={2.2} />
+            </span>
+          )}
+          <span className="min-w-0 flex-1 truncate text-[12px] font-bold tabular-nums">
+            {allocationLabel}
+          </span>
+          <ChevronRight size={14} strokeWidth={2.4} className="shrink-0 opacity-70" />
+        </button>
         <button
           type="button"
           onClick={() => onRemove(index)}
@@ -135,6 +123,17 @@ export default function ExpenseItemRow({
           <Trash2 size={13} strokeWidth={2} />
         </button>
       </div>
+
+      <ExpenseItemAllocationSheet
+        isOpen={allocationOpen}
+        item={item}
+        index={index}
+        members={members}
+        currency={currency}
+        onClose={() => setAllocationOpen(false)}
+        onToggleAllocation={onToggleAllocation}
+        onSetAllocationShares={onSetAllocationShares}
+      />
     </div>
   )
 }
