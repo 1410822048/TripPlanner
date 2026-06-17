@@ -43,6 +43,7 @@ function stubChatAndCaptureRequest(content: string) {
 	}) as typeof fetch
 	return () => JSON.parse(rawBody) as {
 		model?: string
+		enable_thinking?: boolean
 		response_format?: { type?: string; json_schema?: { name?: string; strict?: boolean } }
 		messages: Array<{ role: string; content: unknown }>
 	}
@@ -60,11 +61,28 @@ describe('extractReceiptItemsQwen', () => {
 
 		const body = readBody()
 		expect(body.model).toBe('qwen3-vl-flash')
+		// Thinking mode MUST be disabled — see qwen.ts enable_thinking comment.
+		expect(body.enable_thinking).toBe(false)
 		expect(body.response_format?.type).toBe('json_schema')
 		expect(body.response_format?.json_schema?.name).toBe('receipt_ocr')
 		expect(body.response_format?.json_schema?.strict).toBe(true)
 		expect(body.messages[0]).toMatchObject({ role: 'system' })
 		expect(JSON.stringify(body.messages[1])).toContain('data:image/webp;base64,abcd')
+	})
+
+	it('omits enable_thinking for non-Model-Studio gateways (keeps the body OpenAI-standard)', async () => {
+		const readBody = stubChatAndCaptureRequest(JSON.stringify(VALID_RESPONSE))
+
+		await extractReceiptItemsQwen('abcd', 'image/webp', 'JPY', {
+			...CFG,
+			baseUrl: 'https://openrouter.ai/api/v1',
+		})
+
+		const body = readBody()
+		// enable_thinking is a DashScope extension — a generic gateway must not
+		// receive it (would 400 on the unknown field).
+		expect(body.enable_thinking).toBeUndefined()
+		expect(body.response_format?.type).toBe('json_schema')
 	})
 
 	it('parses a valid response into OcrResponse', async () => {

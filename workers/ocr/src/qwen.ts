@@ -53,6 +53,20 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, '')
 }
 
+// enable_thinking is a DashScope / Model Studio EXTENSION to the OpenAI Chat
+// Completions body, NOT a standard field. This client's contract (see file
+// header) allows pointing QWEN_BASE_URL at OpenRouter / self-hosted OpenAI-
+// compatible gateways, and a strict gateway may reject unknown top-level
+// fields with 400. So the field is sent ONLY to Model Studio hosts
+// (*.aliyuncs.com); every other gateway gets a clean standard body.
+function isModelStudioEndpoint(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname.endsWith('.aliyuncs.com')
+  } catch {
+    return false
+  }
+}
+
 function extractMessageText(message: OpenAiChoice['message']): string | undefined {
   const content = message?.content
   if (typeof content === 'string') return content
@@ -108,6 +122,12 @@ export async function extractReceiptItemsQwen(
     ],
     max_tokens: MAX_TOKENS,
     temperature: 0,
+    // Disable Qwen3 hybrid thinking mode on Model Studio: thinking mode (1)
+    // doesn't support structured output and (2) its reasoning trace blows
+    // latency past our 45s ceiling → 504. Gated to Model Studio hosts because
+    // enable_thinking is a DashScope extension (see isModelStudioEndpoint) —
+    // a generic OpenAI-compatible gateway would 400 on the unknown field.
+    ...(isModelStudioEndpoint(cfg.baseUrl) ? { enable_thinking: false } : {}),
     response_format: {
       type: 'json_schema',
       json_schema: {
