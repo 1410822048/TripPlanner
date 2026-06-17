@@ -65,6 +65,8 @@ export default function WishPage() {
     else if (w.category === 'food') foodCount++
   }
   const counts = { place: placeCount, food: foodCount }
+  const hasAnyWishes = wishes.length > 0
+  const showBoardChrome = (isLoading && !isDemo) || hasAnyWishes
 
   // ─ Wish board の派生データを 1 か所で生成 ───────────────────────────
   // 順位(rank)/ 提案者(proposer)/ 投票者(voters)/ 賛成度の表示状態(consensus)を
@@ -204,51 +206,55 @@ export default function WishPage() {
         </div>
       </div>
 
-      {/* 固定上方フレーム ── 分類タブ。追加 CTA は次の固定ブロックに置く。 */}
-      <div className="shrink-0 px-4 pt-1 pb-2">
-        <div className="flex gap-1 p-1 rounded-card bg-app border border-border">
-        {WISH_CATEGORIES.map(t => {
-          const active = activeTab === t.value
-          return (
-            <button
-              key={t.value}
-              type="button"
-              onClick={() => setActiveTab(t.value)}
-              className={[
-                // 内側 pill の角丸は外枠(rounded-card=20px)− p-1(4px)= 16px に
-                // 合わせ、白い active 背景が外枠と同心になるようにする(角が四角く
-                // 見える違和感を解消)。
-                'flex-1 h-9 rounded-[16px] text-[12.5px] font-semibold cursor-pointer transition-all flex items-center justify-center gap-1.5',
-                active ? 'bg-surface text-ink shadow-[0_1px_3px_rgba(0,0,0,0.08)]' : 'bg-transparent text-muted',
-              ].join(' ')}
-            >
-              <t.icon size={14} strokeWidth={2} />
-              <span>{t.label}</span>
-              <span className={[
-                'text-[10.5px] font-medium tabular-nums',
-                active ? 'text-muted' : 'text-muted opacity-70',
-              ].join(' ')}>
-                {counts[t.value]}
-              </span>
-            </button>
-          )
-        })}
-        </div>
-      </div>
+      {showBoardChrome && (
+        <>
+          {/* 固定上方フレーム ── 分類タブ。追加 CTA は次の固定ブロックに置く。 */}
+          <div className="shrink-0 px-4 pt-1 pb-2">
+            <div className="flex gap-1 p-1 rounded-card bg-app border border-border">
+              {WISH_CATEGORIES.map(t => {
+                const active = activeTab === t.value
+                return (
+                  <button
+                    key={t.value}
+                    type="button"
+                    onClick={() => setActiveTab(t.value)}
+                    className={[
+                      // 内側 pill の角丸は外枠(rounded-card=20px)− p-1(4px)= 16px に
+                      // 合わせ、白い active 背景が外枠と同心になるようにする(角が四角く
+                      // 見える違和感を解消)。
+                      'flex-1 h-9 rounded-[16px] text-[12.5px] font-semibold cursor-pointer transition-all flex items-center justify-center gap-1.5',
+                      active ? 'bg-surface text-ink shadow-[0_1px_3px_rgba(0,0,0,0.08)]' : 'bg-transparent text-muted',
+                    ].join(' ')}
+                  >
+                    <t.icon size={14} strokeWidth={2} />
+                    <span>{t.label}</span>
+                    <span className={[
+                      'text-[10.5px] font-medium tabular-nums',
+                      active ? 'text-muted' : 'text-muted opacity-70',
+                    ].join(' ')}>
+                      {counts[t.value]}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
 
-      {/* 分類に紐づく追加入口。固定フレーム内に置くことで、リストの Y 軸は
-          このボタンの下から始まる。空タブでも高さが変わらずジャンプしない。 */}
-      <div className="shrink-0 px-4 pb-2">
-        <button
-          type="button"
-          onClick={modal.openAdd}
-          aria-label={`${activeTabLabel}の候補を追加`}
-          className="w-full h-11 rounded-[16px] border border-teal/20 bg-teal-pale text-teal text-[12.5px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors hover:bg-teal/15 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-        >
-          <Plus size={15} strokeWidth={2.5} />
-          {activeTabLabel}の候補を追加
-        </button>
-      </div>
+          {/* 分類に紐づく追加入口。固定フレーム内に置くことで、リストの Y 軸は
+              このボタンの下から始まる。空タブでも高さが変わらずジャンプしない。 */}
+          <div className="shrink-0 px-4 pb-2">
+            <button
+              type="button"
+              onClick={modal.openAdd}
+              aria-label={`${activeTabLabel}の候補を追加`}
+              className="w-full h-11 rounded-[16px] border border-teal/20 bg-teal-pale text-teal text-[12.5px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors hover:bg-teal/15 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              <Plus size={15} strokeWidth={2.5} />
+              {activeTabLabel}の候補を追加
+            </button>
+          </div>
+        </>
+      )}
 
       {/* 選項リスト ── 唯一スクロールする領域(独自 Y 軸)。relative ラッパーに
           上下のフェード overlay を重ね、固定フレームとの境界の「鋭い切れ」を
@@ -269,14 +275,37 @@ export default function WishPage() {
             <div className="w-14 h-14 rounded-full bg-app flex items-center justify-center mx-auto mb-3 text-muted">
               <Heart size={24} strokeWidth={1.6} />
             </div>
-            <p className="m-0 mb-1 text-[13.5px] font-semibold text-ink tracking-[0.02em]">
-              まだ{activeTabLabel}がありません
-            </p>
-            <p className="m-0 text-[11.5px] text-muted tracking-[0.04em]">
-              {activeTab === 'place'
-                ? '行きたい所をみんなで共有しましょう'
-                : '食べたいお店をみんなで共有しましょう'}
-            </p>
+            {hasAnyWishes ? (
+              <>
+                <p className="m-0 mb-1 text-[13.5px] font-semibold text-ink tracking-[0.02em]">
+                  まだ{activeTabLabel}がありません
+                </p>
+                <p className="m-0 text-[11.5px] text-muted tracking-[0.04em]">
+                  {activeTab === 'place'
+                    ? '行きたい所をみんなで共有しましょう'
+                    : '食べたいお店をみんなで共有しましょう'}
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="m-0 mb-1 text-[13.5px] font-semibold text-ink tracking-[0.02em]">
+                  まだ候補が登録されていません
+                </p>
+                <p className="m-0 mb-4 text-[11.5px] text-muted tracking-[0.04em] leading-[1.5]">
+                  行きたい場所や食べたいお店を<br />
+                  みんなで集めましょう
+                </p>
+                <button
+                  type="button"
+                  onClick={modal.openAdd}
+                  className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-[24px] border-none bg-teal text-white text-[12.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
+                >
+                  <Plus size={14} strokeWidth={2.5} />
+                  候補を追加
+                </button>
+              </>
+            )}
           </div>
         ) : (
           <div className="flex flex-col gap-3">
@@ -317,8 +346,12 @@ export default function WishPage() {
         </div>
         {/* 上下フェード ── scroll を遮らない overlay(pointer-events-none)。
             mask と違い fixed 子孫を閉じ込めないので ⋮ メニューは正常に開く。 */}
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-4 bg-gradient-to-b from-app to-transparent" />
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-5 bg-gradient-to-t from-app to-transparent" />
+        {showBoardChrome && (
+          <>
+            <div className="pointer-events-none absolute inset-x-0 top-0 h-4 bg-gradient-to-b from-app to-transparent" />
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-5 bg-gradient-to-t from-app to-transparent" />
+          </>
+        )}
       </div>
 
       {modal.isOpen && (
