@@ -13,6 +13,8 @@ describe('deriveReceiptOcrCapabilities', () => {
   it('suppresses all actions while a receipt is preparing', () => {
     expect(deriveReceiptOcrCapabilities({
       source:          { kind: 'preparing', requestId: 1 },
+      sourceKey:       null,
+      analyzedSourceKey: null,
       hasAttachment:   true,
       previewIsImage:  true,
       ocrLoading:      false,
@@ -41,7 +43,9 @@ describe('deriveReceiptOcrCapabilities', () => {
 
     expect(deriveReceiptOcrCapabilities({
       ...common,
-      source: { kind: 'fresh', file: jpeg('fresh.jpg') },
+      source: { kind: 'fresh', file: jpeg('fresh.jpg'), revision: 1 },
+      sourceKey: 'fresh:1',
+      analyzedSourceKey: null,
     }).canCompare).toBe(true)
     expect(deriveReceiptOcrCapabilities({
       ...common,
@@ -51,7 +55,56 @@ describe('deriveReceiptOcrCapabilities', () => {
         expenseId:   'expense-1',
         receiptPath: 'trips/trip-1/expenses/expense-1/receipt.webp',
       },
+      sourceKey: 'existing:trip-1:expense-1:trips/trip-1/expenses/expense-1/receipt.webp:',
+      analyzedSourceKey: null,
     }).canCompare).toBe(false)
+  })
+
+  it('treats existing line items as stale after replacing the receipt source', () => {
+    const common = {
+      hasAttachment:   true,
+      previewIsImage:  true,
+      ocrLoading:      false,
+      hasItems:        true,
+      ocrError:        null,
+      fallbackEnabled: true,
+      compareEnabled:  true,
+    }
+
+    expect(deriveReceiptOcrCapabilities({
+      ...common,
+      source: {
+        kind:        'existing',
+        tripId:      'trip-1',
+        expenseId:   'expense-1',
+        receiptPath: 'trips/trip-1/expenses/expense-1/receipt.webp',
+      },
+      sourceKey: 'existing:trip-1:expense-1:trips/trip-1/expenses/expense-1/receipt.webp:',
+      analyzedSourceKey: null,
+    })).toMatchObject({
+      canAnalyze:   false,
+      canReanalyze: true,
+    })
+
+    expect(deriveReceiptOcrCapabilities({
+      ...common,
+      source: { kind: 'fresh', file: jpeg('fresh.jpg'), revision: 1 },
+      sourceKey: 'fresh:1',
+      analyzedSourceKey: null,
+    })).toMatchObject({
+      canAnalyze:   true,
+      canReanalyze: false,
+    })
+
+    expect(deriveReceiptOcrCapabilities({
+      ...common,
+      source: { kind: 'fresh', file: jpeg('fresh.jpg'), revision: 1 },
+      sourceKey: 'fresh:1',
+      analyzedSourceKey: 'fresh:1',
+    })).toMatchObject({
+      canAnalyze:   false,
+      canReanalyze: true,
+    })
   })
 })
 

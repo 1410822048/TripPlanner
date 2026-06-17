@@ -15,7 +15,7 @@ export interface ExistingReceiptOcrSeed {
 export type ReceiptOcrSource =
   | { kind: 'none' }
   | { kind: 'preparing'; requestId: number }
-  | { kind: 'fresh'; file: File }
+  | { kind: 'fresh'; file: File; revision: number }
   | {
       kind:            'existing'
       tripId:          string
@@ -25,11 +25,12 @@ export type ReceiptOcrSource =
     }
 
 export type ExistingReceiptOcrSource = Extract<ReceiptOcrSource, { kind: 'existing' }>
+export type ReceiptOcrSourceKey = string
 
 type ReceiptOcrReadyLocalState =
   | { kind: 'existing-seed' }
   | { kind: 'none' }
-  | { kind: 'fresh'; file: File }
+  | { kind: 'fresh'; file: File; revision: number }
 
 type ReceiptOcrLocalState =
   | ReceiptOcrReadyLocalState
@@ -43,14 +44,16 @@ export interface ReceiptOcrCapabilities {
 }
 
 export interface ReceiptOcrCapabilityInput {
-  source:          ReceiptOcrSource
-  hasAttachment:   boolean
-  previewIsImage:  boolean
-  ocrLoading:      boolean
-  hasItems:        boolean
-  ocrError:        string | null
-  fallbackEnabled: boolean
-  compareEnabled:  boolean
+  source:            ReceiptOcrSource
+  sourceKey:         ReceiptOcrSourceKey | null
+  analyzedSourceKey: ReceiptOcrSourceKey | null
+  hasAttachment:     boolean
+  previewIsImage:    boolean
+  ocrLoading:        boolean
+  hasItems:          boolean
+  ocrError:          string | null
+  fallbackEnabled:   boolean
+  compareEnabled:    boolean
 }
 
 export function deriveExistingReceiptOcrSource(seed: ExistingReceiptOcrSeed): ExistingReceiptOcrSource | null {
@@ -80,7 +83,7 @@ function sourceFromLocalState(
     case 'existing-seed':
       return deriveExistingReceiptOcrSource(seed) ?? { kind: 'none' }
     case 'fresh':
-      return { kind: 'fresh', file: state.file }
+      return { kind: 'fresh', file: state.file, revision: state.revision }
     case 'preparing':
       return { kind: 'preparing', requestId: state.requestId }
     case 'none':
@@ -92,22 +95,46 @@ function readyStateFrom(state: ReceiptOcrLocalState): ReceiptOcrReadyLocalState 
   return state.kind === 'preparing' ? state.previous : state
 }
 
+export function receiptOcrSourceKey(source: ReceiptOcrSource): ReceiptOcrSourceKey | null {
+  switch (source.kind) {
+    case 'fresh':
+      return `fresh:${source.revision}`
+    case 'existing':
+      return [
+        'existing',
+        source.tripId,
+        source.expenseId,
+        source.receiptPath,
+        source.updatedAtMillis ?? '',
+      ].join(':')
+    case 'none':
+    case 'preparing':
+      return null
+  }
+}
+
 export function deriveReceiptOcrCapabilities(input: ReceiptOcrCapabilityInput): ReceiptOcrCapabilities {
   const hasReadableAttachment = input.hasAttachment && input.previewIsImage
   const hasOcrSource = input.source.kind === 'fresh' || input.source.kind === 'existing'
   const canRunAction = input.source.kind !== 'preparing' && !input.ocrLoading
+  const sourceAlreadyAnalyzed =
+    input.sourceKey !== null && input.sourceKey === input.analyzedSourceKey
+  const currentItemsBelongToSource =
+    input.hasItems && (input.source.kind === 'existing' || sourceAlreadyAnalyzed)
 
   return {
-    canAnalyze:   canRunAction && hasReadableAttachment && !input.hasItems && hasOcrSource,
-    canReanalyze: canRunAction && hasReadableAttachment && input.hasItems && hasOcrSource,
-    canFallback:  canRunAction && input.fallbackEnabled && hasReadableAttachment && hasOcrSource && (input.hasItems || !!input.ocrError),
+    canAnalyze:   canRunAction && hasReadableAttachment && hasOcrSource && !currentItemsBelongToSource,
+    canReanalyze: canRunAction && hasReadableAttachment && hasOcrSource && currentItemsBelongToSource,
+    canFallback:  canRunAction && input.fallbackEnabled && hasReadableAttachment && hasOcrSource && (currentItemsBelongToSource || !!input.ocrError),
     canCompare:   canRunAction && input.compareEnabled && hasReadableAttachment && input.source.kind === 'fresh',
   }
 }
 
 export function useReceiptOcrSource(seed: ExistingReceiptOcrSeed) {
   const [localState, setLocalState] = useState<ReceiptOcrLocalState>({ kind: 'existing-seed' })
+  const [analyzedSourceKey, setAnalyzedSourceKey] = useState<ReceiptOcrSourceKey | null>(null)
   const requestSeqRef = useRef(0)
+  const freshRevisionRef = useRef(0)
 
   useEffect(() => () => {
     requestSeqRef.current++
@@ -124,9 +151,11 @@ export function useReceiptOcrSource(seed: ExistingReceiptOcrSeed) {
   const commitPreparedFile = (requestId: number, file: File): ReceiptOcrSource | null => {
     if (!isCurrent(requestId)) return null
 
+    const revision = freshRevisionRef.current + 1
     const next: ReceiptOcrLocalState = isOcrSupportedImageFile(file)
-      ? { kind: 'fresh', file }
+      ? { kind: 'fresh', file, revision }
       : { kind: 'none' }
+    if (next.kind === 'fresh') freshRevisionRef.current = revision
     setLocalState(next)
     return sourceFromLocalState(next, seed)
   }
@@ -140,15 +169,24 @@ export function useReceiptOcrSource(seed: ExistingReceiptOcrSeed) {
 
   const clear = (): void => {
     requestSeqRef.current++
+    setAnalyzedSourceKey(null)
     setLocalState({ kind: 'none' })
   }
 
+  const source = sourceFromLocalState(localState, seed)
+  const sourceKey = receiptOcrSourceKey(source)
+
   return {
-    source: sourceFromLocalState(localState, seed),
+    source,
+    sourceKey,
+    analyzedSourceKey,
     beginPreparing,
     commitPreparedFile,
     rejectPreparedFile,
     clear,
     isCurrent,
+    markAnalyzed: (key: ReceiptOcrSourceKey | null): void => {
+      if (key !== null) setAnalyzedSourceKey(key)
+    },
   }
 }
