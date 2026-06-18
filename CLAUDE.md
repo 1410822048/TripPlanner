@@ -158,7 +158,6 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 |---|---|
 | `BottomSheet` + `FormModalShell` | 5 個 form modal(Schedule/Booking/Expense/Wish/Planning)共用 wrapper。FormModalShell 內建 `saveError` 紅色 banner(AlertCircle + danger-pale) |
 | `MemberAvatar` | 純圓 avatar(read-only)— SettlementSummary、voter stack、ExpenseFormModal 的 paidBy / split picker 都用這個。內建 Google photo `<img>` + onError 退回 label fallback |
-| `MemberChip` | Selectable button + label avatar — paidBy / compact member picker 用 |
 | `CurrencyInput` | 帶幣值前綴的 number input。**Flex layout 而非 absolute span**,任意 symbol 寬度都不會跟 placeholder「0」重疊(NT$ / CN¥ / HK$ 等多字元 symbol 用這個解)。`size='default'`(42px 主欄)/ `'compact'`(36px row 用)兩種變體 |
 | `SkeletonBar` / `SkeletonContainer` / `PageHeaderSkeleton` / `PageSkeletonShell` | Skeleton primitives;Container 支援 `embedded` prop 避免 nested animate-pulse |
 | `OfflineBanner` | 離線時頂部 amber 細條,回線後 2s「同期しました」綠條 |
@@ -423,7 +422,7 @@ cd workers/ocr && npx wrangler tail        # Worker 即時 log
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **TripPlanner** (4000 symbols, 10153 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **TripPlanner** (4029 symbols, 10195 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

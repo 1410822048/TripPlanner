@@ -18,7 +18,7 @@ import { tripKeys } from '@/features/trips/queryKeys'
 import { MUTATION_ACTION, type MutationMeta } from '@/services/queryClient'
 import type { Invite, Trip } from '@/types'
 
-export const inviteKeys = {
+const inviteKeys = {
   ofTrip: (tripId: string, _uid?: string) => ['invites', tripId] as const,
 }
 

@@ -20,7 +20,7 @@ import type { CreatePlanItemInput, PlanItem } from '@/types'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
 import { MUTATION_ACTION, type MutationOptions } from '@/services/queryClient'
 
-export const planningKeys = {
+const planningKeys = {
   all: (tripId: string, uid?: string) => ['planning', tripId, uid ?? ''] as const,
 }
 

@@ -158,20 +158,6 @@ export async function subscribeToTrip(
 }
 
 /**
- * Fetch every trip the user belongs to — owner OR editor OR viewer.
- * Composes getMyTripIds + getTripsByIds so the staged services stay reusable
- * (AccountPage opts into the staged form to parallelise its member fan-out).
- *
- * Read cost: 1 query + N getDoc, where N is the number of trips the user is
- * a member of. For typical users (N < 20) this is well within budget and
- * avoids the list-rule constraint that prohibits per-doc exists() checks.
- */
-export async function getMyTrips(uid: string): Promise<Trip[]> {
-  const tripIds = await getMyTripIds(uid)
-  return getTripsByIds(tripIds)
-}
-
-/**
  * Batch-create a trip + owner member doc. Matches firestore.rules:
  *   - trips/{id}.ownerId == uid()
  *   - trips/{id}/members/{uid}.userId == uid() && role == 'owner'

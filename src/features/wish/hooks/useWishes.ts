@@ -22,7 +22,7 @@ import type { CreateWishInput, Wish, WishImage } from '@/types'
 import { mockTimestampNow } from '@/mocks/utils'
 import { MUTATION_ACTION, type MutationOptions } from '@/services/queryClient'
 
-export const wishKeys = {
+const wishKeys = {
   all: (tripId: string, uid?: string) => ['wishes', tripId, uid ?? ''] as const,
 }
 

@@ -3,7 +3,7 @@
 // preview mode. Cloud mode (signed-in with trips) bypasses this entirely.
 import type { TripItem, TripMember } from './types'
 
-export const DEMO_MEMBERS: TripMember[] = [
+const DEMO_MEMBERS: TripMember[] = [
   { id:'m1', label:'我', color:'#3A7858', bg:'#C6DDD6' },
   { id:'m2', label:'友', color:'#4A6FA0', bg:'#BDC9DC' },
   { id:'m3', label:'伴', color:'#9A6840', bg:'#DDC9B2' },

@@ -22,7 +22,7 @@ import { useUid } from '@/hooks/useAuth'
 import { useMembers } from '@/features/members/hooks/useMembers'
 import { useCurrentTrip } from '@/features/trips/hooks/useCurrentTrip'
 
-export type TripRole = Member['role']
+type TripRole = Member['role']
 
 /**
  * Returns the caller's role on `tripId`, or null when the answer

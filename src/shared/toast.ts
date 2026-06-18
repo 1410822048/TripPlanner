@@ -13,12 +13,12 @@ export type ToastKind = 'success' | 'error' | 'info'
  *  Why a single action(not array): mobile toasts have ~12px of real
  *  estate for actions; cramming two buttons turns into a misclick trap.
  *  If you need more options, that's an inline dialog, not a toast. */
-export interface ToastAction {
+interface ToastAction {
   label:   string
   onClick: () => void
 }
 
-export interface ToastItem {
+interface ToastItem {
   id:       string
   kind:     ToastKind
   message:  string

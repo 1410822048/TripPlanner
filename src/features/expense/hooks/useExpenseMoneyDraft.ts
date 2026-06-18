@@ -113,7 +113,7 @@ export function renormalizeMoneyDraftForCurrency(
 
 // ─── Reducer state + actions ──────────────────────────────────────
 
-export interface MoneyDraftState {
+interface MoneyDraftState {
   sourceCurrency:       string
   amountText:           string
   adjustments:          ExpenseAdjustment[]
@@ -238,7 +238,7 @@ function reducer(state: MoneyDraftState, action: Action): MoneyDraftState {
 
 // ─── Init from edit target ────────────────────────────────────────
 
-export function initMoneyDraft(editTarget: Expense | null, tripCurrency: string): MoneyDraftState {
+function initMoneyDraft(editTarget: Expense | null, tripCurrency: string): MoneyDraftState {
   // Foreign-edit branch: the persisted shape carries sourceCurrency +
   // sourceAmountMinor, so the amount input shows the SOURCE-side value the
   // user originally typed rather than the materialized trip-currency one.

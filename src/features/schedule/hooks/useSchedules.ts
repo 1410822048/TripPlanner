@@ -16,7 +16,7 @@ import { auditCreateMock, auditUpdateMock } from '@/utils/audit'
 import type { CreateScheduleInput, Schedule } from '@/types'
 import { MUTATION_ACTION, type MutationOptions } from '@/services/queryClient'
 
-export const scheduleKeys = {
+const scheduleKeys = {
   all: (tripId: string, uid?: string) => ['schedules', tripId, uid ?? ''] as const,
 }
 

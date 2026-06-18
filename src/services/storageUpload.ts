@@ -55,23 +55,3 @@ export function uploadFile(
     )
   })
 }
-
-/** Race a promise against a timeout. Throws after `ms` if the
- *  underlying operation hasn't resolved — used to escape Firebase
- *  Storage's 2-minute internal retry loop on operations that don't
- *  expose UploadTask events (e.g. getDownloadURL). */
-export async function withUploadTimeout<T>(
-  p: Promise<T>,
-  ms: number,
-  label: string,
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms)
-  })
-  try {
-    return await Promise.race([p, timeout])
-  } finally {
-    if (timer) clearTimeout(timer)
-  }
-}

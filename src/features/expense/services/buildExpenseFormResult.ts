@@ -49,7 +49,7 @@ import {
 
 /** 草稿行項目 —— form 的 FormItem 去掉純輸入用的 `amountText`,只留
  *  materializer / 持久層真正需要的整數 minor 欄位。 */
-export interface ExpenseFormDraftItem {
+interface ExpenseFormDraftItem {
   id:          string
   name:        string
   amountMinor: number

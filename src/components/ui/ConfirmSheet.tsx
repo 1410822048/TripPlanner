@@ -7,8 +7,8 @@
 import type { ReactNode } from 'react'
 import BottomSheet from '@/components/ui/BottomSheet'
 
-export type ConfirmSheetTone = 'danger' | 'neutral'
-export type ConfirmSheetLayout = 'row' | 'column'
+type ConfirmSheetTone = 'danger' | 'neutral'
+type ConfirmSheetLayout = 'row' | 'column'
 
 interface Props {
   isOpen:          boolean

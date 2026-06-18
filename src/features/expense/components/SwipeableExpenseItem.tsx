@@ -15,7 +15,7 @@ import SwipeableShell from '@/components/ui/SwipeableShell'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { formatMinorAmount } from '@/utils/money'
 
-export interface SwipeableExpenseItemProps {
+interface SwipeableExpenseItemProps {
   expense:      Expense
   payer:        TripMember | undefined
   summary:      string

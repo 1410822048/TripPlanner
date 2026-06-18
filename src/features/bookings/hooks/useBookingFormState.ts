@@ -9,7 +9,7 @@ import type { Booking } from '@/types'
 // `type` (not `interface`): TS won't widen interfaces to satisfy
 // `Record<string, unknown>` since interfaces are open for declaration
 // merging. Type aliases are closed and pass useFormReducer's constraint.
-export type BookingFormState = {
+type BookingFormState = {
   type:             Booking['type']
   title:            string
   origin:           string

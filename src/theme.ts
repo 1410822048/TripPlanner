@@ -22,5 +22,3 @@ export const theme = {
   warnBg:     '#F7EEDC',
   tile:       '#F0EDE8',
 } as const
-
-export type Theme = typeof theme

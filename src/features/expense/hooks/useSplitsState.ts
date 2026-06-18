@@ -13,7 +13,7 @@ import { formatMinorForInput } from '@/utils/money'
 
 export type SplitMode = 'equal' | 'custom'
 
-export interface SplitsState {
+interface SplitsState {
   mode:     SplitMode
   /** Member ids included in the equal-split. Ignored in custom mode. */
   included: Set<string>

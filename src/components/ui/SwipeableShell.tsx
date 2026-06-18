@@ -18,7 +18,7 @@ import {
   useSwipeRow, SWIPE_WIDTH, BG_TRANSITION, FG_TRANSITION,
 } from '@/hooks/useSwipeRow'
 
-export interface SwipeableShellRenderProps {
+interface SwipeableShellRenderProps {
   clickable: boolean
   selectButtonProps: {
     type: 'button'
@@ -31,7 +31,7 @@ type SwipeableShellChildren =
   | ReactNode
   | ((props: SwipeableShellRenderProps) => ReactNode)
 
-export interface SwipeableShellProps {
+interface SwipeableShellProps {
   /** Outer wrapper extra classes — pass the radius / border / shadow
    *  the calling feature wants (e.g. `rounded-xl border border-border`). */
   className?: string

@@ -25,8 +25,6 @@ import { mockTimestampNow } from '@/mocks/utils'
 import type { SettlementRecord } from '@/types/settlement'
 import { MUTATION_ACTION } from '@/services/queryClient'
 
-export { settlementKeys }
-
 export const useSettlements = createRealtimeListHook<SettlementRecord>({
   queryKeyFactory: settlementKeys.all,
   initialFetch:    getSettlementsByTrip,

@@ -18,7 +18,7 @@ import { MUTATION_ACTION } from '@/services/queryClient'
 import { mockTimestampNow } from '@/mocks/utils'
 import type { CreateExpenseInput, Expense } from '@/types'
 
-export const expenseKeys = {
+const expenseKeys = {
   all: (tripId: string, uid?: string) => ['expenses', tripId, uid ?? ''] as const,
 }
 
