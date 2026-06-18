@@ -5,7 +5,7 @@
 // component owns only the two hidden <input> refs (local to the picker UI);
 // every handler + display value is passed in.
 import { useRef, type ChangeEvent } from 'react'
-import { Camera, Check, Loader2, ScanLine, Upload } from 'lucide-react'
+import { AlertTriangle, Camera, Check, Loader2, ScanLine, Upload } from 'lucide-react'
 import FormField from '@/components/ui/FormField'
 import AttachmentRow from '@/components/ui/AttachmentRow'
 import type {
@@ -144,6 +144,11 @@ function CompareSummary({ result }: { result: OcrCompareResult }) {
 interface ReceiptSectionProps {
   /** Receipt error copy (attachment error ?? OCR error). */
   error:          string | undefined
+  /** Lines-vs-bill mismatch warning (null when reconciled). Surfaced at
+   *  the scan locus so an OCR misread is caught before the user scrolls
+   *  to the items; the ✓ reconciled case stays silent (LineItemsSection
+   *  owns the live sum-check display). */
+  reconcileWarning: string | null
   hasAttachment:  boolean
   attachmentName: string
   previewUrl:     string | null
@@ -173,7 +178,7 @@ interface ReceiptSectionProps {
 }
 
 export default function ReceiptSection({
-  error, hasAttachment, attachmentName, previewUrl, previewIsImage, canPreview,
+  error, reconcileWarning, hasAttachment, attachmentName, previewUrl, previewIsImage, canPreview,
   ocrLoading, ocrElapsedMs, canAnalyze, canReanalyze,
   canFallback, canCompare, compareLoading, compareError, compareResult,
   onCameraPicked, onUploadPicked, onClear, onAnalyze, onPreview,
@@ -259,6 +264,18 @@ export default function ReceiptSection({
           )}
 
           {ocrLoading && <OcrLoadingHint elapsedMs={ocrElapsedMs} />}
+
+          {/* Suppress while rescanning so stale residuals don't flash. No
+              live region: this derives from amount/items and would otherwise
+              announce intermediate residuals on every edit. */}
+          {!ocrLoading && reconcileWarning && (
+            <div
+              className="flex items-start gap-2 rounded-input bg-warn-bg text-warn border border-warn/20 px-3 py-2 text-[11.5px] font-semibold leading-[1.45]"
+            >
+              <AlertTriangle size={14} strokeWidth={2.2} className="shrink-0 mt-px" />
+              <span>{reconcileWarning}</span>
+            </div>
+          )}
 
           {compareError && (
             <div className="rounded-input bg-warn-bg text-warn border border-warn/20 px-3 py-2 text-[11.5px] font-semibold leading-[1.45]">

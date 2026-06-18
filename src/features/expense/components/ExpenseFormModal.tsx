@@ -61,6 +61,7 @@ import { useTripId } from '@/hooks/useTripId'
 import { currencySymbol } from '@/utils/currency'
 import {
   formatMinorForInput,
+  formatMinorAmount,
   currencyFractionDigits,
 } from '@/utils/money'
 import AttachmentPreviewModal from '@/features/bookings/components/AttachmentPreviewModal'
@@ -345,9 +346,16 @@ export default function ExpenseFormModal({
   // save-path validator). effectiveItemsTotal nets discounts/taxes so the
   // sum-check banner doesn't read a discounted receipt as "超過";
   // residualMinor drives the 不足/超過 display in LineItemsSection.
-  const { effectiveItemsTotal, residualMinor: itemsDiff } = reconcileReceipt({
+  const { effectiveItemsTotal, residualMinor: itemsDiff, direction } = reconcileReceipt({
     totalMinor: amountMinor, items: items.items, adjustments,
   })
+  // Surface receipt mismatch near scan controls. The `amountMinor > 0` gate
+  // prevents blank / mid-edit 請求額 from reparsing to 0 and falsely warning
+  // "請求額より多く" while the user is still typing the total.
+  const receiptReconcileWarning =
+    att.hasAttachment && items.hasItems && amountMinor > 0 && direction !== 'exact'
+      ? `明細が請求額より ${formatMinorAmount(Math.abs(itemsDiff), currency)} ${direction === 'short' ? '少なく' : '多く'}、合計が一致しません。読み取り結果を確認してください`
+      : null
   const includedArr = members.map(m => m.id).filter(id => splits.state.included.has(id))
   const equalSplits: Record<string, number> = Object.fromEntries(
     splitEqually(amountMinor, includedArr).map(s => [s.memberId, s.amountMinor]),
@@ -462,6 +470,7 @@ export default function ExpenseFormModal({
 
       <ReceiptSection
         error={receiptErrText}
+        reconcileWarning={receiptReconcileWarning}
         hasAttachment={att.hasAttachment}
         attachmentName={att.attachmentName}
         previewUrl={att.previewUrl}
