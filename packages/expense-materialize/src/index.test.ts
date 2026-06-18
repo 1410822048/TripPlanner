@@ -33,6 +33,7 @@ import {
   materializeExpenseSplitContributions,
   canonicalizeSplits,
   adjustmentSign,
+  reconcileReceipt,
   convertSourceLinesToTarget,
   convertSourceSplitsToTarget,
   convertAndMaterializeFromSource,
@@ -1012,5 +1013,46 @@ describe('convertSourceSplitsToTarget', () => {
       sourceFractionDigits:  2,
       targetFractionDigits:  0,
     }), 'SOURCE_SPLIT_SUM_MISMATCH')
+  })
+})
+
+describe('reconcileReceipt', () => {
+  it('items only, reconciled', () => {
+    const r = reconcileReceipt({ totalMinor: 1200, items: [{ amountMinor: 1000 }, { amountMinor: 200 }], adjustments: [] })
+    expect(r).toEqual({ effectiveItemsTotal: 1200, residualMinor: 0, direction: 'exact' })
+  })
+
+  it('discount subtracts so a discounted receipt still reconciles', () => {
+    const r = reconcileReceipt({ totalMinor: 800, items: [{ amountMinor: 1000 }], adjustments: [{ kind: 'DISCOUNT', amountMinor: 200 }] })
+    expect(r).toEqual({ effectiveItemsTotal: 800, residualMinor: 0, direction: 'exact' })
+  })
+
+  it('tax adds so a taxed receipt reconciles', () => {
+    const r = reconcileReceipt({ totalMinor: 1080, items: [{ amountMinor: 1000 }], adjustments: [{ kind: 'TAX', amountMinor: 80 }] })
+    expect(r).toEqual({ effectiveItemsTotal: 1080, residualMinor: 0, direction: 'exact' })
+  })
+
+  it('mixed signed adjustments net out', () => {
+    const r = reconcileReceipt({ totalMinor: 1050, items: [{ amountMinor: 1000 }], adjustments: [{ kind: 'TAX', amountMinor: 100 }, { kind: 'DISCOUNT', amountMinor: 50 }] })
+    expect(r).toEqual({ effectiveItemsTotal: 1050, residualMinor: 0, direction: 'exact' })
+  })
+
+  it('missing line → positive residual, direction short', () => {
+    const r = reconcileReceipt({ totalMinor: 1480, items: [{ amountMinor: 1000 }], adjustments: [] })
+    expect(r).toEqual({ effectiveItemsTotal: 1000, residualMinor: 480, direction: 'short' })
+  })
+
+  it('over-read lines → negative residual, direction over', () => {
+    const r = reconcileReceipt({ totalMinor: 1200, items: [{ amountMinor: 1000 }, { amountMinor: 500 }], adjustments: [] })
+    expect(r).toEqual({ effectiveItemsTotal: 1500, residualMinor: -300, direction: 'over' })
+  })
+
+  it('throws on an unrecognised adjustment kind (same runtime gate as the materializer)', () => {
+    expect(() => reconcileReceipt({
+      totalMinor: 1000,
+      items: [{ amountMinor: 1000 }],
+      // @ts-expect-error — exercising the runtime gate with an out-of-band kind
+      adjustments: [{ kind: 'BOGUS', amountMinor: 1 }],
+    })).toThrow(MaterializeError)
   })
 })

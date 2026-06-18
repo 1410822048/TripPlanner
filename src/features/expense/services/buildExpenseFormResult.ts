@@ -28,7 +28,7 @@ import {
   type SourceExpenseSplit,
 } from '@/types'
 import {
-  adjustmentSign,
+  reconcileReceipt,
   convertAndMaterializeFromSource,
   convertSourceSplitsToTarget,
   materializeExpenseSplits,
@@ -149,12 +149,14 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
   const currency      = isForeignOpen ? sourceCurrency : tripCurrency
 
   // ── 衍生值(component 端有同名 live-preview 版本;此處為 save 路徑重算)──
-  const amountMinor         = safeReparseMoney(amountText, currency)
-  const itemsSum            = items.reduce((s, it) => s + it.amountMinor, 0)
-  const adjustmentNetMinor  = adjustments.reduce((s, a) => s + adjustmentSign(a.kind) * a.amountMinor, 0)
-  const effectiveItemsTotal = itemsSum + adjustmentNetMinor
-  const itemsDiff           = amountMinor - effectiveItemsTotal
-  const hasItems            = items.length > 0
+  const amountMinor = safeReparseMoney(amountText, currency)
+  // Lines-vs-bill reconciliation (signed adjustments) lives in the shared
+  // materialize package, so this save-path check and the form's live banner
+  // can't drift. `direction === 'exact'` ⇔ effective total === bill total.
+  const { effectiveItemsTotal, direction } = reconcileReceipt({
+    totalMinor: amountMinor, items, adjustments,
+  })
+  const hasItems = items.length > 0
 
   const includedSet = new Set(includedIds)
   const includedArr = memberIds.filter(id => includedSet.has(id))
@@ -236,7 +238,7 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
       e.items = `調整 ${zeroAdjustmentIdx + 1}: 金額を入力してください`
     } else if (danglingAdjustmentIdx >= 0) {
       e.items = `調整 ${danglingAdjustmentIdx + 1}: 対象項目を選択してください`
-    } else if (itemsDiff !== 0) {
+    } else if (direction !== 'exact') {
       e.items = `明細合計 ${formatMinorAmount(effectiveItemsTotal, currency)} と請求書合計 ${formatMinorAmount(amountMinor, currency)} が一致しません`
     }
     if (!e.items && !isForeignOpen) {

@@ -27,7 +27,7 @@ import {
   type CreateExpenseInput,
 } from '@/types'
 import type { TripMember } from '@/features/trips/types'
-import { adjustmentSign } from '@tripmate/expense-materialize'
+import { reconcileReceipt } from '@tripmate/expense-materialize'
 import { convertMinorHalfEven } from '@tripmate/fx-core'
 import FormModalShell from '@/components/ui/FormModalShell'
 import FormField from '@/components/ui/FormField'
@@ -341,16 +341,13 @@ export default function ExpenseFormModal({
           targetFractionDigits: currencyFractionDigits(tripCurrency),
         })
       : null)
-  // Net effect of adjustments (signed). DISCOUNT/COUPON/TAX_EXEMPT/OTHER
-  // subtract; SURCHARGE/TAX/TIP add. Same sign convention used by the
-  // materializer — adjustmentSign is exported so the form can mirror
-  // the math without re-deriving it.
-  const adjustmentNetMinor  = adjustments.reduce((s, a) => s + adjustmentSign(a.kind) * a.amountMinor, 0)
-  // Effective post-adjustment total. The sum-check banner compares this
-  // (not raw items.sum) to amountMinor, so receipts with discounts don't
-  // look like a "超過" error.
-  const effectiveItemsTotal = items.sum + adjustmentNetMinor
-  const itemsDiff           = amountMinor - effectiveItemsTotal
+  // Lines-vs-bill reconciliation (signed adjustments, shared with the
+  // save-path validator). effectiveItemsTotal nets discounts/taxes so the
+  // sum-check banner doesn't read a discounted receipt as "超過";
+  // residualMinor drives the 不足/超過 display in LineItemsSection.
+  const { effectiveItemsTotal, residualMinor: itemsDiff } = reconcileReceipt({
+    totalMinor: amountMinor, items: items.items, adjustments,
+  })
   const includedArr = members.map(m => m.id).filter(id => splits.state.included.has(id))
   const equalSplits: Record<string, number> = Object.fromEntries(
     splitEqually(amountMinor, includedArr).map(s => [s.memberId, s.amountMinor]),

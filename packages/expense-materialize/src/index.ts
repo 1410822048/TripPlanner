@@ -193,6 +193,46 @@ export function adjustmentSign(kind: AdjustmentKind): 1 | -1 {
   }
 }
 
+/** Result of reconciling a receipt draft's lines against its stated total. */
+export interface ReceiptReconciliation {
+  /** Σ items + signed Σ adjustments — what the lines add up to once
+   *  discounts subtract and taxes/tips add. The expense form's sum-check
+   *  banner shows this against the bill total. */
+  effectiveItemsTotal: number
+  /** totalMinor − effectiveItemsTotal. >0: the lines fall short of the
+   *  bill (a missing or under-read line); <0: they overshoot (a
+   *  double-counted or over-read line); 0: reconciled. */
+  residualMinor: number
+  direction: 'exact' | 'short' | 'over'
+}
+
+/** Reconcile a receipt draft's line items + signed adjustments against its
+ *  stated total. Pure integer-minor math — currency-agnostic, no
+ *  formatting (callers localize `residualMinor` for display).
+ *
+ *  Single source for the "do the lines add up to the bill?" check: the
+ *  expense form's live banner, the save-path validator, and (next) OCR
+ *  draft quality scoring all read the same residual instead of trusting a
+ *  model's self-reported confidence. `adjustmentSign` drives the sign —
+ *  DISCOUNT/COUPON/TAX_EXEMPT/OTHER subtract, SURCHARGE/TAX/TIP add — the
+ *  same convention the materializer applies downstream, so a reconciled
+ *  draft (residual 0) is one the materializer will also accept. */
+export function reconcileReceipt(input: {
+  totalMinor:  number
+  items:       readonly { amountMinor: number }[]
+  adjustments: readonly { kind: AdjustmentKind; amountMinor: number }[]
+}): ReceiptReconciliation {
+  const itemsSum      = input.items.reduce((s, it) => s + it.amountMinor, 0)
+  const adjustmentNet = input.adjustments.reduce((s, a) => s + adjustmentSign(a.kind) * a.amountMinor, 0)
+  const effectiveItemsTotal = itemsSum + adjustmentNet
+  const residualMinor       = input.totalMinor - effectiveItemsTotal
+  return {
+    effectiveItemsTotal,
+    residualMinor,
+    direction: residualMinor === 0 ? 'exact' : residualMinor > 0 ? 'short' : 'over',
+  }
+}
+
 // ─── Internal helpers ─────────────────────────────────────────────
 
 /**
