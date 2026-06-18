@@ -19,9 +19,15 @@ import type { Booking } from '@/types'
 import BookingFormModal, { type BookingFormResult } from './BookingFormModal'
 import SwipeableBookingItem from './SwipeableBookingItem'
 import AttachmentPreviewModal from './AttachmentPreviewModal'
+import BookingReadonlyModal from './BookingReadonlyModal'
 import BookingsListSkeleton from './BookingsListSkeleton'
 import { bookingDisplayName, BOOKING_TYPE_META, BOOKING_TYPE_ORDER } from '../utils'
 import { toLocalDateString } from '@/utils/dates'
+
+type BookingOverlay =
+  | { kind: 'detail'; bookingId: string }
+  | { kind: 'attachment'; bookingId: string }
+  | null
 
 /**
  * Format the user-facing date / range for a booking. Flights use a single
@@ -56,17 +62,25 @@ export default function BookingsPage() {
   const { ctx, uid, cloudTripId, mutationTripId, isDemo, canWrite, modal, signIn } =
     useFeatureListPage<Booking>()
   const swipe = useSwipeOpen()
-  const [previewBooking, setPreviewBooking] = useState<Booking | null>(null)
-  // path-only: resolve the full-size blob for the preview modal via getBlob
-  // (Storage Rules). Starts fetching the instant a booking is set; the modal
-  // shows a spinner until it lands, and the URL is revoked when closed.
-  const previewUrl = useAttachmentUrl(previewBooking?.attachment?.filePath, { kind: 'full' })
+  const [bookingOverlay, setBookingOverlay] = useState<BookingOverlay>(null)
 
   // Hooks must run unconditionally — pull tripId via optional chaining so
   // useBookings is always called (just disabled in non-cloud states).
   const { data: cloudBookings, isLoading } = useBookings(cloudTripId)
   const demoBookings = ctx.status === 'demo' && ctx.trip.id === 'demo' ? MOCK_BOOKINGS : []
   const bookings = ctx.status === 'demo' ? demoBookings : (cloudBookings ?? [])
+  const detailBooking =
+    bookingOverlay?.kind === 'detail'
+      ? bookings.find(booking => booking.id === bookingOverlay.bookingId) ?? null
+      : null
+  const attachmentBooking =
+    bookingOverlay?.kind === 'attachment'
+      ? bookings.find(booking => booking.id === bookingOverlay.bookingId) ?? null
+      : null
+  // path-only: resolve the full-size blob for the preview modal via getBlob
+  // (Storage Rules). Starts fetching the instant a booking is set; the modal
+  // shows a spinner until it lands, and the URL is revoked when closed.
+  const previewUrl = useAttachmentUrl(attachmentBooking?.attachment?.filePath, { kind: 'full' })
 
   // Optimistic close — modal closes immediately on save; failures route
   // to the global toast via MutationCache.onError + the hook rollback.
@@ -136,6 +150,30 @@ export default function BookingsPage() {
     swipe.closeAll()
     if (isDemo) { signIn.open(); return }
     deleteMut.mutate({ bookingId: b.id, attachment: b.attachment })
+  }
+
+  function handleOpenBookingDetail(b: Booking) {
+    swipe.closeAll()
+    setBookingOverlay({ kind: 'detail', bookingId: b.id })
+  }
+
+  function handlePreviewBookingAttachment(b: Booking) {
+    if (!b.attachment?.filePath) return
+    swipe.closeAll()
+    setBookingOverlay({ kind: 'attachment', bookingId: b.id })
+  }
+
+  function handleCloseAttachmentPreview() {
+    if (bookingOverlay?.kind === 'attachment') {
+      setBookingOverlay({ kind: 'detail', bookingId: bookingOverlay.bookingId })
+      return
+    }
+    setBookingOverlay(null)
+  }
+
+  function handleEditBookingFromDetail(b: Booking) {
+    setBookingOverlay(null)
+    modal.openEdit(b)
   }
 
   /** Inline delete from the edit modal — closes the form immediately so
@@ -235,9 +273,8 @@ export default function BookingsPage() {
                           whenLabel={formatWhen(b)}
                           isUpdating={pendingUpdateIds.has(b.id)}
                           {...swipeProps}
-                          onSelect={canWrite ? () => { swipe.closeAll(); modal.openEdit(b) } : undefined}
+                          onSelect={() => handleOpenBookingDetail(b)}
                           onDelete={canWrite ? () => handleSwipeDelete(b) : undefined}
-                          onPreview={() => setPreviewBooking(b)}
                         />
                       )
                     })}
@@ -285,12 +322,22 @@ export default function BookingsPage() {
         reason="予約を保存するには、"
       />
 
-      {previewBooking?.attachment && (
+      {detailBooking && (
+        <BookingReadonlyModal
+          isOpen
+          booking={detailBooking}
+          onClose={() => setBookingOverlay(null)}
+          onEdit={canWrite ? () => handleEditBookingFromDetail(detailBooking) : undefined}
+          onPreviewAttachment={handlePreviewBookingAttachment}
+        />
+      )}
+
+      {attachmentBooking?.attachment && (
         <AttachmentPreviewModal
           url={previewUrl}
-          fileType={previewBooking.attachment.fileType}
-          fileName={bookingDisplayName(previewBooking)}
-          onClose={() => setPreviewBooking(null)}
+          fileType={attachmentBooking.attachment.fileType}
+          fileName={bookingDisplayName(attachmentBooking)}
+          onClose={handleCloseAttachmentPreview}
         />
       )}
     </div>

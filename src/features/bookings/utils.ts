@@ -24,7 +24,7 @@ export function isImageAttachment(att: BookingAttachment | undefined): boolean {
  * Per-type display metadata — lucide icon shown in section headers /
  * fallback card thumbnails / form picker, label rendered as the heading
  * text. Single source of truth so adding a new booking type is a one-file
- * edit and BookingsPage / GenericCard / BookingFormModal never disagree.
+ * edit and BookingsPage / BookingPassCard / BookingFormModal never disagree.
  */
 export const BOOKING_TYPE_META: Record<Booking['type'], { icon: LucideIcon; label: string }> = {
   flight: { icon: Plane,      label: 'フライト' },
