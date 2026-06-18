@@ -9,7 +9,7 @@ export interface TripMember {
   color: string   // label 文字色
   bg:    string   // label 底色
   /**
-   * Google 等 OAuth 來源的 profile picture URL。MemberAvatar / MemberChip
+   * Google 等 OAuth 來源的 profile picture URL。MemberAvatar
    * 有值就放 <img>,失敗或缺值才 fallback 成色塊+label。從 Member doc 的
    * avatarUrl 欄位帶過來;新成員若為 Google 登入,user.photoURL 會在
    * acceptInvite 時寫進該欄位。

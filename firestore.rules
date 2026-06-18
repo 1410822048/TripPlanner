@@ -205,8 +205,8 @@ service cloud.firestore {
     // invite redeem, member remove, and role update now route through
     // /invite-redeem, /member-remove, and /member-role-update.
 
-    // Collection-group list gate for /members. Used by getMyTrips() to find
-    // every trip the user belongs to (owner OR editor OR viewer). The rule
+    // Collection-group list gate for /members. Used by the trip-id query to
+    // find every trip the user belongs to (owner OR editor OR viewer). The rule
     // restricts results to the caller's own member docs; clients must query
     // `where('userId','==',uid)` or Firestore rejects the query.
     //

@@ -2,9 +2,8 @@
 // Read-only circular avatar. Shows the member's Google / OAuth profile
 // photo when available (avatarUrl), falls back to a coloured circle
 // with the first grapheme of displayName. Used for display-only
-// contexts everywhere members are listed — settlement rows, voter
-// stack, members modal, trip header card. For selectable form chips
-// with avatar + label see MemberChip.tsx.
+// contexts everywhere members are listed: settlement rows, voter stack,
+// members modal, trip header card, and compact form allocations.
 //
 // `size` is a raw pixel diameter so callers spec exactly what they
 // need (typically 18-40px range). Font size auto-scales to 0.42× the

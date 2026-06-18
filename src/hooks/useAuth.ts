@@ -63,7 +63,7 @@ function writeAuthRedirectPending(pending: boolean): void {
   } catch { /* private mode / SSR — non-fatal */ }
 }
 
-export function readAuthBootstrapHint(): boolean {
+function readAuthBootstrapHint(): boolean {
   return readAuthHint() || readAuthRedirectPending()
 }
 
@@ -95,7 +95,7 @@ function getSnapshot(): AuthState {
  * and onAuthStateChanged subscription are warm before any route renders —
  * the first sign-in tap then skips a ~200ms bundle download.
  */
-export function initAuth(): Promise<void> {
+function initAuth(): Promise<void> {
   if (initPromise) return initPromise
   initPromise = (async () => {
     try {

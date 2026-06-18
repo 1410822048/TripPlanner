@@ -3,7 +3,7 @@
 // assumption that real bugs in this codebase have already broken at
 // least once:
 //   - L3 (R3) regression: list-vs-get permission gap. A user who is a
-//     non-owner member of any trip got 403 when getMyTrips switched to
+//     non-owner member of any trip got 403 when trip fetching switched to
 //     a `where(documentId, 'in', ids)` query because LIST is owner-only.
 //   - H2 (R2): immutable fields on update payloads.
 //   - Wish vote-toggle diff predicate (only the caller's own uid; only
