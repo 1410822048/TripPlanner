@@ -1,6 +1,6 @@
 import type { Booking } from '@/types'
 import { BOOKING_PASS_TONE, type BookingPassTone } from '../passStyle'
-import { airlineBrand, hotelBrand, railBrand, type Brand } from './cards/brandMeta'
+import { airlineBrand, bookingPlatformBrand, hotelBrand, railBrand, type Brand } from './cards/brandMeta'
 
 export interface BookingPassTheme {
   tone: BookingPassTone
@@ -17,6 +17,9 @@ interface BookingPassHeroChrome {
 }
 
 function matchedBrand(booking: Booking): Brand | null {
+  const platform = bookingPlatformBrand(booking.provider)
+  if (platform) return platform
+
   const brand =
     booking.type === 'flight' ? airlineBrand(booking.provider)
     : booking.type === 'hotel' ? hotelBrand(booking.provider)

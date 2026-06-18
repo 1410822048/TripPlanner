@@ -7,7 +7,7 @@
 //      per-table state so a hotel `provider` never returns an airline Brand.
 import { describe, expect, test } from 'vitest'
 import { Plane, Hotel } from 'lucide-react'
-import { airlineBrand, hotelBrand, railBrand } from './brandMeta'
+import { airlineBrand, bookingPlatformBrand, hotelBrand, railBrand } from './brandMeta'
 
 describe('airlineBrand', () => {
   test('matches IATA code regardless of case', () => {
@@ -109,6 +109,14 @@ describe('hotelBrand', () => {
 
   test('fallback uses hotel icon', () => {
     expect(hotelBrand('Random Boutique Inn').icon).toBe(Hotel)
+  })
+})
+
+describe('bookingPlatformBrand', () => {
+  test('matches OTA platforms independently of booking type', () => {
+    expect(bookingPlatformBrand('Trip.com')?.label).toBe('Trip')
+    expect(bookingPlatformBrand('Booking.com')?.label).toBe('Booking')
+    expect(bookingPlatformBrand('Marriott')).toBeNull()
   })
 })
 

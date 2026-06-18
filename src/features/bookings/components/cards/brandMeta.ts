@@ -96,10 +96,10 @@ const AIRLINES: Brand[] = [
   { label: '5J',   name: 'Cebu Pacific',          bg: '#FFC72C', fg: '#000', aliases: ['5j', 'cebu pacific', 'cebupacific'] },
 ]
 
-const HOTELS: Brand[] = [
+const BOOKING_PLATFORMS: Brand[] = [
   // OTA / short-rental platforms that users typically book through —
-  // these come first because the booking.provider field most commonly
-  // names the platform (Airbnb / Booking.com), not the underlying chain.
+  // checked before type-specific operators because the booking.provider
+  // field often names who holds the reservation, not who operates it.
   { label: 'Airbnb',     name: 'Airbnb',           bg: '#FF5A5F', fg: '#fff', aliases: ['airbnb', 'air bnb'] },
   { label: 'Booking',    name: 'Booking.com',      bg: '#003580', fg: '#fff', aliases: ['booking.com', 'booking'] },
   { label: 'Agoda',      name: 'Agoda',            bg: '#5392F9', fg: '#fff', aliases: ['agoda'] },
@@ -109,6 +109,9 @@ const HOTELS: Brand[] = [
   { label: '樂天',        name: '楽天トラベル',       bg: '#BF0000', fg: '#fff', aliases: ['rakuten travel', '楽天トラベル', '樂天旅遊'] },
   { label: 'Jalan',      name: 'じゃらん',          bg: '#FF6600', fg: '#fff', aliases: ['jalan', 'じゃらん'] },
   { label: 'VRBO',       name: 'Vrbo',             bg: '#1A2A36', fg: '#fff', aliases: ['vrbo'] },
+]
+
+const HOTELS: Brand[] = [
   // Hotel chains — matched after platforms so a "Marriott via Booking.com"
   // booking surfaces as Booking (the platform that holds the reservation).
   { label: 'Marriott',   name: 'Marriott',         bg: '#A4123F', fg: '#fff', aliases: ['marriott'] },
@@ -217,8 +220,12 @@ export function airlineBrand(provider: string | undefined): Brand {
   return matchBrand(provider, AIRLINES) ?? FALLBACKS.airline
 }
 
+export function bookingPlatformBrand(provider: string | undefined): Brand | null {
+  return matchBrand(provider, BOOKING_PLATFORMS)
+}
+
 export function hotelBrand(provider: string | undefined): Brand {
-  return matchBrand(provider, HOTELS) ?? FALLBACKS.hotel
+  return bookingPlatformBrand(provider) ?? matchBrand(provider, HOTELS) ?? FALLBACKS.hotel
 }
 
 export function railBrand(provider: string | undefined): Brand {
