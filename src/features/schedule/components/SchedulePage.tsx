@@ -1,8 +1,15 @@
 // src/features/schedule/components/SchedulePage.tsx
 // Layout orchestration only — state lives in useSchedulePageState,
-// modals in TripModalsHost. TripModalsHost is rendered as a sibling
-// (not nested in a conditional branch) so CreateTripModal survives the
-// EmptyTrips → main-content transition without remounting and flashing.
+// modals in TripModalsHost.
+//
+// TripModalsHost is lazy + gated on `hasOpenModal`: the whole modal layer
+// (7 modals + the date/time pickers they pull in) is its own chunk that
+// only downloads when the user first opens a modal, keeping it out of the
+// /schedule landing bundle. The `modals` node is rendered identically in
+// every return branch, so while a modal is open it's the same element in
+// all of them — CreateTripModal still survives the EmptyTrips → main
+// transition without remounting (hasOpenModal stays true across the swap).
+import { lazy, Suspense } from 'react'
 import TripSwitcher from '@/features/trips/components/TripSwitcher'
 import TripHeaderCard from '@/features/trips/components/TripHeaderCard'
 import SchedulePageSkeleton from './SchedulePageSkeleton'
@@ -10,8 +17,9 @@ import DaySelector from './DaySelector'
 import DayTimeline from './DayTimeline'
 import EmptyTrips from './EmptyTrips'
 import TripsErrorState from './TripsErrorState'
-import TripModalsHost from './TripModalsHost'
 import { useSchedulePageState } from '../hooks/useSchedulePageState'
+
+const TripModalsHost = lazy(() => import('./TripModalsHost'))
 
 export default function SchedulePage() {
   const state = useSchedulePageState()
@@ -25,7 +33,14 @@ export default function SchedulePage() {
     setCreateTripOpen, setEditTripOpen, setInviteOpen, setSignInOpen,
   } = state
 
-  const modals = <TripModalsHost state={state} />
+  // fallback={null}: the host renders nothing until a modal opens, so the
+  // brief chunk-load window on first open is invisible (no preload yet —
+  // first open eats a small fetch; revisit if that lag is noticeable).
+  const modals = state.hasOpenModal ? (
+    <Suspense fallback={null}>
+      <TripModalsHost state={state} />
+    </Suspense>
+  ) : null
 
   if (cloudTripsError) {
     return <>

@@ -117,6 +117,12 @@ export interface SchedulePageState {
   signInOpen:    boolean
   setSignInOpen: (open: boolean) => void
 
+  /** True when any TripModalsHost-owned modal is open. SchedulePage gates
+   *  the lazy TripModalsHost mount on this, so the modal chunk stays out
+   *  of the initial bundle until the first open. Keep in sync with the
+   *  modals TripModalsHost renders. */
+  hasOpenModal: boolean
+
   // ─── Pass-through references ──────────────────────────────────
   // TripModalsHost needs these to wire CopyTripModal / InviteModal /
   // MembersModal which speak `Trip` (not `TripItem`).
@@ -461,6 +467,17 @@ export function useSchedulePageState(): SchedulePageState {
     setScheduleDetailId(null)
   }
 
+  // Any modal open → SchedulePage mounts the lazy TripModalsHost.
+  const hasOpenModal =
+    scheduleModal.isOpen ||
+    !!scheduleDetailTarget ||
+    editTripOpen ||
+    createTripOpen ||
+    copyTripOpen ||
+    inviteOpen ||
+    membersOpen ||
+    signInOpen
+
   return {
     isDemo, canWrite, isOwner,
 
@@ -502,6 +519,7 @@ export function useSchedulePageState(): SchedulePageState {
     inviteOpen, setInviteOpen,
     membersOpen, setMembersOpen,
     signInOpen, setSignInOpen,
+    hasOpenModal,
 
     currentTrip,
   }
