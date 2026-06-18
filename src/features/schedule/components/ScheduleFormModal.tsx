@@ -15,18 +15,9 @@ import DeleteConfirm from '@/components/ui/DeleteConfirm'
 import { useTripCurrency } from '@/hooks/useTripCurrency'
 import { currencySymbol } from '@/utils/currency'
 import { formatMinorForInput, parseMoneyToMinor, MoneyParseError } from '@/utils/money'
-import { CATEGORY_ICON } from '@/shared/categoryMeta'
+import { CATEGORY_ICON, SCHEDULE_CATEGORIES } from '@/shared/categoryMeta'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
-
-const CATEGORIES: { value: ScheduleCategory; label: string }[] = [
-  { value: 'transport',     label: '交通' },
-  { value: 'accommodation', label: '住宿' },
-  { value: 'food',          label: '餐廳' },
-  { value: 'activity',      label: '活動' },
-  { value: 'shopping',      label: '購物' },
-  { value: 'other',         label: '其他' },
-]
 
 // `type` (not `interface`) so TS treats it as closed and the shape
 // satisfies useFormReducer's `Record<string, unknown>` constraint.
@@ -165,7 +156,7 @@ export default function ScheduleFormModal({
 
       <FormField label="カテゴリ">
         <div className="flex gap-[7px] flex-wrap">
-          {CATEGORIES.map(c => {
+          {SCHEDULE_CATEGORIES.map(c => {
             const CatIcon = CATEGORY_ICON[c.value]
             const active = state.category === c.value
             return (

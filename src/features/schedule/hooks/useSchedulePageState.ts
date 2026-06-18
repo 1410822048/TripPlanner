@@ -85,6 +85,10 @@ export interface SchedulePageState {
   // call openAdd / openEdit / close / setError / clearError on it.
   // The page-specific save + delete handlers stay on the bag.
   scheduleModal:    UseFormModalResult<Schedule>
+  scheduleDetailTarget: Schedule | null
+  openScheduleDetail:   (schedule: Schedule) => void
+  closeScheduleDetail:  () => void
+  editScheduleFromDetail: () => void
   scheduleIsSaving: boolean
   onScheduleSave:   (data: CreateScheduleInput) => Promise<void>
   onScheduleDelete: () => Promise<void>
@@ -154,6 +158,7 @@ export function useSchedulePageState(): SchedulePageState {
   // openAdd/openEdit/close, so the page-level fields below are thin
   // adapters preserving SchedulePageState's existing public shape.
   const scheduleModal = useFormModal<Schedule>()
+  const [scheduleDetailId, setScheduleDetailId] = useState<string | null>(null)
   const [editTripOpen,   setEditTripOpen]   = useState(false)
   const [createTripOpen, setCreateTripOpen] = useState(false)
   const [copyTripOpen,   setCopyTripOpen]   = useState(false)
@@ -228,6 +233,9 @@ export function useSchedulePageState(): SchedulePageState {
 
   const grouped   = groupByDate(schedules)
   const tripTotal = schedules.reduce((s, i) => s + (i.estimatedCostMinor ?? 0), 0)
+  const scheduleDetailTarget = scheduleDetailId
+    ? schedules.find(schedule => schedule.id === scheduleDetailId) ?? null
+    : null
 
   const trips = isDemo ? demoSelection.trips : cloudTripsList
   // Compiler memoises `selectedTrip` — child components (TripHeaderCard
@@ -258,17 +266,20 @@ export function useSchedulePageState(): SchedulePageState {
   const dayTotal = items.reduce((s, i) => s + (i.estimatedCostMinor ?? 0), 0)
 
   // ─── Action callbacks ─────────────────────────────────────────
-  const selectTrip = isDemo
-    ? demoSelection.selectTrip
-    : (item: TripItem) => {
-        // myTrips lookup retained as a "trip exists" gate — picking
-        // an id the user no longer has access to would just produce
-        // a null useCurrentTrip downstream and a confused UI.
-        if (myTrips?.some(t => t.id === item.id)) {
-          setSelectedTripId(item.id)
-          setActiveDate(null)
-        }
-      }
+  const selectTrip = (item: TripItem) => {
+    setScheduleDetailId(null)
+    if (isDemo) {
+      demoSelection.selectTrip(item)
+      return
+    }
+    // myTrips lookup retained as a "trip exists" gate — picking
+    // an id the user no longer has access to would just produce
+    // a null useCurrentTrip downstream and a confused UI.
+    if (myTrips?.some(t => t.id === item.id)) {
+      setSelectedTripId(item.id)
+      setActiveDate(null)
+    }
+  }
 
   // Cloud edit: diff against the current trip and only send changed
   // fields — a save with no changes (or only one field changed) should
@@ -436,6 +447,20 @@ export function useSchedulePageState(): SchedulePageState {
     } catch { /* hook onError already surfaced the toast */ }
   }
 
+  function openScheduleDetail(schedule: Schedule) {
+    setScheduleDetailId(schedule.id)
+  }
+
+  function closeScheduleDetail() {
+    setScheduleDetailId(null)
+  }
+
+  function editScheduleFromDetail() {
+    if (!scheduleDetailTarget) return
+    scheduleModal.openEdit(scheduleDetailTarget)
+    setScheduleDetailId(null)
+  }
+
   return {
     isDemo, canWrite, isOwner,
 
@@ -460,6 +485,10 @@ export function useSchedulePageState(): SchedulePageState {
     setActiveDate,
 
     scheduleModal,
+    scheduleDetailTarget,
+    openScheduleDetail,
+    closeScheduleDetail,
+    editScheduleFromDetail,
     scheduleIsSaving: isSaving,
     onScheduleSave,
     onScheduleDelete,

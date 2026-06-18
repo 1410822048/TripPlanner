@@ -113,7 +113,7 @@ export default function SchedulePage() {
           canWrite={canWrite}
           currency={selectedTrip.currency}
           onAdd={scheduleModal.openAdd}
-          onEdit={scheduleModal.openEdit}
+          onOpenDetails={state.openScheduleDetail}
         />
       </div>
       {modals}

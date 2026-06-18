@@ -1,5 +1,5 @@
 // src/features/schedule/components/TripModalsHost.tsx
-// All seven modals SchedulePage owns rendered in one place. Lifted out
+// All SchedulePage-owned modals rendered in one place. Lifted out
 // of the page so the page itself reads as layout orchestration; the
 // modals are each conditionally rendered + keyed for the
 // fresh-state-on-open pattern (see comments per modal).
@@ -10,6 +10,7 @@
 // then add a block here. Don't widen the page's surface.
 import { lazy, Suspense } from 'react'
 import ScheduleFormModal from './ScheduleFormModal'
+import ScheduleReadonlyModal from './ScheduleReadonlyModal'
 import EditTripModal from '@/features/trips/components/EditTripModal'
 import CopyTripModal from '@/features/trips/components/CopyTripModal'
 import CreateTripModal from '@/features/trips/components/CreateTripModal'
@@ -31,7 +32,7 @@ interface Props {
 export default function TripModalsHost({ state }: Props) {
   const {
     isDemo, canWrite, selectedTrip, schedules, currentTrip, display,
-    scheduleModal, scheduleIsSaving,
+    scheduleModal, scheduleDetailTarget, closeScheduleDetail, editScheduleFromDetail, scheduleIsSaving,
     onScheduleSave, onScheduleDelete,
     editTripOpen,    setEditTripOpen,
     createTripOpen,  setCreateTripOpen,
@@ -63,6 +64,16 @@ export default function TripModalsHost({ state }: Props) {
           onClose={scheduleModal.close}
           onSave={onScheduleSave}
           onDelete={scheduleModal.editTarget && canWrite ? onScheduleDelete : undefined}
+        />
+      )}
+
+      {scheduleDetailTarget && selectedTrip && (
+        <ScheduleReadonlyModal
+          isOpen
+          schedule={scheduleDetailTarget}
+          currency={selectedTrip.currency}
+          onClose={closeScheduleDetail}
+          onEdit={canWrite ? editScheduleFromDetail : undefined}
         />
       )}
 

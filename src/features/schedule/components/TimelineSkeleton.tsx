@@ -5,17 +5,24 @@ import { SkeletonBar, SkeletonContainer } from '@/components/ui/skeleton'
 
 function Card() {
   return (
-    <div className="flex gap-3">
-      <div className="w-12 h-12 rounded-xl bg-tile shrink-0" />
-      <div className="flex-1 bg-surface border border-border rounded-xl px-3 py-2.5 space-y-2">
+    <div className="relative pl-4 pb-4 last:pb-0">
+      <div
+        className="absolute left-[13px] top-[30px] bottom-0 w-[1.5px]"
+        style={{
+          background: `repeating-linear-gradient(to bottom, var(--color-dot) 0, var(--color-dot) 3px, transparent 3px, transparent 7px)`,
+        }}
+      />
+      <div className="absolute left-0 top-1 z-10 w-[28px] h-[28px] rounded-full border-[2px] border-app bg-tile shadow-[0_2px_8px_rgba(32,42,45,0.08)]" />
+      <div className="ml-2.5 min-h-[92px] bg-surface border border-l-[4px] border-border rounded-[20px] pl-4 pr-4 py-3 space-y-3">
+        <div className="flex gap-2.5">
+          <SkeletonBar className="h-[10px] w-[78px]" />
+          <SkeletonBar className="h-[10px] w-[86px]" />
+        </div>
         <div className="flex justify-between items-start gap-2">
           <SkeletonBar className="h-[14px] w-[55%]" />
           <SkeletonBar className="h-[18px] w-[56px] rounded-card" />
         </div>
-        <div className="flex gap-2.5">
-          <SkeletonBar className="h-[10px] w-[44px]" />
-          <SkeletonBar className="h-[10px] w-[60px]" />
-        </div>
+        <SkeletonBar className="h-[10px] w-[64%]" />
       </div>
     </div>
   )

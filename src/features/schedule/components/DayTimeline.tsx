@@ -22,11 +22,11 @@ interface Props {
    *  the old symbol after the user changes currency. */
   currency:   string
   onAdd:      () => void
-  onEdit:     (s: Schedule) => void
+  onOpenDetails: (s: Schedule) => void
 }
 
 function DayTimeline({
-  display, items, dayTotal, isLoading, canWrite, currency, onAdd, onEdit,
+  display, items, dayTotal, isLoading, canWrite, currency, onAdd, onOpenDetails,
 }: Props) {
   return (
     <div className="mx-5 mt-5">
@@ -80,16 +80,15 @@ function DayTimeline({
               s={s}
               isLast={idx === items.length - 1}
               currency={currency}
-              onEdit={() => onEdit(s)}
+              onOpenDetails={() => onOpenDetails(s)}
             />
           ))}
 
           {canWrite && (
-            <div className="flex mt-2.5">
-              <div className="w-12 shrink-0" />
+            <div className="mt-2.5 pl-[26px]">
               <button
                 onClick={onAdd}
-                className="flex-1 h-11 rounded-chip border-[1.5px] border-dashed border-border bg-transparent text-muted text-[13px] font-medium flex items-center justify-center gap-1.5 cursor-pointer tracking-[0.04em] transition-all hover:bg-teal-pale hover:border-teal hover:text-teal"
+                className="w-full h-11 rounded-chip border-[1.5px] border-dashed border-border bg-transparent text-muted text-[13px] font-medium flex items-center justify-center gap-1.5 cursor-pointer tracking-[0.04em] transition-all hover:bg-teal-pale hover:border-teal hover:text-teal"
               >
                 <Plus size={14} strokeWidth={2} />
                 行程を追加

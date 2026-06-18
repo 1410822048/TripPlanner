@@ -1,30 +1,19 @@
 // src/features/schedule/components/TimelineCard.tsx
-import { Clock, MapPin, Pencil } from 'lucide-react'
-import type { Schedule, ScheduleCategory } from '@/types'
+import { Clock, MapPin } from 'lucide-react'
+import type { Schedule } from '@/types'
 import { mapsSearchUrl } from '@/utils/maps'
 import { formatMinorAmount } from '@/utils/money'
-import { CATEGORY_ICON } from '@/shared/categoryMeta'
-
-// 色だけローカル(タイムラインの淡色トーン)。アイコンは shared の CATEGORY_ICON
-// を single source にして、フォーム picker / 費用リストと食い違わないようにする。
-const CAT_STYLE: Record<ScheduleCategory, { bg: string; color: string }> = {
-  transport:     { bg:'#E8EEF5', color:'#4A6FA0' },
-  accommodation: { bg:'#F5EDE6', color:'#9A6840' },
-  food:          { bg:'#F5E8E8', color:'#9A4848' },
-  activity:      { bg:'#E6F2EC', color:'#3A7858' },
-  shopping:      { bg:'#F0E8F5', color:'#724888' },
-  other:         { bg:'#EBEBEB', color:'#707070' },
-}
+import { CATEGORY_ICON, SCHEDULE_CATEGORY_STYLE } from '@/shared/categoryMeta'
 
 interface Props {
   s:        Schedule
   isLast:   boolean
   currency: string
-  onEdit:   () => void
+  onOpenDetails: () => void
 }
 
-export default function TimelineCard({ s, isLast, currency, onEdit }: Props) {
-  const cat  = CAT_STYLE[s.category]
+export default function TimelineCard({ s, isLast, currency, onOpenDetails }: Props) {
+  const cat  = SCHEDULE_CATEGORY_STYLE[s.category]
   const Icon = CATEGORY_ICON[s.category]
   // Inline maps link on the location label — keeps the meta row to one
   // line instead of stacking a separate chip below (which thickened the
@@ -42,96 +31,100 @@ export default function TimelineCard({ s, isLast, currency, onEdit }: Props) {
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
-      onEdit()
+      onOpenDetails()
     }
   }
 
   return (
     <div className={[
-      'flex items-stretch',
-      isLast ? 'mb-0' : 'mb-2.5',
+      'relative pl-4',
+      isLast ? 'pb-0' : 'pb-4',
     ].join(' ')}>
-      <div className="flex flex-col items-center w-12 shrink-0">
-        <div
-          className="w-[34px] h-[34px] rounded-input flex items-center justify-center shrink-0"
-          style={{ background: cat.bg, color: cat.color }}
-        >
-          <Icon size={15} strokeWidth={2} />
-        </div>
-        {!isLast && (
-          <div
-            className="w-[1.5px] flex-1 min-h-3 mt-1"
-            style={{
-              background: `repeating-linear-gradient(to bottom, var(--color-dot) 0, var(--color-dot) 3px, transparent 3px, transparent 7px)`,
-            }}
-          />
-        )}
+      <div
+        className={[
+          'absolute left-[13px] top-0 w-[1.5px]',
+          isLast ? 'h-[18px]' : 'bottom-0',
+        ].join(' ')}
+        style={{
+          background: `repeating-linear-gradient(to bottom, var(--color-dot) 0, var(--color-dot) 3px, transparent 3px, transparent 7px)`,
+        }}
+      />
+      <div
+        className="absolute left-0 top-1 z-10 w-[28px] h-[28px] rounded-full border-[2px] border-app flex items-center justify-center shadow-[0_2px_8px_rgba(32,42,45,0.08)]"
+        style={{ background: cat.bg, color: cat.color }}
+      >
+        <Icon size={14} strokeWidth={2} />
       </div>
 
       <div
         role="button"
         tabIndex={0}
-        onClick={onEdit}
+        onClick={onOpenDetails}
         onKeyDown={handleKeyDown}
-        aria-label={`${s.title} を編集`}
+        aria-label={`${s.title} の詳細を表示`}
         className={[
-          'flex-1 flex items-center gap-2 bg-surface border border-border rounded-chip px-3.5 py-[11px] pr-3',
+          'relative ml-2.5 flex min-h-[92px] items-center gap-2 bg-surface border border-border rounded-[20px] pl-4 pr-3 py-3',
           'cursor-pointer transition-colors',
           'hover:bg-[#F5F1EA] focus-visible:outline-2 focus-visible:outline-accent',
         ].join(' ')}
-        style={{ WebkitTapHighlightColor: 'transparent' }}
+        style={{
+          WebkitTapHighlightColor: 'transparent',
+          borderLeftColor: cat.color,
+          borderLeftWidth: 4,
+        }}
       >
         <div className="flex-1 min-w-0">
-          <div className="flex justify-between items-start gap-2">
-            <span className="text-[14px] font-semibold text-ink leading-[1.3]">
-              {s.title}
-            </span>
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-center gap-2 text-[11px] text-muted min-w-0 pt-0.5">
+              {s.startTime && (
+                <span className="flex items-center gap-[3px] shrink-0">
+                  <Clock size={10} strokeWidth={2} />
+                  {s.startTime}{s.endTime ? ` — ${s.endTime}` : ''}
+                </span>
+              )}
+              {locationName && (
+                mapHref ? (
+                  <a
+                    href={mapHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={e => e.stopPropagation()}
+                    onPointerDown={e => e.stopPropagation()}
+                    onKeyDown={e => e.stopPropagation()}
+                    aria-label={`${locationName} を地図で開く`}
+                    className="flex min-w-0 items-center gap-[3px] text-accent no-underline hover:underline"
+                  >
+                    <MapPin size={10} strokeWidth={2} className="shrink-0" />
+                    <span className="truncate">{locationName}</span>
+                  </a>
+                ) : (
+                  <span className="flex min-w-0 items-center gap-[3px] text-muted">
+                    <MapPin size={10} strokeWidth={2} className="shrink-0" />
+                    <span className="truncate">{locationName}</span>
+                  </span>
+                )
+              )}
+            </div>
             {typeof s.estimatedCostMinor === 'number' && s.estimatedCostMinor > 0 && (
               <span
-                className="text-[11px] font-semibold px-2 py-0.5 rounded-card shrink-0 whitespace-nowrap tabular-nums"
+                className="text-[11px] font-semibold px-2.5 py-1 rounded-full shrink-0 whitespace-nowrap tabular-nums leading-none"
                 style={{ color: cat.color, background: cat.bg }}
               >
                 {formatMinorAmount(s.estimatedCostMinor, currency)}
               </span>
             )}
           </div>
-          <div className="flex gap-2.5 mt-[5px] flex-wrap">
-            {s.startTime && (
-              <span className="flex items-center gap-[3px] text-[11px] text-muted">
-                <Clock size={10} strokeWidth={2} />
-                {s.startTime}{s.endTime ? ` — ${s.endTime}` : ''}
-              </span>
-            )}
-            {locationName && (
-              mapHref ? (
-                <a
-                  href={mapHref}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={e => e.stopPropagation()}
-                  onPointerDown={e => e.stopPropagation()}
-                  onKeyDown={e => e.stopPropagation()}
-                  aria-label={`${locationName} を地図で開く`}
-                  className="flex items-center gap-[3px] text-[11px] text-accent no-underline hover:underline"
-                >
-                  <MapPin size={10} strokeWidth={2} />
-                  {locationName}
-                </a>
-              ) : (
-                <span className="flex items-center gap-[3px] text-[11px] text-muted">
-                  <MapPin size={10} strokeWidth={2} />
-                  {locationName}
-                </span>
-              )
-            )}
+          <div className="mt-1.5">
+            <span className="text-[14px] font-semibold text-ink leading-[1.3] break-words">
+              {s.title}
+            </span>
           </div>
           {s.description && (
-            <span className="block mt-[5px] text-[11.5px] text-[#AEA9A2] leading-[1.55]">
+            <span className="block mt-3 border-t border-border pt-3 text-[11.5px] text-[#AEA9A2] leading-[1.55]">
               {s.description}
             </span>
           )}
         </div>
-        <Pencil size={12} color="#CCC8C0" strokeWidth={1.8} className="shrink-0" />
       </div>
     </div>
   )
