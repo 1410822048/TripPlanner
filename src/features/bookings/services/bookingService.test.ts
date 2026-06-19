@@ -541,7 +541,7 @@ describe('updateBooking', () => {
       // Form: user cleared checkIn + note, left title alone, never
       // touched confirmationCode (key absent → must stay absent in patch
       // so Worker treats as no-op, not as field-deletion).
-      { title: 'Edit', checkIn: undefined, note: undefined } as unknown as Parameters<typeof updateBooking>[2],
+      { title: 'Edit', checkIn: undefined, note: undefined, link: undefined } as unknown as Parameters<typeof updateBooking>[2],
       { uid: 'u1', attachment: new File([], 'r.jpg', { type: 'image/jpeg' }), existing: ATTACHMENT },
     )
 
@@ -550,6 +550,8 @@ describe('updateBooking', () => {
       title:   'Edit',
       checkIn: '',
       note:    '',
+      // link is CLEARABLE too — cleared `undefined` → '' empty-string sentinel.
+      link:    '',
     })
     // Worker contract: keys never sent by the form must stay absent so
     // Worker.encodeBookingUpdate treats them as no-op (not field-delete).

@@ -1,6 +1,7 @@
 import {
   Building2,
   CalendarDays,
+  ExternalLink,
   FileText,
   Hash,
   Image as ImageIcon,
@@ -201,7 +202,7 @@ export default function BookingReadonlyModal({
           </section>
         )}
 
-        {(attachment || mapHref) && (
+        {(attachment || mapHref || booking.link) && (
           <section className="flex flex-wrap gap-2">
             {attachment && (
               <button
@@ -230,6 +231,17 @@ export default function BookingReadonlyModal({
                 icon={Map}
                 label="地図"
                 ariaLabel={`${booking.address ?? ''} を地図で開く`}
+              />
+            )}
+            {/* link は書き込み時に http(s) のみ検証済み(Zod / Worker /
+                rules)なので href に出して安全。ActionChip は
+                rel="noopener noreferrer"。 */}
+            {booking.link && (
+              <ActionChip
+                href={booking.link}
+                icon={ExternalLink}
+                label="予約ページ"
+                ariaLabel="予約ページを開く"
               />
             )}
           </section>

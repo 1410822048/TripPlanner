@@ -708,7 +708,7 @@ service cloud.firestore {
                       && request.resource.data.keys().hasOnly([
                            'tripId','type','title','origin','destination',
                            'confirmationCode','provider','checkIn','checkOut',
-                           'address','note','attachment','sortDate','memberIds',
+                           'address','link','note','attachment','sortDate','memberIds',
                            'createdBy','updatedBy','createdAt','updatedAt'
                          ])
                       && request.resource.data.tripId == tripId
@@ -747,6 +747,14 @@ service cloud.firestore {
                       && (!('note' in request.resource.data)
                             || (request.resource.data.note is string
                                 && request.resource.data.note.size() <= 2000))
+                      // link renders into an <a href>: restrict to http(s)
+                      // so a raw-SDK writer can't store a javascript:/data:
+                      // URL. Mirrors isHttpUrl in src/types/booking.ts +
+                      // workers/ocr/src/booking-write.ts.
+                      && (!('link' in request.resource.data)
+                            || (request.resource.data.link is string
+                                && request.resource.data.link.size() <= 500
+                                && request.resource.data.link.matches('^https?://.+')))
                       // attachment is Worker-authoritative: client setDoc
                       // creates the booking WITHOUT attachment, then the
                       // Worker /booking-file-create / /booking-file-update
@@ -771,7 +779,7 @@ service cloud.firestore {
           && request.resource.data.keys().hasOnly([
                'tripId','type','title','origin','destination',
                'confirmationCode','provider','checkIn','checkOut',
-               'address','note','attachment','sortDate','memberIds',
+               'address','link','note','attachment','sortDate','memberIds',
                'createdBy','updatedBy','createdAt','updatedAt'
              ])
           && unchanged('tripId')
@@ -807,6 +815,11 @@ service cloud.firestore {
           && (!('note' in request.resource.data)
                 || (request.resource.data.note is string
                     && request.resource.data.note.size() <= 2000))
+          // link renders into an <a href>: http(s) only (see create).
+          && (!('link' in request.resource.data)
+                || (request.resource.data.link is string
+                    && request.resource.data.link.size() <= 500
+                    && request.resource.data.link.matches('^https?://.+')))
           // attachment is Worker-authoritative on update too: client may
           // detach via deleteField() (rules-bypass not needed for removal,
           // and the Worker storage-scan cron reaps the orphan blob) OR

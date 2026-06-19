@@ -477,6 +477,72 @@ describe('/trips/{tripId}/bookings', () => {
     )
   })
 
+  // ─── booking.link http(s)-only gate ──────────────────────────────
+  // link renders into an <a href>, so the rule restricts it to
+  // `^https?://.+` (mirrors isHttpUrl in src/types/booking.ts +
+  // workers/ocr/src/booking-write.ts). These pin the allow + deny
+  // halves so a future rule edit can't silently re-open a javascript:
+  // stored-XSS path on the raw-SDK client surface.
+  test('booking create with a valid https link is allowed', async () => {
+    await assertSucceeds(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-link-ok'), {
+        tripId: TRIP_ID, type: 'hotel', title: 'X',
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        sortDate:  serverTimestamp(),
+        link: 'https://www.booking.com/hotel/jp/abc.html',
+      }),
+    )
+  })
+
+  test('booking create with a javascript: link is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-link-xss'), {
+        tripId: TRIP_ID, type: 'hotel', title: 'X',
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        sortDate:  serverTimestamp(),
+        link: 'javascript:alert(document.cookie)',
+      }),
+    )
+  })
+
+  test('booking create with link over 500 chars is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-link-cap'), {
+        tripId: TRIP_ID, type: 'hotel', title: 'X',
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        sortDate:  serverTimestamp(),
+        link: 'https://e.com/' + 'x'.repeat(500),
+      }),
+    )
+  })
+
+  // The regex is intentionally lowercase-only; isHttpUrl (client + Worker)
+  // matches it by rejecting uppercase schemes too, so the three layers
+  // accept the same canonical set (no Worker-written value can later jam
+  // a client update).
+  test('booking create with an UPPERCASE scheme link is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-link-upper'), {
+        tripId: TRIP_ID, type: 'hotel', title: 'X',
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        sortDate:  serverTimestamp(),
+        link: 'HTTPS://example.com',
+      }),
+    )
+  })
+
   test('booking update with title over 100 chars is rejected', async () => {
     // The companion to "booking create with title over 100 chars" —
     // update path has its own size predicate block in firestore.rules

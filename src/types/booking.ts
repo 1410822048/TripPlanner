@@ -6,6 +6,28 @@ import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
 import { TimestampSchema } from './_shared'
 
+/** `link` renders into an `<a href>`, so reject anything that isn't an
+ *  http(s) URL (blocks `javascript:` / `data:` XSS at the write boundary).
+ *  Must accept EXACTLY the set the firestore.rules `^https?://.+` regex
+ *  accepts — rules are the canonical gate, and a value that passes here
+ *  but NOT rules writes fine via the Worker's admin SDK (rules-bypass)
+ *  then jams every later client update (rules re-validate the whole doc).
+ *  `new URL()` alone drifts LOOSER than that regex two ways: it lowercases
+ *  the scheme (rules are case-sensitive lowercase) and silently strips
+ *  embedded tab/newline (rules `.` never matches a newline). So gate on a
+ *  lowercase http(s):// prefix + no whitespace, THEN parse for structure.
+ *  Mirrored verbatim in workers/ocr/src/booking-write.ts. */
+export function isHttpUrl(v: string): boolean {
+  if (!v.startsWith('http://') && !v.startsWith('https://')) return false
+  if (/\s/.test(v)) return false
+  try {
+    new URL(v)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /**
  * Attachment metadata for a booking — single optional file (confirmation
  * PDF / hotel photo / etc.) with an optional smaller thumbnail variant.
@@ -81,6 +103,12 @@ export interface Booking {
    *  through their dedicated fields. Same shape + URL builder as
    *  Wish.address — see utils/maps.ts. */
   address?: string
+  /** External booking URL — the OTA / hotel reservation page (Airbnb,
+   *  Booking.com, the hotel's own site, …). Surfaced as a one-tap
+   *  ActionChip so the user can reopen the source listing. Restricted to
+   *  http(s) at every write boundary (Zod here, Worker, firestore.rules)
+   *  because it renders into an `<a href>`. Mirrors Wish.link. */
+  link?: string
   note?: string
   createdBy: string
   /** Last-writer uid. See useFeatureBadges. */
@@ -127,6 +155,7 @@ export const BookingDocSchema = z.object({
   checkOut:         z.string().optional(),
   attachment:       BookingAttachmentSchema.optional(),
   address:          z.string().optional(),
+  link:             z.string().optional(),
   note:             z.string().optional(),
   createdBy:        z.string(),
   updatedBy:        z.string(),
@@ -151,8 +180,8 @@ export const CreateBookingSchema = z.object({
   confirmationCode: z.string().max(64).optional(),
   provider:         z.string().max(60).optional(),
   // All string caps (title 100 / origin 60 / destination 60 /
-  // confirmationCode 64 / provider 60 / address 500 / checkIn 32 /
-  // checkOut 32 / note 2000) mirror firestore.rules booking
+  // confirmationCode 64 / provider 60 / address 500 / link 500 /
+  // checkIn 32 / checkOut 32 / note 2000) mirror firestore.rules booking
   // create/update AND workers/ocr/src/booking-write.ts. Three-way
   // lockstep is mandatory: the Worker uses admin SDK and bypasses
   // rules, so a looser cap on either side is a real exploit (a
@@ -162,6 +191,10 @@ export const CreateBookingSchema = z.object({
   checkOut:         z.string().max(32).optional(),
   // 住所テキスト or Google Maps URL を受けるため 500(URL は 200 を超え得る)。
   address:          z.string().max(500).optional(),
+  // 予約元 URL。http(s) のみ(href に出すため)。cap 500 は rules / Worker と lockstep。
+  // '' はクリア用 sentinel として許可(stripEmpty / deleteField で
+  // Firestore には届かないので rules 側は strict のまま)。
+  link:             z.string().max(500).refine(v => v === '' || isHttpUrl(v), 'URL は http:// または https:// で始まる必要があります').optional(),
   note:             z.string().max(2000).optional(),
 })
 export type CreateBookingInput = z.infer<typeof CreateBookingSchema>

@@ -103,11 +103,29 @@ export class BookingValidationError extends Error {
   }
 }
 
+/** Verbatim mirror of `isHttpUrl` in src/types/booking.ts. The Worker
+ *  uses the admin SDK and bypasses firestore.rules, so its `link` check
+ *  must match the rules' canonical set EXACTLY — anything it accepts but
+ *  the rules `^https?://.+` regex rejects (uppercase scheme, embedded
+ *  whitespace; both of which `new URL()` would silently accept) gets
+ *  written to the doc and then jams every later client update. Lowercase
+ *  http(s):// prefix + no whitespace, then parse. */
+function isHttpUrl(v: string): boolean {
+  if (!v.startsWith('http://') && !v.startsWith('https://')) return false
+  if (/\s/.test(v)) return false
+  try {
+    new URL(v)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Mirror of `CreateBookingSchema` in src/types/booking.ts. Duplicated
  *  here because the Worker can't import client-side modules -- the
  *  field caps (title 100 / origin 60 / destination 60 / confirmationCode
- *  64 / provider 60 / address 500 / checkIn 32 / checkOut 32 / note
- *  2000) and the type enum MUST stay in sync. The cap values pair-wise
+ *  64 / provider 60 / address 500 / link 500 / checkIn 32 / checkOut 32 /
+ *  note 2000) and the type enum MUST stay in sync. The cap values pair-wise
  *  match firestore.rules booking create/update — the Worker uses admin
  *  SDK and bypasses rules, so any field rules cap but Worker doesn't
  *  is a real exploit (a megabyte `note` bypassing rules cap). Drift
@@ -124,6 +142,11 @@ const CreateBookingBodySchema = z.object({
   checkOut:         z.string().max(32).optional(),
   // 住所テキスト or Google Maps URL を受けるため 500(URL は 200 を超え得る)。
   address:          z.string().max(500).optional(),
+  // 予約元 URL。href に出すため http(s) のみ。`isHttpUrl` は
+  // src/types/booking.ts と verbatim 同期(admin SDK は rules を bypass
+  // するので、ここの check が緩いと XSS の穴になる)。'' は CLEARABLE
+  // sentinel(encodeBookingUpdate が field 削除に変換)なので許可。
+  link:             z.string().max(500).refine(v => v === '' || isHttpUrl(v), 'link must be an http(s) URL').optional(),
   note:             z.string().max(2000).optional(),
 })
 type CreateBookingBody = z.infer<typeof CreateBookingBodySchema>
@@ -136,7 +159,7 @@ type UpdateBookingBody = z.infer<typeof UpdateBookingBodySchema>
 
 const UPDATABLE_BOOKING_FIELDS = new Set([
   'type', 'title', 'origin', 'destination', 'confirmationCode',
-  'provider', 'checkIn', 'checkOut', 'address', 'note',
+  'provider', 'checkIn', 'checkOut', 'address', 'link', 'note',
 ])
 
 /** Text fields the client clears via empty-string sentinel. Mirrors
@@ -148,7 +171,7 @@ const UPDATABLE_BOOKING_FIELDS = new Set([
  *  field would write '' instead of removing the field, leaving the
  *  doc inconsistent with the no-attachment client path. */
 const CLEARABLE_BOOKING_FIELDS = new Set([
-  'confirmationCode', 'provider', 'checkIn', 'checkOut', 'address', 'note',
+  'confirmationCode', 'provider', 'checkIn', 'checkOut', 'address', 'link', 'note',
 ])
 
 /** Parse `checkIn` ('YYYY-MM-DD' or 'YYYY-MM-DDTHH:mm') to an ISO 8601
@@ -340,7 +363,7 @@ function encodeBookingCreate(
   // `stripEmpty(input)` in bookingService.createBooking.
   const OPTIONAL = [
     'title', 'origin', 'destination', 'confirmationCode',
-    'provider', 'checkIn', 'checkOut', 'address', 'note',
+    'provider', 'checkIn', 'checkOut', 'address', 'link', 'note',
   ] as const
   for (const k of OPTIONAL) {
     const v = body[k]

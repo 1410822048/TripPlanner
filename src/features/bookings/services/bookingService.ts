@@ -61,7 +61,7 @@ const LIST_LIMIT = 100
  *  workers/ocr/src/booking-write.ts -- drift on either side means
  *  cleared fields persist in the doc after a Worker-path edit. */
 const CLEARABLE_TEXT_FIELDS = [
-  'confirmationCode', 'provider', 'checkIn', 'checkOut', 'address', 'note',
+  'confirmationCode', 'provider', 'checkIn', 'checkOut', 'address', 'link', 'note',
 ] as const
 
 function bookingFromDoc(d: QueryDocumentSnapshot): Booking {

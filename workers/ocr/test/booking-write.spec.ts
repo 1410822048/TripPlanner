@@ -874,7 +874,7 @@ describe('bookingFileUpdate: happy paths', () => {
 			{
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
-				patch:               { note: '', address: '' },
+				patch:               { note: '', address: '', link: '' },
 				intentIds:           [FULL_INTENT_ID],
 				expectedCurrentPath: FULL_PATH,
 			},
@@ -887,8 +887,39 @@ describe('bookingFileUpdate: happy paths', () => {
 		const patch = writes[1]!
 		expect(patch.updateMask).toContain('note')
 		expect(patch.updateMask).toContain('address')
+		// link is CLEARABLE too: empty-string → mask entry, no field value.
+		expect(patch.updateMask).toContain('link')
 		expect(patch.fields.note).toBeUndefined()
 		expect(patch.fields.address).toBeUndefined()
+		expect(patch.fields.link).toBeUndefined()
+	})
+
+	it('patch with a valid https link → written to fields', async () => {
+		seedUpdateAuth()
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
+		)
+
+		await bookingFileUpdate(
+			CALLER_UID,
+			{
+				tripId:              TRIP_ID,
+				bookingId:           BOOKING_ID,
+				patch:               { link: 'https://www.booking.com/hotel/jp/abc.html' },
+				intentIds:           [FULL_INTENT_ID],
+				expectedCurrentPath: FULL_PATH,
+			},
+			'{}', BUCKET,
+		)
+		const writes = capturedTxResult!.writes as Array<{
+			updateMask?: string[]
+			fields: Record<string, { stringValue?: string }>
+		}>
+		const patch = writes[1]!
+		expect(patch.updateMask).toContain('link')
+		expect(patch.fields.link?.stringValue).toBe('https://www.booking.com/hotel/jp/abc.html')
 	})
 })
 
@@ -1129,6 +1160,59 @@ describe('bookingFileUpdate: body validation', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { checkOut: 'x'.repeat(33) },
+				intentIds:           [FULL_INTENT_ID],
+				expectedCurrentPath: FULL_PATH,
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(BookingValidationError)
+	})
+
+	// SECURITY: link renders into an <a href>. The Worker bypasses
+	// firestore.rules (admin SDK), so its scheme check MUST reject
+	// javascript:/data: just like the client Zod refine + the rules
+	// `^https?://.+` regex. A looser Worker = a real stored-XSS hole.
+	it('rejects when link is not an http(s) URL (javascript: scheme)', async () => {
+		seedUpdateAuth()
+		await expect(bookingFileUpdate(
+			CALLER_UID,
+			{
+				tripId:              TRIP_ID,
+				bookingId:           BOOKING_ID,
+				patch:               { link: 'javascript:alert(document.cookie)' },
+				intentIds:           [FULL_INTENT_ID],
+				expectedCurrentPath: FULL_PATH,
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(BookingValidationError)
+	})
+
+	it('rejects when link exceeds rules cap (500 chars)', async () => {
+		seedUpdateAuth()
+		await expect(bookingFileUpdate(
+			CALLER_UID,
+			{
+				tripId:              TRIP_ID,
+				bookingId:           BOOKING_ID,
+				patch:               { link: 'https://e.com/' + 'x'.repeat(500) },
+				intentIds:           [FULL_INTENT_ID],
+				expectedCurrentPath: FULL_PATH,
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(BookingValidationError)
+	})
+
+	// DRIFT GUARD: new URL() lowercases the scheme, so a naive check would
+	// accept HTTPS://. The rules regex `^https?://.+` is lowercase-only —
+	// admin SDK bypasses rules, so accepting it here would write an
+	// uppercase-scheme link that then jams every later client update.
+	it('rejects an uppercase-scheme link (rules regex is lowercase-only)', async () => {
+		seedUpdateAuth()
+		await expect(bookingFileUpdate(
+			CALLER_UID,
+			{
+				tripId:              TRIP_ID,
+				bookingId:           BOOKING_ID,
+				patch:               { link: 'HTTPS://example.com' },
 				intentIds:           [FULL_INTENT_ID],
 				expectedCurrentPath: FULL_PATH,
 			},

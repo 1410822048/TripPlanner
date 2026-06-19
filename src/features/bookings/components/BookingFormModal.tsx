@@ -10,6 +10,7 @@
 import { useRef, useState } from 'react'
 import { Paperclip, ArrowRight } from 'lucide-react'
 import type { Booking, CreateBookingInput } from '@/types'
+import { isHttpUrl } from '@/types'
 import FormModalShell from '@/components/ui/FormModalShell'
 import DeleteConfirm from '@/components/ui/DeleteConfirm'
 import AttachmentRow from '@/components/ui/AttachmentRow'
@@ -133,6 +134,11 @@ export default function BookingFormModal({
     if (showRange && state.checkIn && state.checkOut && state.checkOut < state.checkIn) {
       e.checkOut = 'チェックアウトはチェックイン以降を選んでください'
     }
+    // link は href に出すので http(s) のみ。空欄は許可(任意項目)。
+    const linkTrimmed = state.link.trim()
+    if (linkTrimmed && !isHttpUrl(linkTrimmed)) {
+      e.link = 'http:// または https:// で始まる URL を入力してください'
+    }
     setErrors(e)
     if (Object.keys(e).length > 0) return null
 
@@ -149,6 +155,7 @@ export default function BookingFormModal({
       // map deep-link). Transport types already convey location via
       // origin/destination so we don't show the input there.
       address:          isTransport ? undefined : state.address.trim() || undefined,
+      link:             linkTrimmed || undefined,
       note:             state.note.trim() || undefined,
     }
 
@@ -311,6 +318,20 @@ export default function BookingFormModal({
           />
         </FormField>
       )}
+
+      {/* 予約 URL — OTA / 公式サイトの予約ページ。全 type 共通
+          (機票も飯店も予約 URL を持ち得る)。href に出すため http(s)
+          のみ(form validate + Zod + firestore.rules で三重 enforce)。 */}
+      <FormField label="予約 URL（任意）" error={errors.link}>
+        <input
+          value={state.link}
+          onChange={e => setField('link', e.target.value)}
+          placeholder="https://..."
+          type="url"
+          maxLength={500}
+          className={inputClass(!!errors.link)}
+        />
+      </FormField>
 
       <FormField label="添付（画像 / PDF）" error={att.error ?? undefined}>
         <input
