@@ -13,7 +13,6 @@ import {
 } from 'lucide-react'
 import type { Booking } from '@/types'
 import BottomSheet from '@/components/ui/BottomSheet'
-import ActionChip from '@/components/ui/ActionChip'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { addressMapHref } from '@/utils/maps'
 import {
@@ -203,46 +202,45 @@ export default function BookingReadonlyModal({
         )}
 
         {(attachment || mapHref || booking.link) && (
-          <section className="flex flex-wrap gap-2">
+          <section className="space-y-2">
             {attachment && (
               <button
                 type="button"
                 onClick={() => onPreviewAttachment(booking)}
                 aria-label={`添付を表示: ${fileLabel(attachment.filePath)}`}
-                className="min-h-10 rounded-full border border-border bg-surface px-3 py-1.5 text-muted flex items-center gap-2 cursor-pointer hover:text-ink hover:bg-white transition-colors"
+                className={`${actionClassName(true)} w-full cursor-pointer`}
+                style={actionStyle(theme.accent)}
               >
-                <span className="w-7 h-7 rounded-full bg-tile overflow-hidden flex items-center justify-center shrink-0">
-                  {attachmentThumb && attachmentIsImage ? (
-                    <img src={attachmentThumb} alt="" className="w-full h-full object-cover" draggable={false} />
-                  ) : attachmentIsImage ? (
-                    <ImageIcon size={14} strokeWidth={1.8} />
-                  ) : (
-                    <FileText size={14} strokeWidth={1.8} />
-                  )}
-                </span>
-                <span className="text-[11px] font-semibold max-w-[150px] truncate">
-                  添付を表示
-                </span>
+                {attachmentIsImage ? <ImageIcon size={15} strokeWidth={2.2} /> : <FileText size={15} strokeWidth={2.2} />}
+                <span className="text-[12.5px] font-bold">添付を表示</span>
               </button>
             )}
-            {mapHref && (
-              <ActionChip
-                href={mapHref}
-                icon={Map}
-                label="地図"
-                ariaLabel={`${booking.address ?? ''} を地図で開く`}
-              />
-            )}
-            {/* link は書き込み時に http(s) のみ検証済み(Zod / Worker /
-                rules)なので href に出して安全。ActionChip は
-                rel="noopener noreferrer"。 */}
-            {booking.link && (
-              <ActionChip
-                href={booking.link}
-                icon={ExternalLink}
-                label="予約ページ"
-                ariaLabel="予約ページを開く"
-              />
+            {(mapHref || booking.link) && (
+              <div className="grid grid-cols-2 gap-2">
+                {mapHref && (
+                  <ActionLink
+                    href={mapHref}
+                    icon={Map}
+                    label="地図"
+                    ariaLabel={`${booking.address ?? ''} を地図で開く`}
+                    accent={theme.accent}
+                    fullWidth={!booking.link}
+                  />
+                )}
+                {/* link は書き込み時に http(s) のみ検証済み(Zod / Worker /
+                    rules)なので href に出して安全。ActionLink は
+                    rel="noopener noreferrer"。 */}
+                {booking.link && (
+                  <ActionLink
+                    href={booking.link}
+                    icon={ExternalLink}
+                    label="予約ページ"
+                    ariaLabel="予約ページを開く"
+                    accent={theme.accent}
+                    fullWidth={!mapHref}
+                  />
+                )}
+              </div>
             )}
           </section>
         )}
@@ -355,4 +353,51 @@ function DetailRow({ row, accent }: { row: DetailRowData; accent: string }) {
       </div>
     </div>
   )
+}
+
+function ActionLink({
+  href,
+  icon: Icon,
+  label,
+  ariaLabel,
+  accent,
+  fullWidth = false,
+}: {
+  href: string
+  icon: LucideIcon
+  label: string
+  ariaLabel: string
+  accent: string
+  fullWidth?: boolean
+}) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={e => e.stopPropagation()}
+      onPointerDown={e => e.stopPropagation()}
+      aria-label={ariaLabel}
+      className={actionClassName(fullWidth)}
+      style={actionStyle(accent)}
+    >
+      <Icon size={15} strokeWidth={2.2} />
+      <span className="text-[12.5px] font-bold">{label}</span>
+    </a>
+  )
+}
+
+function actionClassName(fullWidth = false) {
+  return [
+    'min-h-11 rounded-[14px] border no-underline flex items-center justify-center gap-1.5 px-3 transition-colors',
+    fullWidth ? 'col-span-2' : '',
+  ].join(' ')
+}
+
+function actionStyle(accent: string) {
+  return {
+    backgroundColor: colorWithAlpha(accent, '14'),
+    borderColor: colorWithAlpha(accent, '28'),
+    color: accent,
+  }
 }
