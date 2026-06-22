@@ -5,7 +5,6 @@ import {
   FileText,
   Hash,
   Image as ImageIcon,
-  Map,
   MapPin,
   Pencil,
   Route,
@@ -193,55 +192,39 @@ export default function BookingReadonlyModal({
           ) : null}
         </section>
 
+        {(mapHref || booking.link) && (
+          <section className="grid grid-cols-2 gap-2">
+            {mapHref && (
+              <ActionLink
+                href={mapHref}
+                icon={MapPin}
+                label="地図"
+                ariaLabel={`${booking.address ?? ''} を地図で開く`}
+                accent={theme.accent}
+                fullWidth={!booking.link}
+              />
+            )}
+            {/* link は書き込み時に http(s) のみ検証済み(Zod / Worker /
+                rules)なので href に出して安全。ActionLink は
+                rel="noopener noreferrer"。 */}
+            {booking.link && (
+              <ActionLink
+                href={booking.link}
+                icon={ExternalLink}
+                label="予約ページ"
+                ariaLabel="予約ページを開く"
+                accent={theme.accent}
+                fullWidth={!mapHref}
+              />
+            )}
+          </section>
+        )}
+
         {infoRows.length > 0 && (
           <section className="overflow-hidden rounded-card border border-border bg-surface">
             {infoRows.map(row => (
               <DetailRow key={row.label} row={row} accent={theme.accent} />
             ))}
-          </section>
-        )}
-
-        {(attachment || mapHref || booking.link) && (
-          <section className="space-y-2">
-            {attachment && (
-              <button
-                type="button"
-                onClick={() => onPreviewAttachment(booking)}
-                aria-label={`添付を表示: ${fileLabel(attachment.filePath)}`}
-                className={`${actionClassName(true)} w-full cursor-pointer`}
-                style={actionStyle(theme.accent)}
-              >
-                {attachmentIsImage ? <ImageIcon size={15} strokeWidth={2.2} /> : <FileText size={15} strokeWidth={2.2} />}
-                <span className="text-[12.5px] font-bold">添付を表示</span>
-              </button>
-            )}
-            {(mapHref || booking.link) && (
-              <div className="grid grid-cols-2 gap-2">
-                {mapHref && (
-                  <ActionLink
-                    href={mapHref}
-                    icon={Map}
-                    label="地図"
-                    ariaLabel={`${booking.address ?? ''} を地図で開く`}
-                    accent={theme.accent}
-                    fullWidth={!booking.link}
-                  />
-                )}
-                {/* link は書き込み時に http(s) のみ検証済み(Zod / Worker /
-                    rules)なので href に出して安全。ActionLink は
-                    rel="noopener noreferrer"。 */}
-                {booking.link && (
-                  <ActionLink
-                    href={booking.link}
-                    icon={ExternalLink}
-                    label="予約ページ"
-                    ariaLabel="予約ページを開く"
-                    accent={theme.accent}
-                    fullWidth={!mapHref}
-                  />
-                )}
-              </div>
-            )}
           </section>
         )}
 
@@ -253,6 +236,21 @@ export default function BookingReadonlyModal({
             <div className="mt-2 text-[12.5px] leading-6 text-ink whitespace-pre-wrap break-words">
               {booking.note}
             </div>
+          </section>
+        )}
+
+        {attachment && (
+          <section>
+            <button
+              type="button"
+              onClick={() => onPreviewAttachment(booking)}
+              aria-label={`添付を表示: ${fileLabel(attachment.filePath)}`}
+              className={`${actionClassName()} w-full cursor-pointer`}
+              style={actionStyle(theme.accent)}
+            >
+              {attachmentIsImage ? <ImageIcon size={15} strokeWidth={2.2} /> : <FileText size={15} strokeWidth={2.2} />}
+              <span className="text-[12.5px] font-bold">添付を表示</span>
+            </button>
           </section>
         )}
       </div>

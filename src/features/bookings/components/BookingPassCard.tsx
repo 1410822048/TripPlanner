@@ -176,10 +176,10 @@ function HotelPassCard({ booking, whenLabel }: Props) {
           <div className="text-[20px] font-black leading-tight truncate">
             {title}
           </div>
-          {(booking.provider || booking.address) && (
+          {booking.address && (
             <div className="mt-1 flex items-center gap-1 text-[11.5px] font-bold opacity-90 truncate">
               <MapPin size={12} strokeWidth={2} className="shrink-0" />
-              <span className="truncate">{booking.provider || booking.address}</span>
+              <span className="truncate">{booking.address}</span>
             </div>
           )}
         </div>
