@@ -230,8 +230,9 @@ function AttachmentIndicator({ isImage }: { isImage: boolean }) {
   return (
     <span
       className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/85 text-muted shadow-[0_2px_8px_rgba(0,0,0,0.08)]"
-      aria-label="添付"
-      title="添付"
+      role="img"
+      aria-label="添付あり"
+      title="添付あり"
     >
       <Icon size={12} strokeWidth={2.2} aria-hidden="true" />
     </span>
