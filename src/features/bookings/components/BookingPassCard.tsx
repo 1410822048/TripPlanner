@@ -46,11 +46,11 @@ function StandardPassCard({ booking, whenLabel }: Props) {
   const subtitle = bookingSubtitle(booking)
   const dateLabel = dateTimeLabel(booking.checkIn) || whenLabel
   const hasAttachment = !!booking.attachment?.filePath
+  const attachmentIsImage = isImageAttachment(booking.attachment)
   const facts = [
     dateLabel ? { label: '日時', value: dateLabel, icon: CalendarDays } : null,
     booking.confirmationCode ? { label: '確認番号', value: booking.confirmationCode, icon: Hash, mono: true } : null,
     booking.provider && !subtitle ? { label: '事業者', value: booking.provider, icon: Building2 } : null,
-    hasAttachment ? { label: '添付', value: 'あり', icon: FileText } : null,
   ].filter(Boolean).slice(0, 3) as PassFact[]
 
   return (
@@ -75,6 +75,7 @@ function StandardPassCard({ booking, whenLabel }: Props) {
                 {BOOKING_TYPE_META[booking.type].label}
               </span>
               <BookingBrandPill theme={theme} variant={hero.isBranded ? 'soft' : 'light'} />
+              {hasAttachment && <AttachmentIndicator isImage={attachmentIsImage} />}
             </div>
             <div className="mt-2 text-[21px] font-black leading-none truncate">
               {title}
@@ -165,6 +166,7 @@ function HotelPassCard({ booking, whenLabel }: Props) {
             ホテル
           </span>
           <BookingBrandPill theme={theme} variant={coverSrc || !hero.isBranded ? 'light' : 'soft'} />
+          {hasAttachment && <AttachmentIndicator isImage={isImage} />}
         </div>
         {nights !== null && (
           <div className="absolute right-3 top-3 rounded-full bg-black/45 px-2.5 py-1 text-[10.5px] font-black text-white backdrop-blur-sm">
@@ -190,15 +192,13 @@ function HotelPassCard({ booking, whenLabel }: Props) {
       <div className="px-4 pt-3 pb-3">
         <div className="grid grid-cols-3 gap-3">
           {checkInLabel && (
-            <PassFactCell fact={{ label: 'チェックイン', value: checkInLabel, icon: CalendarDays }} />
+            <PassFactCell fact={{ label: 'Check-in', value: checkInLabel, icon: CalendarDays }} />
           )}
           {checkOutLabel && (
-            <PassFactCell fact={{ label: 'チェックアウト', value: checkOutLabel, icon: CalendarDays }} />
+            <PassFactCell fact={{ label: 'Check-out', value: checkOutLabel, icon: CalendarDays }} />
           )}
           {booking.confirmationCode ? (
             <PassFactCell fact={{ label: '確認番号', value: booking.confirmationCode, icon: Hash, mono: true }} />
-          ) : hasAttachment ? (
-            <PassFactCell fact={{ label: '添付', value: 'あり', icon: isImage ? ImageIcon : FileText }} />
           ) : (
             <PassFactCell fact={{ label: '予約', value: '詳細', icon: Building2 }} />
           )}
@@ -223,6 +223,19 @@ interface PassFact {
   value: string
   icon: typeof CalendarDays
   mono?: boolean
+}
+
+function AttachmentIndicator({ isImage }: { isImage: boolean }) {
+  const Icon = isImage ? ImageIcon : FileText
+  return (
+    <span
+      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/85 text-muted shadow-[0_2px_8px_rgba(0,0,0,0.08)]"
+      aria-label="添付"
+      title="添付"
+    >
+      <Icon size={12} strokeWidth={2.2} aria-hidden="true" />
+    </span>
+  )
 }
 
 function PassFactCell({ fact }: { fact: PassFact }) {

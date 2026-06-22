@@ -155,7 +155,7 @@ export default function BookingFormModal({
       e.title = state.type === 'hotel' ? 'ホテル名を入力してください' : 'タイトルを入力してください'
     }
     if (showRange && state.checkIn && state.checkOut && state.checkOut < state.checkIn) {
-      e.checkOut = 'チェックアウトはチェックイン以降を選んでください'
+      e.checkOut = 'Check-out は Check-in 以降を選んでください'
     }
     // link は href に出すので http(s) のみ。空欄は許可(任意項目)。
     const linkTrimmed = state.link.trim()
@@ -284,7 +284,7 @@ export default function BookingFormModal({
 
       {showRange ? (
         <div className="flex gap-2.5">
-          <FormField label="チェックイン" className="flex-1">
+        <FormField label="Check-in" className="flex-1">
             <DatePicker
               value={state.checkIn}
               onChange={v => {
@@ -302,7 +302,7 @@ export default function BookingFormModal({
               maxDate={tripEndDate}
             />
           </FormField>
-          <FormField label="チェックアウト" error={errors.checkOut} className="flex-1">
+        <FormField label="Check-out" error={errors.checkOut} className="flex-1">
             <DatePicker
               ref={checkOutRef}
               value={state.checkOut}
