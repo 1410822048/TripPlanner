@@ -19,10 +19,11 @@ import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import AttachmentPreviewModal from './AttachmentPreviewModal'
-import { useBookingFormState } from '../hooks/useBookingFormState'
+import { useBookingFormState, type BookingFormDraft } from '../hooks/useBookingFormState'
 import { useAttachment, type AttachmentChange } from '@/hooks/useAttachment'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { BOOKING_TYPE_META, BOOKING_TYPE_ORDER } from '../utils'
+import { deriveBookingLinkDraft } from '../linkDraft'
 
 /** Transport types use origin → destination as the primary identifier;
  *  other types use a single title field. */
@@ -69,6 +70,10 @@ interface Props {
   isOpen:     boolean
   isSaving:   boolean
   saveError?: string | null
+  /** Create-only initial values, used by PWA Share Target. Edit mode
+   *  intentionally ignores it so a shared URL can never overwrite the
+   *  selected booking's persisted fields. */
+  initialDraft?: BookingFormDraft
   onClose:    () => void
   onSave:     (data: BookingFormResult) => void
   /** Only present in edit mode for users with delete permission.
@@ -78,9 +83,9 @@ interface Props {
 
 export default function BookingFormModal({
   editTarget, tripStartDate, tripEndDate,
-  isOpen, isSaving, saveError, onClose, onSave, onDelete,
+  isOpen, isSaving, saveError, initialDraft, onClose, onSave, onDelete,
 }: Props) {
-  const { state, setField } = useBookingFormState(editTarget)
+  const { state, setField } = useBookingFormState(editTarget, initialDraft)
   const att = useAttachment({
     // previewPath = real thumb only (no full-path fallback): a thumb-less /
     // PDF attachment shows the row icon, and the full blob resolves only
@@ -117,6 +122,24 @@ export default function BookingFormModal({
     const f = e.target.files?.[0]
     e.target.value = ''  // allow re-picking the same file
     if (f) att.pickFile(f)
+  }
+
+  function applyLinkDefaults(linkValue = state.link) {
+    const draft = deriveBookingLinkDraft({ link: linkValue })
+    if (!draft?.link) return
+
+    const isBlankIdentity = !state.title.trim() && !state.origin.trim() && !state.destination.trim()
+
+    if (!state.provider.trim()) setField('provider', draft.provider)
+    if (isBlankIdentity) {
+      setField('title', draft.title)
+      // The create form defaults to flight. If URL is the first meaningful
+      // input, choose the closest non-transport type so the draft is saveable.
+      // Once title/route exists, or in edit mode, never rewrite the type.
+      if (!editTarget && state.type === 'flight') {
+        setField('type', draft.type)
+      }
+    }
   }
 
   function validate(): BookingFormResult | null {
@@ -326,6 +349,7 @@ export default function BookingFormModal({
         <input
           value={state.link}
           onChange={e => setField('link', e.target.value)}
+          onBlur={() => applyLinkDefaults()}
           placeholder="https://..."
           type="url"
           maxLength={500}

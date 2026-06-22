@@ -9,7 +9,7 @@ import type { Booking } from '@/types'
 // `type` (not `interface`): TS won't widen interfaces to satisfy
 // `Record<string, unknown>` since interfaces are open for declaration
 // merging. Type aliases are closed and pass useFormReducer's constraint.
-type BookingFormState = {
+export type BookingFormState = {
   type:             Booking['type']
   title:            string
   origin:           string
@@ -30,8 +30,10 @@ function toDateOnly(s: string | undefined): string {
   return s.slice(0, 10)
 }
 
-function initFromBooking(b: Booking | null): BookingFormState {
-  return {
+export type BookingFormDraft = Partial<BookingFormState>
+
+function initFromBooking(b: Booking | null, initialDraft?: BookingFormDraft): BookingFormState {
+  const base = {
     type:             b?.type ?? 'flight',
     title:            b?.title ?? '',
     origin:           b?.origin ?? '',
@@ -44,10 +46,14 @@ function initFromBooking(b: Booking | null): BookingFormState {
     link:             b?.link ?? '',
     note:             b?.note ?? '',
   }
+  return b ? base : { ...base, ...initialDraft }
 }
 
 export type UseBookingFormStateResult = UseFormReducerResult<BookingFormState>
 
-export function useBookingFormState(editTarget: Booking | null): UseBookingFormStateResult {
-  return useFormReducer<BookingFormState>(() => initFromBooking(editTarget))
+export function useBookingFormState(
+  editTarget:    Booking | null,
+  initialDraft?: BookingFormDraft,
+): UseBookingFormStateResult {
+  return useFormReducer<BookingFormState>(() => initFromBooking(editTarget, initialDraft))
 }

@@ -4,6 +4,18 @@
 import { Plane, Hotel, TrainFront, Bus, MapPin, type LucideIcon } from 'lucide-react'
 import type { Booking, BookingAttachment } from '@/types'
 
+/** Extract the booking provider host from a user-supplied reservation URL.
+ *  Presentation/brand mapping stays with the caller; this helper only
+ *  normalizes the durable provider string stored on the booking. */
+export function bookingProviderFromUrl(link: string): string {
+  if (!link) return ''
+  try {
+    return new URL(link).hostname.replace(/^www\./, '').slice(0, 60)
+  } catch {
+    return ''
+  }
+}
+
 /** Thumbnail Storage PATH for getBlob (path-only model). The small WebP
  *  variant ONLY -- deliberately no fall-back to the full filePath so a
  *  thumb-less attachment (PDF, or a pre-thumb upload) renders the type-

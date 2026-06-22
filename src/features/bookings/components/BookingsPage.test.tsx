@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import type { Timestamp } from 'firebase/firestore'
 import type { Booking } from '@/types'
@@ -16,6 +16,8 @@ const harness = vi.hoisted(() => ({
   createBooking: vi.fn(),
   updateBooking: vi.fn(),
   deleteBooking: vi.fn(),
+  modalOpen: false,
+  formInitialDraft: null as Record<string, unknown> | null,
 }))
 
 vi.mock('@/components/ui/BottomSheet', () => ({
@@ -45,6 +47,16 @@ vi.mock('./AttachmentPreviewModal', () => ({
   ),
 }))
 
+vi.mock('./BookingFormModal', () => ({
+  default: (props: {
+    isOpen: boolean
+    initialDraft?: Record<string, unknown>
+  }) => {
+    harness.formInitialDraft = props.initialDraft ?? null
+    return props.isOpen ? <div role="dialog" aria-label="booking-form" /> : null
+  },
+}))
+
 vi.mock('@/hooks/useFeatureListPage', () => ({
   useFeatureListPage: () => ({
     ctx: {
@@ -62,7 +74,7 @@ vi.mock('@/hooks/useFeatureListPage', () => ({
     isDemo: false,
     canWrite: harness.canWrite,
     modal: {
-      isOpen: false,
+      isOpen: harness.modalOpen,
       key: 'closed',
       editTarget: null,
       openAdd: harness.openAdd,
@@ -133,6 +145,7 @@ function bookingWithAttachment(overrides: Partial<Booking> = {}): Booking {
 }
 
 beforeEach(() => {
+  window.history.replaceState(null, '', '/bookings')
   harness.bookings = [bookingWithAttachment()]
   harness.uid = 'u1'
   harness.canWrite = true
@@ -144,6 +157,9 @@ beforeEach(() => {
   harness.createBooking.mockReset()
   harness.updateBooking.mockReset()
   harness.deleteBooking.mockReset()
+  harness.modalOpen = false
+  harness.formInitialDraft = null
+  harness.openAdd.mockImplementation(() => { harness.modalOpen = true })
 })
 
 describe('BookingsPage read-first booking flow', () => {
@@ -195,5 +211,25 @@ describe('BookingsPage read-first booking flow', () => {
     const detail = screen.getByRole('dialog', { name: '予約詳細' })
     expect(detail).toBeTruthy()
     expect(within(detail).queryByRole('button', { name: '編集' })).toBeNull()
+  })
+
+  it('opens add form with a draft from PWA share target params', async () => {
+    window.history.replaceState(
+      null,
+      '',
+      '/bookings?title=Dormy%20Inn&url=https%3A%2F%2Fwww.booking.com%2Fhotel%2Fjp%2Fabc.html',
+    )
+
+    render(<BookingsPage />)
+
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'booking-form' })).toBeTruthy())
+    expect(harness.openAdd).toHaveBeenCalledTimes(1)
+    expect(harness.formInitialDraft).toMatchObject({
+      type:     'hotel',
+      title:    'Dormy Inn',
+      provider: 'Booking.com',
+      link:     'https://www.booking.com/hotel/jp/abc.html',
+    })
+    expect(window.location.pathname + window.location.search).toBe('/bookings')
   })
 })

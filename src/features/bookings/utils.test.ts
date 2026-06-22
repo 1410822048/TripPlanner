@@ -5,6 +5,7 @@
 import { describe, expect, test } from 'vitest'
 import {
   attachmentThumbPath,
+  bookingProviderFromUrl,
   isImageAttachment,
   bookingDisplayName,
   bookingSubtitle,
@@ -33,6 +34,18 @@ function makeBooking(over: Partial<Booking>): Booking {
     ...over,
   }
 }
+
+describe('bookingProviderFromUrl', () => {
+  test('extracts a normalized provider hostname from http(s) URLs', () => {
+    expect(bookingProviderFromUrl('https://www.booking.com/hotel/jp/abc.html')).toBe('booking.com')
+    expect(bookingProviderFromUrl('http://trip.com/orders/123')).toBe('trip.com')
+  })
+
+  test('returns empty for invalid or empty values', () => {
+    expect(bookingProviderFromUrl('')).toBe('')
+    expect(bookingProviderFromUrl('not a url')).toBe('')
+  })
+})
 
 describe('attachmentThumbPath', () => {
   test('returns thumbPath when present', () => {

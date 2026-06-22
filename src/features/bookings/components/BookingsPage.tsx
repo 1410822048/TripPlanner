@@ -1,5 +1,5 @@
 // src/features/bookings/components/BookingsPage.tsx
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Plus, Ticket } from 'lucide-react'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
 import { useSwipeOpen } from '@/hooks/useSwipeOpen'
@@ -22,6 +22,7 @@ import AttachmentPreviewModal from './AttachmentPreviewModal'
 import BookingReadonlyModal from './BookingReadonlyModal'
 import BookingsListSkeleton from './BookingsListSkeleton'
 import { bookingDisplayName, BOOKING_TYPE_META, BOOKING_TYPE_ORDER } from '../utils'
+import { hasShareParams, sharedBookingDraftFromSearch, type SharedBookingDraft } from '../linkDraft'
 import { toLocalDateString } from '@/utils/dates'
 
 type BookingOverlay =
@@ -63,6 +64,7 @@ export default function BookingsPage() {
     useFeatureListPage<Booking>()
   const swipe = useSwipeOpen()
   const [bookingOverlay, setBookingOverlay] = useState<BookingOverlay>(null)
+  const [sharedDraft, setSharedDraft] = useState<SharedBookingDraft | null>(null)
 
   // Hooks must run unconditionally — pull tripId via optional chaining so
   // useBookings is always called (just disabled in non-cloud states).
@@ -95,6 +97,25 @@ export default function BookingsPage() {
     'bookingId',
   )
 
+  useEffect(() => {
+    const search = window.location.search
+    if (!search || !hasShareParams(search)) return
+    // Cloud roles resolve asynchronously. Keep the query until canWrite
+    // becomes true so a writable user does not lose the shared URL during
+    // the role-loading frame. Viewers simply keep the URL and see no create UI.
+    if (!canWrite) return
+
+    const nextDraft = sharedBookingDraftFromSearch(search)
+    window.history.replaceState(window.history.state, '', '/bookings')
+    if (!nextDraft) return
+
+    // 一次性消費 share-target URL → 開新增表單(等同 SchedulePage 消費
+    // location.state.openCreateTrip 的模式)。URL 已 replaceState 清掉,不會重觸發。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSharedDraft(nextDraft)
+    modal.openAdd()
+  }, [canWrite, modal])
+
   if (ctx.status === 'loading') return <BookingsPageSkeleton />
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Ticket} reason="予約を管理" />
 
@@ -120,6 +141,7 @@ export default function BookingsPage() {
   const typeOrder = BOOKING_TYPE_ORDER
 
   function handleSave({ input, attachment }: BookingFormResult) {
+    setSharedDraft(null)
     if (isDemo) { modal.close(); signIn.open(); return }
     if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
 
@@ -144,6 +166,16 @@ export default function BookingsPage() {
         createdBy: uid,
       })
     }
+  }
+
+  function handleOpenAdd() {
+    setSharedDraft(null)
+    modal.openAdd()
+  }
+
+  function handleCloseForm() {
+    setSharedDraft(null)
+    modal.close()
   }
 
   function handleSwipeDelete(b: Booking) {
@@ -173,6 +205,7 @@ export default function BookingsPage() {
 
   function handleEditBookingFromDetail(b: Booking) {
     setBookingOverlay(null)
+    setSharedDraft(null)
     modal.openEdit(b)
   }
 
@@ -231,7 +264,7 @@ export default function BookingsPage() {
             </p>
             {canWrite && (
               <button
-                onClick={modal.openAdd}
+                onClick={handleOpenAdd}
                 className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-[24px] border-none bg-teal text-white text-[12.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
                 style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
               >
@@ -285,7 +318,7 @@ export default function BookingsPage() {
 
             {canWrite && (
               <button
-                onClick={modal.openAdd}
+                onClick={handleOpenAdd}
                 className="w-full h-11 rounded-chip border-[1.5px] border-dashed border-border bg-transparent text-muted text-[13px] font-medium flex items-center justify-center gap-1.5 cursor-pointer tracking-[0.04em] transition-all hover:bg-teal-pale hover:border-teal hover:text-teal"
               >
                 <Plus size={14} strokeWidth={2} />
@@ -303,14 +336,15 @@ export default function BookingsPage() {
           ExpensePage for the shared rationale. */}
       {modal.isOpen && (
         <BookingFormModal
-          key={modal.key}
+          key={sharedDraft?.key ?? modal.key}
           isOpen
           editTarget={modal.editTarget}
+          initialDraft={modal.editTarget ? undefined : sharedDraft?.draft}
           tripStartDate={tripStartDate}
           tripEndDate={tripEndDate}
           isSaving={false}
           saveError={modal.saveError}
-          onClose={modal.close}
+          onClose={handleCloseForm}
           onSave={handleSave}
           onDelete={modal.editTarget && !isDemo && canWrite ? handleFormDelete : undefined}
         />

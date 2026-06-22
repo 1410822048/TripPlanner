@@ -148,6 +148,15 @@ export default defineConfig({
         display: 'standalone',
         orientation: 'portrait',
         scope: '/',
+        share_target: {
+          action: '/bookings',
+          method: 'GET',
+          params: {
+            title: 'title',
+            text:  'text',
+            url:   'url',
+          },
+        },
         // Always boot a fresh launch into /schedule. Resume-from-background
         // can't be controlled from the manifest (the OS picks whatever URL
         // was last visible), so the App-entry redirect in App.tsx handles

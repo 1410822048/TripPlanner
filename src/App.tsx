@@ -14,6 +14,7 @@ import ErrorBoundary from '@/components/ErrorBoundary'
 import Splash from '@/components/Splash'
 import Toaster from '@/shared/Toaster'
 import PerfStrip from '@/components/ui/PerfStrip'
+import { hasShareParams } from '@/features/bookings/linkDraft'
 
 /**
  * Force every fresh session to land on /schedule, regardless of which page
@@ -37,10 +38,12 @@ import PerfStrip from '@/components/ui/PerfStrip'
   sessionStorage.setItem(KEY, '1')
 
   const path = window.location.pathname
+  const isBookingShareTarget = path === '/bookings' && hasShareParams(window.location.search)
   const isDeepLink =
     path.startsWith('/invite/') ||
     path === '/past-lodging' ||
-    path === '/social-circle'
+    path === '/social-circle' ||
+    isBookingShareTarget
   if (isDeepLink) return
   if (path === '/schedule' || path === '/') return
 
