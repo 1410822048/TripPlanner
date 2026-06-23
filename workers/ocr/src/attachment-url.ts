@@ -5,9 +5,10 @@
 // thumbnails stay on getBlob; see docs/design/attachment-signed-url-v2.md §7):
 //
 //   POST /attachment-url  — entity-ref full/pdf signer. Client supplies
-//     {entityType, entityId, variant}, NEVER a path. The Worker reads the
-//     Firestore doc and DERIVES the object path (BOLA defence, same pattern
-//     as /expense-receipt-ocr), then signs only that path. Authz is
+//     {entityType, entityId, variant}. For booking only, it may also
+//     provide the exact object path to disambiguate coverImage vs document;
+//     the Worker still derives the allowed paths from Firestore and signs
+//     only a doc-referenced path. Authz is
 //     trip-member only (viewers can read attachments too, mirroring
 //     storage.rules `allow read: if isMember(tripId)`); we do NOT require
 //     owner/editor the way /expense-receipt-ocr does — that one is
@@ -19,7 +20,7 @@
 // docs/design/attachment-signed-url-v2.md §1).
 import { z }                                              from 'zod'
 import { getAdminToken, getProjectId, getSigningCredentials } from './admin'
-import { getDocFields, readNestedString, readTimestampMs }    from './firestore'
+import { getDocFields, readNestedString, readTimestampMs, type FsValue }    from './firestore'
 import { CascadeError, withTokenRetry }                  from './cascade'
 import { signV4Url }                                     from './gcs-sign'
 
@@ -32,14 +33,27 @@ const PDF_TTL_SEC  = 5 * 60
 
 // ─── Schema ────────────────────────────────────────────────────────
 
-/** `.strict()` so a smuggled `path` / `url` is a 400 (the Worker derives the
- *  path from the doc; the client is never allowed to name the object). */
+/** `.strict()` so a smuggled `url` is a 400; object selection is doc-derived
+ *  and optional `path` must equal one of the stored booking file paths. */
 export const AttachmentUrlRequestSchema = z.object({
   tripId:     z.string().regex(TripIdRe),
   entityType: z.enum(['expense', 'booking', 'wish']),
   entityId:   z.string().regex(TripIdRe),
   variant:    z.enum(['full', 'pdf']),
-}).strict()
+  /** Optional exact object path. The Worker still derives the allowed paths
+   *  from the Firestore doc and signs only when this path equals one of them.
+   *  Needed for bookings after coverImage/document split because "full image"
+   *  is no longer a unique field. */
+  path:       z.string().min(1).max(500).optional(),
+}).strict().superRefine((req, ctx) => {
+  if (req.path !== undefined && req.entityType !== 'booking') {
+    ctx.addIssue({
+      code:    z.ZodIssueCode.custom,
+      path:    ['path'],
+      message: 'path is only supported for booking attachments',
+    })
+  }
+})
 export type AttachmentUrlRequest = z.infer<typeof AttachmentUrlRequestSchema>
 
 type EntityType = 'expense' | 'booking' | 'wish'
@@ -55,8 +69,18 @@ const ATTACHMENT_FIELD: Record<EntityType, {
   typeKey?:   string
 }> = {
   expense: { collection: 'expenses', map: 'receipt',    pathKey: 'path',     typeKey: 'type' },
-  booking: { collection: 'bookings', map: 'attachment', pathKey: 'filePath', typeKey: 'fileType' },
+  booking: { collection: 'bookings', map: 'document',   pathKey: 'filePath', typeKey: 'fileType' },
   wish:    { collection: 'wishes',   map: 'image',      pathKey: 'path' },
+}
+
+function bookingAttachmentCandidates(fields: Record<string, FsValue>): Array<{ path: string; type?: string }> {
+  const out: Array<{ path: string; type?: string }> = []
+  for (const map of ['document', 'coverImage'] as const) {
+    const path = readNestedString(fields, map, 'filePath')
+    const type = readNestedString(fields, map, 'fileType')
+    if (path) out.push({ path, type })
+  }
+  return out
 }
 
 // ─── Handler: entity-ref full/pdf signer ───────────────────────────
@@ -90,8 +114,22 @@ export async function signEntityUrl(
       throw new CascadeError(404, 'expense is deleted')
     }
 
-    // Derive the object path from the DOC — never the client.
-    const path = readNestedString(entityFields, spec.map, spec.pathKey)
+    // Derive the object path from the DOC. For bookings, optional req.path
+    // must match one of the role-specific doc paths; this disambiguates
+    // coverImage vs document while preserving the BOLA invariant.
+    let path: string | undefined
+    let type: string | undefined
+    if (req.entityType === 'booking') {
+      const candidates = bookingAttachmentCandidates(entityFields)
+      const candidate = req.path
+        ? candidates.find(c => c.path === req.path)
+        : candidates.find(c => !c.type || (req.variant === 'pdf' ? c.type === 'application/pdf' : c.type.startsWith('image/')))
+      path = candidate?.path
+      type = candidate?.type
+    } else {
+      path = readNestedString(entityFields, spec.map, spec.pathKey)
+      type = spec.typeKey ? readNestedString(entityFields, spec.map, spec.typeKey) : undefined
+    }
     if (!path) throw new CascadeError(404, `${req.entityType} has no attachment`)
 
     // BOLA defence in depth: even though the path came from the doc, assert
@@ -106,12 +144,11 @@ export async function signEntityUrl(
     if (req.entityType === 'wish') {
       if (req.variant === 'pdf') throw new CascadeError(400, 'wish has no PDF variant')
     } else {
-      // expense.receipt.type / booking.attachment.fileType are REQUIRED by
+      // expense.receipt.type / booking fileType are REQUIRED by
       // schema. A missing one is data-at-rest corruption — refuse rather than
       // sign an unknown-MIME object under a full/pdf TTL it may not match
       // (full=10m image, pdf=5m). 500 = server-side integrity issue, not a
       // client mistake. (spec.typeKey is always set for expense/booking.)
-      const type = spec.typeKey ? readNestedString(entityFields, spec.map, spec.typeKey) : undefined
       if (!type) {
         throw new CascadeError(500, `${req.entityType} attachment is missing its content type`)
       }

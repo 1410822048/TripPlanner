@@ -81,8 +81,8 @@ export interface OrphanPurgeReport {
 export type ValidCollection = 'expenses' | 'bookings' | 'wishes'
 
 /** Decode the FsValue map of an entity doc into the set of paths it
- *  currently references via its attachment field. Schema-aware: each
- *  collection stores the path under a different field name.
+ *  currently references via its file fields. Schema-aware: each
+ *  collection stores paths under different field names.
  *
  *  Schedules deliberately excluded from the type union -- the
  *  parsePurgeEntry validator filters them out at the queue-entry
@@ -103,11 +103,13 @@ export function referencedPaths(
     if (path)  out.add(path)
     if (thumb) out.add(thumb)
   } else if (collection === 'bookings') {
-    // booking.attachment.{filePath,thumbPath}
-    const path  = readNestedString(fields, 'attachment', 'filePath')
-    const thumb = readNestedString(fields, 'attachment', 'thumbPath')
-    if (path)  out.add(path)
-    if (thumb) out.add(thumb)
+    // booking.{coverImage,document}.{filePath,thumbPath}
+    for (const field of ['coverImage', 'document'] as const) {
+      const path  = readNestedString(fields, field, 'filePath')
+      const thumb = readNestedString(fields, field, 'thumbPath')
+      if (path)  out.add(path)
+      if (thumb) out.add(thumb)
+    }
   } else if (collection === 'wishes') {
     // wish.image.{path,thumbPath}
     const path  = readNestedString(fields, 'image', 'path')
@@ -455,4 +457,3 @@ function stripDocPrefix(fullName: string, projectId: string): string {
   const prefix = `projects/${projectId}/databases/(default)/documents/`
   return fullName.startsWith(prefix) ? fullName.slice(prefix.length) : fullName
 }
-

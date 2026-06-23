@@ -130,9 +130,14 @@ async function fetchEntityUrl(path: string): Promise<SignedUrl | null> {
     return null
   }
   try {
-    const res = await workerFetch(base, token, '/attachment-url', {
-      tripId: ref.tripId, entityType: ref.entityType, entityId: ref.entityId, variant: ref.variant,
-    }) as { url?: string; expiresAt?: string }
+    const body = {
+      tripId: ref.tripId,
+      entityType: ref.entityType,
+      entityId: ref.entityId,
+      variant: ref.variant,
+      ...(ref.entityType === 'booking' ? { path } : {}),
+    }
+    const res = await workerFetch(base, token, '/attachment-url', body) as { url?: string; expiresAt?: string }
     if (cacheEpoch !== startEpoch || !res.url || !res.expiresAt) return null
     const entry = toEntry(res.expiresAt, res.url)
     if (entry) cache.set(path, entry)

@@ -15,7 +15,7 @@ export function useThreeHotelThumbUrls(bookings: Booking[] | undefined): string[
   // (useMyHotelBookings returns sortDate-desc).
   const paths: (string | undefined)[] = []
   for (const b of bookings ?? []) {
-    const p = attachmentThumbPath(b.attachment)
+    const p = attachmentThumbPath(b.coverImage)
     if (p) paths.push(p)
     if (paths.length === 3) break
   }

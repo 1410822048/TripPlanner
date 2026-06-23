@@ -8,7 +8,7 @@
 //   - null      → user removed the existing file (clear on save)
 //   - File      → user picked a new file (replace on save)
 import { useRef, useState } from 'react'
-import { Paperclip, ArrowRight } from 'lucide-react'
+import { Paperclip, ArrowRight, Image as ImageIcon } from 'lucide-react'
 import type { Booking, CreateBookingInput } from '@/types'
 import { isHttpUrl } from '@/types'
 import FormModalShell from '@/components/ui/FormModalShell'
@@ -52,11 +52,13 @@ function titlePlaceholder(type: Booking['type']): string {
   }
 }
 
-const ACCEPT_TYPES = 'image/*,application/pdf'
+const IMAGE_ACCEPT_TYPES = 'image/*'
+const DOCUMENT_ACCEPT_TYPES = 'image/*,application/pdf'
 
 export interface BookingFormResult {
   input:      CreateBookingInput
-  attachment: AttachmentChange
+  coverImage: AttachmentChange
+  document:   AttachmentChange
 }
 
 interface Props {
@@ -86,25 +88,39 @@ export default function BookingFormModal({
   isOpen, isSaving, saveError, initialDraft, onClose, onSave, onDelete,
 }: Props) {
   const { state, setField } = useBookingFormState(editTarget, initialDraft)
-  const att = useAttachment({
+  const coverSource = editTarget?.coverImage
+  const documentSource = editTarget?.document
+  const coverAtt = useAttachment({
+    previewPath: coverSource?.thumbPath ?? null,
+    fullPath:    coverSource?.filePath  ?? null,
+    type:        coverSource?.fileType  ?? null,
+  })
+  const docAtt = useAttachment({
     // previewPath = real thumb only (no full-path fallback): a thumb-less /
     // PDF attachment shows the row icon, and the full blob resolves only
     // when the preview modal opens (path-driven via fullPath).
-    previewPath: editTarget?.attachment?.thumbPath ?? null,
-    fullPath:    editTarget?.attachment?.filePath  ?? null,
-    type:        editTarget?.attachment?.fileType  ?? null,
+    previewPath: documentSource?.thumbPath ?? null,
+    fullPath:    documentSource?.filePath  ?? null,
+    type:        documentSource?.fileType  ?? null,
   })
   const [errors,      setErrors]      = useState<Record<string, string>>({})
-  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewTarget, setPreviewTarget] = useState<'cover' | 'document' | null>(null)
   // Full-size preview URL: a newly-picked file uses its local blob (already
   // full-res); an existing attachment resolves its fullPath via getBlob only
   // while the modal is open (path-driven). null → modal shows a spinner.
-  const previewFullUrl = useAttachmentUrl(previewOpen && !att.hasNewFile ? att.fullPath : null, { kind: 'full' })
-  const previewModalUrl = att.hasNewFile ? att.previewUrl : previewFullUrl
+  const coverFullUrl = useAttachmentUrl(previewTarget === 'cover' && !coverAtt.hasNewFile ? coverAtt.fullPath : null, { kind: 'full' })
+  const docFullUrl = useAttachmentUrl(previewTarget === 'document' && !docAtt.hasNewFile ? docAtt.fullPath : null, { kind: 'full' })
+  const previewAtt = previewTarget === 'cover' ? coverAtt : previewTarget === 'document' ? docAtt : null
+  const previewModalUrl = !previewAtt
+    ? null
+    : previewAtt.hasNewFile
+      ? previewAtt.previewUrl
+      : previewTarget === 'cover' ? coverFullUrl : docFullUrl
 
   const titleRef    = useRef<HTMLInputElement>(null)
   const originRef   = useRef<HTMLInputElement>(null)
-  const fileRef     = useRef<HTMLInputElement>(null)
+  const coverFileRef = useRef<HTMLInputElement>(null)
+  const docFileRef   = useRef<HTMLInputElement>(null)
   const checkOutRef = useRef<DatePickerHandle>(null)
   // For transport types the user wants origin first, so focus that input
   // on open. Hotel / other open with their primary text field focused.
@@ -114,14 +130,24 @@ export default function BookingFormModal({
   // Hotel is the only type that conventionally has both check-in and check-out.
   const showRange = state.type === 'hotel'
 
-  function pickFile() {
-    fileRef.current?.click()
+  function pickCoverImage() {
+    coverFileRef.current?.click()
   }
 
-  function onFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
+  function pickDocument() {
+    docFileRef.current?.click()
+  }
+
+  function onCoverImagePicked(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]
     e.target.value = ''  // allow re-picking the same file
-    if (f) att.pickFile(f)
+    if (f) coverAtt.pickFile(f)
+  }
+
+  function onDocumentPicked(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0]
+    e.target.value = ''  // allow re-picking the same file
+    if (f) docAtt.pickFile(f)
   }
 
   function applyLinkDefaults(linkValue = state.link) {
@@ -182,7 +208,11 @@ export default function BookingFormModal({
       note:             state.note.trim() || undefined,
     }
 
-    return { input, attachment: att.pickAttachmentChange() }
+    return {
+      input,
+      coverImage: showRange ? coverAtt.pickAttachmentChange() : coverAtt.hasAttachment ? null : undefined,
+      document:   docAtt.pickAttachmentChange(),
+    }
   }
 
   function handleSave() {
@@ -357,23 +387,90 @@ export default function BookingFormModal({
         />
       </FormField>
 
-      <FormField label="添付（画像 / PDF）" error={att.error ?? undefined}>
+      {showRange && (
+        <FormField label="カバー画像" error={coverAtt.error ?? undefined}>
+          <input
+            ref={coverFileRef}
+            type="file"
+            accept={IMAGE_ACCEPT_TYPES}
+            onChange={onCoverImagePicked}
+            className="hidden"
+          />
+          {coverAtt.hasAttachment ? (
+            <div className="overflow-hidden rounded-card border border-border bg-surface">
+              <button
+                type="button"
+                onClick={() => (coverAtt.hasNewFile || coverAtt.fullPath) && setPreviewTarget('cover')}
+                disabled={!coverAtt.hasNewFile && !coverAtt.fullPath}
+                className="relative block h-[154px] w-full overflow-hidden border-0 bg-tile p-0 text-left cursor-pointer disabled:cursor-default"
+                aria-label="カバー画像を表示"
+              >
+                {coverAtt.previewUrl ? (
+                  <img
+                    src={coverAtt.previewUrl}
+                    alt=""
+                    className="absolute inset-0 h-full w-full object-cover"
+                    draggable={false}
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted">
+                    <ImageIcon size={28} strokeWidth={1.7} />
+                    <span className="text-[12px] font-bold">カバー画像</span>
+                  </div>
+                )}
+              </button>
+              <div className="flex items-center justify-between gap-2 border-t border-border px-3 py-2">
+                <span className="min-w-0 truncate text-[12px] font-bold text-ink">
+                  {coverAtt.attachmentName}
+                </span>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={pickCoverImage}
+                    className="h-8 rounded-chip border border-border bg-surface px-3 text-[11.5px] font-bold text-muted"
+                  >
+                    変更
+                  </button>
+                  <button
+                    type="button"
+                    onClick={coverAtt.clear}
+                    className="h-8 rounded-chip border border-danger-soft bg-danger-pale px-3 text-[11.5px] font-bold text-danger"
+                  >
+                    削除
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={pickCoverImage}
+              className="w-full h-[132px] rounded-card border-[1.5px] border-dashed border-border bg-app text-muted text-[12px] font-medium flex flex-col items-center justify-center gap-2 cursor-pointer hover:border-accent hover:text-accent transition-colors"
+            >
+              <ImageIcon size={22} strokeWidth={1.7} />
+              <span>ホテルカード用の画像を追加</span>
+            </button>
+          )}
+        </FormField>
+      )}
+
+      <FormField label="予約確認書（PDF / 画像）" error={docAtt.error ?? undefined}>
         <input
-          ref={fileRef}
+          ref={docFileRef}
           type="file"
-          accept={ACCEPT_TYPES}
-          onChange={onFilePicked}
+          accept={DOCUMENT_ACCEPT_TYPES}
+          onChange={onDocumentPicked}
           className="hidden"
         />
-        {att.hasAttachment ? (
+        {docAtt.hasAttachment ? (
           <AttachmentRow
-            fileName={att.attachmentName}
-            previewUrl={att.previewUrl}
-            isImage={att.previewIsImage}
-            onReplace={pickFile}
-            onClear={att.clear}
-            onPreview={() => (att.hasNewFile || att.fullPath) && setPreviewOpen(true)}
-            canPreview={att.hasNewFile || !!att.fullPath}
+            fileName={docAtt.attachmentName}
+            previewUrl={docAtt.previewUrl}
+            isImage={docAtt.previewIsImage}
+            onReplace={pickDocument}
+            onClear={docAtt.clear}
+            onPreview={() => (docAtt.hasNewFile || docAtt.fullPath) && setPreviewTarget('document')}
+            canPreview={docAtt.hasNewFile || !!docAtt.fullPath}
             replaceAriaLabel="ファイルを変更"
             previewAriaLabel="添付を表示"
             clearAriaLabel="添付を削除"
@@ -381,7 +478,7 @@ export default function BookingFormModal({
         ) : (
           <button
             type="button"
-            onClick={pickFile}
+            onClick={pickDocument}
             className="w-full h-[58px] rounded-input border-[1.5px] border-dashed border-border bg-app text-muted text-[12px] font-medium flex flex-col items-center justify-center gap-1 cursor-pointer hover:border-accent hover:text-accent transition-colors"
           >
             <Paperclip size={16} strokeWidth={1.8} />
@@ -402,12 +499,12 @@ export default function BookingFormModal({
 
       {editTarget && onDelete && <DeleteConfirm noun="予約" onDelete={onDelete} />}
 
-      {previewOpen && (att.hasNewFile || att.fullPath) && (
+      {previewTarget && previewAtt && (previewAtt.hasNewFile || previewAtt.fullPath) && (
         <AttachmentPreviewModal
           url={previewModalUrl}
-          fileType={att.previewMime}
-          fileName={att.attachmentName}
-          onClose={() => setPreviewOpen(false)}
+          fileType={previewAtt.previewMime}
+          fileName={previewAtt.attachmentName}
+          onClose={() => setPreviewTarget(null)}
         />
       )}
 

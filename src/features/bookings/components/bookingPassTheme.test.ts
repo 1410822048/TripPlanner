@@ -17,7 +17,6 @@ function booking(overrides: Partial<Booking>): Booking {
     address: undefined,
     confirmationCode: undefined,
     note: undefined,
-    attachment: undefined,
     memberIds: [],
     createdBy: 'u1',
     updatedBy: 'u1',

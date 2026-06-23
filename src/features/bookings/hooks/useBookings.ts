@@ -12,6 +12,8 @@
 // optimistic row attachment-less and let the snapshot listener surface
 // the final URL once the server-side write resolves.
 import {
+  type BookingAttachmentChanges,
+  type BookingExistingAttachments,
   getBookingsByTrip,
   getMyHotelBookings,
   subscribeToBookings,
@@ -24,7 +26,7 @@ import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
 import { useTripListMutation } from '@/hooks/useTripListMutation'
 import { tempId } from '@/utils/tempId'
 import { auditCreateMock, auditUpdateMock } from '@/utils/audit'
-import type { Booking, BookingAttachment, CreateBookingInput } from '@/types'
+import type { Booking, CreateBookingInput } from '@/types'
 import { MUTATION_ACTION, type MutationOptions } from '@/services/queryClient'
 
 export const bookingKeys = {
@@ -56,10 +58,10 @@ export function useCreateBooking(tripId: string, options?: MutationOptions) {
   // Phase 3.7: the Worker writes doc + attachment atomically (or not at
   // all on rejection), so there is no partial-failure state to reconcile
   // — the factory's optimistic rollback alone is sufficient.
-  return useTripListMutation<Booking, { input: CreateBookingInput; file: File | null; createdBy: string }>({
+  return useTripListMutation<Booking, { input: CreateBookingInput; files: BookingAttachmentChanges; createdBy: string }>({
     tripId,
     keyFactory: bookingKeys.all,
-    mutate:     ({ input, file, createdBy }) => createBooking(tripId, input, file, createdBy),
+    mutate:     ({ input, files, createdBy }) => createBooking(tripId, input, files, createdBy),
     patch:      (prev, { input, createdBy }) => [
       { id: tempId(), tripId, memberIds: [createdBy], ...auditCreateMock(createdBy), ...input },
       ...prev,
@@ -79,14 +81,14 @@ export function useUpdateBooking(tripId: string, options?: MutationOptions) {
     bookingId:  string
     updates:    Partial<CreateBookingInput>
     uid:        string
-    attachment: File | null | undefined
-    existing:   BookingAttachment | undefined
+    files:      BookingAttachmentChanges
+    existing:   BookingExistingAttachments
   }>({
     tripId,
     keyFactory:  bookingKeys.all,
     mutationKey: bookingUpdateMutationKey,
-    mutate:      ({ bookingId, updates, uid, attachment, existing }) =>
-      updateBooking(tripId, bookingId, updates, { uid, attachment, existing }),
+    mutate:      ({ bookingId, updates, uid, files, existing }) =>
+      updateBooking(tripId, bookingId, updates, { uid, files, existing }),
     patch:       (prev, { bookingId, updates, uid }) =>
       prev.map(b => b.id === bookingId ? { ...b, ...updates, ...auditUpdateMock(uid) } : b),
     action:      MUTATION_ACTION.UPDATE,
@@ -97,11 +99,11 @@ export function useUpdateBooking(tripId: string, options?: MutationOptions) {
 export function useDeleteBooking(tripId: string) {
   return useTripListMutation<Booking, {
     bookingId:  string
-    attachment: BookingAttachment | undefined
+    attachments: BookingExistingAttachments
   }>({
     tripId,
     keyFactory: bookingKeys.all,
-    mutate:     ({ bookingId, attachment }, { uid }) => deleteBooking(tripId, bookingId, uid, attachment),
+    mutate:     ({ bookingId, attachments }, { uid }) => deleteBooking(tripId, bookingId, uid, attachments),
     patch:      (prev, { bookingId }) => prev.filter(b => b.id !== bookingId),
     action:     MUTATION_ACTION.DELETE,
   })

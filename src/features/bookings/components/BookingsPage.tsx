@@ -82,7 +82,8 @@ export default function BookingsPage() {
   // path-only: resolve the full-size blob for the preview modal via getBlob
   // (Storage Rules). Starts fetching the instant a booking is set; the modal
   // shows a spinner until it lands, and the URL is revoked when closed.
-  const previewUrl = useAttachmentUrl(attachmentBooking?.attachment?.filePath, { kind: 'full' })
+  const attachmentPreview = attachmentBooking?.document
+  const previewUrl = useAttachmentUrl(attachmentPreview?.filePath, { kind: 'full' })
 
   // Optimistic close — modal closes immediately on save; failures route
   // to the global toast via MutationCache.onError + the hook rollback.
@@ -140,7 +141,7 @@ export default function BookingsPage() {
   for (const b of bookings) grouped[b.type].push(b)
   const typeOrder = BOOKING_TYPE_ORDER
 
-  function handleSave({ input, attachment }: BookingFormResult) {
+  function handleSave({ input, coverImage, document }: BookingFormResult) {
     setSharedDraft(null)
     if (isDemo) { modal.close(); signIn.open(); return }
     if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
@@ -156,13 +157,16 @@ export default function BookingsPage() {
         bookingId:  editing.id,
         updates:    input,
         uid,
-        attachment,
-        existing:   editing.attachment,
+        files:      { coverImage, document },
+        existing:   {
+          coverImage: editing.coverImage,
+          document:   editing.document,
+        },
       })
     } else {
       createMut.mutate({
         input,
-        file:      attachment instanceof File ? attachment : null,
+        files:     { coverImage, document },
         createdBy: uid,
       })
     }
@@ -181,7 +185,10 @@ export default function BookingsPage() {
   function handleSwipeDelete(b: Booking) {
     swipe.closeAll()
     if (isDemo) { signIn.open(); return }
-    deleteMut.mutate({ bookingId: b.id, attachment: b.attachment })
+    deleteMut.mutate({
+      bookingId: b.id,
+      attachments: { coverImage: b.coverImage, document: b.document },
+    })
   }
 
   function handleOpenBookingDetail(b: Booking) {
@@ -190,7 +197,7 @@ export default function BookingsPage() {
   }
 
   function handlePreviewBookingAttachment(b: Booking) {
-    if (!b.attachment?.filePath) return
+    if (!b.document?.filePath) return
     swipe.closeAll()
     setBookingOverlay({ kind: 'attachment', bookingId: b.id })
   }
@@ -217,7 +224,10 @@ export default function BookingsPage() {
     if (!target) return
     if (isDemo) { modal.close(); signIn.open(); return }
     modal.close()
-    deleteMut.mutate({ bookingId: target.id, attachment: target.attachment })
+    deleteMut.mutate({
+      bookingId: target.id,
+      attachments: { coverImage: target.coverImage, document: target.document },
+    })
   }
 
   return (
@@ -366,10 +376,10 @@ export default function BookingsPage() {
         />
       )}
 
-      {attachmentBooking?.attachment && (
+      {attachmentBooking && attachmentPreview && (
         <AttachmentPreviewModal
           url={previewUrl}
-          fileType={attachmentBooking.attachment.fileType}
+          fileType={attachmentPreview.fileType}
           fileName={bookingDisplayName(attachmentBooking)}
           onClose={handleCloseAttachmentPreview}
         />

@@ -228,15 +228,15 @@ describe('scanOrphanStorage', () => {
 		)
 	})
 
-	it('booking path: parses + routes to attachment.filePath/thumbPath check', async () => {
+	it('booking path: parses + routes to document.filePath/thumbPath check', async () => {
 		// Cross-collection coverage: same scan applies to bookings.
 		// Tests that the path regex correctly distinguishes the
 		// collection segment and feeds it to referencedPaths().
 		const orphanPath = `trips/${TRIP_ID}/bookings/b-1/old.webp`
 		mockSinglePage([{ name: orphanPath, timeCreated: OLD_ISO }])
-		// Booking exists but attachment is on a different path.
+		// Booking exists but document is on a different path.
 		vi.mocked(firestore.getDocFields).mockResolvedValueOnce({
-			attachment: { mapValue: { fields: {
+			document: { mapValue: { fields: {
 				filePath: { stringValue: `trips/${TRIP_ID}/bookings/b-1/NEW.webp` },
 			} } },
 		})

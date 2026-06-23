@@ -4,7 +4,7 @@
 // least once:
 //   - L3 (R3) regression: list-vs-get permission gap. A user who is a
 //     non-owner member of any trip got 403 when trip fetching switched to
-//     a `where(documentId, 'in', ids)` query because LIST is owner-only.
+//     a `where(documentId, 'in', ids)` query because root /trips LIST is closed.
 //   - H2 (R2): immutable fields on update payloads.
 //   - Wish vote-toggle diff predicate (only the caller's own uid; only
 //     `votes` + `updatedAt` may change).
@@ -58,10 +58,9 @@ describe('/trips/{tripId} read', () => {
     await assertFails(getDoc(doc(asAnon(env).firestore(), 'trips', TRIP_ID)))
   })
 
-  // The L3 regression: editor/viewer cannot list /trips even by exact id
-  // because the LIST rule is owner-only. This test pins that semantic so
-  // we don't accidentally relax it AGAIN without realising.
-  test('LIST: editor cannot query trips by documentId in [...] (owner-only LIST)', async () => {
+  // The L3 regression: no client can list /trips, even by exact id. The
+  // app lists accessible trips through the /members collection-group query.
+  test('LIST: editor cannot query trips by documentId in [...] (closed root LIST)', async () => {
     const q = query(
       collection(asEditor(env).firestore(), 'trips'),
       where(documentId(), 'in', [TRIP_ID]),
@@ -69,12 +68,12 @@ describe('/trips/{tripId} read', () => {
     await assertFails(getDocs(q))
   })
 
-  test('LIST: owner can query trips with their own ownerId filter', async () => {
+  test('LIST: owner cannot query trips with their own ownerId filter', async () => {
     const q = query(
       collection(asOwner(env).firestore(), 'trips'),
       where('ownerId', '==', OWNER_UID),
     )
-    await assertSucceeds(getDocs(q))
+    await assertFails(getDocs(q))
   })
 })
 
@@ -261,20 +260,20 @@ describe('/trips/{tripId}/bookings', () => {
     )
   })
 
-  // ─── booking.attachment is Worker-authoritative ──────────────────
+  // ─── booking files are Worker-authoritative ──────────────────────
   // Phase 3.6 commit 3: the field is forbidden on client setDoc CREATE
   // and locked to "unchanged or removed (deleteField)" on client UPDATE.
   // The Worker /booking-file-create + /booking-file-update endpoints
-  // (Admin SDK, rules-bypass) are the ONLY writers of this field — they
+  // (Admin SDK, rules-bypass) are the ONLY writers of these fields — they
   // gate writes behind the upload-intent's used / expires / stale guards.
   // These tests pin the gate so a future rule edit can't silently re-
   // open the raw-SDK direct-write path that would bypass those guards.
-  const ATTACHMENT_VALUE = {
+  const BOOKING_FILE_VALUE = {
     filePath:  'trips/trip-1/bookings/b-att/file.webp',
     fileType:  'image/webp',
   }
 
-  test('booking create WITHOUT attachment is allowed (happy: doc-first → Worker patches)', async () => {
+  test('booking create WITHOUT files is allowed (happy: doc-first → Worker patches)', async () => {
     await assertSucceeds(
       setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-noatt'), {
         tripId: TRIP_ID, type: 'hotel', title: 'X',
@@ -287,7 +286,7 @@ describe('/trips/{tripId}/bookings', () => {
     )
   })
 
-  test('booking create WITH attachment is denied (would bypass /booking-file-* intent guards)', async () => {
+  test('booking create WITH coverImage is denied (would bypass /booking-file-* intent guards)', async () => {
     await assertFails(
       setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-att'), {
         tripId: TRIP_ID, type: 'hotel', title: 'X',
@@ -296,16 +295,30 @@ describe('/trips/{tripId}/bookings', () => {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         sortDate:  serverTimestamp(),
-        attachment: ATTACHMENT_VALUE,
+        coverImage: BOOKING_FILE_VALUE,
       }),
     )
   })
 
-  test('booking update with attachment field absent is allowed (text-only edit)', async () => {
-    // The seeded BOOKING_ID has no attachment; an updateDoc that doesn't
-    // mention `attachment` should pass — `unchangedOrRemoved` returns
+  test('booking create WITH document is denied (would bypass /booking-file-* intent guards)', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-doc'), {
+        tripId: TRIP_ID, type: 'hotel', title: 'X',
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        sortDate:  serverTimestamp(),
+        document: BOOKING_FILE_VALUE,
+      }),
+    )
+  })
+
+  test('booking update with file fields absent is allowed (text-only edit)', async () => {
+    // The seeded BOOKING_ID has no coverImage/document; an updateDoc that doesn't
+    // mention either file field should pass — `unchangedOrRemoved` returns
     // true when the field is absent on both sides (both via `unchanged()`
-    // diff and via `!('attachment' in request.resource.data)`).
+    // diff and via `!(field in request.resource.data)`).
     await assertSucceeds(
       updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_ID), {
         title: 'Edited',
@@ -315,20 +328,30 @@ describe('/trips/{tripId}/bookings', () => {
     )
   })
 
-  test('booking update adding attachment (client→server forge) is denied', async () => {
+  test('booking update adding coverImage (client→server forge) is denied', async () => {
     await assertFails(
       updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_ID), {
-        attachment: ATTACHMENT_VALUE,
+        coverImage: BOOKING_FILE_VALUE,
         updatedBy: EDITOR_UID,
         updatedAt: serverTimestamp(),
       }),
     )
   })
 
-  describe('with pre-attached attachment (seeded via rules-bypass)', () => {
-    // Seed a booking that ALREADY has an attachment (simulating the post-
+  test('booking update adding document (client→server forge) is denied', async () => {
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_ID), {
+        document: BOOKING_FILE_VALUE,
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  describe('with pre-attached document (seeded via rules-bypass)', () => {
+    // Seed a booking that ALREADY has a document (simulating the post-
     // /booking-file-* state) so we can test the "unchanged" / "removed"
-    // / "changed" branches of unchangedOrRemoved('attachment').
+    // / "changed" branches of unchangedOrRemoved('document').
     beforeEach(async () => {
       await env.withSecurityRulesDisabled(async ctx => {
         const db = ctx.firestore()
@@ -339,12 +362,12 @@ describe('/trips/{tripId}/bookings', () => {
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
           sortDate:  serverTimestamp(),
-          attachment: ATTACHMENT_VALUE,
+          document: BOOKING_FILE_VALUE,
         })
       })
     })
 
-    test('text edit with attachment untouched is allowed (unchanged branch)', async () => {
+    test('text edit with document untouched is allowed (unchanged branch)', async () => {
       await assertSucceeds(
         updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-with-att'), {
           title: 'Renamed',
@@ -357,18 +380,18 @@ describe('/trips/{tripId}/bookings', () => {
     test('detach via deleteField() is allowed (removed branch — Worker storage-scan reaps blob)', async () => {
       await assertSucceeds(
         updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-with-att'), {
-          attachment: deleteField(),
+          document: deleteField(),
           updatedBy: EDITOR_UID,
           updatedAt: serverTimestamp(),
         }),
       )
     })
 
-    test('changing attachment to a different value is denied (must route through Worker)', async () => {
+    test('changing document to a different value is denied (must route through Worker)', async () => {
       await assertFails(
         updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-with-att'), {
-          attachment: {
-            ...ATTACHMENT_VALUE,
+          document: {
+            ...BOOKING_FILE_VALUE,
             filePath: 'trips/trip-1/bookings/b-with-att/different.webp',
           },
           updatedBy: EDITOR_UID,
@@ -634,7 +657,7 @@ describe('/trips/{tripId}/wishes vote toggle', () => {
   })
 
   // ─── wish.image is Worker-authoritative ──────────────────────────
-  // Same Phase 3.6 commit 3 lock as booking.attachment above.
+  // Same Phase 3.6 commit 3 lock as booking file fields above.
   const IMAGE_VALUE = {
     path:      'trips/trip-1/wishes/w-img/file.webp',
     thumbPath: 'trips/trip-1/wishes/w-img/thumb.webp',
@@ -1446,17 +1469,12 @@ describe('/{path=**}/members collection-group', () => {
   })
 })
 
-// ─── Member self-read (invite redeem path) ─────────────────────────
-// Pins the May-2026 regression where acceptInvite's idempotency check
-// (getDoc on own member path) returned 403 because the rule required
-// isMember(tripId) — but the redeemer hasn't joined yet at that point.
-// The fix: self-read is allowed independent of membership.
+// ─── Member reads are member-only ─────────────────────────────────
+// Invite redeem is Worker-authoritative now; the client no longer does
+// a pre-redeem self-get on /members/{uid}.
 describe('/trips/{tripId}/members get with self-access', () => {
-  test('non-member can getDoc their OWN member path (used by acceptInvite)', async () => {
-    // STRANGER is not a member of TRIP_ID, but must be able to read
-    // /trips/TRIP_ID/members/STRANGER_UID (returns "not found") so the
-    // invite redeem flow can ask "am I already a member?" before writing.
-    await assertSucceeds(
+  test('non-member cannot getDoc their OWN member path', async () => {
+    await assertFails(
       getDoc(doc(asStranger(env).firestore(), 'trips', TRIP_ID, 'members', STRANGER_UID)),
     )
   })

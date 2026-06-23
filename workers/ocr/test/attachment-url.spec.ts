@@ -94,10 +94,10 @@ describe('signEntityUrl — derive path from doc', () => {
     expect(signCalls[0].expiresSeconds).toBe(5 * 60)
   })
 
-  it('booking full → derives attachment.filePath', async () => {
+  it('booking full → derives document.filePath', async () => {
     seedTrip(); seedMember(CALLER)
     const path = `trips/${TRIP}/bookings/e1/f.jpg`
-    seedEntity('booking', { attachment: mapVal({ filePath: str(path), fileType: str('image/jpeg') }) })
+    seedEntity('booking', { document: mapVal({ filePath: str(path), fileType: str('image/jpeg') }) })
     await signEntityUrl(CALLER, { tripId: TRIP, entityType: 'booking', entityId: 'e1', variant: 'full' }, SA, BUCKET)
     expect(signCalls[0].objectPath).toBe(path)
   })
@@ -177,9 +177,9 @@ describe('signEntityUrl — authorization + integrity', () => {
     expect(signCalls).toHaveLength(0)
   })
 
-  it('booking attachment missing its fileType → 500 (corrupt doc)', async () => {
+  it('booking document missing its fileType → 500 (corrupt doc)', async () => {
     seedTrip(); seedMember(CALLER)
-    seedEntity('booking', { attachment: mapVal({ filePath: str(`trips/${TRIP}/bookings/e1/f.pdf`) }) }) // no `fileType`
+    seedEntity('booking', { document: mapVal({ filePath: str(`trips/${TRIP}/bookings/e1/f.pdf`) }) }) // no `fileType`
     await expect(signEntityUrl(CALLER, { tripId: TRIP, entityType: 'booking', entityId: 'e1', variant: 'pdf' }, SA, BUCKET))
       .rejects.toMatchObject({ status: 500 })
   })
@@ -200,10 +200,13 @@ describe('signEntityUrl — authorization + integrity', () => {
 // ─── Schema strictness ─────────────────────────────────────────────
 
 describe('request schema — strict', () => {
-  it('entity schema: rejects a smuggled path / url and bad variant', () => {
+  it('entity schema: accepts exact booking path locator, rejects non-booking path / smuggled url / bad variant', () => {
     const ok = AttachmentUrlRequestSchema.safeParse({ tripId: TRIP, entityType: 'expense', entityId: 'e1', variant: 'full' })
     expect(ok.success).toBe(true)
+    expect(AttachmentUrlRequestSchema.safeParse({ tripId: TRIP, entityType: 'booking', entityId: 'e1', variant: 'full', path: 'x' }).success).toBe(true)
     expect(AttachmentUrlRequestSchema.safeParse({ tripId: TRIP, entityType: 'expense', entityId: 'e1', variant: 'full', path: 'x' }).success).toBe(false)
+    expect(AttachmentUrlRequestSchema.safeParse({ tripId: TRIP, entityType: 'wish', entityId: 'e1', variant: 'full', path: 'x' }).success).toBe(false)
+    expect(AttachmentUrlRequestSchema.safeParse({ tripId: TRIP, entityType: 'expense', entityId: 'e1', variant: 'full', url: 'https://x.test' }).success).toBe(false)
     expect(AttachmentUrlRequestSchema.safeParse({ tripId: TRIP, entityType: 'expense', entityId: 'e1', variant: 'thumb' }).success).toBe(false)
   })
 })

@@ -7,9 +7,9 @@
 // getObjectMetadata boundary for intent consumption.
 //
 // What this file pins down (Phase 3.7):
-//   - Worker-authoritative booking create with intentIds: caller must
-//     be owner/editor (NO viewer); attachment field built from consumed
-//     intents (not from request body); createdBy / updatedBy / memberIds
+//   - Worker-authoritative booking create with role-specific attachment ids:
+//     caller must be owner/editor (NO viewer); file fields are built from
+//     consumed intents (not from request body); createdBy / updatedBy / memberIds
 //     all stamped from caller / trip state.
 //   - Intent markUsed writes commit atomically with the booking doc
 //     write (one tx, markUsed first so a booking-write 409 leaves
@@ -21,7 +21,7 @@
 //       - update with new parseable checkIn -> Timestamp from checkIn
 //       - update clearing checkIn ('')     -> copied from existing createdAt
 //   - PDF primary (kind='pdf', no thumb) supported.
-//   - Stale-replace guard via attachment.filePath (mirrors wish-write).
+//   - Stale-replace guard via document.filePath (mirrors wish-write).
 //   - Request body cannot smuggle a client-built `attachment` object.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -230,7 +230,7 @@ beforeEach(() => {
 // ─── Happy paths ───────────────────────────────────────────────────
 
 describe('bookingFileCreate: happy paths', () => {
-	it('full + thumb intents → booking doc + attachment + markUsed in same tx, sortDate from checkIn', async () => {
+	it('full + thumb intents → booking doc + document + markUsed in same tx, sortDate from checkIn', async () => {
 		seedAuth('editor')
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID,  kind: 'full',  path: FULL_PATH }))
@@ -250,7 +250,7 @@ describe('bookingFileCreate: happy paths', () => {
 					checkOut: '2026-06-03',
 					address:  '東京都港区',
 				}),
-				intentIds: [FULL_INTENT_ID, THUMB_INTENT_ID],
+				attachments: { document: [FULL_INTENT_ID, THUMB_INTENT_ID] },
 			},
 			'{}', BUCKET,
 		)
@@ -285,10 +285,10 @@ describe('bookingFileCreate: happy paths', () => {
 		const memberIdValues = bookingWrite.fields.memberIds?.arrayValue?.values?.map(v => v.stringValue)
 		expect(memberIdValues).toEqual(MEMBERS)
 
-		// Attachment field built server-side (path-only BookingAttachment:
+		// Document field built server-side (path-only BookingAttachment:
 		// filePath/fileType + thumbPath; reads via getBlob + Storage
 		// Rules, no bearer download URL is persisted).
-		const att = bookingWrite.fields.attachment?.mapValue?.fields
+		const att = bookingWrite.fields.document?.mapValue?.fields
 		expect(att?.filePath?.stringValue).toBe(FULL_PATH)
 		expect(att?.fileType?.stringValue).toBe('image/webp')
 		expect(att?.thumbPath?.stringValue).toBe(THUMB_PATH)
@@ -328,7 +328,7 @@ describe('bookingFileCreate: happy paths', () => {
 				tripId:    TRIP_ID,
 				bookingId: BOOKING_ID,
 				booking:   validBookingPayload({ type: 'flight', origin: 'NRT', destination: 'SFO' }),
-				intentIds: [FULL_INTENT_ID],
+				attachments: { document: [FULL_INTENT_ID] },
 			},
 			'{}', BUCKET,
 		)
@@ -349,11 +349,11 @@ describe('bookingFileCreate: happy paths', () => {
 		expect(bookingWrite.fields.destination?.stringValue).toBe('SFO')
 	})
 
-	it('PDF intent (no thumb) → primary stored as PDF, attachment has no thumb fields', async () => {
-		// Booking attachment supports PDFs (e-tickets, hotel confirmations).
+	it('PDF intent (no thumb) → primary stored as PDF, document has no thumb fields', async () => {
+		// Booking document supports PDFs (e-tickets, hotel confirmations).
 		// kind='pdf' means primary is the PDF itself; no thumb intent.
 		// buildAttachmentMapValue('booking', primary, undefined) returns
-		// attachment with filePath/fileType only (no thumb*).
+		// document with filePath/fileType only (no thumb*).
 		seedAuth('editor')
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${PDF_INTENT_ID}`,
 			intentDoc({ intentId: PDF_INTENT_ID, kind: 'pdf', path: PDF_PATH, contentType: 'application/pdf' }))
@@ -367,7 +367,7 @@ describe('bookingFileCreate: happy paths', () => {
 				tripId:    TRIP_ID,
 				bookingId: BOOKING_ID,
 				booking:   validBookingPayload({ type: 'train', confirmationCode: 'ABC123' }),
-				intentIds: [PDF_INTENT_ID],
+				attachments: { document: [PDF_INTENT_ID] },
 			},
 			'{}', BUCKET,
 		)
@@ -376,7 +376,7 @@ describe('bookingFileCreate: happy paths', () => {
 		}>
 		// 1 markUsed + 1 booking write.
 		expect(writes).toHaveLength(2)
-		const att = writes[1].fields.attachment?.mapValue?.fields
+		const att = writes[1].fields.document?.mapValue?.fields
 		expect(att?.filePath?.stringValue).toBe(PDF_PATH)
 		expect(att?.fileType?.stringValue).toBe('application/pdf')
 		// No thumb fields for PDF attachment.
@@ -396,7 +396,7 @@ describe('bookingFileCreate: happy paths', () => {
 
 		await expect(bookingFileCreate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), intentIds: [FULL_INTENT_ID] },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), attachments: { document: [FULL_INTENT_ID] } },
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ code: 'ATTACHMENT_HARDENING_FAILED' })
 
@@ -420,7 +420,7 @@ describe('bookingFileCreate: happy paths', () => {
 
 		await expect(bookingFileCreate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), intentIds: [FULL_INTENT_ID] },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), attachments: { document: [FULL_INTENT_ID] } },
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ code: 'ATTACHMENT_HARDENING_FAILED' })
 
@@ -436,7 +436,7 @@ describe('bookingFileCreate: authorization', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('editor'))
 		await expect(bookingFileCreate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), intentIds: [FULL_INTENT_ID] },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), attachments: { document: [FULL_INTENT_ID] } },
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 404 })
 	})
@@ -448,7 +448,7 @@ describe('bookingFileCreate: authorization', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('editor'))
 		await expect(bookingFileCreate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), intentIds: [FULL_INTENT_ID] },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), attachments: { document: [FULL_INTENT_ID] } },
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 410 })
 	})
@@ -459,7 +459,7 @@ describe('bookingFileCreate: authorization', () => {
 			notFoundReadDoc(`trips/${TRIP_ID}/members/${CALLER_UID}`))
 		await expect(bookingFileCreate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), intentIds: [FULL_INTENT_ID] },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), attachments: { document: [FULL_INTENT_ID] } },
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 403 })
 	})
@@ -471,7 +471,7 @@ describe('bookingFileCreate: authorization', () => {
 		seedAuth('viewer')
 		await expect(bookingFileCreate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), intentIds: [FULL_INTENT_ID] },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), attachments: { document: [FULL_INTENT_ID] } },
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 403 })
 	})
@@ -491,7 +491,7 @@ describe('bookingFileCreate: state checks', () => {
 		)
 		await expect(bookingFileCreate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), intentIds: [FULL_INTENT_ID] },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), attachments: { document: [FULL_INTENT_ID] } },
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 409 })
 	})
@@ -513,7 +513,7 @@ describe('bookingFileCreate: body validation', () => {
 				tripId:    TRIP_ID,
 				bookingId: BOOKING_ID,
 				booking:   { title: 'no type field' },  // missing required `type`
-				intentIds: [FULL_INTENT_ID],
+				attachments: { document: [FULL_INTENT_ID] },
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(BookingValidationError)
@@ -532,7 +532,7 @@ describe('bookingFileCreate: body validation', () => {
 				tripId:    TRIP_ID,
 				bookingId: BOOKING_ID,
 				booking:   { type: 'spaceship', title: 'x' },  // not in enum
-				intentIds: [FULL_INTENT_ID],
+				attachments: { document: [FULL_INTENT_ID] },
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(BookingValidationError)
@@ -552,13 +552,13 @@ describe('bookingFileCreate: body validation', () => {
 					title:      'x',
 					attachment: { filePath: 'x', fileType: 'image/webp' },
 				},
-				intentIds: [FULL_INTENT_ID],
+				attachments: { document: [FULL_INTENT_ID] },
 			},
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ name: 'BookingValidationError', field: 'attachment' })
 	})
 
-	it('rejects when intentIds has no full/pdf intent (thumb-only)', async () => {
+	it('rejects when document has no full/pdf intent (thumb-only)', async () => {
 		seedAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${THUMB_INTENT_ID}`,
 			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: THUMB_PATH }))
@@ -567,9 +567,9 @@ describe('bookingFileCreate: body validation', () => {
 		)
 		await expect(bookingFileCreate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), intentIds: [THUMB_INTENT_ID] },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), attachments: { document: [THUMB_INTENT_ID] } },
 			'{}', BUCKET,
-		)).rejects.toMatchObject({ name: 'BookingValidationError', field: 'intentIds' })
+		)).rejects.toMatchObject({ name: 'BookingValidationError', field: 'attachments.document' })
 	})
 })
 
@@ -591,7 +591,7 @@ describe('bookingFileCreate: intent scope binding', () => {
 			}))
 		await expect(bookingFileCreate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), intentIds: [FULL_INTENT_ID] },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), attachments: { document: [FULL_INTENT_ID] } },
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 400 })
 	})
@@ -607,7 +607,7 @@ describe('bookingFileCreate: intent scope binding', () => {
 			}))
 		await expect(bookingFileCreate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), intentIds: [FULL_INTENT_ID] },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), attachments: { document: [FULL_INTENT_ID] } },
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 400 })
 	})
@@ -621,11 +621,11 @@ const NEW_PDF_PATH   = `trips/${TRIP_ID}/bookings/${BOOKING_ID}/xyz789.pdf`
 
 const EXISTING_CREATED_AT = '2026-05-20T12:34:56.000Z'
 
-/** Booking doc that exists, with attachment + a stable createdAt
+/** Booking doc that exists, with document + a stable createdAt
  *  Timestamp (for the cleared-checkIn sortDate fallback). The Worker
- *  reads `attachment.filePath` for the stale-replace guard and
+ *  reads `document.filePath` for the stale-replace guard and
  *  `createdAt` for the cleared-checkIn fallback. */
-function ownedBookingReadDoc(opts: { attachmentFilePath?: string | null } = {}) {
+function ownedBookingReadDoc(opts: { documentFilePath?: string | null } = {}) {
 	const fields: Record<string, unknown> = {
 		tripId:    { stringValue: TRIP_ID },
 		type:      { stringValue: 'hotel' },
@@ -635,9 +635,9 @@ function ownedBookingReadDoc(opts: { attachmentFilePath?: string | null } = {}) 
 		checkIn:   { stringValue: '2026-06-01' },
 		sortDate:  { timestampValue: '2026-06-01T00:00:00.000Z' },
 	}
-	const filePath = opts.attachmentFilePath === undefined ? FULL_PATH : opts.attachmentFilePath
+	const filePath = opts.documentFilePath === undefined ? FULL_PATH : opts.documentFilePath
 	if (filePath !== null) {
-		fields.attachment = {
+		fields.document = {
 			mapValue: {
 				fields: {
 					filePath:  { stringValue: filePath },
@@ -657,18 +657,18 @@ function ownedBookingReadDoc(opts: { attachmentFilePath?: string | null } = {}) 
 
 function seedUpdateAuth(opts: {
 	role?:               'owner' | 'editor' | 'viewer'
-	attachmentFilePath?: string | null
+	documentFilePath?: string | null
 } = {}) {
 	txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc())
 	txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc(opts.role ?? 'editor'))
 	txGetResponses.set(`trips/${TRIP_ID}/bookings/${BOOKING_ID}`,
-		ownedBookingReadDoc({ attachmentFilePath: opts.attachmentFilePath }))
+		ownedBookingReadDoc({ documentFilePath: opts.documentFilePath }))
 }
 
 // ─── Happy paths ──────────────────────────────────────────────────
 
 describe('bookingFileUpdate: happy paths', () => {
-	it('text patch + new image (full+thumb) → attachment + text + markUsed in one tx', async () => {
+	it('text patch + new image (full+thumb) → document + text + markUsed in one tx', async () => {
 		seedUpdateAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID,  kind: 'full',  path: NEW_FULL_PATH }))
@@ -684,8 +684,8 @@ describe('bookingFileUpdate: happy paths', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { title: 'new title', note: 'updated' },
-				intentIds:           [FULL_INTENT_ID, THUMB_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID, THUMB_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)
@@ -707,9 +707,9 @@ describe('bookingFileUpdate: happy paths', () => {
 		const patch = writes[2]!
 		expect(patch.document).toContain(`/trips/${TRIP_ID}/bookings/${BOOKING_ID}`)
 		expect(patch.currentDocument).toEqual({ exists: true })
-		// attachment + updatedBy + title + note
+		// document + updatedBy + title + note
 		const maskSet = new Set(patch.updateMask)
-		expect(maskSet.has('attachment')).toBe(true)
+		expect(maskSet.has('document')).toBe(true)
 		expect(maskSet.has('updatedBy')).toBe(true)
 		expect(maskSet.has('title')).toBe(true)
 		expect(maskSet.has('note')).toBe(true)
@@ -720,8 +720,8 @@ describe('bookingFileUpdate: happy paths', () => {
 		expect(patch.fields.title?.stringValue).toBe('new title')
 		expect(patch.fields.note?.stringValue).toBe('updated')
 
-		// New attachment bytes (path-only, no bearer download URL).
-		const att = patch.fields.attachment?.mapValue?.fields
+		// New document bytes (path-only, no bearer download URL).
+		const att = patch.fields.document?.mapValue?.fields
 		expect(att?.filePath?.stringValue).toBe(NEW_FULL_PATH)
 		expect(att?.fileType?.stringValue).toBe('image/webp')
 		expect(att?.thumbPath?.stringValue).toBe(NEW_THUMB_PATH)
@@ -734,8 +734,8 @@ describe('bookingFileUpdate: happy paths', () => {
 		])
 	})
 
-	it('empty patch + new image → attachment-only replace (mask = attachment + updatedBy)', async () => {
-		// Use case: user picks a new attachment but doesn't touch any text
+	it('empty patch + new image → document-only replace (mask = document + updatedBy)', async () => {
+		// Use case: user picks a new document but doesn't touch any text
 		// fields. mask must not include text fields, otherwise we'd
 		// overwrite them with `undefined` (Firestore would treat that
 		// as field-delete via mask-without-field semantics).
@@ -752,8 +752,8 @@ describe('bookingFileUpdate: happy paths', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               {},
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)
@@ -762,12 +762,12 @@ describe('bookingFileUpdate: happy paths', () => {
 			fields: Record<string, unknown>
 		}>
 		const patch = writes[1]!
-		// Exactly two keys: attachment + updatedBy.
-		expect(patch.updateMask).toEqual(['attachment', 'updatedBy'])
-		expect(Object.keys(patch.fields)).toEqual(['attachment', 'updatedBy'])
+		// Exactly two keys: document + updatedBy.
+		expect(patch.updateMask).toEqual(['document', 'updatedBy'])
+		expect(Object.keys(patch.fields)).toEqual(['document', 'updatedBy'])
 	})
 
-	it('PDF replace (no thumb) → attachment has no thumb fields', async () => {
+	it('PDF replace (no thumb) → document has no thumb fields', async () => {
 		seedUpdateAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${PDF_INTENT_ID}`,
 			intentDoc({ intentId: PDF_INTENT_ID, kind: 'pdf', path: NEW_PDF_PATH, contentType: 'application/pdf' }))
@@ -781,15 +781,15 @@ describe('bookingFileUpdate: happy paths', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { title: 'pdf attachment' },
-				intentIds:           [PDF_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [PDF_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)
 		const writes = capturedTxResult!.writes as Array<{
 			fields: Record<string, { mapValue?: { fields: Record<string, { stringValue?: string }> } }>
 		}>
-		const att = writes[1].fields.attachment?.mapValue?.fields
+		const att = writes[1].fields.document?.mapValue?.fields
 		expect(att?.filePath?.stringValue).toBe(NEW_PDF_PATH)
 		expect(att?.fileType?.stringValue).toBe('application/pdf')
 		expect(att?.thumbPath).toBeUndefined()
@@ -809,8 +809,8 @@ describe('bookingFileUpdate: happy paths', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { checkIn: '2026-07-15' },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)
@@ -841,8 +841,8 @@ describe('bookingFileUpdate: happy paths', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { checkIn: '' },  // clear
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)
@@ -875,8 +875,8 @@ describe('bookingFileUpdate: happy paths', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { note: '', address: '', link: '' },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)
@@ -908,8 +908,8 @@ describe('bookingFileUpdate: happy paths', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { link: 'https://www.booking.com/hotel/jp/abc.html' },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)
@@ -932,7 +932,7 @@ describe('bookingFileUpdate: authorization', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/bookings/${BOOKING_ID}`, ownedBookingReadDoc())
 		await expect(bookingFileUpdate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, patch: { title: 'x' }, intentIds: [FULL_INTENT_ID], expectedCurrentPath: FULL_PATH },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, patch: { title: 'x' }, attachments: { document: [FULL_INTENT_ID] }, expectedCurrentPaths: { document: FULL_PATH } },
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 404 })
 	})
@@ -945,7 +945,7 @@ describe('bookingFileUpdate: authorization', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/bookings/${BOOKING_ID}`, ownedBookingReadDoc())
 		await expect(bookingFileUpdate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, patch: { title: 'x' }, intentIds: [FULL_INTENT_ID], expectedCurrentPath: FULL_PATH },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, patch: { title: 'x' }, attachments: { document: [FULL_INTENT_ID] }, expectedCurrentPaths: { document: FULL_PATH } },
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 410 })
 	})
@@ -957,7 +957,7 @@ describe('bookingFileUpdate: authorization', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/bookings/${BOOKING_ID}`, ownedBookingReadDoc())
 		await expect(bookingFileUpdate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, patch: { title: 'x' }, intentIds: [FULL_INTENT_ID], expectedCurrentPath: FULL_PATH },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, patch: { title: 'x' }, attachments: { document: [FULL_INTENT_ID] }, expectedCurrentPaths: { document: FULL_PATH } },
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 403 })
 	})
@@ -966,7 +966,7 @@ describe('bookingFileUpdate: authorization', () => {
 		seedUpdateAuth({ role: 'viewer' })
 		await expect(bookingFileUpdate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, patch: { title: 'x' }, intentIds: [FULL_INTENT_ID], expectedCurrentPath: FULL_PATH },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, patch: { title: 'x' }, attachments: { document: [FULL_INTENT_ID] }, expectedCurrentPaths: { document: FULL_PATH } },
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 403 })
 	})
@@ -978,7 +978,7 @@ describe('bookingFileUpdate: authorization', () => {
 			notFoundReadDoc(`trips/${TRIP_ID}/bookings/${BOOKING_ID}`))
 		await expect(bookingFileUpdate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, patch: { title: 'x' }, intentIds: [FULL_INTENT_ID], expectedCurrentPath: FULL_PATH },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, patch: { title: 'x' }, attachments: { document: [FULL_INTENT_ID] }, expectedCurrentPaths: { document: FULL_PATH } },
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 404 })
 	})
@@ -991,9 +991,26 @@ describe('bookingFileUpdate: body validation', () => {
 		seedUpdateAuth()
 		await expect(bookingFileUpdate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, patch: 'not-an-object', intentIds: [FULL_INTENT_ID], expectedCurrentPath: FULL_PATH },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, patch: 'not-an-object', attachments: { document: [FULL_INTENT_ID] }, expectedCurrentPaths: { document: FULL_PATH } },
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ name: 'BookingValidationError', field: 'patch' })
+	})
+
+	it('rejects when one attachment role is both cleared and replaced', async () => {
+		seedUpdateAuth()
+		await expect(bookingFileUpdate(
+			CALLER_UID,
+			{
+				tripId:              TRIP_ID,
+				bookingId:           BOOKING_ID,
+				patch:               {},
+				attachments: { document: [FULL_INTENT_ID] },
+				clearAttachments: ['document'],
+				expectedCurrentPaths: { document: FULL_PATH },
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ name: 'BookingValidationError', field: 'attachments.document' })
+		expect(capturedTxResult).toBeNull()
 	})
 
 	it('REGRESSION: rejects when patch tries to smuggle an attachment object', async () => {
@@ -1004,8 +1021,8 @@ describe('bookingFileUpdate: body validation', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { attachment: { filePath: 'x', fileType: 'image/webp' } },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ name: 'BookingValidationError', field: 'attachment' })
@@ -1019,8 +1036,8 @@ describe('bookingFileUpdate: body validation', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { createdBy: 'someone-else' },  // immutable; not in allowlist
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ name: 'BookingValidationError', field: 'createdBy' })
@@ -1034,8 +1051,8 @@ describe('bookingFileUpdate: body validation', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { title: 'x'.repeat(101) },  // max=100
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(BookingValidationError)
@@ -1055,8 +1072,8 @@ describe('bookingFileUpdate: body validation', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { origin: 'x'.repeat(61) },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(BookingValidationError)
@@ -1070,8 +1087,8 @@ describe('bookingFileUpdate: body validation', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { destination: 'x'.repeat(61) },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(BookingValidationError)
@@ -1085,8 +1102,8 @@ describe('bookingFileUpdate: body validation', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { confirmationCode: 'x'.repeat(65) },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(BookingValidationError)
@@ -1100,8 +1117,8 @@ describe('bookingFileUpdate: body validation', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { provider: 'x'.repeat(61) },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(BookingValidationError)
@@ -1115,8 +1132,8 @@ describe('bookingFileUpdate: body validation', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { address: 'x'.repeat(501) },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(BookingValidationError)
@@ -1130,8 +1147,8 @@ describe('bookingFileUpdate: body validation', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { note: 'x'.repeat(2001) },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(BookingValidationError)
@@ -1145,8 +1162,8 @@ describe('bookingFileUpdate: body validation', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { checkIn: 'x'.repeat(33) },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(BookingValidationError)
@@ -1160,8 +1177,8 @@ describe('bookingFileUpdate: body validation', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { checkOut: 'x'.repeat(33) },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(BookingValidationError)
@@ -1179,8 +1196,8 @@ describe('bookingFileUpdate: body validation', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { link: 'javascript:alert(document.cookie)' },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(BookingValidationError)
@@ -1194,8 +1211,8 @@ describe('bookingFileUpdate: body validation', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { link: 'https://e.com/' + 'x'.repeat(500) },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(BookingValidationError)
@@ -1213,8 +1230,8 @@ describe('bookingFileUpdate: body validation', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { link: 'HTTPS://example.com' },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(BookingValidationError)
@@ -1233,9 +1250,9 @@ describe('bookingFileUpdate: intent scope binding', () => {
 		)
 		await expect(bookingFileUpdate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, patch: {}, intentIds: [THUMB_INTENT_ID], expectedCurrentPath: FULL_PATH },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, patch: {}, attachments: { document: [THUMB_INTENT_ID] }, expectedCurrentPaths: { document: FULL_PATH } },
 			'{}', BUCKET,
-		)).rejects.toMatchObject({ name: 'BookingValidationError', field: 'intentIds' })
+		)).rejects.toMatchObject({ name: 'BookingValidationError', field: 'attachments.document' })
 	})
 
 	it('rejects when intent.entityType is not "booking"', async () => {
@@ -1250,7 +1267,7 @@ describe('bookingFileUpdate: intent scope binding', () => {
 			}))
 		await expect(bookingFileUpdate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, patch: {}, intentIds: [FULL_INTENT_ID], expectedCurrentPath: FULL_PATH },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, patch: {}, attachments: { document: [FULL_INTENT_ID] }, expectedCurrentPaths: { document: FULL_PATH } },
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 400 })
 	})
@@ -1266,7 +1283,7 @@ describe('bookingFileUpdate: intent scope binding', () => {
 			}))
 		await expect(bookingFileUpdate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, patch: {}, intentIds: [FULL_INTENT_ID], expectedCurrentPath: FULL_PATH },
+			{ tripId: TRIP_ID, bookingId: BOOKING_ID, patch: {}, attachments: { document: [FULL_INTENT_ID] }, expectedCurrentPaths: { document: FULL_PATH } },
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 400 })
 	})
@@ -1274,16 +1291,16 @@ describe('bookingFileUpdate: intent scope binding', () => {
 
 // ─── Stale-replace guard ──────────────────────────────────────────
 //
-// Closes the Tab A overwrites Tab B race via attachment.filePath. Same
+// Closes the Tab A overwrites Tab B race via document.filePath. Same
 // shape as wish-file-update's guard (uniform error mode across Worker
-// endpoints) but reads `attachment.filePath` instead of `image.path`.
+// endpoints) but reads `document.filePath` instead of `image.path`.
 
 describe('bookingFileUpdate: stale-replace guard', () => {
-	it('expectedCurrentPath is a STALE string (Tab B replaced) → 409', async () => {
-		// Doc says attachment.filePath = FULL_PATH, caller sends a
+	it('expectedCurrentPaths.document is a STALE string (Tab B replaced) → 409', async () => {
+		// Doc says document.filePath = FULL_PATH, caller sends a
 		// different path (the one they saw on load, before Tab B's replace
 		// landed).
-		seedUpdateAuth()  // ownedBookingReadDoc sets attachment.filePath = FULL_PATH
+		seedUpdateAuth()  // ownedBookingReadDoc sets document.filePath = FULL_PATH
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
@@ -1296,8 +1313,8 @@ describe('bookingFileUpdate: stale-replace guard', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { title: 'x' },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: `trips/${TRIP_ID}/bookings/${BOOKING_ID}/stale-old.webp`,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: `trips/${TRIP_ID}/bookings/${BOOKING_ID}/stale-old.webp` },
 			},
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 409 })
@@ -1307,11 +1324,11 @@ describe('bookingFileUpdate: stale-replace guard', () => {
 		expect(capturedTxResult).toBeNull()
 	})
 
-	it('expectedCurrentPath=null but doc.attachment exists (Tab B attached) → 409', async () => {
-		// Caller's editor loaded with no attachment. While the form was
+	it('expectedCurrentPaths.document=null but doc.document exists (Tab B attached) → 409', async () => {
+		// Caller's editor loaded with no document. While the form was
 		// open, Tab B attached a file. Caller's upload would silently
 		// overwrite Tab B's commit — reject so the editor reconciles.
-		seedUpdateAuth()  // ownedBookingReadDoc HAS attachment.filePath = FULL_PATH
+		seedUpdateAuth()  // ownedBookingReadDoc HAS document.filePath = FULL_PATH
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
@@ -1324,8 +1341,8 @@ describe('bookingFileUpdate: stale-replace guard', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { title: 'x' },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: null,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: null },
 			},
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 409 })
@@ -1333,12 +1350,12 @@ describe('bookingFileUpdate: stale-replace guard', () => {
 		expect(capturedTxResult).toBeNull()
 	})
 
-	it('expectedCurrentPath=string but doc.attachment absent (Tab B detached) → 409', async () => {
-		// Caller's editor loaded with attachment P1. While the form was
-		// open, Tab B detached the attachment (field removed). Caller's
+	it('expectedCurrentPaths.document=string but doc.document absent (Tab B detached) → 409', async () => {
+		// Caller's editor loaded with document P1. While the form was
+		// open, Tab B detached the document (field removed). Caller's
 		// upload would resurrect a dead reference; safePurge would target
 		// an already-deleted blob — reject so the editor sees the detach.
-		seedUpdateAuth({ attachmentFilePath: null })  // doc has no attachment
+		seedUpdateAuth({ documentFilePath: null })  // doc has no document
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
@@ -1351,8 +1368,8 @@ describe('bookingFileUpdate: stale-replace guard', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { title: 'x' },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: FULL_PATH,  // editor saw P1; doc has no attachment now
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH },  // editor saw P1; doc has no document now
 			},
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 409 })
@@ -1360,11 +1377,11 @@ describe('bookingFileUpdate: stale-replace guard', () => {
 		expect(capturedTxResult).toBeNull()
 	})
 
-	it('expectedCurrentPath=null AND doc.attachment absent (first-attach happy path) → ok', async () => {
+	it('expectedCurrentPaths.document=null AND doc.document absent (first-attach happy path) → ok', async () => {
 		// Symmetry check: a true first-attach (no concurrent edit) commits
-		// cleanly. The guard normalises absent attachment to `null`, so
+		// cleanly. The guard normalises absent document to `null`, so
 		// this comparison matches and the tx proceeds.
-		seedUpdateAuth({ attachmentFilePath: null })
+		seedUpdateAuth({ documentFilePath: null })
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
 		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
@@ -1377,15 +1394,15 @@ describe('bookingFileUpdate: stale-replace guard', () => {
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
 				patch:               { title: 'first attach' },
-				intentIds:           [FULL_INTENT_ID],
-				expectedCurrentPath: null,
+				attachments: { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: null },
 			},
 			'{}', BUCKET,
 		)
 		expect(result).toEqual({ ok: true })
 
 		// 1 markUsed + 1 booking patch — same shape as the canonical happy
-		// path, just with attachment landing for the first time.
+		// path, just with document landing for the first time.
 		const writes = capturedTxResult!.writes as Array<{ fields: Record<string, unknown> }>
 		expect(writes).toHaveLength(2)
 	})

@@ -22,13 +22,6 @@ service cloud.firestore {
     function uid() {
       return request.auth.uid;
     }
-    // Self-access gate. Used wherever "I can read/write my own row" is
-    // legitimate independent of trip membership — most importantly the
-    // invite redeem flow, where the new user needs to getDoc(members/me)
-    // before they have actually joined.
-    function isSelf(id) {
-      return isSignedIn() && id == uid();
-    }
     // Same-doc membership predicate. The denormalised `memberIds: string[]`
     // is cascaded onto every trip-scoped doc (trip + members + 5 entity
     // subcollections) by Worker membership endpoints, so reads check membership against
@@ -102,7 +95,7 @@ service cloud.firestore {
     }
     // Allow `field` to be either unchanged OR removed (via deleteField()),
     // but never written/changed. Used for Worker-authoritative fields
-    // (booking.attachment, wish.image) where the client may detach but
+    // (booking coverImage/document, wish.image) where the client may detach but
     // not write — Worker endpoints (`/booking-file-create` +
     // `/booking-file-update` for booking, `/wish-file-create` +
     // `/wish-file-update` for wish) own all writes via Admin SDK
@@ -190,7 +183,7 @@ service cloud.firestore {
     // a Worker-authoritative write path:
     //   - expense.receipt: `allow create: if false` on /expenses + Worker
     //     `expense-validate.ts` owns shape validation.
-    //   - booking.attachment, wish.image: create rule forbids the field,
+    //   - booking coverImage/document, wish.image: create rule forbids the field,
     //     update rule allows only `unchangedOrRemoved`. Booking uses
     //     `/booking-file-create` + `/booking-file-update`. Wish uses
     //     `/wish-file-create` + `/wish-file-update` (Phase 3.7: atomic
@@ -240,10 +233,10 @@ service cloud.firestore {
       // in the collection-group (Firestore doesn't auto-cascade
       // subcollection deletes from a parent doc delete in the Console).
       allow get: if resource == null || memberOfDoc();
-      // LIST/query on /trips is kept narrow: only "trips I own" via ownerId
-      // filter. The primary list path is now the /members collection-group
-      // query above, so this rule is effectively a defensive fallback.
-      allow list: if isSignedIn() && resource.data.ownerId == uid();
+      // Root /trips queries are intentionally closed. The app discovers
+      // accessible trip ids through the /members collection-group query
+      // above, then getDoc(...) each trip by id.
+      allow list: if false;
       // Anyone signed-in may create a trip they own; ownerId is pinned
       // to their uid. memberIds must start as exactly [uid] so the
       // initial roster matches the owner-only state; Worker membership
@@ -331,16 +324,11 @@ service cloud.firestore {
       allow delete: if false;
 
       match /members/{memberId} {
-        // get: anyone can fetch their OWN member doc, even when they're
-        //      not yet a member. The invite-redeem flow needs this for
-        //      the "already-member?" idempotency check (acceptInvite
-        //      reads its own member doc before deciding whether to
-        //      setDoc). Without the isSelf clause, redeemers got
-        //      "Missing or insufficient permissions" on the read.
-        // list: still member-only — viewing the full roster is a
-        //       trip-internal action. Each member doc carries the full
-        //       roster via memberIds[] so the check is same-doc.
-        allow get:  if memberOfDoc() || isSelf(memberId);
+        // get/list are trip-internal roster reads. Invite redeem is now
+        // Worker-authoritative and no longer needs a client self-precheck.
+        // Each member doc carries the full roster via memberIds[] so the
+        // check is same-doc.
+        allow get:  if memberOfDoc();
         allow list: if memberOfDoc();
         // Client create is only allowed for owner self-bootstrap in the
         // same writeBatch as trip creation. Invite redeem and manual
@@ -708,7 +696,7 @@ service cloud.firestore {
                       && request.resource.data.keys().hasOnly([
                            'tripId','type','title','origin','destination',
                            'confirmationCode','provider','checkIn','checkOut',
-                           'address','link','note','attachment','sortDate','memberIds',
+                           'address','link','note','coverImage','document','sortDate','memberIds',
                            'createdBy','updatedBy','createdAt','updatedAt'
                          ])
                       && request.resource.data.tripId == tripId
@@ -755,16 +743,17 @@ service cloud.firestore {
                             || (request.resource.data.link is string
                                 && request.resource.data.link.size() <= 500
                                 && request.resource.data.link.matches('^https?://.+')))
-                      // attachment is Worker-authoritative: client setDoc
-                      // creates the booking WITHOUT attachment, then the
+                      // coverImage / document are Worker-authoritative:
+                      // client setDoc creates the booking WITHOUT files, then the
                       // Worker /booking-file-create / /booking-file-update
-                      // writes the field via Admin SDK (rules-bypass).
+                      // writes file fields via Admin SDK (rules-bypass).
                       // Forbidding the key on create makes the only path
                       // "doc-first → upload via intent → Worker write",
                       // with the Worker enforcing intent /used/expires/
                       // stale guards. Raw-SDK direct-write would otherwise
                       // bypass those guards.
-                      && !('attachment' in request.resource.data);
+                      && !('coverImage' in request.resource.data)
+                      && !('document' in request.resource.data);
         // Three update paths:
         //   1. Editor / owner edits booking content. tripId / createdBy /
         //      createdAt locked. memberIds locked too — content edits
@@ -779,7 +768,7 @@ service cloud.firestore {
           && request.resource.data.keys().hasOnly([
                'tripId','type','title','origin','destination',
                'confirmationCode','provider','checkIn','checkOut',
-               'address','link','note','attachment','sortDate','memberIds',
+               'address','link','note','coverImage','document','sortDate','memberIds',
                'createdBy','updatedBy','createdAt','updatedAt'
              ])
           && unchanged('tripId')
@@ -820,13 +809,12 @@ service cloud.firestore {
                 || (request.resource.data.link is string
                     && request.resource.data.link.size() <= 500
                     && request.resource.data.link.matches('^https?://.+')))
-          // attachment is Worker-authoritative on update too: client may
-          // detach via deleteField() (rules-bypass not needed for removal,
-          // and the Worker storage-scan cron reaps the orphan blob) OR
-          // leave the field exactly as-is. Any client-issued WRITE of a
-          // new value is denied — those go through /booking-file-create
-          // and /booking-file-update.
-          && unchangedOrRemoved('attachment')
+          // File fields are Worker-authoritative on update too: client may
+          // detach via deleteField() OR leave the field exactly as-is.
+          // Any client-issued WRITE of a new value is denied — those go
+          // through /booking-file-create and /booking-file-update.
+          && unchangedOrRemoved('coverImage')
+          && unchangedOrRemoved('document')
         );
         allow delete: if canWrite(tripId);
       }

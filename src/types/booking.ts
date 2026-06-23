@@ -29,9 +29,10 @@ export function isHttpUrl(v: string): boolean {
 }
 
 /**
- * Attachment metadata for a booking — single optional file (confirmation
- * PDF / hotel photo / etc.) with an optional smaller thumbnail variant.
- * Mirrors the Wish entity's `image: WishImage` shape.
+ * Attachment metadata for a booking file with an optional smaller thumbnail
+ * variant. Bookings use role-specific fields:
+ *   - coverImage: visual hotel cover image (image-only)
+ *   - document: confirmation document (PDF or image, future parser input)
  */
 export interface BookingAttachment {
   /**
@@ -95,8 +96,12 @@ export interface Booking {
    * resource.data.memberIds` — same-doc check, no cross-document lag.
    */
   memberIds: string[]
-  /** Optional attached file — see BookingAttachment for shape. */
-  attachment?: BookingAttachment
+  /** Visual hotel card cover image. */
+  coverImage?: BookingAttachment
+  /** Reservation confirmation document. This is intentionally independent
+   *  from the cover image so PDF/text import can parse the source document
+   *  without stealing the card's visual hero. */
+  document?: BookingAttachment
   /** Free-form address used as a Google Maps search query. Most useful
    *  for hotels / venues where the user wants a one-tap deep link to
    *  the location; transport types already convey origin/destination
@@ -123,7 +128,7 @@ export interface Booking {
 /** Accepted attachment mime types. Mirrors `extForMime()` in
  *  bookingStorage.ts AND the allowlist enforced by the Worker
  *  /booking-file-create + /booking-file-update endpoints (Phase 3.7
- *  made booking.attachment Worker-authoritative; firestore.rules no
+ *  made booking file fields Worker-authoritative; firestore.rules no
  *  longer accepts client writes of the field). Drift would let one
  *  layer accept bytes the other rejects. */
 export const BOOKING_ATTACHMENT_MIME_TYPES = [
@@ -153,7 +158,8 @@ export const BookingDocSchema = z.object({
   provider:         z.string().optional(),
   checkIn:          z.string().optional(),
   checkOut:         z.string().optional(),
-  attachment:       BookingAttachmentSchema.optional(),
+  coverImage:       BookingAttachmentSchema.optional(),
+  document:         BookingAttachmentSchema.optional(),
   address:          z.string().optional(),
   link:             z.string().optional(),
   note:             z.string().optional(),

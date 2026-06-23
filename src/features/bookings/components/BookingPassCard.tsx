@@ -45,8 +45,9 @@ function StandardPassCard({ booking, whenLabel }: Props) {
   const title = bookingDisplayName(booking)
   const subtitle = bookingSubtitle(booking)
   const dateLabel = dateTimeLabel(booking.checkIn) || whenLabel
-  const hasAttachment = !!booking.attachment?.filePath
-  const attachmentIsImage = isImageAttachment(booking.attachment)
+  const document = booking.document
+  const hasAttachment = !!document?.filePath
+  const attachmentIsImage = isImageAttachment(document)
   const facts = [
     dateLabel ? { label: '日時', value: dateLabel, icon: CalendarDays } : null,
     booking.confirmationCode ? { label: '確認番号', value: booking.confirmationCode, icon: Hash, mono: true } : null,
@@ -120,12 +121,13 @@ function HotelPassCard({ booking, whenLabel }: Props) {
   const theme = bookingPassTheme(booking)
   const hero = bookingPassHeroChrome(theme)
   const title = bookingDisplayName(booking)
-  const isImage = isImageAttachment(booking.attachment)
-  const coverSrc = useAttachmentUrl(isImage ? attachmentThumbPath(booking.attachment) : undefined, { kind: 'thumb' })
+  const coverImage = booking.coverImage
+  const document = booking.document
+  const coverSrc = useAttachmentUrl(attachmentThumbPath(coverImage), { kind: 'thumb' })
   const checkInLabel = dateTimeLabel(booking.checkIn) || whenLabel
   const checkOutLabel = dateTimeLabel(booking.checkOut)
   const nights = nightsBetween(booking.checkIn, booking.checkOut)
-  const hasAttachment = !!booking.attachment?.filePath
+  const hasAttachment = !!document?.filePath
   const coverText = coverSrc ? 'text-white' : ''
 
   return (
@@ -166,7 +168,7 @@ function HotelPassCard({ booking, whenLabel }: Props) {
             ホテル
           </span>
           <BookingBrandPill theme={theme} variant={coverSrc || !hero.isBranded ? 'light' : 'soft'} />
-          {hasAttachment && <AttachmentIndicator isImage={isImage} />}
+          {hasAttachment && <AttachmentIndicator isImage={isImageAttachment(document)} />}
         </div>
         {nights !== null && (
           <div className="absolute right-3 top-3 rounded-full bg-black/45 px-2.5 py-1 text-[10.5px] font-black text-white backdrop-blur-sm">

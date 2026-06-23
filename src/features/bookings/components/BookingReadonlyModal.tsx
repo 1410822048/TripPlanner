@@ -65,13 +65,14 @@ export default function BookingReadonlyModal({
   const title = bookingDisplayName(booking)
   const subtitle = bookingSubtitle(booking)
   const mapHref = addressMapHref(booking.address)
-  const attachment = booking.attachment
+  const attachment = booking.document
+  const coverImage = booking.coverImage
   const attachmentIsImage = isImageAttachment(attachment)
-  const attachmentThumb = useAttachmentUrl(
-    attachmentIsImage ? attachmentThumbPath(attachment) : undefined,
+  const coverThumb = useAttachmentUrl(
+    attachmentThumbPath(coverImage),
     { kind: 'thumb' },
   )
-  const headerImage = booking.type === 'hotel' && attachmentIsImage ? attachmentThumb : null
+  const headerImage = booking.type === 'hotel' ? coverThumb : null
   const heroIsTall = booking.type === 'hotel'
   const checkInLabel = dateTimeLabel(booking.checkIn)
   const checkOutLabel = dateTimeLabel(booking.checkOut)

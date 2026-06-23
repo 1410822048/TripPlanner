@@ -136,7 +136,7 @@ function booking(overrides: Partial<Booking> = {}): Booking {
 
 function bookingWithAttachment(overrides: Partial<Booking> = {}): Booking {
   return booking({
-    attachment: {
+    document: {
       filePath: 'trips/trip-1/bookings/b1/confirmation.pdf',
       fileType: 'application/pdf',
     },

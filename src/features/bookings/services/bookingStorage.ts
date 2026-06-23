@@ -21,3 +21,18 @@ export async function purgeAttachments(
   if (existing.thumbPath) tasks.push(deleteStorageObject(existing.thumbPath))
   await Promise.all(tasks)
 }
+
+export function bookingAttachmentPaths(
+  ...attachments: Array<BookingAttachment | undefined>
+): string[] {
+  return Array.from(new Set(attachments.flatMap(att => {
+    if (!att) return []
+    return [att.filePath, att.thumbPath].filter(Boolean) as string[]
+  })))
+}
+
+export async function purgeBookingAttachments(
+  ...attachments: Array<BookingAttachment | undefined>
+): Promise<void> {
+  await Promise.all(bookingAttachmentPaths(...attachments).map(path => deleteStorageObject(path)))
+}

@@ -288,7 +288,7 @@ describe('drainOrphanPurges', () => {
 		expect(report.blobsDeleted).toBe(0)
 	})
 
-	it('booking entityRef: check attachment.filePath / thumbPath', async () => {
+	it('booking entityRef: check document.filePath / thumbPath', async () => {
 		const purgeDocName = `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/_purges/p7`
 		const orphanPath = `trips/${TRIP_ID}/bookings/b-1/abc.webp`
 		mockOrphanPurgePage([{
@@ -298,9 +298,9 @@ describe('drainOrphanPurges', () => {
 				path:      { stringValue: orphanPath },
 			}),
 		}])
-		// Booking entity references a DIFFERENT path under attachment.
+		// Booking entity references a DIFFERENT path under document.
 		vi.mocked(firestore.getDocFields).mockResolvedValueOnce({
-			attachment: { mapValue: { fields: {
+			document: { mapValue: { fields: {
 				filePath: { stringValue: `trips/${TRIP_ID}/bookings/b-1/different.webp` },
 			} } },
 		})

@@ -1,4 +1,4 @@
-// Service-layer regression tests for bookingService.
+﻿// Service-layer regression tests for bookingService.
 //
 // Phase 3.7 surfaces pinned here:
 //   1. deleteBooking strict-cleanup gate — when both purge AND `_purges`
@@ -10,10 +10,10 @@
 //      Tests pin BOTH the Worker call shape AND the absence of client
 //      setDoc on the file path.
 //   3. updateBooking path discrimination — File replace goes through
-//      Worker /booking-file-update with text patch + intentIds in a
+//      Worker /booking-file-update with text patch + attachment ids in a
 //      single atomic round-trip (no separate client updateDoc on this
 //      path). Detach (null) and text-only stay on the client updateDoc
-//      path with `attachment: deleteField()` where applicable.
+//      path with role-specific `deleteField()` where applicable.
 //   4. PDF coverage — bookings accept PDFs (kind='pdf', no thumb intent)
 //      where wishes don't. Pin that the primary kind flips on contentType.
 //
@@ -87,7 +87,9 @@ vi.mock('@/services/orphanPurge', () => ({
 }))
 
 vi.mock('./bookingStorage', () => ({
-  purgeAttachments: mocks.purgeAttachmentsMock,
+  purgeBookingAttachments: mocks.purgeAttachmentsMock,
+  bookingAttachmentPaths: (...attachments: Array<{ filePath: string; thumbPath?: string } | undefined>) =>
+    Array.from(new Set(attachments.flatMap(att => att ? [att.filePath, att.thumbPath].filter(Boolean) : []))),
 }))
 
 vi.mock('@/services/tripActivity', () => ({
@@ -131,6 +133,9 @@ const ATTACHMENT: BookingAttachment = {
   fileType:  'image/webp',
   thumbPath: 'trips/t1/bookings/b1/thumb.webp',
 }
+
+const EMPTY_FILES = { coverImage: undefined, document: undefined }
+const existingDocument = (attachment: BookingAttachment | undefined = ATTACHMENT) => ({ document: attachment })
 
 /**
  * Prime the upload-first pipeline: compressImage → requestUploadIntents
@@ -197,7 +202,7 @@ describe('deleteBooking strict-cleanup gate', () => {
   it('throws + skips deleteDoc when safePurge returns "unrecoverable"', async () => {
     mocks.safePurgeMock.mockResolvedValueOnce('unrecoverable')
 
-    await expect(deleteBooking('t1', 'b1', 'u1', ATTACHMENT))
+    await expect(deleteBooking('t1', 'b1', 'u1', { document: ATTACHMENT }))
       .rejects.toThrow(/添付ファイル|再試行/)
 
     expect(mocks.deleteDocMock).not.toHaveBeenCalled()
@@ -208,7 +213,7 @@ describe('deleteBooking strict-cleanup gate', () => {
     mocks.safePurgeMock.mockResolvedValueOnce('purged')
     mocks.deleteDocMock.mockResolvedValue(undefined)
 
-    await deleteBooking('t1', 'b1', 'u1', ATTACHMENT)
+    await deleteBooking('t1', 'b1', 'u1', { document: ATTACHMENT })
 
     expect(mocks.deleteDocMock).toHaveBeenCalledTimes(1)
   })
@@ -217,7 +222,7 @@ describe('deleteBooking strict-cleanup gate', () => {
     mocks.safePurgeMock.mockResolvedValueOnce('queued')
     mocks.deleteDocMock.mockResolvedValue(undefined)
 
-    await deleteBooking('t1', 'b1', 'u1', ATTACHMENT)
+    await deleteBooking('t1', 'b1', 'u1', { document: ATTACHMENT })
 
     expect(mocks.deleteDocMock).toHaveBeenCalledTimes(1)
   })
@@ -225,7 +230,7 @@ describe('deleteBooking strict-cleanup gate', () => {
   it('skips safePurge entirely when no attachment, goes straight to deleteDoc', async () => {
     mocks.deleteDocMock.mockResolvedValue(undefined)
 
-    await deleteBooking('t1', 'b1', 'u1', undefined)
+    await deleteBooking('t1', 'b1', 'u1', {})
 
     expect(mocks.safePurgeMock).not.toHaveBeenCalled()
     expect(mocks.deleteDocMock).toHaveBeenCalledTimes(1)
@@ -243,13 +248,13 @@ describe('createBooking', () => {
     const id = await createBooking(
       't1',
       { type: 'flight', title: 'Flight' } as unknown as Parameters<typeof createBooking>[1],
-      null,
+      EMPTY_FILES,
       'u1',
     )
 
     expect(id).toBe('b-new')
     expect(mocks.setDocMock).toHaveBeenCalledTimes(1)
-    // No attachment field in setDoc payload — text-only path.
+    // No file fields in setDoc payload — text-only path.
     const payload = mocks.setDocMock.mock.calls[0]![1] as Record<string, unknown>
     expect('attachment' in payload).toBe(false)
     // Text-only path must NEVER touch the Worker — the whole point of
@@ -267,7 +272,7 @@ describe('createBooking', () => {
     const id = await createBooking(
       't1',
       { type: 'flight', title: 'Flight' } as unknown as Parameters<typeof createBooking>[1],
-      new File([], 'r.jpg', { type: 'image/jpeg' }),
+      { coverImage: undefined, document: new File([], 'r.jpg', { type: 'image/jpeg' }) },
       'u1',
     )
 
@@ -307,7 +312,7 @@ describe('createBooking', () => {
       'booking-thumb',
     )
 
-    // workerFetch body: pin so a regression that drops intentIds /
+    // workerFetch body: pin so a regression that drops document intents /
     // swaps bookingId / lets an `attachment` field slip into the
     // booking payload is caught here. 5th arg = `{ traceId }` header
     // opts forwarded by workerFetch (shape-only; same UUID also lands
@@ -321,7 +326,7 @@ describe('createBooking', () => {
         tripId:    't1',
         bookingId: 'b-new',
         booking:   { type: 'flight', title: 'Flight' },
-        intentIds: ['i-b-new-P', 'i-b-new-T'],
+        attachments: { document: ['i-b-new-P', 'i-b-new-T'] },
       },
       { traceId: expect.any(String) },
     )
@@ -340,7 +345,7 @@ describe('createBooking', () => {
     await createBooking(
       't1',
       { type: 'hotel', title: 'Voucher' } as unknown as Parameters<typeof createBooking>[1],
-      new File([], 'doc.pdf', { type: 'application/pdf' }),
+      { coverImage: undefined, document: new File([], 'doc.pdf', { type: 'application/pdf' }) },
       'u1',
     )
 
@@ -360,7 +365,7 @@ describe('createBooking', () => {
         tripId:    't1',
         bookingId: 'b-new',
         booking:   { type: 'hotel', title: 'Voucher' },
-        intentIds: ['i-b-new-P'],
+        attachments: { document: ['i-b-new-P'] },
       },
       { traceId: expect.any(String) },
     )
@@ -376,7 +381,7 @@ describe('createBooking', () => {
     await expect(createBooking(
       't1',
       { type: 'flight' } as unknown as Parameters<typeof createBooking>[1],
-      new File([], 'r.jpg'),
+      { coverImage: undefined, document: new File([], 'r.jpg') },
       'u1',
     )).rejects.toThrow(/canvas-bust/)
 
@@ -395,7 +400,7 @@ describe('createBooking', () => {
     await expect(createBooking(
       't1',
       { type: 'flight' } as unknown as Parameters<typeof createBooking>[1],
-      new File([], 'r.jpg'),
+      { coverImage: undefined, document: new File([], 'r.jpg') },
       'u1',
     )).rejects.toThrow(/boom/)
 
@@ -417,7 +422,7 @@ describe('createBooking', () => {
     await expect(createBooking(
       't1',
       { type: 'flight', title: 'X' } as unknown as Parameters<typeof createBooking>[1],
-      new File([], 'r.jpg'),
+      { coverImage: undefined, document: new File([], 'r.jpg') },
       'u1',
     )).rejects.toThrow(/worker-rejected/)
 
@@ -430,7 +435,7 @@ describe('createBooking', () => {
         tripId:    't1',
         bookingId: 'b-new',
         booking:   { type: 'flight', title: 'X' },
-        intentIds: ['i-b-new-P', 'i-b-new-T'],
+        attachments: { document: ['i-b-new-P', 'i-b-new-T'] },
       },
       { traceId: expect.any(String) },
     )
@@ -451,7 +456,7 @@ describe('createBooking', () => {
     await createBooking(
       't1',
       { type: 'flight', title: 'Trace' } as unknown as Parameters<typeof createBooking>[1],
-      new File([], 'r.jpg', { type: 'image/jpeg' }),
+      { coverImage: undefined, document: new File([], 'r.jpg', { type: 'image/jpeg' }) },
       'u1',
     )
 
@@ -475,7 +480,7 @@ describe('updateBooking', () => {
     await updateBooking(
       't1', 'b1',
       { title: 'Edit' } as unknown as Parameters<typeof updateBooking>[2],
-      { uid: 'u1', attachment: new File([], 'r.jpg', { type: 'image/jpeg' }), existing: ATTACHMENT },
+      { uid: 'u1', files: { coverImage: undefined, document: new File([], 'r.jpg', { type: 'image/jpeg' }) }, existing: existingDocument() },
     )
 
     // Worker-authoritative replace: text + attachment land atomically in
@@ -495,9 +500,9 @@ describe('updateBooking', () => {
     }, { traceId: expect.any(String) })
     expect(mocks.uploadToIntentMock).toHaveBeenCalledTimes(2)
 
-    // Worker call: patch carries validated text fields, intentIds bound
-    // to the bookingId, expectedCurrentPath = the existing attachment
-    // filePath (stale-replace guard). NO `attachment` in the patch.
+    // Worker call: patch carries validated text fields, document intents
+    // bound to the bookingId, expectedCurrentPaths.document = the existing
+    // filePath (stale-replace guard). NO file map in the patch.
     expect(mocks.workerFetchMock).toHaveBeenCalledTimes(1)
     expect(mocks.workerFetchMock).toHaveBeenCalledWith(
       'https://worker.test',
@@ -507,8 +512,8 @@ describe('updateBooking', () => {
         tripId:              't1',
         bookingId:           'b1',
         patch:               { title: 'Edit' },
-        intentIds:           ['i-b1-P', 'i-b1-T'],
-        expectedCurrentPath: ATTACHMENT.filePath,
+        attachments:          { document: ['i-b1-P', 'i-b1-T'] },
+        expectedCurrentPaths: { document: ATTACHMENT.filePath },
       },
       { traceId: expect.any(String) },
     )
@@ -542,7 +547,7 @@ describe('updateBooking', () => {
       // touched confirmationCode (key absent → must stay absent in patch
       // so Worker treats as no-op, not as field-deletion).
       { title: 'Edit', checkIn: undefined, note: undefined, link: undefined } as unknown as Parameters<typeof updateBooking>[2],
-      { uid: 'u1', attachment: new File([], 'r.jpg', { type: 'image/jpeg' }), existing: ATTACHMENT },
+      { uid: 'u1', files: { coverImage: undefined, document: new File([], 'r.jpg', { type: 'image/jpeg' }) }, existing: existingDocument() },
     )
 
     const workerBody = mocks.workerFetchMock.mock.calls[0]![3] as { patch: Record<string, unknown> }
@@ -569,7 +574,7 @@ describe('updateBooking', () => {
     await updateBooking(
       't1', 'b1',
       {} as unknown as Parameters<typeof updateBooking>[2],
-      { uid: 'u1', attachment: new File([], 'doc.pdf', { type: 'application/pdf' }), existing: ATTACHMENT },
+      { uid: 'u1', files: { coverImage: undefined, document: new File([], 'doc.pdf', { type: 'application/pdf' }) }, existing: existingDocument() },
     )
 
     expect(mocks.requestUploadIntentsMock).toHaveBeenCalledWith({
@@ -588,8 +593,8 @@ describe('updateBooking', () => {
         tripId:              't1',
         bookingId:           'b1',
         patch:               {},
-        intentIds:           ['i-b1-P'],
-        expectedCurrentPath: ATTACHMENT.filePath,
+        attachments:          { document: ['i-b1-P'] },
+        expectedCurrentPaths: { document: ATTACHMENT.filePath },
       },
       { traceId: expect.any(String) },
     )
@@ -597,7 +602,7 @@ describe('updateBooking', () => {
   })
 
   it('File replace + Worker FAILS: no purge of OLD (still referenced), no client updateDoc, throws', async () => {
-    // Worker tx atomically aborts: doc attachment still points to OLD,
+    // Worker tx atomically aborts: doc document still points to OLD,
     // text patch never applied. Client has no OLD to purge (OLD still
     // doc-referenced) and no NEW to purge (Worker storage-scan reaps).
     primeBookingUpload('b1')
@@ -606,7 +611,7 @@ describe('updateBooking', () => {
     await expect(updateBooking(
       't1', 'b1',
       { title: 'Edit' } as unknown as Parameters<typeof updateBooking>[2],
-      { uid: 'u1', attachment: new File([], 'r.jpg', { type: 'image/jpeg' }), existing: ATTACHMENT },
+      { uid: 'u1', files: { coverImage: undefined, document: new File([], 'r.jpg', { type: 'image/jpeg' }) }, existing: existingDocument() },
     )).rejects.toThrow(/worker-409-stale/)
 
     expect(mocks.updateDocMock).not.toHaveBeenCalled()
@@ -615,17 +620,17 @@ describe('updateBooking', () => {
     expect(mocks.safePurgeMock).not.toHaveBeenCalled()
   })
 
-  it('attachment=null + updateDoc OK → client updateDoc with patch.attachment=deleteField, no Worker call, purge OLD', async () => {
+  it('document=null + updateDoc OK → client updateDoc with patch.document=deleteField, no Worker call, purge OLD', async () => {
     // Detach flow is purely client-side: deleteField() in the text
-    // patch removes the attachment field. firestore.rules permit
-    // removing `attachment` client-side (only replace is Worker-restricted).
+    // patch removes the document field. firestore.rules permit
+    // removing `document` client-side (only replace is Worker-restricted).
     mocks.updateDocMock.mockResolvedValueOnce(undefined)
     mocks.safePurgeMock.mockResolvedValueOnce('purged')
 
     await updateBooking(
       't1', 'b1',
       {} as unknown as Parameters<typeof updateBooking>[2],
-      { uid: 'u1', attachment: null, existing: ATTACHMENT },
+      { uid: 'u1', files: { coverImage: undefined, document: null }, existing: existingDocument() },
     )
 
     expect(mocks.workerFetchMock).not.toHaveBeenCalled()
@@ -633,15 +638,15 @@ describe('updateBooking', () => {
     expect(mocks.uploadToIntentMock).not.toHaveBeenCalled()
     expect(mocks.deleteFieldMock).toHaveBeenCalled()
     const patch = mocks.updateDocMock.mock.calls[0]![1] as Record<string, unknown>
-    expect(patch.attachment).toEqual({ _kind: 'deleteField' })
+    expect(patch.document).toEqual({ _kind: 'deleteField' })
     expect(mocks.safePurgeMock).toHaveBeenCalledTimes(1)
     const purgeArgs = mocks.safePurgeMock.mock.calls[0]![0] as { enqueue: { source: string } }
     expect(purgeArgs.enqueue.source).toBe('updateBooking/purge-old-attachment')
   })
 
-  it('first-attach (no existing) + File → /booking-file-update with expectedCurrentPath=null, no purge', async () => {
-    // Edge case: editing a booking that has no existing attachment and
-    // adding one for the first time. expectedCurrentPath must be null
+  it('first document attach (no existing) + File → /booking-file-update with expectedCurrentPaths.document=null, no purge', async () => {
+    // Edge case: editing a booking that has no existing document and
+    // adding one for the first time. expectedCurrentPaths.document must be null
     // to match the Worker's first-attach stale-replace gate.
     primeBookingUpload('b1')
     mocks.workerFetchMock.mockResolvedValueOnce({ ok: true })
@@ -649,7 +654,7 @@ describe('updateBooking', () => {
     await updateBooking(
       't1', 'b1',
       { title: 'Edit' } as unknown as Parameters<typeof updateBooking>[2],
-      { uid: 'u1', attachment: new File([], 'r.jpg', { type: 'image/jpeg' }), existing: undefined },
+      { uid: 'u1', files: { coverImage: undefined, document: new File([], 'r.jpg', { type: 'image/jpeg' }) }, existing: {} },
     )
 
     expect(mocks.workerFetchMock).toHaveBeenCalledWith(
@@ -660,10 +665,10 @@ describe('updateBooking', () => {
         tripId:              't1',
         bookingId:           'b1',
         patch:               { title: 'Edit' },
-        intentIds:           ['i-b1-P', 'i-b1-T'],
-        // First-attach: editor saw no attachment. Worker accepts null
-        // only when the live doc also has no attachment.
-        expectedCurrentPath: null,
+        attachments:          { document: ['i-b1-P', 'i-b1-T'] },
+        // First-attach: editor saw no document. Worker accepts null
+        // only when the live doc also has no document.
+        expectedCurrentPaths: { document: null },
       },
       { traceId: expect.any(String) },
     )
@@ -671,19 +676,19 @@ describe('updateBooking', () => {
     expect(mocks.safePurgeMock).not.toHaveBeenCalled()
   })
 
-  it('attachment=undefined (text-only edit) → client updateDoc only, no Worker, no upload, no purge', async () => {
+  it('files omitted (text-only edit) → client updateDoc only, no Worker, no upload, no purge', async () => {
     mocks.updateDocMock.mockResolvedValueOnce(undefined)
 
     await updateBooking(
       't1', 'b1',
       { title: 'Rename' } as unknown as Parameters<typeof updateBooking>[2],
-      { uid: 'u1', attachment: undefined, existing: ATTACHMENT },
+      { uid: 'u1', files: EMPTY_FILES, existing: existingDocument() },
     )
 
     expect(mocks.compressImageMock).not.toHaveBeenCalled()
     expect(mocks.workerFetchMock).not.toHaveBeenCalled()
     expect(mocks.requestUploadIntentsMock).not.toHaveBeenCalled()
-    expect(mocks.safePurgeMock).not.toHaveBeenCalled()  // attachment untouched
+    expect(mocks.safePurgeMock).not.toHaveBeenCalled()  // file fields untouched
     const patch = mocks.updateDocMock.mock.calls[0]![1] as Record<string, unknown>
     expect(patch).not.toHaveProperty('attachment')
   })
@@ -694,7 +699,7 @@ describe('updateBooking', () => {
     await expect(updateBooking(
       't1', 'b1',
       { title: 'Rename' } as unknown as Parameters<typeof updateBooking>[2],
-      { uid: 'u1', attachment: undefined, existing: ATTACHMENT },
+      { uid: 'u1', files: EMPTY_FILES, existing: existingDocument() },
     )).rejects.toThrow(/text-fail/)
 
     expect(mocks.workerFetchMock).not.toHaveBeenCalled()

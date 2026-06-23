@@ -115,7 +115,7 @@ function BookingRow({ booking }: { booking: Booking }) {
   const range = formatRange(booking.checkIn, booking.checkOut)
   // path-only: resolve the thumb path via getBlob + Storage Rules. No thumb
   // path (PDF / pre-thumbnail upload) → null → Hotel icon fallback shows.
-  const thumb = useAttachmentUrl(attachmentThumbPath(booking.attachment), { kind: 'thumb' })
+  const thumb = useAttachmentUrl(attachmentThumbPath(booking.coverImage), { kind: 'thumb' })
   return (
     <div className="flex items-center gap-3 bg-surface border border-border rounded-[18px] px-3 py-2.5 shadow-[0_2px_10px_rgba(0,0,0,0.05)]">
       <div

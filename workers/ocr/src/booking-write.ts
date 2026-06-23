@@ -1,5 +1,5 @@
 // workers/ocr/src/booking-write.ts
-// Worker-side booking create / content-update with file attachment.
+// Worker-side booking create / content-update with role-specific files.
 //
 // Phase 3.7 split (mirrors wish-write.ts shape):
 //   - booking create WITH file    → /booking-file-create  (this module)
@@ -14,19 +14,19 @@
 //      booking into TanStack cache, and a "save failed" toast next
 //      to a visible-but-attachment-less booking led to user retries
 //      that landed DUPLICATE bookings. Worker-authoritative create
-//      commits doc + attachment atomically, so the listener sees the
+//      commits doc + file field atomically, so the listener sees the
 //      booking for the first time WITH its file.
 //   2. The doc-first race -- listener fires at ~200ms with no
-//      attachment, then again ~600ms later once the Worker patched
-//      `attachment` -- is gone by construction.
+//      file field, then again ~600ms later once the Worker patched it
+//      -- is gone by construction.
 //
 // firestore.rules (unchanged for Phase 3.7):
-//   - booking create: `attachment` field must be ABSENT in
+//   - booking create: `coverImage` / `document` fields must be ABSENT in
 //     request.resource.data; Worker writes via admin SDK so the rule
 //     doesn't gate this endpoint.
-//   - booking update: `attachment` is `unchangedOrRemoved()` from the
-//     client side. Worker is the only path that can set a new
-//     attachment object.
+//   - booking update: `coverImage` / `document` are `unchangedOrRemoved()`
+//     from the client side. Worker is the only path that can set a new
+//     file object.
 //
 // Differences from wish-write.ts:
 //   - Role: owner/editor only (no viewer). No proposer concept.
@@ -38,11 +38,11 @@
 //     Update-clearing-checkIn reads the current doc's createdAt
 //     (already loaded for the stale-replace guard, so no extra get)
 //     and copies the FsValue verbatim into sortDate.
-//   - Attachment shape (path-only): BookingAttachment has filePath/fileType
+//   - File shape (path-only): BookingAttachment has filePath/fileType
 //     + optional thumbPath (PDFs ship without thumb). Shape lives in
 //     buildAttachmentMapValue('booking', ...) in upload-intent.ts.
 //   - PDFs supported (kind='pdf'); thumb intent optional.
-//   - Stale-replace guard via `attachment.filePath` (not `image.path`).
+//   - Stale-replace guard via role-specific `filePath` (not `image.path`).
 import { z }                                                        from 'zod'
 import { getAdminToken, getProjectId }                              from './admin'
 import {
@@ -67,6 +67,19 @@ import {
 // ─── Request body schema ──────────────────────────────────────────
 
 const TripIdRe = /^[A-Za-z0-9_-]{1,60}$/
+const IntentIdsSchema = z.array(z.string().min(1).max(60)).min(1).max(2)
+const BookingAttachmentRoleSchema = z.enum(['coverImage', 'document'])
+type BookingAttachmentRole = z.infer<typeof BookingAttachmentRoleSchema>
+
+const BookingAttachmentGroupsSchema = z.object({
+  coverImage: IntentIdsSchema.optional(),
+  document:   IntentIdsSchema.optional(),
+}).strict()
+
+const ExpectedBookingPathsSchema = z.object({
+  coverImage: z.union([z.string(), z.null()]).optional(),
+  document:   z.union([z.string(), z.null()]).optional(),
+}).strict()
 
 export const BookingFileCreateRequestSchema = z.object({
   tripId:    z.string().regex(TripIdRe),
@@ -84,7 +97,7 @@ export const BookingFileCreateRequestSchema = z.object({
    *  endpoint -- file-less booking create stays on the client SDK
    *  path. 1 = full or pdf only (PDFs and pass-through images),
    *  2 = full + thumb (typical WebP flow). */
-  intentIds: z.array(z.string().min(1).max(60)).min(1).max(2),
+  attachments: BookingAttachmentGroupsSchema,
 })
 export type BookingFileCreateRequest = z.infer<typeof BookingFileCreateRequestSchema>
 
@@ -186,18 +199,17 @@ function parseCheckInIso(checkIn: string): string | null {
 }
 
 function parseBookingBody(raw: unknown): CreateBookingBody {
-  // Reject `attachment` if the caller tries to slip one into the
-  // body -- it MUST come from intents. Defense-in-depth: even though
-  // firestore.rules block client-direct attachment writes, surface the
-  // rejection as a Worker 400 with a clear field path rather than a
-  // rules-commit deny.
-  if (typeof raw === 'object' && raw !== null && 'attachment' in raw) {
-    const att = (raw as { attachment?: unknown }).attachment
-    if (att !== undefined && att !== null) {
-      throw new BookingValidationError(
-        'attachment',
-        'booking.attachment cannot be set directly; upload via /upload-intents and pass intentIds',
-      )
+  // Reject attachment maps if the caller tries to slip one into the
+  // body -- they MUST come from intents.
+  if (typeof raw === 'object' && raw !== null) {
+    for (const field of ['attachment', 'coverImage', 'document'] as const) {
+      const value = (raw as Record<string, unknown>)[field]
+      if (value !== undefined && value !== null) {
+        throw new BookingValidationError(
+          field,
+          `booking.${field} cannot be set directly; upload via /upload-intents and pass attachments`,
+        )
+      }
     }
   }
   const parsed = CreateBookingBodySchema.safeParse(raw)
@@ -212,13 +224,15 @@ function parseBookingUpdateBody(raw: unknown): { patch: UpdateBookingBody; rawKe
   if (typeof raw !== 'object' || raw === null) {
     throw new BookingValidationError('patch', 'patch must be an object')
   }
-  if ('attachment' in raw) {
-    const att = (raw as { attachment?: unknown }).attachment
-    if (att !== undefined && att !== null) {
-      throw new BookingValidationError(
-        'attachment',
-        'patch.attachment cannot be set directly; upload via /upload-intents and pass intentIds (or use client updateDoc to detach by deleteField)',
-      )
+  for (const field of ['attachment', 'coverImage', 'document'] as const) {
+    if (field in raw) {
+      const value = (raw as Record<string, unknown>)[field]
+      if (value !== undefined && value !== null) {
+        throw new BookingValidationError(
+          field,
+          `patch.${field} cannot be set directly; upload via /upload-intents and pass attachments (or use client updateDoc to detach by deleteField)`,
+        )
+      }
     }
   }
   const rawKeys = new Set(Object.keys(raw))
@@ -274,15 +288,14 @@ async function authorizeBookingCreateTx(
 }
 
 /** Booking update authz: trip exists + not deleting + caller is
- *  owner/editor AND the booking.attachment.filePath still matches
- *  what the editor loaded with (stale-replace guard). Returns the
+ *  owner/editor AND the touched booking file field still matches what
+ *  the editor loaded with (stale-replace guard). Returns the
  *  current booking doc fields so encodeBookingUpdate can read
  *  `createdAt` for the cleared-checkIn sortDate fallback without
  *  an extra get (already loaded for the stale-replace guard).
  *
- *  Stale-replace 409: client passes `expectedCurrentPath` = the
- *  `attachment.filePath` the editor saw on load (`null` = first-attach,
- *  editor saw no attachment). If the live doc has drifted (Tab B
+ *  Stale-replace 409: client passes expected paths for each touched
+ *  role (`null` = first-attach, editor saw no file). If the live doc has drifted (Tab B
  *  already replaced/detached), this caller's upload would silently
  *  overwrite Tab B's commit AND orphan Tab B's blob -- reject so the
  *  client can re-load and re-confirm. Mirrors authorizeWishUpdateTx. */
@@ -291,7 +304,7 @@ async function authorizeBookingUpdateTx(
   tripId:              string,
   bookingId:           string,
   callerUid:           string,
-  expectedCurrentPath: string | null,
+  expectedCurrentPaths: Partial<Record<BookingAttachmentRole, string | null>>,
 ): Promise<Record<string, FsValue>> {
   const [trip, member, booking] = await Promise.all([
     tx.get(`trips/${tripId}`),
@@ -311,15 +324,17 @@ async function authorizeBookingUpdateTx(
   }
 
   // Stale-replace guard. `readNestedString` returns `undefined` when
-  // the attachment map is absent -- normalise to `null` for the
+  // the role map is absent -- normalise to `null` for the
   // comparison so absent and explicit-null collapse the same way
   // (matches the client's `existing?.filePath ?? null` convention).
-  const currentPath = readNestedString(booking.fields, 'attachment', 'filePath') ?? null
-  if (currentPath !== expectedCurrentPath) {
-    throw new CascadeError(
-      409,
-      'booking attachment has been replaced or removed since the editor loaded',
-    )
+  for (const [field, expectedPath] of Object.entries(expectedCurrentPaths) as Array<[BookingAttachmentRole, string | null]>) {
+    const currentPath = readNestedString(booking.fields, field, 'filePath') ?? null
+    if (currentPath !== expectedPath) {
+      throw new CascadeError(
+        409,
+        `booking ${field} has been replaced or removed since the editor loaded`,
+      )
+    }
   }
   return booking.fields
 }
@@ -331,6 +346,80 @@ interface EncodedCreate {
   sortDateNeedsTransform:  boolean
 }
 
+function requestAttachmentGroups(req: {
+  attachments: Partial<Record<BookingAttachmentRole, string[]>>
+}): Partial<Record<BookingAttachmentRole, string[]>> {
+  const groups = req.attachments
+  if (!groups.coverImage && !groups.document) {
+    throw new BookingValidationError(
+      'attachments',
+      'must include coverImage and/or document intent ids',
+    )
+  }
+  const seen = new Set<string>()
+  for (const ids of Object.values(groups)) {
+    for (const id of ids ?? []) {
+      if (seen.has(id)) throw new BookingValidationError('attachments', 'intent ids must be unique across attachment roles')
+      seen.add(id)
+    }
+  }
+  return groups
+}
+
+function rejectConflictingAttachmentActions(req: {
+  attachments: Partial<Record<BookingAttachmentRole, string[]>>
+  clearAttachments?: BookingAttachmentRole[]
+}) {
+  for (const role of req.clearAttachments ?? []) {
+    if (req.attachments[role]) {
+      throw new BookingValidationError(
+        `attachments.${role}`,
+        'cannot clear and replace the same attachment role',
+      )
+    }
+  }
+}
+
+async function consumeBookingAttachmentGroups(
+  tx:          TxContext,
+  groups:      Partial<Record<BookingAttachmentRole, string[]>>,
+  callerUid:   string,
+  accessToken: string,
+  projectId:   string,
+  bucket:      string,
+  scope:       { tripId: string; bookingId: string },
+): Promise<{
+  fields: Partial<Record<BookingAttachmentRole, FsValue>>
+  markUsedWrites: TxWrite[]
+}> {
+  const fields: Partial<Record<BookingAttachmentRole, FsValue>> = {}
+  const allWrites: TxWrite[] = []
+
+  for (const role of BookingAttachmentRoleSchema.options) {
+    const intentIds = groups[role]
+    if (!intentIds) continue
+    const { consumed, markUsedWrites } = await consumeEntityIntents(
+      tx, intentIds, callerUid, accessToken, projectId, bucket,
+      { tripId: scope.tripId, entityType: 'booking', entityId: scope.bookingId },
+    )
+    const primary = consumed.find(c => c.kind === 'full' || c.kind === 'pdf')
+    if (!primary) {
+      throw new BookingValidationError(
+        `attachments.${role}`,
+        'must include a full or pdf intent (primary attachment missing)',
+      )
+    }
+    if (role === 'coverImage' && !primary.storage.contentType.startsWith('image/')) {
+      throw new BookingValidationError('attachments.coverImage', 'coverImage must be an image')
+    }
+    const thumb = consumed.find(c => c.kind === 'thumb')
+    fields[role] = buildAttachmentMapValue('booking', primary, thumb)
+    allWrites.push(...markUsedWrites)
+  }
+
+  return { fields, markUsedWrites: allWrites }
+}
+
 /** Encode a validated CreateBookingBody + Worker-built attachment into
  *  Firestore REST fields. createdAt / updatedAt stamped via
  *  updateTransforms (REQUEST_TIME) -- CF Workers' Date.now() drifts
@@ -338,15 +427,15 @@ interface EncodedCreate {
  *  `sortDate` also gets REQUEST_TIME so it resolves to the same
  *  instant as createdAt (Firestore commit transforms within one
  *  commit share the request time). Optional text fields are omitted
- *  when empty-string -- matches `stripEmpty(input)` in the legacy
- *  client createBooking, so the doc shape is unchanged across the
+ *  when empty-string -- matches `stripEmpty(input)` in the no-file
+ *  client createBooking path, so the doc shape is unchanged across the
  *  with-file / no-file paths. */
 function encodeBookingCreate(
   body:        CreateBookingBody,
   tripId:      string,
   memberIds:   string[],
   callerUid:   string,
-  attachment:  FsValue,
+  attachments: Partial<Record<BookingAttachmentRole, FsValue>>,
 ): EncodedCreate {
   const fields: Record<string, FsValue> = {
     tripId:     { stringValue: tripId },
@@ -356,8 +445,9 @@ function encodeBookingCreate(
     memberIds:  {
       arrayValue: { values: memberIds.map(uid => ({ stringValue: uid })) },
     },
-    attachment,
   }
+  if (attachments.coverImage) fields.coverImage = attachments.coverImage
+  if (attachments.document)   fields.document   = attachments.document
 
   // Optional text fields: include only when non-empty. Mirrors
   // `stripEmpty(input)` in bookingService.createBooking.
@@ -417,30 +507,11 @@ async function doCreate(
   return runFirestoreTransaction(accessToken, projectId, async (tx) => {
     const ctx = await authorizeBookingCreateTx(tx, req.tripId, callerUid)
 
-    // Consume intents inside the tx so the markUsed writes commit
-    // atomically with the booking doc write. Mirrors expense-create.
-    const { consumed, markUsedWrites } = await consumeEntityIntents(
-      tx, req.intentIds, callerUid, accessToken, projectId, bucket,
-      { tripId: req.tripId, entityType: 'booking', entityId: req.bookingId },
+    const attachmentGroups = requestAttachmentGroups(req)
+    const { fields: attachmentFields, markUsedWrites } = await consumeBookingAttachmentGroups(
+      tx, attachmentGroups, callerUid, accessToken, projectId, bucket,
+      { tripId: req.tripId, bookingId: req.bookingId },
     )
-
-    // Build the BookingAttachment field from intents. Primary may be
-    // either `full` (image) or `pdf` (PDF attachment); thumb optional
-    // (PDFs and HEIC/HEIF pass-through ship without a thumb).
-    const primary = consumed.find(c => c.kind === 'full' || c.kind === 'pdf')
-    if (!primary) {
-      throw new BookingValidationError(
-        'intentIds',
-        'must include a full or pdf intent (primary attachment missing)',
-      )
-    }
-    const thumb = consumed.find(c => c.kind === 'thumb')
-    // BookingAttachment supports PDF-only (no thumb). If a thumb intent
-    // was minted for a PDF primary, /upload-intents already rejected it
-    // (kind=pdf forces contentType=application/pdf and kind!=pdf forces
-    // non-PDF). Belt-and-suspenders: tolerate thumb absent when primary
-    // is PDF; buildAttachmentMapValue handles either shape.
-    const attachmentValue = buildAttachmentMapValue('booking', primary, thumb)
 
     // Create-only: tx's optimistic-concurrency catches a concurrent
     // bookingId collision via currentDocument.exists=false on the
@@ -452,7 +523,7 @@ async function doCreate(
     }
 
     const { fields, sortDateNeedsTransform } = encodeBookingCreate(
-      body, req.tripId, ctx.memberIds, callerUid, attachmentValue,
+      body, req.tripId, ctx.memberIds, callerUid, attachmentFields,
     )
 
     const updateTransforms: NonNullable<TxUpdateWrite['updateTransforms']> = [
@@ -494,17 +565,12 @@ export const BookingFileUpdateRequestSchema = z.object({
    *  silently drop unknown keys; explicit reject makes the contract
    *  obvious). */
   patch:     z.unknown(),
-  /** Stale-replace guard. The client passes the `attachment.filePath`
-   *  value it loaded the booking with (`null` = first-attach: editor
-   *  saw no attachment). Worker reads the current attachment.filePath
-   *  inside the tx and rejects with 409 on mismatch -- closes the
-   *  Tab-A-overwrites-Tab-B race. Same shape as wish-file-update's
-   *  guard for uniform error mode. */
-  expectedCurrentPath: z.union([z.string(), z.null()]),
-  /** REQUIRED on this endpoint. Attachment-replace is the reason
-   *  /booking-file-update exists; text-only edits stay on the client
-   *  updateDoc path (no Worker round-trip). */
-  intentIds: z.array(z.string().min(1).max(60)).min(1).max(2),
+  /** Stale-replace guard for every touched file role. Worker reads the
+   *  current role filePath inside the tx and rejects with 409 on mismatch. */
+  expectedCurrentPaths: ExpectedBookingPathsSchema,
+  /** Role-specific replacement intent ids. */
+  attachments: BookingAttachmentGroupsSchema,
+  clearAttachments: z.array(BookingAttachmentRoleSchema).max(2).optional(),
 })
 export type BookingFileUpdateRequest = z.infer<typeof BookingFileUpdateRequestSchema>
 
@@ -524,7 +590,8 @@ function encodeBookingUpdate(
   rawKeys:           Set<string>,
   callerUid:         string,
   currentDocFields:  Record<string, FsValue>,
-  attachment:        FsValue,
+  attachments:       Partial<Record<BookingAttachmentRole, FsValue>>,
+  clearAttachments:  BookingAttachmentRole[],
 ): { fields: Record<string, FsValue>; updateMask: string[] } {
   const fields:     Record<string, FsValue> = {}
   const updateMask: string[] = []
@@ -575,9 +642,15 @@ function encodeBookingUpdate(
     // untouched. Better than writing a garbage value.
   }
 
-  // Attachment (always present on this endpoint) + updatedBy.
-  fields.attachment = attachment
-  updateMask.push('attachment')
+  for (const role of clearAttachments) {
+    updateMask.push(role)
+  }
+  for (const role of BookingAttachmentRoleSchema.options) {
+    const attachment = attachments[role]
+    if (!attachment) continue
+    fields[role] = attachment
+    updateMask.push(role)
+  }
   fields.updatedBy  = { stringValue: callerUid }
   updateMask.push('updatedBy')
 
@@ -602,34 +675,29 @@ async function doUpdate(
   // Parse the patch body BEFORE entering the tx -- pure-local check,
   // no value in burning a tx retry on a malformed patch.
   const { patch, rawKeys } = parseBookingUpdateBody(req.patch)
+  const attachmentGroups = requestAttachmentGroups(req)
+  rejectConflictingAttachmentActions(req)
 
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
 
   await runFirestoreTransaction(accessToken, projectId, async (tx) => {
     const currentDocFields = await authorizeBookingUpdateTx(
-      tx, req.tripId, req.bookingId, callerUid, req.expectedCurrentPath,
+      tx, req.tripId, req.bookingId, callerUid, req.expectedCurrentPaths,
     )
 
-    // Consume intents inside the tx so markUsed commits atomically
-    // with the booking doc patch. Mirrors expense-update's pattern.
-    const { consumed, markUsedWrites } = await consumeEntityIntents(
-      tx, req.intentIds, callerUid, accessToken, projectId, bucket,
-      { tripId: req.tripId, entityType: 'booking', entityId: req.bookingId },
+    const { fields: attachmentFields, markUsedWrites } = await consumeBookingAttachmentGroups(
+      tx, attachmentGroups, callerUid, accessToken, projectId, bucket,
+      { tripId: req.tripId, bookingId: req.bookingId },
     )
-
-    const primary = consumed.find(c => c.kind === 'full' || c.kind === 'pdf')
-    if (!primary) {
-      throw new BookingValidationError(
-        'intentIds',
-        'must include a full or pdf intent (primary attachment missing)',
-      )
-    }
-    const thumb = consumed.find(c => c.kind === 'thumb')
-    const attachmentValue = buildAttachmentMapValue('booking', primary, thumb)
 
     const { fields, updateMask } = encodeBookingUpdate(
-      patch, rawKeys, callerUid, currentDocFields, attachmentValue,
+      patch,
+      rawKeys,
+      callerUid,
+      currentDocFields,
+      attachmentFields,
+      req.clearAttachments ?? [],
     )
 
     const write: TxWrite = {
