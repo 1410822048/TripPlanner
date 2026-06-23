@@ -31,6 +31,9 @@ dist-ssr
 # FIREBASE_SERVICE_ACCOUNT secret via `wrangler secret put`.
 *-firebase-adminsdk-*.json
 *service-account*.json
+# GCP-console key downloads use <project>-<keyId>.json (no "firebase-adminsdk"
+# in the name), so the pattern above misses them — match those too.
+tripplanner-80a4f-*.json
 
 # ─── Firebase CLI artefacts ────────────────────────────────────
 .firebase/
