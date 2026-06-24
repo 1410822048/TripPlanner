@@ -1,10 +1,9 @@
 import {
   assertPdfPageLimitWithPdfJs,
   MAX_PDF_PAGES,
-  PDF_PAGE_LIMIT_EXCEEDED,
   PDF_UNREADABLE,
   PdfPageLimitError,
-  type PdfPageLimitCode,
+  pdfPageLimitMessageJa,
 } from '@tripmate/pdf-page-limit'
 import { configurePdfJsWorker } from '@/utils/pdfJs'
 
@@ -27,12 +26,6 @@ async function loadPdfJs(): Promise<PdfJsModule> {
   return pdfjsPromise
 }
 
-function clientPdfPageLimitMessage(code: PdfPageLimitCode, maxPages: number): string {
-  return code === PDF_PAGE_LIMIT_EXCEEDED
-    ? `PDFは${maxPages}ページ以下のファイルを選択してください。`
-    : 'PDFを読み込めませんでした。別のPDFを選択してください。'
-}
-
 export async function validatePdfPageLimit(
   file: Blob,
   maxPages: number = MAX_PDF_PAGES,
@@ -46,7 +39,7 @@ export async function validatePdfPageLimit(
   } catch (e) {
     const code = e instanceof PdfPageLimitError ? e.code : PDF_UNREADABLE
     throw new PdfPageLimitError(code, {
-      message: clientPdfPageLimitMessage(code, maxPages),
+      message: pdfPageLimitMessageJa(code, maxPages),
       pageCount: e instanceof PdfPageLimitError ? e.pageCount : undefined,
       cause: e,
     })

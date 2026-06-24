@@ -5,9 +5,10 @@
 // <iframe> / iOS "別タブで開く"); iOS PWA users no longer get kicked out to
 // Safari to read a booking document.
 //
-// Renders ALL pages in a vertical scroll. Booking docs are short (boarding
-// pass / hotel confirmation, ~1-3 pages) so this is fine.
+// Renders up to the product PDF page limit in a vertical scroll. New uploads
+// are Worker-gated to the same limit; the render cap is a legacy-data guard.
 import { useEffect, useRef, useState } from 'react'
+import { MAX_PDF_PAGES } from '@tripmate/pdf-page-limit'
 import { Loader2, FileText } from 'lucide-react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import { configurePdfJsWorker, PDF_DOCUMENT_OPTIONS } from '@/utils/pdfJs'
@@ -27,14 +28,16 @@ export default function PdfPreview({ url }: { url: string }) {
   const [width, setWidth]       = useState<number>()
   const [numPages, setNumPages] = useState(0)
   const [failed, setFailed]     = useState(false)
+  const visiblePages = Math.min(numPages, MAX_PDF_PAGES)
+  const hiddenPages  = Math.max(0, numPages - visiblePages)
 
   // pdf.js fetching a blob: URL directly can fail with "Unexpected server
   // response (0)" (its range-request / worker-context handling of object
-  // URLs). Read the bytes into a Blob once and hand THAT to <Document> — pdf.js
-  // then reads it via arrayBuffer() with no network fetch, sidestepping the
-  // whole class. The objectURL is alive here (the caller's useAttachmentUrl
-  // owns it for the modal's lifetime), so this is a local same-origin memory
-  // copy, not a network round-trip.
+  // URLs). Read the resolved URL into a Blob once and hand that to <Document>;
+  // pdf.js then reads it via arrayBuffer(). In production this is usually a
+  // cross-origin GCS signed URL, so preview depends on bucket CORS allowing the
+  // Pages origin. In getBlob/dev mode it is a blob: URL owned by useAttachmentUrl
+  // for the modal lifetime.
   const [file, setFile] = useState<Blob>()
   useEffect(() => {
     const controller = new AbortController()
@@ -103,9 +106,23 @@ export default function PdfPreview({ url }: { url: string }) {
           className="flex flex-col items-center gap-3"
         >
           {width !== undefined &&
-            Array.from({ length: numPages }, (_, i) => (
+            Array.from({ length: visiblePages }, (_, i) => (
               <Page key={i} pageNumber={i + 1} width={width} className="shadow-lg" />
             ))}
+          {hiddenPages > 0 && (
+            <div className="w-full max-w-[900px] px-4 py-3 text-center text-white/70 text-[12px] leading-[1.6]">
+              残り{hiddenPages}ページは
+              <a
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-white/90 underline underline-offset-2"
+              >
+                別タブで開く
+              </a>
+              から確認してください。
+            </div>
+          )}
         </Document>
       ) : spinner}
     </div>

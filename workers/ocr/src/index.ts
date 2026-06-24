@@ -132,8 +132,8 @@ import {
 }                                                 from './upload-intent'
 import {
   MAX_PDF_PAGES,
-  PDF_PAGE_LIMIT_EXCEEDED,
   PdfPageLimitError,
+  pdfPageLimitMessageJa,
   pdfPageLimitStatus,
 }                                                 from '@tripmate/pdf-page-limit'
 import {
@@ -378,9 +378,7 @@ function pdfPageLimitErrorCatcher() {
     ? {
         log: `pdf-page-limit: ${e.code} ${e.message}`,
         body: {
-          error: e.code === PDF_PAGE_LIMIT_EXCEEDED
-            ? `PDFは${MAX_PDF_PAGES}ページ以下のみアップロードできます。`
-            : 'PDFを読み込めませんでした。別のPDFを選択してください。',
+          error: pdfPageLimitMessageJa(e.code, MAX_PDF_PAGES),
           code: e.code,
           maxPages: MAX_PDF_PAGES,
           ...(e.pageCount !== undefined ? { pageCount: e.pageCount } : {}),

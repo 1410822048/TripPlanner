@@ -34,6 +34,9 @@ async function loadPdfJs(): Promise<PdfJsModule> {
 		])
 		const g = globalThis as typeof globalThis & { pdfjsWorker?: PdfJsWorkerModule }
 		g.pdfjsWorker ??= pdfjsWorker
+		if (!g.pdfjsWorker) {
+			throw new Error('pdf.js worker module was not installed on globalThis')
+		}
 		return pdfjs
 	})()
 	return pdfjsPromise

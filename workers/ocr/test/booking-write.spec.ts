@@ -78,6 +78,7 @@ vi.mock('../src/cascade', async () => {
 
 import { bookingFileCreate, bookingFileUpdate, BookingValidationError } from '../src/booking-write'
 import * as storage from '../src/storage'
+import * as firestoreTx from '../src/firestore-tx'
 import { PdfPageLimitError } from '@tripmate/pdf-page-limit'
 
 const TRIP_ID    = 'trip-1'
@@ -192,6 +193,7 @@ function storageMeta(opts: {
 	kind:        'full' | 'thumb' | 'pdf'
 	token?:      string
 	size?:       number
+	generation?: string
 	contentType?: string
 }) {
 	const customMetadata: Record<string, string> = {
@@ -207,10 +209,21 @@ function storageMeta(opts: {
 	return {
 		name:        opts.path,
 		size:        opts.size ?? 50_000,
+		generation:  opts.generation,
 		contentType: opts.contentType ?? (opts.kind === 'pdf' ? 'application/pdf' : 'image/webp'),
 		timeCreated: '2026-05-26T00:00:00Z',
 		customMetadata,
 	}
+}
+
+function pdfMeta(generation: string) {
+	return storageMeta({
+		path: PDF_PATH,
+		intentId: PDF_INTENT_ID,
+		kind: 'pdf',
+		token: 'tk',
+		generation,
+	})
 }
 
 function validBookingPayload(overrides: Record<string, unknown> = {}) {
@@ -225,6 +238,25 @@ function seedAuth(role: 'owner' | 'editor' | 'viewer' = 'editor') {
 	txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc())
 	txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc(role))
 	txGetResponses.set(`trips/${TRIP_ID}/bookings/${BOOKING_ID}`, notFoundReadDoc(`trips/${TRIP_ID}/bookings/${BOOKING_ID}`))
+}
+
+function runTxBodyTwice() {
+	vi.mocked(firestoreTx.runFirestoreTransaction).mockImplementationOnce(async (_token, _pid, body) => {
+		const ctx = {
+			get: async (path: string) => {
+				const resp = txGetResponses.get(path)
+				if (!resp) throw new Error(`unexpected tx.get('${path}') -- not seeded`)
+				return resp
+			},
+			runQuery: async () => {
+				throw new Error('unexpected tx.runQuery')
+			},
+		}
+		await body(ctx)
+		const result = await body(ctx)
+		capturedTxResult = result
+		return result.result
+	})
 }
 
 beforeEach(() => {
@@ -400,6 +432,56 @@ describe('bookingFileCreate: happy paths', () => {
 		expect(writes[1].fields.confirmationCode?.stringValue).toBe('ABC123')
 		expect(storage.downloadObject).toHaveBeenCalledWith(expect.any(String), BUCKET, PDF_PATH)
 		expect(assertPdfPageLimitBytesMock).toHaveBeenCalledTimes(1)
+	})
+
+	it('PDF page validation is reused across tx body retries for the same GCS generation', async () => {
+		runTxBodyTwice()
+		seedAuth('editor')
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${PDF_INTENT_ID}`,
+			intentDoc({ intentId: PDF_INTENT_ID, kind: 'pdf', path: PDF_PATH, contentType: 'application/pdf' }))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValue(pdfMeta('1700000000000000'))
+
+		await bookingFileCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID,
+				bookingId: BOOKING_ID,
+				booking: validBookingPayload(),
+				attachments: { document: [PDF_INTENT_ID] },
+			},
+			'{}', BUCKET,
+		)
+
+		expect(storage.getObjectMetadata).toHaveBeenCalledTimes(2)
+		expect(storage.downloadObject).toHaveBeenCalledTimes(1)
+		expect(assertPdfPageLimitBytesMock).toHaveBeenCalledTimes(1)
+		expect(storage.updateObjectMetadata).toHaveBeenCalledTimes(2)
+	})
+
+	it('PDF page validation re-runs when the GCS generation changes across tx retries', async () => {
+		runTxBodyTwice()
+		seedAuth('editor')
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${PDF_INTENT_ID}`,
+			intentDoc({ intentId: PDF_INTENT_ID, kind: 'pdf', path: PDF_PATH, contentType: 'application/pdf' }))
+		vi.mocked(storage.getObjectMetadata)
+			.mockResolvedValueOnce(pdfMeta('1700000000000000'))
+			.mockResolvedValueOnce(pdfMeta('1700000000000001'))
+
+		await bookingFileCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID,
+				bookingId: BOOKING_ID,
+				booking: validBookingPayload(),
+				attachments: { document: [PDF_INTENT_ID] },
+			},
+			'{}', BUCKET,
+		)
+
+		expect(storage.getObjectMetadata).toHaveBeenCalledTimes(2)
+		expect(storage.downloadObject).toHaveBeenCalledTimes(2)
+		expect(assertPdfPageLimitBytesMock).toHaveBeenCalledTimes(2)
+		expect(storage.updateObjectMetadata).toHaveBeenCalledTimes(2)
 	})
 
 	it('PDF over page limit -> deletes uploaded blob and rejects before booking doc write', async () => {

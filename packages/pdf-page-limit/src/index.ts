@@ -5,6 +5,7 @@
 // worker/shim setup.
 
 export const MAX_PDF_PAGES = 10
+export const PDF_PAGE_PARSE_TIMEOUT_MS = 8_000
 export const PDF_PAGE_LIMIT_EXCEEDED = 'PDF_PAGE_LIMIT_EXCEEDED'
 export const PDF_UNREADABLE = 'PDF_UNREADABLE'
 
@@ -37,6 +38,15 @@ export function pdfPageLimitStatus(code: PdfPageLimitCode): 400 | 413 {
   return code === PDF_PAGE_LIMIT_EXCEEDED ? 413 : 400
 }
 
+export function pdfPageLimitMessageJa(
+  code: PdfPageLimitCode,
+  maxPages: number = MAX_PDF_PAGES,
+): string {
+  return code === PDF_PAGE_LIMIT_EXCEEDED
+    ? `PDFは${maxPages}ページ以下のファイルを選択してください。`
+    : 'PDFを検証できませんでした。別のPDFを選択してください。'
+}
+
 interface PdfDocument {
   readonly numPages: number
   destroy(): Promise<void> | void
@@ -46,6 +56,9 @@ interface PdfLoadingTask {
   readonly promise: Promise<PdfDocument>
   destroy(): Promise<void> | void
 }
+
+declare function setTimeout(callback: () => void, ms: number): unknown
+declare function clearTimeout(timeoutId: unknown): void
 
 export interface PdfJsLike {
   readonly VerbosityLevel: {
@@ -65,10 +78,24 @@ async function destroyQuietly(resource: { destroy(): Promise<void> | void }): Pr
   }
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeoutId: unknown
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(
+      () => reject(new Error(`PDF page-count parse timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    )
+  })
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId !== undefined) clearTimeout(timeoutId)
+  })
+}
+
 export async function assertPdfPageLimitWithPdfJs(
   pdfjs: PdfJsLike,
   data: Uint8Array,
   maxPages: number = MAX_PDF_PAGES,
+  timeoutMs: number = PDF_PAGE_PARSE_TIMEOUT_MS,
 ): Promise<number> {
   const loadingTask = pdfjs.getDocument({
     data,
@@ -83,7 +110,7 @@ export async function assertPdfPageLimitWithPdfJs(
   })
 
   try {
-    const pdf = await loadingTask.promise
+    const pdf = await withTimeout(loadingTask.promise, timeoutMs)
     try {
       const pageCount = pdf.numPages
       if (!Number.isInteger(pageCount) || pageCount < 1) {

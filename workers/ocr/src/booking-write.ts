@@ -62,6 +62,7 @@ import {
   consumeEntityIntents,
   buildAttachmentMapValue,
   type ConsumedIntent,
+  type PdfValidationCache,
 }                                                                   from './upload-intent'
 
 // ─── Request body schema ──────────────────────────────────────────
@@ -388,6 +389,7 @@ async function consumeBookingAttachmentGroups(
   projectId:   string,
   bucket:      string,
   scope:       { tripId: string; bookingId: string },
+  pdfValidationCache: PdfValidationCache,
 ): Promise<{
   fields: Partial<Record<BookingAttachmentRole, FsValue>>
   markUsedWrites: TxWrite[]
@@ -401,6 +403,7 @@ async function consumeBookingAttachmentGroups(
     const { consumed, markUsedWrites } = await consumeEntityIntents(
       tx, intentIds, callerUid, accessToken, projectId, bucket,
       { tripId: scope.tripId, entityType: 'booking', entityId: scope.bookingId },
+      pdfValidationCache,
     )
     const primary = consumed.find(c => c.kind === 'full' || c.kind === 'pdf')
     if (!primary) {
@@ -503,6 +506,7 @@ async function doCreate(
 
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
+  const pdfValidationCache: PdfValidationCache = new Set()
 
   return runFirestoreTransaction(accessToken, projectId, async (tx) => {
     const ctx = await authorizeBookingCreateTx(tx, req.tripId, callerUid)
@@ -511,6 +515,7 @@ async function doCreate(
     const { fields: attachmentFields, markUsedWrites } = await consumeBookingAttachmentGroups(
       tx, attachmentGroups, callerUid, accessToken, projectId, bucket,
       { tripId: req.tripId, bookingId: req.bookingId },
+      pdfValidationCache,
     )
 
     // Create-only: tx's optimistic-concurrency catches a concurrent
@@ -680,6 +685,7 @@ async function doUpdate(
 
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
+  const pdfValidationCache: PdfValidationCache = new Set()
 
   await runFirestoreTransaction(accessToken, projectId, async (tx) => {
     const currentDocFields = await authorizeBookingUpdateTx(
@@ -689,6 +695,7 @@ async function doUpdate(
     const { fields: attachmentFields, markUsedWrites } = await consumeBookingAttachmentGroups(
       tx, attachmentGroups, callerUid, accessToken, projectId, bucket,
       { tripId: req.tripId, bookingId: req.bookingId },
+      pdfValidationCache,
     )
 
     const { fields, updateMask } = encodeBookingUpdate(

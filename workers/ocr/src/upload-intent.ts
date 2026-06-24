@@ -435,6 +435,12 @@ interface ConsumeResult {
   markUsedWrite:  TxWrite
 }
 
+/** Per-request PDF page-count cache. Firestore may re-run the tx body on
+ * ABORTED/pre-commit retry; tying the cache key to GCS generation avoids
+ * re-downloading/re-parsing the same immutable bytes while still revalidating
+ * if the object was deleted and recreated at the same path. */
+export type PdfValidationCache = Set<string>
+
 /** Read an intent doc inside a tx, validate all the consume-time
  *  preconditions, and verify the corresponding Storage object exists.
  *  Returns the consumed intent + the tx write to mark it used; caller
@@ -471,6 +477,7 @@ async function consumeIntentInTx(
     entityId?:   string
     kind?:       UploadKind
   },
+  pdfValidationCache?: PdfValidationCache,
 ): Promise<ConsumeResult> {
   const intent = await tx.get(`trips/${lookupTripId}/uploadIntents/${intentId}`)
   if (!intent.exists) throw new CascadeError(404, `intent ${intentId} not found`)
@@ -576,7 +583,7 @@ async function consumeIntentInTx(
   }
 
   if (kind === 'pdf') {
-    await validatePdfPageLimitOrDelete(accessToken, bucket, path, storage)
+    await validatePdfPageLimitOrDelete(accessToken, bucket, path, storage, pdfValidationCache)
   }
 
   // path-only hardening: strip the Firebase download token from the
@@ -626,7 +633,11 @@ async function validatePdfPageLimitOrDelete(
   bucket:      string,
   path:        string,
   storage:     ObjectMetadata,
+  cache?:      PdfValidationCache,
 ): Promise<void> {
+  const cacheKey = pdfValidationCacheKey(path, storage)
+  if (cacheKey && cache?.has(cacheKey)) return
+
   const object = await downloadObject(accessToken, bucket, path)
   if (!object) throw new CascadeError(404, `storage object missing at ${path} during PDF page validation`)
   if (object.contentType !== 'application/pdf') {
@@ -640,12 +651,17 @@ async function validatePdfPageLimitOrDelete(
 
   try {
     await assertPdfPageLimitBytes(object.bytes)
+    if (cacheKey) cache?.add(cacheKey)
   } catch (e) {
     if (e instanceof PdfPageLimitError) {
       await deleteRejectedObject(accessToken, bucket, path)
     }
     throw e
   }
+}
+
+function pdfValidationCacheKey(path: string, storage: ObjectMetadata): string | null {
+  return storage.generation ? `${path}@${storage.generation}` : null
 }
 
 async function deleteRejectedObject(
@@ -726,6 +742,7 @@ export async function consumeEntityIntents(
     entityType: EntityType
     entityId:   string
   },
+  pdfValidationCache?: PdfValidationCache,
 ): Promise<{ consumed: ConsumedIntent[]; markUsedWrites: TxWrite[] }> {
   if (intentIds.length === 0) {
     return { consumed: [], markUsedWrites: [] }
@@ -740,6 +757,7 @@ export async function consumeEntityIntents(
       tx, intentId, callerUid, accessToken, projectId, bucket,
       expected.tripId,
       { tripId: expected.tripId, entityType: expected.entityType, entityId: expected.entityId },
+      pdfValidationCache,
     )
     consumed.push(r.consumed)
     if (r.markUsedWrite) markUsedWrites.push(r.markUsedWrite)

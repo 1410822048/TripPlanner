@@ -125,6 +125,7 @@ export async function getObjectMetadata(
   const data = await res.json() as {
     name:         string
     size:         string        // GCS REST returns size as string
+    generation?:   string
     contentType?: string
     timeCreated?: string
     metadata?:    Record<string, string>
@@ -132,6 +133,7 @@ export async function getObjectMetadata(
   return {
     name:           data.name,
     size:           Number(data.size),
+    generation:     data.generation,
     contentType:    data.contentType ?? 'application/octet-stream',
     timeCreated:    data.timeCreated,
     customMetadata: data.metadata,
@@ -141,6 +143,9 @@ export async function getObjectMetadata(
 export interface ObjectMetadata {
   name:           string
   size:           number
+  /** GCS object generation. Changes on delete+recreate / overwrite; used
+   *  to keep cached PDF validation tied to the exact uploaded bytes. */
+  generation?:     string
   contentType:    string
   timeCreated?:   string
   customMetadata?: Record<string, string>

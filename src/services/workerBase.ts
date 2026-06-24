@@ -212,7 +212,8 @@ export async function workerFetch(
   if (res.ok) return res.json()
 
   const detail = await res.text().catch(() => '<unreadable>')
-  const message = `${endpoint} -> ${res.status}: ${detail.slice(0, 300)}`
+  const parsedError = parseWorkerErrorBody(detail)
+  const message = workerErrorMessage(endpoint, res.status, detail, parsedError)
   if (DEFINITIVE_REJECT_STATUSES.has(res.status)) {
     throw new WorkerRejected(res.status, message)
   }
@@ -223,21 +224,37 @@ export async function workerFetch(
   // single-tx endpoint). That's definitively safe to roll back, so surface
   // it as WorkerRejected instead of leaving a phantom optimistic row +
   // misleading "still confirming" toast.
-  if (isPrecommitBody(detail)) {
+  if (parsedError?.precommit === true) {
     throw new WorkerRejected(res.status, message)
   }
   throw new WorkerAmbiguous(message, undefined)
 }
 
-/** True when the Worker error body explicitly marks the failure as
- *  pre-commit (`{ "precommit": true, ... }`). Defensive parse: a non-JSON
- *  or malformed body falls back to ambiguous (returns false), preserving
- *  the safe default for genuine response-loss / infra 5xx. */
-function isPrecommitBody(text: string): boolean {
+type WorkerErrorBody = {
+  error?: unknown
+  precommit?: unknown
+}
+
+function workerErrorMessage(
+  endpoint: string,
+  status:   number,
+  detail:   string,
+  parsed:   WorkerErrorBody | null,
+): string {
+  if (typeof parsed?.error === 'string' && parsed.error.trim()) {
+    return parsed.error
+  }
+  return `${endpoint} -> ${status}: ${detail.slice(0, 300)}`
+}
+
+/** Defensive parse: a non-JSON / malformed body keeps the old
+ * endpoint+status fallback and remains ambiguous for 5xx. */
+function parseWorkerErrorBody(text: string): WorkerErrorBody | null {
   try {
-    return (JSON.parse(text) as { precommit?: unknown })?.precommit === true
+    const parsed = JSON.parse(text) as unknown
+    return parsed && typeof parsed === 'object' ? parsed : null
   } catch {
-    return false
+    return null
   }
 }
 

@@ -12,6 +12,7 @@
 // Module re-import per case because the URL resolution runs at module
 // load, and `vi.stubEnv` only takes effect on subsequent loads.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { pdfPageLimitMessageJa } from '@tripmate/pdf-page-limit'
 
 beforeEach(() => {
   vi.resetModules()
@@ -87,6 +88,34 @@ describe('workerFetch — HTTP error classification', () => {
     await expect(
       workerFetch('https://w.example.dev', 'tok', '/settlement-create', {}),
     ).rejects.toBeInstanceOf(WorkerRejected)
+  })
+
+  it('4xx JSON error body uses the Worker error message instead of raw JSON', async () => {
+    const error = pdfPageLimitMessageJa('PDF_PAGE_LIMIT_EXCEEDED')
+    stubFetchStatus(413, JSON.stringify({
+      error,
+      code: 'PDF_PAGE_LIMIT_EXCEEDED',
+    }))
+    const { workerFetch } = await import('./workerBase')
+    await expect(
+      workerFetch('https://w.example.dev', 'tok', '/booking-file-create', {}),
+    ).rejects.toMatchObject({
+      name: 'WorkerRejected',
+      status: 413,
+      message: error,
+    })
+  })
+
+  it('non-JSON 4xx error body keeps the endpoint/status fallback', async () => {
+    stubFetchStatus(400, 'plain bad request')
+    const { workerFetch } = await import('./workerBase')
+    await expect(
+      workerFetch('https://w.example.dev', 'tok', '/settlement-create', {}),
+    ).rejects.toMatchObject({
+      name: 'WorkerRejected',
+      status: 400,
+      message: '/settlement-create -> 400: plain bad request',
+    })
   })
 
   it('500 → WorkerAmbiguous (commit may have applied; caller keeps optimistic state)', async () => {

@@ -47,7 +47,10 @@ import {
   type TxWrite,
   type TxUpdateWrite,
 }                                                                   from './firestore-tx'
-import { consumeEntityIntents }                                     from './upload-intent'
+import {
+  consumeEntityIntents,
+  type PdfValidationCache,
+}                                                                   from './upload-intent'
 
 // ─── Request body schemas ─────────────────────────────────────────
 
@@ -264,6 +267,7 @@ async function doCreate(
 ): Promise<{ expenseId: string }> {
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
+  const pdfValidationCache: PdfValidationCache = new Set()
 
   return runFirestoreTransaction(accessToken, projectId, async (tx) => {
     const ctx = await authorizeCanWriteTx(tx, req.tripId, callerUid)
@@ -294,6 +298,7 @@ async function doCreate(
       const { consumed, markUsedWrites } = await consumeEntityIntents(
         tx, req.intentIds, callerUid, accessToken, projectId, bucket,
         { tripId: req.tripId, entityType: 'expense', entityId: req.expenseId },
+        pdfValidationCache,
       )
       receipt = validateBuiltReceipt(
         buildReceiptFromIntents(consumed), req.tripId, req.expenseId,
@@ -443,6 +448,7 @@ async function doUpdate(
 ): Promise<{ ok: true }> {
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
+  const pdfValidationCache: PdfValidationCache = new Set()
 
   // Patch-shape gate runs OUTSIDE the transaction body -- it's pure
   // request validation, no retry value. UPDATABLE_FIELDS is only
@@ -511,6 +517,7 @@ async function doUpdate(
       const { consumed, markUsedWrites } = await consumeEntityIntents(
         tx, req.intentIds, callerUid, accessToken, projectId, bucket,
         { tripId: req.tripId, entityType: 'expense', entityId: req.expenseId },
+        pdfValidationCache,
       )
       receipt = validateBuiltReceipt(
         buildReceiptFromIntents(consumed), req.tripId, req.expenseId,
