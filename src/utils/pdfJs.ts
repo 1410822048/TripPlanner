@@ -9,6 +9,23 @@ import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 // top-level react-pdf import from upload service modules in Node/Vitest.
 export const PDF_DOCUMENT_OPTIONS = { verbosity: 0 }
 
+type ReactPdfModule = typeof import('react-pdf')
+type PdfJsModule = ReactPdfModule['pdfjs']
+
+let pdfjsPromise: Promise<PdfJsModule> | undefined
+
 export function configurePdfJsWorker(pdfjs: { GlobalWorkerOptions: { workerSrc: string } }): void {
   pdfjs.GlobalWorkerOptions.workerSrc = workerSrc
+}
+
+export async function getPdfJs(): Promise<PdfJsModule> {
+  pdfjsPromise ??= (async () => {
+    const { pdfjs } = await import('react-pdf')
+    configurePdfJsWorker(pdfjs)
+    return pdfjs
+  })().catch(e => {
+    pdfjsPromise = undefined
+    throw e
+  })
+  return pdfjsPromise
 }

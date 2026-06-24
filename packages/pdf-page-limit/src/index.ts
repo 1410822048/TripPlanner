@@ -6,8 +6,21 @@
 
 export const MAX_PDF_PAGES = 10
 export const PDF_PAGE_PARSE_TIMEOUT_MS = 8_000
+export const BOOKING_PDF_TEXT_MAX_CHARS = 24_000
+export const BOOKING_PDF_LINE_MAX_CHARS = 500
+export const BOOKING_PDF_LINE_MAX_COUNT = 600
 export const PDF_PAGE_LIMIT_EXCEEDED = 'PDF_PAGE_LIMIT_EXCEEDED'
 export const PDF_UNREADABLE = 'PDF_UNREADABLE'
+
+export const PDF_PARSE_OPTIONS = {
+  useWorkerFetch: false,
+  useWasm: false,
+  isEvalSupported: false,
+  isOffscreenCanvasSupported: false,
+  isImageDecoderSupported: false,
+  disableFontFace: true,
+  stopAtErrors: true,
+} as const
 
 export type PdfPageLimitCode =
   | typeof PDF_PAGE_LIMIT_EXCEEDED
@@ -100,13 +113,7 @@ export async function assertPdfPageLimitWithPdfJs(
   const loadingTask = pdfjs.getDocument({
     data,
     verbosity: pdfjs.VerbosityLevel.ERRORS,
-    useWorkerFetch: false,
-    useWasm: false,
-    isEvalSupported: false,
-    isOffscreenCanvasSupported: false,
-    isImageDecoderSupported: false,
-    disableFontFace: true,
-    stopAtErrors: true,
+    ...PDF_PARSE_OPTIONS,
   })
 
   try {

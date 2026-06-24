@@ -2,6 +2,8 @@
 //
 // Endpoints:
 //   POST /ocr                  — primary configured receipt OCR provider
+//   POST /booking-pdf-extract  — Claude-only structured extraction from
+//                                client-side PDF text/layout digest.
 //   POST /invite-create        — owner mints a reusable invite link.
 //                                Worker mints the 256-bit token, caps the
 //                                expiry, and atomically rotates the
@@ -78,6 +80,11 @@ import {
   type OcrProviderConfig,
 }                                                 from './ocr-providers'
 import { expenseReceiptOcr, ExpenseReceiptOcrRequestSchema } from './expense-receipt-ocr'
+import {
+  extractBookingPdfFields,
+  BookingPdfExtractRequestSchema,
+  type BookingPdfExtractResponse,
+}                                                 from './booking-pdf-extract'
 import { cascadeTripDelete, TripDeleteRequestSchema } from './trip-cascade'
 import { purgeExpiredReceipts }                   from './receipt-purge'
 import { drainOrphanPurges }                      from './orphan-purge'
@@ -162,6 +169,7 @@ interface WorkerEnv {
   ANTHROPIC_FOUNDRY_API_KEY: string // secret — Microsoft Foundry (Azure AI Foundry) Claude API key
   ANTHROPIC_FOUNDRY_RESOURCE: string // var — Foundry resource name (e.g. aic-claude-eus2)
   CLAUDE_DEPLOYMENT:        string  // var — Foundry deployment name (e.g. claude-haiku-4-5-2)
+  BOOKING_CLAUDE_DEPLOYMENT?: string // var — optional faster deployment for booking PDF import
   FIREBASE_SERVICE_ACCOUNT: string  // secret — JSON string of service account key
   QWEN_API_KEY:             string  // secret; OpenAI-compatible Qwen provider API key
   QWEN_BASE_URL:            string  // var; without /chat/completions
@@ -338,6 +346,14 @@ function ocrProviderConfig(env: WorkerEnv): OcrProviderConfig {
   }
 }
 
+function bookingPdfClaudeConfig(env: WorkerEnv): OcrProviderConfig['claude'] {
+  return {
+    apiKey:   env.ANTHROPIC_FOUNDRY_API_KEY,
+    resource: env.ANTHROPIC_FOUNDRY_RESOURCE,
+    model:    env.BOOKING_CLAUDE_DEPLOYMENT?.trim() || env.CLAUDE_DEPLOYMENT,
+  }
+}
+
 function primaryOcrProvider(env: WorkerEnv): OcrProvider {
   return parseOcrProvider(env.OCR_PRIMARY_PROVIDER, 'OCR_PRIMARY_PROVIDER', 'qwen')
 }
@@ -421,6 +437,18 @@ function formatCompareResult(r: OcrCompareResult): string {
   return r.ok
     ? `${r.provider}:ok items=${r.result.items.length} adjustments=${r.result.adjustments.length} ignored=${r.result.ignoredLines.length} ms=${r.elapsedMs}`
     : `${r.provider}:err status=${r.error.status} ms=${r.elapsedMs}`
+}
+
+function bookingPdfFieldCount(result: BookingPdfExtractResponse): number {
+  return [
+    result.title,
+    result.provider,
+    result.confirmationCode,
+    result.checkIn,
+    result.checkOut,
+    result.address,
+    result.link,
+  ].filter(field => field.value.trim()).length
 }
 
 export const ROUTES: RouteDescriptor[] = [
@@ -706,6 +734,20 @@ export const ROUTES: RouteDescriptor[] = [
         )
       },
       formatLog: (data, result) => `trip=${data.tripId} exp=${data.expenseId} items=${result.result.items.length}`,
+      catchDomain: ocrErrorCatcher,
+    }),
+  },
+  {
+    path: '/booking-pdf-extract', rate: 'ocr',
+    dispatch: c => handleJsonRoute({
+      endpoint:  'booking-pdf-extract', body: c.body, cors: c.cors, uid: c.uid,
+      schema:    BookingPdfExtractRequestSchema,
+      // Booking confirmation import is intentionally Claude-only. Receipt OCR
+      // can swap primary/fallback providers, but booking PDFs need stricter
+      // document-level reasoning over labels, addresses, and evidence.
+      handle:    data => extractBookingPdfFields(data, bookingPdfClaudeConfig(c.env)),
+      formatLog: (_data, result) =>
+        `type=${result.bookingType} fields=${bookingPdfFieldCount(result)} warnings=${result.warnings.length}`,
       catchDomain: ocrErrorCatcher,
     }),
   },

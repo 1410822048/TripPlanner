@@ -40,6 +40,10 @@
 		//               tier = change this one var to that deployment's name.
 		"ANTHROPIC_FOUNDRY_RESOURCE": "aic-claude-eus2",
 		"CLAUDE_DEPLOYMENT": "claude-sonnet-4-6",
+		// Booking PDF import is text/layout extraction, not receipt OCR; Haiku
+		// is the faster default here. Leave CLAUDE_DEPLOYMENT on Sonnet so the
+		// receipt fallback path keeps its higher-accuracy model.
+		"BOOKING_CLAUDE_DEPLOYMENT": "claude-haiku-4-5-2",
 		// Qwen OCR provider. API key is a SECRET (QWEN_API_KEY via
 		// `wrangler secret put`). Required whenever OCR_PRIMARY_PROVIDER or
 		// OCR_FALLBACK_PROVIDER is qwen; /ocr-compare also uses it when enabled.

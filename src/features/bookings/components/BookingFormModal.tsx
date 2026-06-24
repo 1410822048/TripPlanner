@@ -7,8 +7,8 @@
 //   - undefined → user didn't touch the file (no change on save)
 //   - null      → user removed the existing file (clear on save)
 //   - File      → user picked a new file (replace on save)
-import { useRef, useState } from 'react'
-import { Paperclip, ArrowRight, Image as ImageIcon } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Paperclip, ArrowRight, Image as ImageIcon, Loader2 } from 'lucide-react'
 import type { Booking, CreateBookingInput } from '@/types'
 import { isHttpUrl } from '@/types'
 import FormModalShell from '@/components/ui/FormModalShell'
@@ -24,6 +24,12 @@ import { useAttachment, type AttachmentChange } from '@/hooks/useAttachment'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { BOOKING_TYPE_META, BOOKING_TYPE_ORDER } from '../utils'
 import { deriveBookingLinkDraft } from '../linkDraft'
+import {
+  BookingPdfExtractError,
+  bookingPdfExtractToDraftPatch,
+  extractBookingPdfAutofill,
+} from '../services/bookingPdfExtractService'
+import { isPdfFile } from '../services/bookingPdfText'
 
 /** Transport types use origin → destination as the primary identifier;
  *  other types use a single title field. */
@@ -54,6 +60,11 @@ function titlePlaceholder(type: Booking['type']): string {
 
 const IMAGE_ACCEPT_TYPES = 'image/*'
 const DOCUMENT_ACCEPT_TYPES = 'image/*,application/pdf'
+
+type PdfAutofillState = {
+  status: 'idle' | 'loading' | 'applied' | 'empty' | 'error'
+  message?: string
+}
 
 export interface BookingFormResult {
   input:      CreateBookingInput
@@ -105,6 +116,7 @@ export default function BookingFormModal({
   })
   const [errors,      setErrors]      = useState<Record<string, string>>({})
   const [previewTarget, setPreviewTarget] = useState<'cover' | 'document' | null>(null)
+  const [pdfAutofill, setPdfAutofill] = useState<PdfAutofillState>({ status: 'idle' })
   // Full-size preview URL: a newly-picked file uses its local blob (already
   // full-res); an existing attachment resolves its fullPath via getBlob only
   // while the modal is open (path-driven). null → modal shows a spinner.
@@ -122,6 +134,9 @@ export default function BookingFormModal({
   const coverFileRef = useRef<HTMLInputElement>(null)
   const docFileRef   = useRef<HTMLInputElement>(null)
   const checkOutRef = useRef<DatePickerHandle>(null)
+  const stateRef = useRef(state)
+  const pdfAutofillSeqRef = useRef(0)
+  const pdfAutofillControllerRef = useRef<AbortController | null>(null)
   // For transport types the user wants origin first, so focus that input
   // on open. Hotel / other open with their primary text field focused.
   const isTransport = TRANSPORT_TYPES.has(state.type)
@@ -129,6 +144,14 @@ export default function BookingFormModal({
 
   // Hotel is the only type that conventionally has both check-in and check-out.
   const showRange = state.type === 'hotel'
+
+  useEffect(() => {
+    stateRef.current = state
+  }, [state])
+
+  useEffect(() => () => {
+    pdfAutofillControllerRef.current?.abort()
+  }, [])
 
   function pickCoverImage() {
     coverFileRef.current?.click()
@@ -147,7 +170,79 @@ export default function BookingFormModal({
   function onDocumentPicked(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]
     e.target.value = ''  // allow re-picking the same file
-    if (f) docAtt.pickFile(f)
+    if (!f) return
+    if (docAtt.pickFile(f)) {
+      void runPdfAutofill(f)
+    }
+  }
+
+  function cancelPdfAutofill() {
+    pdfAutofillSeqRef.current += 1
+    pdfAutofillControllerRef.current?.abort()
+    pdfAutofillControllerRef.current = null
+    setPdfAutofill({ status: 'idle' })
+  }
+
+  function pdfAutofillErrorMessage(e: unknown): string {
+    if (e instanceof BookingPdfExtractError) {
+      switch (e.kind) {
+        case 'auth':
+          return 'ログイン後にもう一度お試しください'
+        case 'rate-limit':
+          return '時間を置いてからもう一度お試しください'
+        case 'network':
+        case 'unavailable':
+          return '読み取りサービスに接続できませんでした'
+        case 'parse':
+          return e.message || 'PDFを読み取れませんでした。手入力してください'
+        case 'unknown':
+          return 'PDFの読み取りに失敗しました'
+      }
+    }
+    return 'PDFの読み取りに失敗しました'
+  }
+
+  function applyPdfAutofillPatch(patch: BookingFormDraft) {
+    type DraftEntry = {
+      [K in keyof BookingFormDraft]-?: [K, BookingFormDraft[K]]
+    }[keyof BookingFormDraft]
+
+    for (const [key, value] of Object.entries(patch) as DraftEntry[]) {
+      if (value !== undefined) setField(key, value)
+    }
+  }
+
+  async function runPdfAutofill(file: File) {
+    if (!isPdfFile(file)) {
+      cancelPdfAutofill()
+      return
+    }
+
+    const seq = pdfAutofillSeqRef.current + 1
+    pdfAutofillSeqRef.current = seq
+    pdfAutofillControllerRef.current?.abort()
+    const controller = new AbortController()
+    pdfAutofillControllerRef.current = controller
+    setPdfAutofill({ status: 'loading', message: 'PDFから予約情報を読み取っています…' })
+
+    try {
+      const result = await extractBookingPdfAutofill(file, controller.signal)
+      if (controller.signal.aborted || pdfAutofillSeqRef.current !== seq) return
+      const { patch, appliedCount } = bookingPdfExtractToDraftPatch(stateRef.current, result, {
+        isEdit: !!editTarget,
+      })
+      applyPdfAutofillPatch(patch)
+      setPdfAutofill(appliedCount > 0
+        ? { status: 'applied', message: 'PDFから入力候補を反映しました' }
+        : { status: 'empty', message: '入力できる項目が見つかりませんでした' })
+    } catch (e) {
+      if (controller.signal.aborted || pdfAutofillSeqRef.current !== seq) return
+      setPdfAutofill({ status: 'error', message: pdfAutofillErrorMessage(e) })
+    } finally {
+      if (pdfAutofillSeqRef.current === seq) {
+        pdfAutofillControllerRef.current = null
+      }
+    }
   }
 
   function applyLinkDefaults(linkValue = state.link) {
@@ -468,7 +563,10 @@ export default function BookingFormModal({
             previewUrl={docAtt.previewUrl}
             isImage={docAtt.previewIsImage}
             onReplace={pickDocument}
-            onClear={docAtt.clear}
+            onClear={() => {
+              cancelPdfAutofill()
+              docAtt.clear()
+            }}
             onPreview={() => (docAtt.hasNewFile || docAtt.fullPath) && setPreviewTarget('document')}
             canPreview={docAtt.hasNewFile || !!docAtt.fullPath}
             replaceAriaLabel="ファイルを変更"
@@ -484,6 +582,23 @@ export default function BookingFormModal({
             <Paperclip size={16} strokeWidth={1.8} />
             <span>確認書をアップロード</span>
           </button>
+        )}
+        {pdfAutofill.status !== 'idle' && (
+          <div
+            className={[
+              'mt-2 flex items-center gap-1.5 text-[12px] font-medium',
+              pdfAutofill.status === 'error'
+                ? 'text-danger'
+                : pdfAutofill.status === 'applied'
+                  ? 'text-teal'
+                  : 'text-muted',
+            ].join(' ')}
+          >
+            {pdfAutofill.status === 'loading' && (
+              <Loader2 size={13} strokeWidth={2} className="animate-spin" />
+            )}
+            <span>{pdfAutofill.message}</span>
+          </div>
         )}
       </FormField>
 

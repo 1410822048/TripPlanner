@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   PDF_UNREADABLE,
+  MAX_PDF_PAGES,
   PdfPageLimitError,
   pdfPageLimitMessageJa,
 } from '@tripmate/pdf-page-limit'
@@ -8,7 +9,7 @@ import { validatePdfPageLimit } from './pdfPageLimit'
 
 const mocks = vi.hoisted(() => ({
   assertPdfPageLimitWithPdfJs: vi.fn(),
-  configurePdfJsWorker:       vi.fn(),
+  getPdfJs:                   vi.fn(),
   pdfjs: {
     GlobalWorkerOptions: { workerSrc: '' },
     VerbosityLevel:      { ERRORS: 0 },
@@ -23,18 +24,15 @@ vi.mock('@tripmate/pdf-page-limit', async () => {
   }
 })
 
-vi.mock('react-pdf', () => ({
-  pdfjs: mocks.pdfjs,
-}))
-
 vi.mock('@/utils/pdfJs', () => ({
-  configurePdfJsWorker: mocks.configurePdfJsWorker,
+  getPdfJs: mocks.getPdfJs,
 }))
 
 describe('validatePdfPageLimit', () => {
   beforeEach(() => {
     mocks.assertPdfPageLimitWithPdfJs.mockReset()
-    mocks.configurePdfJsWorker.mockClear()
+    mocks.getPdfJs.mockReset()
+    mocks.getPdfJs.mockResolvedValue(mocks.pdfjs)
   })
 
   it('wraps non-PdfPageLimitError failures as localized PDF_UNREADABLE', async () => {
@@ -49,6 +47,7 @@ describe('validatePdfPageLimit', () => {
       message: pdfPageLimitMessageJa(PDF_UNREADABLE),
     } satisfies Partial<PdfPageLimitError>)
 
-    expect(mocks.configurePdfJsWorker).toHaveBeenCalledWith(mocks.pdfjs)
+    expect(mocks.getPdfJs).toHaveBeenCalledTimes(1)
+    expect(mocks.assertPdfPageLimitWithPdfJs).toHaveBeenCalledWith(mocks.pdfjs, expect.any(Uint8Array), MAX_PDF_PAGES)
   })
 })

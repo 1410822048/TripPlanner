@@ -7,10 +7,15 @@ import {
 	createExecutionContext,
 	waitOnExecutionContext,
 } from 'cloudflare:test'
-import { describe, it, expect } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import worker, { ROUTES, RATE_CLASSES } from '../src/index'
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>
+const realFetch = globalThis.fetch
+
+afterEach(() => {
+	globalThis.fetch = realFetch
+})
 
 async function call(method: string, path: string, init: RequestInit = {}): Promise<Response> {
 	const req = new IncomingRequest(`http://example.com${path}`, { method, ...init })
@@ -111,6 +116,62 @@ describe('OCR worker routing', () => {
 		expect(body.error).toBe('OCR provider failed')
 		expect(body.error).not.toContain('OCR_PRIMARY_PROVIDER')
 	})
+
+	it('booking PDF extraction uses the booking-specific Claude deployment when set', async () => {
+		const route = ROUTES.find(r => r.path === '/booking-pdf-extract')
+		expect(route).toBeDefined()
+
+		let rawBody = ''
+		globalThis.fetch = vi.fn(async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			rawBody = String(init?.body ?? '')
+			return new Response(JSON.stringify({
+				type:        'message',
+				role:        'assistant',
+				content:     [{
+					type:  'tool_use',
+					id:    'toolu_test',
+					name:  'extract_booking_pdf',
+					input: {
+						bookingType:      'hotel',
+						title:            { value: 'Hotel Sakura', confidence: 0.9, evidence: 'Hotel Sakura' },
+						provider:         { value: 'Airbnb', confidence: 0.9, evidence: 'Airbnb' },
+						confirmationCode: { value: '', confidence: 0, evidence: '' },
+						checkIn:          { value: '2026-07-01', confidence: 0.9, evidence: '2026-07-01' },
+						checkOut:         { value: '', confidence: 0, evidence: '' },
+						address:          { value: '', confidence: 0, evidence: '' },
+						link:             { value: '', confidence: 0, evidence: '' },
+						warnings:         [],
+					},
+				}],
+				stop_reason: 'tool_use',
+			}), { status: 200, headers: { 'Content-Type': 'application/json' } })
+		}) as typeof fetch
+
+		const res = await route!.dispatch({
+			body: {
+				pageCount: 1,
+				text:      'Hotel Sakura\nAirbnb\n2026-07-01',
+				lines: [
+					{ page: 1, text: 'Hotel Sakura', x: 10, y: 100 },
+					{ page: 1, text: 'Airbnb', x: 10, y: 90 },
+					{ page: 1, text: '2026-07-01', x: 10, y: 80 },
+				],
+			},
+			cors: {},
+			uid:  'user-1',
+			env:  {
+				ANTHROPIC_FOUNDRY_API_KEY:  'key',
+				ANTHROPIC_FOUNDRY_RESOURCE: 'aic-claude-eus2',
+				CLAUDE_DEPLOYMENT:          'claude-sonnet-4-6',
+				BOOKING_CLAUDE_DEPLOYMENT:  'claude-haiku-4-5-2',
+			},
+		} as never)
+
+		expect(res.status).toBe(200)
+		const body = JSON.parse(rawBody) as { model?: string; tool_choice?: { name?: string } }
+		expect(body.model).toBe('claude-haiku-4-5-2')
+		expect(body.tool_choice?.name).toBe('extract_booking_pdf')
+	})
 })
 
 describe('route descriptor table (rate-limit classification)', () => {
@@ -124,6 +185,7 @@ describe('route descriptor table (rate-limit classification)', () => {
 		'/ocr':                 { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
 		'/ocr-fallback':        { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
 		'/ocr-compare':         { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
+		'/booking-pdf-extract': { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
 		'/expense-receipt-ocr': { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
 		'/expense-receipt-ocr-fallback': { limiter: 'OCR_RATE_LIMITER',    scope: 'ocr',              globalLimit: 60 },
 		'/cascade-trip-delete': { limiter: 'TRIP_CASCADE_RATE_LIMITER',   scope: 'trip-cascade',     globalLimit: 2 },

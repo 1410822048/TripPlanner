@@ -5,26 +5,9 @@ import {
   PdfPageLimitError,
   pdfPageLimitMessageJa,
 } from '@tripmate/pdf-page-limit'
-import { configurePdfJsWorker } from '@/utils/pdfJs'
+import { getPdfJs } from '@/utils/pdfJs'
 
 const PDF_MIME = 'application/pdf'
-
-type ReactPdfModule = typeof import('react-pdf')
-type PdfJsModule = ReactPdfModule['pdfjs']
-
-let pdfjsPromise: Promise<PdfJsModule> | undefined
-
-async function loadPdfJs(): Promise<PdfJsModule> {
-  pdfjsPromise ??= (async () => {
-    const { pdfjs } = await import('react-pdf')
-    configurePdfJsWorker(pdfjs)
-    return pdfjs
-  })().catch(e => {
-    pdfjsPromise = undefined
-    throw e
-  })
-  return pdfjsPromise
-}
 
 export async function validatePdfPageLimit(
   file: Blob,
@@ -34,7 +17,7 @@ export async function validatePdfPageLimit(
 
   try {
     const data = new Uint8Array(await file.arrayBuffer())
-    const pdfjs = await loadPdfJs()
+    const pdfjs = await getPdfJs()
     await assertPdfPageLimitWithPdfJs(pdfjs, data, maxPages)
   } catch (e) {
     const code = e instanceof PdfPageLimitError ? e.code : PDF_UNREADABLE

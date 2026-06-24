@@ -1,10 +1,12 @@
-// Claude receipt OCR client — single-purpose: send a receipt image, get
-// structured items[] + adjustments[] + total back.
+// Claude structured-extraction client. Receipt OCR is the main caller; booking
+// PDF import reuses the same low-level Anthropic Messages JSON helper with a
+// different prompt/schema.
 //
 // Provider: Anthropic Claude via MICROSOFT FOUNDRY (Azure AI Foundry). The
 // Foundry endpoint speaks the NATIVE Anthropic Messages API
-// (`/anthropic/v1/messages`), so this is a normal messages[].content[]
-// (image + text) + output_config request — no OpenAI-compat shim.
+// (`/anthropic/v1/messages`), so this is normal messages[].content[]
+// (image/text) plus Anthropic-native structured output / tool use — no
+// OpenAI-compat shim.
 //
 // Why raw fetch (not @anthropic-ai/foundry-sdk):
 //   - We only ever call one method (messages.create)
@@ -26,9 +28,10 @@
 //     while Sonnet / Opus accept it but we don't need it. Don't add `effort` /
 //     `thinking` unless a future task actually benefits.
 //
-// Structured output: `output_config.format` json_schema with the shared
-// OCR_RESPONSE_JSON_SCHEMA (additionalProperties:false on every object). We
-// still re-parse with Zod on our side for runtime type safety + coercion.
+// Structured output: receipt OCR uses `output_config.format` json_schema with
+// the shared OCR_RESPONSE_JSON_SCHEMA (additionalProperties:false on every
+// object). Booking PDF import uses strict tool input. Both still re-parse with
+// Zod on our side for runtime type safety + coercion.
 //
 // Auth: Foundry API key in the `x-api-key` header + `anthropic-version`. The
 // Foundry resource name (URL host is derived from it) and the deployment name
@@ -147,6 +150,8 @@ export function buildPrompt(currencyHint?: string): string {
 interface AnthropicContentBlock {
   type:  string
   text?: string
+  name?: string
+  input?: unknown
 }
 interface AnthropicMessage {
   content?:     AnthropicContentBlock[]
@@ -154,6 +159,10 @@ interface AnthropicMessage {
   // Foundry mirrors Anthropic's error envelope on non-2xx.
   error?:       { type?: string; message?: string }
 }
+
+type AnthropicUserContent =
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+  | { type: 'text'; text: string }
 
 export class OcrError extends Error {
   constructor(message: string, public readonly status: number) {
@@ -170,6 +179,182 @@ function upstreamStatusForClient(status: number): number {
   if (status === 429) return 429
   if (status === 529) return 503
   return 502
+}
+
+async function requestClaudeMessage(args: {
+  cfg:        ClaudeConfig
+  logPrefix:  string
+  maxTokens:  number
+  system:     string
+  content:    AnthropicUserContent[]
+  requestLog: string
+  bodyExtras: Record<string, unknown>
+}): Promise<AnthropicMessage> {
+  const body = {
+    model:      args.cfg.model,
+    max_tokens: args.maxTokens,
+    system:     args.system,
+    messages: [{
+      role:    'user',
+      content: args.content,
+    }],
+    ...args.bodyExtras,
+  }
+
+  const endpoint = `https://${args.cfg.resource}.services.ai.azure.com/anthropic/v1/messages`
+  const t0 = Date.now()
+  console.log(`[${args.logPrefix}] request: model=${args.cfg.model} ${args.requestLog}`)
+
+  // Explicit subrequest timeout. Workers don't enforce a per-subrequest budget;
+  // without this a hung call rides the whole wall-time until the platform kills
+  // the worker. 45s is well under Cloudflare's budget and matches the client's
+  // 60s patience window.
+  let res: Response
+  try {
+    res = await fetch(endpoint, {
+      method:  'POST',
+      headers: {
+        'content-type':     'application/json',
+        'x-api-key':        args.cfg.apiKey,
+        'anthropic-version': ANTHROPIC_VERSION,
+      },
+      body:   JSON.stringify(body),
+      signal: AbortSignal.timeout(45_000),
+    })
+  } catch (e) {
+    const err = e as Error
+    if (err.name === 'TimeoutError') {
+      console.error(`[${args.logPrefix}] timeout after 45s`)
+      throw new OcrError('Upstream timeout after 45s', 504)
+    }
+    console.error(`[${args.logPrefix}] network error: ${err.message}`)
+    throw new OcrError(`Upstream network error: ${err.message}`, 502)
+  }
+
+  const elapsed = Date.now() - t0
+  console.log(`[${args.logPrefix}] response: status=${res.status} elapsed=${elapsed}ms`)
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    console.error(`[${args.logPrefix}] error body (truncated): ${detail.slice(0, 500)}`)
+    // 400/401/403/404 are almost always OUR config: a malformed request body /
+    // bad json_schema (400), a bad/expired ANTHROPIC_FOUNDRY_API_KEY or missing
+    // RBAC role (401/403), or a wrong CLAUDE_DEPLOYMENT / base URL (404). Emit a
+    // distinct line so it jumps out of wrangler tail — the generic 502 mask
+    // otherwise buries the root cause. Client still receives 502.
+    if (res.status === 400 || res.status === 401 || res.status === 403 || res.status === 404) {
+      console.error(
+        `[${args.logPrefix}] OPERATOR ATTENTION: Foundry returned ${res.status} — ` +
+        `check ANTHROPIC_FOUNDRY_API_KEY / CLAUDE_DEPLOYMENT (deployment name) / ` +
+        `ANTHROPIC_FOUNDRY_RESOURCE / RBAC role / region`,
+      )
+    }
+    throw new OcrError(
+      `Claude ${res.status}: ${detail.slice(0, 200)}`,
+      upstreamStatusForClient(res.status),
+    )
+  }
+
+  return await res.json() as AnthropicMessage
+}
+
+function throwIfTerminalStop(logPrefix: string, stop: string | undefined): void {
+  // Safety refusal — the model declined the input. Distinct from unreadable.
+  if (stop === 'refusal') {
+    console.warn(`[${logPrefix}] content refused`)
+    throw new OcrError('Content refused by the model', 400)
+  }
+  // Output truncated against max_tokens → the JSON is incomplete.
+  if (stop === 'max_tokens') {
+    console.error(`[${logPrefix}] response truncated (stop_reason=max_tokens); raise maxTokens`)
+    throw new OcrError('Model output truncated', 422)
+  }
+}
+
+export async function requestClaudeJson(args: {
+  cfg:        ClaudeConfig
+  logPrefix:  string
+  maxTokens:  number
+  system:     string
+  content:    AnthropicUserContent[]
+  jsonSchema: unknown
+  requestLog: string
+}): Promise<unknown> {
+  const envelope = await requestClaudeMessage({
+    cfg:        args.cfg,
+    logPrefix:  args.logPrefix,
+    maxTokens:  args.maxTokens,
+    system:     args.system,
+    content:    args.content,
+    requestLog: args.requestLog,
+    bodyExtras: {
+      output_config: {
+        format: { type: 'json_schema', schema: args.jsonSchema },
+      },
+    },
+  })
+
+  const stop = envelope.stop_reason
+  const textBlock = envelope.content?.find(b => b.type === 'text' && typeof b.text === 'string')
+  const text = textBlock?.text
+  console.log(`[${args.logPrefix}] stop_reason=${stop ?? '?'} textLen=${text?.length ?? 0}`)
+  throwIfTerminalStop(args.logPrefix, stop)
+
+  if (typeof text !== 'string') {
+    console.error(`[${args.logPrefix}] no text content in response`, JSON.stringify(envelope).slice(0, 500))
+    throw new OcrError('Claude returned no text content', 422)
+  }
+
+  console.log(`[${args.logPrefix}] response text length: ${text.length} chars`)
+
+  try {
+    return JSON.parse(text)
+  } catch {
+    throw new OcrError('Claude returned non-JSON content', 422)
+  }
+}
+
+export async function requestClaudeToolJson(args: {
+  cfg:             ClaudeConfig
+  logPrefix:       string
+  maxTokens:       number
+  system:          string
+  content:         AnthropicUserContent[]
+  toolName:        string
+  toolDescription: string
+  inputSchema:     unknown
+  requestLog:      string
+}): Promise<unknown> {
+  const envelope = await requestClaudeMessage({
+    cfg:        args.cfg,
+    logPrefix:  args.logPrefix,
+    maxTokens:  args.maxTokens,
+    system:     args.system,
+    content:    args.content,
+    requestLog: args.requestLog,
+    bodyExtras: {
+      tools: [{
+        name:         args.toolName,
+        description:  args.toolDescription,
+        input_schema: args.inputSchema,
+        strict:       true,
+        cache_control: { type: 'ephemeral' },
+      }],
+      tool_choice: { type: 'tool', name: args.toolName },
+    },
+  })
+
+  const stop = envelope.stop_reason
+  const toolBlock = envelope.content?.find(b => b.type === 'tool_use' && b.name === args.toolName)
+  console.log(`[${args.logPrefix}] stop_reason=${stop ?? '?'} tool=${toolBlock ? args.toolName : 'missing'}`)
+  throwIfTerminalStop(args.logPrefix, stop)
+
+  if (!toolBlock) {
+    console.error(`[${args.logPrefix}] no tool_use content in response`, JSON.stringify(envelope).slice(0, 500))
+    throw new OcrError('Claude returned no tool_use content', 422)
+  }
+
+  return toolBlock.input
 }
 
 /**
@@ -190,109 +375,21 @@ export async function extractReceiptItems(
   currency:    string | undefined,
   cfg:         ClaudeConfig,
 ): Promise<OcrResponse> {
-  const body = {
-    model:      cfg.model,
-    max_tokens: MAX_TOKENS,
-    system:     SYSTEM_PROMPT,
-    messages: [{
-      role: 'user',
-      content: [
-        // Image FIRST, then the instruction — Anthropic's recommended ordering
-        // for single-image prompts. media_type must be jpeg/png/gif/webp; the
-        // client compresses receipts to WebP, so this is always supported.
-        { type: 'image', source: { type: 'base64', media_type: mimeType, data: imageBase64 } },
-        { type: 'text', text: buildPrompt(currency) },
-      ],
-    }],
-    output_config: {
-      format: { type: 'json_schema', schema: OCR_RESPONSE_JSON_SCHEMA },
-    },
-  }
-
-  const endpoint = `https://${cfg.resource}.services.ai.azure.com/anthropic/v1/messages`
-  const t0 = Date.now()
-  console.log(`[claude] request: model=${cfg.model} mime=${mimeType} imgBytes~${Math.round(imageBase64.length * 0.75)}`)
-
-  // Explicit subrequest timeout. Workers don't enforce a per-subrequest budget;
-  // without this a hung call rides the whole wall-time until the platform kills
-  // the worker. 45s is well under Cloudflare's budget and matches the client's
-  // 60s patience window.
-  let res: Response
-  try {
-    res = await fetch(endpoint, {
-      method:  'POST',
-      headers: {
-        'content-type':     'application/json',
-        'x-api-key':        cfg.apiKey,
-        'anthropic-version': ANTHROPIC_VERSION,
-      },
-      body:   JSON.stringify(body),
-      signal: AbortSignal.timeout(45_000),
-    })
-  } catch (e) {
-    const err = e as Error
-    if (err.name === 'TimeoutError') {
-      console.error(`[claude] timeout after 45s`)
-      throw new OcrError('Upstream timeout after 45s', 504)
-    }
-    console.error(`[claude] network error: ${err.message}`)
-    throw new OcrError(`Upstream network error: ${err.message}`, 502)
-  }
-
-  const elapsed = Date.now() - t0
-  console.log(`[claude] response: status=${res.status} elapsed=${elapsed}ms`)
-
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    console.error(`[claude] error body (truncated): ${detail.slice(0, 500)}`)
-    // 400/401/403/404 are almost always OUR config: a malformed request body /
-    // bad json_schema (400), a bad/expired ANTHROPIC_FOUNDRY_API_KEY or missing
-    // RBAC role (401/403), or a wrong CLAUDE_DEPLOYMENT / base URL (404). Emit a
-    // distinct line so it jumps out of wrangler tail — the generic 502 mask
-    // otherwise buries the root cause. Client still receives 502.
-    if (res.status === 400 || res.status === 401 || res.status === 403 || res.status === 404) {
-      console.error(
-        `[claude] OPERATOR ATTENTION: Foundry returned ${res.status} — ` +
-        `check ANTHROPIC_FOUNDRY_API_KEY / CLAUDE_DEPLOYMENT (deployment name) / ` +
-        `ANTHROPIC_FOUNDRY_RESOURCE / RBAC role / region`,
-      )
-    }
-    throw new OcrError(
-      `Claude ${res.status}: ${detail.slice(0, 200)}`,
-      upstreamStatusForClient(res.status),
-    )
-  }
-
-  const envelope = await res.json() as AnthropicMessage
-  const stop     = envelope.stop_reason
-  const textBlock = envelope.content?.find(b => b.type === 'text' && typeof b.text === 'string')
-  const text     = textBlock?.text
-  console.log(`[claude] stop_reason=${stop ?? '?'} textLen=${text?.length ?? 0}`)
-
-  // Safety refusal — the model declined the image. Distinct from "unreadable".
-  if (stop === 'refusal') {
-    console.warn(`[claude] content refused`)
-    throw new OcrError('Content refused by the model', 400)
-  }
-  // Output truncated against max_tokens → the JSON is incomplete.
-  if (stop === 'max_tokens') {
-    console.error(`[claude] response truncated (stop_reason=max_tokens); raise MAX_TOKENS`)
-    throw new OcrError('Model output truncated', 422)
-  }
-
-  if (typeof text !== 'string') {
-    console.error('[claude] no text content in response', JSON.stringify(envelope).slice(0, 500))
-    throw new OcrError('Claude returned no text content', 422)
-  }
-
-  console.log(`[claude] response text length: ${text.length} chars`)
-
-  let json: unknown
-  try {
-    json = JSON.parse(text)
-  } catch {
-    throw new OcrError('Claude returned non-JSON content', 422)
-  }
+  const json = await requestClaudeJson({
+    cfg,
+    logPrefix: 'claude',
+    maxTokens: MAX_TOKENS,
+    system: SYSTEM_PROMPT,
+    content: [
+      // Image FIRST, then the instruction — Anthropic's recommended ordering
+      // for single-image prompts. media_type must be jpeg/png/gif/webp; the
+      // client compresses receipts to WebP, so this is always supported.
+      { type: 'image', source: { type: 'base64', media_type: mimeType, data: imageBase64 } },
+      { type: 'text', text: buildPrompt(currency) },
+    ],
+    jsonSchema: OCR_RESPONSE_JSON_SCHEMA,
+    requestLog: `mime=${mimeType} imgBytes~${Math.round(imageBase64.length * 0.75)}`,
+  })
 
   const parsed = OcrResponseSchema.safeParse(json)
   if (!parsed.success) {
