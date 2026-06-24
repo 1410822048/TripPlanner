@@ -95,8 +95,9 @@ describe('extractBookingPdfText', () => {
 
     const digest = await extractBookingPdfText(pdfFile())
 
-    expect(digest.lines).toHaveLength(1)
-    expect(digest.lines[0]!.text).toHaveLength(BOOKING_PDF_LINE_MAX_CHARS)
+    expect(digest.lines.map(line => line.text)).toEqual([
+      'A'.repeat(BOOKING_PDF_LINE_MAX_CHARS),
+    ])
     expect(digest.text).toHaveLength(BOOKING_PDF_LINE_MAX_CHARS)
     expect(pdfDestroy).toHaveBeenCalledTimes(1)
   })
