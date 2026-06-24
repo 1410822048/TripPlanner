@@ -84,7 +84,7 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 - **觸發**:
   - 點 `+` 或卡片 → BookingFormModal(類型決定欄位:flight 用 origin→destination,hotel 用 check-in/out)
   - 滑左 row → 刪除
-  - 點卡片附件區 → AttachmentPreviewModal(全螢幕看圖 / PDF 跳新分頁)
+  - 點卡片附件區 → AttachmentPreviewModal(全螢幕看圖 / PDF 走 lazy `PdfPreview`(pdf.js+react-pdf)全平台 app 內 inline 預覽)
 
 ### `/expense` — ExpensePage
 - **CRUD**: `useCreateExpense` / `useUpdateExpense` / `useDeleteExpense`(`features/expense/hooks/useExpenses.ts`)

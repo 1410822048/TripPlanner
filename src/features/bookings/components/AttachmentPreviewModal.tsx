@@ -9,15 +9,16 @@
 // modal is opened path-driven by the caller, not gated on the URL). The
 // objectURL's lifetime is owned by the caller's hook (revoked on close).
 //
-// PDFs: rendered inline via <iframe> on engines that support it. iOS Safari
-// (and iOS Chrome — same WebKit) can't render a blob: PDF in an iframe, so
-// there we fall back to a "別タブで開く" anchor. Because `url` is already
-// resolved when the button shows, the click is a direct, gesture-synchronous
-// navigation (no getBlob-then-open race that the popup blocker would trip),
-// and the new tab finishes loading the bytes well before the user returns
-// to close the modal (which revokes the objectURL).
-import { useEffect } from 'react'
+// PDFs: rendered inline on every platform by the lazy-loaded PdfPreview
+// (pdf.js via react-pdf). The old <iframe> couldn't render a blob: PDF on
+// iOS WebKit, so iOS used to fall back to a new tab — which kicks a
+// standalone PWA out to Safari. pdf.js renders in-app uniformly instead.
+// The top-bar "別タブで開く" anchor stays as an escape hatch (and PdfPreview
+// shows the same anchor if pdf.js fails to parse the bytes).
+import { lazy, Suspense, useEffect } from 'react'
 import { X, ExternalLink, FileText, Loader2 } from 'lucide-react'
+
+const PdfPreview = lazy(() => import('./PdfPreview'))
 
 interface Props {
   /** Resolved blob objectURL, or null while the bytes are being fetched. */
@@ -26,10 +27,6 @@ interface Props {
   fileName: string
   onClose:  () => void
 }
-
-// iOS (any browser — all WebKit) can't inline-render a blob: PDF in an
-// <iframe>; everything else (desktop + Android) can.
-const IS_IOS = typeof navigator !== 'undefined' && /iP(hone|ad|od)/.test(navigator.userAgent)
 
 export default function AttachmentPreviewModal({ url, fileType, fileName, onClose }: Props) {
   // Escape closes. Lock body scroll while open so the page underneath
@@ -46,14 +43,14 @@ export default function AttachmentPreviewModal({ url, fileType, fileName, onClos
     }
   }, [onClose])
 
-  const isImage    = (fileType ?? '').startsWith('image/')
-  const inlinePdf  = !isImage && !IS_IOS   // desktop/Android render PDF in <iframe>
+  const isImage = (fileType ?? '').startsWith('image/')
+  const isPdf   = fileType === 'application/pdf'
 
   return (
     <div
       onClick={onClose}
       className="fixed inset-0 z-[300] bg-black/85 flex flex-col"
-      style={{ touchAction: 'none' }}
+      style={{ touchAction: isPdf ? 'auto' : 'none' }}
     >
       {/* Top bar — kept in normal flex flow (was previously `absolute`,
           which let the image body render behind it and visually drown the
@@ -107,16 +104,24 @@ export default function AttachmentPreviewModal({ url, fileType, fileName, onClos
             draggable={false}
           />
         </div>
-      ) : inlinePdf ? (
-        <iframe
-          src={url}
-          title={fileName}
+      ) : isPdf ? (
+        <div
+          className="flex-1 min-h-0 flex flex-col"
           onClick={e => e.stopPropagation()}
-          className="flex-1 min-h-0 w-full border-0 bg-white"
-        />
+        >
+          <Suspense
+            fallback={
+              <div className="flex-1 min-h-0 flex items-center justify-center">
+                <Loader2 size={28} strokeWidth={2} className="text-white/70 animate-spin" />
+              </div>
+            }
+          >
+            <PdfPreview key={url} url={url} />
+          </Suspense>
+        </div>
       ) : (
-        // iOS / non-inline fallback: open the (already-resolved) blob URL in
-        // a new tab. Gesture-synchronous anchor → no popup-block race.
+        // Unpreviewable type: open the (already-resolved) blob URL in a new
+        // tab. Gesture-synchronous anchor → no popup-block race.
         <div
           className="flex-1 min-h-0 flex flex-col items-center justify-center p-6 gap-4 text-center"
           onClick={e => e.stopPropagation()}

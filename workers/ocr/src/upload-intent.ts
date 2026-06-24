@@ -41,10 +41,10 @@
 //      Worker consumes the intents (path + customMetadata + size
 //      re-verified) and writes the entity doc atomically in one tx.
 //
-// Worker doesn't touch upload bytes. Latency added per upload is one
-// extra Worker round-trip + one Storage rules cross-service read --
-// not the Worker raw-body proxy pattern that would burn the Free
-// plan's 10ms CPU/request budget.
+// Worker doesn't proxy upload bytes. PDF uploads are the only exception:
+// "PDF <= 10 pages" is a product data invariant (not a viewer-only
+// render cap), so the consume step downloads the already-uploaded <=5MB
+// object to parse page count before any entity doc can reference it.
 import { z }                                                        from 'zod'
 import { getAdminToken, getProjectId }                              from './admin'
 import {
@@ -61,10 +61,15 @@ import {
 }                                                                   from './firestore-tx'
 import {
   getObjectMetadata,
+  downloadObject,
   updateObjectMetadata,
   deleteObject,
   type ObjectMetadata,
 }                                                                   from './storage'
+import {
+  assertPdfPageLimitBytes,
+}                                                                   from './pdf-page-limit'
+import { PdfPageLimitError }                                        from '@tripmate/pdf-page-limit'
 
 // ─── Constants ────────────────────────────────────────────────────
 
@@ -570,6 +575,10 @@ async function consumeIntentInTx(
     }
   }
 
+  if (kind === 'pdf') {
+    await validatePdfPageLimitOrDelete(accessToken, bucket, path, storage)
+  }
+
   // path-only hardening: strip the Firebase download token from the
   // uploaded object's customMetadata so NO bearer `?alt=media&token=` URL
   // can ever be constructed. The client reads bytes via getBlob() gated by
@@ -610,6 +619,43 @@ async function consumeIntentInTx(
     },
     markUsedWrite,
   }
+}
+
+async function validatePdfPageLimitOrDelete(
+  accessToken: string,
+  bucket:      string,
+  path:        string,
+  storage:     ObjectMetadata,
+): Promise<void> {
+  const object = await downloadObject(accessToken, bucket, path)
+  if (!object) throw new CascadeError(404, `storage object missing at ${path} during PDF page validation`)
+  if (object.contentType !== 'application/pdf') {
+    await deleteRejectedObject(accessToken, bucket, path)
+    throw new CascadeError(400, `downloaded PDF contentType mismatch: ${object.contentType}`)
+  }
+  if (object.bytes.byteLength > storage.size || object.bytes.byteLength > MAX_BYTES) {
+    await deleteRejectedObject(accessToken, bucket, path)
+    throw new CascadeError(413, `downloaded PDF size ${object.bytes.byteLength} exceeds validated metadata size ${storage.size}`)
+  }
+
+  try {
+    await assertPdfPageLimitBytes(object.bytes)
+  } catch (e) {
+    if (e instanceof PdfPageLimitError) {
+      await deleteRejectedObject(accessToken, bucket, path)
+    }
+    throw e
+  }
+}
+
+async function deleteRejectedObject(
+  accessToken: string,
+  bucket:      string,
+  path:        string,
+): Promise<void> {
+  try {
+    await deleteObject(accessToken, bucket, path)
+  } catch { /* best-effort; orphan storage-scan backstops */ }
 }
 
 /** Strip `firebaseStorageDownloadTokens` from an uploaded object, fail-

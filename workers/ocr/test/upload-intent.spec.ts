@@ -32,6 +32,9 @@ vi.mock('../src/admin', () => ({
 // and to read the Firebase download token from customMetadata.
 vi.mock('../src/storage', () => ({
 	getObjectMetadata:      vi.fn(),
+	downloadObject:         vi.fn(),
+	updateObjectMetadata:   vi.fn(),
+	deleteObject:           vi.fn(),
 	downloadUrlFromMetadata: (bucket: string, path: string, meta?: Record<string, string>) => {
 		const token = meta?.firebaseStorageDownloadTokens?.split(',')[0]?.trim()
 		if (!token) return null

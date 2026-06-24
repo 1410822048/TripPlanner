@@ -131,6 +131,12 @@ import {
   UploadIntentsRequestSchema,
 }                                                 from './upload-intent'
 import {
+  MAX_PDF_PAGES,
+  PDF_PAGE_LIMIT_EXCEEDED,
+  PdfPageLimitError,
+  pdfPageLimitStatus,
+}                                                 from '@tripmate/pdf-page-limit'
+import {
   signEntityUrl,
   AttachmentUrlRequestSchema,
 }                                                 from './attachment-url'
@@ -367,6 +373,24 @@ function ocrErrorCatcher(e: unknown) {
     : null
 }
 
+function pdfPageLimitErrorCatcher() {
+  return (e: unknown) => e instanceof PdfPageLimitError
+    ? {
+        log: `pdf-page-limit: ${e.code} ${e.message}`,
+        body: {
+          error: e.code === PDF_PAGE_LIMIT_EXCEEDED
+            ? `PDFは${MAX_PDF_PAGES}ページ以下のみアップロードできます。`
+            : 'PDFを読み込めませんでした。別のPDFを選択してください。',
+          code: e.code,
+          maxPages: MAX_PDF_PAGES,
+          ...(e.pageCount !== undefined ? { pageCount: e.pageCount } : {}),
+          retryable: false,
+        },
+        status: pdfPageLimitStatus(e.code),
+      }
+    : null
+}
+
 function clientSafeCompareError(status: number): string {
   return clientSafeOcrError(status)
 }
@@ -416,6 +440,7 @@ export const ROUTES: RouteDescriptor[] = [
       catchDomain: chainCatchers(
         validationErrorCatcher(ExpenseValidationError),
         fxErrorCatcher(),
+        pdfPageLimitErrorCatcher(),
         attachmentHardeningErrorCatcher(),
       ),
     }),
@@ -431,6 +456,7 @@ export const ROUTES: RouteDescriptor[] = [
       catchDomain: chainCatchers(
         validationErrorCatcher(ExpenseValidationError),
         fxErrorCatcher(),
+        pdfPageLimitErrorCatcher(),
         attachmentHardeningErrorCatcher(),
       ),
     }),
@@ -472,6 +498,7 @@ export const ROUTES: RouteDescriptor[] = [
       formatResponse: result => ({ ok: true, ...result }),
       catchDomain:    chainCatchers(
         validationErrorCatcher(BookingValidationError),
+        pdfPageLimitErrorCatcher(),
         attachmentHardeningErrorCatcher(),
       ),
     }),
@@ -485,6 +512,7 @@ export const ROUTES: RouteDescriptor[] = [
       formatLog:   data => `trip=${data.tripId} booking=${data.bookingId}`,
       catchDomain: chainCatchers(
         validationErrorCatcher(BookingValidationError),
+        pdfPageLimitErrorCatcher(),
         attachmentHardeningErrorCatcher(),
       ),
     }),

@@ -20,10 +20,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const requestUploadIntentsMock = vi.fn()
 const uploadToIntentMock        = vi.fn()
+const validatePdfPageLimitMock  = vi.fn()
 
 vi.mock('./uploadIntent', () => ({
 	requestUploadIntents: (...args: unknown[]) => requestUploadIntentsMock(...args),
 	uploadToIntent:       (...args: unknown[]) => uploadToIntentMock(...args),
+}))
+
+vi.mock('@/utils/pdfPageLimit', () => ({
+	validatePdfPageLimit: (...args: unknown[]) => validatePdfPageLimitMock(...args),
 }))
 
 import { mintAndUploadEntityIntents } from './uploadIntentEntity'
@@ -53,7 +58,9 @@ function intent(kind: 'full' | 'thumb' | 'pdf', intentId: string, path: string):
 beforeEach(() => {
 	requestUploadIntentsMock.mockReset()
 	uploadToIntentMock.mockReset()
+	validatePdfPageLimitMock.mockReset()
 	uploadToIntentMock.mockResolvedValue({ _kind: 'storage-ref' })
+	validatePdfPageLimitMock.mockResolvedValue(undefined)
 })
 
 describe('mintAndUploadEntityIntents', () => {
@@ -109,10 +116,24 @@ describe('mintAndUploadEntityIntents', () => {
 		})
 
 		expect(uploadToIntentMock).toHaveBeenCalledTimes(1)
+		expect(validatePdfPageLimitMock).toHaveBeenCalledWith(pdfFile)
 		const [intentArg, fileArg, label] = uploadToIntentMock.mock.calls[0]! as [UploadIntent, File, string]
 		expect(intentArg.intentId).toBe('i-pdf')
 		expect(fileArg).toBe(pdfFile)
 		expect(label).toBe('expense-pdf')
+	})
+
+	it('rejects an over-limit PDF before minting intents or uploading bytes', async () => {
+		const pdfFile = new File(['%PDF-1.4'], 'too-long.pdf', { type: 'application/pdf' })
+		validatePdfPageLimitMock.mockRejectedValueOnce(new Error('PDF page limit exceeded'))
+
+		await expect(mintAndUploadEntityIntents({
+			tripId: 't', entityType: 'expense', entityId: 'e',
+			compressed: { full: pdfFile },
+		})).rejects.toThrow(/page limit/)
+
+		expect(requestUploadIntentsMock).not.toHaveBeenCalled()
+		expect(uploadToIntentMock).not.toHaveBeenCalled()
 	})
 
 	it('throws when Worker response is missing the expected primary intent', async () => {

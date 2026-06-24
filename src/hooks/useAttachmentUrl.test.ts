@@ -89,6 +89,23 @@ describe('useAttachmentUrl: full', () => {
     expect(revokeSpy).toHaveBeenCalledWith(aUrl)            // only A's url
     expect(revokeSpy).not.toHaveBeenCalledWith(b.result.current!)
   })
+
+  it('does not resurface a revoked full objectURL when reopening the same path', async () => {
+    const { result, rerender } = renderHook(
+      ({ p }) => useAttachmentUrl(p, { kind: 'full' }),
+      { initialProps: { p: 'p-full-reopen' as string | null } },
+    )
+    await waitFor(() => expect(result.current).toBe('blob:mock-1'))
+
+    rerender({ p: null })
+    expect(revokeSpy).toHaveBeenCalledWith('blob:mock-1')
+    expect(result.current).toBeNull()
+
+    rerender({ p: 'p-full-reopen' })
+    expect(result.current).toBeNull()
+    await waitFor(() => expect(result.current).toBe('blob:mock-2'))
+  })
+
 })
 
 describe('clearAttachmentUrlCache', () => {

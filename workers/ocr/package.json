@@ -13,8 +13,10 @@
   "dependencies": {
     "@tripmate/expense-materialize": "file:../../packages/expense-materialize",
     "@tripmate/fx-core": "file:../../packages/fx-core",
+    "@tripmate/pdf-page-limit": "file:../../packages/pdf-page-limit",
     "@tripmate/settlement-core": "file:../../packages/settlement-core",
     "jose": "^6.2.3",
+    "pdfjs-dist": "5.4.296",
     "zod": "^4.4.3"
   },
   "devDependencies": {

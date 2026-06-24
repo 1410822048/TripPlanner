@@ -30,6 +30,7 @@ import {
 } from './uploadIntent'
 import { breadcrumb } from './sentry'
 import type { CompressedImage } from '@/utils/image'
+import { validatePdfPageLimit } from '@/utils/pdfPageLimit'
 
 /**
  * Mint upload intents + upload the compressed primary (and optional
@@ -59,6 +60,9 @@ export async function mintAndUploadEntityIntents(args: {
   const { tripId, entityType, entityId, compressed, mode } = args
   const { full, thumb } = compressed
   const primaryKind: IntentKind = full.type === 'application/pdf' ? 'pdf' : 'full'
+  if (primaryKind === 'pdf') {
+    await validatePdfPageLimit(full)
+  }
   // Full UUID (36 chars). Header validator accepts {12,64} so we have
   // headroom; using the full UUID keeps collision probability negligible
   // even across long-tail sessions, and there's no log-width pressure

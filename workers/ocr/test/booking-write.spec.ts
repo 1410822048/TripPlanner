@@ -33,11 +33,20 @@ vi.mock('../src/admin', () => ({
 
 vi.mock('../src/storage', () => ({
 	getObjectMetadata:    vi.fn(),
+	downloadObject:       vi.fn(),
 	// path-only: consume strips the download token fail-closed; both resolve
 	// truthy by default so the happy path proceeds. Specific tests override.
 	updateObjectMetadata: vi.fn(() => Promise.resolve(true)),
 	deleteObject:         vi.fn(() => Promise.resolve(true)),
 }))
+
+const assertPdfPageLimitBytesMock = vi.fn()
+
+vi.mock('../src/pdf-page-limit', () => {
+	return {
+		assertPdfPageLimitBytes: (...args: unknown[]) => assertPdfPageLimitBytesMock(...args),
+	}
+})
 
 const txGetResponses = new Map<string, { exists: boolean; fields: Record<string, unknown>; name: string; updateTime: string | null }>()
 let capturedTxResult: { writes: unknown[]; result: unknown } | null = null
@@ -69,6 +78,7 @@ vi.mock('../src/cascade', async () => {
 
 import { bookingFileCreate, bookingFileUpdate, BookingValidationError } from '../src/booking-write'
 import * as storage from '../src/storage'
+import { PdfPageLimitError } from '@tripmate/pdf-page-limit'
 
 const TRIP_ID    = 'trip-1'
 const BOOKING_ID = 'booking-1'
@@ -221,8 +231,14 @@ beforeEach(() => {
 	txGetResponses.clear()
 	capturedTxResult = null
 	vi.clearAllMocks()
+	assertPdfPageLimitBytesMock.mockReset()
+	assertPdfPageLimitBytesMock.mockResolvedValue(1)
 	// clearAllMocks resets call history but NOT implementations, so restore
 	// the strip default (the fail-closed test sets mockRejectedValue).
+	vi.mocked(storage.downloadObject).mockResolvedValue({
+		bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer,
+		contentType: 'application/pdf',
+	})
 	vi.mocked(storage.updateObjectMetadata).mockResolvedValue(true)
 	vi.mocked(storage.deleteObject).mockResolvedValue(true)
 })
@@ -382,6 +398,33 @@ describe('bookingFileCreate: happy paths', () => {
 		// No thumb fields for PDF attachment.
 		expect(att?.thumbPath).toBeUndefined()
 		expect(writes[1].fields.confirmationCode?.stringValue).toBe('ABC123')
+		expect(storage.downloadObject).toHaveBeenCalledWith(expect.any(String), BUCKET, PDF_PATH)
+		expect(assertPdfPageLimitBytesMock).toHaveBeenCalledTimes(1)
+	})
+
+	it('PDF over page limit -> deletes uploaded blob and rejects before booking doc write', async () => {
+		seedAuth('editor')
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${PDF_INTENT_ID}`,
+			intentDoc({ intentId: PDF_INTENT_ID, kind: 'pdf', path: PDF_PATH, contentType: 'application/pdf' }))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+			storageMeta({ path: PDF_PATH, intentId: PDF_INTENT_ID, kind: 'pdf', token: 'tk', contentType: 'application/pdf' }),
+		)
+		assertPdfPageLimitBytesMock.mockRejectedValueOnce(new PdfPageLimitError('PDF_PAGE_LIMIT_EXCEEDED'))
+		capturedTxResult = null
+
+		await expect(bookingFileCreate(
+			CALLER_UID,
+			{
+				tripId:    TRIP_ID,
+				bookingId: BOOKING_ID,
+				booking:   validBookingPayload({ type: 'train' }),
+				attachments: { document: [PDF_INTENT_ID] },
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ code: 'PDF_PAGE_LIMIT_EXCEEDED' })
+
+		expect(storage.deleteObject).toHaveBeenCalledWith(expect.any(String), BUCKET, PDF_PATH)
+		expect(capturedTxResult).toBeNull()
 	})
 
 	it('fail-closed: token strip fails after retry → blob deleted, ATTACHMENT_HARDENING_FAILED, no doc write', async () => {
@@ -793,6 +836,8 @@ describe('bookingFileUpdate: happy paths', () => {
 		expect(att?.filePath?.stringValue).toBe(NEW_PDF_PATH)
 		expect(att?.fileType?.stringValue).toBe('application/pdf')
 		expect(att?.thumbPath).toBeUndefined()
+		expect(storage.downloadObject).toHaveBeenCalledWith(expect.any(String), BUCKET, NEW_PDF_PATH)
+		expect(assertPdfPageLimitBytesMock).toHaveBeenCalledTimes(1)
 	})
 
 	it('patch with new parseable checkIn → sortDate recomputed to Timestamp from checkIn', async () => {

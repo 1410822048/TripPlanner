@@ -54,6 +54,7 @@ const mocks = vi.hoisted(() => {
     safePurgeMock:             vi.fn(),
     purgeAttachmentsMock:      vi.fn(),
     compressImageMock:         vi.fn(),
+    validatePdfPageLimitMock:  vi.fn(),
     requestUploadIntentsMock:  vi.fn(),
     uploadToIntentMock:        vi.fn(),
     getTripMemberIdsMock:      vi.fn(),
@@ -106,6 +107,10 @@ vi.mock('@/services/tripMemberIds', () => ({
 
 vi.mock('@/utils/image', () => ({
   compressImage: mocks.compressImageMock,
+}))
+
+vi.mock('@/utils/pdfPageLimit', () => ({
+  validatePdfPageLimit: mocks.validatePdfPageLimitMock,
 }))
 
 vi.mock('@/services/uploadIntent', () => ({
@@ -177,6 +182,8 @@ beforeEach(() => {
   mocks.safePurgeMock.mockReset()
   mocks.bumpTripActivityMock.mockReset()
   mocks.compressImageMock.mockReset()
+  mocks.validatePdfPageLimitMock.mockReset()
+  mocks.validatePdfPageLimitMock.mockResolvedValue(undefined)
   mocks.requestUploadIntentsMock.mockReset()
   mocks.uploadToIntentMock.mockReset()
   mocks.purgeAttachmentsMock.mockReset()
@@ -357,6 +364,7 @@ describe('createBooking', () => {
       ],
     }, { traceId: expect.any(String) })
     expect(mocks.uploadToIntentMock).toHaveBeenCalledTimes(1)
+    expect(mocks.validatePdfPageLimitMock).toHaveBeenCalledTimes(1)
     expect(mocks.workerFetchMock).toHaveBeenCalledWith(
       'https://worker.test',
       'tok-test',
@@ -585,6 +593,7 @@ describe('updateBooking', () => {
       ],
     }, { traceId: expect.any(String) })
     expect(mocks.uploadToIntentMock).toHaveBeenCalledTimes(1)
+    expect(mocks.validatePdfPageLimitMock).toHaveBeenCalledTimes(1)
     expect(mocks.workerFetchMock).toHaveBeenCalledWith(
       'https://worker.test',
       'tok-test',

@@ -4,7 +4,7 @@
 // PATH (no bearer ?alt=media&token= URL); the bytes are fetched via the
 // Firebase Storage SDK `getBlob(ref(path))`, which re-derives access from
 // Firebase Auth + Storage Rules (`allow read: if isMember(tripId)`). The
-// fetched Blob becomes an `objectURL` that <img>/<iframe> render.
+// fetched Blob becomes an `objectURL` that <img>/<a> render.
 //
 // Single resolver underneath two cache policies so a future swap to
 // Worker-minted signed URLs only touches `fetchBlob` -- the three feature
@@ -128,6 +128,13 @@ function evictThumbsIfNeeded(): void {
   }
 }
 
+type AttachmentUrlState = {
+  path:  string | null
+  kind:  'thumb' | 'full'
+  url:   string | null
+  epoch: number
+}
+
 /**
  * Resolve a Storage object path to a renderable objectURL, or `null`
  * while loading / on failure (callers treat null as "show placeholder",
@@ -152,7 +159,7 @@ export function useAttachmentUrl(
   // state (not a module-cache read in render) so React Compiler stays
   // correct. Initializer seeds a synchronous thumb-cache hit (no flash when
   // a cached list re-mounts).
-  const [state, setState] = useState<{ path: string | null; kind: 'thumb' | 'full'; url: string | null; epoch: number }>(
+  const [state, setState] = useState<AttachmentUrlState>(
     () => {
       // Seed a synchronous cache hit so a re-mount of an already-resolved
       // attachment shows the URL without a null flash. signed mode (full/PDF
@@ -247,7 +254,18 @@ export function useAttachmentUrl(
   // Render guard: surface the URL only when it belongs to the CURRENT input
   // AND its cache generation is still live (a sign-out / account switch bumps
   // cacheEpoch → returns null on the next render, even before unmount).
-  return state.path === key && state.kind === kind && state.epoch === cacheEpoch ? state.url : null
+  if (state.path !== key || state.kind !== kind || state.epoch !== cacheEpoch) {
+    return null
+  }
+
+  // Full getBlob URLs are per-caller and revoked on close. The React state can
+  // still remember that old (path, url) pair; reopening the same path must not
+  // surface a revoked blob: URL for one render before the next fetch settles.
+  if (kind === 'full' && attachmentUrlMode(kind) === 'getBlob' && state.url && !fullUrls.has(state.url)) {
+    return null
+  }
+
+  return state.url
 }
 
 /** Revoke + drop every cached attachment objectURL. Call on sign-out /

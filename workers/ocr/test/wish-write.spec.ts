@@ -28,6 +28,7 @@ vi.mock('../src/admin', () => ({
 
 vi.mock('../src/storage', () => ({
 	getObjectMetadata:    vi.fn(),
+	downloadObject:       vi.fn(),
 	// path-only: consume strips the download token fail-closed.
 	updateObjectMetadata: vi.fn(() => Promise.resolve(true)),
 	deleteObject:         vi.fn(() => Promise.resolve(true)),

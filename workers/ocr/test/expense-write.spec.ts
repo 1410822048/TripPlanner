@@ -32,9 +32,18 @@ vi.mock('../src/admin', () => ({
 // fail-closed via updateObjectMetadata; both resolve truthy by default.
 vi.mock('../src/storage', () => ({
 	getObjectMetadata:    vi.fn(),
+	downloadObject:       vi.fn(),
 	updateObjectMetadata: vi.fn(() => Promise.resolve(true)),
 	deleteObject:         vi.fn(() => Promise.resolve(true)),
 }))
+
+const assertPdfPageLimitBytesMock = vi.fn()
+
+vi.mock('../src/pdf-page-limit', () => {
+	return {
+		assertPdfPageLimitBytes: (...args: unknown[]) => assertPdfPageLimitBytesMock(...args),
+	}
+})
 
 // Programmable transaction. Each test seeds `txGet` with a Map of
 // `path → TxReadDoc` and an optional `capturedWrites` array; the body
@@ -141,6 +150,7 @@ vi.mock('../src/fx-rate', async () => {
 import { expenseCreate, expenseUpdate } from '../src/expense-write'
 import * as storage from '../src/storage'
 import * as fxRate from '../src/fx-rate'
+import { PdfPageLimitError } from '@tripmate/pdf-page-limit'
 import { ExpenseValidationError } from '../src/expense-validate'
 import { CascadeError } from '../src/cascade'
 
@@ -238,6 +248,15 @@ beforeEach(() => {
 	txQueryResponses.clear()
 	txQueryCalls.length = 0
 	capturedTxResult = null
+	assertPdfPageLimitBytesMock.mockReset()
+	assertPdfPageLimitBytesMock.mockResolvedValue(1)
+	vi.mocked(storage.downloadObject).mockReset()
+	vi.mocked(storage.downloadObject).mockResolvedValue({
+		bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer,
+		contentType: 'application/pdf',
+	})
+	vi.mocked(storage.updateObjectMetadata).mockResolvedValue(true)
+	vi.mocked(storage.deleteObject).mockResolvedValue(true)
 })
 
 // ─── expenseCreate ─────────────────────────────────────────────────
@@ -615,8 +634,10 @@ describe('expenseUpdate endpoint', () => {
 describe('expenseCreate with intentIds (Phase 3.5)', () => {
 	const FULL_INTENT_ID  = 'i-full'
 	const THUMB_INTENT_ID = 'i-thumb'
+	const PDF_INTENT_ID   = 'i-pdf'
 	const FULL_PATH       = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/abc123.webp`
 	const THUMB_PATH      = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/abc123.thumb.webp`
+	const PDF_PATH        = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/abc123.pdf`
 
 	function intentDoc(opts: {
 		intentId:    string
@@ -779,6 +800,31 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 		const receipt = writes[2].fields.receipt?.mapValue?.fields
 		expect(receipt?.path?.stringValue).toBe(FULL_PATH)
 		expect(receipt?.thumbPath?.stringValue).toBe(THUMB_PATH)
+	})
+
+	it('PDF over page limit -> deletes uploaded blob and rejects before expense doc write', async () => {
+		seedAuth()
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${PDF_INTENT_ID}`,
+			intentDoc({ intentId: PDF_INTENT_ID, kind: 'pdf', path: PDF_PATH, contentType: 'application/pdf' }))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+			storageMeta({ path: PDF_PATH, intentId: PDF_INTENT_ID, kind: 'pdf', token: 'tk', contentType: 'application/pdf' }),
+		)
+		assertPdfPageLimitBytesMock.mockRejectedValueOnce(new PdfPageLimitError('PDF_PAGE_LIMIT_EXCEEDED'))
+		capturedTxResult = null
+
+		await expect(expenseCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				expense: validExpensePayload(),
+				intentIds: [PDF_INTENT_ID],
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ code: 'PDF_PAGE_LIMIT_EXCEEDED' })
+
+		expect(storage.downloadObject).toHaveBeenCalledWith(expect.any(String), BUCKET, PDF_PATH)
+		expect(storage.deleteObject).toHaveBeenCalledWith(expect.any(String), BUCKET, PDF_PATH)
+		expect(capturedTxResult).toBeNull()
 	})
 
 	it('rejects client-supplied expense.receipt (legacy direct path closed)', async () => {
