@@ -1,6 +1,6 @@
 // src/components/ui/pickers/DatePicker.tsx
 import { forwardRef, useEffect, useImperativeHandle, useState } from 'react'
-import { ChevronLeft, ChevronRight, X } from 'lucide-react'
+import { CalendarDays, ChevronLeft, ChevronRight, X } from 'lucide-react'
 import PickerDialog from './PickerDialog'
 import { PICKER_COLORS } from './constants'
 import { fromLocalDateString } from '@/utils/dates'
@@ -168,7 +168,7 @@ const DatePicker = forwardRef<DatePickerHandle, Props>(function DatePicker(
           triggerBorder,
         ].join(' ')}
       >
-        <span className="text-[15px] leading-6 shrink-0">📅</span>
+        <CalendarDays size={15} strokeWidth={2} className="shrink-0 text-muted" />
         <span
           className={[
             'flex-1 text-left text-[14px] leading-6 min-w-0 truncate',

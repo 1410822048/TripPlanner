@@ -8,7 +8,7 @@
 //   - null      → user removed the existing file (clear on save)
 //   - File      → user picked a new file (replace on save)
 import { useEffect, useRef, useState } from 'react'
-import { Paperclip, ArrowRight, Image as ImageIcon, Loader2 } from 'lucide-react'
+import { Paperclip, ArrowRight, ChevronRight, FileText, Image as ImageIcon, Loader2 } from 'lucide-react'
 import type { Booking, CreateBookingInput } from '@/types'
 import { isHttpUrl } from '@/types'
 import FormModalShell from '@/components/ui/FormModalShell'
@@ -20,7 +20,7 @@ import { inputClass } from '@/components/ui/inputStyle'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import AttachmentPreviewModal from './AttachmentPreviewModal'
 import { useBookingFormState, type BookingFormDraft } from '../hooks/useBookingFormState'
-import { useAttachment, type AttachmentChange } from '@/hooks/useAttachment'
+import { ATTACHMENT_SIZE_ERROR, useAttachment, type AttachmentChange } from '@/hooks/useAttachment'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { BOOKING_TYPE_META, BOOKING_TYPE_ORDER } from '../utils'
 import { deriveBookingLinkDraft } from '../linkDraft'
@@ -58,8 +58,19 @@ function titlePlaceholder(type: Booking['type']): string {
   }
 }
 
+function providerPlaceholder(type: Booking['type']): string {
+  switch (type) {
+    case 'flight': return 'ANA'
+    case 'train':  return 'JR東日本'
+    case 'bus':    return 'WILLER EXPRESS'
+    case 'hotel':  return 'Booking.com'
+    case 'other':  return 'Klook'
+  }
+}
+
 const IMAGE_ACCEPT_TYPES = 'image/*'
 const DOCUMENT_ACCEPT_TYPES = 'image/*,application/pdf'
+const PDF_ACCEPT_TYPES = 'application/pdf,.pdf'
 
 type PdfAutofillState = {
   status: 'idle' | 'loading' | 'applied' | 'empty' | 'error'
@@ -133,6 +144,7 @@ export default function BookingFormModal({
   const originRef   = useRef<HTMLInputElement>(null)
   const coverFileRef = useRef<HTMLInputElement>(null)
   const docFileRef   = useRef<HTMLInputElement>(null)
+  const pdfAutofillFileRef = useRef<HTMLInputElement>(null)
   const checkOutRef = useRef<DatePickerHandle>(null)
   const stateRef = useRef(state)
   const pdfAutofillSeqRef = useRef(0)
@@ -161,6 +173,10 @@ export default function BookingFormModal({
     docFileRef.current?.click()
   }
 
+  function pickPdfForAutofill() {
+    pdfAutofillFileRef.current?.click()
+  }
+
   function onCoverImagePicked(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]
     e.target.value = ''  // allow re-picking the same file
@@ -171,9 +187,25 @@ export default function BookingFormModal({
     const f = e.target.files?.[0]
     e.target.value = ''  // allow re-picking the same file
     if (!f) return
-    if (docAtt.pickFile(f)) {
-      void runPdfAutofill(f)
+    cancelPdfAutofill()
+    docAtt.pickFile(f)
+  }
+
+  function onPdfAutofillPicked(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0]
+    e.target.value = ''  // allow re-picking the same file
+    if (!f) return
+    if (!isPdfFile(f)) {
+      cancelPdfAutofill()
+      setPdfAutofill({ status: 'error', message: 'PDFファイルを選択してください' })
+      return
     }
+    if (!docAtt.pickFile(f)) {
+      cancelPdfAutofill()
+      setPdfAutofill({ status: 'error', message: ATTACHMENT_SIZE_ERROR })
+      return
+    }
+    void runPdfAutofill(f)
   }
 
   function cancelPdfAutofill() {
@@ -213,11 +245,6 @@ export default function BookingFormModal({
   }
 
   async function runPdfAutofill(file: File) {
-    if (!isPdfFile(file)) {
-      cancelPdfAutofill()
-      return
-    }
-
     const seq = pdfAutofillSeqRef.current + 1
     pdfAutofillSeqRef.current = seq
     pdfAutofillControllerRef.current?.abort()
@@ -315,6 +342,8 @@ export default function BookingFormModal({
     if (result) onSave(result)
   }
 
+  const showPdfAutofillStatus = !editTarget && pdfAutofill.status !== 'idle' && pdfAutofill.status !== 'loading'
+
   return (
     <FormModalShell
       isOpen={isOpen}
@@ -325,27 +354,83 @@ export default function BookingFormModal({
       onClose={onClose}
       onSave={handleSave}
     >
+      {!editTarget && (
+        <div className="space-y-2">
+          <input
+            ref={pdfAutofillFileRef}
+            type="file"
+            accept={PDF_ACCEPT_TYPES}
+            onChange={onPdfAutofillPicked}
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={pickPdfForAutofill}
+            className="flex min-h-[62px] w-full items-center gap-3 rounded-card border border-accent/20 bg-accent-pale px-3 py-2.5 text-left text-accent transition-colors hover:bg-accent hover:text-white"
+          >
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-input bg-accent text-white">
+              {pdfAutofill.status === 'loading' ? (
+                <Loader2 size={18} strokeWidth={2} className="animate-spin" />
+              ) : (
+                <FileText size={18} strokeWidth={2} />
+              )}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[11px] font-bold leading-[1.2] opacity-80">
+                予約確認書を選択
+              </span>
+              <span className="mt-0.5 block text-[14px] font-black leading-[1.25]">
+                {pdfAutofill.status === 'loading'
+                  ? 'PDFを読み取っています…'
+                  : pdfAutofill.status === 'applied'
+                    ? '別のPDFから自動入力'
+                    : 'PDFから自動入力'}
+              </span>
+            </span>
+            <ChevronRight size={18} strokeWidth={2.2} className="shrink-0 opacity-80" />
+          </button>
+          {showPdfAutofillStatus && (
+            <div
+              role="status"
+              aria-live="polite"
+              className={[
+                'flex items-center gap-1.5 text-[12px] font-medium',
+                pdfAutofill.status === 'error'
+                  ? 'text-danger'
+                  : pdfAutofill.status === 'applied'
+                    ? 'text-teal'
+                    : 'text-muted',
+              ].join(' ')}
+            >
+              <span>{pdfAutofill.message}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       <FormField label="種類">
-        <div className="flex gap-[7px] flex-wrap">
-          {BOOKING_TYPE_ORDER.map(value => {
-            const { icon: TypeIcon, label } = BOOKING_TYPE_META[value]
-            const active = state.type === value
-            return (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setField('type', value)}
-                className={[
-                  'flex items-center gap-[5px] px-3 py-1.5 rounded-card text-[12px] cursor-pointer transition-all border-[1.5px]',
-                  active
-                    ? 'border-accent bg-accent text-white font-semibold'
-                    : 'border-border bg-transparent text-muted font-normal hover:border-muted',
-                ].join(' ')}
-              >
-                <TypeIcon size={13} strokeWidth={2} />{label}
-              </button>
-            )
-          })}
+        <div className="-mx-5 overflow-x-auto px-5 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+          <div className="flex w-max gap-[7px]">
+            {BOOKING_TYPE_ORDER.map(value => {
+              const { icon: TypeIcon, label } = BOOKING_TYPE_META[value]
+              const active = state.type === value
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setField('type', value)}
+                  className={[
+                    'flex shrink-0 items-center gap-[5px] whitespace-nowrap px-3 py-1.5 rounded-card text-[12px] cursor-pointer transition-all border-[1.5px]',
+                    active
+                      ? 'border-accent bg-accent text-white font-semibold'
+                      : 'border-border bg-transparent text-muted font-normal hover:border-muted',
+                  ].join(' ')}
+                >
+                  <TypeIcon size={13} strokeWidth={2} />{label}
+                </button>
+              )
+            })}
+          </div>
         </div>
       </FormField>
 
@@ -401,7 +486,7 @@ export default function BookingFormModal({
           <input
             value={state.provider}
             onChange={e => setField('provider', e.target.value)}
-            placeholder={state.type === 'flight' ? 'ANA' : state.type === 'hotel' ? 'Booking.com' : ''}
+            placeholder={providerPlaceholder(state.type)}
             className={inputClass(false)}
           />
         </FormField>
@@ -582,23 +667,6 @@ export default function BookingFormModal({
             <Paperclip size={16} strokeWidth={1.8} />
             <span>確認書をアップロード</span>
           </button>
-        )}
-        {pdfAutofill.status !== 'idle' && (
-          <div
-            className={[
-              'mt-2 flex items-center gap-1.5 text-[12px] font-medium',
-              pdfAutofill.status === 'error'
-                ? 'text-danger'
-                : pdfAutofill.status === 'applied'
-                  ? 'text-teal'
-                  : 'text-muted',
-            ].join(' ')}
-          >
-            {pdfAutofill.status === 'loading' && (
-              <Loader2 size={13} strokeWidth={2} className="animate-spin" />
-            )}
-            <span>{pdfAutofill.message}</span>
-          </div>
         )}
       </FormField>
 

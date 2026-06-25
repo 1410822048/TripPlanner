@@ -31,6 +31,7 @@ import { useAttachmentUrl } from './useAttachmentUrl'
 
 /** Mirrors storage.rules cap. Files larger than this are rejected. */
 const MAX_FILE_BYTES = 5 * 1024 * 1024
+export const ATTACHMENT_SIZE_ERROR = 'ファイルサイズは 5MB 以下にしてください'
 
 /** Tri-state for the service-layer attachment param.
  *    undefined → unchanged
@@ -99,7 +100,7 @@ export function useAttachment(initial: ExistingAttachment): UseAttachmentResult 
   // that's functional ownership, not just optimisation.
   const pickFile = (file: File): boolean => {
     if (file.size > MAX_FILE_BYTES) {
-      setError('ファイルサイズは 5MB 以下にしてください')
+      setError(ATTACHMENT_SIZE_ERROR)
       return false
     }
     setError(null)
