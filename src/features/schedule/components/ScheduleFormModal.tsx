@@ -32,13 +32,15 @@ type FormState = {
   costText:  string                // raw user-typed money string; parsed to minor units on save
 }
 
+const DEFAULT_SCHEDULE_CATEGORY: ScheduleCategory = SCHEDULE_CATEGORIES[0]?.value ?? 'transport'
+
 function initFormState(t: Schedule | null, defaultDate: string, currency: string): FormState {
   return {
     title:     t?.title ?? '',
     date:      t?.date ?? defaultDate,
     startTime: t?.startTime ?? '',
     endTime:   t?.endTime ?? '',
-    category:  t?.category ?? 'activity',
+    category:  t?.category ?? DEFAULT_SCHEDULE_CATEGORY,
     location:  t?.location?.name ?? '',
     desc:      t?.description ?? '',
     costText:  typeof t?.estimatedCostMinor === 'number'
