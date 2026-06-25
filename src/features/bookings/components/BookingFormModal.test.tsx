@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import BookingFormModal from './BookingFormModal'
 import { ATTACHMENT_SIZE_ERROR } from '@/hooks/useAttachment'
@@ -194,6 +194,62 @@ describe('BookingFormModal PDF autofill intent', () => {
 
     expect(bookingPdfExtractMocks.extractBookingPdfAutofill)
       .toHaveBeenCalledWith(file, expect.any(AbortSignal))
+  })
+
+  test('can read and re-read the current attached PDF', async () => {
+    const { container } = render(
+      <BookingFormModal
+        editTarget={null}
+        isOpen
+        isSaving={false}
+        onClose={() => {}}
+        onSave={() => {}}
+      />,
+    )
+
+    const file = new File(['%PDF-1.7'], 'booking.pdf', { type: 'application/pdf' })
+    fireEvent.change(fileInput(container, 'image/*,application/pdf'), { target: { files: [file] } })
+
+    expect(bookingPdfExtractMocks.extractBookingPdfAutofill).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: /PDFを読み取る/ }))
+
+    expect(bookingPdfExtractMocks.extractBookingPdfAutofill)
+      .toHaveBeenCalledWith(file, expect.any(AbortSignal))
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /もう一度読み取る/ })).toBeTruthy()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /もう一度読み取る/ }))
+
+    expect(bookingPdfExtractMocks.extractBookingPdfAutofill).toHaveBeenCalledTimes(2)
+    expect(bookingPdfExtractMocks.extractBookingPdfAutofill.mock.calls[1]?.[0]).toBe(file)
+  })
+
+  test('treats each successful PDF pick as a fresh autofill source', async () => {
+    const { container } = render(
+      <BookingFormModal
+        editTarget={null}
+        isOpen
+        isSaving={false}
+        onClose={() => {}}
+        onSave={() => {}}
+      />,
+    )
+
+    const file = new File(['%PDF-1.7'], 'booking.pdf', { type: 'application/pdf' })
+    fireEvent.change(fileInput(container, 'application/pdf,.pdf'), { target: { files: [file] } })
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /もう一度読み取る/ })).toBeTruthy()
+    })
+
+    fireEvent.change(fileInput(container, 'image/*,application/pdf'), { target: { files: [file] } })
+
+    expect(screen.getByRole('button', { name: /PDFを読み取る/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /もう一度読み取る/ })).toBeNull()
+    expect(bookingPdfExtractMocks.extractBookingPdfAutofill).toHaveBeenCalledTimes(1)
   })
 
   test('shows oversize PDF autofill errors near the PDF autofill action', () => {

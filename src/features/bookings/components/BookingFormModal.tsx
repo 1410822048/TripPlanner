@@ -8,7 +8,7 @@
 //   - null      → user removed the existing file (clear on save)
 //   - File      → user picked a new file (replace on save)
 import { useEffect, useRef, useState } from 'react'
-import { Paperclip, ArrowRight, ChevronRight, FileText, Image as ImageIcon, Loader2 } from 'lucide-react'
+import { Paperclip, ArrowRight, ChevronRight, FileText, Image as ImageIcon, Loader2, RefreshCw } from 'lucide-react'
 import type { Booking, CreateBookingInput } from '@/types'
 import { isHttpUrl } from '@/types'
 import FormModalShell from '@/components/ui/FormModalShell'
@@ -76,6 +76,7 @@ type PdfAutofillState = {
   status: 'idle' | 'loading' | 'applied' | 'empty' | 'error'
   message?: string
 }
+type PdfAutofillSourceKey = number
 
 export interface BookingFormResult {
   input:      CreateBookingInput
@@ -128,6 +129,8 @@ export default function BookingFormModal({
   const [errors,      setErrors]      = useState<Record<string, string>>({})
   const [previewTarget, setPreviewTarget] = useState<'cover' | 'document' | null>(null)
   const [pdfAutofill, setPdfAutofill] = useState<PdfAutofillState>({ status: 'idle' })
+  const [pdfAutofillSourceKey, setPdfAutofillSourceKey] = useState<PdfAutofillSourceKey | null>(null)
+  const [analyzedPdfSourceKey, setAnalyzedPdfSourceKey] = useState<PdfAutofillSourceKey | null>(null)
   // Full-size preview URL: a newly-picked file uses its local blob (already
   // full-res); an existing attachment resolves its fullPath via getBlob only
   // while the modal is open (path-driven). null → modal shows a spinner.
@@ -148,6 +151,7 @@ export default function BookingFormModal({
   const checkOutRef = useRef<DatePickerHandle>(null)
   const stateRef = useRef(state)
   const pdfAutofillSeqRef = useRef(0)
+  const pdfAutofillSourceSeqRef = useRef(0)
   const pdfAutofillControllerRef = useRef<AbortController | null>(null)
   // For transport types the user wants origin first, so focus that input
   // on open. Hotel / other open with their primary text field focused.
@@ -156,6 +160,11 @@ export default function BookingFormModal({
 
   // Hotel is the only type that conventionally has both check-in and check-out.
   const showRange = state.type === 'hotel'
+  const pdfAutofillSourceFile = docAtt.newFile && isPdfFile(docAtt.newFile) ? docAtt.newFile : null
+  const hasAnalyzedCurrentPdf =
+    pdfAutofillSourceFile !== null
+    && pdfAutofillSourceKey !== null
+    && analyzedPdfSourceKey === pdfAutofillSourceKey
 
   useEffect(() => {
     stateRef.current = state
@@ -177,6 +186,26 @@ export default function BookingFormModal({
     pdfAutofillFileRef.current?.click()
   }
 
+  function handlePdfAutofillCardClick() {
+    if (!pdfAutofillSourceFile || pdfAutofillSourceKey === null || hasAnalyzedCurrentPdf) {
+      pickPdfForAutofill()
+      return
+    }
+    void runPdfAutofill(pdfAutofillSourceFile, pdfAutofillSourceKey)
+  }
+
+  function handlePdfAutofillRerunClick() {
+    if (!pdfAutofillSourceFile || pdfAutofillSourceKey === null) return
+    void runPdfAutofill(pdfAutofillSourceFile, pdfAutofillSourceKey)
+  }
+
+  function commitPdfAutofillSource(): PdfAutofillSourceKey {
+    const nextKey = pdfAutofillSourceSeqRef.current + 1
+    pdfAutofillSourceSeqRef.current = nextKey
+    setPdfAutofillSourceKey(nextKey)
+    return nextKey
+  }
+
   function onCoverImagePicked(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]
     e.target.value = ''  // allow re-picking the same file
@@ -187,8 +216,12 @@ export default function BookingFormModal({
     const f = e.target.files?.[0]
     e.target.value = ''  // allow re-picking the same file
     if (!f) return
-    cancelPdfAutofill()
-    docAtt.pickFile(f)
+    abortPdfAutofill()
+    if (docAtt.pickFile(f)) {
+      if (isPdfFile(f)) commitPdfAutofillSource()
+      else setPdfAutofillSourceKey(null)
+    }
+    setPdfAutofill({ status: 'idle' })
   }
 
   function onPdfAutofillPicked(e: React.ChangeEvent<HTMLInputElement>) {
@@ -196,22 +229,28 @@ export default function BookingFormModal({
     e.target.value = ''  // allow re-picking the same file
     if (!f) return
     if (!isPdfFile(f)) {
-      cancelPdfAutofill()
+      abortPdfAutofill()
       setPdfAutofill({ status: 'error', message: 'PDFファイルを選択してください' })
       return
     }
     if (!docAtt.pickFile(f)) {
-      cancelPdfAutofill()
+      abortPdfAutofill()
       setPdfAutofill({ status: 'error', message: ATTACHMENT_SIZE_ERROR })
       return
     }
-    void runPdfAutofill(f)
+    void runPdfAutofill(f, commitPdfAutofillSource())
   }
 
-  function cancelPdfAutofill() {
+  function abortPdfAutofill() {
     pdfAutofillSeqRef.current += 1
     pdfAutofillControllerRef.current?.abort()
     pdfAutofillControllerRef.current = null
+  }
+
+  function resetPdfAutofill() {
+    abortPdfAutofill()
+    setPdfAutofillSourceKey(null)
+    setAnalyzedPdfSourceKey(null)
     setPdfAutofill({ status: 'idle' })
   }
 
@@ -244,7 +283,7 @@ export default function BookingFormModal({
     }
   }
 
-  async function runPdfAutofill(file: File) {
+  async function runPdfAutofill(file: File, sourceKey: PdfAutofillSourceKey) {
     const seq = pdfAutofillSeqRef.current + 1
     pdfAutofillSeqRef.current = seq
     pdfAutofillControllerRef.current?.abort()
@@ -259,6 +298,7 @@ export default function BookingFormModal({
         isEdit: !!editTarget,
       })
       applyPdfAutofillPatch(patch)
+      setAnalyzedPdfSourceKey(sourceKey)
       setPdfAutofill(appliedCount > 0
         ? { status: 'applied', message: 'PDFから入力候補を反映しました' }
         : { status: 'empty', message: '入力できる項目が見つかりませんでした' })
@@ -343,6 +383,11 @@ export default function BookingFormModal({
   }
 
   const showPdfAutofillStatus = !editTarget && pdfAutofill.status !== 'idle' && pdfAutofill.status !== 'loading'
+  const pdfAutofillButtonLabel = pdfAutofill.status === 'loading'
+    ? 'PDFを読み取っています…'
+    : pdfAutofillSourceFile
+      ? hasAnalyzedCurrentPdf ? '別のPDFから自動入力' : 'PDFを読み取る'
+      : 'PDFから自動入力'
 
   return (
     <FormModalShell
@@ -365,8 +410,9 @@ export default function BookingFormModal({
           />
           <button
             type="button"
-            onClick={pickPdfForAutofill}
-            className="flex min-h-[62px] w-full items-center gap-3 rounded-card border border-accent/20 bg-accent-pale px-3 py-2.5 text-left text-accent transition-colors hover:bg-accent hover:text-white"
+            onClick={handlePdfAutofillCardClick}
+            disabled={pdfAutofill.status === 'loading'}
+            className="flex min-h-[62px] w-full items-center gap-3 rounded-card border border-accent/20 bg-accent-pale px-3 py-2.5 text-left text-accent transition-colors hover:bg-accent hover:text-white disabled:cursor-wait disabled:opacity-70 disabled:hover:bg-accent-pale disabled:hover:text-accent"
           >
             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-input bg-accent text-white">
               {pdfAutofill.status === 'loading' ? (
@@ -380,29 +426,55 @@ export default function BookingFormModal({
                 予約確認書を選択
               </span>
               <span className="mt-0.5 block text-[14px] font-black leading-[1.25]">
-                {pdfAutofill.status === 'loading'
-                  ? 'PDFを読み取っています…'
-                  : pdfAutofill.status === 'applied'
-                    ? '別のPDFから自動入力'
-                    : 'PDFから自動入力'}
+                {pdfAutofillButtonLabel}
               </span>
             </span>
             <ChevronRight size={18} strokeWidth={2.2} className="shrink-0 opacity-80" />
           </button>
-          {showPdfAutofillStatus && (
-            <div
-              role="status"
-              aria-live="polite"
-              className={[
-                'flex items-center gap-1.5 text-[12px] font-medium',
-                pdfAutofill.status === 'error'
-                  ? 'text-danger'
-                  : pdfAutofill.status === 'applied'
-                    ? 'text-teal'
-                    : 'text-muted',
-              ].join(' ')}
-            >
-              <span>{pdfAutofill.message}</span>
+          {(showPdfAutofillStatus || pdfAutofillSourceFile) && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                {showPdfAutofillStatus ? (
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className={[
+                      'flex min-w-0 flex-1 items-center gap-1 px-1.5 text-[12px] font-medium before:text-[14px] before:leading-none before:content-["・"]',
+                      pdfAutofill.status === 'error'
+                        ? 'text-danger'
+                        : pdfAutofill.status === 'applied'
+                          ? 'text-teal'
+                      : 'text-muted',
+                    ].join(' ')}
+                  >
+                    <span>{pdfAutofill.message}</span>
+                  </div>
+                ) : (
+                  <span className="min-w-0 truncate text-[12px] font-medium text-muted">
+                    {pdfAutofillSourceFile?.name}
+                  </span>
+                )}
+                {pdfAutofillSourceFile && !hasAnalyzedCurrentPdf && (
+                  <button
+                    type="button"
+                    onClick={pickPdfForAutofill}
+                    className="shrink-0 text-[12px] font-bold text-accent"
+                  >
+                    別のPDFを選択
+                  </button>
+                )}
+              </div>
+              {pdfAutofillSourceFile && hasAnalyzedCurrentPdf && (
+                <button
+                  type="button"
+                  onClick={handlePdfAutofillRerunClick}
+                  disabled={pdfAutofill.status === 'loading'}
+                  className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-chip border border-accent/35 bg-transparent px-3 text-[12px] font-black text-accent transition-colors hover:border-accent hover:bg-accent-pale disabled:cursor-wait disabled:opacity-60"
+                >
+                  <RefreshCw size={14} strokeWidth={2.3} />
+                  <span>もう一度読み取る</span>
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -649,7 +721,7 @@ export default function BookingFormModal({
             isImage={docAtt.previewIsImage}
             onReplace={pickDocument}
             onClear={() => {
-              cancelPdfAutofill()
+              resetPdfAutofill()
               docAtt.clear()
             }}
             onPreview={() => (docAtt.hasNewFile || docAtt.fullPath) && setPreviewTarget('document')}

@@ -63,6 +63,7 @@ export interface UseAttachmentResult {
   fullPath:       string | null
   attachmentName: string
   error:          string | null
+  newFile:        File | null
   hasNewFile:     boolean
   pickFile:       (file: File) => boolean
   clear:          () => void
@@ -133,6 +134,7 @@ export function useAttachment(initial: ExistingAttachment): UseAttachmentResult 
       ?? (existing.fullPath ? existing.fullPath.split('/').pop() : null)
       ?? '添付ファイル',
     error,
+    newFile,
     hasNewFile:     !!newFile,
     pickFile,
     clear,
