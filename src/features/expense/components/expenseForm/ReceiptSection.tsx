@@ -4,10 +4,11 @@
 // receipt / OCR / attachment STATE stays in the modal and its hooks). This
 // component owns only the two hidden <input> refs (local to the picker UI);
 // every handler + display value is passed in.
-import { useRef, type ChangeEvent } from 'react'
-import { AlertTriangle, Camera, Check, Loader2, ScanLine, Upload } from 'lucide-react'
+import { useRef, useState, type ChangeEvent } from 'react'
+import { AlertTriangle, Camera, Check, Loader2, Plus, ScanLine, Upload } from 'lucide-react'
 import FormField from '@/components/ui/FormField'
 import AttachmentRow from '@/components/ui/AttachmentRow'
+import PickerDialog from '@/components/ui/pickers/PickerDialog'
 import type {
   OcrCompareProviderResult,
   OcrCompareResult,
@@ -141,6 +142,77 @@ function CompareSummary({ result }: { result: OcrCompareResult }) {
   )
 }
 
+function ReceiptAddActionSheet({
+  isOpen,
+  onClose,
+  onCamera,
+  onUpload,
+}: {
+  isOpen: boolean
+  onClose: () => void
+  onCamera: () => void
+  onUpload: () => void
+}) {
+  return (
+    <PickerDialog isOpen={isOpen} onClose={onClose} title="レシートを追加" placement="bottom">
+      <div className="shrink-0 border-b border-border px-5 pb-3 pt-3">
+        <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-border" />
+        <h3 className="m-0 text-[16px] font-black text-ink">
+          レシートを追加
+        </h3>
+      </div>
+
+      <div className="flex flex-col gap-2 px-5 py-4">
+        <button
+          type="button"
+          onClick={() => {
+            onClose()
+            onCamera()
+          }}
+          className="flex w-full items-center gap-3 rounded-input border border-border bg-surface px-3.5 py-3 text-left cursor-pointer transition-colors hover:border-accent hover:bg-teal-pale/50"
+        >
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-teal-pale text-teal">
+            <Camera size={17} strokeWidth={2.2} />
+          </span>
+          <span className="min-w-0">
+            <span className="block text-[13px] font-bold text-ink">撮影して読み取る</span>
+            <span className="mt-0.5 block text-[11.5px] font-medium leading-[1.45] text-muted">
+              カメラで撮影後、自動で明細を読み取ります
+            </span>
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            onClose()
+            onUpload()
+          }}
+          className="flex w-full items-center gap-3 rounded-input border border-border bg-surface px-3.5 py-3 text-left cursor-pointer transition-colors hover:border-accent hover:bg-teal-pale/50"
+        >
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-app text-muted">
+            <Upload size={17} strokeWidth={2.2} />
+          </span>
+          <span className="min-w-0">
+            <span className="block text-[13px] font-bold text-ink">ファイルを添付</span>
+            <span className="mt-0.5 block text-[11.5px] font-medium leading-[1.45] text-muted">
+              画像 / PDF を追加します。必要なら後で読み取れます
+            </span>
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-1 h-11 rounded-input border border-border bg-app text-[13px] font-semibold text-ink cursor-pointer hover:bg-tile transition-colors"
+        >
+          キャンセル
+        </button>
+      </div>
+    </PickerDialog>
+  )
+}
+
 interface ReceiptSectionProps {
   /** Receipt error copy (attachment error ?? OCR error). */
   error:          string | undefined
@@ -189,6 +261,7 @@ export default function ReceiptSection({
   // this picker UI, so they live here rather than in the modal.
   const cameraRef = useRef<HTMLInputElement>(null)
   const uploadRef = useRef<HTMLInputElement>(null)
+  const [addSheetOpen, setAddSheetOpen] = useState(false)
 
   return (
     // レシート appears EARLY in the form because OCR auto-fills 金額 + 明細
@@ -294,27 +367,24 @@ export default function ReceiptSection({
           )}
         </div>
       ) : (
-        // Compact dual-button (52px instead of 68px). Receipt is an optional
-        // add-on, not a hero action — the previous chunky empty state pulled
-        // too much attention from the rest of the form.
-        <div className="grid grid-cols-2 gap-2">
+        <>
           <button
             type="button"
-            onClick={() => cameraRef.current?.click()}
-            className="h-[52px] rounded-input border-[1.5px] border-dashed border-border bg-app text-muted text-[11.5px] font-medium flex items-center justify-center gap-1.5 cursor-pointer hover:border-accent hover:text-accent transition-colors"
+            aria-haspopup="dialog"
+            aria-expanded={addSheetOpen}
+            onClick={() => setAddSheetOpen(true)}
+            className="h-[52px] w-full rounded-input border-[1.5px] border-dashed border-border bg-app text-muted text-[12px] font-semibold flex items-center justify-center gap-2 cursor-pointer hover:border-accent hover:text-accent transition-colors"
           >
-            <Camera size={16} strokeWidth={1.8} />
-            <span>撮影</span>
+            <Plus size={16} strokeWidth={2.2} />
+            <span>レシートを追加</span>
           </button>
-          <button
-            type="button"
-            onClick={() => uploadRef.current?.click()}
-            className="h-[52px] rounded-input border-[1.5px] border-dashed border-border bg-app text-muted text-[11.5px] font-medium flex items-center justify-center gap-1.5 cursor-pointer hover:border-accent hover:text-accent transition-colors"
-          >
-            <Upload size={15} strokeWidth={1.8} />
-            <span>ファイルから追加</span>
-          </button>
-        </div>
+          <ReceiptAddActionSheet
+            isOpen={addSheetOpen}
+            onClose={() => setAddSheetOpen(false)}
+            onCamera={() => cameraRef.current?.click()}
+            onUpload={() => uploadRef.current?.click()}
+          />
+        </>
       )}
     </FormField>
   )

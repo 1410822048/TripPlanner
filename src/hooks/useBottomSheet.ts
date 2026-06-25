@@ -13,6 +13,7 @@ const CLOSE_ANIM_MS    = 220
 export interface UseBottomSheetOpts {
   isOpen: boolean
   onClose: () => void
+  dismissRatio?: number
 }
 
 export interface UseBottomSheetResult {
@@ -33,7 +34,11 @@ export interface UseBottomSheetResult {
   }
 }
 
-export function useBottomSheet({ isOpen, onClose }: UseBottomSheetOpts): UseBottomSheetResult {
+export function useBottomSheet({
+  isOpen,
+  onClose,
+  dismissRatio = DISMISS_RATIO,
+}: UseBottomSheetOpts): UseBottomSheetResult {
   const [dragY, setDragY] = useState(0)
   const [mounted, setMounted] = useState(false)         // 控制開啟動畫
   const [pointerActive, setPointerActive] = useState(false) // 鏡射 dragging 供 render 使用
@@ -121,7 +126,7 @@ export function useBottomSheet({ isOpen, onClose }: UseBottomSheetOpts): UseBott
     const currentY  = dragYRef.current
     const elapsed   = Math.max(1, Date.now() - drag.current.startTime)
     const velocity  = currentY / elapsed                    // px/ms
-    const threshold = sheetHeight * DISMISS_RATIO
+    const threshold = sheetHeight * dismissRatio
     const shouldClose = currentY > threshold || velocity > DISMISS_VELOCITY
     if (shouldClose) {
       setDragY(window.innerHeight)
@@ -142,7 +147,7 @@ export function useBottomSheet({ isOpen, onClose }: UseBottomSheetOpts): UseBott
     ? 'translateY(100%)'
     : dragY !== 0 ? `translateY(${dragY}px)` : 'translateY(0)'
   // Backdrop 透明度：未 mounted=0、mounted 後隨拖曳距離遞減
-  const dismissPx = sheetHeight * DISMISS_RATIO
+  const dismissPx = sheetHeight * dismissRatio
   const backdropOpacity = !mounted
     ? 0
     : Math.max(0.05, 0.35 - Math.max(0, dragY) / (dismissPx * 2))

@@ -105,6 +105,15 @@ function renderModal(editTarget: Expense) {
   )
 }
 
+function renderCreateModal() {
+  return render(
+    <ExpenseFormModal
+      editTarget={null} defaultDate="2026-06-04" members={members}
+      isOpen isSaving={false} onClose={() => {}} onSave={vi.fn()}
+    />,
+  )
+}
+
 beforeEach(() => {
   ocrApi.run.mockReset()
   ocrApi.runFallback.mockReset()
@@ -119,6 +128,35 @@ beforeEach(() => {
 })
 
 describe('ExpenseFormModal — re-OCR dispatch', () => {
+  it('single receipt entry keeps upload as attach-only', async () => {
+    const { container } = renderCreateModal()
+    const uploadInput = container.querySelectorAll('input[type="file"]')[1] as HTMLInputElement
+    const file = new File(['x'], 'receipt.jpg', { type: 'image/jpeg' })
+    const receipt = new File(['prepared'], 'receipt.webp', { type: 'image/webp' })
+    imageApi.compressReceiptImage.mockResolvedValueOnce({ full: receipt })
+
+    fireEvent.click(screen.getByRole('button', { name: /レシートを追加/ }))
+    fireEvent.click(screen.getByRole('button', { name: /ファイルを添付/ }))
+    fireEvent.change(uploadInput, { target: { files: [file] } })
+
+    await waitFor(() => expect(ocrApi.setFile).toHaveBeenCalledWith(receipt))
+    expect(ocrApi.run).not.toHaveBeenCalled()
+  })
+
+  it('single receipt entry keeps camera as auto-OCR', async () => {
+    const { container } = renderCreateModal()
+    const cameraInput = container.querySelector('input[capture="environment"]') as HTMLInputElement
+    const file = new File(['x'], 'capture.jpg', { type: 'image/jpeg' })
+    const receipt = new File(['prepared'], 'capture.webp', { type: 'image/webp' })
+    imageApi.compressReceiptImage.mockResolvedValueOnce({ full: receipt })
+
+    fireEvent.click(screen.getByRole('button', { name: /レシートを追加/ }))
+    fireEvent.click(screen.getByRole('button', { name: /撮影して読み取る/ }))
+    fireEvent.change(cameraInput, { target: { files: [file] } })
+
+    await waitFor(() => expect(ocrApi.run).toHaveBeenCalledWith(receipt))
+  })
+
   it('existing foreign receipt → runExisting with currencyHint = the foreign source currency (not trip)', () => {
     renderModal(foreignExpense())
     fireEvent.click(screen.getByRole('button', { name: /明細を読み取る/ }))
