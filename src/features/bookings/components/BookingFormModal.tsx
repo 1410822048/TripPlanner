@@ -8,7 +8,7 @@
 //   - null      → user removed the existing file (clear on save)
 //   - File      → user picked a new file (replace on save)
 import { useEffect, useRef, useState } from 'react'
-import { Paperclip, ArrowRight, ChevronRight, FileText, Image as ImageIcon, Loader2, RefreshCw } from 'lucide-react'
+import { Paperclip, CalendarDays, ChevronRight, FileText, Image as ImageIcon, Loader2, RefreshCw } from 'lucide-react'
 import type { Booking, CreateBookingInput } from '@/types'
 import { isHttpUrl } from '@/types'
 import FormModalShell from '@/components/ui/FormModalShell'
@@ -17,7 +17,6 @@ import AttachmentRow from '@/components/ui/AttachmentRow'
 import { DatePicker, type DatePickerHandle } from '@/components/ui/pickers'
 import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
-import { useAutoFocus } from '@/hooks/useAutoFocus'
 import AttachmentPreviewModal from './AttachmentPreviewModal'
 import { useBookingFormState, type BookingFormDraft } from '../hooks/useBookingFormState'
 import { ATTACHMENT_SIZE_ERROR, useAttachment, type AttachmentChange } from '@/hooks/useAttachment'
@@ -26,8 +25,10 @@ import { BOOKING_TYPE_META, BOOKING_TYPE_ORDER } from '../utils'
 import { deriveBookingLinkDraft } from '../linkDraft'
 import {
   BookingPdfExtractError,
+  bookingPdfCandidateToCreateInput,
   bookingPdfExtractToDraftPatch,
   extractBookingPdfAutofill,
+  type BookingPdfExtractCandidate,
 } from '../services/bookingPdfExtractService'
 import { isPdfFile } from '../services/bookingPdfText'
 
@@ -72,16 +73,35 @@ const IMAGE_ACCEPT_TYPES = 'image/*'
 const DOCUMENT_ACCEPT_TYPES = 'image/*,application/pdf'
 const PDF_ACCEPT_TYPES = 'application/pdf,.pdf'
 
+function bookingRouteInputClass(hasError?: boolean): string {
+  return [
+    'w-full min-w-0 border-0 border-b border-dashed bg-transparent px-0 py-1',
+    'text-[16px] leading-6 font-black text-ink outline-none transition-colors',
+    'placeholder:text-muted focus-visible:border-accent focus-visible:ring-0',
+    hasError ? 'border-danger' : 'border-border',
+  ].join(' ')
+}
+
 type PdfAutofillState = {
   status: 'idle' | 'loading' | 'applied' | 'empty' | 'error'
   message?: string
 }
 type PdfAutofillSourceKey = number
+type CreateablePdfCandidate = {
+  candidate: BookingPdfExtractCandidate
+  index:     number
+  input:     CreateBookingInput
+}
 
 export interface BookingFormResult {
   input:      CreateBookingInput
   coverImage: AttachmentChange
   document:   AttachmentChange
+}
+
+export interface BookingFormBatchResult {
+  inputs:   CreateBookingInput[]
+  document: File
 }
 
 interface Props {
@@ -101,6 +121,7 @@ interface Props {
   initialDraft?: BookingFormDraft
   onClose:    () => void
   onSave:     (data: BookingFormResult) => void
+  onCreateMany?: (data: BookingFormBatchResult) => void
   /** Only present in edit mode for users with delete permission.
    *  Renders a two-step inline confirm above the save button. */
   onDelete?:  () => void
@@ -108,7 +129,7 @@ interface Props {
 
 export default function BookingFormModal({
   editTarget, tripStartDate, tripEndDate,
-  isOpen, isSaving, saveError, initialDraft, onClose, onSave, onDelete,
+  isOpen, isSaving, saveError, initialDraft, onClose, onSave, onCreateMany, onDelete,
 }: Props) {
   const { state, setField } = useBookingFormState(editTarget, initialDraft)
   const coverSource = editTarget?.coverImage
@@ -129,6 +150,8 @@ export default function BookingFormModal({
   const [errors,      setErrors]      = useState<Record<string, string>>({})
   const [previewTarget, setPreviewTarget] = useState<'cover' | 'document' | null>(null)
   const [pdfAutofill, setPdfAutofill] = useState<PdfAutofillState>({ status: 'idle' })
+  const [pdfAutofillCreateableCandidates, setPdfAutofillCreateableCandidates] = useState<CreateablePdfCandidate[]>([])
+  const [selectedPdfCandidateIndexes, setSelectedPdfCandidateIndexes] = useState<number[]>([])
   const [pdfAutofillSourceKey, setPdfAutofillSourceKey] = useState<PdfAutofillSourceKey | null>(null)
   const [analyzedPdfSourceKey, setAnalyzedPdfSourceKey] = useState<PdfAutofillSourceKey | null>(null)
   // Full-size preview URL: a newly-picked file uses its local blob (already
@@ -143,8 +166,6 @@ export default function BookingFormModal({
       ? previewAtt.previewUrl
       : previewTarget === 'cover' ? coverFullUrl : docFullUrl
 
-  const titleRef    = useRef<HTMLInputElement>(null)
-  const originRef   = useRef<HTMLInputElement>(null)
   const coverFileRef = useRef<HTMLInputElement>(null)
   const docFileRef   = useRef<HTMLInputElement>(null)
   const pdfAutofillFileRef = useRef<HTMLInputElement>(null)
@@ -153,11 +174,7 @@ export default function BookingFormModal({
   const pdfAutofillSeqRef = useRef(0)
   const pdfAutofillSourceSeqRef = useRef(0)
   const pdfAutofillControllerRef = useRef<AbortController | null>(null)
-  // For transport types the user wants origin first, so focus that input
-  // on open. Hotel / other open with their primary text field focused.
   const isTransport = TRANSPORT_TYPES.has(state.type)
-  useAutoFocus(isTransport ? originRef : titleRef, isOpen)
-
   // Hotel is the only type that conventionally has both check-in and check-out.
   const showRange = state.type === 'hotel'
   const pdfAutofillSourceFile = docAtt.newFile && isPdfFile(docAtt.newFile) ? docAtt.newFile : null
@@ -206,6 +223,16 @@ export default function BookingFormModal({
     return nextKey
   }
 
+  function clearPdfAutofillCandidates() {
+    setPdfAutofillCreateableCandidates([])
+    setSelectedPdfCandidateIndexes([])
+  }
+
+  function rejectPdfAutofillPick(message: string) {
+    resetPdfAutofill()
+    setPdfAutofill({ status: 'error', message })
+  }
+
   function onCoverImagePicked(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]
     e.target.value = ''  // allow re-picking the same file
@@ -221,6 +248,7 @@ export default function BookingFormModal({
       if (isPdfFile(f)) commitPdfAutofillSource()
       else setPdfAutofillSourceKey(null)
     }
+    clearPdfAutofillCandidates()
     setPdfAutofill({ status: 'idle' })
   }
 
@@ -229,13 +257,11 @@ export default function BookingFormModal({
     e.target.value = ''  // allow re-picking the same file
     if (!f) return
     if (!isPdfFile(f)) {
-      abortPdfAutofill()
-      setPdfAutofill({ status: 'error', message: 'PDFファイルを選択してください' })
+      rejectPdfAutofillPick('PDFファイルを選択してください')
       return
     }
     if (!docAtt.pickFile(f)) {
-      abortPdfAutofill()
-      setPdfAutofill({ status: 'error', message: ATTACHMENT_SIZE_ERROR })
+      rejectPdfAutofillPick(ATTACHMENT_SIZE_ERROR)
       return
     }
     void runPdfAutofill(f, commitPdfAutofillSource())
@@ -251,6 +277,7 @@ export default function BookingFormModal({
     abortPdfAutofill()
     setPdfAutofillSourceKey(null)
     setAnalyzedPdfSourceKey(null)
+    clearPdfAutofillCandidates()
     setPdfAutofill({ status: 'idle' })
   }
 
@@ -283,6 +310,40 @@ export default function BookingFormModal({
     }
   }
 
+  function candidateRoleLabel(candidate: BookingPdfExtractCandidate, index: number): string {
+    return candidate.segmentRole === 'outbound' ? '往路'
+      : candidate.segmentRole === 'return' ? '復路'
+      : candidate.segmentRole === 'connection' ? '乗継'
+      : `候補${index + 1}`
+  }
+
+  function applySelectedPdfCandidate(candidate: BookingPdfExtractCandidate) {
+    const { patch, appliedCount } = bookingPdfExtractToDraftPatch(stateRef.current, candidate, {
+      isEdit: !!editTarget,
+    })
+    applyPdfAutofillPatch(patch)
+    setPdfAutofill(appliedCount > 0
+      ? { status: 'applied', message: 'PDFから入力候補を反映しました' }
+      : { status: 'empty', message: '入力できる項目が見つかりませんでした' })
+  }
+
+  function togglePdfCandidate(index: number) {
+    setSelectedPdfCandidateIndexes(prev =>
+      prev.includes(index) ? prev.filter(i => i !== index) : [...prev, index])
+  }
+
+  function createSelectedPdfCandidates() {
+    if (!pdfAutofillSourceFile || !onCreateMany) return
+    const selected = pdfAutofillCreateableCandidates
+      .filter(({ index }) => selectedPdfCandidateIndexes.includes(index))
+      .map(({ input }) => input)
+    if (selected.length === 0) {
+      setPdfAutofill({ status: 'empty', message: '追加する候補を選択してください' })
+      return
+    }
+    onCreateMany({ inputs: selected, document: pdfAutofillSourceFile })
+  }
+
   async function runPdfAutofill(file: File, sourceKey: PdfAutofillSourceKey) {
     const seq = pdfAutofillSeqRef.current + 1
     pdfAutofillSeqRef.current = seq
@@ -290,18 +351,29 @@ export default function BookingFormModal({
     const controller = new AbortController()
     pdfAutofillControllerRef.current = controller
     setPdfAutofill({ status: 'loading', message: 'PDFから予約情報を読み取っています…' })
+    clearPdfAutofillCandidates()
 
     try {
       const result = await extractBookingPdfAutofill(file, controller.signal)
       if (controller.signal.aborted || pdfAutofillSeqRef.current !== seq) return
-      const { patch, appliedCount } = bookingPdfExtractToDraftPatch(stateRef.current, result, {
-        isEdit: !!editTarget,
-      })
-      applyPdfAutofillPatch(patch)
       setAnalyzedPdfSourceKey(sourceKey)
-      setPdfAutofill(appliedCount > 0
-        ? { status: 'applied', message: 'PDFから入力候補を反映しました' }
-        : { status: 'empty', message: '入力できる項目が見つかりませんでした' })
+      if (result.bookings.length > 1) {
+        const createableCandidates = result.bookings.flatMap((candidate, index) => {
+          const input = bookingPdfCandidateToCreateInput(candidate)
+          return input ? [{ candidate, index, input }] : []
+        })
+        const createableIndexes = createableCandidates.map(({ index }) => index)
+        setPdfAutofillCreateableCandidates(createableCandidates)
+        setSelectedPdfCandidateIndexes(createableIndexes)
+        setPdfAutofill({
+          status:  createableIndexes.length > 0 ? 'applied' : 'empty',
+          message: createableIndexes.length > 0
+            ? `${createableIndexes.length}件の予約候補を見つけました`
+            : '追加できる候補が見つかりませんでした',
+        })
+        return
+      }
+      applySelectedPdfCandidate(result.bookings[0]!)
     } catch (e) {
       if (controller.signal.aborted || pdfAutofillSeqRef.current !== seq) return
       setPdfAutofill({ status: 'error', message: pdfAutofillErrorMessage(e) })
@@ -386,21 +458,24 @@ export default function BookingFormModal({
   const pdfAutofillButtonLabel = pdfAutofill.status === 'loading'
     ? 'PDFを読み取っています…'
     : pdfAutofillSourceFile
-      ? hasAnalyzedCurrentPdf ? '別のPDFから自動入力' : 'PDFを読み取る'
+      ? hasAnalyzedCurrentPdf ? 'PDFから自動入力' : 'PDFを読み取る'
       : 'PDFから自動入力'
+  const hasSelectedPdfCandidate = pdfAutofillCreateableCandidates
+    .some(({ index }) => selectedPdfCandidateIndexes.includes(index))
+  const CurrentTypeIcon = BOOKING_TYPE_META[state.type].icon
 
   return (
     <FormModalShell
       isOpen={isOpen}
       isSaving={isSaving}
       title={editTarget ? '予約を編集' : '予約を追加'}
-      saveLabel={editTarget ? '変更を保存' : '予約を追加'}
+      saveLabel={editTarget ? '変更を保存' : '手動予約を追加'}
       saveError={saveError}
       onClose={onClose}
       onSave={handleSave}
     >
       {!editTarget && (
-        <div className="space-y-2">
+        <div className="space-y-3">
           <input
             ref={pdfAutofillFileRef}
             type="file"
@@ -408,81 +483,176 @@ export default function BookingFormModal({
             onChange={onPdfAutofillPicked}
             className="hidden"
           />
-          <button
-            type="button"
-            onClick={handlePdfAutofillCardClick}
-            disabled={pdfAutofill.status === 'loading'}
-            className="flex min-h-[62px] w-full items-center gap-3 rounded-card border border-accent/20 bg-accent-pale px-3 py-2.5 text-left text-accent transition-colors hover:bg-accent hover:text-white disabled:cursor-wait disabled:opacity-70 disabled:hover:bg-accent-pale disabled:hover:text-accent"
-          >
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-input bg-accent text-white">
-              {pdfAutofill.status === 'loading' ? (
-                <Loader2 size={18} strokeWidth={2} className="animate-spin" />
-              ) : (
-                <FileText size={18} strokeWidth={2} />
-              )}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-[11px] font-bold leading-[1.2] opacity-80">
-                予約確認書を選択
-              </span>
-              <span className="mt-0.5 block text-[14px] font-black leading-[1.25]">
-                {pdfAutofillButtonLabel}
-              </span>
-            </span>
-            <ChevronRight size={18} strokeWidth={2.2} className="shrink-0 opacity-80" />
-          </button>
-          {(showPdfAutofillStatus || pdfAutofillSourceFile) && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                {showPdfAutofillStatus ? (
-                  <div
-                    role="status"
-                    aria-live="polite"
-                    className={[
-                      'flex min-w-0 flex-1 items-center gap-1 px-1.5 text-[12px] font-medium before:text-[14px] before:leading-none before:content-["・"]',
-                      pdfAutofill.status === 'error'
-                        ? 'text-danger'
-                        : pdfAutofill.status === 'applied'
-                          ? 'text-teal'
-                      : 'text-muted',
-                    ].join(' ')}
-                  >
-                    <span>{pdfAutofill.message}</span>
-                  </div>
-                ) : (
-                  <span className="min-w-0 truncate text-[12px] font-medium text-muted">
-                    {pdfAutofillSourceFile?.name}
+          <div className="overflow-hidden rounded-card border border-accent/20 bg-surface shadow-[0_8px_22px_rgba(32,42,45,0.07)]">
+            <div className="flex items-center gap-2 bg-accent-pale/70 px-3 py-3">
+              <button
+                type="button"
+                onClick={handlePdfAutofillCardClick}
+                disabled={pdfAutofill.status === 'loading'}
+                className="group flex min-w-0 flex-1 items-center gap-3 text-left text-accent transition-colors hover:text-accent-pressed disabled:cursor-wait disabled:opacity-70"
+              >
+                <span className="relative grid h-9 w-9 shrink-0 place-items-center rounded-input bg-accent text-white shadow-[0_4px_10px_rgba(74,102,112,0.22)]">
+                  {pdfAutofill.status === 'loading' ? (
+                    <Loader2 size={18} strokeWidth={2} className="animate-spin" />
+                  ) : (
+                    <>
+                      <FileText size={18} strokeWidth={2} />
+                      <span aria-hidden="true" className="absolute -bottom-1 rounded-[5px] bg-surface px-1 py-px text-[7px] font-black leading-none text-accent shadow-[0_1px_4px_rgba(0,0,0,0.12)]">
+                        PDF
+                      </span>
+                    </>
+                  )}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[10px] font-black uppercase leading-[1.15] tracking-[0.14em] text-pick">
+                    Automatic import
                   </span>
-                )}
-                {pdfAutofillSourceFile && !hasAnalyzedCurrentPdf && (
-                  <button
-                    type="button"
-                    onClick={pickPdfForAutofill}
-                    className="shrink-0 text-[12px] font-bold text-accent"
-                  >
-                    別のPDFを選択
-                  </button>
-                )}
-              </div>
+                  <span className="mt-0.5 block text-[15px] font-black leading-[1.25] text-accent">
+                    {pdfAutofillButtonLabel}
+                  </span>
+                </span>
+                <ChevronRight size={18} strokeWidth={2.2} className="shrink-0 opacity-80 transition-transform group-hover:translate-x-0.5" />
+              </button>
               {pdfAutofillSourceFile && hasAnalyzedCurrentPdf && (
                 <button
                   type="button"
                   onClick={handlePdfAutofillRerunClick}
                   disabled={pdfAutofill.status === 'loading'}
-                  className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-chip border border-accent/35 bg-transparent px-3 text-[12px] font-black text-accent transition-colors hover:border-accent hover:bg-accent-pale disabled:cursor-wait disabled:opacity-60"
+                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-chip px-2.5 text-[12px] font-bold text-pick transition-colors hover:bg-surface/80 hover:text-accent disabled:cursor-wait disabled:opacity-60"
                 >
-                  <RefreshCw size={14} strokeWidth={2.3} />
-                  <span>もう一度読み取る</span>
+                  <RefreshCw size={13} strokeWidth={2.3} />
+                  <span>再読取</span>
                 </button>
               )}
+            </div>
+            {(showPdfAutofillStatus || pdfAutofillSourceFile) && (
+              <div className="border-t border-accent/10 px-3.5 py-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  {showPdfAutofillStatus ? (
+                    <div
+                      role="status"
+                      aria-live="polite"
+                      className={[
+                        'flex min-w-0 flex-1 items-center gap-2 text-[12px] font-bold leading-[1.35]',
+                        pdfAutofill.status === 'error'
+                          ? 'text-danger'
+                          : pdfAutofill.status === 'applied'
+                            ? 'text-teal'
+                        : 'text-muted',
+                      ].join(' ')}
+                    >
+                      <span aria-hidden="true" className="relative flex h-2.5 w-2.5 shrink-0 items-center justify-center">
+                        {pdfAutofill.status === 'applied' ? (
+                          <>
+                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-teal opacity-35" />
+                            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-teal" />
+                          </>
+                        ) : (
+                          <span className={[
+                            'inline-flex h-2.5 w-2.5 rounded-full',
+                            pdfAutofill.status === 'error' ? 'bg-danger' : 'bg-dot',
+                          ].join(' ')}
+                          />
+                        )}
+                      </span>
+                      <span className="min-w-0 flex-1">{pdfAutofill.message}</span>
+                    </div>
+                  ) : (
+                    <span className="min-w-0 truncate text-[12px] font-medium text-muted">
+                      {pdfAutofillSourceFile?.name}
+                    </span>
+                  )}
+                  {pdfAutofillSourceFile && !hasAnalyzedCurrentPdf && (
+                    <button
+                      type="button"
+                      onClick={pickPdfForAutofill}
+                      className="shrink-0 text-[12px] font-bold text-accent"
+                    >
+                      別のPDFを選択
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+          {pdfAutofillCreateableCandidates.length > 0 && (
+            <div className="space-y-2">
+              <div className="space-y-2.5">
+                {pdfAutofillCreateableCandidates.map(({ candidate, index, input }) => {
+                  const typeMeta = BOOKING_TYPE_META[input.type]
+                  const TypeIcon = typeMeta.icon
+                  const roleLabel = candidateRoleLabel(candidate, index)
+                  const originText = input.origin?.trim() || input.title?.trim() || typeMeta.label
+                  const destinationText = input.destination?.trim() || input.address?.trim() || input.provider?.trim() || typeMeta.label
+                  const detailText = [input.provider?.trim(), input.title?.trim()].filter(Boolean).join(' ')
+                  const dateText = input.checkIn?.trim()
+
+                  return (
+                    <label
+                      key={`${candidate.segmentRole}-${index}`}
+                      className="grid w-full grid-cols-[auto_1fr] items-center gap-3 rounded-card border border-border bg-surface px-3 py-3 text-left shadow-[0_2px_10px_rgba(0,0,0,0.05)] transition-colors hover:border-accent/45 hover:bg-accent-pale/35"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedPdfCandidateIndexes.includes(index)}
+                        onChange={() => togglePdfCandidate(index)}
+                        className="h-4 w-4 shrink-0 accent-accent"
+                      />
+                      <span className="min-w-0 space-y-2">
+                        <span className="flex min-w-0 items-start justify-between gap-2">
+                          <span className="rounded-full bg-pick-pale px-2 py-0.5 text-[10px] font-black leading-none text-pick">
+                            {roleLabel}
+                          </span>
+                          {detailText && (
+                            <span className="min-w-0 truncate text-right text-[10px] font-bold leading-[1.2] text-pick">
+                              {detailText}
+                            </span>
+                          )}
+                        </span>
+                        <span className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
+                          <span className="truncate text-[13px] font-black leading-[1.25] text-ink">
+                            {originText}
+                          </span>
+                          <TypeIcon size={14} strokeWidth={2.2} className="text-dot" />
+                          <span className="truncate text-right text-[13px] font-black leading-[1.25] text-ink">
+                            {destinationText}
+                          </span>
+                        </span>
+                        {dateText && (
+                          <span className="flex items-center gap-1 text-[11px] font-semibold leading-none text-muted">
+                            <CalendarDays size={12} strokeWidth={2} />
+                            {dateText}
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+              <button
+                type="button"
+                onClick={createSelectedPdfCandidates}
+                disabled={!hasSelectedPdfCandidate || pdfAutofill.status === 'loading'}
+                className="inline-flex h-10 w-full items-center justify-center rounded-chip bg-accent px-3 text-[13px] font-black text-white transition-colors hover:bg-accent-pressed disabled:cursor-not-allowed disabled:opacity-55"
+              >
+                選択した予約を追加
+              </button>
             </div>
           )}
         </div>
       )}
 
-      <FormField label="種類">
+      {!editTarget && (
+        <div className="flex items-center gap-3 text-[11px] font-bold leading-none text-muted">
+          <span className="h-px flex-1 bg-border" />
+          <span>または（手動入力）</span>
+          <span className="h-px flex-1 bg-border" />
+        </div>
+      )}
+
+      <FormField label="予約の種類">
         <div className="-mx-5 overflow-x-auto px-5 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-          <div className="flex w-max gap-[7px]">
+          <div className="flex w-max gap-2">
             {BOOKING_TYPE_ORDER.map(value => {
               const { icon: TypeIcon, label } = BOOKING_TYPE_META[value]
               const active = state.type === value
@@ -492,10 +662,10 @@ export default function BookingFormModal({
                   type="button"
                   onClick={() => setField('type', value)}
                   className={[
-                    'flex shrink-0 items-center gap-[5px] whitespace-nowrap px-3 py-1.5 rounded-card text-[12px] cursor-pointer transition-all border-[1.5px]',
+                    'flex shrink-0 items-center gap-[5px] whitespace-nowrap rounded-card border-[1.5px] px-3 py-1.5 text-[12px] cursor-pointer transition-all',
                     active
                       ? 'border-accent bg-accent text-white font-semibold'
-                      : 'border-border bg-transparent text-muted font-normal hover:border-muted',
+                      : 'border-border bg-surface text-muted font-normal hover:border-muted',
                   ].join(' ')}
                 >
                   <TypeIcon size={13} strokeWidth={2} />{label}
@@ -508,26 +678,45 @@ export default function BookingFormModal({
 
       {isTransport && (
         <FormField
-          label={state.type === 'flight' ? '出発地 → 到着地' : '出発 → 到着'}
+          label={state.type === 'flight' ? '航路ルート' : 'ルート'}
           error={errors.origin ?? errors.destination}
           required
         >
-          <div className="flex items-center gap-2">
-            <input
-              ref={originRef}
-              value={state.origin}
-              onChange={e => setField('origin', e.target.value)}
-              placeholder={state.type === 'flight' ? '桃園 / TPE' : '東京駅'}
-              className={inputClass(!!errors.origin)}
-            />
-            <ArrowRight size={16} strokeWidth={2} className="shrink-0 text-muted" />
-            <input
-              value={state.destination}
-              onChange={e => setField('destination', e.target.value)}
-              placeholder={state.type === 'flight' ? '成田 / NRT' : '京都駅'}
-              className={inputClass(!!errors.destination)}
-            />
+          <div className="relative overflow-hidden rounded-input border border-border bg-surface shadow-[0_4px_14px_rgba(32,42,45,0.05)]">
+            <span aria-hidden className="absolute -left-2 top-1/2 h-4 w-4 -translate-y-1/2 rounded-full border border-border bg-app" />
+            <span aria-hidden className="absolute -right-2 top-1/2 h-4 w-4 -translate-y-1/2 rounded-full border border-border bg-app" />
+            <div className="grid grid-cols-[minmax(0,1fr)_42px_minmax(0,1fr)] items-center">
+              <label className="min-w-0 px-4 py-3">
+                <span className="block text-[9px] font-black leading-none text-muted">DEPARTURE</span>
+                <input
+                  value={state.origin}
+                  onChange={e => setField('origin', e.target.value)}
+                  placeholder={state.type === 'flight' ? '桃園 / TPE' : '東京駅'}
+                  aria-label="出発地"
+                  className={bookingRouteInputClass(!!errors.origin)}
+                />
+              </label>
+              <div className="flex flex-col items-center justify-center gap-1 text-pick">
+                <CurrentTypeIcon size={16} strokeWidth={2.4} />
+                <span aria-hidden className="h-px w-8 border-t border-dashed border-border" />
+              </div>
+              <label className="min-w-0 px-4 py-3 text-right">
+                <span className="block text-[9px] font-black leading-none text-muted">ARRIVAL</span>
+                <input
+                  value={state.destination}
+                  onChange={e => setField('destination', e.target.value)}
+                  placeholder={state.type === 'flight' ? '成田 / NRT' : '京都駅'}
+                  aria-label="到着地"
+                  className={`${bookingRouteInputClass(!!errors.destination)} text-right`}
+                />
+              </label>
+            </div>
           </div>
+          {state.type === 'flight' && (
+            <p className="mt-1.5 text-[11px] font-semibold leading-[1.45] text-pick">
+              空港コードがある場合は「Tokyo / NRT」のように入力できます
+            </p>
+          )}
         </FormField>
       )}
 
@@ -537,7 +726,6 @@ export default function BookingFormModal({
         required={!isTransport}
       >
         <input
-          ref={titleRef}
           value={state.title}
           onChange={e => setField('title', e.target.value)}
           placeholder={titlePlaceholder(state.type)}
@@ -566,7 +754,7 @@ export default function BookingFormModal({
 
       {showRange ? (
         <div className="flex gap-2.5">
-        <FormField label="Check-in" className="flex-1">
+          <FormField label="Check-in" className="flex-1">
             <DatePicker
               value={state.checkIn}
               onChange={v => {
@@ -584,7 +772,7 @@ export default function BookingFormModal({
               maxDate={tripEndDate}
             />
           </FormField>
-        <FormField label="Check-out" error={errors.checkOut} className="flex-1">
+          <FormField label="Check-out" error={errors.checkOut} className="flex-1">
             <DatePicker
               ref={checkOutRef}
               value={state.checkOut}

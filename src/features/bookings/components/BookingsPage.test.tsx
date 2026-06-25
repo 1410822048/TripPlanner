@@ -51,9 +51,28 @@ vi.mock('./BookingFormModal', () => ({
   default: (props: {
     isOpen: boolean
     initialDraft?: Record<string, unknown>
+    onCreateMany?: (data: {
+      inputs: Array<Record<string, unknown>>
+      document: File
+    }) => void
   }) => {
     harness.formInitialDraft = props.initialDraft ?? null
-    return props.isOpen ? <div role="dialog" aria-label="booking-form" /> : null
+    return props.isOpen ? (
+      <div role="dialog" aria-label="booking-form">
+        <button
+          type="button"
+          onClick={() => props.onCreateMany?.({
+            inputs: [
+              { type: 'flight', title: 'MM626', origin: 'TPE', destination: 'NRT' },
+              { type: 'flight', title: 'JX803', origin: 'NRT', destination: 'TPE' },
+            ],
+            document: new File(['%PDF-1.7'], 'roundtrip.pdf', { type: 'application/pdf' }),
+          })}
+        >
+          mock batch create
+        </button>
+      </div>
+    ) : null
   },
 }))
 
@@ -92,7 +111,7 @@ vi.mock('@/hooks/useFeatureListPage', () => ({
 vi.mock('../hooks/useBookings', () => ({
   bookingUpdateMutationKey: ['bookings', 'update'],
   useBookings: () => ({ data: harness.bookings, isLoading: false }),
-  useCreateBooking: () => ({ mutate: harness.createBooking }),
+  useCreateBooking: () => ({ mutate: harness.createBooking, mutateAsync: harness.createBooking }),
   useUpdateBooking: () => ({ mutate: harness.updateBooking }),
   useDeleteBooking: () => ({ mutate: harness.deleteBooking }),
 }))
@@ -231,5 +250,28 @@ describe('BookingsPage read-first booking flow', () => {
       link:     'https://www.booking.com/hotel/jp/abc.html',
     })
     expect(window.location.pathname + window.location.search).toBe('/bookings')
+  })
+
+  it('creates every selected PDF candidate with the same source document', async () => {
+    harness.modalOpen = true
+
+    render(<BookingsPage />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'mock batch create' }))
+
+    expect(harness.closeModal).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(harness.createBooking).toHaveBeenCalledTimes(2))
+    expect(harness.createBooking.mock.calls[0]?.[0]).toMatchObject({
+      input: { type: 'flight', title: 'MM626', origin: 'TPE', destination: 'NRT' },
+      files: { coverImage: undefined, document: expect.any(File) },
+      createdBy: 'u1',
+    })
+    expect(harness.createBooking.mock.calls[1]?.[0]).toMatchObject({
+      input: { type: 'flight', title: 'JX803', origin: 'NRT', destination: 'TPE' },
+      files: { coverImage: undefined, document: expect.any(File) },
+      createdBy: 'u1',
+    })
+    expect(harness.createBooking.mock.calls[0]?.[0].files.document)
+      .toBe(harness.createBooking.mock.calls[1]?.[0].files.document)
   })
 })

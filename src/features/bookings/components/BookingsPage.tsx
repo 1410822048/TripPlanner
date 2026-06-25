@@ -16,7 +16,7 @@ import {
 import { usePendingMutationIds } from '@/hooks/usePendingMutationIds'
 import { MOCK_BOOKINGS } from '../mocks'
 import type { Booking } from '@/types'
-import BookingFormModal, { type BookingFormResult } from './BookingFormModal'
+import BookingFormModal, { type BookingFormBatchResult, type BookingFormResult } from './BookingFormModal'
 import SwipeableBookingItem from './SwipeableBookingItem'
 import AttachmentPreviewModal from './AttachmentPreviewModal'
 import BookingReadonlyModal from './BookingReadonlyModal'
@@ -170,6 +170,27 @@ export default function BookingsPage() {
         createdBy: uid,
       })
     }
+  }
+
+  function handleCreateManyFromPdf({ inputs, document }: BookingFormBatchResult) {
+    setSharedDraft(null)
+    if (isDemo) { modal.close(); signIn.open(); return }
+    if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+    modal.close()
+
+    void (async () => {
+      for (const input of inputs) {
+        try {
+          await createMut.mutateAsync({
+            input,
+            files:     { coverImage: undefined, document },
+            createdBy: uid,
+          })
+        } catch {
+          // useTripListMutation + global MutationCache already rollback/toast.
+        }
+      }
+    })()
   }
 
   function handleOpenAdd() {
@@ -356,6 +377,7 @@ export default function BookingsPage() {
           saveError={modal.saveError}
           onClose={handleCloseForm}
           onSave={handleSave}
+          onCreateMany={handleCreateManyFromPdf}
           onDelete={modal.editTarget && !isDemo && canWrite ? handleFormDelete : undefined}
         />
       )}

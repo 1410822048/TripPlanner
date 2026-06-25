@@ -1,4 +1,5 @@
-import type { BookingFormDraft, BookingFormState } from '../hooks/useBookingFormState'
+import { initBookingFormState, type BookingFormDraft, type BookingFormState } from '../bookingFormState'
+import type { CreateBookingInput } from '@/types'
 import {
   PdfPageLimitError,
   pdfPageLimitMessageJa,
@@ -31,15 +32,27 @@ export interface BookingPdfExtractedField {
   evidence:   string
 }
 
-export interface BookingPdfExtractResult {
-  bookingType:      'hotel' | 'other'
+export type BookingPdfExtractBookingType = 'flight' | 'hotel' | 'train' | 'bus' | 'other'
+export type BookingPdfExtractSegmentRole = 'single' | 'outbound' | 'return' | 'connection' | 'unknown'
+
+export interface BookingPdfExtractCandidate {
+  bookingType:      BookingPdfExtractBookingType
+  segmentRole:      BookingPdfExtractSegmentRole
   title:            BookingPdfExtractedField
   provider:         BookingPdfExtractedField
   confirmationCode: BookingPdfExtractedField
+  origin:           BookingPdfExtractedField
+  destination:      BookingPdfExtractedField
+  originIataCode:   BookingPdfExtractedField
+  destinationIataCode: BookingPdfExtractedField
   checkIn:          BookingPdfExtractedField
   checkOut:         BookingPdfExtractedField
   address:          BookingPdfExtractedField
   link:             BookingPdfExtractedField
+}
+
+export interface BookingPdfExtractResult {
+  bookings: BookingPdfExtractCandidate[]
   warnings:         string[]
 }
 
@@ -47,6 +60,9 @@ const FIELD_THRESHOLDS = {
   title:            0.6,
   provider:         0.55,
   confirmationCode: 0.6,
+  origin:           0.7,
+  destination:      0.7,
+  iataCode:         0.7,
   checkIn:          0.65,
   checkOut:         0.65,
   address:          0.75,
@@ -54,6 +70,8 @@ const FIELD_THRESHOLDS = {
 } as const
 
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/
+const IATA_CODE_RE = /^[A-Z]{3}$/
+const TRANSPORT_TYPES = new Set<BookingPdfExtractBookingType>(['flight', 'train', 'bus'])
 
 function bookingPdfFetchSignal(external?: AbortSignal): AbortSignal {
   const timeout = AbortSignal.timeout(60_000)
@@ -65,20 +83,43 @@ function shouldApply(field: BookingPdfExtractedField, threshold: number): boolea
   return field.value.trim().length > 0 && field.confidence >= threshold
 }
 
+function iataCodeValue(field: BookingPdfExtractedField): string {
+  const code = field.value.trim().toUpperCase()
+  return IATA_CODE_RE.test(code) && field.confidence >= FIELD_THRESHOLDS.iataCode ? code : ''
+}
+
+function transportLocationValue(
+  location: BookingPdfExtractedField,
+  iataCode: BookingPdfExtractedField,
+): string {
+  const value = location.value.trim()
+  const code = iataCodeValue(iataCode)
+  if (!value || !code || value === code || value.endsWith(`(${code})`)) return value
+  return `${value.replace(/\s*\([A-Z]{3}\)\s*$/, '')} (${code})`
+}
+
 export function bookingPdfExtractToDraftPatch(
   state: BookingFormState,
-  result: BookingPdfExtractResult,
+  result: BookingPdfExtractCandidate,
   opts: { isEdit: boolean },
 ): { patch: BookingFormDraft; appliedCount: number } {
   const patch: BookingFormDraft = {}
   const isBlankIdentity = !state.title.trim() && !state.origin.trim() && !state.destination.trim()
 
-  if (!opts.isEdit && isBlankIdentity && state.type === 'flight') {
+  if (!opts.isEdit && isBlankIdentity && state.type === 'flight' && result.bookingType !== 'flight') {
     patch.type = result.bookingType
   }
+  const targetType = patch.type ?? state.type
+  const targetIsTransport = TRANSPORT_TYPES.has(targetType)
 
   if (!state.title.trim() && shouldApply(result.title, FIELD_THRESHOLDS.title)) {
     patch.title = result.title.value.trim()
+  }
+  if (targetIsTransport && !state.origin.trim() && shouldApply(result.origin, FIELD_THRESHOLDS.origin)) {
+    patch.origin = transportLocationValue(result.origin, result.originIataCode)
+  }
+  if (targetIsTransport && !state.destination.trim() && shouldApply(result.destination, FIELD_THRESHOLDS.destination)) {
+    patch.destination = transportLocationValue(result.destination, result.destinationIataCode)
   }
   if (!state.provider.trim() && shouldApply(result.provider, FIELD_THRESHOLDS.provider)) {
     patch.provider = result.provider.value.trim()
@@ -89,10 +130,10 @@ export function bookingPdfExtractToDraftPatch(
   if (!state.checkIn && shouldApply(result.checkIn, FIELD_THRESHOLDS.checkIn) && DATE_ONLY_RE.test(result.checkIn.value)) {
     patch.checkIn = result.checkIn.value
   }
-  if (!state.checkOut && shouldApply(result.checkOut, FIELD_THRESHOLDS.checkOut) && DATE_ONLY_RE.test(result.checkOut.value)) {
+  if (targetType === 'hotel' && !state.checkOut && shouldApply(result.checkOut, FIELD_THRESHOLDS.checkOut) && DATE_ONLY_RE.test(result.checkOut.value)) {
     patch.checkOut = result.checkOut.value
   }
-  if (!state.address.trim() && shouldApply(result.address, FIELD_THRESHOLDS.address)) {
+  if (!targetIsTransport && !state.address.trim() && shouldApply(result.address, FIELD_THRESHOLDS.address)) {
     patch.address = result.address.value.trim()
   }
   if (!state.link.trim() && shouldApply(result.link, FIELD_THRESHOLDS.link)) {
@@ -103,6 +144,27 @@ export function bookingPdfExtractToDraftPatch(
   return {
     patch,
     appliedCount: Object.keys(patch).length,
+  }
+}
+
+export function bookingPdfCandidateToCreateInput(
+  candidate: BookingPdfExtractCandidate,
+): CreateBookingInput | null {
+  const blankState = initBookingFormState(null)
+  const { patch } = bookingPdfExtractToDraftPatch(blankState, candidate, { isEdit: false })
+  const type = patch.type ?? blankState.type
+  const isTransport = TRANSPORT_TYPES.has(type)
+
+  if (isTransport && (!patch.origin || !patch.destination)) return null
+  if (!isTransport && !patch.title) return null
+
+  return {
+    type,
+    ...patch,
+    origin:      isTransport ? patch.origin : undefined,
+    destination: isTransport ? patch.destination : undefined,
+    checkOut:    type === 'hotel' ? patch.checkOut : undefined,
+    address:     isTransport ? undefined : patch.address,
   }
 }
 

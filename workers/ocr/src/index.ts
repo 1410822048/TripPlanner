@@ -440,15 +440,19 @@ function formatCompareResult(r: OcrCompareResult): string {
 }
 
 function bookingPdfFieldCount(result: BookingPdfExtractResponse): number {
-  return [
-    result.title,
-    result.provider,
-    result.confirmationCode,
-    result.checkIn,
-    result.checkOut,
-    result.address,
-    result.link,
-  ].filter(field => field.value.trim()).length
+  return result.bookings
+    .flatMap(booking => [
+      booking.title,
+      booking.provider,
+      booking.confirmationCode,
+      booking.origin,
+      booking.destination,
+      booking.checkIn,
+      booking.checkOut,
+      booking.address,
+      booking.link,
+    ])
+    .filter(field => field.value.trim()).length
 }
 
 export const ROUTES: RouteDescriptor[] = [
@@ -747,7 +751,7 @@ export const ROUTES: RouteDescriptor[] = [
       // document-level reasoning over labels, addresses, and evidence.
       handle:    data => extractBookingPdfFields(data, bookingPdfClaudeConfig(c.env)),
       formatLog: (_data, result) =>
-        `type=${result.bookingType} fields=${bookingPdfFieldCount(result)} warnings=${result.warnings.length}`,
+        `candidates=${result.bookings.length} types=${result.bookings.map(b => b.bookingType).join(',')} fields=${bookingPdfFieldCount(result)} warnings=${result.warnings.length}`,
       catchDomain: ocrErrorCatcher,
     }),
   },

@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import BookingFormModal from './BookingFormModal'
 import { ATTACHMENT_SIZE_ERROR } from '@/hooks/useAttachment'
-import type { BookingPdfExtractResult } from '../services/bookingPdfExtractService'
+import type { BookingPdfExtractCandidate, BookingPdfExtractResult } from '../services/bookingPdfExtractService'
 
 const bookingPdfExtractMocks = vi.hoisted(() => ({
   extractBookingPdfAutofill: vi.fn(),
@@ -37,18 +37,45 @@ Object.defineProperty(URL, 'revokeObjectURL', {
   value: vi.fn(),
 })
 
+const EMPTY_PDF_FIELD = { value: '', confidence: 0, evidence: '' }
+
 function emptyPdfResult(): BookingPdfExtractResult {
-  const emptyField = { value: '', confidence: 0, evidence: '' }
   return {
-    bookingType:      'hotel',
-    title:            emptyField,
-    provider:         emptyField,
-    confirmationCode: emptyField,
-    checkIn:          emptyField,
-    checkOut:         emptyField,
-    address:          emptyField,
-    link:             emptyField,
+    bookings: [{
+      bookingType:      'hotel',
+      segmentRole:      'single',
+      title:            EMPTY_PDF_FIELD,
+      provider:         EMPTY_PDF_FIELD,
+      confirmationCode: EMPTY_PDF_FIELD,
+      origin:           EMPTY_PDF_FIELD,
+      destination:      EMPTY_PDF_FIELD,
+      originIataCode:   EMPTY_PDF_FIELD,
+      destinationIataCode: EMPTY_PDF_FIELD,
+      checkIn:          EMPTY_PDF_FIELD,
+      checkOut:         EMPTY_PDF_FIELD,
+      address:          EMPTY_PDF_FIELD,
+      link:             EMPTY_PDF_FIELD,
+    }],
     warnings:         [],
+  }
+}
+
+function flightCandidate(over: Partial<BookingPdfExtractCandidate> = {}): BookingPdfExtractCandidate {
+  return {
+    bookingType:      'flight',
+    segmentRole:      'outbound',
+    title:            { value: 'MM626', confidence: 0.95, evidence: 'MM626' },
+    provider:         { value: 'Peach Aviation', confidence: 0.9, evidence: 'Peach Aviation' },
+    confirmationCode: { value: 'KATR7X', confidence: 0.9, evidence: 'KATR7X' },
+    origin:           { value: 'Taipei', confidence: 0.9, evidence: 'Departure Taiwan Taoyuan International Airport T1' },
+    destination:      { value: 'Tokyo', confidence: 0.9, evidence: 'Arrival Narita International Airport T1' },
+    originIataCode:   { value: 'TPE', confidence: 0.9, evidence: 'Taiwan Taoyuan International Airport T1' },
+    destinationIataCode: { value: 'NRT', confidence: 0.9, evidence: 'Narita International Airport T1' },
+    checkIn:          { value: '2026-09-18', confidence: 0.9, evidence: '2026 年 9 月 18 日' },
+    checkOut:         EMPTY_PDF_FIELD,
+    address:          EMPTY_PDF_FIELD,
+    link:             EMPTY_PDF_FIELD,
+    ...over,
   }
 }
 
@@ -109,7 +136,7 @@ describe('BookingFormModal link defaults', () => {
 
     expect(screen.getAllByDisplayValue('Booking.com')).toHaveLength(2)
 
-    fireEvent.click(screen.getByRole('button', { name: '予約を追加' }))
+    fireEvent.click(screen.getByRole('button', { name: '手動予約を追加' }))
 
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
       input: expect.objectContaining({
@@ -145,7 +172,7 @@ describe('BookingFormModal link defaults', () => {
     expect(screen.getByDisplayValue('Manual title')).toBeTruthy()
     expect(screen.getByDisplayValue('Manual provider')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: '予約を追加' }))
+    fireEvent.click(screen.getByRole('button', { name: '手動予約を追加' }))
 
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
       input: expect.objectContaining({
@@ -218,10 +245,10 @@ describe('BookingFormModal PDF autofill intent', () => {
       .toHaveBeenCalledWith(file, expect.any(AbortSignal))
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /もう一度読み取る/ })).toBeTruthy()
+      expect(screen.getByRole('button', { name: /再読取/ })).toBeTruthy()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /もう一度読み取る/ }))
+    fireEvent.click(screen.getByRole('button', { name: /再読取/ }))
 
     expect(bookingPdfExtractMocks.extractBookingPdfAutofill).toHaveBeenCalledTimes(2)
     expect(bookingPdfExtractMocks.extractBookingPdfAutofill.mock.calls[1]?.[0]).toBe(file)
@@ -242,13 +269,13 @@ describe('BookingFormModal PDF autofill intent', () => {
     fireEvent.change(fileInput(container, 'application/pdf,.pdf'), { target: { files: [file] } })
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /もう一度読み取る/ })).toBeTruthy()
+      expect(screen.getByRole('button', { name: /再読取/ })).toBeTruthy()
     })
 
     fireEvent.change(fileInput(container, 'image/*,application/pdf'), { target: { files: [file] } })
 
     expect(screen.getByRole('button', { name: /PDFを読み取る/ })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /もう一度読み取る/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /再読取/ })).toBeNull()
     expect(bookingPdfExtractMocks.extractBookingPdfAutofill).toHaveBeenCalledTimes(1)
   })
 
@@ -272,5 +299,169 @@ describe('BookingFormModal PDF autofill intent', () => {
 
     expect(bookingPdfExtractMocks.extractBookingPdfAutofill).not.toHaveBeenCalled()
     expect(screen.getByRole('status').textContent).toBe(ATTACHMENT_SIZE_ERROR)
+  })
+
+  test('creates selected extracted booking candidates in one action', async () => {
+    const onCreateMany = vi.fn()
+    bookingPdfExtractMocks.extractBookingPdfAutofill.mockResolvedValueOnce({
+      bookings: [
+        flightCandidate(),
+        flightCandidate({
+          segmentRole: 'return',
+          title:       { value: 'JX803', confidence: 0.95, evidence: 'JX803' },
+          provider:    { value: 'STARLUX Airlines', confidence: 0.9, evidence: 'STARLUX Airlines' },
+          origin:      { value: 'Tokyo', confidence: 0.9, evidence: 'Departure 成田國際機場 T2' },
+          destination: { value: 'Taipei', confidence: 0.9, evidence: 'Arrival 臺灣桃園國際機場 T1' },
+          originIataCode: { value: 'NRT', confidence: 0.9, evidence: 'Departure 成田國際機場 T2' },
+          destinationIataCode: { value: 'TPE', confidence: 0.9, evidence: 'Arrival 臺灣桃園國際機場 T1' },
+          checkIn:     { value: '2026-09-26', confidence: 0.9, evidence: 'September 26, 2026' },
+        }),
+      ],
+      warnings: [],
+    })
+
+    const { container } = render(
+      <BookingFormModal
+        editTarget={null}
+        isOpen
+        isSaving={false}
+        onClose={() => {}}
+        onSave={() => {}}
+        onCreateMany={onCreateMany}
+      />,
+    )
+
+    const file = new File(['%PDF-1.7'], 'roundtrip.pdf', { type: 'application/pdf' })
+    fireEvent.change(fileInput(container, 'application/pdf,.pdf'), { target: { files: [file] } })
+
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toContain('2件の予約候補')
+    })
+
+    expect(screen.queryByDisplayValue('MM626')).toBeNull()
+
+    const checkboxes = screen.getAllByRole('checkbox')
+    expect(checkboxes).toHaveLength(2)
+    expect((checkboxes[0] as HTMLInputElement).checked).toBe(true)
+    expect((checkboxes[1] as HTMLInputElement).checked).toBe(true)
+
+    fireEvent.click(checkboxes[1]!)
+    fireEvent.click(screen.getByRole('button', { name: '選択した予約を追加' }))
+
+    expect(onCreateMany).toHaveBeenCalledWith({
+      document: file,
+      inputs: [expect.objectContaining({
+        type:        'flight',
+        title:       'MM626',
+        provider:    'Peach Aviation',
+        origin:      'Taipei (TPE)',
+        destination: 'Tokyo (NRT)',
+        checkIn:     '2026-09-18',
+      })],
+    })
+  })
+
+  test('clears stale batch candidates when a replacement PDF is rejected', async () => {
+    const onCreateMany = vi.fn()
+    bookingPdfExtractMocks.extractBookingPdfAutofill.mockResolvedValueOnce({
+      bookings: [
+        flightCandidate(),
+        flightCandidate({
+          segmentRole: 'return',
+          title:       { value: 'JX803', confidence: 0.95, evidence: 'JX803' },
+          provider:    { value: 'STARLUX Airlines', confidence: 0.9, evidence: 'STARLUX Airlines' },
+          origin:      { value: 'Tokyo', confidence: 0.9, evidence: 'Departure 成田國際機場 T2' },
+          destination: { value: 'Taipei', confidence: 0.9, evidence: 'Arrival 臺灣桃園國際機場 T1' },
+          originIataCode: { value: 'NRT', confidence: 0.9, evidence: 'Departure 成田國際機場 T2' },
+          destinationIataCode: { value: 'TPE', confidence: 0.9, evidence: 'Arrival 臺灣桃園國際機場 T1' },
+          checkIn:     { value: '2026-09-26', confidence: 0.9, evidence: 'September 26, 2026' },
+        }),
+      ],
+      warnings: [],
+    })
+
+    const { container } = render(
+      <BookingFormModal
+        editTarget={null}
+        isOpen
+        isSaving={false}
+        onClose={() => {}}
+        onSave={() => {}}
+        onCreateMany={onCreateMany}
+      />,
+    )
+
+    fireEvent.change(fileInput(container, 'application/pdf,.pdf'), {
+      target: { files: [new File(['%PDF-1.7'], 'roundtrip.pdf', { type: 'application/pdf' })] },
+    })
+
+    await waitFor(() => expect(screen.getAllByRole('checkbox')).toHaveLength(2))
+
+    const largeFile = new File(
+      [new Uint8Array(5 * 1024 * 1024 + 1)],
+      'large-booking.pdf',
+      { type: 'application/pdf' },
+    )
+    fireEvent.change(fileInput(container, 'application/pdf,.pdf'), { target: { files: [largeFile] } })
+
+    expect(screen.getByRole('status').textContent).toBe(ATTACHMENT_SIZE_ERROR)
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
+    expect(screen.queryByRole('button', { name: '選択した予約を追加' })).toBeNull()
+  })
+
+  test('keeps the candidate picker usable when only one batch candidate is createable', async () => {
+    const onCreateMany = vi.fn()
+    bookingPdfExtractMocks.extractBookingPdfAutofill.mockResolvedValueOnce({
+      bookings: [
+        flightCandidate({
+          destination: { value: '', confidence: 0, evidence: '' },
+          destinationIataCode: { value: '', confidence: 0, evidence: '' },
+        }),
+        flightCandidate({
+          segmentRole: 'return',
+          title:       { value: 'JX803', confidence: 0.95, evidence: 'JX803' },
+          provider:    { value: 'STARLUX Airlines', confidence: 0.9, evidence: 'STARLUX Airlines' },
+          origin:      { value: 'Tokyo', confidence: 0.9, evidence: 'Departure 成田國際機場 T2' },
+          destination: { value: 'Taipei', confidence: 0.9, evidence: 'Arrival 臺灣桃園國際機場 T1' },
+          originIataCode: { value: 'NRT', confidence: 0.9, evidence: 'Departure 成田國際機場 T2' },
+          destinationIataCode: { value: 'TPE', confidence: 0.9, evidence: 'Arrival 臺灣桃園國際機場 T1' },
+          checkIn:     { value: '2026-09-26', confidence: 0.9, evidence: 'September 26, 2026' },
+        }),
+      ],
+      warnings: [],
+    })
+
+    const { container } = render(
+      <BookingFormModal
+        editTarget={null}
+        isOpen
+        isSaving={false}
+        onClose={() => {}}
+        onSave={() => {}}
+        onCreateMany={onCreateMany}
+      />,
+    )
+
+    const file = new File(['%PDF-1.7'], 'roundtrip.pdf', { type: 'application/pdf' })
+    fireEvent.change(fileInput(container, 'application/pdf,.pdf'), { target: { files: [file] } })
+
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toContain('1件の予約候補')
+    })
+
+    expect(screen.getAllByRole('checkbox')).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: '選択した予約を追加' }))
+
+    expect(onCreateMany).toHaveBeenCalledWith({
+      document: file,
+      inputs: [expect.objectContaining({
+        type:        'flight',
+        title:       'JX803',
+        provider:    'STARLUX Airlines',
+        origin:      'Tokyo (NRT)',
+        destination: 'Taipei (TPE)',
+        checkIn:     '2026-09-26',
+      })],
+    })
   })
 })

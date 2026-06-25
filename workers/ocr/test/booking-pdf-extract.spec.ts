@@ -23,15 +23,22 @@ const CFG: ClaudeConfig = {
 }
 
 const VALID_RESULT = {
-	bookingType:      'hotel',
-	title:            { value: 'Airbnb Sakura House', confidence: 0.92, evidence: 'Airbnb Sakura House' },
-	provider:         { value: 'Airbnb', confidence: 0.95, evidence: 'Airbnb' },
-	confirmationCode: { value: 'HM12345', confidence: 0.9, evidence: '確認コード HM12345' },
-	checkIn:          { value: '2026-07-01', confidence: 0.9, evidence: '2026/7/1' },
-	checkOut:         { value: '2026-07-03', confidence: 0.9, evidence: '2026/7/3' },
-	address:          { value: '東京都台東区浅草1-1-1', confidence: 0.86, evidence: '前往房源 東京都台東区浅草1-1-1' },
-	link:             { value: '', confidence: 0, evidence: '' },
-	warnings:         [],
+	bookings: [{
+		bookingType:      'hotel',
+		segmentRole:      'single',
+		title:            { value: 'Airbnb Sakura House', confidence: 0.92, evidence: 'Airbnb Sakura House' },
+		provider:         { value: 'Airbnb', confidence: 0.95, evidence: 'Airbnb' },
+		confirmationCode: { value: 'HM12345', confidence: 0.9, evidence: '確認コード HM12345' },
+		origin:           { value: '', confidence: 0, evidence: '' },
+		destination:      { value: '', confidence: 0, evidence: '' },
+		originIataCode:   { value: '', confidence: 0, evidence: '' },
+		destinationIataCode: { value: '', confidence: 0, evidence: '' },
+		checkIn:          { value: '2026-07-01', confidence: 0.9, evidence: '2026/7/1' },
+		checkOut:         { value: '2026-07-03', confidence: 0.9, evidence: '2026/7/3' },
+		address:          { value: '東京都台東区浅草1-1-1', confidence: 0.86, evidence: '前往房源 東京都台東区浅草1-1-1' },
+		link:             { value: '', confidence: 0, evidence: '' },
+	}],
+	warnings: [],
 }
 
 function request(over: Partial<BookingPdfExtractRequest> = {}): BookingPdfExtractRequest {
@@ -145,11 +152,25 @@ describe('extractBookingPdfFields', () => {
 		expect(BOOKING_PDF_EXTRACT_JSON_SCHEMA).toMatchObject({
 			additionalProperties: false,
 			properties: {
-				bookingType: { enum: ['hotel', 'other'] },
-				title: {
-					additionalProperties: false,
-					properties: {
-						value: { type: 'string' },
+				bookings: {
+					items: {
+						additionalProperties: false,
+						properties: {
+							bookingType: { enum: ['flight', 'hotel', 'train', 'bus', 'other'] },
+							segmentRole: { enum: ['single', 'outbound', 'return', 'connection', 'unknown'] },
+							originIataCode: {
+								additionalProperties: false,
+								properties: {
+									value: { type: 'string' },
+								},
+							},
+							title: {
+								additionalProperties: false,
+								properties: {
+									value: { type: 'string' },
+								},
+							},
+						},
 					},
 				},
 				warnings: { items: { type: 'string' } },
@@ -173,11 +194,34 @@ describe('extractBookingPdfFields', () => {
 		stubToolUseAndCaptureRequest(VALID_RESULT)
 
 		await expect(extractBookingPdfFields(request(), CFG)).resolves.toMatchObject({
-			bookingType:      'hotel',
-			title:            { value: 'Airbnb Sakura House' },
-			confirmationCode: { value: 'HM12345' },
-			address:          { value: '東京都台東区浅草1-1-1' },
+			bookings: [{
+				bookingType:      'hotel',
+				title:            { value: 'Airbnb Sakura House' },
+				confirmationCode: { value: 'HM12345' },
+				address:          { value: '東京都台東区浅草1-1-1' },
+			}],
 		})
+	})
+
+	it('truncates oversized model strings instead of rejecting useful candidates', async () => {
+		const longWarning = 'w'.repeat(260)
+		const longEvidence = 'e'.repeat(360)
+		stubToolUseAndCaptureRequest({
+			...VALID_RESULT,
+			bookings: [{
+				...VALID_RESULT.bookings[0]!,
+				title: {
+					...VALID_RESULT.bookings[0]!.title,
+					evidence: longEvidence,
+				},
+			}],
+			warnings: ['short warning', longWarning],
+		})
+
+		const result = await extractBookingPdfFields(request(), CFG)
+
+		expect(result.warnings[1]).toHaveLength(200)
+		expect(result.bookings[0]!.title.evidence).toHaveLength(300)
 	})
 
 	it('prompts Claude to prefer property address over directions text', async () => {
@@ -188,19 +232,156 @@ describe('extractBookingPdfFields', () => {
 		const body = readBody()
 		const prompt = body.messages[0]?.content.find(part => part.type === 'text')?.text ?? ''
 		expect(body.system).toContain('strict travel booking PDF extraction engine')
+		expect(prompt).toContain('Return a bookings array')
+		expect(prompt).toContain('deduplicate')
+		expect(prompt).toContain('originIataCode and destinationIataCode')
+		expect(prompt).toContain('Narita International Airport T1')
+		expect(prompt).toContain('Do not infer a specific airport code from a city name alone')
 		expect(prompt).toContain('Do NOT use generic directions')
 		expect(prompt).toContain('前往房源')
 		expect(prompt).toContain('如何前往')
 	})
 
+	it('accepts multiple transport candidates for round-trip PDFs', async () => {
+		const flightField = (value: string) => ({ value, confidence: value ? 0.9 : 0, evidence: value })
+		const empty = flightField('')
+		stubToolUseAndCaptureRequest({
+			bookings: [
+				{
+					bookingType:      'flight',
+					segmentRole:      'outbound',
+					title:            flightField('MM626'),
+					provider:         flightField('Peach Aviation'),
+					confirmationCode: flightField('KATR7X'),
+					origin:           flightField('Taipei'),
+					destination:      flightField('Tokyo'),
+					originIataCode:   flightField('tpe', 'Taiwan Taoyuan International Airport T1'),
+					destinationIataCode: flightField('nrt', 'Narita International Airport T1'),
+					checkIn:          flightField('2026-09-18'),
+					checkOut:         flightField('2026-09-18'),
+					address:          empty,
+					link:             empty,
+				},
+				{
+					bookingType:      'flight',
+					segmentRole:      'return',
+					title:            flightField('JX803'),
+					provider:         flightField('STARLUX Airlines'),
+					confirmationCode: flightField('D6RGRW'),
+					origin:           flightField('Tokyo'),
+					destination:      flightField('Taipei'),
+					originIataCode:   flightField('NRT', 'Narita International Airport T2'),
+					destinationIataCode: flightField('TPE', 'Taiwan Taoyuan International Airport T1'),
+					checkIn:          flightField('2026-09-26'),
+					checkOut:         flightField('2026-09-26'),
+					address:          empty,
+					link:             empty,
+				},
+			],
+			warnings: [],
+		})
+
+		await expect(extractBookingPdfFields(request(), CFG)).resolves.toMatchObject({
+			bookings: [
+				{
+					bookingType: 'flight',
+					segmentRole: 'outbound',
+					title:       { value: 'MM626' },
+					origin:      { value: 'Taipei' },
+					destination: { value: 'Tokyo' },
+					originIataCode: { value: 'TPE' },
+					destinationIataCode: { value: 'NRT' },
+				},
+				{
+					bookingType: 'flight',
+					segmentRole: 'return',
+					title:       { value: 'JX803' },
+					origin:      { value: 'Tokyo' },
+					destination: { value: 'Taipei' },
+					originIataCode: { value: 'NRT' },
+					destinationIataCode: { value: 'TPE' },
+				},
+			],
+		})
+	})
+
+	it('normalizes concrete flight IATA code fields', async () => {
+		const flightField = (value: string, evidence = value) => ({ value, confidence: value ? 0.9 : 0, evidence })
+		const empty = flightField('')
+		stubToolUseAndCaptureRequest({
+			bookings: [{
+				bookingType:      'flight',
+				segmentRole:      'outbound',
+				title:            flightField('MM626'),
+				provider:         flightField('Peach Aviation'),
+				confirmationCode: flightField('KATR7X'),
+				origin:           flightField('Taipei', 'Taiwan Taoyuan International Airport T1'),
+				destination:      flightField('Tokyo', 'Narita International Airport T1'),
+				originIataCode:   flightField('tpe', 'Taiwan Taoyuan International Airport T1'),
+				destinationIataCode: flightField('nrt', 'Narita International Airport T1'),
+				checkIn:          flightField('2026-09-18'),
+				checkOut:         flightField('2026-09-18'),
+				address:          empty,
+				link:             empty,
+			}],
+			warnings: [],
+		})
+
+		await expect(extractBookingPdfFields(request(), CFG)).resolves.toMatchObject({
+			bookings: [{
+				origin:      { value: 'Taipei' },
+				destination: { value: 'Tokyo' },
+				originIataCode: { value: 'TPE' },
+				destinationIataCode: { value: 'NRT' },
+			}],
+		})
+	})
+
+	it('does not infer a specific flight airport from city-only evidence', async () => {
+		const flightField = (value: string, evidence = value) => ({ value, confidence: value ? 0.9 : 0, evidence })
+		const empty = flightField('')
+		stubToolUseAndCaptureRequest({
+			bookings: [{
+				bookingType:      'flight',
+				segmentRole:      'outbound',
+				title:            flightField('MM626'),
+				provider:         flightField('Peach Aviation'),
+				confirmationCode: flightField('KATR7X'),
+				origin:           flightField('Taipei', 'Taipei - Tokyo'),
+				destination:      flightField('Tokyo', 'Taipei - Tokyo'),
+				originIataCode:   empty,
+				destinationIataCode: empty,
+				checkIn:          flightField('2026-09-18'),
+				checkOut:         flightField('2026-09-18'),
+				address:          empty,
+				link:             empty,
+			}],
+			warnings: [],
+		})
+
+		await expect(extractBookingPdfFields(request(), CFG)).resolves.toMatchObject({
+			bookings: [{
+				origin:      { value: 'Taipei' },
+				destination: { value: 'Tokyo' },
+				originIataCode: { value: '' },
+				destinationIataCode: { value: '' },
+			}],
+		})
+	})
+
 	it('maps all-empty useful fields to a parse error', async () => {
 		stubToolUseAndCaptureRequest({
 			...VALID_RESULT,
-			title:            { value: '', confidence: 0, evidence: '' },
-			confirmationCode: { value: '', confidence: 0, evidence: '' },
-			checkIn:          { value: '', confidence: 0, evidence: '' },
-			checkOut:         { value: '', confidence: 0, evidence: '' },
-			address:          { value: '', confidence: 0, evidence: '' },
+			bookings: [{
+				...VALID_RESULT.bookings[0],
+				title:            { value: '', confidence: 0, evidence: '' },
+				confirmationCode: { value: '', confidence: 0, evidence: '' },
+				origin:           { value: '', confidence: 0, evidence: '' },
+				destination:      { value: '', confidence: 0, evidence: '' },
+				checkIn:          { value: '', confidence: 0, evidence: '' },
+				checkOut:         { value: '', confidence: 0, evidence: '' },
+				address:          { value: '', confidence: 0, evidence: '' },
+			}],
 		})
 
 		await expect(extractBookingPdfFields(request(), CFG)).rejects.toMatchObject({ status: 422 })
