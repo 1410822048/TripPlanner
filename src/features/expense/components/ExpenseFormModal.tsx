@@ -33,6 +33,7 @@ import FormModalShell from '@/components/ui/FormModalShell'
 import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
 import MemberAvatar from '@/components/ui/MemberAvatar'
+import CategoryChipRow from '@/components/ui/CategoryChipRow'
 import ReceiptSection from './expenseForm/ReceiptSection'
 import CurrencySection from './expenseForm/CurrencySection'
 import SplitsSection from './expenseForm/SplitsSection'
@@ -442,30 +443,12 @@ export default function ExpenseFormModal({
       </FormField>
 
       <FormField label="カテゴリ">
-        {/* Single-row compact chips — emoji + tighter padding lets all 6
-            sit on one line down to ~340px viewport. Wrapping is still
-            allowed as a safety net (narrow phones / accessibility zoom). */}
-        <div className="flex gap-1.5 flex-wrap">
-          {CATEGORIES.map(c => {
-            const CatIcon = CATEGORY_ICON[c.value]
-            const active = state.category === c.value
-            return (
-              <button
-                key={c.value}
-                type="button"
-                onClick={() => setField('category', c.value)}
-                className={[
-                  'flex items-center gap-1 px-2 py-1 rounded-card text-[11px] cursor-pointer transition-all border-[1.5px]',
-                  active
-                    ? 'border-accent bg-accent text-white font-semibold'
-                    : 'border-border bg-transparent text-muted font-normal hover:border-muted',
-                ].join(' ')}
-              >
-                <CatIcon size={13} strokeWidth={2} />{c.label}
-              </button>
-            )
-          })}
-        </div>
+        <CategoryChipRow
+          categories={CATEGORIES}
+          icons={CATEGORY_ICON}
+          active={state.category}
+          onSelect={v => setField('category', v)}
+        />
       </FormField>
 
       <ReceiptSection

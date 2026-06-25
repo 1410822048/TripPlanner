@@ -12,6 +12,7 @@ import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
 import CurrencyInput from '@/components/ui/CurrencyInput'
 import DeleteConfirm from '@/components/ui/DeleteConfirm'
+import CategoryChipRow from '@/components/ui/CategoryChipRow'
 import { useTripCurrency } from '@/hooks/useTripCurrency'
 import { currencySymbol } from '@/utils/currency'
 import { formatMinorForInput, parseMoneyToMinor, MoneyParseError } from '@/utils/money'
@@ -157,27 +158,12 @@ export default function ScheduleFormModal({
       </FormField>
 
       <FormField label="カテゴリ">
-        <div className="flex gap-[7px] flex-wrap">
-          {SCHEDULE_CATEGORIES.map(c => {
-            const CatIcon = CATEGORY_ICON[c.value]
-            const active = state.category === c.value
-            return (
-              <button
-                key={c.value}
-                type="button"
-                onClick={() => setField('category', c.value)}
-                className={[
-                  'flex items-center gap-[5px] px-3 py-1.5 rounded-card text-[12px] cursor-pointer transition-all border-[1.5px]',
-                  active
-                    ? 'border-accent bg-accent text-white font-semibold'
-                    : 'border-border bg-transparent text-muted font-normal hover:border-muted',
-                ].join(' ')}
-              >
-                <CatIcon size={13} strokeWidth={2} />{c.label}
-              </button>
-            )
-          })}
-        </div>
+        <CategoryChipRow
+          categories={SCHEDULE_CATEGORIES}
+          icons={CATEGORY_ICON}
+          active={state.category}
+          onSelect={v => setField('category', v)}
+        />
       </FormField>
 
       <FormField label="日付" error={errors.date} required>
