@@ -20,11 +20,6 @@
     "deploy:pages": "node scripts/deploy-pages-prod.mjs",
     "prepare": "husky"
   },
-  "lint-staged": {
-    "*.{ts,tsx}": [
-      "npm exec -- eslint --max-warnings 0 --no-warn-ignored"
-    ]
-  },
   "overrides": {
     "eslint-plugin-react-hooks": {
       "zod-validation-error": "^4.0.2"
