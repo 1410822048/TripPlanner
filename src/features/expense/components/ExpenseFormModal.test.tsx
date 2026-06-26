@@ -25,7 +25,7 @@ vi.mock('@/components/ui/CurrencyPicker', () => ({ default: () => null }))
 vi.mock('@/components/ui/pickers', () => ({ DatePicker: () => null }))
 vi.mock('@/components/ui/MemberAvatar', () => ({ default: () => null }))
 vi.mock('@/components/ui/AttachmentRow', () => ({ default: () => null }))
-vi.mock('@/features/bookings/components/AttachmentPreviewModal', () => ({ default: () => null }))
+vi.mock('@/features/attachments/components/AttachmentPreviewModal', () => ({ default: () => null }))
 
 // ── Context / network hooks ──────────────────────────────────────────
 vi.mock('@/hooks/useTripCurrency', () => ({ useTripCurrency: () => 'JPY' }))

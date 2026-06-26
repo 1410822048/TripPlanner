@@ -1,4 +1,4 @@
-// src/features/bookings/components/AttachmentPreviewModal.tsx
+// src/features/attachments/components/AttachmentPreviewModal.tsx
 // Full-screen viewer for an attachment (booking / expense receipt). Lets the
 // user inspect the actual contents (list/form thumbnails are too small to
 // read e.g. a flight QR code or hotel room number).

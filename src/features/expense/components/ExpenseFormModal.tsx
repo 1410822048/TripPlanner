@@ -65,7 +65,7 @@ import {
   formatMinorAmount,
   currencyFractionDigits,
 } from '@/utils/money'
-import AttachmentPreviewModal from '@/features/bookings/components/AttachmentPreviewModal'
+import AttachmentPreviewModal from '@/features/attachments/components/AttachmentPreviewModal'
 
 
 const CATEGORIES: { value: ExpenseCategory; label: string }[] = [

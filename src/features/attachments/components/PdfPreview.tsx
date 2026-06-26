@@ -1,4 +1,4 @@
-// src/features/bookings/components/PdfPreview.tsx
+// src/features/attachments/components/PdfPreview.tsx
 // In-app PDF viewer (pdf.js via react-pdf). Lazy-loaded ONLY when the
 // attachment preview opens on a PDF, so pdfjs + its worker (~hundreds of KB)
 // stay out of the main bundle. Replaces the old per-platform split (desktop

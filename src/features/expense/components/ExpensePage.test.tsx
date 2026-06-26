@@ -43,7 +43,7 @@ vi.mock('@/components/ui/BottomSheet', () => ({
   ),
 }))
 
-vi.mock('@/features/bookings/components/AttachmentPreviewModal', () => ({
+vi.mock('@/features/attachments/components/AttachmentPreviewModal', () => ({
   default: ({ fileName, onClose }: { fileName: string; onClose: () => void }) => (
     <div role="dialog" aria-label="attachment-preview">
       preview:{fileName}
