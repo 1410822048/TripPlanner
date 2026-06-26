@@ -13,7 +13,7 @@ import { DEFAULT_CURRENCY } from '@/utils/currency'
 import { useAuth } from '@/hooks/useAuth'
 import { useCreateTrip } from '@/features/trips/hooks/useTrips'
 import { useTripStore } from '@/store/tripStore'
-import { CreateTripSchema } from '@/types'
+import { CreateTripSchema } from '@/types/trip'
 import { toast } from '@/shared/toast'
 
 interface Props {
@@ -189,4 +189,3 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
     </BottomSheet>
   )
 }
-

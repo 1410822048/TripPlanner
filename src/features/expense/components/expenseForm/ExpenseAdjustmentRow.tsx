@@ -9,7 +9,7 @@ import {
   type ExpenseAdjustment,
   type ExpenseAdjustmentKind,
   type ExpenseAdjustmentScope,
-} from '@/types'
+} from '@/types/expense'
 import { adjustmentSign } from '@tripmate/expense-materialize'
 import CurrencyInput from '@/components/ui/CurrencyInput'
 import MemberAvatar from '@/components/ui/MemberAvatar'

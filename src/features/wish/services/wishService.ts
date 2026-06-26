@@ -51,7 +51,7 @@ import {
   type WishImage,
   type CreateWishInput,
   type UpdateWishInput,
-} from '@/types'
+} from '@/types/wish'
 
 const LIST_LIMIT = 100
 

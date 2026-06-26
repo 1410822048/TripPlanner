@@ -7,7 +7,7 @@ import { createTripScopedListServices } from '@/services/tripScopedList'
 import { validateUpdateOrThrow } from '@/services/validateUpdate'
 import { auditUpdate } from '@/utils/audit'
 import { bumpTripActivity } from '@/services/tripActivity'
-import { ExpenseDocSchema, UpdateExpenseSchema, type Expense, type CreateExpenseInput, type UpdateExpenseInput } from '@/types'
+import { ExpenseDocSchema, UpdateExpenseSchema, type Expense, type CreateExpenseInput, type UpdateExpenseInput } from '@/types/expense'
 import { uploadReceipt, purgeReceipt } from './expenseStorage'
 import {
   requireWorkerWriteBase, preflightIdToken, workerFetch,

@@ -20,12 +20,12 @@
 //   - useReceiptOcr    — OCR orchestration (source + worker flow + compare +
 //                        camera/upload pick handlers)
 import { useRef, useState } from 'react'
-import {
-  type Expense,
-  type ExpenseCategory,
-  type ExpenseItem,
-  type CreateExpenseInput,
-} from '@/types'
+import type {
+  Expense,
+  ExpenseCategory,
+  ExpenseItem,
+  CreateExpenseInput,
+} from '@/types/expense'
 import type { TripMember } from '@/features/trips/types'
 import { reconcileReceipt } from '@tripmate/expense-materialize'
 import { convertMinorHalfEven } from '@tripmate/fx-core'

@@ -19,7 +19,7 @@ import {
   type PlanItem,
   type CreatePlanItemInput,
   type UpdatePlanItemInput,
-} from '@/types'
+} from '@/types/planning'
 
 const LIST_LIMIT = 200
 

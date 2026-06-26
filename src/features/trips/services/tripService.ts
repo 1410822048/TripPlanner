@@ -9,7 +9,7 @@ import { P } from '@/services/paths'
 import { toLocalMidnightTimestamp } from '@/utils/dates'
 import { captureError } from '@/services/sentry'
 import { subscribeToCollection } from '@/services/realtimeQuery'
-import { CreateTripSchema, UpdateTripSchema, TripDocSchema, type CreateTripInput, type UpdateTripInput, type Trip } from '@/types'
+import { CreateTripSchema, UpdateTripSchema, TripDocSchema, type CreateTripInput, type UpdateTripInput, type Trip } from '@/types/trip'
 
 /** Defensive cap on the trips-per-user query. Real users don't have 50+
  *  active trips; if Sentry reports a hit, the actual scaling pain is here

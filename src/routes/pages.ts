@@ -16,3 +16,6 @@ export const BookingsPage = lazy(() => import('@/features/bookings/components/Bo
 export const WishPage     = lazy(() => import('@/features/wish/components/WishPage'))
 export const PlanningPage = lazy(() => import('@/features/planning/components/PlanningPage'))
 export const AccountPage  = lazy(() => import('@/features/account/components/AccountPage'))
+export const InvitePage       = lazy(() => import('@/features/trips/invites/InvitePage'))
+export const PastLodgingPage  = lazy(() => import('@/features/bookings/components/PastLodgingPage'))
+export const SocialCirclePage = lazy(() => import('@/features/members/components/SocialCirclePage'))

@@ -11,7 +11,7 @@ import { validateUpdateOrThrow } from '@/services/validateUpdate'
 import { auditCreate, auditUpdate } from '@/utils/audit'
 import { getTripMemberIds } from '@/services/tripMemberIds'
 import { bumpTripActivity } from '@/services/tripActivity'
-import { ScheduleDocSchema, UpdateScheduleSchema, type Schedule, type CreateScheduleInput, type UpdateScheduleInput } from '@/types'
+import { ScheduleDocSchema, UpdateScheduleSchema, type Schedule, type CreateScheduleInput, type UpdateScheduleInput } from '@/types/schedule'
 
 /** Defensive cap — schedules can run higher per trip (multi-day with
  *  multiple stops per day) so 200 vs bookings' 100. */

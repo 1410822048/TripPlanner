@@ -26,7 +26,7 @@ import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'
 import { subscribeToCollection } from '@/services/realtimeQuery'
-import { InviteDocSchema, type Invite, type Trip } from '@/types'
+import { InviteDocSchema, type Invite, type Trip } from '@/types/trip'
 import { getTripsByIds } from '@/features/trips/services/tripService'
 import { requireWorkerWriteBase, preflightIdToken, workerFetch } from '@/services/workerBase'
 

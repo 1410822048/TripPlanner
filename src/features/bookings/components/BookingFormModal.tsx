@@ -9,8 +9,7 @@
 //   - File      → user picked a new file (replace on save)
 import { useEffect, useId, useRef, useState } from 'react'
 import { Paperclip, CalendarDays, ChevronRight, FileText, Image as ImageIcon, KeyRound, Loader2, PencilLine, RefreshCw } from 'lucide-react'
-import type { Booking, CreateBookingInput } from '@/types'
-import { isHttpUrl } from '@/types'
+import { isHttpUrl, type Booking, type CreateBookingInput } from '@/types/booking'
 import FormModalShell from '@/components/ui/FormModalShell'
 import DeleteConfirm from '@/components/ui/DeleteConfirm'
 import AttachmentRow from '@/components/ui/AttachmentRow'

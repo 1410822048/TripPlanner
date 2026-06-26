@@ -16,17 +16,17 @@
 // 影響 optimistic preview 的顯示(Worker 仍為 authoritative,落地時會重算
 // 覆蓋),不會寫錯資料。後續 P3(useExpenseMoneyDraft)會把這層 draft 收斂、
 // 消除這份重算重複。
-import {
-  type CreateExpenseInput,
-  type ExpenseAdjustment,
-  type ExpenseCategory,
-  type ExpenseItem,
-  type ExpenseItemAllocation,
-  type ExpenseSplit,
-  type SourceExpenseAdjustment,
-  type SourceExpenseItem,
-  type SourceExpenseSplit,
-} from '@/types'
+import type {
+  CreateExpenseInput,
+  ExpenseAdjustment,
+  ExpenseCategory,
+  ExpenseItem,
+  ExpenseItemAllocation,
+  ExpenseSplit,
+  SourceExpenseAdjustment,
+  SourceExpenseItem,
+  SourceExpenseSplit,
+} from '@/types/expense'
 import {
   reconcileReceipt,
   convertAndMaterializeFromSource,

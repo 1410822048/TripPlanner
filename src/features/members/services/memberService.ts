@@ -6,7 +6,7 @@ import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
 import { parseListSnapshot } from '@/services/parseListSnapshot'
 import { subscribeToCollection } from '@/services/realtimeQuery'
 import { requireWorkerWriteBase, preflightIdToken, workerFetch } from '@/services/workerBase'
-import { MemberDocSchema, type Member } from '@/types'
+import { MemberDocSchema, type Member } from '@/types/trip'
 
 function memberFromDoc(d: QueryDocumentSnapshot): Member {
   return firestoreDocFromSchema(MemberDocSchema, d, 'memberFromDoc')

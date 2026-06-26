@@ -1,10 +1,10 @@
 import { initBookingFormState, type BookingFormDraft, type BookingFormState } from '../bookingFormState'
-import type { CreateBookingInput } from '@/types'
+import type { CreateBookingInput } from '@/types/booking'
 import {
   PdfPageLimitError,
   pdfPageLimitMessageJa,
 } from '@tripmate/pdf-page-limit'
-import { isHttpUrl } from '@/types'
+import { isHttpUrl } from '@/types/booking'
 import { getFirebaseAuth } from '@/services/firebase'
 import { WORKER_BASE_URL } from '@/services/workerBase'
 import { extractBookingPdfText } from './bookingPdfText'
