@@ -148,6 +148,32 @@ describe('BookingFormModal link defaults', () => {
     }))
   })
 
+  test('hotel title ticket editor writes the booking title', () => {
+    const onSave = vi.fn()
+    render(
+      <BookingFormModal
+        editTarget={null}
+        isOpen
+        isSaving={false}
+        onClose={() => {}}
+        onSave={onSave}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'ホテル' }))
+    fireEvent.change(screen.getByLabelText(/hotel accommodation/i), {
+      target: { value: '星のや東京 / Hoshinoya' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '手動予約を追加' }))
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      input: expect.objectContaining({
+        type:  'hotel',
+        title: '星のや東京 / Hoshinoya',
+      }),
+    }))
+  })
+
   test('does not overwrite a title or provider the user already entered', () => {
     const onSave = vi.fn()
     render(

@@ -7,8 +7,8 @@
 //   - undefined → user didn't touch the file (no change on save)
 //   - null      → user removed the existing file (clear on save)
 //   - File      → user picked a new file (replace on save)
-import { useEffect, useRef, useState } from 'react'
-import { Paperclip, CalendarDays, ChevronRight, FileText, Image as ImageIcon, Loader2, RefreshCw } from 'lucide-react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { Paperclip, CalendarDays, ChevronRight, FileText, Image as ImageIcon, KeyRound, Loader2, PencilLine, RefreshCw } from 'lucide-react'
 import type { Booking, CreateBookingInput } from '@/types'
 import { isHttpUrl } from '@/types'
 import FormModalShell from '@/components/ui/FormModalShell'
@@ -80,6 +80,61 @@ function bookingRouteInputClass(hasError?: boolean): string {
     'placeholder:text-muted focus-visible:border-accent focus-visible:ring-0',
     hasError ? 'border-danger' : 'border-border',
   ].join(' ')
+}
+
+function HotelTitleTicketEditor({
+  value,
+  error,
+  onChange,
+}: {
+  value: string
+  error?: string
+  onChange: (value: string) => void
+}) {
+  const titleId = useId()
+  const errorId = useId()
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div
+        className={[
+          'relative overflow-hidden rounded-card border bg-[#FFFDF6] shadow-[0_8px_22px_rgba(32,42,45,0.07)] transition-[border-color,box-shadow] focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20',
+          error ? 'border-danger' : 'border-[#F2C45D]',
+        ].join(' ')}
+      >
+        <span aria-hidden="true" className="absolute inset-y-0 left-0 w-1 bg-[#FFB21F]" />
+        <span aria-hidden="true" className="absolute -left-2 top-1/2 h-4 w-4 -translate-y-1/2 rounded-full border border-[#F2C45D] bg-app" />
+        <span aria-hidden="true" className="absolute -right-2 top-1/2 h-4 w-4 -translate-y-1/2 rounded-full border border-[#F2C45D] bg-app" />
+
+        <div className="grid grid-cols-[42px_minmax(0,1fr)] items-center gap-3 px-4 py-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-input bg-[#FFF1D6] text-[#C77700]">
+            <KeyRound size={20} strokeWidth={2.3} />
+          </div>
+
+          <div className="min-w-0">
+            <label htmlFor={titleId} className="block text-[9px] font-black uppercase tracking-[0.13em] text-[#E18700]">
+              Hotel accommodation
+              <span className="ml-[3px] text-danger">*</span>
+            </label>
+            <div className="mt-1 flex min-w-0 items-center gap-1.5">
+              <input
+                id={titleId}
+                value={value}
+                onChange={e => onChange(e.target.value)}
+                placeholder="星のや東京 / Hoshinoya"
+                maxLength={100}
+                aria-invalid={!!error}
+                aria-describedby={error ? errorId : undefined}
+                className="min-w-0 flex-1 border-0 bg-transparent p-0 text-[16px] font-black leading-6 text-ink outline-none placeholder:text-[#C8BCA6] focus-visible:ring-0 [&::placeholder]:font-semibold"
+              />
+              <PencilLine size={13} strokeWidth={2.3} className="shrink-0 text-[#D18A18]" aria-hidden="true" />
+            </div>
+          </div>
+        </div>
+      </div>
+      {error && <span id={errorId} className="text-[11px] text-danger">{error}</span>}
+    </div>
+  )
 }
 
 type PdfAutofillState = {
@@ -720,18 +775,26 @@ export default function BookingFormModal({
         </FormField>
       )}
 
-      <FormField
-        label={titleLabel(state.type)}
-        error={errors.title}
-        required={!isTransport}
-      >
-        <input
+      {showRange ? (
+        <HotelTitleTicketEditor
           value={state.title}
-          onChange={e => setField('title', e.target.value)}
-          placeholder={titlePlaceholder(state.type)}
-          className={inputClass(!!errors.title)}
+          error={errors.title}
+          onChange={v => setField('title', v)}
         />
-      </FormField>
+      ) : (
+        <FormField
+          label={titleLabel(state.type)}
+          error={errors.title}
+          required={!isTransport}
+        >
+          <input
+            value={state.title}
+            onChange={e => setField('title', e.target.value)}
+            placeholder={titlePlaceholder(state.type)}
+            className={inputClass(!!errors.title)}
+          />
+        </FormField>
+      )}
 
       <div className="flex gap-2.5">
         <FormField label="確認番号" className="flex-1">
