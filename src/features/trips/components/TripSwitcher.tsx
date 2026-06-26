@@ -1,6 +1,16 @@
 // src/features/trips/components/TripSwitcher.tsx
 import { useState, useRef, useEffect } from 'react'
-import { Plus, ChevronDown } from 'lucide-react'
+import {
+  ChevronDown,
+  Copy,
+  FolderOpen,
+  Link,
+  PencilLine,
+  Plus,
+  Settings,
+  UsersRound,
+  type LucideIcon,
+} from 'lucide-react'
 import SwipeableTripItem from './SwipeableTripItem'
 import { useSwipeOpen } from '@/hooks/useSwipeOpen'
 import { toast } from '@/shared/toast'
@@ -16,16 +26,16 @@ import type { TripItem, MenuActionKey } from '@/features/trips/types'
 // visible to everyone.
 const MENU_ACTIONS: {
   key:       MenuActionKey
-  emoji:     string
+  icon:      LucideIcon
   label:     string
   sub:       string
   danger:    boolean
   ownerOnly: boolean
 }[] = [
-  { key:'edit',     emoji:'✏️',  label:'編輯行程資訊', sub:'名稱・日期・目的地・幣別', danger:false, ownerOnly:true  },
-  { key:'members',  emoji:'👥',  label:'管理成員',     sub:'邀請・移除旅伴',           danger:false, ownerOnly:false },
-  { key:'copy',     emoji:'📋',  label:'複製行程',     sub:'建立此行程的副本',          danger:false, ownerOnly:false },
-  { key:'share',    emoji:'🔗',  label:'分享行程',     sub:'產生邀請連結',              danger:false, ownerOnly:true  },
+  { key:'edit',     icon:PencilLine, label:'編輯行程資訊', sub:'名稱・日期・目的地・幣別', danger:false, ownerOnly:true  },
+  { key:'members',  icon:UsersRound, label:'管理成員',     sub:'邀請・移除旅伴',           danger:false, ownerOnly:false },
+  { key:'copy',     icon:Copy,       label:'複製行程',     sub:'建立此行程的副本',          danger:false, ownerOnly:false },
+  { key:'share',    icon:Link,       label:'分享行程',     sub:'產生邀請連結',              danger:false, ownerOnly:true  },
 ]
 
 interface TripSwitcherProps {
@@ -235,7 +245,7 @@ export default function TripSwitcher({
             <div className="px-2.5 pt-3 pb-2">
               <div className="flex items-center justify-between px-1.5 pb-2">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[13px]">🗂️</span>
+                  <FolderOpen size={13} strokeWidth={2.2} className="text-pick" aria-hidden="true" />
                   <span className="text-[10px] font-bold text-muted tracking-[0.1em] uppercase">
                     マイ旅程
                   </span>
@@ -310,12 +320,12 @@ export default function TripSwitcher({
 
             <div className="px-2.5 pt-1.5 pb-3">
               <div className="flex items-center gap-1.5 px-1.5 pb-2">
-                <span className="text-[13px]">⚙️</span>
+                <Settings size={13} strokeWidth={2.2} className="text-pick" aria-hidden="true" />
                 <span className="text-[10px] font-bold text-muted tracking-[0.1em] uppercase">
                   管理
                 </span>
               </div>
-              {MENU_ACTIONS.filter(a => isOwner || !a.ownerOnly).map(({ key, emoji, label, sub, danger }) => (
+              {MENU_ACTIONS.filter(a => isOwner || !a.ownerOnly).map(({ key, icon: Icon, label, sub, danger }) => (
                 <button
                   key={key}
                   onClick={() => { onAction(key); closeDropdown() }}
@@ -325,10 +335,15 @@ export default function TripSwitcher({
                   ].join(' ')}
                 >
                   <div className={[
-                    'w-[34px] h-[34px] rounded-input shrink-0 flex items-center justify-center text-[16px]',
+                    'w-[34px] h-[34px] rounded-input shrink-0 flex items-center justify-center',
                     danger ? 'bg-danger-pale' : 'bg-tile',
                   ].join(' ')}>
-                    {emoji}
+                    <Icon
+                      size={17}
+                      strokeWidth={2.2}
+                      className={danger ? 'text-danger' : 'text-pick'}
+                      aria-hidden="true"
+                    />
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className={[
