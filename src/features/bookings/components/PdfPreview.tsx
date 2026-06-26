@@ -7,15 +7,18 @@
 //
 // Renders up to the product PDF page limit in a vertical scroll. New uploads
 // are Worker-gated to the same limit; the render cap is a legacy-data guard.
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { MAX_PDF_PAGES } from '@tripmate/pdf-page-limit'
 import { Loader2, FileText } from 'lucide-react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import { configurePdfJsWorker, PDF_DOCUMENT_OPTIONS } from '@/utils/pdfJs'
-import 'react-pdf/dist/Page/AnnotationLayer.css'
-import 'react-pdf/dist/Page/TextLayer.css'
+import PdfZoomViewport from './PdfZoomViewport'
 
 configurePdfJsWorker(pdfjs)
+
+const ESTIMATED_PAGE_RATIO = 1.414
+const MAX_CANVAS_PIXELS = 12_000_000
+const MAX_DEVICE_PIXEL_RATIO = 2.5
 
 const spinner = (
   <div className="flex items-center justify-center py-16">
@@ -23,9 +26,61 @@ const spinner = (
   </div>
 )
 
+function pdfDevicePixelRatio(renderWidth: number) {
+  const nativeRatio = window.devicePixelRatio || 1
+  const targetRatio = Math.min(nativeRatio * 1.5, MAX_DEVICE_PIXEL_RATIO)
+  const estimatedPixels = renderWidth * renderWidth * ESTIMATED_PAGE_RATIO
+  const cappedRatio = Math.sqrt(MAX_CANVAS_PIXELS / estimatedPixels)
+  return Math.max(1, Math.min(targetRatio, cappedRatio))
+}
+
+function ScaledPdfPage({
+  pageNumber,
+  width,
+  scale,
+}: {
+  pageNumber: number
+  width: number
+  scale: number
+}) {
+  const [pageRatio, setPageRatio] = useState(ESTIMATED_PAGE_RATIO)
+  const displayWidth = width * scale
+  const displayHeight = width * pageRatio * scale
+
+  return (
+    <div
+      data-pdf-page-frame={pageNumber}
+      className="relative shrink-0"
+      style={{ width: `${displayWidth}px`, height: `${displayHeight}px` }}
+    >
+      <div
+        className="absolute left-1/2 top-0"
+        style={{
+          transform: `translateX(-50%) scale(${scale})`,
+          transformOrigin: 'top center',
+          width: `${width}px`,
+        }}
+      >
+        <Page
+          pageNumber={pageNumber}
+          width={width}
+          devicePixelRatio={pdfDevicePixelRatio(width)}
+          renderAnnotationLayer={false}
+          renderTextLayer={false}
+          className="shadow-lg"
+          onRenderSuccess={page => {
+            setPageRatio(current => {
+              const next = page.height / width
+              return current === next ? current : next
+            })
+          }}
+        />
+      </div>
+    </div>
+  )
+}
+
 export default function PdfPreview({ url }: { url: string }) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const [width, setWidth]       = useState<number>()
   const [numPages, setNumPages] = useState(0)
   const [failed, setFailed]     = useState(false)
   const visiblePages = Math.min(numPages, MAX_PDF_PAGES)
@@ -57,19 +112,6 @@ export default function PdfPreview({ url }: { url: string }) {
     return () => controller.abort()
   }, [url])
 
-  // Fit each page to the container width (capped so desktop doesn't render a
-  // giant page). ResizeObserver = external-resource subscription, the one
-  // place useEffect is correct here (cf. useBlobUrl / useAttachmentUrl).
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const measure = () => setWidth(Math.min(el.clientWidth - 24, 900))
-    measure()
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
-
   if (failed) {
     // pdf.js couldn't parse / fetch the bytes. Keep the new-tab escape hatch
     // (the resolved blob/signed URL still opens in the browser's own viewer).
@@ -89,13 +131,9 @@ export default function PdfPreview({ url }: { url: string }) {
     )
   }
 
-  return (
-    <div
-      ref={containerRef}
-      className="flex-1 min-h-0 overflow-y-auto overscroll-contain py-3"
-      style={{ touchAction: 'auto' }}
-    >
-      {file ? (
+  return file ? (
+    <PdfZoomViewport>
+      {({ pageWidth, scale }) => (
         <Document
           file={file}
           options={PDF_DOCUMENT_OPTIONS}
@@ -103,15 +141,20 @@ export default function PdfPreview({ url }: { url: string }) {
           onLoadSuccess={({ numPages }) => setNumPages(numPages)}
           onLoadError={() => setFailed(true)}
           onSourceError={() => setFailed(true)}
-          className="flex flex-col items-center gap-3"
+          className="flex w-max min-w-full flex-col items-center gap-3"
         >
-          {width !== undefined &&
+          {pageWidth !== undefined &&
             Array.from({ length: visiblePages }, (_, i) => (
-              <Page key={i} pageNumber={i + 1} width={width} className="shadow-lg" />
+              <ScaledPdfPage
+                key={i}
+                pageNumber={i + 1}
+                width={pageWidth}
+                scale={scale}
+              />
             ))}
           {hiddenPages > 0 && (
             <div className="w-full max-w-[900px] px-4 py-3 text-center text-white/70 text-[12px] leading-[1.6]">
-              残り{hiddenPages}ページは
+              残り{hiddenPages}ページは非表示です。
               <a
                 href={url}
                 target="_blank"
@@ -124,7 +167,11 @@ export default function PdfPreview({ url }: { url: string }) {
             </div>
           )}
         </Document>
-      ) : spinner}
+      )}
+    </PdfZoomViewport>
+  ) : (
+    <div className="flex-1 min-h-0 overflow-auto overscroll-contain py-3">
+      {spinner}
     </div>
   )
 }
