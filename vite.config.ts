@@ -126,6 +126,9 @@ export default defineConfig({
         })]
       : []),
     VitePWA({
+      strategies: 'injectManifest',
+      srcDir:    'src',
+      filename:  'sw.ts',
       // `prompt` keeps the new SW in "waiting" state until the user clicks
       // "reload" in PwaUpdatePrompt. Prevents silent mid-session reloads
       // that would wipe any in-progress form edits.
@@ -174,19 +177,12 @@ export default defineConfig({
           { src: 'pwa-maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
       },
-      workbox: {
+      injectManifest: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
-        // Firebase Auth redirect helper is served by Cloudflare Pages
-        // Functions at /__/auth/*. It must bypass Workbox's SPA navigation
-        // fallback; otherwise an existing PWA service worker can respond
-        // with index.html, React Router sees /__/auth/handler, and the
-        // login return path becomes a client-side 404.
-        navigateFallbackDenylist: [/^\/__\/auth\//],
         // Chunks excluded from the SW install-time precache. Each one
-        // has a runtimeCaching rule below so signed-in users still get
-        // a populated cache after first use; demo / first-visit /
-        // signed-out users pay zero bandwidth for the chunks they
-        // never actually import.
+        // has a runtime route in src/sw.ts so opted-in / signed-in users
+        // still get a populated cache after first use; demo / first-visit /
+        // signed-out users pay zero bandwidth for chunks they never import.
         //
         // - vendor-sentry-*: dynamically imported via
         //   requestIdleCallback in services/sentry.ts. Precaching would
@@ -200,69 +196,14 @@ export default defineConfig({
         //   modulepreload + the runtime auth-hint gate. Found in
         //   2026-05-22 review: HTML preload was correctly skipped but
         //   precache silently re-introduced the 150KB+gz download.
+        // - vendor-firebase-messaging-*: loaded only after notification
+        //   opt-in / granted permission. Precaching it would make every PWA
+        //   install pay for push code even when notifications stay off.
         globIgnores: [
           '**/vendor-sentry-*.js',
           '**/vendor-firebase-firestore-*.js',
           '**/vendor-firebase-auth-*.js',
-        ],
-        // Intentionally no Firestore runtime cache: Firestore uses WebChannel /
-        // long-polling that Workbox can't meaningfully cache at the HTTP layer.
-        // Offline support is delegated to the Firestore SDK's own IndexedDB
-        // persistence (when enabled), which understands document semantics.
-        runtimeCaching: [
-          {
-            urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
-            handler: 'StaleWhileRevalidate',
-            options: {
-              cacheName: 'google-fonts-cache',
-              // Bounded growth — Google Fonts CSS evolves rarely; 30
-              // entries covers every font family / weight we'd realistically
-              // request. maxAgeSeconds gives a 1y ceiling so an unused
-              // entry eventually evicts on its own (Workbox runs the
-              // expiration sweep on each cache hit).
-              expiration: { maxEntries: 30, maxAgeSeconds: 365 * 24 * 60 * 60 },
-            },
-          },
-          {
-            // Cache vendor-sentry chunk on first runtime fetch (the
-            // dynamic import inside services/sentry.ts). After that
-            // subsequent loads come from SW cache without network.
-            // CacheFirst is safe because the filename is content-
-            // hashed -- a new Sentry version ships under a different
-            // chunk URL and the old cache entry becomes garbage.
-            urlPattern: /\/assets\/vendor-sentry-.*\.js$/,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'vendor-sentry-cache',
-              // Without expiration, every prior content-hashed chunk
-              // accumulates indefinitely after each deploy -- the
-              // CacheFirst handler never reaches the old URL again
-              // (filename changed), but the entry stays in IndexedDB
-              // forever. maxEntries=3 keeps the previous handful (in
-              // case the SW rollback path serves an old chunk briefly);
-              // 90 days is a generous floor for entries that DO get
-              // re-served via revisited URLs.
-              expiration: { maxEntries: 3, maxAgeSeconds: 90 * 24 * 60 * 60 },
-            },
-          },
-          {
-            // Runtime cache for the Firebase SDK chunks that are
-            // excluded from precache (see globIgnores above). First
-            // import after install / after deploy fetches from the
-            // network; subsequent navigations are SW-served. Pattern
-            // intentionally matches both firestore + auth (one cache
-            // bucket for Firebase, easier eviction story than per-chunk).
-            //
-            // maxEntries=4: 2 current chunks × 2 deploys of headroom
-            // (in case the SW briefly serves the previous deploy's
-            // assets during rollover).
-            urlPattern: /\/assets\/vendor-firebase-(firestore|auth)-.*\.js$/,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'vendor-firebase-cache',
-              expiration: { maxEntries: 4, maxAgeSeconds: 90 * 24 * 60 * 60 },
-            },
-          },
+          '**/vendor-firebase-messaging-*.js',
         ],
       },
     }),
@@ -312,6 +253,8 @@ export default defineConfig({
             return 'vendor-firebase-firestore'
           if (id.includes('@firebase/auth') || id.includes('firebase/auth'))
             return 'vendor-firebase-auth'
+          if (id.includes('@firebase/messaging') || id.includes('firebase/messaging'))
+            return 'vendor-firebase-messaging'
           if (id.includes('@sentry'))
             return 'vendor-sentry'
           return undefined

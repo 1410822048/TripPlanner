@@ -7,13 +7,16 @@ import type { FirebaseApp } from 'firebase/app'
 import type { Firestore } from 'firebase/firestore'
 import type { Auth } from 'firebase/auth'
 import type { FirebaseStorage } from 'firebase/storage'
+import type { Messaging } from 'firebase/messaging'
 import type * as firestoreModule from 'firebase/firestore'
 import type * as authModule from 'firebase/auth'
 import type * as storageModule from 'firebase/storage'
+import type * as messagingModule from 'firebase/messaging'
 
 export type FirestoreModule = typeof firestoreModule
 export type AuthModule      = typeof authModule
 export type StorageModule   = typeof storageModule
+export type MessagingModule = typeof messagingModule
 
 export interface FirebaseBundle extends FirestoreModule {
   db: Firestore
@@ -23,6 +26,9 @@ export interface AuthBundle extends AuthModule {
 }
 export interface StorageBundle extends StorageModule {
   storage: FirebaseStorage
+}
+export interface MessagingBundle extends MessagingModule {
+  messaging: Messaging
 }
 
 // Fail-fast in production builds when required Firebase env vars are missing.
@@ -36,6 +42,7 @@ const REQUIRED_FIREBASE_ENV = [
   'VITE_FIREBASE_PROJECT_ID',
   'VITE_FIREBASE_STORAGE_BUCKET',
   'VITE_FIREBASE_MESSAGING_SENDER_ID',
+  'VITE_FIREBASE_VAPID_KEY',
   'VITE_FIREBASE_APP_ID',
 ] as const
 if (import.meta.env.PROD) {
@@ -138,4 +145,32 @@ export function getFirebaseStorage(): Promise<StorageBundle> {
     return { storage: storageMod.getStorage(app), ...storageMod }
   })()
   return storageBundlePromise
+}
+
+let messagingBundlePromise: Promise<MessagingBundle | null> | null = null
+
+/**
+ * Lazy-load + initialize the Messaging bundle for FCM Web Push. Resolves
+ * `null` when the browser can't do Web Push (`isSupported()` false — e.g.
+ * Safari tab without Home-Screen install, private mode) so callers branch
+ * instead of crashing. Pulled separately from Firestore/Auth/Storage and
+ * loaded ONLY from the Account notification toggle (`enable()`) or the
+ * foreground listener (both gate on signed-in + permission granted), so
+ * demo / signed-out / never-opted-in sessions ship zero messaging code.
+ */
+export function getFirebaseMessaging(): Promise<MessagingBundle | null> {
+  if (messagingBundlePromise) return messagingBundlePromise
+  messagingBundlePromise = (async () => {
+    const [app, msg] = await Promise.all([getApp(), import('firebase/messaging')])
+    const supported = await msg.isSupported().catch(() => false)
+    if (!supported) return null
+    return { messaging: msg.getMessaging(app), ...msg }
+  })().catch(err => {
+    // Chunk loads can fail transiently after a fresh Pages deploy while an
+    // older tab/SW is still active. Do not cache the rejected promise forever;
+    // the next explicit opt-in attempt should get a fresh import.
+    messagingBundlePromise = null
+    throw err
+  })
+  return messagingBundlePromise
 }

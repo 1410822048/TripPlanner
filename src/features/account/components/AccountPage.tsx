@@ -33,6 +33,8 @@ import ConfirmSheet from '@/components/ui/ConfirmSheet'
 import GoogleIcon from '@/components/icons/GoogleIcon'
 import StatCell from './StatCell'
 import FeatureCard from './FeatureCard'
+import NotificationInboxButton from './NotificationInboxButton'
+import NotificationSettings from './NotificationSettings'
 import AccountPageSkeleton from './AccountPageSkeleton'
 import { StackedEmojiPreview, StackedImagePreview, StackedAvatarPreview } from './StackedPreviews'
 import { useAuth } from '@/hooks/useAuth'
@@ -42,7 +44,10 @@ import { useThreeHotelThumbUrls } from '../hooks/useThreeHotelThumbUrls'
 import { memberToTripMember } from '@/features/members/utils'
 import { useTripStore } from '@/store/tripStore'
 import { toast } from '@/shared/toast'
+import { captureError } from '@/services/sentry'
 import { daysBetween } from '@/utils/dates'
+import { revokeStoredPushToken } from '../services/pushTokenService'
+import { writePushOwnerUid } from '../services/pushOwnerStore'
 import type { TripMember } from '@/features/trips/types'
 import type { Trip } from '@/types'
 
@@ -57,6 +62,31 @@ import type { Trip } from '@/types'
 // would have paid for the same query the moment they tapped the
 // card to navigate to /past-lodging.
 const PAST_LODGING_EMOJIS = ['🏨', '🛏️', '🏖️']
+// Grace cap so an online-but-stalled Firestore write can't hang logout
+// forever. Generous enough that a slow-but-working mobile network still lands
+// the delivery-critical server disable before we abandon it (the 1.2s it was
+// barely covered a healthy round-trip).
+const LOGOUT_PUSH_REVOKE_GRACE_MS = 2500
+type LogoutPushRevokeResult = 'completed' | 'incomplete'
+
+async function revokePushTokenForLogout(uid: string): Promise<LogoutPushRevokeResult> {
+  // Offline: the server disable can't be ACKed, and after signOut() the queued
+  // write loses auth and is dropped — so waiting only stalls logout for a
+  // revoke that can't land. Bail honestly (the toast warns the user).
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return 'incomplete'
+
+  const revoke = revokeStoredPushToken(uid)
+    .then((): LogoutPushRevokeResult => 'completed')
+    .catch((e): LogoutPushRevokeResult => {
+      captureError(e, { source: 'AccountPage.handleSignOut.revokePushToken', uid })
+      return 'incomplete'
+    })
+  const timeout = new Promise<LogoutPushRevokeResult>(resolve => {
+    setTimeout(() => resolve('incomplete'), LOGOUT_PUSH_REVOKE_GRACE_MS)
+  })
+
+  return await Promise.race([revoke, timeout])
+}
 
 function tripDays(trip: Trip): number {
   return daysBetween(trip.startDate, trip.endDate)
@@ -128,7 +158,14 @@ export default function AccountPage() {
   // called from the sheet's 「ログアウト」 button.
   async function handleSignOut() {
     setSigningOut(true)
+    let pushRevokeResult: LogoutPushRevokeResult = 'completed'
+    let pushOwnerCleared = false
     try {
+      if (uid) {
+        await writePushOwnerUid(null)
+        pushOwnerCleared = true
+        pushRevokeResult = await revokePushTokenForLogout(uid)
+      }
       // Clear the persisted trip selection first — otherwise on next cold
       // start the rehydration effect in SchedulePage would try to fetch a
       // trip whose rules now deny read access, producing a stuck spinner.
@@ -136,7 +173,11 @@ export default function AccountPage() {
       await signOut()
       setLogoutOpen(false)
       toast.success('ログアウトしました')
+      if (pushRevokeResult === 'incomplete') {
+        toast.info('通知の解除は完了できませんでした。通信が戻ったら通知設定を確認してください')
+      }
     } catch (e) {
+      if (pushOwnerCleared && uid) void writePushOwnerUid(uid)
       toast.error(e instanceof Error ? e.message : 'ログアウトに失敗しました')
     } finally { setSigningOut(false) }
   }
@@ -196,11 +237,13 @@ export default function AccountPage() {
   return (
     <div className="bg-app min-h-full pb-10">
       {/* Header */}
-      <div className="px-5 pt-6 pb-5">
+      <div className="px-5 pt-6 pb-3 flex items-center justify-between gap-4">
         <h1 className="m-0 text-[26px] font-black text-ink -tracking-[0.4px] leading-[1.1]">
           マイページ
         </h1>
+        <NotificationInboxButton />
       </div>
+      <NotificationSettings uid={user.uid} />
 
       {/* Profile card — vertically stacked, centered hero layout.
           Rationale: a left-right split with avatar-on-left + stacked-stats-
@@ -342,4 +385,3 @@ export default function AccountPage() {
     </div>
   )
 }
-
