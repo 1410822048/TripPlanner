@@ -13,7 +13,9 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 15 (not 10): the rules step pulls firebase-tools via npx + downloads the
+    # Firestore emulator jar + boots the JVM before any test runs.
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,6 +50,26 @@ jobs:
         working-directory: workers/ocr
         run: npx vitest run
 
+      # firebase-functions has its own vitest config and lives outside the
+      # root glob (src/** + packages/**), same as the Worker above. Typecheck
+      # already covers it via `npm run typecheck` (--workspaces), but the test
+      # run does not — without this step the push dispatch/normalize/send
+      # suite never executes in CI.
+      - name: Test (functions)
+        run: npm run functions:test
+
+      # The rules suite runs against the Firestore emulator, which needs a JVM.
+      # This is exactly the kind of check that shouldn't require every dev to
+      # install a JDK locally — CI is the environment that has Java.
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Test (rules)
+        run: npm run test:rules
+
       - name: Build
         run: npm run build
         env:
@@ -60,4 +82,5 @@ jobs:
           VITE_FIREBASE_PROJECT_ID: ci-placeholder
           VITE_FIREBASE_STORAGE_BUCKET: ci-placeholder.appspot.com
           VITE_FIREBASE_MESSAGING_SENDER_ID: '0'
+          VITE_FIREBASE_VAPID_KEY: ci-placeholder
           VITE_FIREBASE_APP_ID: '0:ci'
