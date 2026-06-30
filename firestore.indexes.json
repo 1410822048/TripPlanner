@@ -68,6 +68,14 @@
       ]
     },
     {
+      "collectionGroup": "pushTokens",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "disabledAt", "order": "ASCENDING" },
+        { "fieldPath": "lastSeenAt", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "uploadIntents",
       "queryScope": "COLLECTION_GROUP",
       "fields": [

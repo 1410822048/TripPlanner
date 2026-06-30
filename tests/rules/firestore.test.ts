@@ -2601,3 +2601,255 @@ describe('canWrite removal-quiesce (removingAt gate)', () => {
     )
   })
 })
+
+// ─── Push notifications: tokens / _pushEvents ──────────────────────
+// Tokens are private to the owning user; the only writer of the
+// server-origin disable reasons (fcm-unregistered/send-failed) and the
+// _pushEvents dedupe collection is the Firebase Functions admin SDK
+// (rules-bypass). These tests pin the own-read/write allow paths and the
+// cross-user / forge / arbitrary-field deny paths.
+describe('push notifications rules', () => {
+  // 64-char hex (sha256 of the FCM token). Doc id MUST equal this.
+  const TOKEN_HASH = 'a'.repeat(64)
+
+  function tokenDoc(overrides: Record<string, unknown> = {}) {
+    return {
+      token:      'fcm-token-' + 'x'.repeat(30),  // > 20 chars
+      tokenHash:  TOKEN_HASH,
+      platform:   'web',
+      provider:   'fcm',
+      permission: 'granted',
+      swScope:    '/',
+      createdAt:  serverTimestamp(),
+      updatedAt:  serverTimestamp(),
+      lastSeenAt: serverTimestamp(),
+      disabledAt: null,
+      ...overrides,
+    }
+  }
+
+  /** Admin-SDK seed of an existing (enabled) token to test update paths. */
+  async function seedToken(uid: string, overrides: Record<string, unknown> = {}) {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'users', uid, 'pushTokens', TOKEN_HASH),
+        {
+          ...tokenDoc(),
+          createdAt:  Timestamp.now(),
+          updatedAt:  Timestamp.now(),
+          lastSeenAt: Timestamp.now(),
+          ...overrides,
+        },
+      )
+    })
+  }
+
+  // ─── pushTokens create ───────────────────────────────────────────
+  test('self user can create own valid push token', async () => {
+    await assertSucceeds(
+      setDoc(doc(asOwner(env).firestore(), 'users', OWNER_UID, 'pushTokens', TOKEN_HASH), tokenDoc()),
+    )
+  })
+
+  test('cannot create a token under another user uid', async () => {
+    // editor (uid=editor) writing into owner's pushTokens → isSelfUser fails.
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'users', OWNER_UID, 'pushTokens', TOKEN_HASH), tokenDoc()),
+    )
+  })
+
+  test('cannot create a token whose doc id != tokenHash', async () => {
+    await assertFails(
+      setDoc(doc(asOwner(env).firestore(), 'users', OWNER_UID, 'pushTokens', 'wrong-id'), tokenDoc()),
+    )
+  })
+
+  test('cannot set a server-origin disabledReason on create', async () => {
+    await assertFails(
+      setDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'pushTokens', TOKEN_HASH),
+        tokenDoc({ disabledReason: 'fcm-unregistered' }),
+      ),
+    )
+  })
+
+  test('cannot create a token with disabledAt already set (non-null)', async () => {
+    await assertFails(
+      setDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'pushTokens', TOKEN_HASH),
+        tokenDoc({ disabledAt: serverTimestamp() }),
+      ),
+    )
+  })
+
+  test('cannot create a token with an extra unrecognized field', async () => {
+    await assertFails(
+      setDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'pushTokens', TOKEN_HASH),
+        tokenDoc({ evilField: 'x' }),
+      ),
+    )
+  })
+
+  // ─── pushTokens update ───────────────────────────────────────────
+  test('self user can refresh own lastSeenAt/updatedAt', async () => {
+    await seedToken(OWNER_UID)
+    await assertSucceeds(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'pushTokens', TOKEN_HASH),
+        { lastSeenAt: serverTimestamp(), updatedAt: serverTimestamp() },
+      ),
+    )
+  })
+
+  test('cannot refresh with an oversized appVersion', async () => {
+    await seedToken(OWNER_UID)
+    await assertFails(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'pushTokens', TOKEN_HASH),
+        {
+          lastSeenAt: serverTimestamp(),
+          updatedAt:  serverTimestamp(),
+          appVersion: 'x'.repeat(65),
+        },
+      ),
+    )
+  })
+
+  test('cannot mutate the token string after create', async () => {
+    await seedToken(OWNER_UID)
+    await assertFails(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'pushTokens', TOKEN_HASH),
+        { token: 'hijacked-token-' + 'y'.repeat(30), updatedAt: serverTimestamp(), lastSeenAt: serverTimestamp() },
+      ),
+    )
+  })
+
+  test('self user can user-disable own token', async () => {
+    await seedToken(OWNER_UID)
+    await assertSucceeds(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'pushTokens', TOKEN_HASH),
+        { disabledAt: serverTimestamp(), disabledReason: 'user-disabled', updatedAt: serverTimestamp() },
+      ),
+    )
+  })
+
+  test('self user can re-enable a previously disabled same-device token', async () => {
+    await seedToken(OWNER_UID, {
+      disabledAt:     Timestamp.now(),
+      disabledReason: 'user-disabled',
+    })
+    await assertSucceeds(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'pushTokens', TOKEN_HASH),
+        {
+          disabledAt:     null,
+          disabledReason: deleteField(),
+          lastSeenAt:     serverTimestamp(),
+          updatedAt:      serverTimestamp(),
+          appVersion:     'test',
+        },
+      ),
+    )
+  })
+
+  test('cannot re-enable a server-disabled invalid token', async () => {
+    await seedToken(OWNER_UID, {
+      disabledAt:     Timestamp.now(),
+      disabledReason: 'fcm-unregistered',
+    })
+    await assertFails(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'pushTokens', TOKEN_HASH),
+        {
+          disabledAt:     null,
+          disabledReason: deleteField(),
+          lastSeenAt:     serverTimestamp(),
+          updatedAt:      serverTimestamp(),
+        },
+      ),
+    )
+  })
+
+  test('cannot re-enable with a non-string appVersion', async () => {
+    await seedToken(OWNER_UID, {
+      disabledAt:     Timestamp.now(),
+      disabledReason: 'user-disabled',
+    })
+    await assertFails(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'pushTokens', TOKEN_HASH),
+        {
+          disabledAt:     null,
+          disabledReason: deleteField(),
+          lastSeenAt:     serverTimestamp(),
+          updatedAt:      serverTimestamp(),
+          appVersion:     123,
+        },
+      ),
+    )
+  })
+
+  test('cannot forge a server-origin disabledReason on update', async () => {
+    await seedToken(OWNER_UID)
+    await assertFails(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'pushTokens', TOKEN_HASH),
+        { disabledAt: serverTimestamp(), disabledReason: 'fcm-unregistered', updatedAt: serverTimestamp() },
+      ),
+    )
+  })
+
+  // Laundering guard: a server-disabled (fcm-unregistered) token must not be
+  // re-stampable as user-disabled — that would be the first hop of
+  // fcm-unregistered → user-disabled → re-enable, washing out the server's
+  // tombstone. The re-enable hop itself is already denied above; this pins
+  // the user-disable hop closed too (only enterable from enabled state).
+  test('cannot user-disable a server-disabled token (launder hop 1)', async () => {
+    await seedToken(OWNER_UID, {
+      disabledAt:     Timestamp.now(),
+      disabledReason: 'fcm-unregistered',
+    })
+    await assertFails(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'pushTokens', TOKEN_HASH),
+        { disabledAt: serverTimestamp(), disabledReason: 'user-disabled', updatedAt: serverTimestamp() },
+      ),
+    )
+  })
+
+  // ─── pushTokens read ─────────────────────────────────────────────
+  test('cannot read another user\'s token', async () => {
+    await seedToken(OWNER_UID)
+    await assertFails(
+      getDoc(doc(asStranger(env).firestore(), 'users', OWNER_UID, 'pushTokens', TOKEN_HASH)),
+    )
+  })
+
+  test('self user can read own token', async () => {
+    await seedToken(OWNER_UID)
+    await assertSucceeds(
+      getDoc(doc(asOwner(env).firestore(), 'users', OWNER_UID, 'pushTokens', TOKEN_HASH)),
+    )
+  })
+
+  test('client cannot delete own token doc', async () => {
+    await seedToken(OWNER_UID)
+    await assertFails(
+      deleteDoc(doc(asOwner(env).firestore(), 'users', OWNER_UID, 'pushTokens', TOKEN_HASH)),
+    )
+  })
+
+  // ─── _pushEvents (server-only) ───────────────────────────────────
+  test('client cannot read _pushEvents', async () => {
+    await assertFails(getDoc(doc(asOwner(env).firestore(), '_pushEvents', 'evt-1')))
+  })
+
+  test('client cannot write _pushEvents', async () => {
+    await assertFails(
+      setDoc(doc(asOwner(env).firestore(), '_pushEvents', 'evt-1'), { tripId: TRIP_ID, status: 'pending' }),
+    )
+  })
+})

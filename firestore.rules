@@ -1039,6 +1039,126 @@ service cloud.firestore {
       }
     }
 
+    // ─── Push notifications (FCM Web) ─────────────────────────────
+    // Per-user push tokens, private to the owning user. Firebase Functions
+    // (admin SDK) bypass these rules to read tokens for delivery and disable
+    // invalid ones. Push delivery is re-derived server-side from entity writes
+    // — NEVER from these docs or from trip.lastActivityByFeature (the
+    // client-writable badge field).
+    match /users/{userId} {
+      // The user doc itself is unused; only the subcollections carry data.
+      allow read, write: if false;
+
+      function isSelfUser() {
+        return isSignedIn() && userId == uid();
+      }
+
+      function validPushTokenAppVersion() {
+        return !('appVersion' in request.resource.data)
+          || (request.resource.data.appVersion is string
+              && request.resource.data.appVersion.size() <= 64);
+      }
+
+      // Create: full token doc, identity fields pinned, timestamps ==
+      // request.time, disabledAt null + no disabledReason. The server-only
+      // disable reasons (fcm-unregistered/send-failed) can't be forged.
+      function validPushTokenCreate() {
+        return request.resource.data.keys().hasOnly([
+            'token','tokenHash','platform','provider','permission','swScope',
+            'appVersion','createdAt','updatedAt','lastSeenAt',
+            'disabledAt','disabledReason'
+          ])
+          && request.resource.data.token is string
+          && request.resource.data.token.size() > 20
+          && request.resource.data.token.size() <= 4096
+          && request.resource.data.tokenHash is string
+          && request.resource.data.tokenHash.size() == 64
+          && request.resource.data.platform == 'web'
+          && request.resource.data.provider == 'fcm'
+          && request.resource.data.permission == 'granted'
+          && request.resource.data.swScope is string
+          && request.resource.data.swScope.size() <= 200
+          && validPushTokenAppVersion()
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.updatedAt == request.time
+          && request.resource.data.lastSeenAt == request.time
+          && request.resource.data.disabledAt == null
+          && !('disabledReason' in request.resource.data);
+      }
+
+      // Refresh: bump only lastSeenAt/updatedAt/appVersion.
+      function validPushTokenRefresh() {
+        return unchanged('token')
+          && unchanged('tokenHash')
+          && unchanged('platform')
+          && unchanged('provider')
+          && unchanged('permission')
+          && unchanged('createdAt')
+          && changedOnly(['updatedAt','lastSeenAt','appVersion'])
+          && validPushTokenAppVersion()
+          && request.resource.data.updatedAt == request.time
+          && request.resource.data.lastSeenAt == request.time;
+      }
+
+      // Re-enable: same browser/FCM token was previously disabled and
+      // getToken returned it again. Client may only re-enable user-origin
+      // disables; server-origin invalid-token cleanup is authoritative.
+      function validPushTokenReenable() {
+        return unchanged('token')
+          && unchanged('tokenHash')
+          && unchanged('platform')
+          && unchanged('provider')
+          && unchanged('permission')
+          && unchanged('createdAt')
+          && changedOnly(['updatedAt','lastSeenAt','appVersion','disabledAt','disabledReason'])
+          && validPushTokenAppVersion()
+          && request.resource.data.updatedAt == request.time
+          && request.resource.data.lastSeenAt == request.time
+          && resource.data.disabledAt is timestamp
+          && resource.data.disabledReason in ['user-disabled','permission-revoked']
+          && request.resource.data.disabledAt == null
+          && !('disabledReason' in request.resource.data);
+      }
+
+      // User-disable: set disabledAt + a user-origin reason only. Forging
+      // a server reason (fcm-unregistered/send-failed) is rejected. Only
+      // enterable from the currently-enabled state (resource.disabledAt ==
+      // null) — otherwise a client could overwrite a server-origin reason
+      // (fcm-unregistered) with a user-origin one and then re-enable, washing
+      // out the server's invalid-token tombstone.
+      function validPushTokenUserDisable() {
+        return unchanged('token')
+          && unchanged('tokenHash')
+          && unchanged('platform')
+          && unchanged('provider')
+          && unchanged('permission')
+          && unchanged('createdAt')
+          && changedOnly(['updatedAt','disabledAt','disabledReason'])
+          && resource.data.disabledAt == null
+          && request.resource.data.updatedAt == request.time
+          && request.resource.data.disabledAt == request.time
+          && request.resource.data.disabledReason in ['user-disabled','permission-revoked'];
+      }
+
+      match /pushTokens/{tokenId} {
+        allow get, list: if isSelfUser();
+        allow create: if isSelfUser()
+          && tokenId == request.resource.data.tokenHash
+          && validPushTokenCreate();
+        allow update: if isSelfUser()
+          && (validPushTokenRefresh()
+              || validPushTokenReenable()
+              || validPushTokenUserDisable());
+        allow delete: if false;
+      }
+    }
+
+    // Server-only push-event dedupe / audit. Functions write via admin SDK
+    // (rules-bypass); no client surface (explicit deny doubles as a test target).
+    match /_pushEvents/{eventId} {
+      allow read, write: if false;
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }
