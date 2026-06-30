@@ -129,6 +129,13 @@ firebase deploy --only firestore       # firestore rules + indexes
 firebase deploy --only storage         # storage rules
 ```
 
+Push notifications（Firestore rules 必須先於 Functions 同步，否則 token opt-in 會被 rules 擋掉）：
+
+```bash
+npm run functions:artifacts:keep-one   # 首次設定 Artifact Registry 只保留最新 1 個 image（需 gcloud CLI）
+npm run functions:deploy               # build -> firestore rules/indexes -> tripmate-push functions
+```
+
 ## 專案結構
 
 Feature-first folder layout。每個 feature 有自己的 `components / hooks / services`：
@@ -189,7 +196,8 @@ src/
 ```bash
 npm run typecheck && npm run lint && npm run test  # 本地驗證
 npm run build                                       # 確認 build 通
-firebase deploy --only firestore,storage           # rules / indexes 同步
+firebase deploy --only storage                      # storage rules
+npm run functions:deploy                            # firestore rules/indexes + push functions
 npm run deploy:pages                                # 上線（Cloudflare Pages）
 gcloud firestore export gs://<bucket>/backups/$(date +%F)  # 手動備份基準
 ```
