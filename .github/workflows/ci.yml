@@ -62,10 +62,12 @@ jobs:
       # This is exactly the kind of check that shouldn't require every dev to
       # install a JDK locally — CI is the environment that has Java.
       - name: Setup Java
+        # 21 (not 17): firebase-tools@latest dropped support for JDK < 21, so
+        # the emulator refuses to start on anything older.
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
       - name: Test (rules)
         run: npm run test:rules
