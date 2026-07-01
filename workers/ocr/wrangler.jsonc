@@ -39,7 +39,7 @@
 		//               Sonnet 4.6 (Haiku 4.5 read receipt amounts poorly). Swap
 		//               tier = change this one var to that deployment's name.
 		"ANTHROPIC_FOUNDRY_RESOURCE": "aic-claude-eus2",
-		"CLAUDE_DEPLOYMENT": "claude-sonnet-4-6",
+		"CLAUDE_DEPLOYMENT": "claude-sonnet-5",
 		// Booking PDF import is text/layout extraction, not receipt OCR; Haiku
 		// is the faster default here. Leave CLAUDE_DEPLOYMENT on Sonnet so the
 		// receipt fallback path keeps its higher-accuracy model.
