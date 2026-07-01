@@ -80,6 +80,7 @@ export function useCreateSettlement(tripId: string) {
             amountMinor: vars.optimistic.amountMinor,
             currency:    vars.optimistic.currency,
             settledBy:   vars.toUid,
+            deletedAt:   null,
             // Conservative pending lock lineage so ExpensePage's readonly
             // union locks the source expenses during the optimistic window
             // (before the Worker writes settlementLockIds + the expense
@@ -96,6 +97,7 @@ export function useCreateSettlement(tripId: string) {
             amountMinor:       vars.optimistic.amountMinor,
             currency:          vars.optimistic.currency,
             settledBy:         vars.toUid,
+            deletedAt:         null,
             sourceCurrency:    vars.sourceCurrency,
             sourceAmountMinor: vars.optimistic.sourceAmountMinor,
             settledOn:         vars.settledOn,

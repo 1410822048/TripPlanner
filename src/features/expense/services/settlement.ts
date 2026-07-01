@@ -259,7 +259,15 @@ export function computeBalancesFull(
     console.warn(`[settlement] excluding malformed expense ${e.id}`, e)
     return false
   })
+  // Cancelled settlements are excluded up front, before the malformed-data
+  // check -- a soft-deleted settlement is valid, expected state, not a data
+  // problem worth warning about. Everything downstream (sortedSettlements,
+  // buildOrphanReasonMap, the forward-cap loop, computePairwiseRemaining)
+  // treats a cancelled settlement as if it never existed -- unlike a
+  // soft-deleted expense, there's no "moving target over time" a cancelled
+  // settlement needs to explain, so there's no raw/active split to keep.
   const settlements = settlementsRaw.filter(s => {
+    if (s.deletedAt !== null) return false
     if (isSettlementSafe(s)) return true
     console.warn(`[settlement] excluding malformed settlement ${s.id}`, s)
     return false

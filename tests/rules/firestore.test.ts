@@ -1662,7 +1662,7 @@ describe('/trips/{tripId}/settlements client write rejection (Worker-only)', () 
     }
   }
 
-  test('trip member can read settlements (SettlementSummary listener path)', async () => {
+  test('trip member can read an ACTIVE settlement (SettlementSummary listener path)', async () => {
     // M4 closed create / delete but read stays member-gated. Guard
     // against an accidental `allow read: if false` regression that
     // would break the realtime listener client-side.
@@ -1672,12 +1672,52 @@ describe('/trips/{tripId}/settlements client write rejection (Worker-only)', () 
         {
           tripId: TRIP_ID, settledBy: EDITOR_UID, toUid: EDITOR_UID,
           fromUid: VIEWER_UID, amountMinor: 100, currency: 'JPY',
-          createdAt: serverTimestamp(),
+          createdAt: serverTimestamp(), deletedAt: null,
         },
       )
     })
     await assertSucceeds(
       getDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-readable')),
+    )
+  })
+
+  test('trip member CANNOT read a cancelled (soft-deleted) settlement', async () => {
+    // Nothing in the app ever needs to read a cancelled settlement --
+    // getSettlementsByTrip / subscribeToSettlements already query
+    // `deletedAt == null`, and computeBalancesFull treats a cancelled
+    // settlement as if it never existed. This rule mirrors that filter
+    // so a raw-SDK getDoc/list can't see past it either.
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'settlements', 's-cancelled'),
+        {
+          tripId: TRIP_ID, settledBy: EDITOR_UID, toUid: EDITOR_UID,
+          fromUid: VIEWER_UID, amountMinor: 100, currency: 'JPY',
+          createdAt: serverTimestamp(), deletedAt: serverTimestamp(), deletedBy: EDITOR_UID,
+        },
+      )
+    })
+    await assertFails(
+      getDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-cancelled')),
+    )
+  })
+
+  test('trip member CANNOT read a settlement doc missing deletedAt entirely (fail-closed, not error)', async () => {
+    // Every settlement the Worker writes carries deletedAt (create writes
+    // it explicitly), but rules can't assume that -- a doc missing the
+    // field entirely must deny read, not throw a rules-evaluation error.
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'trips', TRIP_ID, 'settlements', 's-no-deletedat'),
+        {
+          tripId: TRIP_ID, settledBy: EDITOR_UID, toUid: EDITOR_UID,
+          fromUid: VIEWER_UID, amountMinor: 100, currency: 'JPY',
+          createdAt: serverTimestamp(),
+        },
+      )
+    })
+    await assertFails(
+      getDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'settlements', 's-no-deletedat')),
     )
   })
 
@@ -1724,11 +1764,13 @@ describe('/trips/{tripId}/settlements client write rejection (Worker-only)', () 
     )
   })
 
-  test('client updateDoc is rejected (settlements are append-only)', async () => {
-    // No `allow update` ever existed on settlements — chronological
-    // replay sorts by createdAt and any in-place mutation would
-    // silently corrupt the orphan-reason classification. This test
-    // guards against a future regression that adds an allow update.
+  test('client updateDoc is rejected (soft-delete cancel is Worker-only)', async () => {
+    // No `allow update` ever existed on settlements. The Worker's
+    // /settlement-delete now performs an update (stamps deletedBy +
+    // deletedAt instead of hard-deleting), but that's an admin-SDK write
+    // that bypasses rules entirely -- a client-SDK updateDoc must still
+    // be rejected the same way it always was. This test guards against a
+    // future regression that adds a client-reachable `allow update`.
     await env.withSecurityRulesDisabled(async ctx => {
       await setDoc(
         doc(ctx.firestore(), 'trips', TRIP_ID, 'settlements', 's-client-upd'),

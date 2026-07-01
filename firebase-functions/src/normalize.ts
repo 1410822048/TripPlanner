@@ -172,14 +172,33 @@ export function normalizeSettlementWrite(input: {
     })
   }
 
+  if (before && after && !isTombstoned(before) && isTombstoned(after)) {
+    // Settlement cancel is now a soft-delete (Worker stamps deletedBy +
+    // deletedAt instead of hard-deleting), so the canceller's uid IS
+    // available here -- unlike the hard-delete fallback below, no
+    // actorUnknown guess is needed.
+    return makeEvent({
+      eventId,
+      tripId,
+      entityType: 'settlement',
+      entityId: settlementId,
+      action: 'deleted',
+      actorUid: resolveActorUid(auth, [after], ['deletedBy']),
+      route: '/expense',
+      templateKey: 'settlement.deleted',
+      partyUids,
+    })
+  }
+
   if (before && !after) {
-    // Settlement is a HARD-delete on the Worker (admin SDK), so the deleter's
-    // uid never reaches this trigger — only `before` is available, and its
-    // `settledBy` is the RECORDER (= the receiver who created it), NOT the
-    // deleter, who may be the trip owner removing someone else's settlement.
-    // Using settledBy as the actor would (a) push the real deleter and
-    // (b) silence the recorder, who should be told their settlement was
-    // removed. Mark actorUnknown so selectRecipients notifies BOTH parties.
+    // Defensive fallback: settlement cancel is soft-delete now (see the
+    // tombstone-transition branch above), so this hard-delete branch should
+    // no longer fire in normal operation. Kept in case a future admin/manual
+    // write hard-deletes a settlement doc directly. `before.settledBy` is
+    // the RECORDER, NOT necessarily whoever performed the delete (could be
+    // the trip owner removing someone else's settlement) -- so the actor is
+    // unreliable here. Mark actorUnknown so selectRecipients notifies BOTH
+    // parties rather than guessing wrong.
     return makeEvent({
       eventId,
       tripId,

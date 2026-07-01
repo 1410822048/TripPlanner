@@ -89,6 +89,17 @@ export interface SettlementRecord {
    * vs EXPENSE_DELETED.
    */
   createdAt:   Timestamp
+  /** Soft-delete tombstone. `null` on active settlements; the Worker
+   *  stamps its own REQUEST_TIME here on cancel instead of hard-
+   *  deleting the doc. This is what lets the push-notification
+   *  Firestore trigger recover the actual canceller's uid via
+   *  `deletedBy` -- a hard delete only carries `before` in the
+   *  trigger, whose `settledBy` is the recorder, not necessarily
+   *  whoever cancelled. */
+  deletedAt:   Timestamp | null
+  /** uid that cancelled the settlement. Present iff `deletedAt` is
+   *  set -- enforced by SettlementDocSchema's superRefine below. */
+  deletedBy?:  string
   /** FX source-currency fields. Present iff the payee received money
    *  in a non-trip currency. Written by the Worker's foreign-mode
    *  router.
@@ -144,6 +155,8 @@ export const SettlementDocSchema = z.object({
   appliedSources: z.array(SettlementAppliedSourceSchema).max(80).optional(),
   appliedExpenseIds: z.array(z.string().min(1).max(60)).max(500).optional(),
   createdAt:   TimestampSchema,
+  deletedAt:   TimestampSchema.nullable(),
+  deletedBy:   z.string().min(1).max(128).optional(),
   /** FX source fields. Optional (NOT nullable) — same-currency
    *  settlements simply omit them. The Worker's foreign-mode router
    *  writes the full group in one tx; superRefine below rejects any
@@ -153,6 +166,25 @@ export const SettlementDocSchema = z.object({
   fxSnapshot:        FxSnapshotSchema.optional(),
   settledOn:         IsoDateSchema.optional(),
 }).superRefine((data, ctx) => {
+  // deletedAt / deletedBy iff-pair: cancelled settlements must carry
+  // the canceller's uid, active ones must not. Independent of the FX
+  // group check below.
+  const isDeleted = data.deletedAt !== null
+  if (isDeleted && data.deletedBy === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'deletedBy is required when deletedAt is set',
+      path: ['deletedBy'],
+    })
+  }
+  if (!isDeleted && data.deletedBy !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'deletedBy is only allowed when deletedAt is set',
+      path: ['deletedBy'],
+    })
+  }
+
   // FX group all-or-none + cross-field equality with the parent doc.
   //
   // Rationale: TRIP_CURRENCY settlements omit all FX fields

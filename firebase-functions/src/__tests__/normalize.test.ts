@@ -76,11 +76,13 @@ describe('normalizeSettlementWrite', () => {
     expect(event?.actorUnknown).toBeUndefined()
   })
 
-  test('settlement hard-delete marks the actor unknown and notifies both parties', () => {
+  test('settlement hard-delete marks the actor unknown and notifies both parties (defensive fallback)', () => {
     // before.settledBy = the recorder (u2), but the deleter may be the trip
     // owner removing u2's settlement. The deleter's uid never reaches this
     // trigger, so actorUnknown=true keeps BOTH parties as recipients instead
-    // of wrongly excluding the recorder.
+    // of wrongly excluding the recorder. Settlement cancel is soft-delete
+    // now (see the test below) -- this branch should no longer fire in
+    // normal operation, kept only in case of a future hard-delete write.
     const event = normalizeSettlementWrite({
       eventId: 's2',
       tripId: 'trip-1',
@@ -91,6 +93,35 @@ describe('normalizeSettlementWrite', () => {
     expect(event?.templateKey).toBe('settlement.deleted')
     expect(event?.partyUids).toEqual(['u1', 'u2'])
     expect(event?.actorUnknown).toBe(true)
+  })
+
+  test('settlement soft-delete (cancel) resolves the actual canceller via deletedBy, no actorUnknown', () => {
+    // Cancel is now an update (deletedBy + deletedAt stamped, doc stays),
+    // so the canceller's uid IS available -- unlike hard-delete, no guess
+    // is needed and only the canceller is excluded from the notification.
+    const event = normalizeSettlementWrite({
+      eventId: 's3',
+      tripId: 'trip-1',
+      settlementId: 'settlement-1',
+      before: { fromUid: 'u1', toUid: 'u2', settledBy: 'u2', deletedAt: null },
+      after:  { fromUid: 'u1', toUid: 'u2', settledBy: 'u2', deletedAt: '2026-07-01T00:00:00Z', deletedBy: 'u1' },
+    })
+    expect(event?.templateKey).toBe('settlement.deleted')
+    expect(event?.partyUids).toEqual(['u1', 'u2'])
+    expect(event?.actorUid).toBe('u1')
+    expect(event?.actorUnknown).toBeUndefined()
+  })
+
+  test('settlement soft-delete by the recorder themselves excludes them, not the other party', () => {
+    const event = normalizeSettlementWrite({
+      eventId: 's4',
+      tripId: 'trip-1',
+      settlementId: 'settlement-1',
+      before: { fromUid: 'u1', toUid: 'u2', settledBy: 'u2', deletedAt: null },
+      after:  { fromUid: 'u1', toUid: 'u2', settledBy: 'u2', deletedAt: '2026-07-01T00:00:00Z', deletedBy: 'u2' },
+    })
+    expect(event?.actorUid).toBe('u2')
+    expect(event?.actorUnknown).toBeUndefined()
   })
 })
 

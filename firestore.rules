@@ -820,7 +820,8 @@ service cloud.firestore {
       }
 
       // Settlement records — bilateral "X paid Y back" entries.
-      // Reads stay open to trip members; writes are Worker-authoritative.
+      // Reads stay open to trip members for ACTIVE settlements; writes are
+      // Worker-authoritative.
       match /settlements/{settlementId} {
         // Settlements don't carry memberIds[] (they're a bounded set
         // per trip and writes are rare — denormalising would pay cost
@@ -829,16 +830,35 @@ service cloud.firestore {
         // settlements are only accessed inside ExpensePage which mounts
         // long after trip create, so the rules-eval lag window has
         // resolved by then.
-        allow read:   if exists(memberPath(tripId));
-        // Settlement CREATE / DELETE are Worker-only. The domain
+        //
+        // Cancelled (soft-deleted) settlements are excluded from read.
+        // Unlike expense soft-delete (whose chronological replay needs
+        // the client to see soft-deleted rows — see the expenses match
+        // block), nothing in this app ever needs to read a cancelled
+        // settlement: computeBalancesFull treats it as if it never
+        // existed, and getSettlementsByTrip / subscribeToSettlements
+        // already query `deletedAt == null`. Mirroring that in rules
+        // costs nothing (the client's own query already satisfies it)
+        // and closes the raw-SDK path around the query-level filter.
+        // `'deletedAt' in resource.data` guards a rules error on a doc
+        // that somehow lacks the field, denying read rather than
+        // erroring.
+        allow read: if exists(memberPath(tripId))
+          && 'deletedAt' in resource.data
+          && resource.data.deletedAt == null;
+        // Settlement CREATE / cancel are Worker-only. The domain
         // invariant `amountMinor <= pairwise[fromUid][toUid]` (sum of
         // expense.splits for that uid pair minus already-applied
         // settlements) can't be expressed in CEL — no array reduce,
         // no cross-doc sum. The Worker endpoints /settlement-create
         // and /settlement-delete re-derive gross → applied →
         // remaining inside a single tx with a per-pair lock doc and
-        // fail-closed read-cap truncation. Admin SDK on Worker
-        // bypasses these rules; clients calling setDoc / deleteDoc
+        // fail-closed read-cap truncation. /settlement-delete is a
+        // soft-delete (updates deletedBy/deletedAt, doesn't remove the
+        // doc) — there's no `allow update` line below, so implicit deny
+        // already blocks a direct client update the same way `create`/
+        // `delete` are blocked explicitly. Admin SDK on Worker bypasses
+        // these rules; clients calling setDoc / updateDoc / deleteDoc
         // directly are rejected. See settlement-write.ts in
         // workers/ocr/src/.
         allow create: if false;

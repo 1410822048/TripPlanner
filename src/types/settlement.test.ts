@@ -31,6 +31,7 @@ function baseDoc(overrides: Record<string, unknown> = {}): Record<string, unknow
     currency:    'JPY',
     settledBy:   'bob-uid',
     createdAt:   NOW,
+    deletedAt:   null,
     ...overrides,
   }
 }
@@ -119,6 +120,44 @@ describe('SettlementDocSchema — TRIP_CURRENCY (degenerate path)', () => {
   it('rejects zero amountMinor', () => {
     const result = SettlementDocSchema.safeParse(baseDoc({ amountMinor: 0 }))
     expect(result.success).toBe(false)
+  })
+})
+
+describe('SettlementDocSchema — deletedAt / deletedBy soft-delete invariant', () => {
+  it('parses an active settlement (deletedAt: null, no deletedBy)', () => {
+    const result = SettlementDocSchema.safeParse(baseDoc())
+    expect(result.success).toBe(true)
+  })
+
+  it('parses a cancelled settlement (deletedAt set + deletedBy present)', () => {
+    const result = SettlementDocSchema.safeParse(baseDoc({
+      deletedAt: NOW,
+      deletedBy: 'alice-uid',
+    }))
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects deletedAt missing entirely (required, not optional)', () => {
+    const doc = baseDoc()
+    delete doc.deletedAt
+    const result = SettlementDocSchema.safeParse(doc)
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects deletedAt set without deletedBy', () => {
+    const result = SettlementDocSchema.safeParse(baseDoc({ deletedAt: NOW }))
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.issues.some(i => i.path.includes('deletedBy'))).toBe(true)
+    }
+  })
+
+  it('rejects deletedBy present while deletedAt is null', () => {
+    const result = SettlementDocSchema.safeParse(baseDoc({ deletedBy: 'alice-uid' }))
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.issues.some(i => i.path.includes('deletedBy'))).toBe(true)
+    }
   })
 })
 

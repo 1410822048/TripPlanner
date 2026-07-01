@@ -63,6 +63,7 @@ function mkSettlement(
     currency: 'JPY',
     settledBy: toUid,
     createdAt: TS,
+    deletedAt: null,
   }
 }
 
@@ -537,6 +538,51 @@ describe('orphan reason classification (phase-2)', () => {
     expect(byId['s_m2_m1_50_a']).toBe('EXPENSE_DELETED')
     expect(byId['s_m3_m1_30_b']).toBe('UNKNOWN')
     expect(byId['s_m2_m3_25_c']).toBe('OVERPAYMENT')
+  })
+})
+
+// ─── Settlement soft-delete (cancellation) ─────────────────────────
+//
+// Unlike a soft-deleted EXPENSE (which the chronological replay still
+// needs to see, to explain why a settlement recorded against it later
+// became orphan), a cancelled SETTLEMENT carries no such timeline fact
+// worth replaying: it's "record a mistake, then undo it" -- not "this
+// used to owe more." So it's excluded once, up front, from every
+// downstream computation (gross/applied/orphans/net), not just the
+// balance a soft-deleted expense would get.
+describe('settlement soft-delete (cancellation)', () => {
+  it('a cancelled settlement no longer reduces the pair debt and is not an orphan', () => {
+    const expense = mkExpense('m1', 100, [['m1', 50], ['m2', 50]])
+    const cancelled: SettlementRecord = {
+      ...mkSettlement('m2', 'm1', 50),
+      deletedAt: tsAt(2000),
+      deletedBy: 'm1',
+    }
+    const { balances, orphans, applied } = computeBalancesFull([expense], MEMBERS, [cancelled])
+    // m2 still owes m1 the full 50 -- as if the settlement never happened.
+    expect(balances.find(b => b.memberId === 'm2')!.net).toBe(-50)
+    expect(balances.find(b => b.memberId === 'm1')!.net).toBe(50)
+    // Excluded entirely, not surfaced as a zero-leftover orphan.
+    expect(orphans).toEqual([])
+    expect(applied.m2?.m1).toBeUndefined()
+  })
+
+  it('a cancelled settlement produces identical results to if it never existed at all', () => {
+    const expenses = [
+      mkExpense('m1', 100, [['m1', 50], ['m2', 50]], '_a'),
+      mkExpense('m2', 40,  [['m1', 20], ['m2', 20]], '_b'),
+    ]
+    const active: SettlementRecord    = { ...mkSettlement('m2', 'm1', 20, '_active'),    createdAt: tsAt(3000) }
+    const cancelled: SettlementRecord = {
+      ...mkSettlement('m2', 'm1', 15, '_cancelled'),
+      createdAt:  tsAt(1500),
+      deletedAt:  tsAt(2000),
+      deletedBy:  'm1',
+    }
+    const withCancelled = computeBalancesFull(expenses, MEMBERS, [cancelled, active])
+    const withoutAtAll  = computeBalancesFull(expenses, MEMBERS, [active])
+    expect(withCancelled.balances).toEqual(withoutAtAll.balances)
+    expect(withCancelled.orphans).toEqual(withoutAtAll.orphans)
   })
 })
 

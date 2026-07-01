@@ -290,6 +290,14 @@ function readInteger(fields: Record<string, FsValue> | undefined, key: string): 
   return Number.isSafeInteger(n) ? n : null
 }
 
+/** True when a settlement doc has been soft-deleted (cancelled). Shared
+ *  by the create-path idempotency check (reject reuse of a cancelled
+ *  id) and the delete-path idempotency check (no-op on a second
+ *  cancel). */
+function isSoftDeleted(fields: Record<string, FsValue>): boolean {
+  return Boolean((fields.deletedAt as { timestampValue?: string } | undefined)?.timestampValue)
+}
+
 export async function settlementCreate(
   callerUid:          string,
   req:                SettlementCreateRequest,
@@ -326,6 +334,18 @@ function idempotencyShortCircuit(
   req:         SettlementCreateRequest,
   callerUid:   string,
 ): TxResult<{ settlementId: string }> {
+  // A cancelled settlement's id must never be treated as a live retry
+  // target. Soft-delete only touches deletedBy/deletedAt -- every other
+  // field (fromUid/toUid/amountMinor/note/...) would otherwise still
+  // "match" a retry's payload below, silently reporting create success
+  // for a target that has since been cancelled.
+  if (isSoftDeleted(existingDoc.fields)) {
+    throw new SettlementValidationError(
+      'settlementId',
+      'settlementId already exists but has been cancelled (soft-deleted)',
+    )
+  }
+
   const existingFromUid   = readString(existingDoc.fields, 'fromUid')
   const existingToUid     = readString(existingDoc.fields, 'toUid')
   const existingSettledBy = readString(existingDoc.fields, 'settledBy')
@@ -508,7 +528,14 @@ async function doCreate(
     //     doc forces the conflict.
     //   - Soft-deleted expenses are dropped in-memory (below) rather than
     //     via a `deletedAt IS_NULL` filter, so we don't pull in a composite
-    //     (paidBy, deletedAt) index requirement.
+    //     (paidBy, deletedAt) index requirement. Settlements make the
+    //     OPPOSITE tradeoff deliberately: they add `deletedAt IS_NULL` to
+    //     the query itself (composite index in firestore.indexes.json),
+    //     because the truncation guard below (`> SETTLEMENT_READ_LIMIT`)
+    //     needs to count ACTIVE settlements for this pair -- an in-memory
+    //     filter would let a pair with many cancelled settlements accumulate
+    //     toward the 200 cap and spuriously 503 while genuinely having few
+    //     active ones.
     const pairUidsValue: FsValue = {
       arrayValue: { values: [{ stringValue: req.fromUid }, { stringValue: req.toUid }] },
     }
@@ -523,8 +550,9 @@ async function doCreate(
         parent:     `trips/${req.tripId}`,
         collection: 'settlements',
         filters: [
-          { fieldPath: 'fromUid', op: 'EQUAL', value: { stringValue: req.fromUid } },
-          { fieldPath: 'toUid',   op: 'EQUAL', value: { stringValue: req.toUid } },
+          { fieldPath: 'fromUid',    op: 'EQUAL',   value: { stringValue: req.fromUid } },
+          { fieldPath: 'toUid',      op: 'EQUAL',   value: { stringValue: req.toUid } },
+          { fieldPath: 'deletedAt',  op: 'IS_NULL' },
         ],
         limit: SETTLEMENT_READ_LIMIT + 1,
       }),
@@ -532,8 +560,9 @@ async function doCreate(
         parent:     `trips/${req.tripId}`,
         collection: 'settlements',
         filters: [
-          { fieldPath: 'fromUid', op: 'EQUAL', value: { stringValue: req.toUid } },
-          { fieldPath: 'toUid',   op: 'EQUAL', value: { stringValue: req.fromUid } },
+          { fieldPath: 'fromUid',    op: 'EQUAL',   value: { stringValue: req.toUid } },
+          { fieldPath: 'toUid',      op: 'EQUAL',   value: { stringValue: req.fromUid } },
+          { fieldPath: 'deletedAt',  op: 'IS_NULL' },
         ],
         limit: SETTLEMENT_READ_LIMIT + 1,
       }),
@@ -655,6 +684,7 @@ async function doCreate(
       amountMinor: { integerValue: String(canonicalAmountMinor) },
       currency:    { stringValue: ctx.currency },
       settledBy:   { stringValue: callerUid },
+      deletedAt:   { nullValue: null },
     }
     if (appliedSources.length > 0) {
       fields.appliedSources = encodeAppliedSources(appliedSources)
@@ -785,6 +815,13 @@ async function doDelete(
       )
     }
 
+    // Idempotent: a settlement that's already cancelled stays cancelled.
+    // Checked AFTER authz (not before) so a non-owner/non-recorder can't
+    // probe cancellation state by observing whether this short-circuits.
+    if (isSoftDeleted(settlement.fields)) {
+      return { writes: [], result: undefined }
+    }
+
     // Read+write the same per-pair lock doc that `doCreate` touches.
     // Delete already naturally conflicts with a concurrent create that
     // includes this settlement in its runQuery snapshot, but touching
@@ -818,18 +855,29 @@ async function doDelete(
       lockedExpenseReads,
     )
 
-    const deleteWrite: TxWrite = {
-      op:              'delete',
-      document:        docResourceName(projectId, settlementPath),
+    // Soft-delete: stamp deletedBy + REQUEST_TIME-transform deletedAt
+    // rather than hard-deleting the doc. This is what lets the push-
+    // notification trigger recover the actual canceller's uid (a hard
+    // delete only carries `before` in the trigger, whose `settledBy` is
+    // the recorder, not necessarily the canceller). updateMask scopes
+    // the write to just `deletedBy` -- every other field (amountMinor,
+    // fromUid/toUid, appliedSources, ...) is preserved untouched.
+    const softDeleteWrite: TxWrite = {
+      document: docResourceName(projectId, settlementPath),
+      fields:   { deletedBy: { stringValue: callerUid } },
+      updateMask: ['deletedBy'],
       // `exists: true` makes a concurrent delete-then-our-delete race
       // surface as a 412 -> TxRetryExhausted instead of a silent
-      // double-delete. With the recheck above (settlement.exists) the
+      // double-cancel. With the recheck above (isSoftDeleted) the
       // common case is covered; this guards the gap between read and
       // commit.
       currentDocument: { exists: true },
+      updateTransforms: [
+        { fieldPath: 'deletedAt', setToServerValue: 'REQUEST_TIME' },
+      ],
     }
     const lockWrite = buildLockWrite(projectId, lockPath, req.settlementId)
-    return { writes: [deleteWrite, lockWrite, ...expenseUnlockWrites], result: undefined }
+    return { writes: [softDeleteWrite, lockWrite, ...expenseUnlockWrites], result: undefined }
   })
 
   return { ok: true }

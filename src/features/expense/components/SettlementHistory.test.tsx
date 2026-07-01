@@ -20,6 +20,7 @@ function rec(id: string, over: Partial<SettlementRecord> = {}): SettlementRecord
   return {
     id, tripId: 't1', fromUid: 'u1', toUid: 'u2',
     amountMinor: 5000, currency: 'JPY', settledBy: 'u2', createdAt: TS,
+    deletedAt: null,
     ...over,
   }
 }

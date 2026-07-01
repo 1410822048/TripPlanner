@@ -6,7 +6,11 @@
 //
 // Reads (list + onSnapshot) stay on the Firebase SDK -- persistentLocalCache
 // covers offline + cross-tab and there's no domain invariant that needs
-// admin authority on read.
+// admin authority on read. Both queries filter `deletedAt == null` at the
+// query level (not an in-memory .filter() after fetch) -- cancelled
+// settlements must genuinely leave the raw list for useSettlements'
+// tombstone-overlay to clear (see useDeleteSettlement's `tombstone` option;
+// pruneTombstones only clears an id once it's absent from the raw cache).
 //
 // Writes (create + delete) go through the Cloudflare Worker because the
 // core invariant `amountMinor == Worker-computed pair-remaining` can't be
@@ -139,9 +143,10 @@ function settlementFromDoc(d: QueryDocumentSnapshot): SettlementRecord {
 }
 
 export async function getSettlementsByTrip(tripId: string): Promise<SettlementRecord[]> {
-  const { db, collection, query, orderBy, limit, getDocs } = await getFirebase()
+  const { db, collection, query, where, orderBy, limit, getDocs } = await getFirebase()
   const q = query(
     collection(db, ...P.settlements(tripId)),
+    where('deletedAt', '==', null),
     orderBy('createdAt', 'desc'),
     limit(LIST_LIMIT),
   )
@@ -157,8 +162,9 @@ export const subscribeToSettlements = (
   onData: (rows: SettlementRecord[]) => void,
   onError: (e: Error) => void,
 ) => subscribeToCollection<SettlementRecord>({
-  buildQuery: ({ db, collection, query, orderBy, limit }) => query(
+  buildQuery: ({ db, collection, query, where, orderBy, limit }) => query(
     collection(db, ...P.settlements(tripId)),
+    where('deletedAt', '==', null),
     orderBy('createdAt', 'desc'),
     limit(LIST_LIMIT),
   ),

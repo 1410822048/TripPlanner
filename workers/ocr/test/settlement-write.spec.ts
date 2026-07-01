@@ -51,6 +51,17 @@ interface MockFieldFilter {
 	value:     { stringValue?: string; arrayValue?: { values?: Array<{ stringValue?: string }> } }
 }
 
+interface MockUnaryFilter {
+	fieldPath: string
+	op:        'IS_NULL'
+}
+
+type MockFilter = MockFieldFilter | MockUnaryFilter
+
+function isMockUnaryFilter(f: MockFilter): f is MockUnaryFilter {
+	return f.op === 'IS_NULL'
+}
+
 function readMockStringField(doc: MockReadDoc, fieldPath: string): string | undefined {
 	const raw = doc.fields[fieldPath] as { stringValue?: string } | undefined
 	return raw?.stringValue
@@ -58,7 +69,17 @@ function readMockStringField(doc: MockReadDoc, fieldPath: string): string | unde
 
 function matchesMockFilters(doc: MockReadDoc, filters: unknown): boolean {
 	if (!Array.isArray(filters)) return true
-	for (const filter of filters as MockFieldFilter[]) {
+	for (const filter of filters as MockFilter[]) {
+		if (isMockUnaryFilter(filter)) {
+			// Mirrors real Firestore IS_NULL semantics: matches only when the
+			// field is PRESENT and holds a null value -- an absent field does
+			// NOT match (settlement fixtures always carry `deletedAt` per the
+			// schema, so this distinction is mostly defensive here).
+			const raw = (doc.fields as Record<string, unknown>)[filter.fieldPath] as { nullValue?: null } | undefined
+			const isNull = raw !== undefined && 'nullValue' in raw
+			if (!isNull) return false
+			continue
+		}
 		const value = readMockStringField(doc, filter.fieldPath)
 		if (filter.op === 'EQUAL' && value !== filter.value.stringValue) return false
 		if (filter.op === 'IN') {
@@ -297,6 +318,10 @@ function settlementReadDoc(opts: {
 	settledBy?:   string
 	createdAt?:   string
 	note?:        string
+	/** ISO timestamp -> builds a soft-deleted (cancelled) fixture. Omit
+	 *  (default) for an active settlement (`deletedAt: {nullValue: null}`). */
+	deletedAt?:   string
+	deletedBy?:   string
 }): MockReadDoc {
 	// No pairKey: settlement docs aren't denormalized with one (read is by
 	// (fromUid,toUid) equality). Builder mirrors the real persisted shape.
@@ -307,8 +332,10 @@ function settlementReadDoc(opts: {
 		currency:    { stringValue: opts.currency ?? 'JPY' },
 		settledBy:   { stringValue: opts.settledBy ?? opts.toUid },
 		createdAt:   { timestampValue: opts.createdAt ?? '2026-05-28T00:00:00Z' },
+		deletedAt:   opts.deletedAt !== undefined ? { timestampValue: opts.deletedAt } : { nullValue: null },
 	}
 	if (opts.note !== undefined) fields.note = { stringValue: opts.note }
+	if (opts.deletedBy !== undefined) fields.deletedBy = { stringValue: opts.deletedBy }
 	return {
 		exists:     true,
 		name:       `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/settlements/${opts.id}`,
@@ -345,6 +372,7 @@ function foreignSettlementReadDoc(opts: {
 		currency:          { stringValue:  currency },
 		settledBy:         { stringValue:  opts.settledBy ?? opts.toUid },
 		createdAt:         { timestampValue: opts.createdAt ?? '2026-06-01T00:00:00Z' },
+		deletedAt:         { nullValue: null },
 		sourceCurrency:    { stringValue:  sourceCurrency },
 		sourceAmountMinor: { integerValue: String(sourceAmountMinor) },
 		settledOn:         { stringValue:  settledOn },
@@ -466,6 +494,9 @@ describe('settlementCreate endpoint', () => {
 		expect(w.fields.currency).toEqual({ stringValue: 'JPY' })
 		expect(w.fields.settledBy).toEqual({ stringValue: TO_UID })
 		expect(w.fields.tripId).toEqual({ stringValue: TRIP_ID })
+		// Every settlement is created active -- deletedAt written explicitly
+		// (not omitted), matching the now-required schema field.
+		expect(w.fields.deletedAt).toEqual({ nullValue: null })
 		// Settlement docs deliberately carry NO denormalized pairKey field —
 		// prior settlements are read by (fromUid,toUid) equality, so there's
 		// nothing to keep in sync / backfill. Asserting absence guards against
@@ -644,16 +675,46 @@ describe('settlementCreate endpoint', () => {
 		const expQ  = txQueryCalls.find(q => q.collection === 'expenses')
 		const setQs = txQueryCalls.filter(q => q.collection === 'settlements')
 		expect(expQ?.filters).toEqual([{ fieldPath: 'paidBy', op: 'IN', value: pairValue }])
-		// Both directions, exact equality, NO pairKey field.
+		// Both directions, exact equality, NO pairKey field, PLUS deletedAt
+		// IS_NULL so cancelled settlements never enter the pair-remaining math.
 		expect(setQs).toHaveLength(2)
 		expect(setQs[0].filters).toEqual([
-			{ fieldPath: 'fromUid', op: 'EQUAL', value: { stringValue: FROM_UID } },
-			{ fieldPath: 'toUid',   op: 'EQUAL', value: { stringValue: TO_UID } },
+			{ fieldPath: 'fromUid',   op: 'EQUAL',   value: { stringValue: FROM_UID } },
+			{ fieldPath: 'toUid',     op: 'EQUAL',   value: { stringValue: TO_UID } },
+			{ fieldPath: 'deletedAt', op: 'IS_NULL' },
 		])
 		expect(setQs[1].filters).toEqual([
-			{ fieldPath: 'fromUid', op: 'EQUAL', value: { stringValue: TO_UID } },
-			{ fieldPath: 'toUid',   op: 'EQUAL', value: { stringValue: FROM_UID } },
+			{ fieldPath: 'fromUid',   op: 'EQUAL',   value: { stringValue: TO_UID } },
+			{ fieldPath: 'toUid',     op: 'EQUAL',   value: { stringValue: FROM_UID } },
+			{ fieldPath: 'deletedAt', op: 'IS_NULL' },
 		])
+	})
+
+	it('excludes a soft-deleted (cancelled) settlement from pair-remaining -- it never applies against gross', async () => {
+		// A settlement that was recorded then cancelled must count for
+		// nothing: cancelling settlement 'cancelled-1' (400) must NOT reduce
+		// the 1000 gross debt. Expect the Worker to write the FULL 1000, not
+		// 1000-400=600 -- proving the deletedAt IS_NULL filter (simulated by
+		// the mock's matchesMockFilters) actually excludes it, not just that
+		// the filter object was passed.
+		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`, memberReadDoc(FROM_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			notFoundReadDoc(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`))
+		seedLock(FROM_UID, TO_UID)
+		txQueryResponses.set(`trips/${TRIP_ID}|settlements`, [
+			settlementReadDoc({
+				id: 'cancelled-1', fromUid: FROM_UID, toUid: TO_UID, amountMinor: 400,
+				deletedAt: '2026-05-29T00:00:00Z', deletedBy: TO_UID,
+			}),
+		])
+		seedDebt(FROM_UID, TO_UID, 1000)
+
+		await settlementCreate(TO_UID, baseCreatePayload(1000), '{}')
+
+		const writes = capturedTxResult!.writes as Array<{ fields: Record<string, unknown> }>
+		expect(writes[0].fields.amountMinor).toEqual({ integerValue: '1000' })
 	})
 
 	it('reads a prior settlement that has NO pairKey field (legacy-data regression lock)', async () => {
@@ -726,6 +787,28 @@ describe('settlementCreate endpoint', () => {
 		expect(result.settlementId).toBe(SETTLEMENT_ID)
 		expect(capturedTxResult).not.toBeNull()
 		expect(capturedTxResult!.writes).toEqual([])
+	})
+
+	it('rejects retry when the existing doc at the same id has since been cancelled', async () => {
+		// A create-retry (same settlementId, same payload) must NOT report
+		// success if the original settlement was cancelled between the first
+		// attempt landing and the retry arriving -- soft-delete only touches
+		// deletedBy/deletedAt, so every other field still "matches" the
+		// retry's payload. Silently succeeding would tell the client its
+		// settlement is live when it's actually cancelled.
+		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`, memberReadDoc(FROM_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			settlementReadDoc({
+				id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amountMinor: 200,
+				deletedAt: '2026-05-29T00:00:00Z', deletedBy: TO_UID,
+			}))
+		seedLock(FROM_UID, TO_UID)
+
+		await expect(settlementCreate(TO_UID, baseCreatePayload(), '{}'))
+			.rejects.toBeInstanceOf(SettlementValidationError)
+		expect(capturedTxResult).toBeNull()
 	})
 
 	it('rejects when expectedRemainingMinor is stale', async () => {
@@ -848,7 +931,7 @@ describe('settlementCreate endpoint', () => {
 // ─── settlementDelete ─────────────────────────────────────────────
 
 describe('settlementDelete endpoint', () => {
-	it('happy path: recorder deletes own settlement → op=delete + lock touch + currentDocument.exists=true', async () => {
+	it('happy path: recorder cancels own settlement → soft-delete update + lock touch + currentDocument.exists=true', async () => {
 		txGetResponses.set(`trips/${TRIP_ID}`,                          tripReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,        memberReadDoc(TO_UID, 'editor'))
 		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
@@ -862,14 +945,24 @@ describe('settlementDelete endpoint', () => {
 		expect(result).toEqual({ ok: true })
 		expect(capturedTxResult).not.toBeNull()
 		const writes = capturedTxResult!.writes as Array<{
-			op?:              string
-			document:         string
-			currentDocument?: { exists?: boolean }
-			fields?:          Record<string, unknown>
+			op?:                string
+			document:           string
+			currentDocument?:   { exists?: boolean }
+			fields?:            Record<string, unknown>
+			updateMask?:        string[]
+			updateTransforms?:  Array<{ fieldPath: string; setToServerValue: string }>
 		}>
-		// Two writes: delete settlement + touch the per-pair lock.
+		// Two writes: soft-delete settlement (update) + touch the per-pair lock.
 		expect(writes).toHaveLength(2)
-		expect(writes[0].op).toBe('delete')
+		// NOT a hard delete: no `op`, scoped update via updateMask, deletedAt
+		// via REQUEST_TIME transform. Every other field (amountMinor, fromUid,
+		// toUid, ...) is preserved because updateMask only lists `deletedBy`.
+		expect(writes[0].op).toBeUndefined()
+		expect(writes[0].fields).toEqual({ deletedBy: { stringValue: TO_UID } })
+		expect(writes[0].updateMask).toEqual(['deletedBy'])
+		expect(writes[0].updateTransforms).toEqual([
+			{ fieldPath: 'deletedAt', setToServerValue: 'REQUEST_TIME' },
+		])
 		expect(writes[0].currentDocument).toEqual({ exists: true })
 		expect(writes[0].document).toContain(`settlements/${SETTLEMENT_ID}`)
 		expect(writes[1].op).toBeUndefined()
@@ -877,7 +970,7 @@ describe('settlementDelete endpoint', () => {
 		expect(writes[1].fields?.lastSettlementId).toEqual({ stringValue: SETTLEMENT_ID })
 	})
 
-	it('owner can delete a settlement they did not record', async () => {
+	it('owner can cancel a settlement they did not record', async () => {
 		// Owner is determined by trip.ownerId === callerUid (aligned with
 		// expense-write), NOT members/{uid}.role — seed ownerId accordingly.
 		txGetResponses.set(`trips/${TRIP_ID}`,                          tripReadDoc('JPY', { ownerId: { stringValue: OWNER_UID } }))
@@ -891,10 +984,47 @@ describe('settlementDelete endpoint', () => {
 		}, '{}')
 
 		expect(result).toEqual({ ok: true })
-		const writes = capturedTxResult!.writes as Array<{ op?: string; document: string }>
+		const writes = capturedTxResult!.writes as Array<{ op?: string; document: string; fields?: Record<string, unknown> }>
 		expect(writes).toHaveLength(2)
-		expect(writes[0].op).toBe('delete')
+		expect(writes[0].op).toBeUndefined()
+		// deletedBy is the OWNER (the canceller), not settledBy (the recorder).
+		expect(writes[0].fields).toEqual({ deletedBy: { stringValue: OWNER_UID } })
 		expect(writes[1].document).toContain(`settlementPairLocks/${lockKey(FROM_UID, TO_UID)}`)
+	})
+
+	it('idempotent: cancelling an already-cancelled settlement is a no-op (checked after authz)', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`,                          tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,        memberReadDoc(TO_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			settlementReadDoc({
+				id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amountMinor: 100, settledBy: TO_UID,
+				deletedAt: '2026-05-29T00:00:00Z', deletedBy: TO_UID,
+			}))
+
+		const result = await settlementDelete(TO_UID, {
+			tripId: TRIP_ID, settlementId: SETTLEMENT_ID,
+		}, '{}')
+
+		expect(result).toEqual({ ok: true })
+		expect(capturedTxResult!.writes).toEqual([])
+	})
+
+	it('a non-recorder non-owner cannot cancel, even when the settlement is already cancelled', async () => {
+		// Idempotency check runs AFTER authz -- an unauthorized caller must
+		// see the same 403 whether the settlement is active or already
+		// cancelled, so cancellation state can't be probed by an outsider.
+		const editorUid = 'other-editor'
+		txGetResponses.set(`trips/${TRIP_ID}`,                          tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${editorUid}`,     memberReadDoc(editorUid, 'editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			settlementReadDoc({
+				id: SETTLEMENT_ID, fromUid: FROM_UID, toUid: TO_UID, amountMinor: 100, settledBy: TO_UID,
+				deletedAt: '2026-05-29T00:00:00Z', deletedBy: TO_UID,
+			}))
+
+		await expect(settlementDelete(editorUid, {
+			tripId: TRIP_ID, settlementId: SETTLEMENT_ID,
+		}, '{}')).rejects.toBeInstanceOf(CascadeError)
 	})
 
 	it('owner check uses trip.ownerId, NOT members.role (drift guard)', async () => {
