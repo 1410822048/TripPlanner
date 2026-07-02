@@ -28,18 +28,19 @@ export default function NotificationInboxButton({ uid, accessibleTripIds }: Prop
         aria-expanded={open}
         onClick={() => setOpen(true)}
         className={[
-          'relative w-11 h-11 rounded-full bg-accent-pale text-accent',
+          'group relative w-11 h-11 rounded-full bg-transparent text-ink',
           'flex items-center justify-center shrink-0 cursor-pointer',
-          'shadow-[0_2px_8px_rgba(74,102,112,0.14)] transition-all',
-          'hover:bg-accent-pale/80 active:scale-[0.97]',
+          'transition-transform active:scale-[0.97]',
           'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
         ].join(' ')}
       >
-        <Bell size={18} strokeWidth={2} aria-hidden />
+        <span className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-white shadow-[0_1px_5px_rgba(32,42,45,0.10)] transition-colors group-hover:bg-white/90">
+          <Bell size={18} strokeWidth={2} aria-hidden />
+        </span>
         {hasUnread && (
           <span
             aria-hidden
-            className="absolute top-1.5 right-2 w-[9px] h-[9px] rounded-full bg-danger border-2 border-app"
+            className="absolute top-1.5 right-1.5 w-[9px] h-[9px] rounded-full bg-danger border-2 border-white"
           />
         )}
       </button>
