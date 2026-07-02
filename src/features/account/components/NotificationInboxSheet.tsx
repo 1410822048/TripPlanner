@@ -1,10 +1,11 @@
 // src/features/account/components/NotificationInboxSheet.tsx
-// Inbox content for NotificationInboxButton's BottomSheet: row list, empty
-// state, and a "すべて既読" footer. Opening the sheet does NOT mark
-// anything read — only tapping a row (that one) or すべて既読 (all
-// currently-unread) does, per the P2 spec.
+// Inbox content for NotificationInboxButton's BottomSheet: filter controls,
+// row list, and empty states. Opening the sheet does NOT mark anything read
+// -- only tapping a row (that one) or "すべて既読" (all currently-unread) does,
+// per the P2 spec.
+import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Receipt, Ticket, Wallet, UserPlus, Inbox } from 'lucide-react'
+import { Receipt, Ticket, Wallet, UserPlus, Inbox, CheckCheck } from 'lucide-react'
 import BottomSheet from '@/components/ui/BottomSheet'
 import { markNotificationRead, markAllNotificationsRead } from '../services/notificationService'
 import { captureError } from '@/services/sentry'
@@ -18,11 +19,17 @@ interface Props {
   notifications: Notification[]
 }
 
-const ENTITY_ICON: Record<NotificationEntityType, typeof Receipt> = {
-  expense:    Receipt,
-  booking:    Ticket,
-  settlement: Wallet,
-  member:     UserPlus,
+type NotificationFilter = 'all' | 'unread'
+
+const ENTITY_META: Record<NotificationEntityType, {
+  icon: typeof Receipt
+  iconClass: string
+  iconBgClass: string
+}> = {
+  expense:    { icon: Receipt,  iconClass: 'text-warn',   iconBgClass: 'bg-warn-bg' },
+  booking:    { icon: Ticket,   iconClass: 'text-pick',   iconBgClass: 'bg-pick-pale' },
+  settlement: { icon: Wallet,   iconClass: 'text-teal',   iconBgClass: 'bg-teal-pale' },
+  member:     { icon: UserPlus, iconClass: 'text-accent', iconBgClass: 'bg-accent-pale' },
 }
 
 const RELATIVE_TIME = new Intl.RelativeTimeFormat('ja', { numeric: 'auto' })
@@ -42,7 +49,13 @@ export default function NotificationInboxSheet({ isOpen, onClose, uid, notificat
   const navigate = useNavigate()
   const { pathname } = useLocation()
   const setSelectedTripId = useTripStore(s => s.setSelectedTripId)
-  const unreadIds = notifications.filter(n => n.readAt == null).map(n => n.id)
+  const [filter, setFilter] = useState<NotificationFilter>('all')
+  const unreadNotifications = notifications.filter(n => n.readAt == null)
+  const unreadIds = unreadNotifications.map(n => n.id)
+  const unreadCount = unreadNotifications.length
+  const visibleNotifications = filter === 'unread'
+    ? unreadNotifications
+    : notifications
 
   async function handleRowClick(n: Notification) {
     onClose()
@@ -61,62 +74,115 @@ export default function NotificationInboxSheet({ isOpen, onClose, uid, notificat
     <BottomSheet
       isOpen={isOpen}
       onClose={onClose}
-      title="通知ボックス"
-      footer={unreadIds.length > 0 && (
+      title={(
+        <span className="flex min-w-0 items-center gap-2">
+          <span>通知ボックス</span>
+          {unreadCount > 0 && (
+            <span className="shrink-0 rounded-full bg-danger px-2 py-0.5 text-[10.5px] font-bold leading-none text-white">
+              {unreadCount}件未読
+            </span>
+          )}
+        </span>
+      )}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="inline-flex shrink-0 items-center gap-1 rounded-chip border border-border bg-app p-1">
+          {(['all', 'unread'] as const).map(mode => {
+            const active = filter === mode
+            return (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={active}
+                onClick={() => setFilter(mode)}
+                className={[
+                  'flex h-8 cursor-pointer items-center gap-1.5 rounded-full px-3 text-[12px] font-semibold transition-colors',
+                  'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                  active ? 'bg-surface text-ink shadow-[0_1px_3px_rgba(0,0,0,0.08)]' : 'bg-transparent text-muted hover:text-ink',
+                ].join(' ')}
+              >
+                {mode === 'all' ? 'すべて' : '未読'}
+                {mode === 'unread' && unreadCount > 0 && (
+                  <span aria-hidden className="h-2 w-2 rounded-full bg-danger" />
+                )}
+              </button>
+            )
+          })}
+        </div>
+
         <button
           type="button"
           onClick={handleMarkAllRead}
-          className="w-full h-10 rounded-chip text-[13px] font-semibold text-accent bg-accent-pale cursor-pointer transition-colors hover:bg-accent-pale/80"
+          disabled={unreadCount === 0}
+          className={[
+            'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[11.5px] font-semibold transition-colors',
+            'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+            unreadCount > 0
+              ? 'text-accent hover:bg-accent-pale cursor-pointer'
+              : 'text-muted/60 cursor-not-allowed',
+          ].join(' ')}
         >
-          すべて既読にする
+          <CheckCheck size={13} strokeWidth={2.4} aria-hidden />
+          すべて既読
         </button>
-      )}
-    >
-      {notifications.length === 0 ? (
+      </div>
+
+      {visibleNotifications.length === 0 ? (
         <div className="rounded-card border border-border bg-app px-4 py-8 text-center">
           <div className="mx-auto w-12 h-12 rounded-full bg-surface flex items-center justify-center text-muted">
             <Inbox size={21} strokeWidth={2} aria-hidden />
           </div>
           <div className="mt-3 text-[14px] font-black text-ink -tracking-[0.1px]">
-            通知はありません
+            {filter === 'unread' ? '未読はありません' : '通知はありません'}
           </div>
           <div className="mt-1 text-[12px] leading-[1.6] text-muted">
-            新しい更新が届くとここに表示されます
+            {filter === 'unread'
+              ? '新しい通知はすべて確認済みです。'
+              : '新しい更新が届くとここに表示されます'}
           </div>
         </div>
       ) : (
-        notifications.map(n => {
-          const Icon = ENTITY_ICON[n.entityType]
-          const unread = n.readAt == null
-          return (
-            <button
-              key={n.id}
-              type="button"
-              onClick={() => handleRowClick(n)}
-              className={[
-                'w-full flex items-start gap-3 rounded-card border border-border px-3.5 py-3 text-left cursor-pointer transition-colors',
-                unread ? 'bg-accent-pale/40' : 'bg-app',
-              ].join(' ')}
-            >
-              <div className="relative w-9 h-9 rounded-full bg-surface flex items-center justify-center shrink-0 text-muted">
-                <Icon size={16} strokeWidth={2} aria-hidden />
-                {unread && (
-                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-danger border-2 border-app" aria-hidden />
-                )}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-[13.5px] font-bold text-ink leading-[1.4]">{n.title}</div>
-                    <div className="mt-0.5 text-[10.5px] font-semibold text-accent truncate">{n.tripTitle}</div>
-                  </div>
-                  <div className="text-[10.5px] text-muted shrink-0 pt-0.5">{relativeTime(n.createdAt.toDate())}</div>
-                </div>
-                <div className="mt-0.5 text-[12px] text-muted leading-[1.5] line-clamp-2">{n.body}</div>
-              </div>
-            </button>
-          )
-        })
+        <ul className="m-0 flex list-none flex-col gap-3 p-0" role="list">
+          {visibleNotifications.map(n => {
+            const meta = ENTITY_META[n.entityType]
+            const Icon = meta.icon
+            const unread = n.readAt == null
+            return (
+              <li key={n.id}>
+                <button
+                  type="button"
+                  onClick={() => handleRowClick(n)}
+                  className={[
+                    'grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3 rounded-card border px-3.5 py-3 text-left transition-colors',
+                    'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                    unread
+                      ? 'border-danger-soft bg-danger-pale/35 hover:bg-danger-pale/55'
+                      : 'border-border bg-app hover:bg-tile',
+                  ].join(' ')}
+                >
+                  <span className={[
+                    'flex h-10 w-10 shrink-0 items-center justify-center rounded-full',
+                    meta.iconBgClass,
+                    meta.iconClass,
+                  ].join(' ')}>
+                    <Icon size={17} strokeWidth={2.1} aria-hidden />
+                  </span>
+
+                  <span className="min-w-0">
+                    <span className="block text-[13.5px] font-bold leading-[1.4] text-ink">{n.title}</span>
+                    <span className="mt-0.5 block truncate text-[10.5px] font-semibold text-accent">{n.tripTitle}</span>
+                    <span className="mt-1 block text-[12px] leading-[1.55] text-muted line-clamp-2">{n.body}</span>
+                  </span>
+
+                  <span className="flex shrink-0 items-center gap-2 pt-0.5">
+                    <span className="text-[10.5px] leading-none text-muted">{relativeTime(n.createdAt.toDate())}</span>
+                    {unread && <span aria-hidden className="h-2.5 w-2.5 rounded-full bg-danger" />}
+                  </span>
+                </button>
+              </li>
+            )
+          })}
+        </ul>
       )}
     </BottomSheet>
   )

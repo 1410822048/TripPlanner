@@ -5,7 +5,7 @@ import { useBottomSheet } from '@/hooks/useBottomSheet'
 
 interface Props {
   isOpen:   boolean
-  title:    string
+  title:    ReactNode
   onClose:  () => void
   footer?:  ReactNode
   children: ReactNode
