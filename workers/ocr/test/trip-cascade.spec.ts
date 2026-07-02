@@ -26,6 +26,18 @@ vi.mock('../src/firestore', () => ({
 	readString:      vi.fn((fields: Record<string, { stringValue?: string }> | null | undefined, key: string) =>
 		fields?.[key]?.stringValue,
 	),
+	readStringArray: vi.fn((
+		fields: Record<string, { arrayValue?: { values?: { stringValue?: string }[] } }> | null | undefined,
+		key: string,
+	) =>
+		(fields?.[key]?.arrayValue?.values ?? [])
+			.map(v => v.stringValue)
+			.filter((v): v is string => typeof v === 'string'),
+	),
+	docIdFromName: vi.fn((name: string) => {
+		const id = name.split('/').pop()
+		return id && id.length > 0 ? id : null
+	}),
 	buildDocName:    vi.fn(),
 }))
 vi.mock('../src/admin', () => ({

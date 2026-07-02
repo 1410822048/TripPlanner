@@ -8,6 +8,7 @@
 // move — no tx / cascade / authz logic changed.
 import {
   readString,
+  readStringArray,
   listDocNames,
   batchStripDepartedMember,
   deleteUserTripNotifications,
@@ -58,10 +59,7 @@ export function assertTripNotDeleting(trip: TxReadDoc): void {
  *  the field is missing or contains non-string entries -- defensive
  *  decode that mirrors firestore.ts/getDocMemberIds without the round trip. */
 function decodeMemberIds(fields: Record<string, FsValue>): string[] {
-  const values = fields.memberIds?.arrayValue?.values ?? []
-  return values
-    .map(v => v.stringValue)
-    .filter((v): v is string => typeof v === 'string')
+  return readStringArray(fields, 'memberIds')
 }
 
 export function readTripRoster(trip: TxReadDoc): string[] {

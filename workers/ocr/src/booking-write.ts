@@ -47,6 +47,7 @@ import { z }                                                        from 'zod'
 import { getAdminToken, getProjectId }                              from './admin'
 import {
   readString,
+  readStringArray,
   readNestedString,
   type FsValue,
 }                                                                   from './firestore'
@@ -278,10 +279,7 @@ async function authorizeBookingCreateTx(
     throw new CascadeError(403, 'caller role is not owner/editor')
   }
 
-  const arr = (trip.fields.memberIds as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []
-  const memberIds = arr
-    .map(v => v.stringValue)
-    .filter((s): s is string => typeof s === 'string')
+  const memberIds = readStringArray(trip.fields, 'memberIds')
   if (memberIds.length === 0) {
     throw new CascadeError(500, 'trip.memberIds is empty')
   }

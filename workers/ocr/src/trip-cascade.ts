@@ -53,9 +53,11 @@ import {
   batchDeleteDocs,
   deleteUserTripNotifications,
   deleteDoc,
+  docIdFromName,
   getDocFields,
   listDocNames,
   readString,
+  readStringArray,
   updateDocFields,
   type FsValue,
 }                                                                   from './firestore'
@@ -88,18 +90,6 @@ const TRIP_SUBCOLLECTIONS = [
   'planning', 'settlements', 'settlementPairLocks',
   '_purges', 'invites', 'inviteState', 'members',
 ] as const
-
-function readStringArray(fields: Record<string, unknown> | null, key: string): string[] {
-  const value = fields?.[key] as FsValue | undefined
-  return (value?.arrayValue?.values ?? [])
-    .map(v => v.stringValue)
-    .filter((v): v is string => typeof v === 'string' && v.length > 0)
-}
-
-function docIdFromName(name: string): string | null {
-  const id = name.split('/').pop()
-  return id && id.length > 0 ? id : null
-}
 
 export interface CascadeTripResult {
   /** Total Firestore docs removed across all subcollections + the
@@ -135,7 +125,7 @@ async function runCascade(
   // success rather than 404. Client retries and concurrent deletes
   // both land here; throwing 404 would force the client to invent
   // recovery logic for a state that's exactly what they wanted.
-  let tripFields: Record<string, unknown> | null
+  let tripFields: Record<string, FsValue> | null
   try {
     tripFields = await getDocFields(accessToken, projectId, `trips/${req.tripId}`)
   } catch (e) {
@@ -144,14 +134,16 @@ async function runCascade(
   if (!tripFields) {
     return { deletedDocs: 0, deletedObjects: 0 }
   }
-  const ownerId = readString(tripFields as Parameters<typeof readString>[0], 'ownerId')
+  const ownerId = readString(tripFields, 'ownerId')
   if (!ownerId) {
     throw new CascadeError(500, 'trip doc has no ownerId field')
   }
   if (ownerId !== callerUid) {
     throw new CascadeError(403, 'caller is not the trip owner')
   }
-  const notificationCleanupUids = new Set(readStringArray(tripFields, 'memberIds'))
+  const notificationCleanupUids = new Set(
+    readStringArray(tripFields, 'memberIds').filter(uid => uid.length > 0),
+  )
   // Token might have been invalidated above — re-fetch (cheap, cached)
   // so the rest of the run uses the freshest token. withTokenRetry will
   // retry the WHOLE cascade on 401, but that's the long path; this is

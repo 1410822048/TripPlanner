@@ -28,6 +28,7 @@ import {
   batchArrayUnionMemberIds,
   arrayUnionMembersOnDoc,
   buildDocName,
+  readStringArray,
 } from './firestore'
 import { mapWithConcurrency }                from './concurrency'
 
@@ -159,10 +160,7 @@ async function runCascade(
   // stale member doc from a previous tx-committed-but-cascade-failed
   // attempt is fine to recover from (roster still includes caller),
   // but a member doc from a partially-finished kick is not.
-  const tripRosterValues = tripFields.memberIds?.arrayValue?.values ?? []
-  const tripRoster = tripRosterValues
-    .map(v => v.stringValue)
-    .filter((v): v is string => typeof v === 'string')
+  const tripRoster = readStringArray(tripFields, 'memberIds')
   if (!tripRoster.includes(req.memberUid)) {
     throw new CascadeError(403, 'member is not in trip roster — cascade refused')
   }

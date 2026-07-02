@@ -56,16 +56,8 @@ export async function getDocMemberIds(
     const detail = await res.text().catch(() => '')
     throw new Error(`getDocMemberIds ${path} → ${res.status}: ${detail.slice(0, 200)}`)
   }
-  const data = await res.json() as {
-    fields?: {
-      memberIds?: {
-        arrayValue?: { values?: { stringValue?: string }[] }
-      }
-    }
-  }
-  return (data.fields?.memberIds?.arrayValue?.values ?? [])
-    .map(v => v.stringValue)
-    .filter((v): v is string => typeof v === 'string')
+  const data = await res.json() as { fields?: Record<string, FsValue> }
+  return readStringArray(data.fields, 'memberIds')
 }
 
 /** arrayUnion MULTIPLE values onto a single doc's memberIds field.
@@ -433,6 +425,19 @@ export interface FsValue {
 /** Decode a string field. Returns undefined when missing OR not a string. */
 export function readString(fields: Record<string, FsValue> | null | undefined, key: string): string | undefined {
   return fields?.[key]?.stringValue
+}
+
+/** Decode a string array field. Non-string entries are ignored. */
+export function readStringArray(fields: Record<string, FsValue> | null | undefined, key: string): string[] {
+  return (fields?.[key]?.arrayValue?.values ?? [])
+    .map(v => v.stringValue)
+    .filter((v): v is string => typeof v === 'string')
+}
+
+/** Extract the trailing document id from a Firestore REST resource name. */
+export function docIdFromName(name: string): string | null {
+  const id = name.split('/').pop()
+  return id && id.length > 0 ? id : null
 }
 
 // ─── Receipt-purge: collection-group query + per-doc patch ─────────

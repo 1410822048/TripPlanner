@@ -56,6 +56,7 @@
 // retry sees the now-committed settlement and reapplies the gate.
 import { getAdminToken, getProjectId }                      from './admin'
 import {
+  docIdFromName,
   readString,
   type FsValue,
 }                                                           from './firestore'
@@ -209,10 +210,6 @@ function decodeSettlementForDomain(fields: Record<string, FsValue>): CoreSettlem
 
 const MAX_APPLIED_SOURCES = 80
 
-function docIdFromName(name: string): string {
-  return name.split('/').pop() ?? ''
-}
-
 function parseCreatedAtMs(fields: Record<string, FsValue>): number {
   const iso = fields.createdAt?.timestampValue
   const ms = typeof iso === 'string' ? Date.parse(iso) : 0
@@ -221,6 +218,7 @@ function parseCreatedAtMs(fields: Record<string, FsValue>): number {
 
 function decodePairExpenseForSettlement(doc: TxReadDoc): PairExpenseForSettlement {
   const core = decodeExpenseForDomain(doc.fields)
+  const expenseId = docIdFromName(doc.name) ?? ''
   const itemArr = (doc.fields.items as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values
   const items = itemArr?.map(v => {
     const inner = v.mapValue?.fields ?? {}
@@ -256,8 +254,8 @@ function decodePairExpenseForSettlement(doc: TxReadDoc): PairExpenseForSettlemen
   })
   return {
     ...core,
-    id:          docIdFromName(doc.name),
-    title:       readString(doc.fields, 'title') ?? docIdFromName(doc.name),
+    id:          expenseId,
+    title:       readString(doc.fields, 'title') ?? expenseId,
     createdAtMs: parseCreatedAtMs(doc.fields),
     items,
     adjustments,
@@ -740,7 +738,7 @@ async function doCreate(
     // covers these expenses so concurrent same-expense settlements serialize.
     const currentLockIds = new Map<string, string[]>(
       activeExpenseReads.map(d => [
-        docIdFromName(d.name),
+        docIdFromName(d.name) ?? '',
         decodeStringArrayField(d.fields, 'settlementLockIds'),
       ]),
     )
