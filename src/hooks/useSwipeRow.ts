@@ -37,6 +37,12 @@ export interface UseSwipeRowProps {
    *  openX stays 0, wrapTap passes through. Lets a row hide the swipe
    *  affordance when the caller has no delete permission. */
   enabled?: boolean
+  /** Two-step "tap once to confirm, tap again to delete" gate. Default
+   *  true (matches every data row). Pass false for non-destructive
+   *  dismissals — e.g. hiding a notification — where one tap should act
+   *  immediately (`confirming` then stays false, so the bg keeps the
+   *  Trash2 / 削除 label). */
+  confirmDelete?: boolean
 }
 
 export interface UseSwipeRowResult {
@@ -76,7 +82,7 @@ export interface UseSwipeRowResult {
 }
 
 export function useSwipeRow({
-  isOpen, onOpen, onClose, onDelete, enabled = true,
+  isOpen, onOpen, onClose, onDelete, enabled = true, confirmDelete = true,
 }: UseSwipeRowProps): UseSwipeRowResult {
   const [confirming, setConfirming] = useState(false)
   const fgRef = useRef<HTMLDivElement | null>(null)
@@ -180,14 +186,14 @@ export function useSwipeRow({
 
   function handleDeleteTap(e: React.MouseEvent) {
     e.stopPropagation()
-    if (!confirming) {
+    if (confirmDelete && !confirming) {
       // 第一段:轉成「確認削除」紅字。較重的 haptic 對應「警告中」語意。
       haptic('medium')
       setConfirming(true)
       return
     }
-    // 第二段:真正執行刪除。success 模式(三段震動)讓使用者明確感受
-    // 到「動作已生效」,跟一般 tap 區分。
+    // 二段確認模式的第二段(或一段模式的唯一一段):真正執行刪除。
+    // success 模式(三段震動)讓使用者明確感受到「動作已生效」。
     haptic('success')
     onDelete?.()
   }

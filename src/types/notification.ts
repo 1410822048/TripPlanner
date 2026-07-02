@@ -34,6 +34,9 @@ export interface Notification {
   }
   createdAt: Timestamp
   readAt: Timestamp | null
+  /** Set when the recipient soft-dismisses the row from the inbox. Server
+   *  query filters `dismissedAt == null` so dismissed rows never surface. */
+  dismissedAt: Timestamp | null
   expiresAt: Timestamp
 }
 
@@ -61,5 +64,6 @@ export const NotificationDocSchema = z.object({
   settlement:    notificationSettlementInfoSchema.optional(),
   createdAt:     TimestampSchema,
   readAt:        TimestampSchema.nullable(),
+  dismissedAt:   TimestampSchema.nullable(),
   expiresAt:     TimestampSchema,
 })

@@ -1173,14 +1173,22 @@ service cloud.firestore {
       }
 
       // Notification inbox (P2, Functions writes). Client only reads its own
-      // docs and marks readAt=request.time; no prior-value gate so duplicate
-      // mark-read attempts from multi-tab races stay idempotent.
+      // docs and may mark readAt (open), dismissedAt (soft-dismiss), or both
+      // at once (dismiss an unread row). No prior-value gate so duplicate
+      // attempts from multi-tab races stay idempotent. Hard delete stays
+      // server-only; soft-dismiss is the client path.
       match /notifications/{notificationId} {
         allow get, list: if isSelfUser();
         allow create, delete: if false;
-        allow update: if isSelfUser()
-          && changedOnly(['readAt'])
-          && request.resource.data.readAt == request.time;
+        allow update: if isSelfUser() && (
+          (changedOnly(['readAt']) && request.resource.data.readAt == request.time)
+          || (changedOnly(['dismissedAt'])
+              && resource.data.readAt is timestamp
+              && request.resource.data.dismissedAt == request.time)
+          || (changedOnly(['readAt', 'dismissedAt'])
+              && request.resource.data.readAt == request.time
+              && request.resource.data.dismissedAt == request.time)
+        );
       }
     }
 

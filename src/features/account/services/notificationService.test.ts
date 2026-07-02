@@ -7,17 +7,20 @@ type QueryConstraint = {
 }
 
 const fb = vi.hoisted(() => ({
-  db:         {},
-  collection: vi.fn((...path: readonly string[]) => ({ path })),
-  where:      vi.fn((...args: readonly unknown[]): QueryConstraint => ({ kind: 'where', args })),
-  orderBy:    vi.fn((...args: readonly unknown[]): QueryConstraint => ({ kind: 'orderBy', args })),
-  limit:      vi.fn((...args: readonly unknown[]): QueryConstraint => ({ kind: 'limit', args })),
-  query:      vi.fn((collection: unknown, ...constraints: readonly QueryConstraint[]) => ({
+  db:              {},
+  collection:      vi.fn((...path: readonly string[]) => ({ path })),
+  where:           vi.fn((...args: readonly unknown[]): QueryConstraint => ({ kind: 'where', args })),
+  orderBy:         vi.fn((...args: readonly unknown[]): QueryConstraint => ({ kind: 'orderBy', args })),
+  limit:           vi.fn((...args: readonly unknown[]): QueryConstraint => ({ kind: 'limit', args })),
+  query:           vi.fn((collection: unknown, ...constraints: readonly QueryConstraint[]) => ({
     collection,
     constraints,
   })),
-  getDocs:    vi.fn(),
-  onSnapshot: vi.fn(),
+  getDocs:         vi.fn(),
+  onSnapshot:      vi.fn(),
+  doc:             vi.fn((...path: readonly unknown[]) => ({ path })),
+  updateDoc:       vi.fn(async () => {}),
+  serverTimestamp: vi.fn(() => 'SERVER_TS'),
 }))
 
 vi.mock('@/services/firebase', () => ({
@@ -25,6 +28,7 @@ vi.mock('@/services/firebase', () => ({
 }))
 
 import {
+  dismissNotification,
   getNotifications,
   notificationTripIdsFromKey,
   notificationTripIdsKey,
@@ -60,6 +64,7 @@ function notificationDoc(
       route:        '/expense',
       createdAt,
       readAt:       null,
+      dismissedAt:  null,
       expiresAt:    timestamp(createdAtMs + 1000),
     }),
   }
@@ -77,6 +82,9 @@ beforeEach(() => {
   fb.query.mockClear()
   fb.getDocs.mockReset()
   fb.onSnapshot.mockReset()
+  fb.doc.mockClear()
+  fb.updateDoc.mockClear()
+  fb.serverTimestamp.mockClear()
 })
 
 describe('notification trip id key', () => {
@@ -107,8 +115,11 @@ describe('getNotifications', () => {
 
     expect(rows.map(n => n.id)).toEqual(['newest', 'middle', 'older'])
     expect(fb.query).toHaveBeenCalledTimes(2)
-    expect(fb.where).toHaveBeenNthCalledWith(1, 'tripId', 'in', tripIds.slice(0, 30))
-    expect(fb.where).toHaveBeenNthCalledWith(2, 'tripId', 'in', tripIds.slice(30))
+    // Each chunk query is dismissedAt==null + tripId in chunk, in that order.
+    expect(fb.where).toHaveBeenNthCalledWith(1, 'dismissedAt', '==', null)
+    expect(fb.where).toHaveBeenNthCalledWith(2, 'tripId', 'in', tripIds.slice(0, 30))
+    expect(fb.where).toHaveBeenNthCalledWith(3, 'dismissedAt', '==', null)
+    expect(fb.where).toHaveBeenNthCalledWith(4, 'tripId', 'in', tripIds.slice(30))
     expect(fb.orderBy).toHaveBeenCalledWith('createdAt', 'desc')
     expect(fb.limit).toHaveBeenCalledWith(50)
   })
@@ -118,6 +129,30 @@ describe('getNotifications', () => {
 
     expect(rows).toEqual([])
     expect(fb.getDocs).not.toHaveBeenCalled()
+  })
+})
+
+describe('dismissNotification', () => {
+  test('unread row marks read + dismissed in one write', async () => {
+    const unread = { id: 'n1', readAt: null } as Notification
+
+    await dismissNotification('user-1', unread)
+
+    expect(fb.doc).toHaveBeenCalledWith(fb.db, 'users', 'user-1', 'notifications', 'n1')
+    expect(fb.updateDoc).toHaveBeenCalledWith(expect.anything(), {
+      readAt:      'SERVER_TS',
+      dismissedAt: 'SERVER_TS',
+    })
+  })
+
+  test('already-read row only sets dismissedAt', async () => {
+    const read = { id: 'n2', readAt: timestamp(1000) } as Notification
+
+    await dismissNotification('user-1', read)
+
+    expect(fb.updateDoc).toHaveBeenCalledWith(expect.anything(), {
+      dismissedAt: 'SERVER_TS',
+    })
   })
 })
 

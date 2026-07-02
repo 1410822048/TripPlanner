@@ -50,17 +50,21 @@ interface SwipeableShellProps {
    *  rows in the expense list while the Firestore + Storage round-trip
    *  is in flight. */
   disabled?: boolean
+  /** Two-step delete confirm. Default true (data rows). Pass false for
+   *  non-destructive one-tap dismissals (e.g. notification inbox). */
+  confirmDelete?: boolean
   children: SwipeableShellChildren
 }
 
 function SwipeableShell({
-  className, onSelect, isOpen, onOpen, onClose, onDelete, disabled = false, children,
+  className, onSelect, isOpen, onOpen, onClose, onDelete, disabled = false,
+  confirmDelete = true, children,
 }: SwipeableShellProps) {
   const swipeable = !!onDelete && !!onOpen && !!onClose && !disabled
   const clickable = !!onSelect && !disabled
   const {
     bindFg, bindBg, pointerProps, deleteProps, openX, confirming, wrapTap,
-  } = useSwipeRow({ isOpen: !!isOpen, onOpen, onClose, onDelete, enabled: swipeable })
+  } = useSwipeRow({ isOpen: !!isOpen, onOpen, onClose, onDelete, enabled: swipeable, confirmDelete })
 
   const wrapperBase = 'relative overflow-hidden bg-surface'
   const childOwnsSelect = typeof children === 'function'

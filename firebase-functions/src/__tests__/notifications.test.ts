@@ -91,6 +91,7 @@ describe('writeNotificationDocs', () => {
       body: 'メンバーさんが費用を追加しました',
       route: '/expense',
       readAt: null,
+      dismissedAt: null,
     })
     expect(doc1.settlement).toBeUndefined()
     expect(firestoreMock.db.runTransaction).toHaveBeenCalledTimes(1)

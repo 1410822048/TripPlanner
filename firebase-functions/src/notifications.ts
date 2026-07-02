@@ -152,6 +152,7 @@ export async function writeNotificationDocs(
           ...(settlementInfo ? { settlement: settlementInfo } : {}),
           createdAt:     FieldValue.serverTimestamp(),
           readAt:        null,
+          dismissedAt:   null,
           expiresAt,
         })
       })

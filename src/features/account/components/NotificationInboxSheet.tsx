@@ -7,9 +7,11 @@ import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Receipt, Ticket, Wallet, UserPlus, Inbox, CheckCheck } from 'lucide-react'
 import BottomSheet from '@/components/ui/BottomSheet'
-import { markNotificationRead, markAllNotificationsRead } from '../services/notificationService'
+import SwipeableShell from '@/components/ui/SwipeableShell'
+import { markNotificationRead, markAllNotificationsRead, dismissNotification } from '../services/notificationService'
 import { captureError } from '@/services/sentry'
 import { useTripStore } from '@/store/tripStore'
+import { useSwipeOpen } from '@/hooks/useSwipeOpen'
 import type { Notification, NotificationEntityType } from '@/types'
 
 interface Props {
@@ -50,12 +52,28 @@ export default function NotificationInboxSheet({ isOpen, onClose, uid, notificat
   const { pathname } = useLocation()
   const setSelectedTripId = useTripStore(s => s.setSelectedTripId)
   const [filter, setFilter] = useState<NotificationFilter>('all')
-  const unreadNotifications = notifications.filter(n => n.readAt == null)
+  // Optimistically hide a dismissed row until the server snapshot drops it
+  // (query filters dismissedAt == null). On write failure the id is removed
+  // so the row reappears — no toast, per spec.
+  const [dismissingIds, setDismissingIds] = useState<Set<string>>(new Set())
+  const swipe = useSwipeOpen()
+
+  // This component stays mounted while the sheet is closed (BottomSheet only
+  // unmounts its children), so a row swiped open before closing would render
+  // open on reopen. Reset the open-row state on every open/close transition.
+  const [prevIsOpen, setPrevIsOpen] = useState(isOpen)
+  if (isOpen !== prevIsOpen) {
+    setPrevIsOpen(isOpen)
+    swipe.closeAll()
+  }
+
+  const activeNotifications = notifications.filter(n => !dismissingIds.has(n.id))
+  const unreadNotifications = activeNotifications.filter(n => n.readAt == null)
   const unreadIds = unreadNotifications.map(n => n.id)
   const unreadCount = unreadNotifications.length
   const visibleNotifications = filter === 'unread'
     ? unreadNotifications
-    : notifications
+    : activeNotifications
 
   async function handleRowClick(n: Notification) {
     onClose()
@@ -66,7 +84,16 @@ export default function NotificationInboxSheet({ isOpen, onClose, uid, notificat
     if (!pathname.startsWith(n.route)) navigate(n.route)
   }
 
+  function handleDismiss(n: Notification) {
+    setDismissingIds(prev => new Set(prev).add(n.id))
+    dismissNotification(uid, n).catch(e => {
+      captureError(e, { source: 'NotificationInboxSheet.dismiss', notificationId: n.id })
+      setDismissingIds(prev => { const next = new Set(prev); next.delete(n.id); return next })
+    })
+  }
+
   function handleMarkAllRead() {
+    swipe.closeAll()
     markAllNotificationsRead(uid, unreadIds).catch(e => captureError(e, { source: 'NotificationInboxSheet.markAllRead', uid }))
   }
 
@@ -94,7 +121,7 @@ export default function NotificationInboxSheet({ isOpen, onClose, uid, notificat
                 key={mode}
                 type="button"
                 aria-pressed={active}
-                onClick={() => setFilter(mode)}
+                onClick={() => { swipe.closeAll(); setFilter(mode) }}
                 className={[
                   'flex h-8 cursor-pointer items-center gap-1.5 rounded-full px-3 text-[12px] font-semibold transition-colors',
                   'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
@@ -149,36 +176,45 @@ export default function NotificationInboxSheet({ isOpen, onClose, uid, notificat
             const unread = n.readAt == null
             return (
               <li key={n.id}>
-                <button
-                  type="button"
-                  onClick={() => handleRowClick(n)}
-                  className={[
-                    'grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3 rounded-card border px-3.5 py-3 text-left transition-colors',
-                    'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-                    unread
-                      ? 'border-danger-soft bg-danger-pale/35 hover:bg-danger-pale/55'
-                      : 'border-border bg-app hover:bg-tile',
-                  ].join(' ')}
+                <SwipeableShell
+                  className="rounded-card"
+                  confirmDelete={false}
+                  {...swipe.bindRow(n.id)}
+                  onSelect={() => handleRowClick(n)}
+                  onDelete={() => handleDismiss(n)}
                 >
-                  <span className={[
-                    'flex h-10 w-10 shrink-0 items-center justify-center rounded-full',
-                    meta.iconBgClass,
-                    meta.iconClass,
-                  ].join(' ')}>
-                    <Icon size={17} strokeWidth={2.1} aria-hidden />
-                  </span>
+                  {({ selectButtonProps }) => (
+                    <button
+                      {...selectButtonProps}
+                      className={[
+                        'grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3 rounded-card border px-3.5 py-3 text-left transition-colors',
+                        'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                        unread
+                          ? 'border-danger-soft bg-danger-pale/35 hover:bg-danger-pale/55'
+                          : 'border-border bg-app hover:bg-tile',
+                      ].join(' ')}
+                    >
+                      <span className={[
+                        'flex h-10 w-10 shrink-0 items-center justify-center rounded-full',
+                        meta.iconBgClass,
+                        meta.iconClass,
+                      ].join(' ')}>
+                        <Icon size={17} strokeWidth={2.1} aria-hidden />
+                      </span>
 
-                  <span className="min-w-0">
-                    <span className="block text-[13.5px] font-bold leading-[1.4] text-ink">{n.title}</span>
-                    <span className="mt-0.5 block truncate text-[10.5px] font-semibold text-accent">{n.tripTitle}</span>
-                    <span className="mt-1 block text-[12px] leading-[1.55] text-muted line-clamp-2">{n.body}</span>
-                  </span>
+                      <span className="min-w-0">
+                        <span className="block text-[13.5px] font-bold leading-[1.4] text-ink">{n.title}</span>
+                        <span className="mt-0.5 block truncate text-[10.5px] font-semibold text-accent">{n.tripTitle}</span>
+                        <span className="mt-1 block text-[12px] leading-[1.55] text-muted line-clamp-2">{n.body}</span>
+                      </span>
 
-                  <span className="flex shrink-0 items-center gap-2 pt-0.5">
-                    <span className="text-[10.5px] leading-none text-muted">{relativeTime(n.createdAt.toDate())}</span>
-                    {unread && <span aria-hidden className="h-2.5 w-2.5 rounded-full bg-danger" />}
-                  </span>
-                </button>
+                      <span className="flex shrink-0 items-center gap-2 pt-0.5">
+                        <span className="text-[10.5px] leading-none text-muted">{relativeTime(n.createdAt.toDate())}</span>
+                        {unread && <span aria-hidden className="h-2.5 w-2.5 rounded-full bg-danger" />}
+                      </span>
+                    </button>
+                  )}
+                </SwipeableShell>
               </li>
             )
           })}

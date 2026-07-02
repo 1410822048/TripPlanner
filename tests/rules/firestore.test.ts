@@ -2919,6 +2919,7 @@ describe('notification inbox rules', () => {
       route:        '/expense',
       createdAt:    Timestamp.now(),
       readAt:       null,
+      dismissedAt:  null,
       expiresAt:    Timestamp.now(),
       ...overrides,
     }
@@ -3013,6 +3014,59 @@ describe('notification inbox rules', () => {
       updateDoc(
         doc(asOwner(env).firestore(), 'users', OWNER_UID, 'notifications', NOTIFICATION_ID),
         { readAt: serverTimestamp(), body: 'forged body' },
+      ),
+    )
+  })
+
+  // Soft-dismiss: hide the row without hard-deleting. An already-read row
+  // sets dismissedAt alone; an unread row sets readAt + dismissedAt together
+  // so the bell dot clears in the same write.
+  test('self user can soft-dismiss an already-read notification', async () => {
+    await seedNotification(OWNER_UID, { readAt: Timestamp.now() })
+    await assertSucceeds(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'notifications', NOTIFICATION_ID),
+        { dismissedAt: serverTimestamp() },
+      ),
+    )
+  })
+
+  test('cannot soft-dismiss an unread notification without marking it read', async () => {
+    await seedNotification(OWNER_UID)
+    await assertFails(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'notifications', NOTIFICATION_ID),
+        { dismissedAt: serverTimestamp() },
+      ),
+    )
+  })
+
+  test('self user can dismiss an unread notification (readAt + dismissedAt together)', async () => {
+    await seedNotification(OWNER_UID)
+    await assertSucceeds(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'notifications', NOTIFICATION_ID),
+        { readAt: serverTimestamp(), dismissedAt: serverTimestamp() },
+      ),
+    )
+  })
+
+  test('cannot dismiss another user\'s notification', async () => {
+    await seedNotification(OWNER_UID)
+    await assertFails(
+      updateDoc(
+        doc(asStranger(env).firestore(), 'users', OWNER_UID, 'notifications', NOTIFICATION_ID),
+        { dismissedAt: serverTimestamp() },
+      ),
+    )
+  })
+
+  test('cannot change other fields alongside dismissing', async () => {
+    await seedNotification(OWNER_UID)
+    await assertFails(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'notifications', NOTIFICATION_ID),
+        { dismissedAt: serverTimestamp(), body: 'forged body' },
       ),
     )
   })

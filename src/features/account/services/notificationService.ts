@@ -49,6 +49,9 @@ function mergeNotifications(pages: Iterable<Notification[]>): Notification[] {
 function notificationQuery(fb: FirebaseBundle, uid: string, tripIdChunk: readonly string[]) {
   return fb.query(
     fb.collection(fb.db, 'users', uid, 'notifications'),
+    // Soft-dismissed rows are filtered server-side so they never consume the
+    // 50-row window — same window-hygiene motivation as the trip-access scope.
+    fb.where('dismissedAt', '==', null),
     fb.where('tripId', 'in', [...tripIdChunk]),
     fb.orderBy('createdAt', 'desc'),
     fb.limit(LIST_LIMIT),
@@ -105,6 +108,18 @@ export async function markNotificationRead(uid: string, notificationId: string):
   await fb.updateDoc(fb.doc(fb.db, 'users', uid, 'notifications', notificationId), {
     readAt: fb.serverTimestamp(),
   })
+}
+
+/** Soft-dismiss: hide the row from the inbox without hard-deleting (rules
+ *  block client delete). Dismissing an unread row also marks it read in the
+ *  same write so the bell dot clears — rules allow readAt+dismissedAt
+ *  together only when both == request.time. */
+export async function dismissNotification(uid: string, notification: Notification): Promise<void> {
+  const fb = await getFirebase()
+  const ref = fb.doc(fb.db, 'users', uid, 'notifications', notification.id)
+  await fb.updateDoc(ref, notification.readAt == null
+    ? { readAt: fb.serverTimestamp(), dismissedAt: fb.serverTimestamp() }
+    : { dismissedAt: fb.serverTimestamp() })
 }
 
 /** Marks every currently-unread id as read in one batch. Callers filter to
