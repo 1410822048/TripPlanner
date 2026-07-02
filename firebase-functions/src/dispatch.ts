@@ -1,6 +1,7 @@
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore'
 import * as logger from 'firebase-functions/logger'
 import { hasRetryableSendError, sendPush, type PushTokenRecord, type SendResult } from './send.js'
+import { writeNotificationDocs } from './notifications.js'
 import type { NormalizedPushEvent } from './model.js'
 
 type DedupeStatus = 'pending' | 'sent' | 'partial' | 'failed'
@@ -196,6 +197,16 @@ export async function dispatchPushEvent(event: NormalizedPushEvent | null): Prom
   try {
     const recipientUids = await candidateRecipients(event)
     await updateEvent(event.eventId, { recipientUids })
+
+    // Inbox row exists for every recipient regardless of push-token state —
+    // written before the FCM send so a signed-in-but-push-disabled member
+    // still sees it. Uses the same lease/retry as the send below: if this
+    // throws, dispatchPushEvent's catch marks the event failed and a
+    // platform retry re-runs the whole reservation. writeNotificationDocs
+    // uses transaction create-only writes, so a retry never re-writes (and
+    // can't clobber readAt on) a doc the recipient already opened between
+    // attempts.
+    await writeNotificationDocs(event, recipientUids)
 
     const tokens = await loadTokens(recipientUids)
     if (tokens.length === 0) {

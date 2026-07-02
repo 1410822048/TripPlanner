@@ -115,7 +115,7 @@ export default function AccountPage() {
   const navigate = useNavigate()
 
   const uid = state.status === 'signed-in' ? state.user.uid : undefined
-  const { trips, memberResults } = useAllTripMembers(uid)
+  const { trips, tripIds, memberResults } = useAllTripMembers(uid)
   const { data: hotelBookings } = useMyHotelBookings(uid)
 
   // Plain derivations — React Compiler auto-memoises based on inferred
@@ -241,7 +241,7 @@ export default function AccountPage() {
         <h1 className="m-0 text-[26px] font-black text-ink -tracking-[0.4px] leading-[1.1]">
           マイページ
         </h1>
-        <NotificationInboxButton />
+        <NotificationInboxButton uid={user.uid} accessibleTripIds={tripIds} />
       </div>
       <NotificationSettings uid={user.uid} />
 

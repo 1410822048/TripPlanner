@@ -607,15 +607,17 @@ Permission prompt rules：
 
 不要在 UI 寫教學長文；狀態文字短句即可。
 
-### 8.6 Foreground messages
+### 8.6 Foreground messages（P2 起移除，見下）
 
-新增 `useForegroundPushMessages()`：
+~~新增 `useForegroundPushMessages()`：~~
 
-- 掛在 signed-in layout。
-- `onMessage(messaging, payload => ...)`。
-- 若 `payload.data.route` 是目前路由，只顯示更低干擾 toast 或不顯示。
-- 不呼叫 `new Notification()`。
-- toast 使用既有 `toast`，不新增 notification UI stack。
+- ~~掛在 signed-in layout。~~
+- ~~`onMessage(messaging, payload => ...)`。~~
+- ~~若 `payload.data.route` 是目前路由，只顯示更低干擾 toast 或不顯示。~~
+- ~~不呼叫 `new Notification()`。~~
+- ~~toast 使用既有 `toast`，不新增 notification UI stack。~~
+
+**2026-07-01 P2 更新**：`useForegroundPushMessages` 已整支移除。持久訊息匣上線後，前景不再 toast；鈴鐺的已讀/未讀改由 `users/{uid}/notifications` 的獨立 realtime listener 驅動（`useNotifications`），不依賴 FCM `onMessage` 事件本身——該 listener 在 Functions 寫入通知 doc 後即會更新，時序上不晚於 FCM 送達，因此 `onMessage` 監聽器移除後鈴鐺狀態沒有任何缺口。連帶移除的還有 `PUSH_TOKEN_ENABLED_EVENT` / `announcePushTokenEnabled()`（原本唯一的用途就是讓這支 hook 在使用者剛開啟權限後重新 attach）。
 
 ## 9. Service worker implementation details
 

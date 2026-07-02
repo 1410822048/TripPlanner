@@ -9,7 +9,6 @@
 // token pair upserts instead of accumulating stale docs.
 import { getFirebase, getFirebaseMessaging } from '@/services/firebase'
 
-export const PUSH_TOKEN_ENABLED_EVENT = 'tripmate:push-token-enabled'
 const TOKEN_HASH_KEY = 'tripmate.push.tokenHash'
 
 /** SHA-256 hex digest — stable id for an FCM token. */
@@ -32,11 +31,6 @@ export function writeStoredPushTokenHash(hash: string | null): void {
 
 function clearStoredPushTokenHashIfCurrent(hash: string): void {
   if (readStoredPushTokenHash() === hash) writeStoredPushTokenHash(null)
-}
-
-export function announcePushTokenEnabled(): void {
-  if (typeof window === 'undefined') return
-  window.dispatchEvent(new window.Event(PUSH_TOKEN_ENABLED_EVENT))
 }
 
 // Server-origin disable reasons. A doc carrying one is a tombstone for a

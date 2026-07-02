@@ -21,6 +21,7 @@ vi.mock('../src/firestore', () => ({
 	listDocNames:    vi.fn(async () => []),
 	batchDeleteDocs: vi.fn(),
 	deleteDoc:       vi.fn(),
+	deleteUserTripNotifications: vi.fn(async () => 0),
 	updateDocFields: vi.fn(),
 	readString:      vi.fn((fields: Record<string, { stringValue?: string }> | null | undefined, key: string) =>
 		fields?.[key]?.stringValue,
@@ -43,6 +44,11 @@ beforeEach(() => {
 	vi.mocked(firestore.getDocFields).mockResolvedValue({
 		ownerId: { stringValue: 'owner-uid' },
 	})
+	vi.mocked(firestore.listDocNames).mockResolvedValue([])
+	vi.mocked(firestore.batchDeleteDocs).mockResolvedValue(undefined)
+	vi.mocked(firestore.deleteDoc).mockResolvedValue(undefined)
+	vi.mocked(firestore.deleteUserTripNotifications).mockResolvedValue(0)
+	vi.mocked(firestore.updateDocFields).mockResolvedValue(undefined)
 })
 
 describe('cascadeTripDelete - Storage prefix boundary', () => {
@@ -141,6 +147,88 @@ describe('cascadeTripDelete - Storage prefix boundary', () => {
 		// failed-auth attempt would freeze the trip from legitimate
 		// owner writes.
 		expect(firestore.updateDocFields).not.toHaveBeenCalled()
+	})
+
+	it('cleans notification rows for root memberIds and members subcollection docs after trip delete', async () => {
+		const callOrder: string[] = []
+		vi.mocked(firestore.getDocFields).mockResolvedValueOnce({
+			ownerId: {
+				stringValue: 'owner-uid',
+			},
+			memberIds: {
+				arrayValue: {
+					values: [
+						{ stringValue: 'owner-uid' },
+						{ stringValue: 'root-member' },
+					],
+				},
+			},
+		})
+		vi.mocked(firestore.listDocNames).mockImplementation(async (_token, _projectId, parent) => {
+			if (parent === 'trips/abc/members') {
+				return [
+					'projects/demo-project/databases/(default)/documents/trips/abc/members/doc-member',
+					'projects/demo-project/databases/(default)/documents/trips/abc/members/root-member',
+				]
+			}
+			return []
+		})
+		vi.mocked(firestore.deleteDoc).mockImplementationOnce(async (_token, _projectId, path) => {
+			callOrder.push(`deleteDoc:${path}`)
+		})
+		vi.mocked(firestore.deleteUserTripNotifications).mockImplementation(async (_token, _projectId, uid, tripId) => {
+			callOrder.push(`cleanup:${uid}:${tripId}`)
+			return 0
+		})
+
+		await cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', 'bucket')
+
+		const cleanupCalls = vi.mocked(firestore.deleteUserTripNotifications).mock.calls
+		expect(new Set(cleanupCalls.map(call => `${call[2]}:${call[3]}`))).toEqual(new Set([
+			'owner-uid:abc',
+			'root-member:abc',
+			'doc-member:abc',
+		]))
+		const tripDeleteIdx = callOrder.indexOf('deleteDoc:trips/abc')
+		expect(tripDeleteIdx).toBeGreaterThanOrEqual(0)
+		for (const [index, call] of callOrder.entries()) {
+			if (call.startsWith('cleanup:')) expect(index).toBeGreaterThan(tripDeleteIdx)
+		}
+	})
+
+	it('continues best-effort notification cleanup when one member cleanup fails', async () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+		vi.mocked(firestore.getDocFields).mockResolvedValueOnce({
+			ownerId: {
+				stringValue: 'owner-uid',
+			},
+			memberIds: {
+				arrayValue: {
+					values: [
+						{ stringValue: 'owner-uid' },
+						{ stringValue: 'bad-member' },
+						{ stringValue: 'ok-member' },
+					],
+				},
+			},
+		})
+		vi.mocked(firestore.deleteUserTripNotifications).mockImplementation(async (_token, _projectId, uid) => {
+			if (uid === 'bad-member') throw new Error('cleanup failed')
+			return 1
+		})
+
+		try {
+			await cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', 'bucket')
+
+			const cleanedUids = vi.mocked(firestore.deleteUserTripNotifications).mock.calls.map(call => call[2])
+			expect(new Set(cleanedUids)).toEqual(new Set(['owner-uid', 'bad-member', 'ok-member']))
+			expect(warn).toHaveBeenCalledWith('trip notification cleanup failed', expect.objectContaining({
+				tripId: 'abc',
+				uid:    'bad-member',
+			}))
+		} finally {
+			warn.mockRestore()
+		}
 	})
 })
 

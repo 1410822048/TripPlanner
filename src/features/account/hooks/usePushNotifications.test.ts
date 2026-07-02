@@ -7,7 +7,6 @@ const messagingBundle = vi.hoisted(() => ({
 }))
 
 const pushTokenService = vi.hoisted(() => ({
-  announcePushTokenEnabled: vi.fn(),
   disableStoredPushToken: vi.fn(),
   isTokenEnabled: vi.fn(),
   readStoredPushTokenHash: vi.fn(() => null),
@@ -35,7 +34,6 @@ beforeEach(() => {
     value: { ready: Promise.resolve({ scope: '/' }) },
   })
   messagingBundle.getToken.mockReset()
-  pushTokenService.announcePushTokenEnabled.mockClear()
   pushTokenService.disableStoredPushToken.mockClear()
   pushTokenService.isTokenEnabled.mockClear()
   pushTokenService.readStoredPushTokenHash.mockClear()

@@ -19,6 +19,18 @@ export interface EventAuth {
   authType?: string
 }
 
+/** Settlement direction + amount, carried through to the notification
+ *  inbox doc (`writeNotificationDocs`) so its body can say "誰付給誰多少"
+ *  without dispatch.ts re-reading the (possibly soft-deleted) settlement
+ *  doc a second time. Names are resolved separately from member docs —
+ *  this only carries the raw uids + money. */
+export interface NormalizedSettlementInfo {
+  fromUid: string
+  toUid: string
+  amountMinor: number
+  currency: string
+}
+
 export interface NormalizedPushEvent {
   eventId: string
   tripId: string
@@ -34,6 +46,7 @@ export interface NormalizedPushEvent {
   // on the Worker (admin SDK) and the only doc field available — `settledBy` —
   // is the RECORDER, not the deleter. See selectRecipients in dispatch.ts.
   actorUnknown?: boolean
+  settlement?: NormalizedSettlementInfo
 }
 
 export const TEMPLATES: Record<TemplateKey, string> = {

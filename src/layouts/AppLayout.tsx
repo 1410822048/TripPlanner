@@ -8,7 +8,6 @@ import PwaUpdatePrompt from '@/components/PwaUpdatePrompt'
 import PwaInstallPrompt from '@/components/PwaInstallPrompt'
 import { useCurrentTripSync } from '@/features/trips/hooks/useCurrentTripSync'
 import { usePrefetchBookings } from '@/features/bookings/hooks/usePrefetchBookings'
-import { useForegroundPushMessages } from '@/hooks/useForegroundPushMessages'
 import { readAuthHint, useAuth } from '@/hooks/useAuth'
 import { useFeatureBadges } from '@/hooks/useFeatureBadges'
 import { writePushOwnerUid } from '@/features/account/services/pushOwnerStore'
@@ -82,10 +81,6 @@ export default function AppLayout() {
   // navigate to /bookings, the list resolves from cache — closes the
   // visible "header showing but list still loading" gap on cold load.
   usePrefetchBookings()
-
-  // Foreground FCM → in-app toast only. No-op unless signed-in AND push
-  // permission already granted (never pulls the messaging SDK otherwise).
-  useForegroundPushMessages()
 
   const { state: pushOwnerAuthState } = useAuth()
   const pushOwnerUid = pushOwnerAuthState.status === 'signed-in'

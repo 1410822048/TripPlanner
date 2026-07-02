@@ -1,18 +1,29 @@
 // src/features/account/components/NotificationInboxButton.tsx
-// Header entry for the future in-app notification inbox. It stays separate
-// from browser push settings so the bell always means "messages".
+// Header entry for the in-app notification inbox. Stays separate from
+// browser push settings so the bell always means "messages". Owns the
+// single realtime listener for both the unread dot and the sheet contents,
+// so opening the sheet costs zero extra Firestore reads.
 import { useState } from 'react'
-import { Bell, Inbox } from 'lucide-react'
-import BottomSheet from '@/components/ui/BottomSheet'
+import { Bell } from 'lucide-react'
+import NotificationInboxSheet from './NotificationInboxSheet'
+import { useNotifications } from '../hooks/useNotifications'
 
-export default function NotificationInboxButton() {
+interface Props {
+  uid: string
+  accessibleTripIds: readonly string[] | undefined
+}
+
+export default function NotificationInboxButton({ uid, accessibleTripIds }: Props) {
   const [open, setOpen] = useState(false)
+  const { data: notifications } = useNotifications(uid, accessibleTripIds)
+  const visibleNotifications = notifications ?? []
+  const hasUnread = visibleNotifications.some(n => n.readAt == null)
 
   return (
     <>
       <button
         type="button"
-        aria-label="通知ボックス"
+        aria-label={hasUnread ? '通知ボックス(未読あり)' : '通知ボックス'}
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen(true)}
@@ -25,21 +36,20 @@ export default function NotificationInboxButton() {
         ].join(' ')}
       >
         <Bell size={18} strokeWidth={2} aria-hidden />
+        {hasUnread && (
+          <span
+            aria-hidden
+            className="absolute top-1.5 right-2 w-[9px] h-[9px] rounded-full bg-danger border-2 border-app"
+          />
+        )}
       </button>
 
-      <BottomSheet isOpen={open} onClose={() => setOpen(false)} title="通知ボックス">
-        <div className="rounded-card border border-border bg-app px-4 py-8 text-center">
-          <div className="mx-auto w-12 h-12 rounded-full bg-surface flex items-center justify-center text-muted">
-            <Inbox size={21} strokeWidth={2} aria-hidden />
-          </div>
-          <div className="mt-3 text-[14px] font-black text-ink -tracking-[0.1px]">
-            通知はありません
-          </div>
-          <div className="mt-1 text-[12px] leading-[1.6] text-muted">
-            新しい更新が届くとここに表示されます
-          </div>
-        </div>
-      </BottomSheet>
+      <NotificationInboxSheet
+        isOpen={open}
+        onClose={() => setOpen(false)}
+        uid={uid}
+        notifications={visibleNotifications}
+      />
     </>
   )
 }

@@ -123,6 +123,26 @@ describe('normalizeSettlementWrite', () => {
     expect(event?.actorUid).toBe('u2')
     expect(event?.actorUnknown).toBeUndefined()
   })
+
+  test('settlement info requires a non-negative integer amountMinor', () => {
+    const decimal = normalizeSettlementWrite({
+      eventId: 's5',
+      tripId: 'trip-1',
+      settlementId: 'settlement-1',
+      before: null,
+      after: { fromUid: 'u1', toUid: 'u2', settledBy: 'u2', amountMinor: 10.5, currency: 'JPY' },
+    })
+    const negative = normalizeSettlementWrite({
+      eventId: 's6',
+      tripId: 'trip-1',
+      settlementId: 'settlement-1',
+      before: null,
+      after: { fromUid: 'u1', toUid: 'u2', settledBy: 'u2', amountMinor: -1, currency: 'JPY' },
+    })
+
+    expect(decimal?.settlement).toBeUndefined()
+    expect(negative?.settlement).toBeUndefined()
+  })
 })
 
 describe('normalizeBookingWrite', () => {

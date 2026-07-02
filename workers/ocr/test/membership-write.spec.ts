@@ -80,6 +80,7 @@ let batchRemoveDocs: string[] = []
 // wishes subcollection only) and which uid it stripped.
 let wishVotesDocs: string[] = []
 let wishVotesUid: string | null = null
+const notificationCleanupCalls: Array<{ uid: string; tripId: string }> = []
 vi.mock('../src/firestore', async () => {
 	const actual = await vi.importActual<typeof import('../src/firestore')>('../src/firestore')
 	return {
@@ -103,6 +104,11 @@ vi.mock('../src/firestore', async () => {
 		}),
 		deleteDoc: vi.fn(async (_t: string, _p: string, path: string) => {
 			restCallOrder.push(`deleteDoc:${path}`)
+		}),
+		deleteUserTripNotifications: vi.fn(async (_t: string, _p: string, uid: string, tripId: string) => {
+			restCallOrder.push(`deleteUserTripNotifications:${uid}:${tripId}`)
+			notificationCleanupCalls.push({ uid, tripId })
+			return 1
 		}),
 		buildDocName: (projectId: string, path: string) =>
 			`projects/${projectId}/databases/(default)/documents/${path}`,
@@ -236,6 +242,7 @@ beforeEach(() => {
 	batchRemoveDocs.length = 0
 	wishVotesDocs.length   = 0
 	wishVotesUid           = null
+	notificationCleanupCalls.length = 0
 	cascadeCalls.length    = 0
 	capturedTxResult       = null
 })
@@ -810,6 +817,18 @@ describe('memberRemove endpoint', () => {
 		expect(deleteCall).toContain(`/members/${TARGET}`)
 	})
 
+	it('cleans kicked member trip notifications after member doc delete', async () => {
+		seedAuthorizedRemove()
+
+		await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
+
+		expect(notificationCleanupCalls).toEqual([{ uid: TARGET, tripId: TRIP_ID }])
+		const deleteIdx  = restCallOrder.findIndex(c => c.startsWith('deleteDoc:'))
+		const cleanupIdx = restCallOrder.findIndex(c => c.startsWith('deleteUserTripNotifications:'))
+		expect(deleteIdx).toBeGreaterThan(-1)
+		expect(cleanupIdx).toBeGreaterThan(deleteIdx)
+	})
+
 	it('strips kicked uid from wish votes IN THE SAME commit as memberIds (no extra failure window)', async () => {
 		// Regression: before the shared cascade, a kicked member's vote stayed
 		// in wishes.votes[] -- and votes.length is the wish sort key, so a
@@ -1096,6 +1115,18 @@ describe('memberLeave endpoint', () => {
 		expect(wishVotesDocs[0]).toContain(`/trips/${TRIP_ID}/wishes/`)
 		// The final delete removes the leaver's own member doc.
 		expect(restCallOrder[deleteIdx]).toContain(`/members/${LEAVER}`)
+	})
+
+	it('cleans self-leaver trip notifications after member doc delete', async () => {
+		seedLeave({ role: 'editor' })
+
+		await memberLeave(LEAVER, { tripId: TRIP_ID }, '{}')
+
+		expect(notificationCleanupCalls).toEqual([{ uid: LEAVER, tripId: TRIP_ID }])
+		const deleteIdx  = restCallOrder.findIndex(c => c.startsWith('deleteDoc:'))
+		const cleanupIdx = restCallOrder.findIndex(c => c.startsWith('deleteUserTripNotifications:'))
+		expect(deleteIdx).toBeGreaterThan(-1)
+		expect(cleanupIdx).toBeGreaterThan(deleteIdx)
 	})
 
 	it('viewer leaves: same strip cascade (viewer is a non-owner too)', async () => {

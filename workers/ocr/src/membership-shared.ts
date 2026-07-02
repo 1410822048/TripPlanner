@@ -10,6 +10,7 @@ import {
   readString,
   listDocNames,
   batchStripDepartedMember,
+  deleteUserTripNotifications,
   deleteDoc,
   type FsValue,
 }                                                           from './firestore'
@@ -175,6 +176,7 @@ export function buildMemberStripWrites(
  *       `votes` off wish docs (folded into the same commit, see
  *       batchStripDepartedMember for why votes doesn't get its own call)
  *    3. ONLY THEN delete members/{targetUid}
+ *    4. Best-effort cleanup of that user's per-trip notification docs
  *  Mid-step failure between (2) and (3) leaves "still a member doc, ACL
  *  projection gone" -- the user keeps formal membership but loses
  *  subcollection visibility; a retry converges. The reverse (delete
@@ -204,11 +206,24 @@ export async function runMemberStripCascade(
   // commit -- votes never becomes a separate post-ACL-strip failure window.
   await batchStripDepartedMember(accessToken, projectId, lists.flat(), wishDocNames, targetUid)
 
-  // Member doc delete is the very last step: by now every subcollection +
-  // trip doc has had targetUid stripped from memberIds, so collection-group
-  // `array-contains targetUid` queries no longer match this trip's docs.
+  // Member doc delete is the final membership mutation: by now every
+  // subcollection + trip doc has had targetUid stripped from memberIds,
+  // so collection-group `array-contains targetUid` queries no longer
+  // match this trip's docs.
   if (targetExists) {
     await deleteDoc(accessToken, projectId, `trips/${tripId}/members/${targetUid}`)
+  }
+
+  // Inbox cleanup is data hygiene, not the security boundary. Do not let
+  // a transient Firestore failure strand member-leave after ACL removal.
+  try {
+    await deleteUserTripNotifications(accessToken, projectId, targetUid, tripId)
+  } catch (err) {
+    console.warn('deleteUserTripNotifications failed', {
+      tripId,
+      targetUid,
+      error: err instanceof Error ? err.message : String(err),
+    })
   }
 }
 

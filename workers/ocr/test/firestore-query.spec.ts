@@ -15,6 +15,7 @@ import {
 	queryReceiptPurgeCandidates,
 	updateDocFields,
 	deleteDocFields,
+	deleteUserTripNotifications,
 } from '../src/firestore'
 
 const originalFetch = globalThis.fetch
@@ -127,6 +128,52 @@ describe('queryReceiptPurgeCandidates - REST query shape', () => {
 		await callQuery()
 		const body = await capturedBody()
 		expect(body.structuredQuery.limit).toBe(200)
+	})
+})
+
+describe('deleteUserTripNotifications - REST query shape', () => {
+	it('queries only one user inbox and deletes docs whose tripId matches', async () => {
+		globalThis.fetch = vi.fn(async (input) => {
+			const url = String(input)
+			if (url.endsWith(':runQuery')) {
+				return new Response(JSON.stringify([
+					{
+						document: {
+							name: 'projects/demo/databases/(default)/documents/users/u1/notifications/n1',
+						},
+					},
+				]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+			}
+			return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+		}) as typeof fetch
+
+		const deleted = await deleteUserTripNotifications('fake-token', 'demo', 'u1', 'trip-1')
+
+		expect(deleted).toBe(1)
+		const calls = vi.mocked(globalThis.fetch).mock.calls
+		expect(calls).toHaveLength(2)
+
+		const queryUrl = String(calls[0][0])
+		expect(queryUrl).toContain('/documents/users/u1:runQuery')
+		const queryBody = JSON.parse((calls[0][1] as RequestInit).body as string)
+		expect(queryBody.structuredQuery.from).toEqual([{ collectionId: 'notifications' }])
+		expect(queryBody.structuredQuery.where).toEqual({
+			fieldFilter: {
+				field: { fieldPath: 'tripId' },
+				op:    'EQUAL',
+				value: { stringValue: 'trip-1' },
+			},
+		})
+		expect(queryBody.structuredQuery.orderBy).toEqual([
+			{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' },
+		])
+
+		const commitBody = JSON.parse((calls[1][1] as RequestInit).body as string)
+		expect(commitBody.writes).toEqual([
+			{
+				delete: 'projects/demo/databases/(default)/documents/users/u1/notifications/n1',
+			},
+		])
 	})
 })
 

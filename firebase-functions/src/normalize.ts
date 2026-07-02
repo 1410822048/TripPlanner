@@ -1,4 +1,4 @@
-import type { EventAuth, NormalizedPushEvent } from './model.js'
+import type { EventAuth, NormalizedPushEvent, NormalizedSettlementInfo } from './model.js'
 
 type Doc = Record<string, unknown>
 
@@ -40,6 +40,21 @@ const BOOKING_MEANINGFUL_FIELDS = [
 
 function isString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+}
+
+// Carries direction + amount straight from the trigger's own before/after
+// doc into the notification inbox row (writeNotificationDocs) — avoids a
+// second Firestore read of a settlement that may already be soft-deleted
+// by the time dispatch.ts runs.
+function settlementInfoOf(doc: Doc | undefined): NormalizedSettlementInfo | undefined {
+  if (!doc) return undefined
+  const { fromUid, toUid, amountMinor, currency } = doc
+  if (!isString(fromUid) || !isString(toUid) || !isNonNegativeInteger(amountMinor) || !isString(currency)) return undefined
+  return { fromUid, toUid, amountMinor, currency }
 }
 
 function isTombstoned(doc: Doc | null): boolean {
@@ -169,6 +184,7 @@ export function normalizeSettlementWrite(input: {
       route: '/expense',
       templateKey: 'settlement.created',
       partyUids,
+      settlement: settlementInfoOf(after),
     })
   }
 
@@ -187,6 +203,7 @@ export function normalizeSettlementWrite(input: {
       route: '/expense',
       templateKey: 'settlement.deleted',
       partyUids,
+      settlement: settlementInfoOf(after),
     })
   }
 
@@ -210,6 +227,7 @@ export function normalizeSettlementWrite(input: {
       route: '/expense',
       templateKey: 'settlement.deleted',
       partyUids,
+      settlement: settlementInfoOf(before),
     })
   }
 

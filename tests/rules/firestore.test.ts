@@ -2895,3 +2895,125 @@ describe('push notifications rules', () => {
     )
   })
 })
+
+// ─── Notification inbox (P2) ────────────────────────────────────────
+// Server (Firebase Functions admin SDK) writes these; client is read-only
+// except marking its own docs read. See the amended non-goal in
+// docs/design/push-notifications-p1.md and firestore.rules
+// users/{uid}/notifications.
+describe('notification inbox rules', () => {
+  const NOTIFICATION_ID = 'evt-1'
+
+  function notificationDoc(overrides: Record<string, unknown> = {}) {
+    return {
+      recipientUid: OWNER_UID,
+      tripId:       TRIP_ID,
+      tripTitle:    'Tokyo Trip',
+      entityType:   'settlement',
+      entityId:     'settlement-1',
+      action:       'deleted',
+      actorUid:     EDITOR_UID,
+      actorName:    'Editor',
+      title:        '精算が取り消されました',
+      body:         'Editor さんが取り消しました',
+      route:        '/expense',
+      createdAt:    Timestamp.now(),
+      readAt:       null,
+      expiresAt:    Timestamp.now(),
+      ...overrides,
+    }
+  }
+
+  /** Admin-SDK seed — mirrors seedToken above (client can't create these). */
+  async function seedNotification(uid: string, overrides: Record<string, unknown> = {}) {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(
+        doc(ctx.firestore(), 'users', uid, 'notifications', NOTIFICATION_ID),
+        notificationDoc(overrides),
+      )
+    })
+  }
+
+  test('client cannot create a notification doc', async () => {
+    await assertFails(
+      setDoc(doc(asOwner(env).firestore(), 'users', OWNER_UID, 'notifications', NOTIFICATION_ID), notificationDoc()),
+    )
+  })
+
+  test('client cannot delete a notification doc', async () => {
+    await seedNotification(OWNER_UID)
+    await assertFails(
+      deleteDoc(doc(asOwner(env).firestore(), 'users', OWNER_UID, 'notifications', NOTIFICATION_ID)),
+    )
+  })
+
+  test('self user can read own notification', async () => {
+    await seedNotification(OWNER_UID)
+    await assertSucceeds(
+      getDoc(doc(asOwner(env).firestore(), 'users', OWNER_UID, 'notifications', NOTIFICATION_ID)),
+    )
+  })
+
+  test('cannot read another user\'s notification', async () => {
+    await seedNotification(OWNER_UID)
+    await assertFails(
+      getDoc(doc(asStranger(env).firestore(), 'users', OWNER_UID, 'notifications', NOTIFICATION_ID)),
+    )
+  })
+
+  test('self user can mark own unread notification as read', async () => {
+    await seedNotification(OWNER_UID)
+    await assertSucceeds(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'notifications', NOTIFICATION_ID),
+        { readAt: serverTimestamp() },
+      ),
+    )
+  })
+
+  test('cannot mark another user\'s notification as read', async () => {
+    await seedNotification(OWNER_UID)
+    await assertFails(
+      updateDoc(
+        doc(asStranger(env).firestore(), 'users', OWNER_UID, 'notifications', NOTIFICATION_ID),
+        { readAt: serverTimestamp() },
+      ),
+    )
+  })
+
+  // Idempotency guard: two tabs (or a stale sheet + a Functions retry that
+  // re-derives the same unread snapshot) both firing "mark read" for a
+  // notification that's already read must both succeed, not have the
+  // second one reject and fail its whole batch. readAt is a UX flag, not
+  // a security boundary — re-marking read is intentionally NOT gated on
+  // the prior value.
+  test('self user can re-mark an already-read notification as read (idempotent retry)', async () => {
+    await seedNotification(OWNER_UID, { readAt: Timestamp.now() })
+    await assertSucceeds(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'notifications', NOTIFICATION_ID),
+        { readAt: serverTimestamp() },
+      ),
+    )
+  })
+
+  test('cannot flip an already-read notification back to unread', async () => {
+    await seedNotification(OWNER_UID, { readAt: Timestamp.now() })
+    await assertFails(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'notifications', NOTIFICATION_ID),
+        { readAt: null },
+      ),
+    )
+  })
+
+  test('cannot change other fields alongside marking read', async () => {
+    await seedNotification(OWNER_UID)
+    await assertFails(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'users', OWNER_UID, 'notifications', NOTIFICATION_ID),
+        { readAt: serverTimestamp(), body: 'forged body' },
+      ),
+    )
+  })
+})

@@ -43,13 +43,15 @@
 //        delete the get() throws and we'd lose the admin path).
 //   4.   Trip doc        — DELETE the root doc
 //
-// All ops are idempotent (404 on a re-run = success). On any failure
-// we throw a CascadeError with the step name; the caller may retry
-// and continue where we stopped.
+// Core delete ops are idempotent (404 on a re-run = success). On any
+// core failure we throw a CascadeError with the step name; the caller
+// may retry and continue where we stopped. Notification cleanup runs
+// best-effort after the trip doc is gone.
 import { z }                                                        from 'zod'
 import { getAdminToken, getProjectId, invalidateAdminToken }        from './admin'
 import {
   batchDeleteDocs,
+  deleteUserTripNotifications,
   deleteDoc,
   getDocFields,
   listDocNames,
@@ -59,6 +61,7 @@ import {
 }                                                                   from './firestore'
 import { purgeObjectsByPrefix }                                     from './storage'
 import { CascadeError, withTokenRetry }                             from './cascade'
+import { mapWithConcurrency }                                       from './concurrency'
 
 // Firestore auto-IDs are 20-char [A-Za-z0-9]; we also tolerate `_-` for
 // any future custom-ID path. The regex is the load-bearing defense: a
@@ -85,6 +88,18 @@ const TRIP_SUBCOLLECTIONS = [
   'planning', 'settlements', 'settlementPairLocks',
   '_purges', 'invites', 'inviteState', 'members',
 ] as const
+
+function readStringArray(fields: Record<string, unknown> | null, key: string): string[] {
+  const value = fields?.[key] as FsValue | undefined
+  return (value?.arrayValue?.values ?? [])
+    .map(v => v.stringValue)
+    .filter((v): v is string => typeof v === 'string' && v.length > 0)
+}
+
+function docIdFromName(name: string): string | null {
+  const id = name.split('/').pop()
+  return id && id.length > 0 ? id : null
+}
 
 export interface CascadeTripResult {
   /** Total Firestore docs removed across all subcollections + the
@@ -136,6 +151,7 @@ async function runCascade(
   if (ownerId !== callerUid) {
     throw new CascadeError(403, 'caller is not the trip owner')
   }
+  const notificationCleanupUids = new Set(readStringArray(tripFields, 'memberIds'))
   // Token might have been invalidated above — re-fetch (cheap, cached)
   // so the rest of the run uses the freshest token. withTokenRetry will
   // retry the WHOLE cascade on 401, but that's the long path; this is
@@ -190,6 +206,12 @@ async function runCascade(
       const names = await listDocNames(
         accessToken, projectId, `trips/${req.tripId}/${sub}`,
       )
+      if (sub === 'members') {
+        for (const name of names) {
+          const uid = docIdFromName(name)
+          if (uid) notificationCleanupUids.add(uid)
+        }
+      }
       if (names.length === 0) continue
       await batchDeleteDocs(accessToken, projectId, names)
       deletedDocs += names.length
@@ -223,6 +245,18 @@ async function runCascade(
   } catch (e) {
     handleStepError('trip doc delete', e)
   }
+
+  await mapWithConcurrency([...notificationCleanupUids], 3, async uid => {
+    try {
+      await deleteUserTripNotifications(accessToken, projectId, uid, req.tripId)
+    } catch (e) {
+      console.warn('trip notification cleanup failed', {
+        tripId: req.tripId,
+        uid,
+        error: e instanceof Error ? e.message : String(e),
+      })
+    }
+  })
 
   return { deletedDocs, deletedObjects }
 }

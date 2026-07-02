@@ -10,12 +10,7 @@ let dbPromise: Promise<IDBDatabase | null> | null = null
 function openDb(): Promise<IDBDatabase | null> {
   if (dbPromise) return dbPromise
 
-  let idb: IDBFactory | null = null
-  try {
-    idb = globalThis.indexedDB ?? null
-  } catch {
-    idb = null
-  }
+  const idb = globalThis.indexedDB ?? null
   if (!idb) return Promise.resolve(null)
 
   dbPromise = new Promise(resolve => {

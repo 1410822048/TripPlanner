@@ -326,6 +326,79 @@ export async function batchDeleteDocs(
   }
 }
 
+const USER_TRIP_NOTIFICATION_DELETE_PAGE_SIZE = 500
+
+async function queryUserTripNotificationDocNames(
+  accessToken:        string,
+  projectId:          string,
+  userUid:            string,
+  tripId:             string,
+  cursorAfterDocName?: string,
+): Promise<string[]> {
+  const parent = `projects/${projectId}/databases/(default)/documents/users/${userUid}`
+  const structuredQuery: Record<string, unknown> = {
+    from: [{ collectionId: 'notifications' }],
+    where: {
+      fieldFilter: {
+        field: { fieldPath: 'tripId' },
+        op:    'EQUAL',
+        value: { stringValue: tripId },
+      },
+    },
+    orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
+    limit: USER_TRIP_NOTIFICATION_DELETE_PAGE_SIZE,
+  }
+  if (cursorAfterDocName) {
+    structuredQuery.startAt = {
+      before: false,
+      values: [{ referenceValue: cursorAfterDocName }],
+    }
+  }
+
+  const res = await fetch(`${BASE}/${parent}:runQuery`, {
+    ...NO_CACHE,
+    method:  'POST',
+    headers: {
+      Authorization:  `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ structuredQuery }),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`queryUserTripNotificationDocNames -> ${res.status}: ${detail.slice(0, 200)}`)
+  }
+  const rows = await res.json() as { document?: { name: string } }[]
+  return rows
+    .map(row => row.document?.name)
+    .filter((name): name is string => typeof name === 'string' && name.length > 0)
+}
+
+/** Delete one departed user's notification inbox rows for one trip.
+ *  Used by member-remove / member-leave after ACL removal has already
+ *  converged. Idempotent: no matching docs means no writes. */
+export async function deleteUserTripNotifications(
+  accessToken: string,
+  projectId:   string,
+  userUid:     string,
+  tripId:      string,
+): Promise<number> {
+  let deleted = 0
+  let cursorAfterDocName: string | undefined
+  while (true) {
+    const docNames = await queryUserTripNotificationDocNames(
+      accessToken, projectId, userUid, tripId, cursorAfterDocName,
+    )
+    if (docNames.length === 0) return deleted
+
+    await batchDeleteDocs(accessToken, projectId, docNames)
+    deleted += docNames.length
+
+    if (docNames.length < USER_TRIP_NOTIFICATION_DELETE_PAGE_SIZE) return deleted
+    cursorAfterDocName = docNames[docNames.length - 1]
+  }
+}
+
 /**
  * Delete the single doc at `path`. 404 returns silently (caller's
  * idempotent re-run scenario). All other non-2xx throw.

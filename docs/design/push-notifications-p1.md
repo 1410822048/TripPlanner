@@ -18,7 +18,7 @@ P1 目標：
 非目標：
 
 - 不做 MagicBell / OneSignal 類的 dashboard、journey、A/B test、segmentation、email/SMS multi-channel。
-- 不做完整通知中心 inbox。紅點仍是 App 內未讀狀態的唯一來源。
+- ~~不做完整通知中心 inbox。紅點仍是 App 內未讀狀態的唯一來源。~~ **此條已於 2026-07-01 由 P2「持久訊息匣」規劃取代**：鈴鐺新增獨立的已讀/未讀狀態，來源是 `users/{uid}/notifications`。既有的 tab 紅點（`lastActivityByFeature`）不受影響，維持原邏輯。
 - P1 不推 wish vote / planning checklist，避免低價值通知疲勞。
 
 ## 2. 官方限制與前提
@@ -260,8 +260,8 @@ match /_pushEvents/{eventId} {
 
 - App 外 interrupt signal。
 - 只推高價值事件。
-- 不新增第二套 unread state。
-- 點擊推播只是導回 tab，由現有 tab viewed 流程自然清紅點。
+- ~~不新增第二套 unread state。~~ **P2 起例外**：通知鈴鐺自己的已讀/未讀是刻意新增的第二套 unread state，範圍限定在鈴鐺 UI，不影響 tab 紅點的判斷邏輯。
+- 點擊推播只是導回 tab，由現有 tab viewed 流程自然清紅點；點鈴鐺內單筆通知則額外 mark 該筆 `readAt`。
 
 ## 9. 競態與安全風險
 

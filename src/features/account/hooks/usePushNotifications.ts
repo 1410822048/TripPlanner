@@ -9,7 +9,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { getFirebaseMessaging } from '@/services/firebase'
 import {
-  announcePushTokenEnabled,
   disableStoredPushToken,
   isTokenEnabled,
   readStoredPushTokenHash,
@@ -189,7 +188,6 @@ export function usePushNotifications(uid: string | undefined): UsePushNotificati
       })
       if (!canApply()) return
       writeStoredPushTokenHash(hash)
-      announcePushTokenEnabled()
       setState('enabled')
     } catch (e) {
       if (canApply()) {

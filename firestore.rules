@@ -1171,6 +1171,17 @@ service cloud.firestore {
               || validPushTokenUserDisable());
         allow delete: if false;
       }
+
+      // Notification inbox (P2, Functions writes). Client only reads its own
+      // docs and marks readAt=request.time; no prior-value gate so duplicate
+      // mark-read attempts from multi-tab races stay idempotent.
+      match /notifications/{notificationId} {
+        allow get, list: if isSelfUser();
+        allow create, delete: if false;
+        allow update: if isSelfUser()
+          && changedOnly(['readAt'])
+          && request.resource.data.readAt == request.time;
+      }
     }
 
     // Server-only push-event dedupe / audit. Functions write via admin SDK
