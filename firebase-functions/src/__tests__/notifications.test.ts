@@ -182,6 +182,61 @@ describe('writeNotificationDocs', () => {
     expect(doc.body).toContain('TWD 5,000')
   })
 
+  test('role change writes a subject-based body + trip scope, tolerating a null actor', async () => {
+    firestoreMock.docData.set('trips/trip-1', { title: 'Tokyo Trip' })
+
+    await writeNotificationDocs(baseEvent({
+      entityType: 'member',
+      entityId: 'u2',
+      action: 'role_changed',
+      templateKey: 'member.role_changed',
+      route: '/schedule',
+      actorUid: null,
+      actorUnknown: true,
+      partyUids: ['u2'],
+      subjectUid: 'u2',
+      subjectName: 'Aki',
+      subjectRole: 'editor',
+    }), ['u2'])
+
+    const [, doc] = firestoreMock.txCreate.mock.calls[0]!
+    expect(doc.body).toBe('あなたの権限が編集者に変更されました')
+    expect(doc.scope).toBe('trip')
+    expect(doc.actorUid).toBeNull()
+  })
+
+  test('removal writes a third-person body for remaining members and account scope for the removed self', async () => {
+    firestoreMock.docData.set('trips/trip-1', { title: 'Tokyo Trip' })
+
+    await writeNotificationDocs(baseEvent({
+      entityType: 'member', entityId: 'u2', action: 'removed', templateKey: 'member.removed',
+      route: '/schedule', actorUid: null, actorUnknown: true, subjectUid: 'u2', subjectName: 'Aki',
+    }), ['u3'])
+    expect(firestoreMock.txCreate.mock.calls[0]![1].body).toBe('Akiさんが旅程から削除されました')
+
+    firestoreMock.txCreate.mockClear()
+    await writeNotificationDocs(baseEvent({
+      eventId: 'evt-1:self', entityType: 'member', entityId: 'u2', action: 'removed',
+      templateKey: 'member.removed_self', route: '/account', scope: 'account',
+      actorUid: null, actorUnknown: true, subjectUid: 'u2', subjectName: 'Aki',
+    }), ['u2'])
+    const [, doc] = firestoreMock.txCreate.mock.calls[0]!
+    expect(doc.body).toBe('旅程から削除されました')
+    expect(doc.scope).toBe('account')
+    expect(doc.route).toBe('/account')
+  })
+
+  test('self-leave writes a "○○ left" body for remaining members', async () => {
+    firestoreMock.docData.set('trips/trip-1', { title: 'Tokyo Trip' })
+
+    await writeNotificationDocs(baseEvent({
+      entityType: 'member', entityId: 'u2', action: 'removed', templateKey: 'member.left',
+      route: '/schedule', actorUid: null, actorUnknown: true, subjectUid: 'u2', subjectName: 'Aki',
+    }), ['u3'])
+
+    expect(firestoreMock.txCreate.mock.calls[0]![1].body).toBe('Akiさんが旅程から退出しました')
+  })
+
   test('stamps expiresAt exactly NOTIFICATION_RETENTION_MS out from now', async () => {
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
     try {

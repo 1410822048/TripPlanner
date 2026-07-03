@@ -325,18 +325,33 @@ async function queryUserTripNotificationDocNames(
   projectId:          string,
   userUid:            string,
   tripId:             string,
-  cursorAfterDocName?: string,
+  cursorAfterDocName:  string | undefined,
+  includeAccountScope: boolean,
 ): Promise<string[]> {
   const parent = `projects/${projectId}/databases/(default)/documents/users/${userUid}`
+  const tripFilter = { fieldFilter: { field: { fieldPath: 'tripId' }, op: 'EQUAL', value: { stringValue: tripId } } }
+  // Default (member-remove / member-leave): tripId==X AND scope=='trip', which
+  // PRESERVES the departing user's account-scoped `member.removed_self` row
+  // ("you were removed") that this same cascade's trigger writes moments later —
+  // otherwise the cleanup could race-delete the very notification that tells
+  // them they were removed. Two equality filters are served by single-field
+  // indexes (zigzag merge), no composite index needed.
+  // includeAccountScope (trip-cascade): tripId==X only, ALL scopes — the trip is
+  // gone, so a rejoined member's stale account row for it must be swept too.
+  const where = includeAccountScope
+    ? tripFilter
+    : {
+        compositeFilter: {
+          op: 'AND',
+          filters: [
+            tripFilter,
+            { fieldFilter: { field: { fieldPath: 'scope' }, op: 'EQUAL', value: { stringValue: 'trip' } } },
+          ],
+        },
+      }
   const structuredQuery: Record<string, unknown> = {
     from: [{ collectionId: 'notifications' }],
-    where: {
-      fieldFilter: {
-        field: { fieldPath: 'tripId' },
-        op:    'EQUAL',
-        value: { stringValue: tripId },
-      },
-    },
+    where,
     orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
     limit: USER_TRIP_NOTIFICATION_DELETE_PAGE_SIZE,
   }
@@ -368,18 +383,23 @@ async function queryUserTripNotificationDocNames(
 
 /** Delete one departed user's notification inbox rows for one trip.
  *  Used by member-remove / member-leave after ACL removal has already
- *  converged. Idempotent: no matching docs means no writes. */
+ *  converged. Idempotent: no matching docs means no writes.
+ *
+ *  By default preserves the user's account-scoped rows (member.removed_self);
+ *  pass `includeAccountScope: true` (trip-cascade) to sweep every scope when the
+ *  whole trip is being deleted. */
 export async function deleteUserTripNotifications(
   accessToken: string,
   projectId:   string,
   userUid:     string,
   tripId:      string,
+  opts:        { includeAccountScope?: boolean } = {},
 ): Promise<number> {
   let deleted = 0
   let cursorAfterDocName: string | undefined
   while (true) {
     const docNames = await queryUserTripNotificationDocNames(
-      accessToken, projectId, userUid, tripId, cursorAfterDocName,
+      accessToken, projectId, userUid, tripId, cursorAfterDocName, opts.includeAccountScope ?? false,
     )
     if (docNames.length === 0) return deleted
 

@@ -5,7 +5,7 @@
 // per the P2 spec.
 import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Receipt, Ticket, Wallet, UserPlus, Inbox, CheckCheck } from 'lucide-react'
+import { Receipt, Ticket, Wallet, UserPlus, Inbox, CheckCheck, CalendarClock, Heart, ListChecks, Plane } from 'lucide-react'
 import BottomSheet from '@/components/ui/BottomSheet'
 import SwipeableShell from '@/components/ui/SwipeableShell'
 import { markNotificationRead, markAllNotificationsRead, dismissNotification } from '../services/notificationService'
@@ -28,10 +28,14 @@ const ENTITY_META: Record<NotificationEntityType, {
   iconClass: string
   iconBgClass: string
 }> = {
-  expense:    { icon: Receipt,  iconClass: 'text-warn',   iconBgClass: 'bg-warn-bg' },
-  booking:    { icon: Ticket,   iconClass: 'text-pick',   iconBgClass: 'bg-pick-pale' },
-  settlement: { icon: Wallet,   iconClass: 'text-teal',   iconBgClass: 'bg-teal-pale' },
-  member:     { icon: UserPlus, iconClass: 'text-accent', iconBgClass: 'bg-accent-pale' },
+  expense:    { icon: Receipt,       iconClass: 'text-warn',   iconBgClass: 'bg-warn-bg' },
+  booking:    { icon: Ticket,        iconClass: 'text-pick',   iconBgClass: 'bg-pick-pale' },
+  settlement: { icon: Wallet,        iconClass: 'text-teal',   iconBgClass: 'bg-teal-pale' },
+  member:     { icon: UserPlus,      iconClass: 'text-accent', iconBgClass: 'bg-accent-pale' },
+  schedule:   { icon: CalendarClock, iconClass: 'text-accent', iconBgClass: 'bg-accent-pale' },
+  wish:       { icon: Heart,         iconClass: 'text-danger', iconBgClass: 'bg-danger-pale' },
+  planning:   { icon: ListChecks,    iconClass: 'text-teal',   iconBgClass: 'bg-teal-pale' },
+  trip:       { icon: Plane,         iconClass: 'text-warn',   iconBgClass: 'bg-warn-bg' },
 }
 
 const RELATIVE_TIME = new Intl.RelativeTimeFormat('ja', { numeric: 'auto' })
@@ -77,7 +81,9 @@ export default function NotificationInboxSheet({ isOpen, onClose, uid, notificat
 
   async function handleRowClick(n: Notification) {
     onClose()
-    setSelectedTripId(n.tripId)
+    // Account-scoped rows (member.removed_self) point at a trip the user can no
+    // longer access — never switch into it. Their route is /account.
+    if (n.scope !== 'account') setSelectedTripId(n.tripId)
     if (n.readAt == null) {
       markNotificationRead(uid, n.id).catch(e => captureError(e, { source: 'NotificationInboxSheet.markRead', notificationId: n.id }))
     }

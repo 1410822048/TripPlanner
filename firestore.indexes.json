@@ -102,6 +102,25 @@
       ]
     },
     {
+      "collectionGroup": "notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "dismissedAt", "order": "ASCENDING" },
+        { "fieldPath": "scope",       "order": "ASCENDING" },
+        { "fieldPath": "tripId",      "order": "ASCENDING" },
+        { "fieldPath": "createdAt",   "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "dismissedAt", "order": "ASCENDING" },
+        { "fieldPath": "scope",       "order": "ASCENDING" },
+        { "fieldPath": "createdAt",   "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "uploadIntents",
       "queryScope": "COLLECTION_GROUP",
       "fields": [

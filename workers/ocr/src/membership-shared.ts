@@ -140,20 +140,37 @@ export function encodeMemberIds(uids: string[]): FsValue {
  *  `removingAt` uses a client-stamped Date (not REQUEST_TIME): the field
  *  is consumed as exists/not-exists in rules, never compared by value;
  *  and updateTransforms can't express the roster strip anyway, so both
- *  writes stay on the plain-PATCH path. */
+ *  writes stay on the plain-PATCH path.
+ *
+ *  `removalKind` ('removed' = owner kicked / 'left' = self-leave) and
+ *  `removedBy` (the acting caller's uid) ride the same marker write so they
+ *  survive on the member doc until the cascade deletes it. Their ONLY consumer
+ *  is the delete trigger's notification normalizer (firebase-functions):
+ *  removalKind tells "○○ was removed" + a "you were removed" self-notice apart
+ *  from a voluntary "○○ left" (no self-notice); removedBy is the actor, so the
+ *  owner who performed a kick is excluded from the "○○ was removed" fan-out
+ *  (otherwise they'd be pushed about their own action — the member doc carries
+ *  no updatedBy for admin writes, so the actor is otherwise unknowable). Not
+ *  read by rules or any Worker path. */
 export function buildMemberStripWrites(
-  projectId: string,
-  tripId:    string,
-  targetUid: string,
-  target:    TxReadDoc,
-  trip:      TxReadDoc,
+  projectId:   string,
+  tripId:      string,
+  targetUid:   string,
+  target:      TxReadDoc,
+  trip:        TxReadDoc,
+  removalKind: 'removed' | 'left',
+  removedBy:   string,
 ): TxWrite[] {
   const writes: TxWrite[] = []
   if (target.exists) {
     writes.push({
       document:   docResourceName(projectId, `trips/${tripId}/members/${targetUid}`),
-      fields:     { removingAt: { timestampValue: new Date().toISOString() } },
-      updateMask: ['removingAt'],
+      fields:     {
+        removingAt:  { timestampValue: new Date().toISOString() },
+        removalKind: { stringValue: removalKind },
+        removedBy:   { stringValue: removedBy },
+      },
+      updateMask: ['removingAt', 'removalKind', 'removedBy'],
     })
   }
   const currentRoster = readTripRoster(trip)

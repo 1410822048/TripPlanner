@@ -8,27 +8,17 @@ const REGION = 'asia-east1';
 const CODEBASE = 'tripmate-push';
 const FIRESTORE_INDEXES_FILE = 'firestore.indexes.json';
 const FUNCTIONS = [
-  'notifyBookingWrite',
-  'notifyExpenseWrite',
-  'notifyMemberJoined',
-  'notifySettlementWrite',
+  'notifyTripRootWrite',
+  'notifyTripChildWrite',
 ];
 const FUNCTION_ARTIFACT_TARGETS = [
   {
-    serviceId: 'notifybookingwrite',
-    packageName: 'tripplanner--80a4f__asia--east1__notify_booking_write',
+    serviceId: 'notifytriprootwrite',
+    packageName: 'tripplanner--80a4f__asia--east1__notify_trip_root_write',
   },
   {
-    serviceId: 'notifyexpensewrite',
-    packageName: 'tripplanner--80a4f__asia--east1__notify_expense_write',
-  },
-  {
-    serviceId: 'notifymemberjoined',
-    packageName: 'tripplanner--80a4f__asia--east1__notify_member_joined',
-  },
-  {
-    serviceId: 'notifysettlementwrite',
-    packageName: 'tripplanner--80a4f__asia--east1__notify_settlement_write',
+    serviceId: 'notifytripchildwrite',
+    packageName: 'tripplanner--80a4f__asia--east1__notify_trip_child_write',
   },
 ];
 const POLL_MS = 15_000;
@@ -511,6 +501,78 @@ async function deployFunctions() {
   }
 }
 
+// Retired functions must be explicitly deleted, not left to implicit codebase
+// prune: a targeted `functions:codebase:name` deploy (the path taken when the
+// new functions don't exist yet) prunes NOTHING, so old triggers would stay
+// live and double-fire the same Firestore write with a different event.id that
+// `_pushEvents` can't dedupe.
+//
+// Runs as post-deploy HYGIENE — after the whole critical path (functions +
+// rules + pages), never before it — so a housekeeping error can't leave a
+// split-brain release (new functions live, this release's rules/pages never
+// shipped). The new functions are already ACTIVE by the time we get here, so
+// the old ones staying live until now costs only a brief old+new overlap where
+// one write can double-notify; it self-heals the moment the delete lands.
+// functions:delete still THROWS on failure (surfaces the double-fire risk;
+// retryable because the old functions are still listable next run); only the
+// artifact-package cleanup below is downgraded to a warning (its retry signal
+// dies with the function, so throwing would strand not retry).
+// ponytail: no maintenance-mode gate — negligible at this scale; add one here
+// if the overlap window ever needs to be zero.
+// Scoped to our codebase so it can never touch functions outside tripmate-push.
+// After cutover the retired set is empty → idempotent no-op.
+async function retireUnexpectedFunctions() {
+  if (dryRun) {
+    console.log('retire functions: dry run skips deletion');
+    return;
+  }
+
+  const retired = listFunctions()
+    .filter((fn) => fn?.codebase === CODEBASE && !FUNCTIONS.includes(fn.id))
+    .map((fn) => fn.id);
+
+  if (retired.length === 0) {
+    console.log('No retired functions to delete.');
+    return;
+  }
+
+  console.log(`Deleting retired functions in codebase ${CODEBASE}: ${retired.join(', ')}`);
+  const result = firebase(
+    ['functions:delete', ...retired, '--project', PROJECT_ID, '--region', REGION, '--force'],
+    { allowFailure: true },
+  );
+  if (!result.ok) {
+    throw new Error(`Failed to delete retired functions: ${retired.join(', ')}`);
+  }
+
+  // functions:delete removes the function + its Cloud Run service but leaves the
+  // build images in Artifact Registry, and pruneFunctionArtifactsToOne only
+  // sweeps the CURRENT targets — so a retired function's images would accrue
+  // cost forever. Delete the whole retired package (all versions). Best-effort:
+  // it may already be gone. Package name mirrors gcloud's gcf-artifacts scheme
+  // (project/region '-'→'--', function id camelCase→snake_case) — verified
+  // against the previous FUNCTION_ARTIFACT_TARGETS; tied to that naming.
+  for (const id of retired) {
+    const pkg = `${PROJECT_ID.replace(/-/g, '--')}__${REGION.replace(/-/g, '--')}__${id.replace(/([A-Z])/g, '_$1').toLowerCase()}`;
+    const res = gcloud(
+      ['artifacts', 'packages', 'delete', pkg, '--repository', 'gcf-artifacts', '--location', REGION, '--project', PROJECT_ID, '--quiet'],
+      { allowFailure: true },
+    );
+    if (res.ok) {
+      console.log(`Deleted retired artifact package ${pkg}`);
+    } else if (/NOT_FOUND|was not found|does not exist/i.test(res.output)) {
+      console.log(`Retired artifact package ${pkg} already absent`);
+    } else {
+      // Real error (IAM / API-disabled / network / quota) — surface it LOUDLY
+      // but do NOT throw. The function is already deleted, so 'retired' can't
+      // re-derive this package on a re-run (its retry signal is gone); throwing
+      // would only strand the images AND, running before rules/pages, abort the
+      // release. Warn for manual cleanup instead of masking it as "absent".
+      console.warn(`[WARN] Retired artifact package ${pkg} NOT deleted (non-NOT_FOUND error); delete it manually to avoid image cost:\n${res.output}`);
+    }
+  }
+}
+
 async function googleFetch(url, init) {
   const token = readGcloudAccessToken();
   const response = await fetch(url, {
@@ -826,6 +888,7 @@ async function main() {
   if (functionsOnly) {
     preflightGcloud({ cloudRun: true, artifacts: true });
     await deployFunctions();
+    await retireUnexpectedFunctions();
     await pruneCloudRunRevisionsToLatest();
     await pruneFunctionArtifactsToOne();
     return;
@@ -835,10 +898,15 @@ async function main() {
   preflightGcloud({ firestore: true, cloudRun: true, artifacts: true });
   await deployIndexes();
   await deployFunctions();
-  await pruneCloudRunRevisionsToLatest();
-  await pruneFunctionArtifactsToOne();
   await deployRules();
   deployPages();
+
+  // Post-deploy hygiene: retire old functions + prune revisions/images. Kept
+  // AFTER the critical path so a cost/cleanup error can never abort the
+  // functions/rules/pages release above.
+  await retireUnexpectedFunctions();
+  await pruneCloudRunRevisionsToLatest();
+  await pruneFunctionArtifactsToOne();
 }
 
 await main();

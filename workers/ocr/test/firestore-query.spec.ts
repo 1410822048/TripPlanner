@@ -157,11 +157,15 @@ describe('deleteUserTripNotifications - REST query shape', () => {
 		expect(queryUrl).toContain('/documents/users/u1:runQuery')
 		const queryBody = JSON.parse((calls[0][1] as RequestInit).body as string)
 		expect(queryBody.structuredQuery.from).toEqual([{ collectionId: 'notifications' }])
+		// tripId==X AND scope=='trip' — the scope filter preserves the departing
+		// user's account-scoped member.removed_self row.
 		expect(queryBody.structuredQuery.where).toEqual({
-			fieldFilter: {
-				field: { fieldPath: 'tripId' },
-				op:    'EQUAL',
-				value: { stringValue: 'trip-1' },
+			compositeFilter: {
+				op: 'AND',
+				filters: [
+					{ fieldFilter: { field: { fieldPath: 'tripId' }, op: 'EQUAL', value: { stringValue: 'trip-1' } } },
+					{ fieldFilter: { field: { fieldPath: 'scope' },  op: 'EQUAL', value: { stringValue: 'trip' } } },
+				],
 			},
 		})
 		expect(queryBody.structuredQuery.orderBy).toEqual([
@@ -174,6 +178,28 @@ describe('deleteUserTripNotifications - REST query shape', () => {
 				delete: 'projects/demo/databases/(default)/documents/users/u1/notifications/n1',
 			},
 		])
+	})
+
+	it('includeAccountScope sweeps every scope (trip-cascade) with a tripId-only filter', async () => {
+		globalThis.fetch = vi.fn(async (input) => {
+			const url = String(input)
+			if (url.endsWith(':runQuery')) {
+				return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+			}
+			return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+		}) as typeof fetch
+
+		await deleteUserTripNotifications('fake-token', 'demo', 'u1', 'trip-1', { includeAccountScope: true })
+
+		const queryBody = JSON.parse((vi.mocked(globalThis.fetch).mock.calls[0][1] as RequestInit).body as string)
+		// No scope filter — deletes trip- AND account-scoped rows for the dead trip.
+		expect(queryBody.structuredQuery.where).toEqual({
+			fieldFilter: {
+				field: { fieldPath: 'tripId' },
+				op:    'EQUAL',
+				value: { stringValue: 'trip-1' },
+			},
+		})
 	})
 })
 

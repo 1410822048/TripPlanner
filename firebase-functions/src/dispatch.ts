@@ -125,10 +125,32 @@ function errorMessage(err: unknown): string {
     : String(err).slice(0, 500)
 }
 
-async function loadTripMemberIds(tripId: string): Promise<string[]> {
+interface TripRecipientState {
+  // True once the /cascade-trip-delete Worker has stamped deletingAt (or the
+  // trip doc is already gone). While a trip is tearing down, its subcollection
+  // + member deletes each fire this trigger — suppress them all so one trip
+  // deletion never spams every member with dozens of ".deleted" notifications.
+  deleting: boolean
+  memberIds: string[]
+  // Read from the same trip snapshot so writeNotificationDocs doesn't re-fetch
+  // trips/{tripId} just for the inbox title. '' when the trip is deleting/gone
+  // (recipients are then empty, so it's unused) or — degenerately — a live trip
+  // whose title field is missing/non-string. TripDocSchema requires title, so
+  // real trips always carry one; a '' here only yields a blank inbox label,
+  // exactly as the prior per-doc loadTripTitle already did for the same input.
+  title: string
+}
+
+async function loadTripRecipientState(tripId: string): Promise<TripRecipientState> {
   const snap = await getFirestore().doc(`trips/${tripId}`).get()
+  if (!snap.exists || snap.get('deletingAt') != null) return { deleting: true, memberIds: [], title: '' }
   const memberIds = snap.get('memberIds')
-  return Array.isArray(memberIds) ? memberIds.filter((uid): uid is string => typeof uid === 'string') : []
+  const title = snap.get('title')
+  return {
+    deleting: false,
+    memberIds: Array.isArray(memberIds) ? memberIds.filter((uid): uid is string => typeof uid === 'string') : [],
+    title: typeof title === 'string' ? title : '',
+  }
 }
 
 // Pick who to notify. Normally the actor is excluded (you don't get pushed
@@ -140,18 +162,43 @@ async function loadTripMemberIds(tripId: string): Promise<string[]> {
 // a redundant push to the actor beats a missing one to the right party.
 export function selectRecipients(
   candidates: readonly string[],
-  actorUid: string,
+  actorUid: string | null,
   actorUnknown: boolean,
 ): string[] {
   const deduped = unique(candidates)
-  return actorUnknown ? deduped : deduped.filter(uid => uid !== actorUid)
+  // A null actor (admin/Worker write with no resolvable author) is treated
+  // exactly like actorUnknown: nobody is excluded, since excluding a
+  // best-guess actor could silence the very party who should be told.
+  return actorUnknown || actorUid == null ? deduped : deduped.filter(uid => uid !== actorUid)
 }
 
-async function candidateRecipients(event: NormalizedPushEvent): Promise<string[]> {
-  const candidates = event.partyUids?.length
-    ? event.partyUids
-    : await loadTripMemberIds(event.tripId)
-  return selectRecipients(candidates, event.actorUid, event.actorUnknown ?? false)
+// Pure recipient resolution given the trip state + the event. Exported for
+// testing; the live path is candidateRecipients (loadTripRecipientState + this,
+// which also reuses the same snapshot's title for the inbox docs).
+export function resolveRecipients(
+  trip: TripRecipientState,
+  event: Pick<NormalizedPushEvent, 'partyUids' | 'actorUid' | 'actorUnknown' | 'subjectUid'>,
+): string[] {
+  // Trip teardown suppresses everything, trip- AND account-scoped.
+  if (trip.deleting) return []
+
+  // Explicit partyUids (settlement parties, role-change subject, account-scope
+  // target) are the recipient set as-is — don't second-guess them.
+  if (event.partyUids?.length) {
+    return selectRecipients(event.partyUids, event.actorUid, event.actorUnknown ?? false)
+  }
+
+  const selected = selectRecipients(trip.memberIds, event.actorUid, event.actorUnknown ?? false)
+  // Trip-scoped member removal loads the (post-strip) member list; drop the
+  // removed person so they never get the "○○ was removed" copy — they receive
+  // the account-scoped member.removed_self notification instead. subjectUid is
+  // only ever set on member.* events, so this is a no-op elsewhere.
+  return event.subjectUid ? selected.filter(uid => uid !== event.subjectUid) : selected
+}
+
+async function candidateRecipients(event: NormalizedPushEvent): Promise<{ recipientUids: string[]; tripTitle: string }> {
+  const trip = await loadTripRecipientState(event.tripId)
+  return { recipientUids: resolveRecipients(trip, event), tripTitle: trip.title }
 }
 
 export async function loadEnabledTokens(uid: string): Promise<PushTokenRecord[]> {
@@ -195,7 +242,7 @@ export async function dispatchPushEvent(event: NormalizedPushEvent | null): Prom
   }
 
   try {
-    const recipientUids = await candidateRecipients(event)
+    const { recipientUids, tripTitle } = await candidateRecipients(event)
     await updateEvent(event.eventId, { recipientUids })
 
     // Inbox row exists for every recipient regardless of push-token state —
@@ -206,7 +253,21 @@ export async function dispatchPushEvent(event: NormalizedPushEvent | null): Prom
     // uses transaction create-only writes, so a retry never re-writes (and
     // can't clobber readAt on) a doc the recipient already opened between
     // attempts.
-    await writeNotificationDocs(event, recipientUids)
+    await writeNotificationDocs(event, recipientUids, tripTitle)
+
+    // Inbox-only events (currently trip title updates): the durable row is
+    // written above, but we skip token load + FCM entirely — no push nudge.
+    if (event.push === false) {
+      await updateEvent(event.eventId, {
+        status:         'sent',
+        sentCount:      0,
+        failedCount:    0,
+        leaseExpiresAt: FieldValue.delete(),
+        lastError:      FieldValue.delete(),
+        errorCodes:     FieldValue.delete(),
+      })
+      return
+    }
 
     const tokens = await loadTokens(recipientUids)
     if (tokens.length === 0) {

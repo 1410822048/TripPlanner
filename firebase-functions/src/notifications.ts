@@ -57,13 +57,78 @@ function formatMoney(amountMinor: number, currency: string): string {
   return currency === 'JPY' ? `¥${formatted}` : `${currency} ${formatted}`
 }
 
-const BODY_TEMPLATES: Record<Exclude<NormalizedPushEvent['templateKey'], 'settlement.created' | 'settlement.deleted'>, (actorName: string) => string> = {
-  'member.joined':   name => `${name}さんが旅程に参加しました`,
-  'expense.created': name => `${name}さんが費用を追加しました`,
-  'expense.updated': name => `${name}さんが費用を更新しました`,
-  'expense.deleted': name => `${name}さんが費用を削除しました`,
-  'booking.created': name => `${name}さんが予約を追加しました`,
-  'booking.updated': name => `${name}さんが予約を更新しました`,
+// Actor-based bodies: "○○さんが〜しました". Excludes settlement (custom
+// direction/amount body) and the member-subject templates (role_changed /
+// removed / removed_self name the SUBJECT, not the actor — which is often
+// unresolvable on admin/Worker writes). TS enforces this map covers every
+// remaining key.
+type ActorTemplateKey = Exclude<
+  NormalizedPushEvent['templateKey'],
+  'settlement.created' | 'settlement.deleted' | MemberSubjectTemplateKey
+>
+
+const BODY_TEMPLATES: Record<ActorTemplateKey, (actorName: string) => string> = {
+  'member.joined':            name => `${name}さんが旅程に参加しました`,
+  'expense.created':          name => `${name}さんが費用を追加しました`,
+  'expense.updated':          name => `${name}さんが費用を更新しました`,
+  'expense.deleted':          name => `${name}さんが費用を削除しました`,
+  'booking.created':          name => `${name}さんが予約を追加しました`,
+  'booking.updated':          name => `${name}さんが予約を更新しました`,
+  'booking.deleted':          name => `${name}さんが予約を削除しました`,
+  'schedule.created':         name => `${name}さんが予定を追加しました`,
+  'schedule.updated':         name => `${name}さんが予定を更新しました`,
+  'schedule.deleted':         name => `${name}さんが予定を削除しました`,
+  'wish.created':             name => `${name}さんが行きたい場所を追加しました`,
+  'wish.updated':             name => `${name}さんが行きたい場所を更新しました`,
+  'wish.deleted':             name => `${name}さんが行きたい場所を削除しました`,
+  'planning.created':         name => `${name}さんが準備リストを追加しました`,
+  'planning.updated':         name => `${name}さんが準備リストを更新しました`,
+  'planning.deleted':         name => `${name}さんが準備リストを削除しました`,
+  'trip.title_updated':       name => `${name}さんが旅程名を変更しました`,
+  'trip.dates_updated':       name => `${name}さんが日程を変更しました`,
+  'trip.destination_updated': name => `${name}さんが目的地を変更しました`,
+}
+
+const ROLE_LABEL: Record<'owner' | 'editor' | 'viewer', string> = {
+  owner:  'オーナー',
+  editor: '編集者',
+  viewer: '閲覧者',
+}
+
+type MemberSubjectTemplateKey = 'member.role_changed' | 'member.removed' | 'member.removed_self' | 'member.left'
+
+function isMemberSubjectTemplate(templateKey: NormalizedPushEvent['templateKey']): templateKey is MemberSubjectTemplateKey {
+  return templateKey === 'member.role_changed'
+    || templateKey === 'member.removed'
+    || templateKey === 'member.removed_self'
+    || templateKey === 'member.left'
+}
+
+// Subject-based bodies for member lifecycle. role_changed / removed_self are
+// second-person (the recipient IS the subject); removed / left are third-person
+// (the remaining members read who was removed / who left).
+function memberSubjectBody(
+  templateKey: MemberSubjectTemplateKey,
+  subjectName: string | undefined,
+  subjectRole: 'owner' | 'editor' | 'viewer' | undefined,
+): string {
+  const name = subjectName ?? FALLBACK_NAME
+  switch (templateKey) {
+    case 'member.role_changed':
+      return subjectRole
+        ? `あなたの権限が${ROLE_LABEL[subjectRole]}に変更されました`
+        : 'あなたの権限が変更されました'
+    case 'member.removed':
+      return `${name}さんが旅程から削除されました`
+    case 'member.removed_self':
+      return '旅程から削除されました'
+    case 'member.left':
+      return `${name}さんが旅程から退出しました`
+  }
+}
+
+async function actorDisplayName(tripId: string, actorUid: string | null): Promise<string> {
+  return actorUid ? loadMemberName(tripId, actorUid) : FALLBACK_NAME
 }
 
 function settlementBody(
@@ -90,17 +155,20 @@ function isSettlementTemplate(templateKey: NormalizedPushEvent['templateKey']): 
 export async function writeNotificationDocs(
   event: NormalizedPushEvent,
   recipientUids: readonly string[],
+  // Passed by dispatch from the trip snapshot it already read for recipients —
+  // avoids re-fetching trips/{tripId} just for the title. Undefined only on
+  // direct (test) callers, which fall back to a fresh read.
+  tripTitleFromCaller?: string,
 ): Promise<void> {
   if (recipientUids.length === 0) return
 
-  const [tripTitle, actorName] = await Promise.all([
-    loadTripTitle(event.tripId),
-    loadMemberName(event.tripId, event.actorUid),
-  ])
+  const tripTitle = tripTitleFromCaller ?? await loadTripTitle(event.tripId)
 
   let body: string
   let settlementInfo: Record<string, unknown> | undefined
+  let actorName = ''
   if (isSettlementTemplate(event.templateKey)) {
+    actorName = await actorDisplayName(event.tripId, event.actorUid)
     if (!event.settlement) {
       body = settlementFallbackBody(actorName, event.action)
     } else {
@@ -118,7 +186,12 @@ export async function writeNotificationDocs(
         currency:    event.settlement.currency,
       }
     }
+  } else if (isMemberSubjectTemplate(event.templateKey)) {
+    // Subject-based (actor is usually null on admin/Worker member writes).
+    body = memberSubjectBody(event.templateKey, event.subjectName, event.subjectRole)
+    actorName = event.subjectName ?? FALLBACK_NAME
   } else {
+    actorName = await actorDisplayName(event.tripId, event.actorUid)
     body = BODY_TEMPLATES[event.templateKey](actorName)
   }
 
@@ -141,6 +214,9 @@ export async function writeNotificationDocs(
           recipientUid:  uid,
           tripId:        event.tripId,
           tripTitle,
+          // 'account' rows survive the client's trip-scoped inbox query (a
+          // removed member no longer has the trip in accessibleTripIds).
+          scope:         event.scope ?? 'trip',
           entityType:    event.entityType,
           entityId:      event.entityId,
           action:        event.action,

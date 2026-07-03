@@ -33,6 +33,7 @@ import {
   MAX_DISPATCH_ATTEMPTS,
   MAX_TOKENS_PER_USER,
   reservationDecision,
+  resolveRecipients,
   selectRecipients,
   shouldRetrySendResult,
 } from '../dispatch.js'
@@ -87,6 +88,38 @@ describe('recipient selection', () => {
     // settledBy is a best-guess deleter; excluding it would silence the
     // recorder and could push the real (owner) deleter. Notify both.
     expect(selectRecipients(['u1', 'u2'], 'u1', true)).toEqual(['u1', 'u2'])
+  })
+
+  test('treats a null actor like an unknown actor — excludes nobody (member role/remove)', () => {
+    // member role_changed / removed are admin/Worker writes with no resolvable
+    // author. A null actor must never exclude a recipient.
+    expect(selectRecipients(['u1', 'u2'], null, false)).toEqual(['u1', 'u2'])
+  })
+})
+
+describe('resolveRecipients', () => {
+  const alive = { deleting: false, memberIds: ['u1', 'u2', 'u3'], title: 'Tokyo' }
+  const deleting = { deleting: true, memberIds: [], title: '' }
+
+  test('suppresses ALL notifications while the trip is tearing down', () => {
+    // The cascade-delete spam guard: every subcollection/member delete during a
+    // trip deletion fires a trigger; a deleting trip must notify nobody, even
+    // account-scoped events with explicit partyUids.
+    expect(resolveRecipients(deleting, { actorUid: 'u1' })).toEqual([])
+    // Even an account-scoped event with explicit partyUids is suppressed.
+    expect(resolveRecipients(deleting, { partyUids: ['u2'], actorUid: null })).toEqual([])
+  })
+
+  test('trip-scoped events go to members minus the actor', () => {
+    expect(resolveRecipients(alive, { actorUid: 'u1' })).toEqual(['u2', 'u3'])
+  })
+
+  test('explicit partyUids are used as-is (settlement / account target)', () => {
+    expect(resolveRecipients(alive, { partyUids: ['u2'], actorUid: null })).toEqual(['u2'])
+  })
+
+  test('trip-scoped member removal drops the removed subject (they get the account copy)', () => {
+    expect(resolveRecipients(alive, { actorUid: null, actorUnknown: true, subjectUid: 'u2' })).toEqual(['u1', 'u3'])
   })
 })
 

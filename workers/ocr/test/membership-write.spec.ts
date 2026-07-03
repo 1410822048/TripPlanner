@@ -896,10 +896,15 @@ describe('memberRemove endpoint', () => {
 
 		const markerWrite = writes.find(w => w.document.includes(`/members/${TARGET}`))
 		expect(markerWrite).toBeDefined()
-		expect(markerWrite!.updateMask).toEqual(['removingAt'])
+		// removalKind + removedBy ride the marker write so the delete trigger can
+		// tell a kick ('removed') from a self-leave ('left') AND exclude the
+		// acting owner from the "○○ was removed" fan-out.
+		expect(markerWrite!.updateMask).toEqual(['removingAt', 'removalKind', 'removedBy'])
 		expect(markerWrite!.fields.removingAt).toMatchObject({
 			timestampValue: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
 		})
+		expect(markerWrite!.fields.removalKind).toEqual({ stringValue: 'removed' })
+		expect(markerWrite!.fields.removedBy).toEqual({ stringValue: OWNER_UID })
 
 		const rosterWrite = writes.find(w => w.document.match(/\/documents\/trips\/trip-1$/))
 		expect(rosterWrite).toBeDefined()
@@ -950,7 +955,7 @@ describe('memberRemove endpoint', () => {
 		const writes = capturedTxResult!.writes as Array<{ document: string; updateMask: string[] }>
 		expect(writes).toHaveLength(1)
 		expect(writes[0].document).toContain(`/members/${TARGET}`)
-		expect(writes[0].updateMask).toEqual(['removingAt'])
+		expect(writes[0].updateMask).toEqual(['removingAt', 'removalKind', 'removedBy'])
 	})
 
 	it('target member doc missing: still strips stale ACL projections, no marker write', async () => {
@@ -1089,7 +1094,11 @@ describe('memberLeave endpoint', () => {
 		}>
 		expect(writes).toHaveLength(2)
 		const markerWrite = writes.find(w => w.document.includes(`/members/${LEAVER}`))
-		expect(markerWrite!.updateMask).toEqual(['removingAt'])
+		// Self-leave stamps removalKind 'left' so the delete trigger skips the
+		// "you were removed" self-notification; removedBy is the leaver themselves.
+		expect(markerWrite!.updateMask).toEqual(['removingAt', 'removalKind', 'removedBy'])
+		expect(markerWrite!.fields.removalKind).toEqual({ stringValue: 'left' })
+		expect(markerWrite!.fields.removedBy).toEqual({ stringValue: LEAVER })
 		const rosterWrite = writes.find(w => w.document.match(/\/documents\/trips\/trip-1$/))
 		expect(rosterWrite!.updateMask).toEqual(['memberIds'])
 		expect(rosterWrite!.fields.memberIds).toEqual({

@@ -46,6 +46,7 @@ function notificationDoc(
   id: string,
   tripId: string,
   createdAtMs: number,
+  scope: Notification['scope'] = 'trip',
 ): { id: string; data: () => Omit<Notification, 'id'> } {
   const createdAt = timestamp(createdAtMs)
   return {
@@ -54,6 +55,7 @@ function notificationDoc(
       recipientUid: 'user-1',
       tripId,
       tripTitle:    'Tokyo',
+      scope,
       entityType:   'expense',
       entityId:     `entity-${id}`,
       action:       'created',
@@ -97,9 +99,13 @@ describe('notification trip id key', () => {
 })
 
 describe('getNotifications', () => {
-  test('queries only accessible trip chunks, then merges newest rows', async () => {
+  test('runs account query + accessible trip chunks, then merges newest rows', async () => {
     const tripIds = Array.from({ length: 31 }, (_, i) => `trip-${String(i).padStart(2, '0')}`)
+    // Query order is account (index 0), then chunk-0, chunk-1.
     const pages = [
+      snapshot([
+        notificationDoc('removed', 'trip-gone', 3500, 'account'),
+      ]),
       snapshot([
         notificationDoc('older', 'trip-00', 1000),
         notificationDoc('middle', 'trip-29', 3000),
@@ -113,22 +119,39 @@ describe('getNotifications', () => {
 
     const rows = await getNotifications('user-1', tripIds)
 
-    expect(rows.map(n => n.id)).toEqual(['newest', 'middle', 'older'])
-    expect(fb.query).toHaveBeenCalledTimes(2)
-    // Each chunk query is dismissedAt==null + tripId in chunk, in that order.
+    expect(rows.map(n => n.id)).toEqual(['newest', 'removed', 'middle', 'older'])
+    // 1 account query + 2 trip chunks.
+    expect(fb.query).toHaveBeenCalledTimes(3)
+    // Account query: dismissedAt==null + scope==account, no tripId filter.
     expect(fb.where).toHaveBeenNthCalledWith(1, 'dismissedAt', '==', null)
-    expect(fb.where).toHaveBeenNthCalledWith(2, 'tripId', 'in', tripIds.slice(0, 30))
+    expect(fb.where).toHaveBeenNthCalledWith(2, 'scope', '==', 'account')
+    // Each trip chunk: dismissedAt==null + scope==trip + tripId in chunk.
     expect(fb.where).toHaveBeenNthCalledWith(3, 'dismissedAt', '==', null)
-    expect(fb.where).toHaveBeenNthCalledWith(4, 'tripId', 'in', tripIds.slice(30))
+    expect(fb.where).toHaveBeenNthCalledWith(4, 'scope', '==', 'trip')
+    expect(fb.where).toHaveBeenNthCalledWith(5, 'tripId', 'in', tripIds.slice(0, 30))
+    expect(fb.where).toHaveBeenNthCalledWith(6, 'dismissedAt', '==', null)
+    expect(fb.where).toHaveBeenNthCalledWith(7, 'scope', '==', 'trip')
+    expect(fb.where).toHaveBeenNthCalledWith(8, 'tripId', 'in', tripIds.slice(30))
     expect(fb.orderBy).toHaveBeenCalledWith('createdAt', 'desc')
     expect(fb.limit).toHaveBeenCalledWith(50)
   })
 
-  test('does not initialize Firebase when there are no accessible trips', async () => {
+  test('still runs the account query when there are no accessible trips', async () => {
+    // A removed member has zero accessible trips but must still see the
+    // account-scoped "you were removed" row.
+    fb.getDocs.mockResolvedValue(snapshot([
+      notificationDoc('removed', 'trip-gone', 2000, 'account'),
+    ]))
+
     const rows = await getNotifications('user-1', [])
 
-    expect(rows).toEqual([])
-    expect(fb.getDocs).not.toHaveBeenCalled()
+    expect(rows.map(n => n.id)).toEqual(['removed'])
+    expect(fb.query).toHaveBeenCalledTimes(1)
+    expect(fb.getDocs).toHaveBeenCalledTimes(1)
+    expect(fb.where).toHaveBeenNthCalledWith(1, 'dismissedAt', '==', null)
+    expect(fb.where).toHaveBeenNthCalledWith(2, 'scope', '==', 'account')
+    // No trip-scoped filter when there are no accessible trips.
+    expect(fb.where).not.toHaveBeenCalledWith('tripId', 'in', expect.anything())
   })
 })
 
@@ -157,11 +180,11 @@ describe('dismissNotification', () => {
 })
 
 describe('subscribeToNotifications', () => {
-  test('waits for every initial chunk before publishing realtime rows', async () => {
+  test('waits for account query + every chunk before publishing realtime rows', async () => {
     type Snapshot = ReturnType<typeof snapshot>
     const tripIds = Array.from({ length: 31 }, (_, i) => `trip-${String(i).padStart(2, '0')}`)
     const nexts: Array<(snap: Snapshot) => void> = []
-    const unsubs = [vi.fn(), vi.fn()]
+    const unsubs = [vi.fn(), vi.fn(), vi.fn()]
     fb.onSnapshot.mockImplementation((_query: unknown, onNext: (snap: Snapshot) => void) => {
       nexts.push(onNext)
       return unsubs[nexts.length - 1] ?? vi.fn()
@@ -171,20 +194,25 @@ describe('subscribeToNotifications', () => {
 
     const unsubscribe = await subscribeToNotifications('user-1', tripIds, onData, onError)
 
-    expect(fb.onSnapshot).toHaveBeenCalledTimes(2)
-    nexts[0]?.(snapshot([notificationDoc('older', 'trip-00', 1000)]))
+    // account (index 0) + 2 trip chunks.
+    expect(fb.onSnapshot).toHaveBeenCalledTimes(3)
+    nexts[0]?.(snapshot([notificationDoc('removed', 'trip-gone', 3500, 'account')]))
     expect(onData).not.toHaveBeenCalled()
 
-    nexts[1]?.(snapshot([notificationDoc('newer', 'trip-30', 3000)]))
-    expect(onData).toHaveBeenCalledTimes(1)
-    expect(onData.mock.calls[0]?.[0].map((n: Notification) => n.id)).toEqual(['newer', 'older'])
+    nexts[1]?.(snapshot([notificationDoc('older', 'trip-00', 1000)]))
+    expect(onData).not.toHaveBeenCalled()
 
-    nexts[0]?.(snapshot([notificationDoc('latest', 'trip-29', 5000)]))
+    nexts[2]?.(snapshot([notificationDoc('newer', 'trip-30', 3000)]))
+    expect(onData).toHaveBeenCalledTimes(1)
+    expect(onData.mock.calls[0]?.[0].map((n: Notification) => n.id)).toEqual(['removed', 'newer', 'older'])
+
+    nexts[1]?.(snapshot([notificationDoc('latest', 'trip-29', 5000)]))
     expect(onData).toHaveBeenCalledTimes(2)
-    expect(onData.mock.calls[1]?.[0].map((n: Notification) => n.id)).toEqual(['latest', 'newer'])
+    expect(onData.mock.calls[1]?.[0].map((n: Notification) => n.id)).toEqual(['latest', 'removed', 'newer'])
 
     unsubscribe()
     expect(unsubs[0]).toHaveBeenCalledOnce()
     expect(unsubs[1]).toHaveBeenCalledOnce()
+    expect(unsubs[2]).toHaveBeenCalledOnce()
   })
 })

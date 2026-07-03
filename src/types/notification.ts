@@ -8,7 +8,7 @@ import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
 import { TimestampSchema, CurrencyCodeSchema } from './_shared'
 
-export type NotificationEntityType = 'expense' | 'booking' | 'settlement' | 'member'
+export type NotificationEntityType = 'expense' | 'booking' | 'settlement' | 'member' | 'schedule' | 'wish' | 'planning' | 'trip'
 
 // users/{uid}/notifications/{eventId}
 export interface Notification {
@@ -16,14 +16,21 @@ export interface Notification {
   recipientUid: string
   tripId: string
   tripTitle: string
+  /** 'trip' rows are scoped to a trip the recipient is a member of and load
+   *  via the trip-scoped inbox query. 'account' rows (member.removed_self)
+   *  target a recipient who has lost trip access, so they load via a separate
+   *  membership-independent query and route to /account. */
+  scope: 'trip' | 'account'
   entityType: NotificationEntityType
   entityId: string
-  action: 'created' | 'updated' | 'deleted' | 'joined'
-  actorUid: string
+  action: 'created' | 'updated' | 'deleted' | 'joined' | 'role_changed' | 'removed'
+  /** null for admin/Worker-authored events with no resolvable actor
+   *  (member role_changed / removed). */
+  actorUid: string | null
   actorName: string
   title: string
   body: string
-  route: '/schedule' | '/expense' | '/bookings'
+  route: '/schedule' | '/expense' | '/bookings' | '/wish' | '/planning' | '/account'
   settlement?: {
     fromUid: string
     fromName: string
@@ -53,14 +60,15 @@ export const NotificationDocSchema = z.object({
   recipientUid:  z.string(),
   tripId:        z.string(),
   tripTitle:     z.string(),
-  entityType:    z.enum(['expense', 'booking', 'settlement', 'member']),
+  scope:         z.enum(['trip', 'account']),
+  entityType:    z.enum(['expense', 'booking', 'settlement', 'member', 'schedule', 'wish', 'planning', 'trip']),
   entityId:      z.string(),
-  action:        z.enum(['created', 'updated', 'deleted', 'joined']),
-  actorUid:      z.string(),
+  action:        z.enum(['created', 'updated', 'deleted', 'joined', 'role_changed', 'removed']),
+  actorUid:      z.string().nullable(),
   actorName:     z.string(),
   title:         z.string(),
   body:          z.string(),
-  route:         z.enum(['/schedule', '/expense', '/bookings']),
+  route:         z.enum(['/schedule', '/expense', '/bookings', '/wish', '/planning', '/account']),
   settlement:    notificationSettlementInfoSchema.optional(),
   createdAt:     TimestampSchema,
   readAt:        TimestampSchema.nullable(),

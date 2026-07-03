@@ -125,7 +125,7 @@ async function doMemberRemove(
     // non-tx cascade -- coupled to the owner-authz read above so a
     // concurrent trip-cascade-delete can never land them on a trip being
     // torn down.
-    const writes = buildMemberStripWrites(projectId, req.tripId, req.memberUid, target, trip)
+    const writes = buildMemberStripWrites(projectId, req.tripId, req.memberUid, target, trip, 'removed', callerUid)
 
     return {
       writes,
@@ -200,7 +200,7 @@ async function doMemberLeave(
       // requireTripMember already asserted member.exists (403 otherwise),
       // so targetExists is invariably true -- but we route it through the
       // same helper shape as /member-remove for a single code path.
-      const writes = buildMemberStripWrites(projectId, req.tripId, callerUid, member, trip)
+      const writes = buildMemberStripWrites(projectId, req.tripId, callerUid, member, trip, 'left', callerUid)
       return {
         writes,
         result: { targetExists: member.exists },

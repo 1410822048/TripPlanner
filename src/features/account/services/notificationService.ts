@@ -52,7 +52,24 @@ function notificationQuery(fb: FirebaseBundle, uid: string, tripIdChunk: readonl
     // Soft-dismissed rows are filtered server-side so they never consume the
     // 50-row window — same window-hygiene motivation as the trip-access scope.
     fb.where('dismissedAt', '==', null),
+    // scope=='trip' is explicit (not implied by the tripId filter): account
+    // rows carry a tripId the recipient can no longer access, and this keeps
+    // the two query surfaces disjoint by schema, not by circumstance.
+    fb.where('scope', '==', 'trip'),
     fb.where('tripId', 'in', [...tripIdChunk]),
+    fb.orderBy('createdAt', 'desc'),
+    fb.limit(LIST_LIMIT),
+  )
+}
+
+// Account-scoped rows (member.removed_self) target a recipient who has lost
+// trip access, so they can't ride the trip-scoped query. This one is
+// membership-independent — it runs even when the user belongs to no trips.
+function accountNotificationQuery(fb: FirebaseBundle, uid: string) {
+  return fb.query(
+    fb.collection(fb.db, 'users', uid, 'notifications'),
+    fb.where('dismissedAt', '==', null),
+    fb.where('scope', '==', 'account'),
     fb.orderBy('createdAt', 'desc'),
     fb.limit(LIST_LIMIT),
   )
@@ -63,12 +80,15 @@ function notificationsFromSnapshot(snap: QuerySnapshot): Notification[] {
 }
 
 export async function getNotifications(uid: string, tripIds: readonly string[]): Promise<Notification[]> {
-  const chunks = tripIdChunks(tripIds)
-  if (chunks.length === 0) return []
-
   const fb = await getFirebase()
+  // Account query always runs (index 0), even with zero accessible trips — a
+  // removed member has no trip in scope but must still see "you were removed".
+  const queries = [
+    accountNotificationQuery(fb, uid),
+    ...tripIdChunks(tripIds).map(chunk => notificationQuery(fb, uid, chunk)),
+  ]
   const pages = await Promise.all(
-    chunks.map(async chunk => notificationsFromSnapshot(await fb.getDocs(notificationQuery(fb, uid, chunk)))),
+    queries.map(async q => notificationsFromSnapshot(await fb.getDocs(q))),
   )
   return mergeNotifications(pages)
 }
@@ -79,20 +99,19 @@ export const subscribeToNotifications = (
   onData: (data: Notification[]) => void,
   onError: (e: Error) => void,
 ) => getFirebase().then(fb => {
-  const chunks = tripIdChunks(tripIds)
-  if (chunks.length === 0) {
-    onData([])
-    return () => {}
-  }
+  const queries = [
+    accountNotificationQuery(fb, uid),
+    ...tripIdChunks(tripIds).map(chunk => notificationQuery(fb, uid, chunk)),
+  ]
 
   const pages = new Map<number, Notification[]>()
   const readyChunks = new Set<number>()
   const publish = () => {
-    if (readyChunks.size !== chunks.length) return
+    if (readyChunks.size !== queries.length) return
     onData(mergeNotifications(pages.values()))
   }
-  const unsubs = chunks.map((chunk, index) => fb.onSnapshot(
-    notificationQuery(fb, uid, chunk),
+  const unsubs = queries.map((query, index) => fb.onSnapshot(
+    query,
     snap => {
       pages.set(index, notificationsFromSnapshot(snap))
       readyChunks.add(index)

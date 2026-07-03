@@ -240,7 +240,9 @@ async function runCascade(
 
   await mapWithConcurrency([...notificationCleanupUids], 3, async uid => {
     try {
-      await deleteUserTripNotifications(accessToken, projectId, uid, req.tripId)
+      // The whole trip is gone — sweep every scope, including any stale
+      // account-scoped "you were removed" row a rejoined member still holds.
+      await deleteUserTripNotifications(accessToken, projectId, uid, req.tripId, { includeAccountScope: true })
     } catch (e) {
       console.warn('trip notification cleanup failed', {
         tripId: req.tripId,
