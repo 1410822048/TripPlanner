@@ -111,16 +111,28 @@ CI 不跑 rules tests（emulator 啟動時間 + 額外服務），只在本地 +
 
 ## Build & Deploy
 
+目前部署策略是 **production fail-closed / preview-first**：
+
+- **production 只允許 `main`**：`npm run deploy:prod`、`npm run deploy:pages`、`npm run functions:deploy`、artifact/revision prune、`notifications:clear` 都走 production guard。真執行時必須在 `main`，且 local `HEAD == origin/main`、worktree clean。
+- **feature branch 只跑 Pages preview**：在 `feat/*` 或其他非 main branch 測前端時，用 `npm run deploy:pages:preview`。它會部署到 Cloudflare Pages preview branch，不會更新 production。
+- **dry-run 是唯一可繞過 production git gate 的模式**：`--dry-run` 只列出會跑的 production 流程，不改遠端狀態。
+- **未知參數直接 abort**：例如 `--dryrun`、`--preflightonly` 這類 typo 不會被忽略。
+- **互斥 mode 只能擇一**：`--functions-only`、`--artifacts-only`、`--revisions-only`、`--clear-notifications-only` 不能混用。
+
 ```bash
 npm run build                          # tsc + vite build → dist/
-npm run deploy:pages                   # build + Cloudflare Pages deploy（主 host）
+npm run deploy:pages                   # production Pages only：要求 main == origin/main + clean worktree
+npm run deploy:pages:preview           # feature branch Pages preview deploy
+npm run deploy:pages:preview -- --preflight-only
+npm run deploy:pages:preview -- --build-only
+npm run deploy:pages:preview -- --branch=feat/example
 ```
 
 Cloudflare Pages 上的 Firebase Auth redirect flow 走 same-origin helper：
 `functions/__/auth/[[path]].ts` 會代理 `/__/auth/*` 到 Firebase Hosting auth helper。
-production build 的 `VITE_FIREBASE_AUTH_DOMAIN` 必須是 Pages/custom domain
-（目前 `tripmate-2wg.pages.dev`），OAuth redirect URI 需允許
-`https://<domain>/__/auth/handler`。
+production build 的 `VITE_FIREBASE_AUTH_DOMAIN` 必須是 Pages/custom domain（目前 `tripmate-2wg.pages.dev`），OAuth redirect URI 需允許 `https://<domain>/__/auth/handler`。
+
+Pages preview build 會依 branch 推導 preview auth domain，例如 `feat/push-notifications` 會使用 `feat-push-notifications.tripmate-2wg.pages.dev`。若 Cloudflare preview host 不是這個格式，可用 `TRIPMATE_PAGES_AUTH_DOMAIN` 明確覆蓋。
 
 Rules / indexes（Firebase 那邊還在管 Firestore + Storage）：
 
@@ -129,12 +141,19 @@ firebase deploy --only firestore       # firestore rules + indexes
 firebase deploy --only storage         # storage rules
 ```
 
-Push notifications（Firestore rules 必須先於 Functions 同步，否則 token opt-in 會被 rules 擋掉）：
+Push notifications（Firestore rules/indexes 必須先於 Pages client 上線，否則 token opt-in / inbox query 會被擋）：
 
 ```bash
-npm run functions:artifacts:keep-one   # 首次設定 Artifact Registry 只保留最新 1 個 image（需 gcloud CLI）
-npm run functions:deploy               # build -> firestore rules/indexes -> tripmate-push functions
+npm run deploy:prod                    # pages build -> indexes -> functions -> prune -> rules -> pages upload
+npm run deploy:prod -- --dry-run        # 檢查 production 流程，不改遠端
+npm run functions:deploy               # production guard 後 push functions only + prune Cloud Run revisions/runtime images
+npm run functions:deploy -- --dry-run   # 檢查 functions-only 流程，不改遠端
+npm run functions:artifacts:keep-one   # 手動修剪 Artifact Registry runtime images（需 gcloud CLI）
+npm run functions:revisions:keep-one   # 手動修剪 Cloud Run revisions（需 gcloud CLI）
+npm run notifications:clear -- --confirm-clear-notifications=tripplanner-80a4f  # 破壞性：清空所有通知匣 docs
 ```
+
+`npm run functions:deploy` **不會部署 Firestore rules / indexes**。如果只改了 notification 相關 rules 或 index，單跑 `functions:deploy` 不會生效；請改跑 `npm run deploy:prod`，或手動執行 `firebase deploy --only firestore`。
 
 ## 專案結構
 
@@ -197,9 +216,32 @@ src/
 npm run typecheck && npm run lint && npm run test  # 本地驗證
 npm run build                                       # 確認 build 通
 firebase deploy --only storage                      # storage rules
-npm run functions:deploy                            # firestore rules/indexes + push functions
-npm run deploy:pages                                # 上線（Cloudflare Pages）
+npm run deploy:prod                                 # Pages build gate + indexes/functions/rules + Pages upload
 gcloud firestore export gs://<bucket>/backups/$(date +%F)  # 手動備份基準
+```
+
+### 部署順序判斷
+
+`npm run deploy:prod` 適合一般 additive deploy：新增 index、放寬 rules、新 client 需要的新 backend/functions 先就緒，最後才上 Pages client。
+
+`deploy:prod` 會在任何遠端變更前先檢查 production git ref（`main == origin/main` + clean worktree）、Pages production env、Cloudflare Pages project access，並實際完成 production build；接著檢查 gcloud auth / Firestore / Cloud Run / Artifact Registry read 權限。任一項不通就 fail-fast，避免 backend 已部署但 Pages build / Pages access / cleanup 最後才失敗。
+
+若要在 feature branch 驗證前端，使用 `npm run deploy:pages:preview`。不要用 `deploy:pages` 或 `deploy:prod` 測 feature branch，因為這兩個是 production path。
+
+`npm run functions:deploy` 也是 production path，會套用同一個 git gate。若只是想看會跑什麼，使用 `npm run functions:deploy -- --dry-run`。
+
+`npm run functions:deploy` 只處理 Functions + Cloud Run / Artifact Registry prune，不會碰 Firestore rules / indexes。若變更內容只有 notification rules 或 Firestore index，請跑 `npm run deploy:prod` 或手動 `firebase deploy --only firestore`。
+
+若是 rules tightening、移除舊欄位、改 schema contract、或任何舊 client 可能被新 rules / backend 擋住的變更，不要直接套固定順序；先做 two-phase deploy（先讓 client/backend 同時相容舊新資料，再收緊 rules / 移除舊路徑）。
+
+### 通知匣資料清理
+
+`npm run notifications:clear` 是破壞性維護指令，不屬於日常 deploy，也不會被 `deploy:prod` 自動執行。只有在明確要清空資料庫、推播測試產生大量假通知、通知 schema 不相容且決定不做 migration，或誤寫入錯誤收件者 / tripId 的通知時才使用。
+
+為避免誤清正式訊息匣，實際執行必須帶 project id 確認：
+
+```bash
+npm run notifications:clear -- --confirm-clear-notifications=tripplanner-80a4f
 ```
 
 ## Contributing

@@ -28,7 +28,31 @@
 //   來自控制輸入(這裡注入 + preflight),不是事後掃輸出。
 
 import { execSync } from 'node:child_process'
+import fs from 'node:fs'
 import { loadEnv } from 'vite'
+
+const abort = (message) => {
+  console.error(message)
+  process.exit(1)
+}
+
+const rawArgs = process.argv.slice(2)
+const ALLOWED_FLAGS = new Set(['--preflight-only', '--build-only', '--deploy-only'])
+const unknownArgs = rawArgs.filter((arg) => !ALLOWED_FLAGS.has(arg))
+if (unknownArgs.length > 0) {
+  abort(
+    `[deploy:pages:prod] ABORT: unknown argument(s): ${unknownArgs.join(', ')}\n` +
+      'Supported flags: --preflight-only / --build-only / --deploy-only.',
+  )
+}
+
+const preflightOnly = process.argv.includes('--preflight-only')
+const buildOnly = process.argv.includes('--build-only')
+const deployOnly = process.argv.includes('--deploy-only')
+const modeCount = [preflightOnly, buildOnly, deployOnly].filter(Boolean).length
+if (modeCount > 1) {
+  abort('[deploy:pages:prod] ABORT: use only one of --preflight-only / --build-only / --deploy-only.')
+}
 
 // 正式 Worker URL。canonical 來源三處必須一致:
 //   1. workers/ocr/wrangler.jsonc  name=tripmate-ocr (workers_dev:true)
@@ -104,19 +128,103 @@ if (missing.length > 0) {
 const run = (cmd, extraEnv) =>
   execSync(cmd, { stdio: 'inherit', env: { ...process.env, ...extraEnv } })
 
-// 1. build —— 透過 process.env 注入。Vite 會把 VITE_ 前綴的 process.env
-//    併入 import.meta.env 並 bake 進 bundle,不依賴本機 .env。
-console.log(
-  `[deploy:pages:prod] env preflight OK (${REQUIRED_CLIENT_ENV.length} keys); ` +
-    `building with VITE_WORKER_BASE_URL=${WORKER_URL}, ` +
-    `VITE_FIREBASE_AUTH_DOMAIN=${PAGES_AUTH_DOMAIN}`,
-)
-run('npm run build', {
-  VITE_WORKER_BASE_URL: WORKER_URL,
-  VITE_FIREBASE_AUTH_DOMAIN: PAGES_AUTH_DOMAIN,
-})
+const PRODUCTION_BRANCH = 'main'
 
-// 2. deploy —— --commit-dirty=false 強制乾淨 worktree。
+const git = (args) => execSync(`git ${args}`, { encoding: 'utf8' }).trim()
+
+const assertProductionGitRef = () => {
+  const currentBranch = git('branch --show-current')
+  if (currentBranch !== PRODUCTION_BRANCH) {
+    abort(
+      `[deploy:pages:prod] ABORT: production Pages deploy must run from ` +
+        `\`${PRODUCTION_BRANCH}\`, current branch is \`${currentBranch || '(detached)'}\`.`,
+    )
+  }
+
+  try {
+    execSync(`git fetch --quiet origin ${PRODUCTION_BRANCH}`, { stdio: 'ignore' })
+  } catch {
+    abort(`[deploy:pages:prod] ABORT: cannot fetch origin/${PRODUCTION_BRANCH}.`)
+  }
+
+  const head = git('rev-parse HEAD')
+  const originHead = git(`rev-parse origin/${PRODUCTION_BRANCH}`)
+  if (head !== originHead) {
+    abort(
+      `[deploy:pages:prod] ABORT: local HEAD must equal origin/${PRODUCTION_BRANCH} before production deploy.\n` +
+        `    HEAD: ${head}\n` +
+        `    origin/${PRODUCTION_BRANCH}: ${originHead}`,
+    )
+  }
+}
+
+const assertCleanWorktree = () => {
+  const status = execSync('git status --porcelain', { encoding: 'utf8' }).trim()
+  if (status.length === 0) {
+    return
+  }
+
+  abort(
+    `[deploy:pages:prod] ABORT: worktree must be clean before Pages deploy.\n` +
+      status
+        .split('\n')
+        .slice(0, 20)
+        .map((line) => `    ${line}`)
+        .join('\n'),
+  )
+}
+
+const assertWranglerPagesAccess = () => {
+  try {
+    execSync(
+      'npx wrangler pages deployment list --project-name=tripmate --environment=production --json',
+      { stdio: 'pipe', env: process.env },
+    )
+  } catch {
+    console.error(
+      '[deploy:pages:prod] ABORT: cannot access Cloudflare Pages project `tripmate`. ' +
+        'Run `npx wrangler login` or check Pages project permissions.',
+    )
+    process.exit(1)
+  }
+}
+
+assertProductionGitRef()
+assertCleanWorktree()
+assertWranglerPagesAccess()
+
+if (preflightOnly) {
+  console.log(
+    `[deploy:pages:prod] preflight OK (${REQUIRED_CLIENT_ENV.length} env keys, clean worktree, Pages access).`,
+  )
+  process.exit(0)
+}
+
+if (!deployOnly) {
+  // 1. build —— 透過 process.env 注入。Vite 會把 VITE_ 前綴的 process.env
+  //    併入 import.meta.env 並 bake 進 bundle,不依賴本機 .env。
+  console.log(
+    `[deploy:pages:prod] env preflight OK (${REQUIRED_CLIENT_ENV.length} keys); ` +
+      `building with VITE_WORKER_BASE_URL=${WORKER_URL}, ` +
+      `VITE_FIREBASE_AUTH_DOMAIN=${PAGES_AUTH_DOMAIN}`,
+  )
+  run('npm run build', {
+    VITE_WORKER_BASE_URL: WORKER_URL,
+    VITE_FIREBASE_AUTH_DOMAIN: PAGES_AUTH_DOMAIN,
+  })
+
+  if (buildOnly) {
+    console.log('[deploy:pages:prod] build-only OK; dist is ready for deploy.')
+    process.exit(0)
+  }
+}
+
+// 2. deploy —— --commit-dirty=false 強制乾淨 worktree。deploy-only 用於
+//    deploy:prod:production build 已在任何遠端變更前完成,這裡只上傳同一份 dist。
+if (!fs.existsSync('dist/index.html')) {
+  abort('[deploy:pages:prod] ABORT: dist/index.html not found; run without --deploy-only first.')
+}
+
 run(
   'npx wrangler pages deploy dist --project-name=tripmate --branch=main ' +
     '--commit-message="Pages deploy" --commit-dirty=false',

@@ -110,7 +110,10 @@ P1 不推：
     - `functions:build`
     - `functions:test`
     - `functions:artifacts:keep-one`
+    - `functions:revisions:keep-one`
     - `functions:deploy`
+    - `notifications:clear`
+    - `deploy:prod`
 - `package-lock.json`
   - npm install 後更新。
 - `firebase.json`
@@ -1223,9 +1226,10 @@ npm --prefix firebase-functions test
 Deploy：
 
 ```powershell
-npm run functions:artifacts:keep-one  # 首次或 cleanup policy 變更時才需要；需 gcloud CLI
-npm run functions:deploy              # build -> Firestore rules/indexes -> tripmate-push functions
-npm run deploy:pages
+npm run deploy:prod                   # pages build -> indexes -> functions -> prune -> rules -> pages upload
+npm run functions:deploy              # push functions only + prune revisions/images
+npm run functions:artifacts:keep-one  # 手動修剪 Artifact Registry runtime images；需 gcloud CLI
+npm run functions:revisions:keep-one  # 手動修剪 Cloud Run revisions；需 gcloud CLI
 ```
 
 ### 14.3 Rollback

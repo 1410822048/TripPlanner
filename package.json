@@ -19,10 +19,14 @@
     "test:rules": "npx -y firebase-tools@latest emulators:exec --project=demo-tripmate-rules --only firestore,storage \"vitest run --config vitest.rules.config.ts\"",
     "functions:build": "npm --workspace firebase-functions run build",
     "functions:test": "npm --workspace firebase-functions test",
-    "functions:artifacts:keep-one": "gcloud artifacts repositories set-cleanup-policies gcf-artifacts --location=asia-east1 --project=tripplanner-80a4f --policy=scripts/functions-artifact-cleanup-policy.json",
-    "functions:deploy": "npm --workspace firebase-functions run build && npx -y firebase-tools@latest deploy --only firestore --project tripplanner-80a4f && npx -y firebase-tools@latest deploy --only functions:tripmate-push --project tripplanner-80a4f --force",
+    "functions:artifacts:keep-one": "node scripts/deploy-prod-safe.mjs --artifacts-only",
+    "functions:revisions:keep-one": "node scripts/deploy-prod-safe.mjs --revisions-only",
+    "functions:deploy": "node scripts/deploy-prod-safe.mjs --functions-only",
+    "notifications:clear": "node scripts/deploy-prod-safe.mjs --clear-notifications-only",
     "icons": "node scripts/generate-icons.mjs",
+    "deploy:prod": "node scripts/deploy-prod-safe.mjs",
     "deploy:pages": "node scripts/deploy-pages-prod.mjs",
+    "deploy:pages:preview": "node scripts/deploy-pages-preview.mjs",
     "prepare": "husky"
   },
   "overrides": {
@@ -78,6 +82,7 @@
     "typescript-eslint": "^8.61.0",
     "vite": "^8.0.16",
     "vite-plugin-pwa": "^1.3.0",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.8",
+    "wrangler": "^4.106.0"
   }
 }
