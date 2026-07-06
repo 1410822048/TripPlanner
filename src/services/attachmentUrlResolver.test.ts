@@ -55,11 +55,6 @@ describe('attachmentUrlMode', () => {
     expect(attachmentUrlMode('thumb')).toBe('getBlob')
     vi.unstubAllEnvs()
 
-    // full per-kind override opts full in without the global; thumb unmoved
-    vi.stubEnv('VITE_ATTACHMENT_FULL_URL_MODE', 'signed')
-    expect(attachmentUrlMode('full')).toBe('signed')
-    expect(attachmentUrlMode('thumb')).toBe('getBlob')
-    vi.unstubAllEnvs()
   })
 })
 

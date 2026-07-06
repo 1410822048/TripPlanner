@@ -4,7 +4,6 @@
 //   - useReceiptOcrSource  — source state machine (none/preparing/fresh/
 //                            existing) + sourceKey / analyzedSourceKey lifecycle
 //   - useOcrFlow           — the bytes→items Worker pipeline + race guards
-//   - compare state        — the /ocr-compare side feature (loading/error/result)
 //   - pick handlers        — camera (auto-OCR) vs upload (stash) + image prep
 //
 // It also owns the pendingSourceKeyRef bookkeeping (which source key an
@@ -17,10 +16,10 @@
 //     (items / money / splits / title / category / errors). Injected as a
 //     callback; it THROWS on parse failure and we let that propagate exactly
 //     like the inline version did (fresh path → useOcrFlow catches → error
-//     banner; compare path → caught here → compareError).
+//     banner).
 //   - attachment / items / adjustments CLEAR: clearOcrOnly() resets only the
-//     OCR / source / compare slices; the component composes the sibling clears.
-import { useEffect, useRef, useState } from 'react'
+//     OCR / source slices; the component composes the sibling clears.
+import { useRef } from 'react'
 import { useOcrFlow } from './useOcrFlow'
 import {
   deriveReceiptOcrCapabilities,
@@ -33,10 +32,7 @@ import {
   type ReceiptOcrCapabilities,
 } from './useReceiptOcrSource'
 import {
-  ocrCompareReceipt,
   ocrResultStillApplicable,
-  OcrError,
-  type OcrCompareResult,
   type OcrResult,
 } from '../services/ocrService'
 import { compressReceiptImage } from '@/utils/image'
@@ -47,13 +43,11 @@ export interface UseReceiptOcrInput {
   /** Currency hint for FRESH captures — trip currency (no persisted currency
    *  exists yet). */
   tripCurrency: string
-  /** Currency hint for re-OCR of a SAVED receipt + compare — the form's
+  /** Currency hint for re-OCR of a SAVED receipt — the form's
    *  effective (foreign-aware) currency. Kept SEPARATE from tripCurrency to
    *  preserve the original asymmetry: fresh biases toward trip currency,
    *  existing biases toward the expense's already-known currency. */
   currencyHint: string
-  fallbackEnabled: boolean
-  compareEnabled: boolean
   /** Sibling reads needed only for capability derivation. */
   hasAttachment: boolean
   previewIsImage: boolean
@@ -70,13 +64,6 @@ export interface UseReceiptOcrResult {
   source: ReceiptOcrSource
   status: { loading: boolean; error: string | null; elapsedMs: number }
   caps: ReceiptOcrCapabilities
-  compare: {
-    loading: boolean
-    error: string | null
-    result: OcrCompareResult | null
-    run: () => Promise<void>
-    apply: (result: OcrResult) => void
-  }
   handlers: {
     onCameraPicked: (e: React.ChangeEvent<HTMLInputElement>) => Promise<void>
     onUploadPicked: (e: React.ChangeEvent<HTMLInputElement>) => Promise<void>
@@ -89,7 +76,6 @@ export interface UseReceiptOcrResult {
 export function useReceiptOcr(input: UseReceiptOcrInput): UseReceiptOcrResult {
   const {
     existingReceipt, tripCurrency, currencyHint,
-    fallbackEnabled, compareEnabled,
     hasAttachment, previewIsImage, hasItems,
     pickFile, applyOcrResult,
   } = input
@@ -108,27 +94,6 @@ export function useReceiptOcr(input: UseReceiptOcrInput): UseReceiptOcrResult {
       pendingSourceKeyRef.current = null
     },
   })
-
-  const [compareLoading, setCompareLoading] = useState(false)
-  const [compareError, setCompareError]     = useState<string | null>(null)
-  const [compareResult, setCompareResult]   = useState<OcrCompareResult | null>(null)
-  const compareSeqRef   = useRef(0)
-  const compareAbortRef = useRef<AbortController | null>(null)
-
-  useEffect(() => () => {
-    compareSeqRef.current++
-    compareAbortRef.current?.abort()
-    compareAbortRef.current = null
-  }, [])
-
-  function resetCompare() {
-    compareSeqRef.current++
-    compareAbortRef.current?.abort()
-    compareAbortRef.current = null
-    setCompareLoading(false)
-    setCompareError(null)
-    setCompareResult(null)
-  }
 
   // Pre-compress receipt images at pick-time into the same OCR-grade full image
   // that will be stored. Fresh OCR and future re-OCR then read the same
@@ -153,7 +118,6 @@ export function useReceiptOcr(input: UseReceiptOcrInput): UseReceiptOcrResult {
     e.target.value = ''
     if (!f) return
     const requestId = receiptSource.beginPreparing()
-    resetCompare()
     ocr.cancel()
     const receipt = await prepareReceiptImage(f)
     if (!receiptSource.isCurrent(requestId)) return
@@ -174,7 +138,6 @@ export function useReceiptOcr(input: UseReceiptOcrInput): UseReceiptOcrResult {
     e.target.value = ''
     if (!f) return
     const requestId = receiptSource.beginPreparing()
-    resetCompare()
     ocr.cancel()
     const receipt = await prepareReceiptImage(f)
     if (!receiptSource.isCurrent(requestId)) return
@@ -228,45 +191,10 @@ export function useReceiptOcr(input: UseReceiptOcrInput): UseReceiptOcrResult {
     if (source.kind === 'existing') runExistingReceiptOcr(source, true, sourceKey)
   }
 
-  async function runCompare() {
-    if (receiptSource.source.kind !== 'fresh') return
-    const file = receiptSource.source.file
-    const seq = ++compareSeqRef.current
-    compareAbortRef.current?.abort()
-    const ac = new AbortController()
-    compareAbortRef.current = ac
-    setCompareLoading(true)
-    setCompareError(null)
-    setCompareResult(null)
-    try {
-      const result = await ocrCompareReceipt(file, currencyHint, ac.signal)
-      if (seq !== compareSeqRef.current) return
-      setCompareResult(result)
-    } catch (e) {
-      if (seq !== compareSeqRef.current) return
-      setCompareError(e instanceof OcrError ? e.message : (e as Error).message)
-    } finally {
-      if (seq === compareSeqRef.current) setCompareLoading(false)
-      if (compareAbortRef.current === ac) compareAbortRef.current = null
-    }
-  }
-
-  function applyCompareResult(result: OcrResult) {
-    try {
-      applyOcrResult(result)
-      receiptSource.markAnalyzed(receiptSource.sourceKey)
-      setCompareError(null)
-      setCompareResult(null)
-    } catch (e) {
-      setCompareError(e instanceof Error ? e.message : 'OCR結果を適用できませんでした')
-    }
-  }
-
   // OCR-only reset. The component's handleClearReceipt composes this with the
   // sibling clears (att / items / adjustments) it owns.
   function clearOcrOnly() {
     receiptSource.clear()
-    resetCompare()
     ocr.reset()
     pendingSourceKeyRef.current = null
   }
@@ -280,21 +208,12 @@ export function useReceiptOcr(input: UseReceiptOcrInput): UseReceiptOcrResult {
     ocrLoading:        ocr.loading,
     hasItems,
     ocrError:          ocr.error,
-    fallbackEnabled,
-    compareEnabled,
   })
 
   return {
     source: receiptSource.source,
     status: { loading: ocr.loading, error: ocr.error, elapsedMs: ocr.elapsedMs },
     caps,
-    compare: {
-      loading: compareLoading,
-      error:   compareError,
-      result:  compareResult,
-      run:     runCompare,
-      apply:   applyCompareResult,
-    },
     handlers: {
       onCameraPicked,
       onUploadPicked,

@@ -83,8 +83,8 @@ export type TripDeleteRequest = z.infer<typeof TripDeleteRequestSchema>
 
 /** Subcollections under /trips/{tripId} to drain. Members LAST so any
  *  rule-respecting fallback path doesn't lose write perm mid-cascade.
- *  Mirrors src/services/paths.ts TRIP_SUBCOLLECTIONS — duplicated here
- *  because the worker bundle stays standalone, no client-types import. */
+ *  Keep this Worker-local copy in sync with trip-owned subcollections; the
+ *  worker bundle stays standalone, no client-types import. */
 const TRIP_SUBCOLLECTIONS = [
   'schedules', 'expenses', 'wishes', 'bookings',
   'planning', 'settlements', 'settlementPairLocks',

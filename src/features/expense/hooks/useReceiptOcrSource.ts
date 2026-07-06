@@ -40,7 +40,6 @@ export interface ReceiptOcrCapabilities {
   canAnalyze:   boolean
   canReanalyze: boolean
   canFallback:  boolean
-  canCompare:   boolean
 }
 
 export interface ReceiptOcrCapabilityInput {
@@ -52,8 +51,6 @@ export interface ReceiptOcrCapabilityInput {
   ocrLoading:        boolean
   hasItems:          boolean
   ocrError:          string | null
-  fallbackEnabled:   boolean
-  compareEnabled:    boolean
 }
 
 export function deriveExistingReceiptOcrSource(seed: ExistingReceiptOcrSeed): ExistingReceiptOcrSource | null {
@@ -125,8 +122,7 @@ export function deriveReceiptOcrCapabilities(input: ReceiptOcrCapabilityInput): 
   return {
     canAnalyze:   canRunAction && hasReadableAttachment && hasOcrSource && !currentItemsBelongToSource,
     canReanalyze: canRunAction && hasReadableAttachment && hasOcrSource && currentItemsBelongToSource,
-    canFallback:  canRunAction && input.fallbackEnabled && hasReadableAttachment && hasOcrSource && (currentItemsBelongToSource || !!input.ocrError),
-    canCompare:   canRunAction && input.compareEnabled && hasReadableAttachment && input.source.kind === 'fresh',
+    canFallback:  canRunAction && hasReadableAttachment && hasOcrSource && (currentItemsBelongToSource || !!input.ocrError),
   }
 }
 

@@ -20,44 +20,11 @@ describe('deriveReceiptOcrCapabilities', () => {
       ocrLoading:      false,
       hasItems:        false,
       ocrError:        null,
-      fallbackEnabled: true,
-      compareEnabled:  true,
     })).toEqual({
       canAnalyze:   false,
       canReanalyze: false,
       canFallback:  false,
-      canCompare:   false,
     })
-  })
-
-  it('allows compare only for fresh local files', () => {
-    const common = {
-      hasAttachment:   true,
-      previewIsImage:  true,
-      ocrLoading:      false,
-      hasItems:        true,
-      ocrError:        null,
-      fallbackEnabled: true,
-      compareEnabled:  true,
-    }
-
-    expect(deriveReceiptOcrCapabilities({
-      ...common,
-      source: { kind: 'fresh', file: jpeg('fresh.jpg'), revision: 1 },
-      sourceKey: 'fresh:1',
-      analyzedSourceKey: null,
-    }).canCompare).toBe(true)
-    expect(deriveReceiptOcrCapabilities({
-      ...common,
-      source: {
-        kind:        'existing',
-        tripId:      'trip-1',
-        expenseId:   'expense-1',
-        receiptPath: 'trips/trip-1/expenses/expense-1/receipt.webp',
-      },
-      sourceKey: 'existing:trip-1:expense-1:trips/trip-1/expenses/expense-1/receipt.webp:',
-      analyzedSourceKey: null,
-    }).canCompare).toBe(false)
   })
 
   it('treats existing line items as stale after replacing the receipt source', () => {
@@ -67,8 +34,6 @@ describe('deriveReceiptOcrCapabilities', () => {
       ocrLoading:      false,
       hasItems:        true,
       ocrError:        null,
-      fallbackEnabled: true,
-      compareEnabled:  true,
     }
 
     expect(deriveReceiptOcrCapabilities({

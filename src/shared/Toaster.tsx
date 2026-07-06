@@ -20,9 +20,8 @@ export default function Toaster() {
       className="fixed left-1/2 -translate-x-1/2 z-[9999] flex flex-col gap-2 pointer-events-none"
       style={{ top: 'calc(env(safe-area-inset-top, 0px) + 14px)', maxWidth: '92vw' }}
     >
-      {/* Outer is <div>, not <button>: HTML disallows nested <button>
-          and the action slot itself is a button. The message area is its
-          own inner button so tapping it still dismisses. */}
+      {/* Outer is <div>, not <button>; the message area is its own inner
+          button so tapping it still dismisses. */}
       {items.map(t => {
         const s = KIND_STYLE[t.kind]
         return (
@@ -54,19 +53,6 @@ export default function Toaster() {
             >
               {t.message}
             </button>
-            {t.action && (
-              <button
-                type="button"
-                onClick={() => { t.action!.onClick(); dismiss(t.id) }}
-                className="shrink-0 px-2.5 py-1 rounded-full border-none text-[12px] font-bold cursor-pointer"
-                style={{
-                  background: s.fg,
-                  color:      s.bg,
-                }}
-              >
-                {t.action.label}
-              </button>
-            )}
           </div>
         )
       })}

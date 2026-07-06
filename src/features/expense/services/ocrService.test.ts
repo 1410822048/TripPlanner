@@ -21,7 +21,6 @@ vi.mock('@/services/workerBase', () => ({
 }))
 
 import {
-  ocrCompareReceipt,
   ocrFallbackReceipt,
   ocrResultStillApplicable,
   ocrExistingExpenseReceipt,
@@ -180,58 +179,6 @@ describe('ocrExistingExpenseReceipt', () => {
     expect(captured?.aborted).toBe(false)
     ac.abort()
     expect(captured?.aborted).toBe(true)
-  })
-})
-
-describe('ocrCompareReceipt', () => {
-  const realFetch = globalThis.fetch
-  afterEach(() => { globalThis.fetch = realFetch })
-  beforeEach(() => {
-    getIdToken.mockClear()
-  })
-
-  it('posts the same image envelope to /ocr-compare and returns both provider results', async () => {
-    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
-      Promise.resolve(new Response(
-        JSON.stringify({
-          claude: {
-            provider: 'claude', ok: true, elapsedMs: 1200,
-            result: { items: [{ name: 'A', amountText: '100' }], adjustments: [], ignoredLines: [], totalText: '100' },
-          },
-          qwen: {
-            provider: 'qwen', ok: false, elapsedMs: 900,
-            error: { message: 'bad', status: 422 },
-          },
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      )),
-    )
-    globalThis.fetch = fetchMock as unknown as typeof fetch
-
-    const out = await ocrCompareReceipt(new File(['img'], 'receipt.webp', { type: 'image/webp' }), 'JPY')
-    expect(out.claude.ok).toBe(true)
-    expect(out.qwen.ok).toBe(false)
-    const call = fetchMock.mock.calls[0]!
-    expect(call[0]).toBe('https://worker.example.dev/ocr-compare')
-    const sent = JSON.parse(call[1]!.body as string)
-    expect(sent).toMatchObject({ mimeType: 'image/webp', currency: 'JPY' })
-    expect(typeof sent.image).toBe('string')
-    expect(sent.image.length).toBeGreaterThan(0)
-  })
-
-  it('maps request-level auth/rate/upstream failures to OcrError kinds', async () => {
-    const stubFetch = (status: number) => {
-      globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ error: 'x' }), {
-        status, headers: { 'Content-Type': 'application/json' },
-      })) as typeof fetch
-    }
-
-    stubFetch(401)
-    await expect(ocrCompareReceipt(new File(['x'], 'r.webp', { type: 'image/webp' }))).rejects.toMatchObject({ kind: 'auth' })
-    stubFetch(429)
-    await expect(ocrCompareReceipt(new File(['x'], 'r.webp', { type: 'image/webp' }))).rejects.toMatchObject({ kind: 'rate-limit' })
-    stubFetch(503)
-    await expect(ocrCompareReceipt(new File(['x'], 'r.webp', { type: 'image/webp' }))).rejects.toMatchObject({ kind: 'unavailable' })
   })
 })
 

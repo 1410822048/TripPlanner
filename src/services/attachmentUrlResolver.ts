@@ -27,16 +27,13 @@ import { workerFetch, preflightIdToken, requireWorkerWriteBase } from './workerB
 
 export type AttachmentKind = 'thumb' | 'full'
 
-/** Per-kind signed/getBlob switch. Thumbnails are PINNED to getBlob (signed
- *  thumb was removed — design §7), so only full/pdf consults the env: the
- *  per-kind VITE_ATTACHMENT_FULL_URL_MODE overrides the global
- *  VITE_ATTACHMENT_URL_MODE; anything that isn't 'signed' (incl. unset) is
- *  'getBlob'. Read lazily so a build/test can flip it via env. */
+/** Signed/getBlob switch. Thumbnails are PINNED to getBlob (signed thumb was
+ *  removed — design §7), so only full/pdf consults VITE_ATTACHMENT_URL_MODE.
+ *  Anything that isn't 'signed' (incl. unset) is 'getBlob'. Read lazily so a
+ *  build/test can flip it via env. */
 export function attachmentUrlMode(kind: AttachmentKind): 'getBlob' | 'signed' {
   if (kind === 'thumb') return 'getBlob'
-  const perKind = import.meta.env.VITE_ATTACHMENT_FULL_URL_MODE as string | undefined
-  const global  = import.meta.env.VITE_ATTACHMENT_URL_MODE      as string | undefined
-  return (perKind ?? global) === 'signed' ? 'signed' : 'getBlob'
+  return import.meta.env.VITE_ATTACHMENT_URL_MODE === 'signed' ? 'signed' : 'getBlob'
 }
 
 /** Resolve the strict Worker base for signed-URL minting, or null. signed mode

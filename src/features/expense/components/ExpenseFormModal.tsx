@@ -48,7 +48,6 @@ import { useExpenseItems } from '../hooks/useExpenseItems'
 import { useExpenseMoneyDraft } from '../hooks/useExpenseMoneyDraft'
 import { useFxPreview } from '@/hooks/useFxPreview'
 import { type OcrResult } from '../services/ocrService'
-import { OCR_COMPARE_UI_ENABLED, OCR_FALLBACK_UI_ENABLED } from '../services/ocrFeatures'
 import { useReceiptOcr } from '../hooks/useReceiptOcr'
 import { buildExpenseFormResult } from '../services/buildExpenseFormResult'
 import { buildOcrExpenseDraft } from '../services/buildOcrExpenseDraft'
@@ -230,11 +229,9 @@ export default function ExpenseFormModal({
   // FAIL-FAST: buildOcrExpenseDraft throws BEFORE returning a draft when the
   // Worker's currency-agnostic decimal shape can't be parsed for this currency
   // (e.g. OCR emitting "12.34" for JPY breaks parseMoneyToMinor). Nothing is
-  // mutated before the throw, so partial application is never visible. The two
-  // callers differ ONLY in how they surface the throw + which source key gets
-  // marked analyzed — keeping the apply itself here means they never drift:
-  //   - useOcrFlow.onSuccess lets it propagate → useOcrFlow catches → error banner
-  //   - applyComparedOcrResult catches → compareError
+  // mutated before the throw, so partial application is never visible.
+  // useOcrFlow.onSuccess lets it propagate; useOcrFlow catches it and surfaces
+  // the OCR error banner.
   function applyOcrResultToForm(result: OcrResult) {
     const draft = buildOcrExpenseDraft(
       result,
@@ -266,7 +263,7 @@ export default function ExpenseFormModal({
     setErrors(prev => ({ ...prev, items: '' }))
   }
 
-  // OCR orchestration — source state machine + worker flow + compare + the
+  // OCR orchestration — source state machine + worker flow + the
   // camera/upload pick handlers, all consolidated in useReceiptOcr. The
   // form-domain apply (applyOcrResultToForm) and the sibling clears
   // (att/items/adjustments) stay here; everything else is the hook's.
@@ -280,8 +277,6 @@ export default function ExpenseFormModal({
     },
     tripCurrency,
     currencyHint:    effectiveCurrency,
-    fallbackEnabled: OCR_FALLBACK_UI_ENABLED,
-    compareEnabled:  OCR_COMPARE_UI_ENABLED,
     hasAttachment:   att.hasAttachment,
     previewIsImage:  att.previewIsImage,
     hasItems:        items.hasItems,
@@ -293,7 +288,7 @@ export default function ExpenseFormModal({
   useAutoFocus(titleRef, isOpen)
 
   function handleClearReceipt() {
-    // clearOcrOnly resets the OCR / source / compare slices; the sibling
+    // clearOcrOnly resets the OCR / source slices; the sibling
     // clears (attachment / items / adjustments) stay the component's.
     receiptOcr.handlers.clearOcrOnly()
     att.clear()
@@ -464,17 +459,11 @@ export default function ExpenseFormModal({
         canAnalyze={receiptOcr.caps.canAnalyze}
         canReanalyze={receiptOcr.caps.canReanalyze}
         canFallback={receiptOcr.caps.canFallback}
-        canCompare={receiptOcr.caps.canCompare}
-        compareLoading={receiptOcr.compare.loading}
-        compareError={receiptOcr.compare.error}
-        compareResult={receiptOcr.compare.result}
         onCameraPicked={receiptOcr.handlers.onCameraPicked}
         onUploadPicked={receiptOcr.handlers.onUploadPicked}
         onClear={handleClearReceipt}
         onAnalyze={receiptOcr.handlers.analyze}
         onFallback={receiptOcr.handlers.fallback}
-        onCompare={() => { void receiptOcr.compare.run() }}
-        onApplyCompareResult={receiptOcr.compare.apply}
         onPreview={() => (att.hasNewFile || att.fullPath) && setPreviewOpen(true)}
       />
 

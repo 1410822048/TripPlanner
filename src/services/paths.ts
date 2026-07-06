@@ -1,62 +1,24 @@
 // src/services/paths.ts
 // Single source of truth for Firestore collection + document path segments.
 // Consolidating the string literals here makes a future collection rename
-// (e.g. 'bookings' → 'reservations') one-file surgery instead of a global
-// find-and-replace sweep. It also pairs the CASCADE_SUBCOLLECTIONS list in
-// tripService with a typed tuple, so adding a new subcollection without
-// updating the cascade becomes a TypeScript error rather than a silent
-// orphan-doc bug.
+// (e.g. 'bookings' -> 'reservations') one-file surgery instead of a global
+// find-and-replace sweep.
 //
 // Functions return plain strings + arg arrays so callers can spread them
 // into `doc(db, ...path)` or `collection(db, ...path)` freely. They
-// deliberately don't import firebase types — this file stays bundle-neutral
+// deliberately don't import firebase types -- this file stays bundle-neutral
 // and can be imported anywhere without dragging firestore into the bundle.
 
-// ─── Root collections ──────────────────────────────────────────
+// Root collections
 export const TRIPS = 'trips'
 
-// ─── Trip-scoped subcollections ────────────────────────────────
-// Order matters: listed in the order subcollections must be purged during
-// cascade delete. `members` MUST be last because canWrite() rules on
-// schedules/expenses/journals/bookings dereference members/{uid}, and
-// deleting the owner's member doc mid-cascade would revoke write perm for
-// the remaining steps. `invites` is rule-independent (gated by
-// isTripOwner which reads the trip doc), so it's order-agnostic — placed
-// just before `members` for symmetry with other content collections.
-export const TRIP_SUBCOLLECTIONS = [
-  'schedules',
-  'expenses',
-  'wishes',
-  'bookings',
-  'planning',
-  'settlements',
-  // Per-unordered-pair contention guard docs written by the Worker
-  // settlement-create/-delete tx. Lives under the trip so cascade
-  // naturally drains it; rules deny all client access (Worker-only).
-  'settlementPairLocks',
-  '_purges',
-  'invites',
-  // Single-active-invite pointer (inviteState/current) written by the
-  // Worker invite-create/revoke/redeem tx. Worker-only (rules deny all
-  // client access); listed so trip-cascade drains it like any other
-  // subcollection.
-  'inviteState',
-  'members',
-] as const
-export type TripSubcollection = typeof TRIP_SUBCOLLECTIONS[number]
-
-// ─── Path builders ─────────────────────────────────────────────
+// Path builders
 // Each returns a tuple suitable for `doc(db, ...)` / `collection(db, ...)`.
-// Example: `doc(db, ...P.tripMember('t1', 'u1'))` → the member doc path.
-
+// Example: `doc(db, ...P.member('t1', 'u1'))` -- the member doc path.
 export const P = {
   // Root
   trips:     (): ['trips']                                    => [TRIPS],
   trip:      (tripId: string): ['trips', string]              => [TRIPS, tripId],
-
-  // Subcollections of /trips/{tripId}
-  subcollection: <K extends TripSubcollection>(tripId: string, name: K): ['trips', string, K] =>
-    [TRIPS, tripId, name],
 
   members:     (tripId: string): ['trips', string, 'members']   => [TRIPS, tripId, 'members'],
   member:      (tripId: string, memberId: string): ['trips', string, 'members', string] =>
@@ -96,6 +58,4 @@ export const P = {
   // block lists, the listener hooks ignore it, the trip-cascade
   // Worker cleans it like any other subcollection.
   purges:      (tripId: string): ['trips', string, '_purges'] => [TRIPS, tripId, '_purges'],
-  purge:       (tripId: string, id: string): ['trips', string, '_purges', string] =>
-    [TRIPS, tripId, '_purges', id],
 } as const

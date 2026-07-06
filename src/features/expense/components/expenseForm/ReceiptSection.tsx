@@ -5,15 +5,10 @@
 // component owns only the two hidden <input> refs (local to the picker UI);
 // every handler + display value is passed in.
 import { useRef, useState, type ChangeEvent } from 'react'
-import { AlertTriangle, Camera, Check, Loader2, Plus, ScanLine, Upload } from 'lucide-react'
+import { AlertTriangle, Camera, Loader2, Plus, ScanLine, Upload } from 'lucide-react'
 import FormField from '@/components/ui/FormField'
 import AttachmentRow from '@/components/ui/AttachmentRow'
 import PickerDialog from '@/components/ui/pickers/PickerDialog'
-import type {
-  OcrCompareProviderResult,
-  OcrCompareResult,
-  OcrResult,
-} from '../../services/ocrService'
 
 const IMAGE_ACCEPT = 'image/*'
 const ANY_ACCEPT   = 'image/*,application/pdf'
@@ -56,87 +51,6 @@ function OcrLoadingHint({ elapsedMs }: { elapsedMs: number }) {
             ? '複雑なレシートは少し時間がかかります'
             : 'AI で店名・品目・金額を解析しています'}
         </div>
-      </div>
-    </div>
-  )
-}
-
-function CompareProviderCard({
-  data,
-  onApply,
-}: {
-  data: OcrCompareProviderResult
-  onApply: (result: OcrResult) => void
-}) {
-  const title = data.provider === 'claude' ? 'Claude' : 'Qwen'
-  const accent = data.provider === 'claude' ? 'text-[#7C5FB8]' : 'text-teal'
-  const seconds = (data.elapsedMs / 1000).toFixed(1)
-
-  if (!data.ok) {
-    return (
-      <div className="rounded-[10px] border border-warn/25 bg-warn-bg px-2.5 py-2">
-        <div className="flex items-center justify-between gap-2">
-          <span className={`text-[12px] font-bold ${accent}`}>{title}</span>
-          <span className="text-[10.5px] font-semibold text-muted tabular-nums">{seconds}s</span>
-        </div>
-        <div className="mt-1 text-[11px] font-semibold text-warn">
-          error {data.error.status}
-        </div>
-        <div className="mt-0.5 text-[10.5px] leading-[1.35] text-muted line-clamp-2">
-          {data.error.message}
-        </div>
-      </div>
-    )
-  }
-
-  const r = data.result
-  return (
-    <div className="rounded-[10px] border border-border bg-surface px-2.5 py-2">
-      <div className="flex items-center justify-between gap-2">
-        <span className={`text-[12px] font-bold ${accent}`}>{title}</span>
-        <span className="text-[10.5px] font-semibold text-muted tabular-nums">{seconds}s</span>
-      </div>
-      <div className="mt-1 grid grid-cols-[1fr_auto] gap-x-2 gap-y-0.5 text-[11px] leading-[1.35]">
-        <span className="text-muted">total</span>
-        <span className="font-bold tabular-nums text-ink">{r.totalText}</span>
-        <span className="text-muted">items / adj / ignored</span>
-        <span className="font-semibold tabular-nums text-ink">
-          {r.items.length} / {r.adjustments.length} / {r.ignoredLines.length}
-        </span>
-        {r.storeName && (
-          <>
-            <span className="text-muted">store</span>
-            <span className="font-semibold text-ink truncate max-w-[120px]">{r.storeName}</span>
-          </>
-        )}
-      </div>
-      <button
-        type="button"
-        onClick={() => onApply(r)}
-        className="mt-2 h-7 w-full rounded-full bg-teal-pale text-teal text-[11.5px] font-bold border border-teal/15 cursor-pointer flex items-center justify-center gap-1.5 hover:bg-teal hover:text-white transition-colors"
-      >
-        <Check size={12} strokeWidth={2.4} />
-        この結果を適用
-      </button>
-    </div>
-  )
-}
-
-function CompareSummary({ result }: { result: OcrCompareResult }) {
-  const c = result.claude.ok ? result.claude.result : null
-  const q = result.qwen.ok ? result.qwen.result : null
-  if (!c || !q) return null
-
-  const totalSame = c.totalText === q.totalText
-  const itemDelta = c.items.length - q.items.length
-  return (
-    <div className="rounded-[10px] bg-app px-2.5 py-2 text-[11px] leading-[1.45] text-muted">
-      <div className="font-bold text-ink mb-0.5">diff</div>
-      <div>
-        total: {totalSame ? 'same' : `${c.totalText} / ${q.totalText}`}
-      </div>
-      <div>
-        items: {itemDelta === 0 ? 'same' : `Claude ${itemDelta > 0 ? '+' : ''}${itemDelta}`}
       </div>
     </div>
   )
@@ -232,10 +146,6 @@ interface ReceiptSectionProps {
   /** 「もう一度読み取る」 link visible (already has items). */
   canReanalyze:   boolean
   canFallback:    boolean
-  canCompare:     boolean
-  compareLoading: boolean
-  compareError:   string | null
-  compareResult:  OcrCompareResult | null
   /** Whether the full preview is openable (a new file or an existing
    *  fullPath) — independent of whether a thumbnail URL resolved. */
   canPreview:     boolean
@@ -244,17 +154,15 @@ interface ReceiptSectionProps {
   onClear:        () => void
   onAnalyze:      () => void
   onFallback:     () => void
-  onCompare:      () => void
-  onApplyCompareResult: (result: OcrResult) => void
   onPreview:      () => void
 }
 
 export default function ReceiptSection({
   error, reconcileWarning, hasAttachment, attachmentName, previewUrl, previewIsImage, canPreview,
   ocrLoading, ocrElapsedMs, canAnalyze, canReanalyze,
-  canFallback, canCompare, compareLoading, compareError, compareResult,
+  canFallback,
   onCameraPicked, onUploadPicked, onClear, onAnalyze, onPreview,
-  onFallback, onCompare, onApplyCompareResult,
+  onFallback,
 }: ReceiptSectionProps) {
   // Two separate <input>s — we CAN'T detect "camera vs gallery" from one
   // input, so the UX branches on which button was tapped. Refs are local to
@@ -322,20 +230,6 @@ export default function ReceiptSection({
             </button>
           )}
 
-          {canCompare && (
-            <button
-              type="button"
-              onClick={onCompare}
-              disabled={compareLoading}
-              className="flex items-center gap-1 text-[11.5px] text-muted font-medium border-none bg-transparent p-0 cursor-pointer hover:text-accent hover:underline self-start disabled:opacity-50 disabled:cursor-wait"
-            >
-              {compareLoading
-                ? <Loader2 size={12} strokeWidth={2} className="animate-spin" />
-                : <ScanLine size={12} strokeWidth={2} />}
-              モデル比較
-            </button>
-          )}
-
           {ocrLoading && <OcrLoadingHint elapsedMs={ocrElapsedMs} />}
 
           {/* Suppress while rescanning so stale residuals don't flash. No
@@ -350,21 +244,6 @@ export default function ReceiptSection({
             </div>
           )}
 
-          {compareError && (
-            <div className="rounded-input bg-warn-bg text-warn border border-warn/20 px-3 py-2 text-[11.5px] font-semibold leading-[1.45]">
-              {compareError}
-            </div>
-          )}
-
-          {compareResult && (
-            <div className="rounded-input border border-border bg-app/70 p-2 flex flex-col gap-2">
-              <div className="grid grid-cols-2 gap-2">
-                <CompareProviderCard data={compareResult.claude} onApply={onApplyCompareResult} />
-                <CompareProviderCard data={compareResult.qwen} onApply={onApplyCompareResult} />
-              </div>
-              <CompareSummary result={compareResult} />
-            </div>
-          )}
         </div>
       ) : (
         <>

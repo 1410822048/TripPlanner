@@ -91,16 +91,6 @@ export interface OcrResult {
   category?: OcrCategory
 }
 
-export type OcrCompareProvider = 'claude' | 'qwen'
-export type OcrCompareProviderResult =
-  | { provider: OcrCompareProvider; ok: true; elapsedMs: number; result: OcrResult }
-  | { provider: OcrCompareProvider; ok: false; elapsedMs: number; error: { message: string; status: number } }
-
-export interface OcrCompareResult {
-  claude: OcrCompareProviderResult
-  qwen:   OcrCompareProviderResult
-}
-
 import { WORKER_BASE_URL, requireWorkerWriteBase } from '@/services/workerBase'
 
 const OCR_SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
@@ -247,18 +237,6 @@ export async function ocrFallbackReceipt(file: File, currency?: string, signal?:
   return postOcrImage<OcrResult>('/ocr-fallback', file, currency, signal, {
     timeout: 'OCR fallback timed out',
     failed:  'OCR fallback failed',
-  })
-}
-
-/**
- * Dev/QA comparison path: sends the same prepared receipt image to Claude and
- * Qwen through the Worker, returning both results. It does NOT apply anything
- * to the form; callers decide whether to use one provider's result.
- */
-export async function ocrCompareReceipt(file: File, currency?: string, signal?: AbortSignal): Promise<OcrCompareResult> {
-  return postOcrImage<OcrCompareResult>('/ocr-compare', file, currency, signal, {
-    timeout: 'OCR comparison timed out',
-    failed:  'OCR comparison failed',
   })
 }
 
