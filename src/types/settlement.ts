@@ -155,10 +155,7 @@ export const SettlementDocSchema = z.object({
   appliedSources: z.array(SettlementAppliedSourceSchema).max(80).optional(),
   appliedExpenseIds: z.array(z.string().min(1).max(60)).max(500).optional(),
   createdAt:   TimestampSchema,
-  deletedAt:   z.preprocess(
-    v => v === undefined ? null : v,
-    TimestampSchema.nullable(),
-  ),
+  deletedAt:   TimestampSchema.nullable(),
   deletedBy:   z.string().min(1).max(128).optional(),
   /** FX source fields. Optional (NOT nullable) — same-currency
    *  settlements simply omit them. The Worker's foreign-mode router
