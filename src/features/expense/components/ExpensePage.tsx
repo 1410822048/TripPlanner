@@ -127,11 +127,20 @@ export default function ExpensePage() {
     for (const id of settlement.appliedExpenseIds ?? []) lockedExpenseIds.add(id)
     for (const source of settlement.appliedSources ?? []) lockedExpenseIds.add(source.expenseId)
   }
+  const editingExpenseId = modal.editTarget?.id ?? null
+  const editingExpenseBecameReadonly =
+    modal.isOpen
+    && editingExpenseId !== null
+    && !isOwner
+    && lockedExpenseIds.has(editingExpenseId)
+  const readonlyRedirectExpenseId = editingExpenseBecameReadonly ? editingExpenseId : null
+  const activeExpenseOverlay = expenseOverlay
+    ?? (readonlyRedirectExpenseId ? { kind: 'detail' as const, expenseId: readonlyRedirectExpenseId } : null)
   const expenseById = new Map(expenses.map(e => [e.id, e]))
-  const overlayExpense = expenseOverlay ? expenseById.get(expenseOverlay.expenseId) ?? null : null
-  const detailExpense = expenseOverlay?.kind === 'detail' ? overlayExpense : null
+  const overlayExpense = activeExpenseOverlay ? expenseById.get(activeExpenseOverlay.expenseId) ?? null : null
+  const detailExpense = activeExpenseOverlay?.kind === 'detail' ? overlayExpense : null
   const detailExpenseLocked = detailExpense ? lockedExpenseIds.has(detailExpense.id) : false
-  const receiptPreviewExpense = expenseOverlay?.kind === 'receipt' ? overlayExpense : null
+  const receiptPreviewExpense = activeExpenseOverlay?.kind === 'receipt' ? overlayExpense : null
   const receiptPreview = receiptPreviewExpense?.receipt
   const receiptPreviewUrl = useAttachmentUrl(receiptPreview?.path, { kind: 'full' })
 
@@ -389,7 +398,7 @@ export default function ExpensePage() {
           previous version kept the modal mounted and drove state resets
           from useEffect; migrating to the key+unmount pattern removed the
           last setState-in-effect smell here. */}
-      {modal.isOpen && (
+      {modal.isOpen && !readonlyRedirectExpenseId && (
         <ExpenseFormModal
           key={modal.key}
           isOpen
@@ -410,7 +419,10 @@ export default function ExpensePage() {
           members={members}
           currency={currency}
           isLocked={detailExpenseLocked}
-          onClose={() => setExpenseOverlay(null)}
+          onClose={() => {
+            setExpenseOverlay(null)
+            if (readonlyRedirectExpenseId) modal.close()
+          }}
           onPreviewReceipt={expense => handlePreviewExpenseReceipt(expense, { returnToDetail: true })}
           onEdit={canWrite && (isOwner || !detailExpenseLocked)
             ? () => handleEditExpenseFromDetail(detailExpense)

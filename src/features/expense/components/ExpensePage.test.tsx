@@ -23,6 +23,8 @@ const harness = vi.hoisted(() => ({
   deleteExpense: vi.fn(),
   createSettlement: vi.fn(),
   deleteSettlement: vi.fn(),
+  modalIsOpen: false,
+  modalEditTarget: null as Expense | null,
 }))
 
 vi.mock('@/components/ui/BottomSheet', () => ({
@@ -65,9 +67,9 @@ vi.mock('@/hooks/useFeatureListPage', () => ({
     canWrite: harness.canWrite,
     isOwner: harness.isOwner,
     modal: {
-      isOpen: false,
+      isOpen: harness.modalIsOpen,
       key: 'closed',
-      editTarget: null,
+      editTarget: harness.modalEditTarget,
       openAdd: harness.openAdd,
       openEdit: harness.openEdit,
       close: harness.closeModal,
@@ -121,6 +123,11 @@ vi.mock('@/hooks/useAttachmentUrl', () => ({
 
 vi.mock('./SettlementSummary', () => ({ default: () => null }))
 vi.mock('./SettlementRecordSheet', () => ({ default: () => null }))
+vi.mock('./ExpenseFormModal', () => ({
+  default: ({ editTarget }: { editTarget: Expense | null }) => (
+    <div role="dialog" aria-label={editTarget ? 'expense-edit' : 'expense-create'} />
+  ),
+}))
 vi.mock('@/features/auth/components/SignInPromptModal', () => ({ default: () => null }))
 vi.mock('@/components/ui/DemoBanner', () => ({ default: () => null }))
 vi.mock('@/components/ui/NoTripEmptyState', () => ({ default: () => null }))
@@ -190,6 +197,8 @@ beforeEach(() => {
   harness.deleteExpense.mockResolvedValue(undefined)
   harness.createSettlement.mockReset()
   harness.deleteSettlement.mockReset()
+  harness.modalIsOpen = false
+  harness.modalEditTarget = null
 })
 
 describe('ExpensePage read-first expense flow', () => {
@@ -244,5 +253,23 @@ describe('ExpensePage read-first expense flow', () => {
     expect(detail).toBeTruthy()
     expect(within(detail).getByText('清算済み')).toBeTruthy()
     expect(screen.queryByRole('button', { name: '編集' })).toBeNull()
+  })
+
+  it('downgrades an open edit form to read-only detail when the expense becomes settlement-locked', async () => {
+    const locked = receiptExpense({ settlementLockIds: ['settlement-1'] })
+    harness.expenses = [locked]
+    harness.modalIsOpen = true
+    harness.modalEditTarget = locked
+    harness.canWrite = true
+    harness.isOwner = false
+
+    render(<ExpensePage />)
+
+    expect(screen.queryByRole('dialog', { name: 'expense-edit' })).toBeNull()
+
+    const detail = screen.getByRole('dialog', { name: '費用詳細' })
+    expect(within(detail).getByText('清算済み')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '編集' })).toBeNull()
+    expect(harness.closeModal).not.toHaveBeenCalled()
   })
 })
