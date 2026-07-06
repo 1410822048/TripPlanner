@@ -128,12 +128,10 @@ export default function ExpensePage() {
     for (const source of settlement.appliedSources ?? []) lockedExpenseIds.add(source.expenseId)
   }
   const editingExpenseId = modal.editTarget?.id ?? null
-  const editingExpenseBecameReadonly =
-    modal.isOpen
-    && editingExpenseId !== null
-    && !isOwner
-    && lockedExpenseIds.has(editingExpenseId)
-  const readonlyRedirectExpenseId = editingExpenseBecameReadonly ? editingExpenseId : null
+  const readonlyRedirectExpenseId =
+    modal.isOpen && editingExpenseId !== null && !isOwner && lockedExpenseIds.has(editingExpenseId)
+      ? editingExpenseId
+      : null
   const activeExpenseOverlay = expenseOverlay
     ?? (readonlyRedirectExpenseId ? { kind: 'detail' as const, expenseId: readonlyRedirectExpenseId } : null)
   const expenseById = new Map(expenses.map(e => [e.id, e]))

@@ -115,7 +115,6 @@ function scheduleSettlementDeleteReconcile(
   key:          QueryKey,
   tripId:       string,
   settlementId: string,
-  delayMs = AMBIGUOUS_RECONCILE_DELAY_MS,
 ): void {
   const timer = setTimeout(() => {
     void qc.invalidateQueries({ queryKey: key })
@@ -132,7 +131,7 @@ function scheduleSettlementDeleteReconcile(
       .catch(() => {
         removeSettlementTombstone(tripId, settlementId)
       })
-  }, delayMs)
+  }, AMBIGUOUS_RECONCILE_DELAY_MS)
   const nodeTimer = timer as unknown as { unref?: () => void }
   nodeTimer.unref?.()
 }
