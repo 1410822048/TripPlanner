@@ -99,6 +99,8 @@ function SwipeableShell({
     )
   }
 
+  const iconOnlyAction = !confirmDelete
+
   return (
     <div className={[wrapperBase, className ?? ''].join(' ')}>
       <div
@@ -106,7 +108,9 @@ function SwipeableShell({
         {...deleteProps}
         className={[
           'absolute top-0 right-0 bottom-0 flex items-center justify-center cursor-pointer',
-          confirming ? 'bg-[#A83A3A]' : 'bg-[#D85A5A]',
+          iconOnlyAction
+            ? 'bg-transparent'
+            : (confirming ? 'bg-[#A83A3A]' : 'bg-[#D85A5A]'),
         ].join(' ')}
         style={{
           width: SWIPE_WIDTH,
@@ -119,6 +123,13 @@ function SwipeableShell({
           <div className="text-white text-[11px] font-bold tracking-[0.04em] text-center leading-[1.3]">
             確認<br/>削除
           </div>
+        ) : iconOnlyAction ? (
+          <span
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-[#D85A5A] text-white shadow-[0_6px_16px_rgba(216,90,90,0.24)]"
+            aria-hidden
+          >
+            <Trash2 size={18} strokeWidth={2.2} />
+          </span>
         ) : (
           <div className="flex flex-col items-center gap-0.5">
             <Trash2 size={18} color="white" strokeWidth={2.2} />
