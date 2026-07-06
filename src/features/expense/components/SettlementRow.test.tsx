@@ -36,7 +36,9 @@ function mkExpense(over: Partial<Expense>): Expense {
     id: 'e1', tripId: 't1', title: 't', amountMinor: 5000, currency: 'JPY',
     category: 'food', paidBy: 'u1', splits: [], date: '2026-06-01',
     adjustments: [], createdBy: 'u1', updatedBy: 'u1',
-    memberIds: ['u1', 'u2'], createdAt: TS, updatedAt: TS, ...over,
+    memberIds: ['u1', 'u2'], createdAt: TS, updatedAt: TS,
+    deletedAt: null, receiptPurgedAt: null,
+    ...over,
   }
 }
 

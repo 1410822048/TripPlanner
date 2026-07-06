@@ -33,6 +33,8 @@ function expense(overrides: Partial<Expense> = {}): Expense {
     date: '2026-06-01', adjustments: [],
     createdBy: 'a', updatedBy: 'a', memberIds: ['a', 'b'],
     createdAt: TS, updatedAt: TS,
+    deletedAt: null,
+    receiptPurgedAt: null,
     ...overrides,
   }
 }

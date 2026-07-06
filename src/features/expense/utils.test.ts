@@ -17,6 +17,7 @@ function mkExpense(splits: Array<{ memberId: string; amountMinor: number }>): Ex
     currency: 'JPY', category: 'food', paidBy: 'm1', splits,
     date: '2026-05-01', adjustments: [],
     memberIds: ['m1', 'm2', 'm3', 'm4'], createdBy: 'u', updatedBy: 'u', createdAt: TS, updatedAt: TS,
+    deletedAt: null, receiptPurgedAt: null,
   }
 }
 

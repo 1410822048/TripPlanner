@@ -82,6 +82,7 @@ function foreignExpense(): Expense {
     date: '2026-06-01', adjustments: [],
     createdBy: 'a', updatedBy: 'a', memberIds: ['a', 'b'],
     createdAt: ts(0), updatedAt: ts(1_700_000_000_000),
+    deletedAt: null, receiptPurgedAt: null,
     receipt: { url: 'https://x/r.webp', path: 'trips/trip-1/expenses/e1/receipt.webp', type: 'image/webp' },
     sourceCurrency: 'USD', sourceAmountMinor: 4500,
   } as Expense

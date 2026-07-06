@@ -38,6 +38,8 @@ function baseDoc(overrides: Record<string, unknown> = {}): Record<string, unknow
     memberIds:   ['editor-uid'],
     createdAt:   NOW,
     updatedAt:   NOW,
+    deletedAt:   null,
+    receiptPurgedAt: null,
     ...overrides,
   }
 }
@@ -105,6 +107,22 @@ const baseSourceAdjustments = [
 describe('ExpenseDocSchema — same-currency degenerate path', () => {
   it('accepts a baseline expense with no FX fields', () => {
     expect(ExpenseDocSchema.safeParse(baseDoc()).success).toBe(true)
+  })
+})
+
+describe('ExpenseDocSchema — soft-delete / receipt-purge fields', () => {
+  it('rejects deletedAt missing entirely', () => {
+    const doc = baseDoc()
+    delete doc.deletedAt
+
+    expect(ExpenseDocSchema.safeParse(doc).success).toBe(false)
+  })
+
+  it('rejects receiptPurgedAt missing entirely', () => {
+    const doc = baseDoc()
+    delete doc.receiptPurgedAt
+
+    expect(ExpenseDocSchema.safeParse(doc).success).toBe(false)
   })
 })
 

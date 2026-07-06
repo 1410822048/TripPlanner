@@ -216,9 +216,9 @@ export interface Expense {
    * the replay logic.
    *
    * Set by `deleteExpense` (the original hard-delete was replaced when
-   * settlement phase-2 shipped). Absent / null on live expenses.
+   * settlement phase-2 shipped). Null on live expenses.
    */
-  deletedAt?: Timestamp | null
+  deletedAt: Timestamp | null
   /**
    * Receipt-purge watermark. `null` on every live expense (create
    * rule rejects missing / non-null values); set to a server
@@ -228,7 +228,7 @@ export interface Expense {
    * candidate set permanently — without this watermark the cron
    * would re-scan every soft-deleted expense forever.
    */
-  receiptPurgedAt?: Timestamp | null
+  receiptPurgedAt: Timestamp | null
   /** Settlement ids that currently reference (lock) this expense. Each
    *  settlement that applies to this expense adds its id on create and
    *  removes it on delete, so the array is the single source of truth for
@@ -495,16 +495,14 @@ export const ExpenseDocSchema = z.object({
   memberIds:   z.array(z.string().min(1)).min(1),
   createdAt:   TimestampSchema,
   updatedAt:   TimestampSchema,
-  /** Soft-delete tombstone (settlement phase-2). Nullable + optional
-   *  for parse tolerance — Zod sees the full server doc (always
-   *  null/Timestamp per the create rule) AND optimistic-cache rows
-   *  that may not include the field until the listener reconciles. */
-  deletedAt:   TimestampSchema.nullable().optional(),
-  /** Receipt-purge watermark. Same parse-tolerance reasoning as
-   *  deletedAt: rule enforces present+null on create, so server-side
-   *  it's always shaped, but optimistic patches / partial cache rows
-   *  may omit it before reconciliation. */
-  receiptPurgedAt: TimestampSchema.nullable().optional(),
+  /** Soft-delete tombstone (settlement phase-2). Required on every
+   *  persisted expense: Worker create seeds null and rules require
+   *  presence through client soft-delete / restore updates. */
+  deletedAt:   TimestampSchema.nullable(),
+  /** Receipt-purge watermark. Required for the purge query contract:
+   *  live/unpurged expenses carry null; the Worker cron stamps a
+   *  Timestamp after receipt bytes are purged. */
+  receiptPurgedAt: TimestampSchema.nullable(),
   // Worker-maintained lock-ref set (see SettlementRecord lineage). Absent
   // on unsettled expenses; may be present-but-empty after the last
   // referencing settlement is deleted. Lock ⇔ length > 0.

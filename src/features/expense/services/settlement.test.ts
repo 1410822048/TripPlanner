@@ -45,6 +45,8 @@ function mkExpense(
     updatedBy: 'u',
     createdAt: TS,
     updatedAt: TS,
+    deletedAt: null,
+    receiptPurgedAt: null,
   }
 }
 
