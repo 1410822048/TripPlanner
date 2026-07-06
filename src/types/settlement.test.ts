@@ -137,11 +137,14 @@ describe('SettlementDocSchema — deletedAt / deletedBy soft-delete invariant', 
     expect(result.success).toBe(true)
   })
 
-  it('rejects deletedAt missing entirely (required, not optional)', () => {
+  it('normalizes legacy active settlements with missing deletedAt to null', () => {
     const doc = baseDoc()
     delete doc.deletedAt
     const result = SettlementDocSchema.safeParse(doc)
-    expect(result.success).toBe(false)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.deletedAt).toBeNull()
+    }
   })
 
   it('rejects deletedAt set without deletedBy', () => {
