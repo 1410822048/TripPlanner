@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import type { SettlementRecord } from '@/types/settlement'
 import { AMBIGUOUS_RECONCILE_DELAY_MS } from '@/hooks/useTripListMutation'
@@ -29,7 +29,7 @@ vi.mock('../services/settlementService', () => ({
   },
 }))
 
-import { useDeleteSettlement } from './useSettlements'
+import { useDeleteSettlement, useSettlements } from './useSettlements'
 
 const TRIP = 'trip-1'
 const KEY = ['settlements', TRIP] as const
@@ -55,6 +55,16 @@ function renderDeleteMutation(qc = makeQueryClient()) {
   return renderHook(() => useDeleteSettlement(TRIP), { wrapper })
 }
 
+function renderSettlementHooks(qc = makeQueryClient()) {
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client: qc }, children)
+
+  return renderHook(() => ({
+    list:   useSettlements(TRIP),
+    delete: useDeleteSettlement(TRIP),
+  }), { wrapper })
+}
+
 beforeEach(() => {
   __resetSettlementTombstonesForTest()
   vi.clearAllMocks()
@@ -66,6 +76,24 @@ afterEach(() => {
 })
 
 describe('useDeleteSettlement tombstone flow', () => {
+  it('useSettlements hides the row immediately after delete mutate even while raw cache still has it', async () => {
+    serviceMocks.getSettlementsByTrip.mockResolvedValueOnce([row('x')])
+    serviceMocks.subscribeToSettlements.mockResolvedValueOnce(() => {})
+    serviceMocks.deleteSettlement.mockReturnValueOnce(new Promise(() => {}))
+    const hook = renderSettlementHooks()
+
+    await waitFor(() => {
+      expect(hook.result.current.list.data?.map(s => s.id)).toEqual(['x'])
+    })
+
+    await act(async () => {
+      hook.result.current.delete.mutate({ settlementId: 'x' })
+      await Promise.resolve()
+    })
+
+    expect(hook.result.current.list.data?.map(s => s.id)).toEqual([])
+  })
+
   it('restores the row immediately on a definitive failure', async () => {
     serviceMocks.deleteSettlement.mockRejectedValueOnce(rejectedErr())
     const hook = renderDeleteMutation()

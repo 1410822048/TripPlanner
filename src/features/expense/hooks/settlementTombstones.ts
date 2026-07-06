@@ -69,7 +69,12 @@ export function pruneSettlementTombstones(tripId: string, serverList: Settlement
 export function filterSettlementTombstones(
   tripId: string,
   list:   SettlementRecord[],
+  // Load-bearing render dependency: useSettlements passes the
+  // useSyncExternalStore snapshot here so React Compiler cannot treat the
+  // filtered result as depending only on tripId + list identity.
+  _version = settlementTombstoneVersion(tripId),
 ): SettlementRecord[] {
+  if (_version < 0) return list
   const set = registry.get(tripId)
   if (!set || set.size === 0) return list
   return list.filter(settlement => !set.has(settlement.id))

@@ -49,7 +49,7 @@ const useSettlementsRaw = createRealtimeListHook<SettlementRecord>({
 export function useSettlements(tripId: string | undefined): UseQueryResult<SettlementRecord[]> {
   const result = useSettlementsRaw(tripId)
 
-  useSyncExternalStore(
+  const tombstoneVersion = useSyncExternalStore(
     cb => (tripId ? subscribeSettlementTombstones(tripId, cb) : () => {}),
     () => (tripId ? settlementTombstoneVersion(tripId) : 0),
     () => 0,
@@ -61,7 +61,7 @@ export function useSettlements(tripId: string | undefined): UseQueryResult<Settl
   }, [tripId, result.data])
 
   if (!tripId || !result.data) return result
-  const filtered = filterSettlementTombstones(tripId, result.data)
+  const filtered = filterSettlementTombstones(tripId, result.data, tombstoneVersion)
   return (filtered === result.data ? result : { ...result, data: filtered }) as UseQueryResult<SettlementRecord[]>
 }
 
