@@ -113,11 +113,11 @@ CI 不跑 rules tests（emulator 啟動時間 + 額外服務），只在本地 +
 
 目前部署策略是 **production fail-closed / preview-first**：
 
-- **production 只允許 `main`**：`npm run deploy:prod`、`npm run deploy:pages`、`npm run functions:deploy`、artifact/revision prune、`notifications:clear` 都走 production guard。真執行時必須在 `main`，且 local `HEAD == origin/main`、worktree clean。
+- **production 只允許 `main`**：`npm run deploy:prod`、`npm run deploy:pages`、`npm run worker:deploy`、`npm run functions:deploy`、artifact/revision prune、`notifications:clear` 都走 production guard。真執行時必須在 `main`，且 local `HEAD == origin/main`、worktree clean。
 - **feature branch 只跑 Pages preview**：在 `feat/*` 或其他非 main branch 測前端時，用 `npm run deploy:pages:preview`。它會部署到 Cloudflare Pages preview branch，不會更新 production。
 - **dry-run 是唯一可繞過 production git gate 的模式**：`--dry-run` 只列出會跑的 production 流程，不改遠端狀態。
 - **未知參數直接 abort**：例如 `--dryrun`、`--preflightonly` 這類 typo 不會被忽略。
-- **互斥 mode 只能擇一**：`--functions-only`、`--artifacts-only`、`--revisions-only`、`--clear-notifications-only` 不能混用。
+- **互斥 mode 只能擇一**：`--worker-only`、`--functions-only`、`--artifacts-only`、`--revisions-only`、`--clear-notifications-only` 不能混用。
 
 ```bash
 npm run build                          # tsc + vite build → dist/
@@ -144,8 +144,9 @@ firebase deploy --only storage         # storage rules
 Push notifications（Firestore rules/indexes 必須先於 Pages client 上線，否則 token opt-in / inbox query 會被擋）：
 
 ```bash
-npm run deploy:prod                    # pages build -> indexes -> functions -> prune -> rules -> pages upload
+npm run deploy:prod                    # pages build -> indexes -> worker -> functions -> rules -> pages upload -> prune
 npm run deploy:prod -- --dry-run        # 檢查 production 流程，不改遠端
+npm run worker:deploy                   # production guard 後 deploy Cloudflare Worker only
 npm run functions:deploy               # production guard 後 push functions only + prune Cloud Run revisions/runtime images
 npm run functions:deploy -- --dry-run   # 檢查 functions-only 流程，不改遠端
 npm run functions:artifacts:keep-one   # 手動修剪 Artifact Registry runtime images（需 gcloud CLI）
@@ -153,7 +154,9 @@ npm run functions:revisions:keep-one   # 手動修剪 Cloud Run revisions（需 
 npm run notifications:clear -- --confirm-clear-notifications=tripplanner-80a4f  # 破壞性：清空所有通知匣 docs
 ```
 
-`npm run functions:deploy` **不會部署 Firestore rules / indexes**。如果只改了 notification 相關 rules 或 index，單跑 `functions:deploy` 不會生效；請改跑 `npm run deploy:prod`，或手動執行 `firebase deploy --only firestore`。
+`npm run deploy:prod` 會把 Cloudflare Worker 納入正式流程，且 Worker 會早於 Functions / Pages 上線，避免 Functions 或 client 依賴 Worker 新行為時靠人腦記部署順序。
+
+`npm run functions:deploy` **不會部署 Cloudflare Worker / Firestore rules / indexes**。如果只改了 notification 相關 rules 或 index，單跑 `functions:deploy` 不會生效；請改跑 `npm run deploy:prod`，或手動執行 `firebase deploy --only firestore`。如果 Worker 和 Functions/Pages 需要同批相容，請跑 `npm run deploy:prod`，不要拆成 `functions:deploy`。
 
 ## 專案結構
 

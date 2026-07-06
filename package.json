@@ -22,6 +22,7 @@
     "functions:artifacts:keep-one": "node scripts/deploy-prod-safe.mjs --artifacts-only",
     "functions:revisions:keep-one": "node scripts/deploy-prod-safe.mjs --revisions-only",
     "functions:deploy": "node scripts/deploy-prod-safe.mjs --functions-only",
+    "worker:deploy": "node scripts/deploy-prod-safe.mjs --worker-only",
     "notifications:clear": "node scripts/deploy-prod-safe.mjs --clear-notifications-only",
     "icons": "node scripts/generate-icons.mjs",
     "deploy:prod": "node scripts/deploy-prod-safe.mjs",

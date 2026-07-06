@@ -39,6 +39,7 @@ const ALLOWED_EXACT_ARGS = new Set([
   '--artifacts-only',
   '--revisions-only',
   '--functions-only',
+  '--worker-only',
   '--clear-notifications-only',
 ]);
 const isAllowedArg = (arg) =>
@@ -56,6 +57,7 @@ const dryRun = args.has('--dry-run');
 const artifactsOnly = args.has('--artifacts-only');
 const revisionsOnly = args.has('--revisions-only');
 const functionsOnly = args.has('--functions-only');
+const workerOnly = args.has('--worker-only');
 const clearNotificationsOnly = args.has('--clear-notifications-only');
 const clearNotificationsConfirmArg = rawArgs.find((arg) =>
   arg.startsWith('--confirm-clear-notifications='),
@@ -72,6 +74,7 @@ Usage:
   npm run deploy:prod
   npm run deploy:prod -- --dry-run
   npm run functions:deploy
+  npm run worker:deploy
   npm run functions:artifacts:keep-one
   npm run functions:revisions:keep-one
   npm run notifications:clear -- --confirm-clear-notifications=${PROJECT_ID}
@@ -83,6 +86,7 @@ Options:
   --confirm-clear-notifications=${PROJECT_ID}
                                 Required for real notification cleanup.
   --functions-only             Deploy Functions only.
+  --worker-only                Deploy Cloudflare Worker only.
   --dry-run                    Print commands without changing remote state.
 
 Real production actions require main == origin/main and a clean worktree.
@@ -94,12 +98,13 @@ const modeCount = [
   artifactsOnly,
   revisionsOnly,
   functionsOnly,
+  workerOnly,
   clearNotificationsOnly,
 ].filter(Boolean).length;
 if (modeCount > 1) {
   abort(
     '[deploy:prod] ABORT: use only one of --artifacts-only / --revisions-only / ' +
-      '--functions-only / --clear-notifications-only.',
+      '--functions-only / --worker-only / --clear-notifications-only.',
   );
 }
 
@@ -795,6 +800,14 @@ async function deployRules() {
   );
 }
 
+function preflightWorkerDeploy() {
+  run(bin('npm'), ['--workspace', 'workers/ocr', 'run', 'deploy', '--', '--dry-run']);
+}
+
+function deployWorker() {
+  run(bin('npm'), ['--workspace', 'workers/ocr', 'run', 'deploy']);
+}
+
 function readGcloudAccessToken() {
   const result = gcloud(['auth', 'print-access-token'], { printOutput: false });
   const token = result.stdout.trim();
@@ -894,9 +907,17 @@ async function main() {
     return;
   }
 
+  if (workerOnly) {
+    preflightWorkerDeploy();
+    deployWorker();
+    return;
+  }
+
   buildPages();
   preflightGcloud({ firestore: true, cloudRun: true, artifacts: true });
+  preflightWorkerDeploy();
   await deployIndexes();
+  deployWorker();
   await deployFunctions();
   await deployRules();
   deployPages();
