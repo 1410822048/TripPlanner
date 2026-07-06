@@ -9,8 +9,8 @@
 // admin authority on read. Both queries filter `deletedAt == null` at the
 // query level (not an in-memory .filter() after fetch) -- cancelled
 // settlements must genuinely leave the raw list for useSettlements'
-// tombstone-overlay to clear (see useDeleteSettlement's `tombstone` option;
-// pruneTombstones only clears an id once it's absent from the raw cache).
+// feature-local tombstone overlay to clear. The overlay only prunes an id
+// once it is absent from the raw cache.
 //
 // Writes (create + delete) go through the Cloudflare Worker because the
 // core invariant `amountMinor == Worker-computed pair-remaining` can't be
