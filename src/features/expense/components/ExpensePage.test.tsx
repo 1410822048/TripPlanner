@@ -272,4 +272,23 @@ describe('ExpensePage read-first expense flow', () => {
     expect(screen.queryByRole('button', { name: '編集' })).toBeNull()
     expect(harness.closeModal).not.toHaveBeenCalled()
   })
+
+  it('does not strand the modal when a settlement-locked edit target has been soft-deleted', async () => {
+    // X 被 owner soft-delete(deletedAt 已設 → 從 active 列表濾掉),但仍被
+    // settlement lineage 鎖定,所以 expenseById 查不到 X、readonly detail 無法
+    // 渲染。guard 讓 redirect 退回 null,form modal 正常顯示(可關閉),而非
+    // form 與 detail 兩者皆空、modal.isOpen 卻卡在 true。
+    const deleted = receiptExpense({ id: 'e-del', deletedAt: TS })
+    harness.expenses = [deleted]
+    harness.settlements = [{ id: 's1', appliedExpenseIds: ['e-del'] }]
+    harness.modalIsOpen = true
+    harness.modalEditTarget = deleted
+    harness.canWrite = true
+    harness.isOwner = false
+
+    render(<ExpensePage />)
+
+    expect(screen.queryByRole('dialog', { name: 'expense-edit' })).not.toBeNull()
+    expect(screen.queryByRole('dialog', { name: '費用詳細' })).toBeNull()
+  })
 })

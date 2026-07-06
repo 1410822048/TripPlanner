@@ -128,13 +128,19 @@ export default function ExpensePage() {
     for (const source of settlement.appliedSources ?? []) lockedExpenseIds.add(source.expenseId)
   }
   const editingExpenseId = modal.editTarget?.id ?? null
+  const expenseById = new Map(expenses.map(e => [e.id, e]))
+  // 只在該 expense 仍存在於 active 列表(能真的渲染 readonly detail)時才
+  // downgrade。否則(編輯途中被 owner soft-delete,但仍被 settlement lineage
+  // 鎖定 → 留在 lockedExpenseIds)redirect 會指向 expenseById 查不到的 id,
+  // 使 form 與 detail 兩個 modal 都不渲染、modal.isOpen 卻卡在 true。
   const readonlyRedirectExpenseId =
-    modal.isOpen && editingExpenseId !== null && !isOwner && lockedExpenseIds.has(editingExpenseId)
+    modal.isOpen && editingExpenseId !== null && !isOwner
+    && lockedExpenseIds.has(editingExpenseId)
+    && expenseById.has(editingExpenseId)
       ? editingExpenseId
       : null
   const activeExpenseOverlay = expenseOverlay
     ?? (readonlyRedirectExpenseId ? { kind: 'detail' as const, expenseId: readonlyRedirectExpenseId } : null)
-  const expenseById = new Map(expenses.map(e => [e.id, e]))
   const overlayExpense = activeExpenseOverlay ? expenseById.get(activeExpenseOverlay.expenseId) ?? null : null
   const detailExpense = activeExpenseOverlay?.kind === 'detail' ? overlayExpense : null
   const detailExpenseLocked = detailExpense ? lockedExpenseIds.has(detailExpense.id) : false
