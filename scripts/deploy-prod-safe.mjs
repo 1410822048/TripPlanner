@@ -801,6 +801,21 @@ async function deployRules() {
 }
 
 function preflightWorkerDeploy() {
+  // Cloudflare auth gate. `wrangler whoami` is NOT reliable by exit code alone:
+  // v4.106 prints "You are not authenticated" but EXITS 0 when no credentials
+  // are present (only a malformed/rejected token exits non-zero), so a missing
+  // CLOUDFLARE_API_TOKEN — the common CI failure — would sail through. Inspect
+  // the output too. ponytail: string-match ceiling — if a future wrangler
+  // reworks the message this fails OPEN (deploy proceeds, same as before the
+  // gate existed), never falsely blocks a good deploy.
+  const auth = run(bin('npm'), ['--workspace', 'workers/ocr', 'run', 'whoami'], { capture: true, allowFailure: true });
+  if (!auth.ok || /not authenticated/i.test(auth.output)) {
+    abort(
+      '[deploy:prod] ABORT: Cloudflare Worker auth check failed. ' +
+        'Run `wrangler login` or set CLOUDFLARE_API_TOKEN before deploying.',
+    );
+  }
+  // Bundle/config validation before touching remote state.
   run(bin('npm'), ['--workspace', 'workers/ocr', 'run', 'deploy', '--', '--dry-run']);
 }
 

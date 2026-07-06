@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "deploy": "wrangler deploy",
+    "whoami": "wrangler whoami",
     "dev": "wrangler dev",
     "start": "wrangler dev",
     "test": "vitest",
