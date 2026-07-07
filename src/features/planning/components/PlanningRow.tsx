@@ -146,14 +146,10 @@ function PlanningRow({
               <span className="text-[10.5px] font-bold tracking-[0.04em] text-muted">
                 メンバー準備
               </span>
-              <span className="text-[10px] font-semibold text-muted">
-                自分のアイコンで切替
-              </span>
             </div>
             <div className="flex items-center justify-end gap-2">
               {members.map(member => {
                 const memberDone = Boolean(item.completedBy[member.id])
-                const isSelf = member.id === currentUid
                 const avatar = (
                   <MemberAvatar
                     member={member}
@@ -163,19 +159,12 @@ function PlanningRow({
                       : 'opacity-35 grayscale'}
                   />
                 )
-                return isSelf ? (
-                  <button
+                return (
+                  <span
                     key={member.id}
-                    type="button"
-                    aria-pressed={memberDone}
-                    aria-label={memberDone ? '自分を未完了に戻す' : '自分を完了にする'}
-                    onClick={wrapTap(onToggleDone)}
-                    className="rounded-full border-none bg-transparent p-0 cursor-pointer"
+                    aria-label={memberDone ? '完了' : '未準備'}
+                    aria-current={member.id === currentUid ? 'true' : undefined}
                   >
-                    {avatar}
-                  </button>
-                ) : (
-                  <span key={member.id} aria-label={memberDone ? '完了' : '未準備'}>
                     {avatar}
                   </span>
                 )

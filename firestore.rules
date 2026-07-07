@@ -901,7 +901,6 @@ service cloud.firestore {
             && request.resource.data.category in
                  ['essentials','documents','packing','todo','other']
             && request.resource.data.completedBy is map
-            && request.resource.data.completedBy.size() <= request.resource.data.memberIds.size()
             && request.resource.data.completedBy.keys().hasOnly(request.resource.data.memberIds)
             && (!('note' in request.resource.data)
                   || (request.resource.data.note is string
