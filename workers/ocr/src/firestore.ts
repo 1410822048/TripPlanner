@@ -191,8 +191,9 @@ export async function batchArrayUnionMemberIds(
 /** Strip a departed member (kicked via /member-remove, or self-left via
  *  /member-leave) from a trip's docs in a SINGLE commit per chunk:
  *  `removeAllFromArray(memberIds, memberUid)` on EVERY doc, plus
- *  `removeAllFromArray(votes, memberUid)` carried as a SECOND fieldTransform
- *  on the SAME write for wish docs. Symmetric to `batchArrayUnionMemberIds`
+ *  `removeAllFromArray(votes, memberUid)` for wish docs and
+ *  `delete(completedBy.memberUid)` for planning docs on the SAME write.
+ *  Symmetric to `batchArrayUnionMemberIds`
  *  (the add side) -- same 500-writes-per-commit chunking + error shape.
  *
  *  Why votes rides in this commit rather than a follow-up call: the
@@ -206,8 +207,9 @@ export async function batchArrayUnionMemberIds(
  *  own member doc, one of these docs, has had memberIds stripped, so the
  *  /members collection-group query no longer matches it) yet be unable to
  *  retry from the UI, leaving an orphaned removingAt member doc. Same-commit
- *  means votes either lands with the memberIds strip or the whole strip
- *  fails and the caller's retry re-converges -- no new intermediate state.
+ *  means secondary cleanup either lands with the memberIds strip or the whole
+ *  strip fails and the caller's retry re-converges -- no new intermediate
+ *  state.
  *
  *  Idempotent (removeAllFromArray of an absent value is a no-op). Caller
  *  deletes the member doc LAST, after this returns. */
@@ -224,6 +226,7 @@ export async function batchStripDepartedMember(
     fieldPath,
     removeAllFromArray: { values: [{ stringValue: memberUid }] },
   })
+  const completedByFieldPath = `completedBy.\`${memberUid.replace(/\\/g, '\\\\').replace(/`/g, '\\`')}\``
   for (let i = 0; i < docNames.length; i += 500) {
     const chunk = docNames.slice(i, i + 500)
     const writes = chunk.map(name => {
@@ -231,6 +234,13 @@ export async function batchStripDepartedMember(
       // Wish docs get the votes strip as a second transform on the SAME
       // write -- one touch per doc, atomic with its memberIds strip.
       if (wishSet.has(name)) fieldTransforms.push(removeUid('votes'))
+      if (name.includes('/planning/')) {
+        return {
+          update: { name, fields: {} },
+          updateMask: { fieldPaths: [completedByFieldPath] },
+          updateTransforms: fieldTransforms,
+        }
+      }
       return { transform: { document: name, fieldTransforms } }
     })
     const res = await fetch(

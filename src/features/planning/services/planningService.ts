@@ -1,8 +1,7 @@
 // src/features/planning/services/planningService.ts
-// Pre-trip planning checklist — collaborative to-do list grouped by
-// category. Any member can add / edit / toggle / delete (the list is
-// inherently shared; gating it would just slow group prep). Sorted by
-// createdAt so newer items appear at the top of their section.
+// Pre-trip planning checklist grouped by category. Item content is edited by
+// writers, while every trip member can toggle their own completion state.
+// Sorted by createdAt so newer items appear at the top of their section.
 import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
@@ -53,7 +52,7 @@ export async function createPlanItem(
   const ref = await addDoc(collection(db, ...P.planning(tripId)), {
     ...stripEmpty(input),
     tripId,
-    done: false,
+    completedBy: {},
     memberIds,
     ...auditCreate(createdBy, serverTimestamp()),
   })
@@ -85,10 +84,8 @@ export async function updatePlanItem(
 }
 
 /**
- * Toggle done state. Stamps doneBy + doneAt for accountability — useful
- * when multiple members are checking different items in parallel.
- * Clearing back to undone wipes those stamps so the row visually
- * "resets" (otherwise users would see ghostly metadata on undone rows).
+ * Toggle the caller's own completion state without touching any other
+ * member's progress. FieldPath avoids treating a uid as a dotted path.
  */
 export async function togglePlanItemDone(
   tripId: string,
@@ -96,20 +93,16 @@ export async function togglePlanItemDone(
   uid: string,
   done: boolean,
 ): Promise<void> {
-  const { db, doc, updateDoc, deleteField, serverTimestamp } = await getFirebase()
-  await updateDoc(doc(db, ...P.planItem(tripId, itemId)), done
-    ? {
-        done:   true,
-        doneBy: uid,
-        doneAt: serverTimestamp(),
-        ...auditUpdate(uid, serverTimestamp()),
-      }
-    : {
-        done:   false,
-        doneBy: deleteField(),
-        doneAt: deleteField(),
-        ...auditUpdate(uid, serverTimestamp()),
-      })
+  const { db, doc, updateDoc, deleteField, serverTimestamp, FieldPath } = await getFirebase()
+  await updateDoc(
+    doc(db, ...P.planItem(tripId, itemId)),
+    new FieldPath('completedBy', uid),
+    done ? serverTimestamp() : deleteField(),
+    'updatedBy',
+    uid,
+    'updatedAt',
+    serverTimestamp(),
+  )
   void bumpTripActivity(tripId, 'planning', uid)
 }
 

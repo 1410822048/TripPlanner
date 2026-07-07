@@ -62,7 +62,7 @@ const WISH_MEANINGFUL_FIELDS = [
   'image',
 ] as const
 
-// `done`/`doneBy`/`doneAt` are the checkbox toggle — deliberately NOT here, so
+// `completedBy` is the per-member checkbox state — deliberately NOT here, so
 // ticking an item off produces no notification. Only content edits do.
 const PLANNING_MEANINGFUL_FIELDS = [
   'title',
@@ -476,7 +476,7 @@ export function normalizePlanningWrite(input: {
     })
   }
 
-  // Content edit notifies. A `done` checkbox toggle changes no meaningful
+  // Content edit notifies. A `completedBy` toggle changes no meaningful
   // field, so it drops to [] and stays silent.
   if (before && after && changedAny(before, after, PLANNING_MEANINGFUL_FIELDS)) {
     return actorEvent({

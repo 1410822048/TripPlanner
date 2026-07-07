@@ -191,17 +191,17 @@ describe('normalizeWishWrite', () => {
 })
 
 describe('normalizePlanningWrite', () => {
-  const base = { title: 'Passport', category: 'documents', done: false, createdBy: 'u1', updatedBy: 'u1' }
+  const base = { title: 'Passport', category: 'documents', completedBy: {}, createdBy: 'u1', updatedBy: 'u1' }
 
-  test('create/delete/content edit push; done toggle is silent', () => {
+  test('create/delete/content edit push; completion toggle is silent', () => {
     expect(single(normalizePlanningWrite({
       eventId: 'p1', tripId: 'trip-1', planItemId: 'plan-1', before: null, after: base,
     })).templateKey).toBe('planning.created')
 
-    // done toggle only → silent.
+    // Per-member completion toggle only → silent.
     expect(normalizePlanningWrite({
       eventId: 'p2', tripId: 'trip-1', planItemId: 'plan-1',
-      before: base, after: { ...base, done: true, doneBy: 'u2', updatedBy: 'u2' },
+      before: base, after: { ...base, completedBy: { u2: { toMillis: () => 1 } }, updatedBy: 'u2' },
     })).toEqual([])
 
     // content edit → push + inbox.

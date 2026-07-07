@@ -58,6 +58,11 @@ service cloud.firestore {
         && get(memberPath(tripId)).data.role in ['owner', 'editor']
         && !('removingAt' in get(memberPath(tripId)).data);
     }
+    function isActiveMember(tripId) {
+      return isSignedIn()
+        && exists(memberPath(tripId))
+        && !('removingAt' in get(memberPath(tripId)).data);
+    }
     function isTripOwner(tripId) {
       return isSignedIn()
         && exists(/databases/$(database)/documents/trips/$(tripId))
@@ -877,68 +882,68 @@ service cloud.firestore {
         allow read, write: if false;
       }
 
-      // Planning checklist — collaborative pre-trip prep. Any member
-      // can add / edit / toggle / delete; the list is inherently shared
-      // (one person packs the charger, another marks "currency
-      // exchanged"). createdBy is pinned to the caller so audit trail
-      // stays honest.
+      // Planning checklist — collaborative pre-trip prep. Owners/editors own
+      // item content; every active trip member may only toggle their own
+      // completedBy[uid] progress key.
       match /planning/{itemId} {
+        function planningKeys() {
+          return [
+            'tripId','category','title','note','completedBy',
+            'memberIds','createdBy','updatedBy','createdAt','updatedAt'
+          ];
+        }
+        function validPlanningDoc() {
+          return request.resource.data.keys().hasOnly(planningKeys())
+            && request.resource.data.tripId == tripId
+            && request.resource.data.title is string
+            && request.resource.data.title.size() > 0
+            && request.resource.data.title.size() <= 100
+            && request.resource.data.category in
+                 ['essentials','documents','packing','todo','other']
+            && request.resource.data.completedBy is map
+            && request.resource.data.completedBy.size() <= request.resource.data.memberIds.size()
+            && request.resource.data.completedBy.keys().hasOnly(request.resource.data.memberIds)
+            && (!('note' in request.resource.data)
+                  || (request.resource.data.note is string
+                      && request.resource.data.note.size() <= 500));
+        }
+        function immutablePlanningFieldsUnchanged() {
+          return unchanged('tripId')
+            && unchanged('createdBy')
+            && unchanged('createdAt')
+            && unchanged('memberIds');
+        }
+        function selfProgressOnly() {
+          return changedOnly(['completedBy', 'updatedBy', 'updatedAt'])
+            && request.resource.data.completedBy.diff(resource.data.completedBy)
+                 .affectedKeys().hasOnly([uid()])
+            && (!request.resource.data.completedBy.keys().hasAny([uid()])
+                  || request.resource.data.completedBy[uid()] is timestamp);
+        }
+
         allow read:   if memberOfDoc();
-        allow create: if exists(memberPath(tripId))
+        allow create: if canWrite(tripId)
                       && tripNotDeleting(tripId)
-                      && request.resource.data.keys().hasOnly([
-                           'tripId','category','title','note','done','doneBy','doneAt',
-                           'memberIds','createdBy','updatedBy','createdAt','updatedAt'
-                         ])
-                      && request.resource.data.tripId == tripId
+                      && validPlanningDoc()
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()
                       && memberIdsMatchTrip(tripId)
-                      && request.resource.data.title is string
-                      && request.resource.data.title.size() > 0
-                      && request.resource.data.title.size() <= 200
-                      && request.resource.data.category in
-                           ['essentials','documents','packing','todo','other']
-                      && request.resource.data.done is bool
-                      && (!('doneBy' in request.resource.data)
-                            || (request.resource.data.doneBy is string
-                                && request.resource.data.doneBy.size() > 0
-                                && request.resource.data.doneBy.size() <= 128))
-                      && (!('doneAt' in request.resource.data)
-                            || request.resource.data.doneAt is timestamp)
-                      && (!('note' in request.resource.data)
-                            || (request.resource.data.note is string
-                                && request.resource.data.note.size() <= 1000));
-        // Three update paths: content edit (any member), invitee
-        // self-add cascade, owner remove-member cascade.
-        allow update: if (
-          memberOfDoc()
-          && request.resource.data.keys().hasOnly([
-               'tripId','category','title','note','done','doneBy','doneAt',
-               'memberIds','createdBy','updatedBy','createdAt','updatedAt'
-             ])
-          && unchanged('tripId')
-          && unchanged('createdBy')
-          && unchanged('createdAt')
-          && unchanged('memberIds')
+                      && request.resource.data.completedBy.size() == 0;
+        allow update: if validPlanningDoc()
+          && immutablePlanningFieldsUnchanged()
           && request.resource.data.updatedBy == uid()
-          && request.resource.data.title is string
-          && request.resource.data.title.size() > 0
-          && request.resource.data.title.size() <= 200
-          && request.resource.data.category in
-               ['essentials','documents','packing','todo','other']
-          && request.resource.data.done is bool
-          && (!('doneBy' in request.resource.data)
-                || (request.resource.data.doneBy is string
-                    && request.resource.data.doneBy.size() > 0
-                    && request.resource.data.doneBy.size() <= 128))
-          && (!('doneAt' in request.resource.data)
-                || request.resource.data.doneAt is timestamp)
-          && (!('note' in request.resource.data)
-                || (request.resource.data.note is string
-                    && request.resource.data.note.size() <= 1000))
-        );
-        allow delete: if memberOfDoc();
+          && (
+            (
+              canWrite(tripId)
+              && changedOnly(['category', 'title', 'note', 'updatedBy', 'updatedAt'])
+            )
+            || (
+              isActiveMember(tripId)
+              && memberOfDoc()
+              && selfProgressOnly()
+            )
+          );
+        allow delete: if canWrite(tripId);
       }
 
       // Orphan-blob cleanup queue. Write-only enqueue surface for

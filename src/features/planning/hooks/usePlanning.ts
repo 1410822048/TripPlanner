@@ -38,7 +38,7 @@ export function useCreatePlanItem(tripId: string, options?: MutationOptions) {
     keyFactory: planningKeys.all,
     mutate:     ({ input, createdBy }) => createPlanItem(tripId, input, createdBy),
     patch:      (prev, { input, createdBy }) => [
-      { id: tempId(), tripId, memberIds: [createdBy], ...input, done: false, ...auditCreateMock(createdBy) },
+      { id: tempId(), tripId, memberIds: [createdBy], ...input, completedBy: {}, ...auditCreateMock(createdBy) },
       ...prev,
     ],
     action:     MUTATION_ACTION.CREATE_PLAN,
@@ -62,24 +62,21 @@ export function useUpdatePlanItem(tripId: string, options?: MutationOptions) {
   })
 }
 
-/** Optimistic checkbox flip. Toggling is idempotent + per-doc, so the
- *  listener's eventual server-state delivery doesn't conflict. */
+/** Optimistic self-completion flip. Toggling is idempotent + scoped to
+ *  completedBy[uid], so co-member progress does not conflict. */
 export function useTogglePlanItem(tripId: string) {
   return useTripListMutation<PlanItem, { itemId: string; uid: string; done: boolean }>({
     tripId,
     keyFactory: planningKeys.all,
     mutate:     ({ itemId, uid, done }) => togglePlanItemDone(tripId, itemId, uid, done),
     patch:      (prev, { itemId, uid, done }) =>
-      prev.map(p => p.id === itemId
-        ? {
-            ...p,
-            done,
-            doneBy: done ? uid           : undefined,
-            doneAt: done ? MOCK_TIMESTAMP : undefined,
-            ...auditUpdateMock(uid),
-          }
-        : p,
-      ),
+      prev.map(p => {
+        if (p.id !== itemId) return p
+        const completedBy = { ...p.completedBy }
+        if (done) completedBy[uid] = MOCK_TIMESTAMP
+        else delete completedBy[uid]
+        return { ...p, completedBy, ...auditUpdateMock(uid) }
+      }),
     action:     MUTATION_ACTION.UPDATE,
   })
 }

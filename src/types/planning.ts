@@ -1,8 +1,7 @@
 // src/types/planning.ts
-// Pre-trip planning checklist — collaborative to-do list grouped by
-// category. Members add items (passport, charger, currency exchange,
-// etc.) and tick them off as preparation progresses. The whole list is
-// shared; any member can add / edit / toggle / delete.
+// Pre-trip planning checklist grouped by category. The item content is
+// shared, while completion state is tracked per member so each traveler can
+// prepare independently.
 import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
 import { TimestampSchema } from './_shared'
@@ -25,11 +24,9 @@ export interface PlanItem {
   category: PlanCategory
   title: string
   note?: string         // optional details (size / 數量 / 提醒)
-  done: boolean         // shared checkbox state — anyone can toggle
-  /** uid of who last toggled `done`. Resets on toggle so it always
-   *  reflects "the most recent person to touch this row". */
-  doneBy?: string
-  doneAt?: Timestamp
+  /** Map of uid -> completion timestamp. A member can only toggle their
+   *  own key; rules reject writes that touch another member's progress. */
+  completedBy: Record<string, Timestamp>
   createdBy: string
   /** Last-writer uid (incl. toggleDone). See useFeatureBadges. */
   updatedBy: string
@@ -45,9 +42,7 @@ export const PlanItemDocSchema = z.object({
   category:  z.enum(['essentials', 'documents', 'packing', 'todo', 'other']),
   title:     z.string(),
   note:      z.string().optional(),
-  done:      z.boolean(),
-  doneBy:    z.string().optional(),
-  doneAt:    TimestampSchema.optional(),
+  completedBy: z.record(z.string().min(1), TimestampSchema),
   createdBy: z.string(),
   updatedBy: z.string(),
   memberIds: z.array(z.string().min(1)).min(1),

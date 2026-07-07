@@ -1,6 +1,6 @@
 // src/features/planning/components/PlanningPage.tsx
 // Pre-trip checklist grouped by category. Rows are inline tap-to-edit;
-// the checkbox to the left of each row toggles done state without
+// the leading control toggles the current member's completion without
 // opening the modal. Empty categories render an inline "+ 追加" prompt
 // inside their section so the user can add directly into context.
 import { useState } from 'react'
@@ -13,16 +13,21 @@ import PlanningListSkeleton from './PlanningListSkeleton'
 import PlanningPageSkeleton from './PlanningPageSkeleton'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
 import DemoBanner from '@/components/ui/DemoBanner'
+import MemberAvatar from '@/components/ui/MemberAvatar'
 import SignInPromptModal from '@/features/auth/components/SignInPromptModal'
 import {
   usePlanning, useCreatePlanItem, useUpdatePlanItem,
   useTogglePlanItem, useDeletePlanItem,
 } from '../hooks/usePlanning'
+import { useMembers } from '@/features/members/hooks/useMembers'
+import { memberToTripMember } from '@/features/members/utils'
 import { MOCK_PLAN_ITEMS } from '../mocks'
 import type { PlanItem, PlanCategory, CreatePlanItemInput } from '@/types'
+import type { TripMember } from '@/features/trips/types'
 import PlanningFormModal from './PlanningFormModal'
 import PlanningRow from './PlanningRow'
-import { PLAN_CATEGORY_ICON } from '../categories'
+
+type PlanningMember = TripMember & { name: string }
 
 // Section order — matches PlanCategory enum semantically. UI fixed even
 // when sections are empty so the page layout doesn't reshuffle as items
@@ -35,8 +40,16 @@ const SECTIONS: { category: PlanCategory; label: string }[] = [
   { category: 'other',      label: 'その他' },
 ]
 
+function isCompletedBy(item: PlanItem, uid: string | undefined): boolean {
+  return !!uid && Boolean(item.completedBy[uid])
+}
+
+function completedCount(items: PlanItem[], uid: string | undefined): number {
+  return uid ? items.filter(item => isCompletedBy(item, uid)).length : 0
+}
+
 export default function PlanningPage() {
-  const { ctx, uid, cloudTripId, mutationTripId, isDemo, modal, signIn } =
+  const { ctx, uid, cloudTripId, mutationTripId, isDemo, canWrite, modal, signIn } =
     useFeatureListPage<PlanItem>()
   /** Which category the "Add" tap should default to. Reset to first
    *  category when modal closes so a global add button still feels
@@ -45,12 +58,18 @@ export default function PlanningPage() {
   const swipe = useSwipeOpen()
 
   const { data: cloudItems, isLoading } = usePlanning(cloudTripId)
+  const { data: cloudMembers } = useMembers(cloudTripId)
 
   // Compiler memoises both `items` and `grouped` based on inferred deps.
   const items: PlanItem[] =
     ctx.status === 'demo'  ? (ctx.trip.id === 'demo' ? MOCK_PLAN_ITEMS : []) :
     ctx.status === 'cloud' ? (cloudItems ?? []) :
     []
+  const members: PlanningMember[] =
+    ctx.status === 'demo'  ? ctx.trip.members.map(member => ({ ...member, name: member.label })) :
+    ctx.status === 'cloud' ? (cloudMembers ?? []).map(member => ({ ...memberToTripMember(member), name: member.displayName })) :
+    []
+  const currentUid = uid ?? (isDemo ? members[0]?.id : undefined)
 
   const grouped: Record<PlanCategory, PlanItem[]> = {
     essentials: [], documents: [], packing: [], todo: [], other: [],
@@ -58,7 +77,7 @@ export default function PlanningPage() {
   for (const i of items) grouped[i.category].push(i)
 
   const totalCount = items.length
-  const doneCount  = items.filter(i => i.done).length
+  const doneCount  = completedCount(items, currentUid)
 
   // silent — modal surfaces errors via inline banner(useFormModal.saveError),
   // global toast would double-notify.
@@ -80,6 +99,7 @@ export default function PlanningPage() {
 
   async function handleSave(input: CreatePlanItemInput) {
     if (isDemo) { modal.close(); signIn.open(); return }
+    if (!canWrite) { toast.error('編集権限がありません'); return }
     if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
     modal.clearError()
     try {
@@ -98,6 +118,7 @@ export default function PlanningPage() {
   async function handleDelete() {
     if (!modal.editTarget) return
     if (isDemo) { modal.close(); signIn.open(); return }
+    if (!canWrite) { toast.error('削除権限がありません'); return }
     try {
       await deleteMut.mutateAsync(modal.editTarget.id)
       modal.close()
@@ -107,12 +128,13 @@ export default function PlanningPage() {
   function handleToggle(item: PlanItem) {
     if (isDemo) { signIn.open(); return }
     if (!uid)   { toast.error('ログイン準備中です。少々お待ちください'); return }
-    toggleMut.mutate({ itemId: item.id, uid, done: !item.done })
+    toggleMut.mutate({ itemId: item.id, uid, done: !isCompletedBy(item, uid) })
   }
 
   async function handleSwipeDelete(item: PlanItem) {
     swipe.closeAll()
     if (isDemo) { signIn.open(); return }
+    if (!canWrite) { toast.error('削除権限がありません'); return }
     await deleteMut.mutateAsync(item.id).catch(() => {})
   }
 
@@ -145,6 +167,42 @@ export default function PlanningPage() {
       </div>
 
       <div className="mt-4 px-4">
+        {members.length > 0 && totalCount > 0 && (
+          <div className="mb-5">
+            <p className="m-0 mb-2 px-1 text-[11px] font-extrabold tracking-[0.08em] text-muted">
+              全員の準備状況
+            </p>
+            <div className="flex gap-3 overflow-x-auto pb-1">
+              {members.map(member => {
+                const memberDone = completedCount(items, member.id)
+                const memberPercent = totalCount ? Math.round((memberDone / totalCount) * 100) : 0
+                return (
+                  <div
+                    key={member.id}
+                    className="min-w-[86px] rounded-[18px] border border-border bg-surface px-3 py-3 text-center shadow-[0_2px_10px_rgba(0,0,0,0.04)]"
+                  >
+                    <div className="mx-auto mb-2 flex h-11 w-11 items-center justify-center rounded-full border-[2px] border-[#D8CEC3] bg-app">
+                      <MemberAvatar member={member} size={30} />
+                    </div>
+                    <div className="truncate text-[11.5px] font-black text-ink">
+                      {member.name}
+                    </div>
+                    <div className="mt-1 text-[10.5px] font-extrabold tabular-nums text-[#8A6B50]">
+                      {memberDone} / {totalCount} 項
+                    </div>
+                    <div className="mt-2 h-1 rounded-full bg-border/70">
+                      <div
+                        className="h-full rounded-full bg-[#B29B89]"
+                        style={{ width: `${memberPercent}%` }}
+                      />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
         {isLoading && !isDemo ? (
           <PlanningListSkeleton />
         ) : totalCount === 0 ? (
@@ -158,56 +216,87 @@ export default function PlanningPage() {
             <p className="m-0 mb-[18px] text-[11.5px] text-muted tracking-[0.04em]">
               パスポート、充電器、行く前の手続きなど、忘れず準備
             </p>
-            <button
-              onClick={() => openAdd('essentials')}
-              className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-[24px] border-none bg-teal text-white text-[12.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
-              style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
-            >
-              <Plus size={14} strokeWidth={2.5} />
-              項目を追加
-            </button>
+            {canWrite && (
+              <button
+                onClick={() => openAdd('essentials')}
+                className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-[24px] border-none bg-teal text-white text-[12.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
+                style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
+              >
+                <Plus size={14} strokeWidth={2.5} />
+                項目を追加
+              </button>
+            )}
           </div>
         ) : (
           <div className="flex flex-col gap-5">
             {SECTIONS.map(section => {
               const sectionItems = grouped[section.category]
-              const sectionDone  = sectionItems.filter(i => i.done).length
-              const SectionIcon  = PLAN_CATEGORY_ICON[section.category]
+              const sectionDone  = completedCount(sectionItems, currentUid)
+              const sectionPercent = sectionItems.length
+                ? Math.round((sectionDone / sectionItems.length) * 100)
+                : 0
               return (
-                <div key={section.category}>
-                  <div className="flex items-center justify-between px-1 mb-2">
-                    <span className="flex items-center gap-1.5 text-[12px] font-bold text-ink tracking-[0.02em]">
-                      <SectionIcon size={13} strokeWidth={2.2} className="text-muted" />
-                      {section.label}
-                    </span>
-                    {sectionItems.length > 0 && (
-                      <span className="text-[11px] text-muted font-medium tabular-nums">
-                        {sectionDone} / {sectionItems.length}
+                <section
+                  key={section.category}
+                  className="relative overflow-hidden rounded-[24px] border border-border bg-surface shadow-[0_2px_14px_rgba(0,0,0,0.05)]"
+                >
+                  <div className="flex items-start justify-between gap-3 pb-2 pr-5">
+                    <div className="flex h-[52px] min-w-[150px] items-center gap-3 rounded-br-[26px] bg-[#A78A72] pl-5 pr-6 text-white shadow-[0_4px_14px_rgba(120,88,62,0.18)]">
+                      <span className="text-[15px] font-black tabular-nums leading-none">
+                        {sectionPercent}%
                       </span>
-                    )}
+                      <span className="h-4 w-px bg-white/35" aria-hidden />
+                      <span className="text-[13px] font-extrabold tracking-[0.04em] whitespace-nowrap">
+                        {section.label}
+                      </span>
+                    </div>
+
+                    <div className="pt-4 text-right">
+                      <div className="text-[10.5px] font-semibold tracking-[0.08em] text-muted">
+                        進捗概要
+                      </div>
+                      <div className="mt-0.5 text-[17px] font-black leading-none tabular-nums text-[#8A6B50]">
+                        {sectionDone} / {sectionItems.length}
+                        <span className="ml-1 text-[13px] font-extrabold text-ink">項目</span>
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="flex flex-col gap-1.5">
-                    {sectionItems.map(item => (
-                      <PlanningRow
-                        key={item.id}
-                        item={item}
-                        isPreviewOnly={isDemo}
-                        {...swipe.bindRow(item.id)}
-                        onToggleDone={() => { swipe.closeAll(); handleToggle(item) }}
-                        onTap={() => { swipe.closeAll(); modal.openEdit(item) }}
-                        onDelete={() => handleSwipeDelete(item)}
-                      />
-                    ))}
-                    <button
-                      onClick={() => openAdd(section.category)}
-                      className="h-9 rounded-[14px] border-[1.5px] border-dashed border-border bg-transparent text-muted text-[11.5px] font-medium flex items-center justify-center gap-1 cursor-pointer tracking-[0.04em] transition-all hover:bg-teal-pale hover:border-teal hover:text-teal"
-                    >
-                      <Plus size={12} strokeWidth={2} />
-                      追加
-                    </button>
+                  <div className="px-5 pb-4 pt-1">
+                    {sectionItems.length > 0 ? (
+                      <div className="divide-y divide-border/70">
+                        {sectionItems.map(item => (
+                          <PlanningRow
+                            key={item.id}
+                            item={item}
+                            members={members}
+                            currentUid={currentUid}
+                            isDone={isCompletedBy(item, currentUid)}
+                            canEdit={canWrite}
+                            isPreviewOnly={isDemo}
+                            {...swipe.bindRow(item.id)}
+                            onToggleDone={() => { swipe.closeAll(); handleToggle(item) }}
+                            onTap={() => { swipe.closeAll(); modal.openEdit(item) }}
+                            onDelete={() => handleSwipeDelete(item)}
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="px-1 py-5 text-center text-[12px] font-semibold text-muted">
+                        まだ項目がありません
+                      </div>
+                    )}
+                    {canWrite && (
+                      <button
+                        onClick={() => openAdd(section.category)}
+                        className="mt-2 h-9 w-full rounded-[14px] border-[1.5px] border-dashed border-border bg-transparent text-muted text-[11.5px] font-medium flex items-center justify-center gap-1 cursor-pointer tracking-[0.04em] transition-all hover:bg-teal-pale hover:border-teal hover:text-teal"
+                      >
+                        <Plus size={12} strokeWidth={2} />
+                        追加
+                      </button>
+                    )}
                   </div>
-                </div>
+                </section>
               )
             })}
           </div>
@@ -224,7 +313,7 @@ export default function PlanningPage() {
           saveError={modal.saveError}
           onClose={modal.close}
           onSave={handleSave}
-          onDelete={modal.editTarget && !isDemo ? handleDelete : undefined}
+          onDelete={modal.editTarget && canWrite && !isDemo ? handleDelete : undefined}
         />
       )}
 

@@ -10,7 +10,7 @@
 // Copies:
 //   ✅ Trip metadata (with new title + rebased dates)
 //   ✅ Schedules (date-shifted to the new range)
-//   ✅ Planning items (no date concept, copied as-is with done=false)
+//   ✅ Planning items (no date concept, copied as fresh uncompleted rows)
 //
 // Does NOT copy:
 //   ❌ Bookings   — real reservations tied to original trip's
@@ -43,11 +43,11 @@ export interface CopyTripResult {
   orphanedSchedules: number
 }
 
-/** Skipped fields when rebuilding doc payloads from source. Schedule
- *  preserves done state isn't relevant; planning explicitly resets
- *  `done` so a copied checklist starts unticked. */
+/** Skipped fields when rebuilding doc payloads from source. Planning
+ *  explicitly resets per-member completion so a copied checklist starts
+ *  unticked for the new trip. */
 const SCHEDULE_SKIP = new Set(['createdAt', 'updatedAt', 'createdBy', 'updatedBy', 'memberIds', 'tripId'])
-const PLAN_SKIP     = new Set(['createdAt', 'updatedAt', 'createdBy', 'updatedBy', 'memberIds', 'tripId', 'done', 'doneAt', 'doneBy'])
+const PLAN_SKIP     = new Set(['createdAt', 'updatedAt', 'createdBy', 'updatedBy', 'memberIds', 'tripId', 'completedBy'])
 
 /**
  * Build a fresh doc payload from a source doc's data: drop the named
@@ -180,11 +180,11 @@ export async function copyTrip(
       const batch = writeBatch(db)
       for (const d of sourcePlanning.docs.slice(i, i + 500)) {
         const newRef = doc(collection(db, ...P.planning(tripRef.id)))
-        // `done: false` resets the new trip's checklist — the original
-        // trip's progress isn't relevant to the duplicate.
+        // `completedBy: {}` resets the new trip's checklist — the
+        // original trip's per-member progress isn't relevant here.
         batch.set(newRef, rebuildPayload(d.data(), PLAN_SKIP, {
-          done:   false,
-          tripId: tripRef.id,
+          completedBy: {},
+          tripId:      tripRef.id,
           memberIds,
           ...auditCreate(user.uid, serverTimestamp()),
         }))

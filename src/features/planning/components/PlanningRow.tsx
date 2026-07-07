@@ -1,17 +1,25 @@
 // src/features/planning/components/PlanningRow.tsx
 // One row in the planning checklist. Swipe-left reveals a red delete
 // button — same gesture + tap-to-confirm UX as SwipeableBookingItem /
-// SwipeableTripItem. Body tap opens edit; checkbox tap toggles done.
+// SwipeableTripItem. Body tap opens edit; leading control toggles the
+// current member's completion.
 //
 // When the row is swiped open, taps on either the body or the checkbox
 // are short-circuited to "close the row" so the user can dismiss the
 // delete affordance without accidentally toggling state.
 import { Check, Trash2 } from 'lucide-react'
 import type { PlanItem } from '@/types'
+import type { TripMember } from '@/features/trips/types'
 import { useSwipeRow, SWIPE_WIDTH, BG_TRANSITION, FG_TRANSITION } from '@/hooks/useSwipeRow'
+import MemberAvatar from '@/components/ui/MemberAvatar'
+import { PLAN_CATEGORY_ICON } from '../categories'
 
 interface Props {
   item:          PlanItem
+  members:       TripMember[]
+  currentUid:    string | undefined
+  isDone:        boolean
+  canEdit:       boolean
   /** True in demo mode — visually dim the row so users sense it's "not
    *  real yet", but the click still fires so the parent can surface the
    *  sign-in prompt. */
@@ -25,18 +33,16 @@ interface Props {
 }
 
 function PlanningRow({
-  item, isPreviewOnly, isOpen,
+  item, members, currentUid, isDone, canEdit, isPreviewOnly, isOpen,
   onToggleDone, onTap, onOpen, onClose, onDelete,
 }: Props) {
   const {
     bindFg, bindBg, pointerProps, deleteProps, openX, confirming, wrapTap,
-  } = useSwipeRow({ isOpen, onOpen, onClose, onDelete })
+  } = useSwipeRow({ isOpen, onOpen, onClose, onDelete, enabled: canEdit })
+  const ItemIcon = PLAN_CATEGORY_ICON[item.category]
 
   return (
-    <div className={[
-      'relative rounded-[14px] overflow-hidden bg-surface border border-border transition-opacity',
-      item.done ? 'opacity-60' : 'opacity-100',
-    ].join(' ')}>
+    <div className="relative overflow-hidden bg-surface">
       <div
         ref={bindBg}
         {...deleteProps}
@@ -53,7 +59,7 @@ function PlanningRow({
       >
         {confirming ? (
           <div className="text-white text-[11px] font-bold tracking-[0.04em] text-center leading-[1.3]">
-            確認<br/>削除
+            確認<br />削除
           </div>
         ) : (
           <div className="flex flex-col items-center gap-0.5">
@@ -68,7 +74,7 @@ function PlanningRow({
       <div
         ref={bindFg}
         {...pointerProps}
-        className="relative select-none flex items-stretch gap-2 bg-surface"
+        className="relative select-none bg-surface"
         style={{
           transform: `translate3d(${openX}px,0,0)`,
           transition: FG_TRANSITION,
@@ -77,39 +83,106 @@ function PlanningRow({
           WebkitTapHighlightColor: 'transparent',
         }}
       >
-        <button
-          onClick={wrapTap(onToggleDone)}
-          aria-pressed={item.done}
-          aria-label={item.done ? 'チェック解除' : 'チェック'}
-          className={[
-            'shrink-0 w-12 flex items-center justify-center bg-transparent border-none border-r border-border cursor-pointer transition-colors hover:bg-app',
-            isPreviewOnly ? 'opacity-70' : 'opacity-100',
-          ].join(' ')}
-        >
-          <div className={[
-            'w-5 h-5 rounded-md border-[2px] flex items-center justify-center transition-colors',
-            item.done ? 'border-accent bg-accent' : 'border-border bg-app',
-          ].join(' ')}>
-            {item.done && <Check size={13} strokeWidth={3} className="text-white" />}
-          </div>
-        </button>
+        <div className="flex items-stretch">
+          <button
+            type="button"
+            onClick={wrapTap(onToggleDone)}
+            aria-pressed={isDone}
+            aria-label={isDone ? '自分を未完了に戻す' : '自分を完了にする'}
+            className={[
+              'shrink-0 w-14 flex items-center justify-center bg-transparent border-none cursor-pointer transition-colors hover:bg-app',
+              isPreviewOnly ? 'opacity-70' : 'opacity-100',
+            ].join(' ')}
+          >
+            <span className={[
+              'flex h-10 w-10 items-center justify-center rounded-full transition-all',
+              isDone
+                ? 'bg-[#B29B89] text-white'
+                : 'bg-[#F3ECE4] text-[#9D7A5F] hover:bg-[#EEE3D8]',
+            ].join(' ')}>
+              {isDone
+                ? <Check size={17} strokeWidth={3} />
+                : <ItemIcon size={17} strokeWidth={2.4} />}
+            </span>
+          </button>
 
-        <button
-          onClick={wrapTap(onTap)}
-          className="flex-1 min-w-0 px-3 py-2.5 text-left bg-transparent border-none cursor-pointer hover:bg-app transition-colors"
-        >
-          <div className={[
-            'text-[13.5px] font-semibold text-ink truncate',
-            item.done ? 'line-through' : '',
-          ].join(' ')}>
-            {item.title}
-          </div>
-          {item.note && (
-            <div className="text-[11px] text-muted mt-0.5 truncate">
-              {item.note}
+          <button
+            type="button"
+            onClick={canEdit ? wrapTap(onTap) : undefined}
+            disabled={!canEdit}
+            className={[
+              'flex min-w-0 flex-1 items-center gap-3 py-3 pr-3 text-left bg-transparent border-none transition-colors',
+              canEdit ? 'cursor-pointer hover:bg-app' : 'cursor-default',
+              isDone ? 'opacity-60' : '',
+            ].join(' ')}
+          >
+            <div className="min-w-0 flex-1">
+              <div className={[
+                'truncate text-[13.5px] font-extrabold leading-5',
+                isDone ? 'text-muted' : 'text-ink',
+              ].join(' ')}>
+                {item.title}
+              </div>
+              {item.note && (
+                <div className="mt-0.5 truncate text-[11px] font-medium text-muted">
+                  {item.note}
+                </div>
+              )}
             </div>
-          )}
-        </button>
+            <div className="w-[72px] shrink-0 text-right">
+              <div className={[
+                'truncate text-[12px] font-extrabold leading-5',
+                isDone ? 'text-muted' : 'text-ink',
+              ].join(' ')}>
+                {isDone ? '完了' : '未準備'}
+              </div>
+            </div>
+          </button>
+        </div>
+
+        {members.length > 0 && (
+          <div className="mx-3 mb-3 rounded-[14px] border border-border/70 bg-app/45 px-3 py-2.5">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="text-[10.5px] font-bold tracking-[0.04em] text-muted">
+                メンバー準備
+              </span>
+              <span className="text-[10px] font-semibold text-muted">
+                自分のアイコンで切替
+              </span>
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              {members.map(member => {
+                const memberDone = Boolean(item.completedBy[member.id])
+                const isSelf = member.id === currentUid
+                const avatar = (
+                  <MemberAvatar
+                    member={member}
+                    size={24}
+                    className={memberDone
+                      ? 'ring-2 ring-[#B29B89] ring-offset-2 ring-offset-surface'
+                      : 'opacity-35 grayscale'}
+                  />
+                )
+                return isSelf ? (
+                  <button
+                    key={member.id}
+                    type="button"
+                    aria-pressed={memberDone}
+                    aria-label={memberDone ? '自分を未完了に戻す' : '自分を完了にする'}
+                    onClick={wrapTap(onToggleDone)}
+                    className="rounded-full border-none bg-transparent p-0 cursor-pointer"
+                  >
+                    {avatar}
+                  </button>
+                ) : (
+                  <span key={member.id} aria-label={memberDone ? '完了' : '未準備'}>
+                    {avatar}
+                  </span>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

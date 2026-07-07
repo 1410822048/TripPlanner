@@ -1792,17 +1792,24 @@ describe('/trips/{tripId}/settlements client write rejection (Worker-only)', () 
 
 // ─── Planning: hasOnly() allowlist + is-string type guards ─────────
 describe('/trips/{tripId}/planning shape guards', () => {
+  const validPlanningPayload = (overrides: Record<string, unknown> = {}) => ({
+    tripId: TRIP_ID,
+    category: 'essentials',
+    title: 'X',
+    completedBy: {},
+    memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+    createdBy: EDITOR_UID,
+    updatedBy: EDITOR_UID,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    ...overrides,
+  })
+
   test('planning create with extra unrecognized field is rejected', async () => {
     await assertFails(
-      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-extra'), {
-        tripId: TRIP_ID, category: 'essentials', title: 'X',
-        done: false,
-        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
-        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-extra'), validPlanningPayload({
         unwantedField: 'should be rejected by hasOnly()',
-      }),
+      })),
     )
   })
 
@@ -1810,7 +1817,7 @@ describe('/trips/{tripId}/planning shape guards', () => {
     await assertFails(
       setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-typ'), {
         tripId: TRIP_ID, category: 'essentials', title: 'X',
-        done: false,
+        completedBy: {},
         memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
         createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
         createdAt: serverTimestamp(),
@@ -1824,7 +1831,7 @@ describe('/trips/{tripId}/planning shape guards', () => {
     await assertSucceeds(
       setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-ok'), {
         tripId: TRIP_ID, category: 'essentials', title: 'X',
-        done: false,
+        completedBy: {},
         memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
         createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
         createdAt: serverTimestamp(),
@@ -1834,42 +1841,174 @@ describe('/trips/{tripId}/planning shape guards', () => {
     )
   })
 
-  // ─── Nested value-type guards (done/doneBy/doneAt) ──────────────
+  // completedBy guards + per-member progress permissions.
 
-  test('planning create without `done` field is rejected', async () => {
+  test('planning create without `completedBy` field is rejected', async () => {
     await assertFails(
-      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-nodone'), {
-        tripId: TRIP_ID, category: 'essentials', title: 'X',
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-no-completed'), {
+        tripId: TRIP_ID,
+        category: 'essentials',
+        title: 'X',
         memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
-        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdBy: EDITOR_UID,
+        updatedBy: EDITOR_UID,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       }),
     )
   })
 
-  test('planning create with non-bool `done` is rejected', async () => {
+  test('planning create with non-map `completedBy` is rejected', async () => {
     await assertFails(
-      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-strdone'), {
-        tripId: TRIP_ID, category: 'essentials', title: 'X',
-        done: 'yes',  // string, not bool
-        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
-        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
-        createdAt: serverTimestamp(),
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-str-completed'), validPlanningPayload({
+        completedBy: 'yes',
+      })),
+    )
+  })
+
+  test('planning create with pre-completed member is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-pre-completed'), validPlanningPayload({
+        completedBy: { [EDITOR_UID]: Timestamp.now() },
+      })),
+    )
+  })
+
+  test('viewer can toggle only their own completion key', async () => {
+    await assertSucceeds(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-viewer-own'), validPlanningPayload()),
+    )
+
+    await assertSucceeds(
+      updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-viewer-own'), {
+        [`completedBy.${VIEWER_UID}`]: serverTimestamp(),
+        updatedBy: VIEWER_UID,
         updatedAt: serverTimestamp(),
       }),
     )
   })
 
-  test('planning create with non-timestamp `doneAt` is rejected', async () => {
+  test('editor can update planning content without touching progress', async () => {
+    await assertSucceeds(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-editor-content'), validPlanningPayload()),
+    )
+
+    await assertSucceeds(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-editor-content'), {
+        title: 'Updated checklist item',
+        note: 'Updated note',
+        category: 'todo',
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('viewer cannot change planning content while toggling progress', async () => {
+    await assertSucceeds(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-viewer-title'), validPlanningPayload()),
+    )
+
     await assertFails(
-      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-strdoneat'), {
-        tripId: TRIP_ID, category: 'essentials', title: 'X',
-        done: true,
-        doneAt: 'tomorrow',  // string, not Timestamp
-        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
-        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
-        createdAt: serverTimestamp(),
+      updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-viewer-title'), {
+        [`completedBy.${VIEWER_UID}`]: serverTimestamp(),
+        title: 'hijacked',
+        updatedBy: VIEWER_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('viewer cannot toggle another member completion key', async () => {
+    await assertSucceeds(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-viewer-other'), validPlanningPayload()),
+    )
+
+    await assertFails(
+      updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-viewer-other'), {
+        [`completedBy.${EDITOR_UID}`]: serverTimestamp(),
+        updatedBy: VIEWER_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('viewer cannot set own completion key to non-timestamp', async () => {
+    await assertSucceeds(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-viewer-bad-completed'), validPlanningPayload()),
+    )
+
+    await assertFails(
+      updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-viewer-bad-completed'), {
+        [`completedBy.${VIEWER_UID}`]: 'yes',
+        updatedBy: VIEWER_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('viewer can clear their own completion key', async () => {
+    await assertSucceeds(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-viewer-clear'), validPlanningPayload()),
+    )
+    await assertSucceeds(
+      updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-viewer-clear'), {
+        [`completedBy.${VIEWER_UID}`]: serverTimestamp(),
+        updatedBy: VIEWER_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+
+    await assertSucceeds(
+      updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-viewer-clear'), {
+        [`completedBy.${VIEWER_UID}`]: deleteField(),
+        updatedBy: VIEWER_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  // Emptying completedBy (deleting the last key) must leave a valid `{}` map
+  // at rest, NOT drop the field entirely — otherwise the next write's
+  // `completedBy is map` guard would reject it. This is the exact invariant
+  // the /member-remove cascade relies on when it deletes the departed
+  // member's completedBy key via updateMask (same DocumentMask deletion the
+  // client's deleteField() compiles to), so pin it here rather than adding a
+  // read-then-write guard in the cascade.
+  test('emptying completedBy leaves a valid map for later writes', async () => {
+    await assertSucceeds(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-empty-map'), validPlanningPayload()),
+    )
+    // viewer completes then clears — completedBy goes back to {}.
+    await assertSucceeds(
+      updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-empty-map'), {
+        [`completedBy.${VIEWER_UID}`]: serverTimestamp(),
+        updatedBy: VIEWER_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+    await assertSucceeds(
+      updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-empty-map'), {
+        [`completedBy.${VIEWER_UID}`]: deleteField(),
+        updatedBy: VIEWER_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+    // Content edit re-validates the AT-REST completedBy via validPlanningDoc
+    // without touching it — the discriminating check: passes only if the now
+    // emptied completedBy is still a map.
+    await assertSucceeds(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-empty-map'), {
+        title: 'still editable after empty',
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+    // And another member can still toggle their own progress afterward.
+    await assertSucceeds(
+      updateDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-empty-map'), {
+        [`completedBy.${OWNER_UID}`]: serverTimestamp(),
+        updatedBy: OWNER_UID,
         updatedAt: serverTimestamp(),
       }),
     )
@@ -2009,7 +2148,7 @@ describe('memberIdsMatchTrip create-time injection guards', () => {
     await assertFails(
       setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'planning', 'p-inj'), {
         tripId: TRIP_ID, category: 'essentials', title: 'Injection attempt',
-        done: false,
+        completedBy: {},
         memberIds: withStranger,
         createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
         createdAt: serverTimestamp(),
