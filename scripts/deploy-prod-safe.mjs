@@ -293,9 +293,20 @@ function normalizedIndexFields(index) {
     }));
 }
 
+function collectionGroupOfIndex(index) {
+  if (typeof index.collectionGroup === 'string' && index.collectionGroup.length > 0) {
+    return index.collectionGroup;
+  }
+
+  const match = typeof index.name === 'string'
+    ? index.name.match(/\/collectionGroups\/([^/]+)\/indexes\//)
+    : null;
+  return match?.[1] ?? index.collectionGroup;
+}
+
 function indexKey(index) {
   return JSON.stringify({
-    collectionGroup: index.collectionGroup,
+    collectionGroup: collectionGroupOfIndex(index),
     queryScope: index.queryScope,
     fields: normalizedIndexFields(index),
   });
