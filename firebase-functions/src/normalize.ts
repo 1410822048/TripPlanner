@@ -587,8 +587,9 @@ export function normalizeMemberWrite(input: {
   // we can tell a kick apart from a voluntary leave:
   //   'removed' (owner kicked) → TWO notifications:
   //     1. trip-scoped → remaining members ("○○ was removed"). dispatch loads
-  //        the post-strip memberIds and also drops subjectUid, so the removed
-  //        person never gets this copy.
+  //        the post-strip memberIds, includes the kicking owner in the inbox
+  //        audit trail, and still drops subjectUid so the removed person never
+  //        gets this copy.
   //     2. account-scoped → the removed person ("you were removed"). They've
   //        lost trip access, so it routes to /account with a distinct eventId
   //        suffix so _pushEvents dedupe keeps both.
@@ -601,9 +602,9 @@ export function normalizeMemberWrite(input: {
     const subjectName = isString(before.displayName) ? before.displayName : undefined
     const left = before.removalKind === 'left'
     // The Worker stamps removedBy = the acting caller. When present it's a
-    // trusted actor → exclude it from the remaining-members fan-out (so a kick
-    // never pushes the owner about their own action). Absent (legacy /
-    // trip-cascade delete) → actorUnknown fallback notifies everyone remaining.
+    // trusted actor: keep them in the inbox audit trail, but suppress their
+    // FCM self-push via pushActor:false. Absent (legacy / trip-cascade delete)
+    // → actorUnknown fallback notifies everyone remaining.
     const removedBy = isString(before.removedBy) ? before.removedBy : null
     const shared = {
       tripId,
@@ -616,7 +617,16 @@ export function normalizeMemberWrite(input: {
       subjectName,
     }
     const events: NormalizedPushEvent[] = [
-      { ...shared, eventId, route: '/schedule', templateKey: left ? 'member.left' : 'member.removed' },
+      left
+        ? { ...shared, eventId, route: '/schedule', templateKey: 'member.left' }
+        : {
+            ...shared,
+            eventId,
+            route: '/schedule',
+            templateKey: 'member.removed',
+            includeActor: true,
+            pushActor:    false,
+          },
     ]
     if (!left) {
       events.push({

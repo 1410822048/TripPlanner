@@ -307,10 +307,12 @@ describe('normalizeMemberWrite', () => {
     expect(remaining!.eventId).toBe('m4')
     expect(remaining!.scope).toBeUndefined()
     expect(remaining!.subjectUid).toBe('u2')
-    // removedBy is a trusted actor → excluded from the fan-out, so the kicking
-    // owner isn't pushed about their own action.
+    // removedBy is a trusted actor. The kicking owner gets an inbox audit row
+    // but no FCM self-push.
     expect(remaining!.actorUid).toBe('owner-1')
     expect(remaining!.actorUnknown).toBe(false)
+    expect(remaining!.includeActor).toBe(true)
+    expect(remaining!.pushActor).toBe(false)
 
     expect(self!.templateKey).toBe('member.removed_self')
     expect(self!.eventId).toBe('m4:self')

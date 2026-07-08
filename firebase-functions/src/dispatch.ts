@@ -164,12 +164,13 @@ export function selectRecipients(
   candidates: readonly string[],
   actorUid: string | null,
   actorUnknown: boolean,
+  includeActor = false,
 ): string[] {
   const deduped = unique(candidates)
   // A null actor (admin/Worker write with no resolvable author) is treated
   // exactly like actorUnknown: nobody is excluded, since excluding a
   // best-guess actor could silence the very party who should be told.
-  return actorUnknown || actorUid == null ? deduped : deduped.filter(uid => uid !== actorUid)
+  return actorUnknown || actorUid == null || includeActor ? deduped : deduped.filter(uid => uid !== actorUid)
 }
 
 // Pure recipient resolution given the trip state + the event. Exported for
@@ -177,7 +178,7 @@ export function selectRecipients(
 // which also reuses the same snapshot's title for the inbox docs).
 export function resolveRecipients(
   trip: TripRecipientState,
-  event: Pick<NormalizedPushEvent, 'partyUids' | 'actorUid' | 'actorUnknown' | 'subjectUid'>,
+  event: Pick<NormalizedPushEvent, 'partyUids' | 'actorUid' | 'actorUnknown' | 'subjectUid' | 'includeActor'>,
 ): string[] {
   // Trip teardown suppresses everything, trip- AND account-scoped.
   if (trip.deleting) return []
@@ -185,10 +186,10 @@ export function resolveRecipients(
   // Explicit partyUids (settlement parties, role-change subject, account-scope
   // target) are the recipient set as-is — don't second-guess them.
   if (event.partyUids?.length) {
-    return selectRecipients(event.partyUids, event.actorUid, event.actorUnknown ?? false)
+    return selectRecipients(event.partyUids, event.actorUid, event.actorUnknown ?? false, event.includeActor ?? false)
   }
 
-  const selected = selectRecipients(trip.memberIds, event.actorUid, event.actorUnknown ?? false)
+  const selected = selectRecipients(trip.memberIds, event.actorUid, event.actorUnknown ?? false, event.includeActor ?? false)
   // Trip-scoped member removal loads the (post-strip) member list; drop the
   // removed person so they never get the "○○ was removed" copy — they receive
   // the account-scoped member.removed_self notification instead. subjectUid is
@@ -199,6 +200,16 @@ export function resolveRecipients(
 async function candidateRecipients(event: NormalizedPushEvent): Promise<{ recipientUids: string[]; tripTitle: string }> {
   const trip = await loadTripRecipientState(event.tripId)
   return { recipientUids: resolveRecipients(trip, event), tripTitle: trip.title }
+}
+
+export function selectPushRecipients(
+  event: Pick<NormalizedPushEvent, 'actorUid' | 'pushActor'>,
+  recipientUids: readonly string[],
+): string[] {
+  if (event.pushActor === false && event.actorUid != null) {
+    return recipientUids.filter(uid => uid !== event.actorUid)
+  }
+  return [...recipientUids]
 }
 
 export async function loadEnabledTokens(uid: string): Promise<PushTokenRecord[]> {
@@ -269,7 +280,8 @@ export async function dispatchPushEvent(event: NormalizedPushEvent | null): Prom
       return
     }
 
-    const tokens = await loadTokens(recipientUids)
+    const pushRecipientUids = selectPushRecipients(event, recipientUids)
+    const tokens = await loadTokens(pushRecipientUids)
     if (tokens.length === 0) {
       await updateEvent(event.eventId, {
         status:         'sent',

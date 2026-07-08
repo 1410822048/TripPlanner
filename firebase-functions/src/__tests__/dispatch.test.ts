@@ -34,6 +34,7 @@ import {
   MAX_TOKENS_PER_USER,
   reservationDecision,
   resolveRecipients,
+  selectPushRecipients,
   selectRecipients,
   shouldRetrySendResult,
 } from '../dispatch.js'
@@ -84,6 +85,10 @@ describe('recipient selection', () => {
     expect(selectRecipients(['u1', 'u2', 'u1'], 'u1', false)).toEqual(['u2'])
   })
 
+  test('can include the actor for inbox audit rows', () => {
+    expect(selectRecipients(['u1', 'u2', 'u1'], 'u1', false, true)).toEqual(['u1', 'u2'])
+  })
+
   test('notifies all parties when the actor is unknown (settlement hard-delete)', () => {
     // settledBy is a best-guess deleter; excluding it would silence the
     // recorder and could push the real (owner) deleter. Notify both.
@@ -120,6 +125,25 @@ describe('resolveRecipients', () => {
 
   test('trip-scoped member removal drops the removed subject (they get the account copy)', () => {
     expect(resolveRecipients(alive, { actorUid: null, actorUnknown: true, subjectUid: 'u2' })).toEqual(['u1', 'u3'])
+  })
+
+  test('member kick keeps the actor in the inbox fan-out and still drops the removed subject', () => {
+    expect(resolveRecipients(alive, {
+      actorUid: 'u1',
+      actorUnknown: false,
+      includeActor: true,
+      subjectUid: 'u2',
+    })).toEqual(['u1', 'u3'])
+  })
+})
+
+describe('push recipient selection', () => {
+  test('can suppress actor self-push while preserving their inbox row', () => {
+    expect(selectPushRecipients({ actorUid: 'u1', pushActor: false }, ['u1', 'u3'])).toEqual(['u3'])
+  })
+
+  test('pushes every inbox recipient by default', () => {
+    expect(selectPushRecipients({ actorUid: 'u1' }, ['u1', 'u3'])).toEqual(['u1', 'u3'])
   })
 })
 

@@ -74,6 +74,12 @@ export interface NormalizedPushEvent {
   // on the Worker (admin SDK) and the only doc field available — `settledBy` —
   // is the RECORDER, not the deleter. See selectRecipients in dispatch.ts.
   actorUnknown?: boolean
+  // true = include the actor in the inbox recipient set. Used for member
+  // removal so the owner can still see the audit row for their own kick.
+  includeActor?: boolean
+  // false = write the actor's inbox row but do not send an FCM push to them.
+  // Default is true.
+  pushActor?: boolean
   settlement?: NormalizedSettlementInfo
   // false = inbox-only. Writes the notification row for every recipient but
   // skips token load + FCM send. Currently used for low-signal trip title
