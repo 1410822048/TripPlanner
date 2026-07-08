@@ -7,6 +7,7 @@ import {
   Link,
   PencilLine,
   Plus,
+  QrCode,
   Settings,
   UsersRound,
   type LucideIcon,
@@ -46,6 +47,7 @@ interface TripSwitcherProps {
   onDelete:      (tripId: string) => void
   onReorder:     (fromIdx: number, toIdx: number) => void
   onCreateTrip?: () => void
+  onScanInvite?: () => void
   /**
    * When true, the last remaining trip can be deleted. Cloud mode sets this
    * because the parent renders `EmptyTrips` at `length === 0`. Demo mode
@@ -63,6 +65,7 @@ interface TripSwitcherProps {
 
 export default function TripSwitcher({
   trips, selected, onSelect, onAction, onDelete, onReorder, onCreateTrip,
+  onScanInvite,
   canDeleteLast = false,
   isOwner = true,
 }: TripSwitcherProps) {
@@ -309,10 +312,10 @@ export default function TripSwitcher({
                   else toast.info('新しい旅の追加は開発中です')
                   closeDropdown()
                 }}
-                className="w-full h-10 rounded-xl border-[1.5px] border-dashed border-border bg-transparent text-muted text-[12.5px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer tracking-[0.04em] transition-all hover:bg-pick-pale hover:border-pick hover:text-pick"
+                className="mb-1.5 h-10 w-full rounded-xl border-[1.5px] border-dashed border-border bg-transparent text-muted text-[12.5px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer tracking-[0.04em] transition-all hover:bg-pick-pale hover:border-pick hover:text-pick"
               >
                 <Plus size={14} strokeWidth={2.5} />
-                新しい旅を追加
+                新しい旅
               </button>
             </div>
 
@@ -325,6 +328,32 @@ export default function TripSwitcher({
                   管理
                 </span>
               </div>
+              {onScanInvite && (
+                <button
+                  onClick={() => {
+                    onScanInvite()
+                    closeDropdown()
+                  }}
+                  className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl border-none bg-transparent cursor-pointer text-left transition-colors hover:bg-app"
+                >
+                  <div className="w-[34px] h-[34px] rounded-input shrink-0 flex items-center justify-center bg-tile">
+                    <QrCode
+                      size={17}
+                      strokeWidth={2.2}
+                      className="text-pick"
+                      aria-hidden="true"
+                    />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] font-semibold text-ink">
+                      QRコードで参加
+                    </div>
+                    <div className="text-[10.5px] mt-px text-muted">
+                      招待QRを読み取って旅に参加
+                    </div>
+                  </div>
+                </button>
+              )}
               {MENU_ACTIONS.filter(a => isOwner || !a.ownerOnly).map(({ key, icon: Icon, label, sub, danger }) => (
                 <button
                   key={key}

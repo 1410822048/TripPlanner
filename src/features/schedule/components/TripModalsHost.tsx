@@ -24,6 +24,7 @@ import type { SchedulePageState } from '../hooks/useSchedulePageState'
 // "share trip" — by which point the page has long settled, so the brief
 // Suspense fallback (<50ms typical) is invisible.
 const InviteModal = lazy(() => import('@/features/trips/invites/InviteModal'))
+const InviteQrScannerModal = lazy(() => import('@/features/trips/invites/InviteQrScannerModal'))
 
 interface Props {
   state: SchedulePageState
@@ -38,6 +39,7 @@ export default function TripModalsHost({ state }: Props) {
     createTripOpen,  setCreateTripOpen,
     copyTripOpen,    setCopyTripOpen, copyTripSource, copyTripPending, onCopyTrip,
     inviteOpen,      setInviteOpen,
+    inviteScannerOpen, setInviteScannerOpen,
     membersOpen,     setMembersOpen,
     signInOpen,      setSignInOpen,
     saveTrip,        onLeaveTrip,
@@ -133,6 +135,15 @@ export default function TripModalsHost({ state }: Props) {
             onLeave={onLeaveTrip}
           />
         </>
+      )}
+
+      {inviteScannerOpen && (
+        <Suspense fallback={null}>
+          <InviteQrScannerModal
+            isOpen
+            onClose={() => setInviteScannerOpen(false)}
+          />
+        </Suspense>
       )}
 
       <SignInPromptModal

@@ -111,6 +111,9 @@ export interface SchedulePageState {
   inviteOpen:    boolean
   setInviteOpen: (open: boolean) => void
 
+  inviteScannerOpen:    boolean
+  setInviteScannerOpen: (open: boolean) => void
+
   membersOpen:    boolean
   setMembersOpen: (open: boolean) => void
 
@@ -178,6 +181,7 @@ export function useSchedulePageState(): SchedulePageState {
   const [copyTripSource, setCopyTripSource] = useState<Trip | null>(null)
   const [signInOpen,     setSignInOpen]     = useState(false)
   const [inviteOpen,     setInviteOpen]     = useState(false)
+  const [inviteScannerOpen, setInviteScannerOpen] = useState(false)
   const [membersOpen,    setMembersOpen]    = useState(false)
 
   // AccountPage's "Planner" card navigates here with state.openCreateTrip
@@ -475,6 +479,7 @@ export function useSchedulePageState(): SchedulePageState {
     createTripOpen ||
     copyTripOpen ||
     inviteOpen ||
+    inviteScannerOpen ||
     membersOpen ||
     signInOpen
 
@@ -517,6 +522,7 @@ export function useSchedulePageState(): SchedulePageState {
     copyTripPending: copyTripMut.isPending,
     onCopyTrip,
     inviteOpen, setInviteOpen,
+    inviteScannerOpen, setInviteScannerOpen,
     membersOpen, setMembersOpen,
     signInOpen, setSignInOpen,
     hasOpenModal,

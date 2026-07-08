@@ -43,6 +43,7 @@
     "@tripmate/pdf-page-limit": "file:./packages/pdf-page-limit",
     "@tripmate/settlement-core": "file:./packages/settlement-core",
     "firebase": "^12.14.0",
+    "jsqr": "^1.4.0",
     "lucide-react": "^1.17.0",
     "pdfjs-dist": "5.4.296",
     "qrcode.react": "^4.2.0",

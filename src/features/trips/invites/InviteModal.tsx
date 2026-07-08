@@ -18,6 +18,7 @@ import LoadingText from '@/components/ui/LoadingText'
 import { useAuth } from '@/hooks/useAuth'
 import { useInvites, useCreateInvite, useRevokeInvite } from './useInvites'
 import { formatInviteExpiry } from './inviteService'
+import { buildInviteUrl } from './inviteUrl'
 import { toast } from '@/shared/toast'
 import type { Invite, Trip } from '@/types'
 
@@ -28,15 +29,6 @@ interface Props {
 }
 
 type Role = 'editor' | 'viewer'
-
-function buildInviteUrl(tripId: string, token: string): string {
-  // Token in URL fragment — never included in HTTP request line, so it
-  // doesn't leak via server logs or Referer headers when the link is
-  // forwarded through third-party apps. InvitePage reads it via
-  // `useLocation().hash`.
-  return `${window.location.origin}/invite/${tripId}#${token}`
-}
-
 
 export default function InviteModal({ isOpen, onClose, trip }: Props) {
   const { state }  = useAuth(isOpen)

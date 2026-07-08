@@ -30,7 +30,7 @@ export default function SchedulePage() {
     schedules, tripTotal, grouped, isLoading,
     selectTrip, deleteTrip, reorderTrips, handleMenuAction,
     scheduleModal, setActiveDate,
-    setCreateTripOpen, setEditTripOpen, setInviteOpen, setSignInOpen,
+    setCreateTripOpen, setEditTripOpen, setInviteOpen, setInviteScannerOpen, setSignInOpen,
   } = state
 
   // fallback={null}: the host renders nothing until a modal opens, so the
@@ -41,6 +41,11 @@ export default function SchedulePage() {
       <TripModalsHost state={state} />
     </Suspense>
   ) : null
+
+  function openInviteScanner() {
+    if (isDemo) setSignInOpen(true)
+    else setInviteScannerOpen(true)
+  }
 
   if (cloudTripsError) {
     return <>
@@ -56,7 +61,10 @@ export default function SchedulePage() {
   }
   if (cloudTripsEmpty) {
     return <>
-      <EmptyTrips onCreate={() => setCreateTripOpen(true)} />
+      <EmptyTrips
+        onCreate={() => setCreateTripOpen(true)}
+        onScanInvite={openInviteScanner}
+      />
       {modals}
     </>
   }
@@ -97,6 +105,7 @@ export default function SchedulePage() {
             onDelete={deleteTrip}
             onReorder={reorderTrips}
             onCreateTrip={() => setCreateTripOpen(true)}
+            onScanInvite={openInviteScanner}
             canDeleteLast={!isDemo}
             isOwner={isOwner}
           />

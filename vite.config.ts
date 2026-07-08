@@ -199,11 +199,16 @@ export default defineConfig({
         // - vendor-firebase-messaging-*: loaded only after notification
         //   opt-in / granted permission. Precaching it would make every PWA
         //   install pay for push code even when notifications stay off.
+        // - jsQR-*: fallback decoder for browsers without native
+        //   BarcodeDetector. Loaded only when opening the QR scanner on an
+        //   unsupported browser; precaching would make native-capable
+        //   Android/Chromium installs pay for fallback code they never run.
         globIgnores: [
           '**/vendor-sentry-*.js',
           '**/vendor-firebase-firestore-*.js',
           '**/vendor-firebase-auth-*.js',
           '**/vendor-firebase-messaging-*.js',
+          '**/jsQR-*.js',
         ],
       },
     }),

@@ -1,9 +1,12 @@
 // src/features/schedule/components/EmptyTrips.tsx
 // Onboarding hero shown when a signed-in user has zero trips. Tapping
-// the CTA opens CreateTripModal — wired from SchedulePage.
-import { Plus } from 'lucide-react'
+// the CTAs are wired from SchedulePage.
+import { Plus, QrCode } from 'lucide-react'
 
-export default function EmptyTrips({ onCreate }: { onCreate: () => void }) {
+export default function EmptyTrips({ onCreate, onScanInvite }: {
+  onCreate:     () => void
+  onScanInvite: () => void
+}) {
   return (
     <div className="bg-app min-h-full flex flex-col items-center justify-center px-6 py-10">
       <div className="text-[52px] leading-none mb-4">🗺️</div>
@@ -14,14 +17,23 @@ export default function EmptyTrips({ onCreate }: { onCreate: () => void }) {
         行程・費用・日記を一つのアプリで。<br />
         まずは旅程を作成してください。
       </p>
-      <button
-        onClick={onCreate}
-        className="inline-flex items-center gap-1.5 px-6 py-3 rounded-chip border-none bg-teal text-white text-[13.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
-        style={{ boxShadow: '0 6px 20px rgba(61,139,122,0.28)' }}
-      >
-        <Plus size={15} strokeWidth={2.5} />
-        新しい旅を作成
-      </button>
+      <div className="flex flex-col items-center gap-2.5">
+        <button
+          onClick={onCreate}
+          className="inline-flex items-center gap-1.5 px-6 py-3 rounded-chip border-none bg-teal text-white text-[13.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
+          style={{ boxShadow: '0 6px 20px rgba(61,139,122,0.28)' }}
+        >
+          <Plus size={15} strokeWidth={2.5} />
+          新しい旅を作成
+        </button>
+        <button
+          onClick={onScanInvite}
+          className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-chip border border-border bg-surface text-pick text-[12.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:bg-pick-pale hover:border-pick"
+        >
+          <QrCode size={14} strokeWidth={2.4} />
+          QRコードで参加
+        </button>
+      </div>
     </div>
   )
 }

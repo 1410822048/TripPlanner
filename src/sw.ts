@@ -81,6 +81,19 @@ registerRoute(
   }),
 )
 
+registerRoute(
+  ({ url }) => url.origin === sw.location.origin && /\/assets\/jsQR-.*\.js$/.test(url.pathname),
+  new CacheFirst({
+    cacheName: 'qr-scanner-fallback-cache',
+    plugins: [
+      new ExpirationPlugin({
+        maxEntries:    2,
+        maxAgeSeconds: 90 * 24 * 60 * 60,
+      }),
+    ],
+  }),
+)
+
 function toSameOriginUrl(raw: unknown): string {
   const fallback = new URL('/schedule', sw.location.origin)
   if (typeof raw !== 'string' || raw.length > 300) return fallback.href
