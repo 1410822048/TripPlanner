@@ -126,6 +126,8 @@ export async function copyTrip(
     currency:    source.currency,
     ownerId:     user.uid,
     memberIds,
+    wishVotingDeadlineAt:         null,
+    wishVotingDeadlineNotifiedAt: null,
     createdAt:   serverTimestamp(),
     updatedAt:   serverTimestamp(),
   })
@@ -205,6 +207,8 @@ export async function copyTrip(
     currency:    source.currency,
     ownerId:     user.uid,
     memberIds,
+    wishVotingDeadlineAt:         null,
+    wishVotingDeadlineNotifiedAt: null,
     createdAt:   nowTs,
     updatedAt:   nowTs,
   }

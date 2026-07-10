@@ -35,6 +35,7 @@ export type TemplateKey =
   | 'trip.title_updated'
   | 'trip.dates_updated'
   | 'trip.destination_updated'
+  | 'wish.deadline_closed'
 
 export interface EventAuth {
   authId?: string
@@ -126,4 +127,5 @@ export const TEMPLATES: Record<TemplateKey, string> = {
   'trip.title_updated':       '旅程名が変更されました',
   'trip.dates_updated':       '日程が変更されました',
   'trip.destination_updated': '目的地が変更されました',
+  'wish.deadline_closed':     'ウィッシュの投票が締め切られました',
 }

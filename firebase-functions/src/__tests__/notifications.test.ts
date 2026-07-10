@@ -237,6 +237,22 @@ describe('writeNotificationDocs', () => {
     expect(firestoreMock.txCreate.mock.calls[0]![1].body).toBe('Akiさんが旅程から退出しました')
   })
 
+  test('wish.deadline_closed is a fixed system body, no actor resolution', async () => {
+    firestoreMock.docData.set('trips/trip-1', { title: 'Tokyo Trip' })
+
+    await writeNotificationDocs(baseEvent({
+      entityType: 'wish', entityId: 'trip-1', action: 'updated',
+      templateKey: 'wish.deadline_closed', route: '/wish',
+      actorUid: null, actorUnknown: true,
+    }), ['u1', 'u2'])
+
+    const [, doc] = firestoreMock.txCreate.mock.calls[0]!
+    expect(doc.body).toBe('ウィッシュの投票が締め切られました。結果を確認しましょう')
+    expect(doc.route).toBe('/wish')
+    expect(doc.entityType).toBe('wish')
+    expect(doc.actorUid).toBeNull()
+  })
+
   test('stamps expiresAt exactly NOTIFICATION_RETENTION_MS out from now', async () => {
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
     try {

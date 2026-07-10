@@ -480,6 +480,16 @@ export interface QueryPage {
   nextPageToken?: string
 }
 
+/** Wish sweep needs the document version returned by runQuery so its
+ *  subsequent PATCH can prove the candidate did not change in between. */
+export interface WishDeadlineQueryPage {
+  docs: {
+    name:       string
+    fields:     Record<string, FsValue>
+    updateTime: string
+  }[]
+}
+
 /**
  * Page through expense docs that are purge candidates:
  *   receiptPurgedAt == null  AND  deletedAt < cutoff
@@ -581,6 +591,142 @@ export async function queryReceiptPurgeCandidates(
       fields: r.document!.fields ?? {},
     }))
   return { docs }
+}
+
+// ─── Wish deadline sweep: trip-level candidate query ──────────────
+
+/**
+ * Page through trips where wishVotingDeadlineAt <= now AND
+ * wishVotingDeadlineNotifiedAt is still null. `trips` is a root
+ * collection (not a subcollection), so this is a plain COLLECTION query
+ * — no `allDescendants: true`, unlike queryReceiptPurgeCandidates.
+ *
+ * Cursor uses (wishVotingDeadlineAt, __name__), matching orderBy. The
+ * IS_NULL filter doesn't need to appear in the cursor tuple (same
+ * reasoning as queryReceiptPurgeCandidates' receiptPurgedAt).
+ */
+export async function queryWishDeadlineSweepCandidates(
+  accessToken:            string,
+  projectId:              string,
+  nowMs:                  number,
+  pageSize:               number,
+  cursorAfterDocName?:     string,
+  cursorAfterDeadlineMs?:  number,
+): Promise<WishDeadlineQueryPage> {
+  const parent = `projects/${projectId}/databases/(default)/documents`
+  const nowIso = new Date(nowMs).toISOString()
+
+  const structuredQuery: Record<string, unknown> = {
+    from: [{ collectionId: 'trips' }],
+    where: {
+      compositeFilter: {
+        op: 'AND',
+        filters: [
+          {
+            unaryFilter: {
+              field: { fieldPath: 'wishVotingDeadlineNotifiedAt' },
+              op:    'IS_NULL',
+            },
+          },
+          {
+            fieldFilter: {
+              field: { fieldPath: 'wishVotingDeadlineAt' },
+              op:    'LESS_THAN_OR_EQUAL',
+              value: { timestampValue: nowIso },
+            },
+          },
+        ],
+      },
+    },
+    orderBy: [
+      { field: { fieldPath: 'wishVotingDeadlineAt' }, direction: 'ASCENDING' },
+      { field: { fieldPath: '__name__' },              direction: 'ASCENDING' },
+    ],
+    limit: pageSize,
+  }
+  if (cursorAfterDocName && cursorAfterDeadlineMs != null) {
+    structuredQuery.startAt = {
+      before: false,
+      values: [
+        { timestampValue: new Date(cursorAfterDeadlineMs).toISOString() },
+        { referenceValue: cursorAfterDocName },
+      ],
+    }
+  }
+
+  const res = await fetch(`${BASE}/${parent}:runQuery`, {
+    ...NO_CACHE,
+    method:  'POST',
+    headers: {
+      Authorization:  `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ structuredQuery }),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`queryWishDeadlineSweepCandidates → ${res.status}: ${detail.slice(0, 200)}`)
+  }
+  const rows = await res.json() as {
+    document?: {
+      name:        string
+      fields?:     Record<string, FsValue>
+      updateTime?: string
+    }
+  }[]
+  const docs = rows.flatMap(row => {
+    const document = row.document
+    if (!document || typeof document.updateTime !== 'string') return []
+    return [{
+      name:       document.name,
+      fields:     document.fields ?? {},
+      updateTime: document.updateTime,
+    }]
+  })
+  return { docs }
+}
+
+/**
+ * Atomically stamp a Wish deadline candidate only if it is still the exact
+ * document version returned by the candidate query. A concurrent owner edit
+ * changes updateTime, so Firestore rejects this PATCH without touching the doc.
+ *
+ * `false` is a benign race (deleted or changed document); callers leave it for
+ * the next cron pass. Other failures still throw and surface operational faults.
+ */
+export async function stampWishDeadlineNotifiedIfUnchanged(
+  accessToken:       string,
+  projectId:         string,
+  path:              string,
+  queriedUpdateTime: string,
+  notifiedAtIso:     string,
+): Promise<boolean> {
+  const url = new URL(fullName(projectId, path))
+  url.searchParams.set('updateMask.fieldPaths', 'wishVotingDeadlineNotifiedAt')
+  url.searchParams.set('currentDocument.updateTime', queriedUpdateTime)
+
+  const res = await fetch(url, {
+    ...NO_CACHE,
+    method:  'PATCH',
+    headers: {
+      Authorization:  `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      fields: {
+        wishVotingDeadlineNotifiedAt: { timestampValue: notifiedAtIso },
+      },
+    }),
+  })
+  if (res.ok) return true
+  if (res.status === 404 || res.status === 412) return false
+  if (res.status === 400) {
+    const detail = await res.text().catch(() => '')
+    if (detail.includes('FAILED_PRECONDITION')) return false
+    throw new Error(`stampWishDeadlineNotifiedIfUnchanged ${path} → 400: ${detail.slice(0, 200)}`)
+  }
+  const detail = await res.text().catch(() => '')
+  throw new Error(`stampWishDeadlineNotifiedIfUnchanged ${path} → ${res.status}: ${detail.slice(0, 200)}`)
 }
 
 // ─── Upload intent purge: status + age query ──────────────────────
@@ -968,4 +1114,14 @@ export function readTimestampMs(fields: Record<string, FsValue> | null | undefin
   if (typeof iso !== 'string') return undefined
   const ms = Date.parse(iso)
   return Number.isFinite(ms) ? ms : undefined
+}
+
+/** Strip the `projects/<id>/databases/(default)/documents/` prefix from a
+ *  full document resource name so callers using path-based helpers
+ *  (`updateDocFields`, `deleteDocFields`) can target it. Shared by every
+ *  cron module that pages a runQuery result and then patches docs by path
+ *  (receipt-purge, orphan-purge, wish-deadline-sweep). */
+export function stripDocPrefix(fullName: string, projectId: string): string {
+  const prefix = `projects/${projectId}/databases/(default)/documents/`
+  return fullName.startsWith(prefix) ? fullName.slice(prefix.length) : fullName
 }

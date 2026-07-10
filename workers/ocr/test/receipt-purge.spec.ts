@@ -34,6 +34,7 @@ vi.mock('../src/firestore', async () => {
 		updateDocFields:             vi.fn(async (..._args: unknown[]) => true),
 		readNestedString:            actual.readNestedString,
 		readTimestampMs:             actual.readTimestampMs,
+		stripDocPrefix:              actual.stripDocPrefix,
 	}
 })
 vi.mock('../src/admin', () => ({

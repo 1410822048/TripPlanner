@@ -75,6 +75,22 @@ export interface Trip {
    * with the trip doc at end of cascade.
    */
   deletingAt?: Timestamp | null
+  /**
+   * Owner-set shared cutoff for Wish voting. `null` = no deadline (default).
+   * Once past, firestore.rules + the Worker /wish-file-* endpoints reject
+   * all wish create/update/delete/vote writes — see wishVotingOpen(tripId).
+   * Always present. New trips are seeded with explicit null values; this
+   * codebase intentionally does not support legacy trip docs missing these
+   * keys.
+   */
+  wishVotingDeadlineAt: Timestamp | null
+  /**
+   * Stamped by the Worker's wish-deadline-sweep cron (Admin SDK) the first
+   * time it observes wishVotingDeadlineAt <= now. Client rules enforce
+   * `unchanged` on this field — only the Worker can set it. Once non-null,
+   * the owner can no longer change wishVotingDeadlineAt (no re-open).
+   */
+  wishVotingDeadlineNotifiedAt: Timestamp | null
   createdAt: Timestamp
   updatedAt: Timestamp
 }
@@ -117,6 +133,10 @@ export const TripDocSchema = z.object({
   }).optional(),
   /** Cascade write-quiesce marker. Worker-controlled (admin SDK). */
   deletingAt: TimestampSchema.nullable().optional(),
+  // Always present: the database is initialized from the current schema and
+  // the create rule forces both fields to be written as explicit null values.
+  wishVotingDeadlineAt:         TimestampSchema.nullable(),
+  wishVotingDeadlineNotifiedAt: TimestampSchema.nullable(),
   createdAt:   TimestampSchema,
   updatedAt:   TimestampSchema,
 })

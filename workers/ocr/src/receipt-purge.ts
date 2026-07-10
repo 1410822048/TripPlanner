@@ -22,6 +22,7 @@ import {
   updateDocFields,
   readNestedString,
   readTimestampMs,
+  stripDocPrefix,
   type FsValue,
 }                                            from './firestore'
 import { deleteObject }                      from './storage'
@@ -164,14 +165,4 @@ export async function purgeExpiredReceipts(
   }
 
   return report
-}
-
-/** Strip the `projects/<id>/databases/(default)/documents/` prefix from
- *  a full document resource name so callers using path-based helpers
- *  (`fullName(projectId, path)`) can target it. The REST endpoints we
- *  pass results from emit full resource names; updateDocFields takes
- *  a trip-scoped path. */
-function stripDocPrefix(fullName: string, projectId: string): string {
-  const prefix = `projects/${projectId}/databases/(default)/documents/`
-  return fullName.startsWith(prefix) ? fullName.slice(prefix.length) : fullName
 }

@@ -191,6 +191,8 @@ export async function createTrip(input: CreateTripInput, user: User): Promise<Tr
     currency:    data.currency,
     ownerId:     user.uid,
     memberIds,
+    wishVotingDeadlineAt:         null,
+    wishVotingDeadlineNotifiedAt: null,
     createdAt:   serverTimestamp(),
     updatedAt:   serverTimestamp(),
   }
@@ -225,6 +227,8 @@ export async function createTrip(input: CreateTripInput, user: User): Promise<Tr
     currency:    data.currency,
     ownerId:     user.uid,
     memberIds,
+    wishVotingDeadlineAt:         null,
+    wishVotingDeadlineNotifiedAt: null,
     createdAt:   nowTs,
     updatedAt:   nowTs,
   }
@@ -255,4 +259,18 @@ export async function updateTrip(
   if (validated.startDate) patch.startDate = toLocalMidnightTimestamp(validated.startDate, Timestamp)
   if (validated.endDate)   patch.endDate   = toLocalMidnightTimestamp(validated.endDate,   Timestamp)
   await updateDoc(doc(db, ...P.trip(tripId)), patch)
+}
+
+/**
+ * Owner-only shared Wish voting cutoff. Separate from updateTrip/
+ * UpdateTripSchema (that schema is string-typed trip-metadata form fields);
+ * this is a standalone Timestamp-typed toggle, closer in spirit to seeding
+ * ownerId/memberIds than to editing title/dates.
+ */
+export async function setWishVotingDeadline(tripId: string, deadlineAt: Date | null): Promise<void> {
+  const { db, doc, updateDoc, serverTimestamp, Timestamp } = await getFirebase()
+  await updateDoc(doc(db, ...P.trip(tripId)), {
+    wishVotingDeadlineAt: deadlineAt ? Timestamp.fromDate(deadlineAt) : null,
+    updatedAt: serverTimestamp(),
+  })
 }

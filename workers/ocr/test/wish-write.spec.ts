@@ -385,6 +385,75 @@ describe('wishFileCreate: authorization', () => {
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 403 })
 	})
+
+	it('REGRESSION: non-member probing an expired-deadline trip gets "not a member", not the deadline message (no state leak)', async () => {
+		// Membership must be checked before the deadline gate -- otherwise a
+		// non-member could distinguish "deadline passed" from "not a member"
+		// via the error message alone, leaking a trip's Wish-deadline state
+		// to someone who was never a member.
+		const trip = tripReadDoc()
+		trip.fields = { ...trip.fields, wishVotingDeadlineAt: { timestampValue: new Date(Date.now() - 60_000).toISOString() } }
+		txGetResponses.set(`trips/${TRIP_ID}`, trip)
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`,
+			notFoundReadDoc(`trips/${TRIP_ID}/members/${CALLER_UID}`))
+		await expect(wishFileCreate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, wishId: WISH_ID, wish: validWishPayload(), intentIds: [FULL_INTENT_ID] },
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ status: 403, message: expect.stringContaining('not a trip member') })
+	})
+
+	it('wish voting deadline has passed → 403 CascadeError (Admin SDK bypasses rules, so this Worker gate is the only enforcement on this path)', async () => {
+		const trip = tripReadDoc()
+		trip.fields = { ...trip.fields, wishVotingDeadlineAt: { timestampValue: new Date(Date.now() - 60_000).toISOString() } }
+		txGetResponses.set(`trips/${TRIP_ID}`, trip)
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('viewer'))
+		await expect(wishFileCreate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, wishId: WISH_ID, wish: validWishPayload(), intentIds: [FULL_INTENT_ID] },
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ status: 403 })
+	})
+
+	it('wish voting deadline in the future → allowed (no false-positive lock)', async () => {
+		seedAuth('viewer')
+		const trip = tripReadDoc()
+		trip.fields = { ...trip.fields, wishVotingDeadlineAt: { timestampValue: new Date(Date.now() + 60_000).toISOString() } }
+		txGetResponses.set(`trips/${TRIP_ID}`, trip)
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
+		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
+		)
+		const result = await wishFileCreate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, wishId: WISH_ID, wish: validWishPayload(), intentIds: [FULL_INTENT_ID] },
+			'{}', BUCKET,
+		)
+		expect(result.wishId).toBe(WISH_ID)
+	})
+
+	it('wish voting deadline exactly equal to now → 403 (boundary is closed, not open)', async () => {
+		// Fake timers pin Date.now() so the deadline and "now" are the exact
+		// same instant with no test/network timing gap -- assertWishVotingOpen
+		// uses `deadlineMs <= Date.now()`, so this asserts the boundary itself
+		// (not just "1 minute past") is treated as closed.
+		vi.useFakeTimers()
+		try {
+			const nowMs = Date.now()
+			const trip = tripReadDoc()
+			trip.fields = { ...trip.fields, wishVotingDeadlineAt: { timestampValue: new Date(nowMs).toISOString() } }
+			txGetResponses.set(`trips/${TRIP_ID}`, trip)
+			txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('viewer'))
+			await expect(wishFileCreate(
+				CALLER_UID,
+				{ tripId: TRIP_ID, wishId: WISH_ID, wish: validWishPayload(), intentIds: [FULL_INTENT_ID] },
+				'{}', BUCKET,
+			)).rejects.toMatchObject({ status: 403 })
+		} finally {
+			vi.useRealTimers()
+		}
+	})
 })
 
 // ─── Conflict / state ─────────────────────────────────────────────
@@ -733,6 +802,20 @@ describe('wishFileUpdate: authorization', () => {
 		)).rejects.toMatchObject({ status: 403 })
 	})
 
+	it('REGRESSION: non-member probing an expired-deadline trip gets "not a member", not the deadline message (no state leak)', async () => {
+		const trip = tripReadDoc()
+		trip.fields = { ...trip.fields, wishVotingDeadlineAt: { timestampValue: new Date(Date.now() - 60_000).toISOString() } }
+		txGetResponses.set(`trips/${TRIP_ID}`, trip)
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`,
+			notFoundReadDoc(`trips/${TRIP_ID}/members/${CALLER_UID}`))
+		txGetResponses.set(`trips/${TRIP_ID}/wishes/${WISH_ID}`, ownedWishReadDoc())
+		await expect(wishFileUpdate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, wishId: WISH_ID, patch: { title: 'x' }, intentIds: [FULL_INTENT_ID], expectedCurrentPath: FULL_PATH },
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ status: 403, message: expect.stringContaining('not a trip member') })
+	})
+
 	it('wish doc not found → 404', async () => {
 		txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('viewer'))
@@ -743,6 +826,19 @@ describe('wishFileUpdate: authorization', () => {
 			{ tripId: TRIP_ID, wishId: WISH_ID, patch: { title: 'x' }, intentIds: [FULL_INTENT_ID], expectedCurrentPath: FULL_PATH },
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ status: 404 })
+	})
+
+	it('wish voting deadline has passed → 403 (blocks image-replace via Worker even for the proposer)', async () => {
+		const trip = tripReadDoc()
+		trip.fields = { ...trip.fields, wishVotingDeadlineAt: { timestampValue: new Date(Date.now() - 60_000).toISOString() } }
+		txGetResponses.set(`trips/${TRIP_ID}`, trip)
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('viewer'))
+		txGetResponses.set(`trips/${TRIP_ID}/wishes/${WISH_ID}`, ownedWishReadDoc())
+		await expect(wishFileUpdate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, wishId: WISH_ID, patch: { title: 'x' }, intentIds: [FULL_INTENT_ID], expectedCurrentPath: FULL_PATH },
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ status: 403 })
 	})
 
 	it('caller is not the wish proposer → 403 (rules-parity)', async () => {

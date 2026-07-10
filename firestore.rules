@@ -68,6 +68,16 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/trips/$(tripId))
         && get(/databases/$(database)/documents/trips/$(tripId)).data.ownerId == uid();
     }
+    // Shared Wish voting cutoff. Every trip doc carries this field because
+    // the database is initialized from the current schema and the create rule
+    // below forces explicit null. This mirrors the "always present" invariant
+    // used for expense.receiptPurgedAt. The two get() calls this triggers are
+    // cached by the rules engine within one eval, same as
+    // canWrite()/isTripOwner().
+    function wishVotingOpen(tripId) {
+      return get(tripPath(tripId)).data.wishVotingDeadlineAt == null
+        || request.time < get(tripPath(tripId)).data.wishVotingDeadlineAt;
+    }
 
     // ─── Field-level update guards ────────────────────────────────
     // Each entity's update rule should explicitly preserve identity /
@@ -250,6 +260,7 @@ service cloud.firestore {
                     && request.resource.data.keys().hasOnly([
                          'ownerId','title','destination','startDate','endDate',
                          'currency','icon','memberIds','lastActivityByFeature',
+                         'wishVotingDeadlineAt','wishVotingDeadlineNotifiedAt',
                          'createdAt','updatedAt'
                        ])
                     && request.resource.data.ownerId == uid()
@@ -268,7 +279,15 @@ service cloud.firestore {
                               && request.resource.data.currency.size() == 3))
                     && (!('icon' in request.resource.data)
                           || (request.resource.data.icon is string
-                              && request.resource.data.icon.size() <= 8));
+                              && request.resource.data.icon.size() <= 8))
+                    // Every trip must be created with these two fields
+                    // present and null — establishes the "always present"
+                    // schema invariant the Worker sweep's IS_NULL query and
+                    // wishVotingOpen()/owner-update rule below depend on.
+                    && 'wishVotingDeadlineAt' in request.resource.data
+                    && request.resource.data.wishVotingDeadlineAt == null
+                    && 'wishVotingDeadlineNotifiedAt' in request.resource.data
+                    && request.resource.data.wishVotingDeadlineNotifiedAt == null;
       // Two update paths:
       //   1. Owner edits trip metadata (title/dates/icon/currency).
       //      ownerId + createdAt pinned to prevent transfer / forgery.
@@ -285,7 +304,8 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly([
              'ownerId','title','destination','startDate','endDate',
              'currency','icon','memberIds','lastActivityByFeature',
-             'deletingAt','createdAt','updatedAt'
+             'deletingAt','wishVotingDeadlineAt','wishVotingDeadlineNotifiedAt',
+             'createdAt','updatedAt'
            ])
         && unchanged('ownerId')
         && unchanged('createdAt')
@@ -295,6 +315,18 @@ service cloud.firestore {
         // lastActivity paths pin their change sets via changedOnly, but
         // the owner-edit path still carries the explicit guard.
         && unchanged('deletingAt')
+        // wishVotingDeadlineNotifiedAt is Worker-only (wish-deadline-sweep
+        // cron, Admin SDK bypasses rules). The owner may change the deadline
+        // only while the current deadline is still open; otherwise there is
+        // a sweep-delay window where raw SDK could reopen voting after the
+        // cutoff but before the Worker stamps notifiedAt.
+        && unchanged('wishVotingDeadlineNotifiedAt')
+        && (unchanged('wishVotingDeadlineAt')
+              || (resource.data.wishVotingDeadlineNotifiedAt == null
+                    && (resource.data.wishVotingDeadlineAt == null
+                          || request.time < resource.data.wishVotingDeadlineAt)))
+        && (request.resource.data.wishVotingDeadlineAt == null
+              || request.resource.data.wishVotingDeadlineAt is timestamp)
         && request.resource.data.title is string
         && request.resource.data.title.size() > 0
         && request.resource.data.title.size() <= 100
@@ -583,6 +615,7 @@ service cloud.firestore {
         // blocked everywhere else.
         allow create: if exists(memberPath(tripId))
                       && tripNotDeleting(tripId)
+                      && wishVotingOpen(tripId)
                       // Allowlist closes the raw-SDK "stuff arbitrary extra
                       // fields" hole. Optional fields can be absent; this
                       // only rejects keys NOT in the list.
@@ -633,7 +666,7 @@ service cloud.firestore {
         //      prevents a malicious member from clearing or hijacking
         //      others' votes.
         allow update: if (
-          memberOfDoc() && (
+          memberOfDoc() && wishVotingOpen(tripId) && (
             // 1. Proposer path: edit any field EXCEPT ownership / identity.
             (
               resource.data.proposedBy == uid()
@@ -691,6 +724,7 @@ service cloud.firestore {
         //      power to delete the entire trip; per-wish moderation is
         //      a strict subset of that authority.
         allow delete: if memberOfDoc()
+                      && wishVotingOpen(tripId)
                       && (resource.data.proposedBy == uid() || isTripOwner(tripId));
       }
 

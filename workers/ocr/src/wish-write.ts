@@ -29,6 +29,7 @@ import { getAdminToken, getProjectId }                              from './admi
 import {
   readString,
   readNestedString,
+  readTimestampMs,
   type FsValue,
 }                                                                   from './firestore'
 import { withTokenRetry, CascadeError }                             from './cascade'
@@ -127,6 +128,16 @@ interface TripContext {
   memberIds: string[]
 }
 
+/** Mirrors firestore.rules' wishVotingOpen(tripId). Admin SDK bypasses
+ *  rules entirely, so these Worker endpoints need their own deadline gate
+ *  or a closed-vote trip could still accept image uploads through them. */
+function assertWishVotingOpen(trip: { fields: Record<string, FsValue> }): void {
+  const deadlineMs = readTimestampMs(trip.fields, 'wishVotingDeadlineAt')
+  if (deadlineMs != null && deadlineMs <= Date.now()) {
+    throw new CascadeError(403, 'wish voting deadline has passed')
+  }
+}
+
 /** Wish create authz: caller must be a member of the trip (any role
  *  including viewer — wishes are intentionally low-friction). Trip
  *  must exist and not be cascade-deleting. memberIds returned for
@@ -148,7 +159,11 @@ async function authorizeWishCreateTx(
   ])
   if (!trip.exists)               throw new CascadeError(404, 'trip not found')
   if ('deletingAt' in trip.fields) throw new CascadeError(410, 'trip is being deleted')
+  // Membership is checked BEFORE the deadline gate so a non-member probing a
+  // tripId can't distinguish "deadline passed" from "not a member" via the
+  // error message — both collapse to the same 403 as far as they can tell.
   if (!member.exists)              throw new CascadeError(403, 'caller is not a trip member')
+  assertWishVotingOpen(trip)
 
   const role = readString(member.fields, 'role')
   if (role !== 'owner' && role !== 'editor' && role !== 'viewer') {
@@ -381,7 +396,11 @@ async function authorizeWishUpdateTx(
   ])
   if (!trip.exists)               throw new CascadeError(404, 'trip not found')
   if ('deletingAt' in trip.fields) throw new CascadeError(410, 'trip is being deleted')
+  // Membership is checked BEFORE the deadline gate so a non-member probing a
+  // tripId can't distinguish "deadline passed" from "not a member" via the
+  // error message — both collapse to the same 403 as far as they can tell.
   if (!member.exists)              throw new CascadeError(403, 'caller is not a trip member')
+  assertWishVotingOpen(trip)
 
   const role = readString(member.fields, 'role')
   if (role !== 'owner' && role !== 'editor' && role !== 'viewer') {

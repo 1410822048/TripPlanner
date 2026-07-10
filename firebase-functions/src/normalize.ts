@@ -506,6 +506,27 @@ export function normalizeTripRootWrite(input: {
   // (cascade) are handled elsewhere / silent.
   if (!before || !after) return []
 
+  // Worker-only field (wish-deadline-sweep cron, Admin SDK): notified goes
+  // null -> Timestamp exactly once, mutually exclusive with owner-edit
+  // fields on the same write. No real actor to resolve, so this is built
+  // directly (bypassing actorEvent()) — same shape as member.role_changed.
+  if (!before.wishVotingDeadlineNotifiedAt && after.wishVotingDeadlineNotifiedAt) {
+    return [{
+      eventId,
+      tripId,
+      // 'wish' (not 'trip') so the inbox row picks up the Heart icon like
+      // every other wish.* notification, even though the underlying write
+      // is on the trip root doc.
+      entityType: 'wish',
+      entityId: tripId,
+      action: 'updated',
+      actorUid: null,
+      actorUnknown: true,
+      route: '/wish',
+      templateKey: 'wish.deadline_closed',
+    }]
+  }
+
   // One notification per save, priority dates > destination > title. Icon-only
   // edits are deliberately silent, so a single edit that touches several fields
   // never fans out to 2-3 pushes.

@@ -8,7 +8,7 @@
 // tab filters by `category`; new wishes default to whichever tab is
 // currently active so the user's intent is reflected without an extra
 // dropdown click.
-import { Fragment, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { Plus, Heart } from 'lucide-react'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
 import { toast } from '@/shared/toast'
@@ -30,14 +30,38 @@ import type { TripMember } from '@/features/trips/types'
 import WishFormModal, { type WishFormResult } from './WishFormModal'
 import WishCard from './WishCard'
 import WishDetailSheet from './WishDetailSheet'
+import WishVotingDeadlineBar from './WishVotingDeadlineBar'
+import WishDeadlineSheet from './WishDeadlineSheet'
 import { rankWishes, toConsensus } from '../utils'
 import { WISH_CATEGORIES } from '../categories'
+import { useSetWishVotingDeadline } from '@/features/trips/hooks/useTrips'
 
 export default function WishPage() {
   const { ctx, uid, cloudTripId, mutationTripId, isDemo, isOwner, modal, signIn } =
     useFeatureListPage<Wish>()
   const [activeTab, setActiveTab] = useState<WishCategory>('place')
   const [detailWishId, setDetailWishId] = useState<string | null>(null)
+  const [deadlineSheetOpen, setDeadlineSheetOpen] = useState(false)
+
+  // Reactive clock for the Wish deadline. Render stays pure; the effect below
+  // advances this only when the cutoff is reached.
+  const [now, setNow] = useState(() => Date.now())
+
+  // Shared Wish voting deadline (demo has no deadline concept — always open).
+  const deadlineAt   = ctx.status === 'cloud' ? ctx.trip.wishVotingDeadlineAt : null
+  const notifiedAt   = ctx.status === 'cloud' ? ctx.trip.wishVotingDeadlineNotifiedAt : null
+  const deadlineMs   = deadlineAt?.toMillis() ?? null
+  const deadlineLocked = !isDemo && notifiedAt != null
+  const votingClosed = !isDemo && (deadlineLocked || (deadlineMs != null && deadlineMs <= now))
+  const setDeadlineMut = useSetWishVotingDeadline(uid)
+
+  useEffect(() => {
+    if (isDemo || deadlineMs == null || deadlineLocked || deadlineMs <= now) return
+    const currentMs = Date.now()
+    const delayMs = Math.max(0, Math.min(deadlineMs - currentMs, 2_147_483_647))
+    const timerId = window.setTimeout(() => setNow(Date.now()), delayMs)
+    return () => window.clearTimeout(timerId)
+  }, [deadlineLocked, deadlineMs, isDemo, now])
 
   const { data: cloudWishes, isLoading } = useWishes(cloudTripId)
   const { data: fbMembers } = useMembers(cloudTripId)
@@ -112,6 +136,7 @@ export default function WishPage() {
   const title = ctx.trip.title
 
   function handleSave({ input, attachment }: WishFormResult) {
+    if (votingClosed) { modal.close(); toast.error('投票は締め切られました'); return }
     if (isDemo) { modal.close(); signIn.open(); return }
     if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
 
@@ -137,6 +162,7 @@ export default function WishPage() {
 
   function handleDelete() {
     if (!modal.editTarget) return
+    if (votingClosed) { modal.close(); toast.error('投票は締め切られました'); return }
     if (isDemo) { modal.close(); signIn.open(); return }
     const target = modal.editTarget
     modal.close()
@@ -144,6 +170,7 @@ export default function WishPage() {
   }
 
   function handleToggleVote(w: Wish) {
+    if (votingClosed) { toast.error('投票は締め切られました'); return }
     if (isDemo) { signIn.open(); return }
     if (!uid)   { toast.error('ログイン準備中です。少々お待ちください'); return }
     voteMut.mutate({
@@ -154,10 +181,11 @@ export default function WishPage() {
   }
 
   /** Whether the current viewer can delete a given wish. Mirrors the
-   *  firestore.rules predicate (proposer === uid OR trip owner). Drives
-   *  the ⋮ menu's 削除 item visibility. */
+   *  firestore.rules predicate (proposer === uid OR trip owner), plus the
+   *  wishVotingOpen(tripId) gate — once closed, nobody (incl. owner) can
+   *  delete. Drives the ⋮ menu's 削除 item visibility. */
   function canDelete(w: Wish): boolean {
-    if (isDemo || !uid) return false
+    if (votingClosed || isDemo || !uid) return false
     return w.proposedBy === uid || isOwner
   }
 
@@ -166,13 +194,26 @@ export default function WishPage() {
    *  Demo mode opens the modal so the save-time signIn prompt is
    *  reachable (consistent with other features). */
   function canEdit(w: Wish): boolean {
+    if (votingClosed) return false
     if (isDemo) return true
     return uid != null && w.proposedBy === uid
   }
 
   function handleDeleteFromMenu(w: Wish) {
+    if (votingClosed) { toast.error('投票は締め切られました'); return }
     if (isDemo) { signIn.open(); return }
     deleteMut.mutate({ wishId: w.id, image: w.image })
+  }
+
+  function handleSaveDeadline(deadlineAtInput: Date | null) {
+    if (!cloudTripId) return
+    if (votingClosed) {
+      setDeadlineSheetOpen(false)
+      toast.error('投票は締め切られました')
+      return
+    }
+    setDeadlineMut.mutate({ tripId: cloudTripId, deadlineAt: deadlineAtInput })
+    setDeadlineSheetOpen(false)
   }
 
   function handleEditFromDetail(w: Wish) {
@@ -205,6 +246,18 @@ export default function WishPage() {
           )}
         </div>
       </div>
+
+      {!isDemo && (
+        <WishVotingDeadlineBar
+          deadlineAt={deadlineAt}
+          now={now}
+          votingClosed={votingClosed}
+          deadlineLocked={deadlineLocked}
+          isOwner={isOwner}
+          isSaving={setDeadlineMut.isPending}
+          onOpenSheet={() => setDeadlineSheetOpen(true)}
+        />
+      )}
 
       {showBoardChrome && (
         <>
@@ -241,18 +294,21 @@ export default function WishPage() {
           </div>
 
           {/* 分類に紐づく追加入口。固定フレーム内に置くことで、リストの Y 軸は
-              このボタンの下から始まる。空タブでも高さが変わらずジャンプしない。 */}
-          <div className="shrink-0 px-4 pb-2">
-            <button
-              type="button"
-              onClick={modal.openAdd}
-              aria-label={`${activeTabLabel}の候補を追加`}
-              className="w-full h-11 rounded-[16px] border border-teal/20 bg-teal-pale text-teal text-[12.5px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors hover:bg-teal/15 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-            >
-              <Plus size={15} strokeWidth={2.5} />
-              {activeTabLabel}の候補を追加
-            </button>
-          </div>
+              このボタンの下から始まる。空タブでも高さが変わらずジャンプしない。
+              投票締切後は非表示(wishVotingOpen(tripId) が create を拒否する)。 */}
+          {!votingClosed && (
+            <div className="shrink-0 px-4 pb-2">
+              <button
+                type="button"
+                onClick={modal.openAdd}
+                aria-label={`${activeTabLabel}の候補を追加`}
+                className="w-full h-11 rounded-[16px] border border-teal/20 bg-teal-pale text-teal text-[12.5px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors hover:bg-teal/15 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              >
+                <Plus size={15} strokeWidth={2.5} />
+                {activeTabLabel}の候補を追加
+              </button>
+            </div>
+          )}
         </>
       )}
 
@@ -295,6 +351,7 @@ export default function WishPage() {
                   行きたい場所や食べたいお店を<br />
                   みんなで集めましょう
                 </p>
+                {!votingClosed && (
                 <button
                   type="button"
                   onClick={modal.openAdd}
@@ -304,6 +361,7 @@ export default function WishPage() {
                   <Plus size={14} strokeWidth={2.5} />
                   候補を追加
                 </button>
+                )}
               </>
             )}
           </div>
@@ -395,6 +453,16 @@ export default function WishPage() {
         onClose={signIn.close}
         reason="ウィッシュに投票するには、"
       />
+
+      {deadlineSheetOpen && (
+        <WishDeadlineSheet
+          isOpen
+          currentDeadlineAt={deadlineAt}
+          isSaving={setDeadlineMut.isPending}
+          onClose={() => setDeadlineSheetOpen(false)}
+          onSave={handleSaveDeadline}
+        />
+      )}
     </div>
   )
 }

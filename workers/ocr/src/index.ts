@@ -90,6 +90,7 @@ import { purgeExpiredReceipts }                   from './receipt-purge'
 import { drainOrphanPurges }                      from './orphan-purge'
 import { runStorageMaintenance }                  from './storage-scan'
 import { purgeExpiredUploadIntents }              from './upload-intent-purge'
+import { sweepWishVotingDeadlines }               from './wish-deadline-sweep'
 import {
   expenseCreate, expenseUpdate,
   ExpenseCreateRequestSchema, ExpenseUpdateRequestSchema,
@@ -800,6 +801,13 @@ export const ROUTES: RouteDescriptor[] = [
   },
 ]
 
+// Two independent schedules on the same Worker (wrangler.jsonc
+// triggers.crons) — scheduled() below branches on event.cron so the
+// 5-min Wish-deadline sweep never also fires the daily maintenance jobs
+// (and vice versa).
+const DAILY_MAINTENANCE_CRON = '0 3 * * *'
+const WISH_DEADLINE_SWEEP_CRON = '*/5 * * * *'
+
 export default {
   async fetch(request, env): Promise<Response> {
     const url     = new URL(request.url)
@@ -895,12 +903,38 @@ export default {
     return route.dispatch({ body, cors, uid, traceId, env })
   },
 
-  // ─── Cron: 10-day receipt purge ───────────────────────────────────
-  // Triggered daily UTC 03:00 (see wrangler.jsonc triggers.crons).
-  // Soft deadline (~14min) lives inside purgeExpiredReceipts; whatever
-  // doesn't process gets picked up tomorrow — the deletedAt < cutoff
-  // filter is naturally idempotent across runs.
-  async scheduled(_event, env, ctx): Promise<void> {
+  // ─── Cron dispatch ──────────────────────────────────────────────────
+  // Two schedules share this Worker (see wrangler.jsonc triggers.crons):
+  // the 5-min Wish-deadline sweep and the daily maintenance batch below.
+  // Branch on event.cron so neither ever runs the other's jobs.
+  async scheduled(event, env, ctx): Promise<void> {
+    if (event.cron === WISH_DEADLINE_SWEEP_CRON) {
+      console.log('[cron] wish-deadline-sweep starting')
+      ctx.waitUntil(
+        sweepWishVotingDeadlines(env.FIREBASE_SERVICE_ACCOUNT)
+          .then(report => {
+            console.log(
+              `[cron] wish-deadline-sweep done scanned=${report.scanned} ` +
+              `notified=${report.notified} deadlineHit=${report.deadlineHit}`,
+            )
+          })
+          .catch(err => {
+            console.error(`[cron] wish-deadline-sweep failed: ${(err as Error).message}`)
+          }),
+      )
+      return
+    }
+
+    if (event.cron !== DAILY_MAINTENANCE_CRON) {
+      console.warn(`[cron] unrecognized cron trigger: ${event.cron}`)
+      return
+    }
+
+    // ─── Cron: 10-day receipt purge ───────────────────────────────────
+    // Triggered daily UTC 03:00 (see wrangler.jsonc triggers.crons).
+    // Soft deadline (~14min) lives inside purgeExpiredReceipts; whatever
+    // doesn't process gets picked up tomorrow — the deletedAt < cutoff
+    // filter is naturally idempotent across runs.
     console.log('[cron] receipt-purge starting')
     ctx.waitUntil(
       purgeExpiredReceipts(env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)

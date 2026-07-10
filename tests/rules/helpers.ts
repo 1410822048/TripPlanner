@@ -89,6 +89,11 @@ export async function seedFixture(env: RulesTestEnvironment): Promise<void> {
       currency:    'JPY',
       ownerId:     OWNER_UID,
       memberIds:   allMembers,
+      // Always-present invariant (see firestore.rules trip create rule +
+      // wishVotingOpen()) — omitting these would make every wish
+      // create/update/delete rule test below throw on property access.
+      wishVotingDeadlineAt:         null,
+      wishVotingDeadlineNotifiedAt: null,
       createdAt:   serverTimestamp(),
       updatedAt:   serverTimestamp(),
     })

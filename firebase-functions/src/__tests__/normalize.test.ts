@@ -261,6 +261,32 @@ describe('normalizeTripRootWrite', () => {
       eventId: 't5', tripId: 'trip-1', auth: webAuth, before: null, after: base,
     })).toEqual([])
   })
+
+  test('wishVotingDeadlineNotifiedAt null -> Timestamp emits a no-actor system event', () => {
+    const withDeadline = { ...base, wishVotingDeadlineAt: { toMillis: () => 100 }, wishVotingDeadlineNotifiedAt: null }
+    const event = single(normalizeTripRootWrite({
+      eventId: 'w1', tripId: 'trip-1', auth: webAuth,
+      before: withDeadline,
+      after:  { ...withDeadline, wishVotingDeadlineNotifiedAt: { toMillis: () => 200 } },
+    }))
+    expect(event.templateKey).toBe('wish.deadline_closed')
+    expect(event.route).toBe('/wish')
+    expect(event.entityType).toBe('wish')
+    expect(event.actorUid).toBeNull()
+    expect(event.actorUnknown).toBe(true)
+  })
+
+  test('wishVotingDeadlineNotifiedAt unchanged (both null, or both set) stays silent', () => {
+    const bothNull = { ...base, wishVotingDeadlineAt: null, wishVotingDeadlineNotifiedAt: null }
+    expect(normalizeTripRootWrite({
+      eventId: 'w2', tripId: 'trip-1', auth: webAuth, before: bothNull, after: bothNull,
+    })).toEqual([])
+
+    const bothSet = { ...base, wishVotingDeadlineAt: { toMillis: () => 100 }, wishVotingDeadlineNotifiedAt: { toMillis: () => 200 } }
+    expect(normalizeTripRootWrite({
+      eventId: 'w3', tripId: 'trip-1', auth: webAuth, before: bothSet, after: bothSet,
+    })).toEqual([])
+  })
 })
 
 describe('normalizeMemberWrite', () => {

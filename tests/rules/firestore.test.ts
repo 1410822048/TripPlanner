@@ -217,6 +217,121 @@ describe('/trips/{tripId} write', () => {
   })
 })
 
+// ─── Wish voting deadline ───────────────────────────────────────────
+describe('/trips/{tripId} wishVotingDeadline', () => {
+  function freshTripPayload(overrides: Record<string, unknown> = {}) {
+    const now = Timestamp.now()
+    return {
+      title: 'Fresh', destination: 'Tokyo', ownerId: OWNER_UID, memberIds: [OWNER_UID],
+      currency: 'JPY', startDate: now, endDate: now,
+      wishVotingDeadlineAt: null, wishVotingDeadlineNotifiedAt: null,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+      ...overrides,
+    }
+  }
+
+  test('create succeeds when both fields are present and null', async () => {
+    await assertSucceeds(
+      setDoc(doc(asOwner(env).firestore(), 'trips', 'wvd-fresh-1'), freshTripPayload()),
+    )
+  })
+
+  test('create fails when wishVotingDeadlineAt is omitted', async () => {
+    const payload = freshTripPayload() as Record<string, unknown>
+    delete payload.wishVotingDeadlineAt
+    await assertFails(
+      setDoc(doc(asOwner(env).firestore(), 'trips', 'wvd-fresh-2'), payload),
+    )
+  })
+
+  test('create fails when wishVotingDeadlineNotifiedAt is non-null', async () => {
+    await assertFails(
+      setDoc(
+        doc(asOwner(env).firestore(), 'trips', 'wvd-fresh-3'),
+        freshTripPayload({ wishVotingDeadlineNotifiedAt: Timestamp.now() }),
+      ),
+    )
+  })
+
+  test('owner can set, change, and clear wishVotingDeadlineAt before it fires', async () => {
+    const tripDoc = doc(asOwner(env).firestore(), 'trips', TRIP_ID)
+    const future = Timestamp.fromMillis(Date.now() + 3600_000)
+    await assertSucceeds(updateDoc(tripDoc, { wishVotingDeadlineAt: future }))
+    const future2 = Timestamp.fromMillis(Date.now() + 7200_000)
+    await assertSucceeds(updateDoc(tripDoc, { wishVotingDeadlineAt: future2 }))
+    await assertSucceeds(updateDoc(tripDoc, { wishVotingDeadlineAt: null }))
+  })
+
+  test('editor/viewer cannot set wishVotingDeadlineAt', async () => {
+    const future = Timestamp.fromMillis(Date.now() + 3600_000)
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID), { wishVotingDeadlineAt: future }),
+    )
+    await assertFails(
+      updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID), { wishVotingDeadlineAt: future }),
+    )
+  })
+
+  test('client (incl. owner) cannot write wishVotingDeadlineNotifiedAt directly', async () => {
+    await assertFails(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'trips', TRIP_ID),
+        { wishVotingDeadlineNotifiedAt: serverTimestamp() },
+      ),
+    )
+  })
+
+  test('once wishVotingDeadlineNotifiedAt is stamped, owner can no longer change wishVotingDeadlineAt', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await updateDoc(doc(ctx.firestore(), 'trips', TRIP_ID), {
+        wishVotingDeadlineAt:         Timestamp.fromMillis(Date.now() - 60_000),
+        wishVotingDeadlineNotifiedAt: Timestamp.now(),
+      })
+    })
+    await assertFails(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'trips', TRIP_ID),
+        { wishVotingDeadlineAt: Timestamp.fromMillis(Date.now() + 3600_000) },
+      ),
+    )
+    // Restore for subsequent tests reusing the shared fixture.
+    await env.withSecurityRulesDisabled(async ctx => {
+      await updateDoc(doc(ctx.firestore(), 'trips', TRIP_ID), {
+        wishVotingDeadlineAt:         null,
+        wishVotingDeadlineNotifiedAt: null,
+      })
+    })
+  })
+
+  test('once wishVotingDeadlineAt has passed, owner cannot reopen it before the sweep stamps notifiedAt', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await updateDoc(doc(ctx.firestore(), 'trips', TRIP_ID), {
+        wishVotingDeadlineAt:         Timestamp.fromMillis(Date.now() - 60_000),
+        wishVotingDeadlineNotifiedAt: null,
+      })
+    })
+    await assertFails(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'trips', TRIP_ID),
+        { wishVotingDeadlineAt: Timestamp.fromMillis(Date.now() + 3600_000) },
+      ),
+    )
+    await assertFails(
+      updateDoc(
+        doc(asOwner(env).firestore(), 'trips', TRIP_ID),
+        { wishVotingDeadlineAt: null },
+      ),
+    )
+    // Restore for subsequent tests reusing the shared fixture.
+    await env.withSecurityRulesDisabled(async ctx => {
+      await updateDoc(doc(ctx.firestore(), 'trips', TRIP_ID), {
+        wishVotingDeadlineAt:         null,
+        wishVotingDeadlineNotifiedAt: null,
+      })
+    })
+  })
+})
+
 // ─── Bookings ──────────────────────────────────────────────────────
 describe('/trips/{tripId}/bookings', () => {
   test('viewer cannot create a booking', async () => {
@@ -857,6 +972,77 @@ describe('/trips/{tripId}/wishes vote toggle', () => {
   })
 })
 
+// ─── Wish voting deadline gate (wishVotingOpen(tripId)) ─────────────
+describe('/trips/{tripId}/wishes voting deadline gate', () => {
+  test('before a deadline is set, create/vote/edit/delete all succeed', async () => {
+    await assertSucceeds(
+      setDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-open-1'), {
+        tripId: TRIP_ID, category: 'place', title: 'Open',
+        proposedBy: VIEWER_UID, updatedBy: VIEWER_UID, votes: [VIEWER_UID],
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+      }),
+    )
+    await assertSucceeds(
+      updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
+        votes: [EDITOR_UID, VIEWER_UID], updatedBy: VIEWER_UID, updatedAt: serverTimestamp(),
+      }),
+    )
+    await assertSucceeds(
+      deleteDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID)),
+    )
+  })
+
+  describe('once the deadline has passed', () => {
+    beforeEach(async () => {
+      await env.withSecurityRulesDisabled(async ctx => {
+        await updateDoc(doc(ctx.firestore(), 'trips', TRIP_ID), {
+          wishVotingDeadlineAt: Timestamp.fromMillis(Date.now() - 60_000),
+        })
+      })
+    })
+
+    test('create is rejected', async () => {
+      await assertFails(
+        setDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-closed-1'), {
+          tripId: TRIP_ID, category: 'place', title: 'Closed',
+          proposedBy: VIEWER_UID, updatedBy: VIEWER_UID, votes: [VIEWER_UID],
+          memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+          createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+        }),
+      )
+    })
+
+    test('vote toggle is rejected', async () => {
+      await assertFails(
+        updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
+          votes: [EDITOR_UID, VIEWER_UID], updatedBy: VIEWER_UID, updatedAt: serverTimestamp(),
+        }),
+      )
+    })
+
+    test('proposer edit is rejected', async () => {
+      await assertFails(
+        updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
+          title: 'Edited after close', updatedBy: EDITOR_UID, updatedAt: serverTimestamp(),
+        }),
+      )
+    })
+
+    test('delete is rejected for the proposer', async () => {
+      await assertFails(
+        deleteDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID)),
+      )
+    })
+
+    test('delete is rejected even for the trip owner (no override)', async () => {
+      await assertFails(
+        deleteDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID)),
+      )
+    })
+  })
+})
+
 // ─── Expense create is Worker-only (allow create: if false) ────────
 //
 // All expense create + content-update flows go through the Worker's
@@ -1355,6 +1541,8 @@ describe('fresh trip — immediate listener attach (post-batch-commit)', () => {
       currency:    'JPY',
       startDate:   serverTimestamp(),
       endDate:     serverTimestamp(),
+      wishVotingDeadlineAt:         null,
+      wishVotingDeadlineNotifiedAt: null,
       createdAt:   serverTimestamp(),
       updatedAt:   serverTimestamp(),
     })

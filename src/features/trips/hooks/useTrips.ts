@@ -21,7 +21,7 @@ import {
   createTrip,
   getMyTripIds, getTripsByIds,
   subscribeToMyTripIds, subscribeToTrip,
-  updateTrip,
+  updateTrip, setWishVotingDeadline,
 } from '../services/tripService'
 import { deleteTrip } from '../services/tripCascade'
 import { leaveMember } from '@/features/members/services/memberService'
@@ -230,6 +230,33 @@ export function useUpdateTrip(uid: string | undefined, options?: MutationOptions
     // diverging from the server is `updatedAt`, which isn't displayed anywhere,
     // so a full refetch would just re-download N trips for no visible benefit.
     // Concurrent cross-client edits are rare on trip metadata — acceptable tradeoff.
+  })
+}
+
+/** Owner-only shared Wish voting deadline. Same optimistic-patch shape as
+ *  useUpdateTrip, scoped to the one field it owns. */
+export function useSetWishVotingDeadline(uid: string | undefined, options?: MutationOptions) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ tripId, deadlineAt }: { tripId: string; deadlineAt: Date | null }) =>
+      setWishVotingDeadline(tripId, deadlineAt),
+    meta: { action: MUTATION_ACTION.UPDATE, silent: options?.silent } satisfies MutationMeta,
+    onMutate: async ({ tripId, deadlineAt }) => {
+      if (!uid) return { prev: undefined as Trip[] | undefined }
+      const key  = tripKeys.mine(uid)
+      const prev = qc.getQueryData<Trip[]>(key)
+      if (!prev) return { prev }
+      const { Timestamp } = await getFirebase()
+      qc.setQueryData<Trip[]>(key, prev.map(t => t.id !== tripId ? t : {
+        ...t,
+        wishVotingDeadlineAt: deadlineAt ? Timestamp.fromDate(deadlineAt) : null,
+        updatedAt: MOCK_TIMESTAMP,
+      }))
+      return { prev }
+    },
+    onError: (_err, _vars, ctx) => {
+      if (uid && ctx?.prev !== undefined) qc.setQueryData(tripKeys.mine(uid), ctx.prev)
+    },
   })
 }
 

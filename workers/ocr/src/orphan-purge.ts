@@ -41,6 +41,7 @@ import {
   updateDocFields,
   readNestedString,
   readTimestampMs,
+  stripDocPrefix,
   type FsValue,
 }                                            from './firestore'
 import { deleteObject }                      from './storage'
@@ -449,11 +450,4 @@ async function tryDeletePurgeDoc(
   } catch (e) {
     console.warn(`[orphan-purge] delete purge entry failed: ${(e as Error).message}`)
   }
-}
-
-/** Convert `projects/{pid}/databases/(default)/documents/{path}`
- *  back to `{path}`. */
-function stripDocPrefix(fullName: string, projectId: string): string {
-  const prefix = `projects/${projectId}/databases/(default)/documents/`
-  return fullName.startsWith(prefix) ? fullName.slice(prefix.length) : fullName
 }

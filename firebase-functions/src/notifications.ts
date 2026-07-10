@@ -58,14 +58,28 @@ function formatMoney(amountMinor: number, currency: string): string {
 }
 
 // Actor-based bodies: "○○さんが〜しました". Excludes settlement (custom
-// direction/amount body) and the member-subject templates (role_changed /
+// direction/amount body), the member-subject templates (role_changed /
 // removed / removed_self name the SUBJECT, not the actor — which is often
-// unresolvable on admin/Worker writes). TS enforces this map covers every
+// unresolvable on admin/Worker writes), and system templates (no actor at
+// all — Worker-cron-triggered). TS enforces this map covers every
 // remaining key.
 type ActorTemplateKey = Exclude<
   NormalizedPushEvent['templateKey'],
-  'settlement.created' | 'settlement.deleted' | MemberSubjectTemplateKey
+  'settlement.created' | 'settlement.deleted' | MemberSubjectTemplateKey | SystemTemplateKey
 >
+
+// Worker-cron-triggered, no actor and no per-recipient variation — a single
+// fixed copy for every recipient. Currently just the Wish voting deadline
+// closing; TS enforces SYSTEM_BODY covers every key in this union.
+type SystemTemplateKey = 'wish.deadline_closed'
+
+const SYSTEM_BODY: Record<SystemTemplateKey, string> = {
+  'wish.deadline_closed': 'ウィッシュの投票が締め切られました。結果を確認しましょう',
+}
+
+function isSystemTemplate(templateKey: NormalizedPushEvent['templateKey']): templateKey is SystemTemplateKey {
+  return templateKey === 'wish.deadline_closed'
+}
 
 const BODY_TEMPLATES: Record<ActorTemplateKey, (actorName: string) => string> = {
   'member.joined':            name => `${name}さんが旅程に参加しました`,
@@ -190,6 +204,9 @@ export async function writeNotificationDocs(
     // Subject-based (actor is usually null on admin/Worker member writes).
     body = memberSubjectBody(event.templateKey, event.subjectName, event.subjectRole)
     actorName = event.subjectName ?? FALLBACK_NAME
+  } else if (isSystemTemplate(event.templateKey)) {
+    // Fixed copy, no actor to resolve — Worker-cron-triggered.
+    body = SYSTEM_BODY[event.templateKey]
   } else {
     actorName = await actorDisplayName(event.tripId, event.actorUid)
     body = BODY_TEMPLATES[event.templateKey](actorName)

@@ -13,6 +13,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
 	queryReceiptPurgeCandidates,
+	queryWishDeadlineSweepCandidates,
+	stampWishDeadlineNotifiedIfUnchanged,
 	updateDocFields,
 	deleteDocFields,
 	deleteUserTripNotifications,
@@ -200,6 +202,69 @@ describe('deleteUserTripNotifications - REST query shape', () => {
 				value: { stringValue: 'trip-1' },
 			},
 		})
+	})
+})
+
+describe('Wish deadline sweep - versioned REST write', () => {
+	it('returns query document updateTime for the later compare-and-set', async () => {
+		globalThis.fetch = vi.fn(async () => new Response(JSON.stringify([
+			{
+				document: {
+					name: 'projects/demo/databases/(default)/documents/trips/t1',
+					fields: {
+						wishVotingDeadlineAt: { timestampValue: '2026-07-10T00:00:00Z' },
+					},
+					updateTime: '2026-07-10T01:02:03.123456Z',
+				},
+			},
+		]), { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof fetch
+
+		const page = await queryWishDeadlineSweepCandidates(
+			'fake-token', 'demo', Date.parse('2026-07-10T02:00:00Z'), 200,
+		)
+		expect(page.docs[0].updateTime).toBe('2026-07-10T01:02:03.123456Z')
+	})
+
+	it('PATCHes only notifiedAt with currentDocument.updateTime precondition', async () => {
+		globalThis.fetch = vi.fn(async () =>
+			new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+		) as typeof fetch
+
+		const stamped = await stampWishDeadlineNotifiedIfUnchanged(
+			'fake-token',
+			'demo',
+			'trips/t1',
+			'2026-07-10T01:02:03.123456Z',
+			'2026-07-10T02:00:00.000Z',
+		)
+
+		expect(stamped).toBe(true)
+		const [input, init] = vi.mocked(globalThis.fetch).mock.calls[0]
+		const url = input instanceof URL ? input : new URL(String(input))
+		expect(url.searchParams.get('currentDocument.updateTime')).toBe('2026-07-10T01:02:03.123456Z')
+		expect(url.searchParams.get('currentDocument.exists')).toBeNull()
+		expect(url.searchParams.getAll('updateMask.fieldPaths')).toEqual(['wishVotingDeadlineNotifiedAt'])
+		expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+			fields: {
+				wishVotingDeadlineNotifiedAt: { timestampValue: '2026-07-10T02:00:00.000Z' },
+			},
+		})
+	})
+
+	it.each([404, 412])('returns false for benign race status %i', async status => {
+		globalThis.fetch = vi.fn(async () => new Response('conflict', { status })) as typeof fetch
+		await expect(stampWishDeadlineNotifiedIfUnchanged(
+			'fake-token', 'demo', 'trips/t1',
+			'2026-07-10T01:02:03.123456Z', '2026-07-10T02:00:00.000Z',
+		)).resolves.toBe(false)
+	})
+
+	it('throws non-precondition failures instead of hiding them', async () => {
+		globalThis.fetch = vi.fn(async () => new Response('unavailable', { status: 503 })) as typeof fetch
+		await expect(stampWishDeadlineNotifiedIfUnchanged(
+			'fake-token', 'demo', 'trips/t1',
+			'2026-07-10T01:02:03.123456Z', '2026-07-10T02:00:00.000Z',
+		)).rejects.toThrow(/503/)
 	})
 })
 

@@ -62,11 +62,18 @@
 		"OCR_FALLBACK_PROVIDER": "claude",
 		"OCR_COMPARE_ENABLED": "false"
 	},
-	// Cron: daily UTC 03:00 receipt purge — globally low-traffic hour.
-	// Scoped to ~14min via SOFT_DEADLINE_MS in receipt-purge.ts; under
-	// the 15-min hard cap on Workers scheduled handlers.
+	// Two independent schedules — index.ts's scheduled() branches on
+	// event.cron so neither ever runs the other's jobs:
+	//   "0 3 * * *"    daily UTC 03:00 maintenance (receipt/orphan purge +
+	//                  storage-maintenance + upload-intent purge).
+	//                  Scoped to ~14min via SOFT_DEADLINE_MS in
+	//                  receipt-purge.ts; under the 15-min hard cap on
+	//                  Workers scheduled handlers.
+	//   "*/5 * * * *"  Wish-deadline sweep (wish-deadline-sweep.ts) —
+	//                  needs minute-granularity since deadlines are
+	//                  arbitrary owner-set timestamps, not daily-aligned.
 	"triggers": {
-		"crons": ["0 3 * * *"]
+		"crons": ["0 3 * * *", "*/5 * * * *"]
 	},
 	// Per-uid rate limiting (GA 2025-09). Counters are per Cloudflare
 	// location (eventually consistent) — fine for abuse prevention,
