@@ -12,7 +12,6 @@ import type { PlanItem } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import { useSwipeRow, SWIPE_WIDTH, BG_TRANSITION, FG_TRANSITION } from '@/hooks/useSwipeRow'
 import MemberAvatar from '@/components/ui/MemberAvatar'
-import { PLAN_CATEGORY_ICON } from '../categories'
 
 interface Props {
   item:          PlanItem
@@ -39,7 +38,6 @@ function PlanningRow({
   const {
     bindFg, bindBg, pointerProps, deleteProps, openX, confirming, wrapTap,
   } = useSwipeRow({ isOpen, onOpen, onClose, onDelete, enabled: canEdit })
-  const ItemIcon = PLAN_CATEGORY_ICON[item.category]
 
   return (
     <div className="relative overflow-hidden bg-surface">
@@ -83,26 +81,24 @@ function PlanningRow({
           WebkitTapHighlightColor: 'transparent',
         }}
       >
-        <div className="flex items-stretch">
+        <div className="flex items-start py-3">
           <button
             type="button"
             onClick={wrapTap(onToggleDone)}
             aria-pressed={isDone}
             aria-label={isDone ? '自分を未完了に戻す' : '自分を完了にする'}
             className={[
-              'shrink-0 w-14 flex items-center justify-center bg-transparent border-none cursor-pointer transition-colors hover:bg-app',
+              'shrink-0 -my-3 flex h-11 w-14 items-center justify-center bg-transparent border-none cursor-pointer transition-colors hover:bg-app',
               isPreviewOnly ? 'opacity-70' : 'opacity-100',
             ].join(' ')}
           >
             <span className={[
-              'flex h-10 w-10 items-center justify-center rounded-full transition-all',
+              'flex h-6 w-6 items-center justify-center rounded-full transition-all',
               isDone
-                ? 'bg-[#B29B89] text-white'
-                : 'bg-[#F3ECE4] text-[#9D7A5F] hover:bg-[#EEE3D8]',
+                ? 'bg-[#B29B89] text-white shadow-[inset_0_1px_1px_rgba(255,255,255,0.24),0_1px_3px_rgba(80,62,48,0.16)]'
+                : 'border border-[#D8D4CF] bg-[#FCFBF9] text-transparent shadow-[inset_0_1px_2px_rgba(255,255,255,0.9),0_1px_3px_rgba(80,70,60,0.08)] hover:border-[#C9C3BC] hover:bg-white',
             ].join(' ')}>
-              {isDone
-                ? <Check size={17} strokeWidth={3} />
-                : <ItemIcon size={17} strokeWidth={2.4} />}
+              {isDone && <Check size={13} strokeWidth={3} />}
             </span>
           </button>
 
@@ -111,7 +107,7 @@ function PlanningRow({
             onClick={canEdit ? wrapTap(onTap) : undefined}
             disabled={!canEdit}
             className={[
-              'flex min-w-0 flex-1 items-center gap-3 py-3 pr-3 text-left bg-transparent border-none transition-colors',
+              'flex min-w-0 flex-1 items-start gap-3 pr-3 text-left bg-transparent border-none transition-colors',
               canEdit ? 'cursor-pointer hover:bg-app' : 'cursor-default',
               isDone ? 'opacity-60' : '',
             ].join(' ')}

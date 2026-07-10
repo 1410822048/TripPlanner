@@ -264,7 +264,7 @@ export default function PlanningPage() {
 
                   <div className="px-5 pb-4 pt-1">
                     {sectionItems.length > 0 ? (
-                      <div className="divide-y divide-border/70">
+                      <div className="flex flex-col gap-2">
                         {sectionItems.map(item => (
                           <PlanningRow
                             key={item.id}
