@@ -97,11 +97,15 @@ export const subscribeToMyTripIds = (
  * every role. The N getDoc round-trips are acceptable because trips
  * per user is small (cap TRIPS_LIMIT = 50, real usage <10).
  */
-export async function getTripsByIds(tripIds: string[]): Promise<Trip[]> {
+export async function getTripsByIds(
+  tripIds: string[],
+  source: 'default' | 'server' = 'default',
+): Promise<Trip[]> {
   if (tripIds.length === 0) return []
-  const { db, doc, getDoc } = await getFirebase()
+  const { db, doc, getDoc, getDocFromServer } = await getFirebase()
+  const readTrip = source === 'server' ? getDocFromServer : getDoc
   const tripDocs = await Promise.all(
-    tripIds.map(id => getDoc(doc(db, ...P.trip(id)))),
+    tripIds.map(id => readTrip(doc(db, ...P.trip(id)))),
   )
   return tripDocs
     .filter(d => d.exists())

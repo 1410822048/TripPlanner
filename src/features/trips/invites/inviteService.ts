@@ -30,7 +30,7 @@ import { InviteDocSchema, type Invite, type Trip } from '@/types/trip'
 import { getTripsByIds } from '@/features/trips/services/tripService'
 import { requireWorkerWriteBase, preflightIdToken, workerFetch } from '@/services/workerBase'
 
-export type InviteErrorCode = 'not-found' | 'expired'
+export type InviteErrorCode = 'not-found' | 'expired' | 'unavailable' | 'failed'
 
 export class InviteError extends Error {
   readonly code: InviteErrorCode
@@ -92,7 +92,7 @@ function toInvite(id: string, data: Record<string, unknown>): Invite {
   const result = InviteDocSchema.safeParse(data)
   if (!result.success) {
     captureError(result.error, { source: 'inviteService/toInvite', docId: id })
-    throw new Error(`Invite ${id} failed schema validation`)
+    throw new InviteError('failed', `Invite ${id} failed schema validation`)
   }
   const parsed = result.data
   return {
@@ -190,19 +190,29 @@ export async function revokeInvite(tripId: string, token: string): Promise<void>
 }
 
 /**
- * Read an invite doc by token. Throws InviteError for the two hard-fail
- * cases (not-found / expired) so the UI can branch on `.code` without
+ * Read an invite doc by token. Throws InviteError for the three user-facing
+ * cases (not-found / expired / unavailable / failed) so the UI can branch on `.code` without
  * parsing message text. Called by InvitePage to render trip info before
  * asking the user to confirm.
  */
 export async function getInvite(tripId: string, token: string): Promise<Invite> {
-  const { db, doc, getDoc } = await getFirebase()
-  const snap = await getDoc(doc(db, ...P.invite(tripId, token)))
-  if (!snap.exists()) throw new InviteError('not-found', 'Invite not found')
+  try {
+    const { db, doc, getDocFromServer } = await getFirebase()
+    const snap = await getDocFromServer(doc(db, ...P.invite(tripId, token)))
+    if (!snap.exists()) throw new InviteError('not-found', 'Invite not found')
 
-  const invite = toInvite(snap.id, snap.data())
-  if (invite.expiresAt.toMillis() < Date.now()) throw new InviteError('expired', 'Invite expired')
-  return invite
+    const invite = toInvite(snap.id, snap.data())
+    if (invite.expiresAt.toMillis() < Date.now()) throw new InviteError('expired', 'Invite expired')
+    return invite
+  } catch (e) {
+    if (e instanceof InviteError) throw e
+    captureError(e, { source: 'getInvite/serverRead', tripId })
+    const code = typeof e === 'object' && e != null && 'code' in e ? e.code : null
+    if (code === 'unavailable') {
+      throw new InviteError('unavailable', 'Invite could not be confirmed')
+    }
+    throw new InviteError('failed', 'Invite could not be loaded')
+  }
 }
 
 /**
@@ -235,7 +245,9 @@ export async function acceptInvite(
 
   // Fetch trip for caller cache seeding. Failure here is non-fatal; callers
   // still invalidate/refetch through their normal path.
-  const [trip] = await getTripsByIds([tripId]).catch(e => {
+  // The Worker has just committed membership. Bypass IndexedDB here so an
+  // old local trip snapshot cannot be used to seed the post-join cache.
+  const [trip] = await getTripsByIds([tripId], 'server').catch(e => {
     captureError(e, { source: 'acceptInvite/postFetchTrip', tripId, uid: user.uid })
     return [] as Trip[]
   })

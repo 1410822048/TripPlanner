@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Check, X } from 'lucide-react'
+import { Check, RotateCcw, X } from 'lucide-react'
 import GoogleIcon from '@/components/icons/GoogleIcon'
 import { useAuth } from '@/hooks/useAuth'
 import { useTripStore } from '@/store/tripStore'
@@ -70,10 +70,11 @@ export default function InviteRedeemPanel({
   }
 
   const paramsInvalid = !tripId || !token
+  const inviteError = inviteQ.error instanceof InviteError ? inviteQ.error : null
   const errorMessage  = paramsInvalid
     ? '不正な招待リンクです'
-    : inviteQ.error instanceof InviteError
-      ? messageFor(inviteQ.error.code)
+    : inviteError
+      ? messageFor(inviteError.code)
       : inviteQ.error instanceof Error
         ? inviteQ.error.message
         : '読み込みに失敗しました'
@@ -83,7 +84,17 @@ export default function InviteRedeemPanel({
   if (state.status === 'signed-out') return <SignInCard signingIn={signingIn} onSignIn={handleSignIn} />
   if (state.status === 'error') return <ErrorCard message="認証に失敗しました" onHome={onCancel} />
   if (inviteQ.isPending) return <LoadingCard />
-  if (inviteQ.isError) return <ErrorCard message={errorMessage} onHome={onCancel} />
+  if (inviteQ.isError) {
+    const canRetry = inviteError?.code === 'unavailable'
+    return (
+      <ErrorCard
+        message={errorMessage}
+        onHome={onCancel}
+        onRetry={canRetry ? () => { void inviteQ.refetch() } : undefined}
+        retrying={inviteQ.isFetching}
+      />
+    )
+  }
   return (
     <ReadyCard
       invite={inviteQ.data}
@@ -98,6 +109,8 @@ function messageFor(code: InviteError['code']): string {
   switch (code) {
     case 'not-found': return 'この招待リンクは見つかりません'
     case 'expired':   return 'この招待リンクは期限切れです'
+    case 'unavailable': return '招待を確認できません。通信状況を確認して再試行してください'
+    case 'failed': return '招待を読み込めませんでした'
   }
 }
 
@@ -133,13 +146,30 @@ function SignInCard({ signingIn, onSignIn }: { signingIn: boolean; onSignIn: () 
   )
 }
 
-function ErrorCard({ message, onHome }: { message: string; onHome: () => void }) {
+function ErrorCard({
+  message, onHome, onRetry, retrying = false,
+}: {
+  message: string
+  onHome:  () => void
+  onRetry?: () => void
+  retrying?: boolean
+}) {
   return (
     <div className="bg-surface border border-border rounded-2xl p-6 text-center">
       <div className="text-[40px] leading-none mb-3">⚠️</div>
       <p className="m-0 mb-5 text-[13px] text-ink leading-[1.7] tracking-[0.02em]">
         {message}
       </p>
+      {onRetry && (
+        <button
+          onClick={onRetry}
+          disabled={retrying}
+          className="w-full max-w-[280px] h-11 mb-2 rounded-chip border border-border bg-surface text-ink text-[13px] font-semibold cursor-pointer hover:bg-app transition-colors inline-flex items-center justify-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          <RotateCcw size={14} strokeWidth={2.2} />
+          {retrying ? '再試行中…' : '再試行'}
+        </button>
+      )}
       <button
         onClick={onHome}
         className="w-full max-w-[280px] h-11 rounded-chip border border-border bg-app text-ink text-[13px] font-semibold cursor-pointer hover:bg-tile transition-colors"

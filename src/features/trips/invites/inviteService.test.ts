@@ -18,10 +18,18 @@ import type { Trip } from '@/types'
 import type { User } from 'firebase/auth'
 
 const fetchMock = vi.fn()
+const { captureErrorMock, docMock, getDocFromServerMock, getTripsByIdsMock } = vi.hoisted(() => ({
+  captureErrorMock:       vi.fn(),
+  docMock:               vi.fn((_db: unknown, ...path: string[]) => ({ path })),
+  getDocFromServerMock:  vi.fn(),
+  getTripsByIdsMock:     vi.fn(),
+}))
 
 vi.mock('@/services/firebase', () => ({
   getFirebase: vi.fn(async () => ({
     db: {},
+    doc: docMock,
+    getDocFromServer: getDocFromServerMock,
     // createInvite reconstructs the optimistic Invite's timestamps locally;
     // the real server values arrive on the next realtime push. Stub just
     // enough of the Timestamp surface it touches (now / fromMillis).
@@ -47,9 +55,17 @@ vi.mock('@/services/workerBase', async () => {
   }
 })
 
+vi.mock('@/features/trips/services/tripService', () => ({
+  getTripsByIds: getTripsByIdsMock,
+}))
+
+vi.mock('@/services/sentry', () => ({
+  captureError: captureErrorMock,
+}))
+
 vi.stubGlobal('fetch', fetchMock)
 
-import { InviteError, createInvite, revokeInvite } from './inviteService'
+import { InviteError, acceptInvite, createInvite, getInvite, revokeInvite } from './inviteService'
 
 const TRIP: Trip = {
   id:    'trip-1',
@@ -68,6 +84,10 @@ function okResponse(body: unknown): Response {
 
 beforeEach(() => {
   fetchMock.mockReset()
+  captureErrorMock.mockReset()
+  docMock.mockClear()
+  getDocFromServerMock.mockReset()
+  getTripsByIdsMock.mockReset()
 })
 
 describe('InviteError', () => {
@@ -76,6 +96,54 @@ describe('InviteError', () => {
     expect(e.code).toBe('expired')
     expect(e.name).toBe('InviteError')
     expect(e instanceof Error).toBe(true)
+  })
+})
+
+describe('getInvite', () => {
+  it('reads the invite from the server, never from IndexedDB', async () => {
+    const createdAt = { toDate: () => new Date(0), toMillis: () => 1_000 }
+    const expiresAt = { toDate: () => new Date(0), toMillis: () => Date.now() + 60_000 }
+    getDocFromServerMock.mockResolvedValueOnce({
+      id: 'a'.repeat(64),
+      exists: () => true,
+      data: () => ({
+        tripId: 'trip-1', tripTitle: '東京五日間', tripIcon: '🗼', role: 'viewer',
+        createdBy: 'owner-uid', createdAt, expiresAt,
+      }),
+    })
+
+    await expect(getInvite('trip-1', 'a'.repeat(64))).resolves.toMatchObject({
+      id: 'a'.repeat(64), tripId: 'trip-1', role: 'viewer',
+    })
+    expect(getDocFromServerMock).toHaveBeenCalledWith({ path: ['trips', 'trip-1', 'invites', 'a'.repeat(64)] })
+  })
+
+  it('maps Firestore unavailable to a retryable error and captures the original', async () => {
+    const cause = Object.assign(new Error('Failed to get document because the client is offline.'), {
+      code: 'unavailable',
+    })
+    getDocFromServerMock.mockRejectedValueOnce(cause)
+
+    await expect(getInvite('trip-1', 'a'.repeat(64))).rejects.toMatchObject({
+      code: 'unavailable', message: 'Invite could not be confirmed',
+    })
+    expect(captureErrorMock).toHaveBeenCalledWith(cause, {
+      source: 'getInvite/serverRead', tripId: 'trip-1',
+    })
+  })
+
+  it('maps a permanent server-read failure to non-retryable failed', async () => {
+    const cause = Object.assign(new Error('Missing or insufficient permissions.'), {
+      code: 'permission-denied',
+    })
+    getDocFromServerMock.mockRejectedValueOnce(cause)
+
+    await expect(getInvite('trip-1', 'a'.repeat(64))).rejects.toMatchObject({
+      code: 'failed', message: 'Invite could not be loaded',
+    })
+    expect(captureErrorMock).toHaveBeenCalledWith(cause, {
+      source: 'getInvite/serverRead', tripId: 'trip-1',
+    })
   })
 })
 
@@ -172,5 +240,17 @@ describe('revokeInvite', () => {
 
     await expect(revokeInvite('trip-1', 'e'.repeat(64)))
       .rejects.toThrowError(/stale/i)
+  })
+})
+
+describe('acceptInvite', () => {
+  it('reads the freshly joined trip from the server before seeding the cache', async () => {
+    fetchMock.mockResolvedValueOnce(okResponse({ ok: true, outcome: 'joined' }))
+    getTripsByIdsMock.mockResolvedValueOnce([TRIP])
+
+    const result = await acceptInvite('trip-1', 'f'.repeat(64), USER)
+
+    expect(result).toEqual({ outcome: 'joined', trip: TRIP })
+    expect(getTripsByIdsMock).toHaveBeenCalledWith(['trip-1'], 'server')
   })
 })
