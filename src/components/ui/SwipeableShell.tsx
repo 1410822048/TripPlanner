@@ -121,7 +121,7 @@ function SwipeableShell({
       >
         {confirming ? (
           <div className="text-white text-[11px] font-bold tracking-[0.04em] text-center leading-[1.3]">
-            確認<br/>削除
+            確認<br/>刪除
           </div>
         ) : iconOnlyAction ? (
           <span
@@ -134,7 +134,7 @@ function SwipeableShell({
           <div className="flex flex-col items-center gap-0.5">
             <Trash2 size={18} color="white" strokeWidth={2.2} />
             <span className="text-white text-[10px] font-bold tracking-[0.04em]">
-              削除
+              刪除
             </span>
           </div>
         )}

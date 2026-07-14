@@ -27,11 +27,11 @@ export const MOCK_BOOKINGS: Booking[] = [
   {
     id: 'b3', tripId: 'demo', type: 'train',
     origin: '東京駅', destination: '京都駅',
-    title: 'のぞみ47号',
+    title: '希望 47 號',
     confirmationCode: 'JRP-XX9921',
     provider: 'JR Central',
     checkIn: '2026-05-02',
-    note: 'グリーン車 5号車',
+    note: '綠色車廂第 5 車',
     ...DEMO_AUDIT,
   },
   {

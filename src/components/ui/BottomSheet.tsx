@@ -153,7 +153,7 @@ export default function BottomSheet({ isOpen, title, onClose, footer, children }
             <button
               onClick={onClose}
               onPointerDown={e => e.stopPropagation()}
-              aria-label="閉じる"
+              aria-label="關閉"
               className="w-[30px] h-[30px] rounded-full border-none bg-app text-muted flex items-center justify-center cursor-pointer touch-auto hover:bg-border transition-colors"
             >
               <X size={16} strokeWidth={2} />

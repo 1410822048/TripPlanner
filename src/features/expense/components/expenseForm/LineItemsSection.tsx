@@ -73,7 +73,7 @@ export default function LineItemsSection({
   onSetAdjustmentKind, onSetAdjustmentScope, onSetAdjustmentTarget,
 }: LineItemsSectionProps) {
   return (
-    <FormField label="明細（各項目に分担者を選択）" error={error}>
+    <FormField label="明細（為每個項目選擇分攤者）" error={error}>
       <div className="flex flex-col gap-2">
         {/* Single bordered container holding all rows with hairline
             separators (divide-y) instead of each row being its own
@@ -138,7 +138,7 @@ export default function LineItemsSection({
             className="flex items-center justify-center gap-1.5 h-9 rounded-input border-[1.5px] border-dashed border-border bg-transparent text-muted text-[12px] font-medium cursor-pointer hover:border-accent hover:text-accent transition-colors"
           >
             <Plus size={14} strokeWidth={2} />
-            行を追加
+            新增明細
           </button>
           <button
             type="button"
@@ -146,7 +146,7 @@ export default function LineItemsSection({
             className="flex items-center justify-center gap-1.5 h-9 rounded-input border-[1.5px] border-dashed border-border bg-transparent text-muted text-[12px] font-medium cursor-pointer hover:border-accent hover:text-accent transition-colors"
           >
             <Plus size={14} strokeWidth={2} />
-            調整を追加
+            新增調整
           </button>
         </div>
 

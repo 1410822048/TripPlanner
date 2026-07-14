@@ -66,7 +66,7 @@ export default function CurrencyPicker({ value, onChange }: Props) {
         />
       </div>
 
-      <PickerDialog isOpen={open} onClose={() => setOpen(false)} title="通貨を選択">
+      <PickerDialog isOpen={open} onClose={() => setOpen(false)} title="選擇幣別">
         <CurrencyList value={value} onPick={pick} />
       </PickerDialog>
     </>
@@ -88,7 +88,7 @@ function CurrencyList({ value, onPick }: { value: string; onPick: (code: string)
   return (
     <div className="flex flex-col">
       <div className="px-4 pt-4 pb-2 text-[12px] font-bold text-muted tracking-[0.08em] uppercase">
-        通貨を選択
+        選擇幣別
       </div>
       <div
         ref={setContainer}

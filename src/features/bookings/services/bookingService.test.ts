@@ -210,7 +210,7 @@ describe('deleteBooking strict-cleanup gate', () => {
     mocks.safePurgeMock.mockResolvedValueOnce('unrecoverable')
 
     await expect(deleteBooking('t1', 'b1', 'u1', { document: ATTACHMENT }))
-      .rejects.toThrow(/添付ファイル|再試行/)
+      .rejects.toThrow(/附件|再試一次/)
 
     expect(mocks.deleteDocMock).not.toHaveBeenCalled()
     expect(mocks.bumpTripActivityMock).not.toHaveBeenCalled()

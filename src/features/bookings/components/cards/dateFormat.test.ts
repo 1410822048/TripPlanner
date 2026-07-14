@@ -45,13 +45,13 @@ describe('fmtDate', () => {
   // explicit hour math.
   test('formats MM/DD with Japanese weekday', () => {
     // 2026-05-15 is a Friday. WEEKDAYS_JA[5] === '金'.
-    expect(fmtDate('2026-05-15T12:00')).toBe('05/15 (金)')
+    expect(fmtDate('2026-05-15T12:00')).toBe('05/15 (五)')
     // 2026-05-17 is a Sunday. WEEKDAYS_JA[0] === '日'.
     expect(fmtDate('2026-05-17T12:00')).toBe('05/17 (日)')
   })
 
   test('accepts the production check-in datetime shape', () => {
-    expect(fmtDate('2026-05-15T15:00')).toBe('05/15 (金)')
+    expect(fmtDate('2026-05-15T15:00')).toBe('05/15 (五)')
   })
 
   test('missing or invalid input returns empty string', () => {

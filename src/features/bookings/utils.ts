@@ -39,11 +39,11 @@ export function isImageAttachment(att: BookingAttachment | undefined): boolean {
  * edit and BookingsPage / BookingPassCard / BookingFormModal never disagree.
  */
 export const BOOKING_TYPE_META: Record<Booking['type'], { icon: LucideIcon; label: string }> = {
-  flight: { icon: Plane,      label: 'フライト' },
-  hotel:  { icon: Hotel,      label: 'ホテル'   },
+  flight: { icon: Plane,      label: '航班'     },
+  hotel:  { icon: Hotel,      label: '飯店'     },
   train:  { icon: TrainFront, label: '電車'     },
-  bus:    { icon: Bus,        label: 'バス'     },
-  other:  { icon: MapPin,     label: 'その他'   },
+  bus:    { icon: Bus,        label: '巴士'     },
+  other:  { icon: MapPin,     label: '其他'     },
 }
 
 /** 表示順(section / form picker 共用)。BOOKING_TYPE_META と二重管理しないよう
@@ -58,7 +58,7 @@ export const BOOKING_TYPE_ORDER: Booking['type'][] = ['flight', 'hotel', 'train'
 export function bookingDisplayName(b: Booking): string {
   if (b.origin && b.destination) return `${b.origin} → ${b.destination}`
   if (b.title) return b.title
-  return '予約'
+  return '訂單'
 }
 
 /**

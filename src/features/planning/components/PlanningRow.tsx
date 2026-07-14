@@ -57,13 +57,13 @@ function PlanningRow({
       >
         {confirming ? (
           <div className="text-white text-[11px] font-bold tracking-[0.04em] text-center leading-[1.3]">
-            確認<br />削除
+            確認<br />刪除
           </div>
         ) : (
           <div className="flex flex-col items-center gap-0.5">
             <Trash2 size={18} color="white" strokeWidth={2.2} />
             <span className="text-white text-[10px] font-bold tracking-[0.04em]">
-              削除
+              刪除
             </span>
           </div>
         )}
@@ -86,7 +86,7 @@ function PlanningRow({
             type="button"
             onClick={wrapTap(onToggleDone)}
             aria-pressed={isDone}
-            aria-label={isDone ? '自分を未完了に戻す' : '自分を完了にする'}
+            aria-label={isDone ? '將自己改為未完成' : '標示自己已完成'}
             className={[
               'shrink-0 -my-3 flex h-11 w-14 items-center justify-center bg-transparent border-none cursor-pointer transition-colors hover:bg-app',
               isPreviewOnly ? 'opacity-70' : 'opacity-100',
@@ -130,7 +130,7 @@ function PlanningRow({
                 'truncate text-[12px] font-extrabold leading-5',
                 isDone ? 'text-muted' : 'text-ink',
               ].join(' ')}>
-                {isDone ? '完了' : '未準備'}
+                {isDone ? '已完成' : '未準備'}
               </div>
             </div>
           </button>
@@ -140,7 +140,7 @@ function PlanningRow({
           <div className="mx-3 mb-3 rounded-[14px] border border-border/70 bg-app/45 px-3 py-2.5">
             <div className="mb-2 flex items-center justify-between gap-2">
               <span className="text-[10.5px] font-bold tracking-[0.04em] text-muted">
-                メンバー準備
+                成員準備狀態
               </span>
             </div>
             <div className="flex items-center justify-end gap-2">
@@ -158,7 +158,7 @@ function PlanningRow({
                 return (
                   <span
                     key={member.id}
-                    aria-label={memberDone ? '完了' : '未準備'}
+                    aria-label={memberDone ? '已完成' : '未準備'}
                     aria-current={member.id === currentUid ? 'true' : undefined}
                   >
                     {avatar}

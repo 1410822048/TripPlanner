@@ -19,8 +19,8 @@ export default function WishConsensusBar({ consensus, size, delay = 0 }: Props) 
       <div className="flex items-center gap-3 min-w-0">
         <div
           role="progressbar"
-          aria-label="賛成した人数"
-          aria-valuetext={`${consensus.votes}票(メンバー数を確認中)`}
+          aria-label="投票人數"
+          aria-valuetext={`${consensus.votes} 票（正在確認成員人數）`}
           className={trackCls}
         />
         <span className={labelCls}>
@@ -35,7 +35,7 @@ export default function WishConsensusBar({ consensus, size, delay = 0 }: Props) 
     <div className="flex items-center gap-3 min-w-0">
       <div
         role="progressbar"
-        aria-label="賛成した人数"
+        aria-label="投票人數"
         aria-valuenow={percent}
         aria-valuemin={0}
         aria-valuemax={100}

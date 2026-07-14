@@ -67,7 +67,7 @@ export default function CurrencySection({
         <span className="flex min-w-0 items-center gap-1.5">
           <Globe size={14} strokeWidth={2} className="shrink-0" />
           <span className="truncate">
-            {isForeignOpen ? `${tripCurrency}で入力に戻す` : '別の通貨で入力'}
+            {isForeignOpen ? `改回以 ${tripCurrency} 輸入` : '以其他幣別輸入'}
           </span>
         </span>
         {isForeignOpen && (
@@ -79,13 +79,13 @@ export default function CurrencySection({
 
       {isForeignOpen && (
         <section id="foreign-currency-fields" className="flex flex-col gap-2">
-          <FormField label="入力する通貨">
+          <FormField label="輸入幣別">
             <CurrencyPicker
               value={sourceCurrency}
               onChange={onSwitchCurrency}
             />
             <p className="text-[11px] leading-relaxed text-muted">
-              入力した金額を{tripCurrency}に換算して保存します
+              輸入的金額會換算為 {tripCurrency} 後儲存
             </p>
           </FormField>
         </section>
@@ -101,7 +101,7 @@ export default function CurrencySection({
             error={!!amountError}
           />
         </FormField>
-        <FormField label="日付" error={dateError} required className="flex-1">
+        <FormField label="日期" error={dateError} required className="flex-1">
           <DatePicker value={date} onChange={onDateChange} error={!!dateError} />
         </FormField>
       </div>
@@ -131,16 +131,16 @@ export default function CurrencySection({
           ].join(' ')}
         >
           {fx.disabledReason === 'future-date' ? (
-            <span>未来日付は換算できません。日付を変更してください。</span>
+            <span>無法換算未來日期，請變更日期。</span>
           ) : fx.disabledReason === 'invalid-input' ? (
-            <span>通貨または日付を確認してください。</span>
+            <span>請確認幣別或日期。</span>
           ) : fx.isLoading ? (
             <>
               <Loader2 size={14} strokeWidth={2.2} className="animate-spin shrink-0" />
-              <span>換算レートを取得中…</span>
+              <span>正在取得匯率…</span>
             </>
           ) : fx.isError || !fx.rateDecimal ? (
-            <span>換算レートを取得できません。再試行してください。</span>
+            <span>無法取得匯率，請再試一次。</span>
           ) : previewConvertedMinor !== null ? (
             <div className="flex-1 min-w-0 flex flex-col gap-1 tabular-nums sm:flex-row sm:items-baseline sm:justify-between">
               <span className="min-w-0 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 leading-5">
@@ -155,7 +155,7 @@ export default function CurrencySection({
               </span>
             </div>
           ) : (
-            <span>レート {fx.rateDecimal}（{fx.rateDate}）— 金額を入力してください</span>
+            <span>匯率 {fx.rateDecimal}（{fx.rateDate}），請輸入金額</span>
           )}
         </div>
       )}

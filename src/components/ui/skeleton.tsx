@@ -26,9 +26,9 @@ interface ContainerProps {
 export function SkeletonContainer({ className = '', children, embedded = false }: ContainerProps) {
   if (embedded) return <div className={className}>{children}</div>
   return (
-    <div role="status" aria-label="読み込み中" className={`animate-pulse ${className}`}>
+    <div role="status" aria-label="載入中" className={`animate-pulse ${className}`}>
       {children}
-      <span className="sr-only">読み込み中</span>
+      <span className="sr-only">載入中</span>
     </div>
   )
 }

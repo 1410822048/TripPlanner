@@ -109,10 +109,10 @@ export default function NotificationInboxSheet({ isOpen, onClose, uid, notificat
       onClose={onClose}
       title={(
         <span className="flex min-w-0 items-center gap-2">
-          <span>通知ボックス</span>
+          <span>通知收件匣</span>
           {unreadCount > 0 && (
             <span className="shrink-0 rounded-full bg-danger px-2 py-0.5 text-[10.5px] font-bold leading-none text-white">
-              {unreadCount}件未読
+              {unreadCount} 則未讀
             </span>
           )}
         </span>
@@ -134,7 +134,7 @@ export default function NotificationInboxSheet({ isOpen, onClose, uid, notificat
                   active ? 'bg-surface text-ink shadow-[0_1px_3px_rgba(0,0,0,0.08)]' : 'bg-transparent text-muted hover:text-ink',
                 ].join(' ')}
               >
-                {mode === 'all' ? 'すべて' : '未読'}
+                {mode === 'all' ? '全部' : '未讀'}
                 {mode === 'unread' && unreadCount > 0 && (
                   <span aria-hidden className="h-2 w-2 rounded-full bg-danger" />
                 )}
@@ -156,7 +156,7 @@ export default function NotificationInboxSheet({ isOpen, onClose, uid, notificat
           ].join(' ')}
         >
           <CheckCheck size={13} strokeWidth={2.4} aria-hidden />
-          すべて既読
+          全部標為已讀
         </button>
       </div>
 
@@ -166,12 +166,12 @@ export default function NotificationInboxSheet({ isOpen, onClose, uid, notificat
             <Inbox size={21} strokeWidth={2} aria-hidden />
           </div>
           <div className="mt-3 text-[14px] font-black text-ink -tracking-[0.1px]">
-            {filter === 'unread' ? '未読はありません' : '通知はありません'}
+            {filter === 'unread' ? '沒有未讀通知' : '沒有通知'}
           </div>
           <div className="mt-1 text-[12px] leading-[1.6] text-muted">
             {filter === 'unread'
-              ? '新しい通知はすべて確認済みです。'
-              : '新しい更新が届くとここに表示されます'}
+              ? '所有新通知都已查看。'
+              : '收到新的更新時會顯示在這裡'}
           </div>
         </div>
       ) : (

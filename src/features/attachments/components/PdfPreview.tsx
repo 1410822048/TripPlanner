@@ -118,14 +118,14 @@ export default function PdfPreview({ url }: { url: string }) {
     return (
       <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-3 p-6 text-center">
         <FileText size={36} strokeWidth={1.4} className="text-white/80" />
-        <p className="text-white/70 text-[13px]">PDF を表示できませんでした</p>
+        <p className="text-white/70 text-[13px]">無法顯示 PDF</p>
         <a
           href={url}
           target="_blank"
           rel="noopener noreferrer"
           className="text-white/90 underline text-[13px]"
         >
-          別タブで開く
+          在新分頁開啟
         </a>
       </div>
     )
@@ -154,16 +154,16 @@ export default function PdfPreview({ url }: { url: string }) {
             ))}
           {hiddenPages > 0 && (
             <div className="w-full max-w-[900px] px-4 py-3 text-center text-white/70 text-[12px] leading-[1.6]">
-              残り{hiddenPages}ページは非表示です。
+              其餘 {hiddenPages} 頁未顯示。
               <a
                 href={url}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-white/90 underline underline-offset-2"
               >
-                別タブで開く
+                在新分頁開啟
               </a>
-              から確認してください。
+              查看完整內容。
             </div>
           )}
         </Document>

@@ -31,7 +31,7 @@ import { useAttachmentUrl } from './useAttachmentUrl'
 
 /** Mirrors storage.rules cap. Files larger than this are rejected. */
 const MAX_FILE_BYTES = 5 * 1024 * 1024
-export const ATTACHMENT_SIZE_ERROR = 'ファイルサイズは 5MB 以下にしてください'
+export const ATTACHMENT_SIZE_ERROR = '檔案大小必須小於 5MB'
 
 /** Tri-state for the service-layer attachment param.
  *    undefined → unchanged
@@ -132,7 +132,7 @@ export function useAttachment(initial: ExistingAttachment): UseAttachmentResult 
     fullPath:       existing.fullPath,
     attachmentName: newFile?.name
       ?? (existing.fullPath ? existing.fullPath.split('/').pop() : null)
-      ?? '添付ファイル',
+      ?? '附件',
     error,
     newFile,
     hasNewFile:     !!newFile,

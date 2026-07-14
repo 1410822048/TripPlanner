@@ -59,7 +59,7 @@ export default function PastLodgingPage() {
       <div className="flex items-center gap-2 px-4 pt-4 pb-2 shrink-0">
         <button
           onClick={() => navigate(-1)}
-          aria-label="戻る"
+          aria-label="返回"
           className="w-9 h-9 rounded-full flex items-center justify-center text-ink hover:bg-tile transition-colors cursor-pointer"
         >
           <ArrowLeft size={18} strokeWidth={2} />
@@ -74,8 +74,8 @@ export default function PastLodgingPage() {
       {/* Body */}
       {!uid ? (
         <EmptyState
-          title="サインインが必要です"
-          description="旅程を確認するには、アカウントにサインインしてください。"
+          title="需要登入"
+          description="請登入帳戶以查看旅程。"
         />
       ) : anyLoading ? (
         <div className="flex-1 flex items-center justify-center text-muted text-[13px]">
@@ -83,8 +83,8 @@ export default function PastLodgingPage() {
         </div>
       ) : bookings.length === 0 ? (
         <EmptyState
-          title="まだ記録がありません"
-          description="予約が追加されると、ここに過去の宿泊が年ごとに並びます。"
+          title="尚未有紀錄"
+          description="新增訂單後，過去的住宿會依年份顯示在這裡。"
         />
       ) : (
         <div className="px-4 pb-10 flex flex-col gap-3">
@@ -126,7 +126,7 @@ function BookingRow({ booking }: { booking: Booking }) {
       </div>
       <div className="flex-1 min-w-0">
         <div className="text-[14px] font-bold text-ink truncate">
-          {booking.title ?? '宿泊'}
+          {booking.title ?? '住宿'}
         </div>
         {range && (
           <div className="text-[11px] text-muted mt-0.5 truncate">

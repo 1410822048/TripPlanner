@@ -34,19 +34,19 @@ export function parsePositiveMoneyToMinorResult(
 export function moneyErrorMessage(reason: AmountErrorReason, currency: string): string {
   switch (reason) {
     case 'EMPTY':
-      return '金額を入力してください'
+      return '請輸入金額'
     case 'NON_POSITIVE':
-      return '金額は0より大きく入力してください'
+      return '金額必須大於 0'
     case 'DECIMALS_FORBIDDEN':
-      return `${currency} は小数を入力できません`
+      return `${currency} 不支援小數`
     case 'TOO_MANY_DECIMALS':
-      return `${currency} は小数第${currencyFractionDigits(currency)}位まで入力できます`
+      return `${currency} 最多可輸入 ${currencyFractionDigits(currency)} 位小數`
     case 'MALFORMED':
-      return '金額の形式が正しくありません'
+      return '金額格式不正確'
     case 'OUT_OF_RANGE':
-      return '金額が大きすぎます'
+      return '金額過大'
     case 'EXPECTED_STRING':
-      return '金額の形式が正しくありません'
+      return '金額格式不正確'
   }
 }
 
@@ -138,7 +138,7 @@ export function splitSummary(e: Expense, totalMembers: number): string {
   if (allEqual) {
     return nonZero.length === totalMembers
       ? `${nonZero.length}人均等`
-      : `${nonZero.length}人で均等`
+      : `${nonZero.length} 人均分`
   }
-  return 'カスタム分担'
+  return '自訂分攤'
 }

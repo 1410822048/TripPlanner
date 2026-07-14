@@ -72,7 +72,7 @@ describe('useOcrFlow — single request lifecycle', () => {
     await flush()
 
     expect(onSuccess).not.toHaveBeenCalled()
-    expect(view.result.current.error).toMatch(/回数制限/)
+    expect(view.result.current.error).toMatch(/讀取次數限制/)
     expect(view.result.current.loading).toBe(false)
   })
 })
@@ -180,7 +180,7 @@ describe('useOcrFlow — runExisting applicability', () => {
     })
 
     expect(onSuccess).not.toHaveBeenCalled()
-    expect(view.result.current.error).toMatch(/費用が更新されました/)
+    expect(view.result.current.error).toMatch(/費用已更新/)
   })
 
   it('isStillApplicable=true (latest) → onSuccess applies the result', async () => {

@@ -16,11 +16,11 @@ export default function NoTripEmptyState({ icon: Icon, reason }: Props) {
         <Icon size={22} strokeWidth={1.6} />
       </div>
       <h2 className="m-0 mb-1.5 text-[17px] font-bold text-ink -tracking-[0.3px]">
-        旅程がありません
+        尚未建立旅程
       </h2>
       <p className="m-0 text-[12px] text-muted text-center max-w-[260px] leading-[1.7] tracking-[0.02em]">
-        「行程」タブで旅程を作成すると、<br />
-        {reason}できるようになります。
+        在「行程」分頁建立旅程後，<br />
+        就能{reason}。
       </p>
     </div>
   )

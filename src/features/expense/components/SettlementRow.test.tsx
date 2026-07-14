@@ -71,9 +71,9 @@ describe('SettlementRow — amount rendering', () => {
 describe('SettlementRow — delete affordance', () => {
   it('arms on first tap and only fires onDelete on the second', () => {
     const onDelete = renderRow()
-    fireEvent.click(screen.getByRole('button', { name: '清算記録を削除' }))
+    fireEvent.click(screen.getByRole('button', { name: '刪除清算紀錄' }))
     expect(onDelete).not.toHaveBeenCalled()
-    const armed = screen.getByRole('button', { name: '清算記録の削除を確認' })
+    const armed = screen.getByRole('button', { name: '確認刪除清算紀錄' })
     expect(armed.textContent).toContain('確認')
     fireEvent.click(armed)
     expect(onDelete).toHaveBeenCalledTimes(1)
@@ -81,7 +81,7 @@ describe('SettlementRow — delete affordance', () => {
 
   it('hides the delete button when canDelete is false', () => {
     renderRow({ canDelete: false })
-    expect(screen.queryByRole('button', { name: '清算記録を削除' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '刪除清算紀錄' })).toBeNull()
   })
 })
 

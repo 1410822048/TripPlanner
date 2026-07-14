@@ -70,7 +70,7 @@ export async function saveToken({ uid, token, swScope, rotateToken }: SaveTokenI
       // Dead token. Re-enabling is rules-rejected and pointless — rotate to a
       // fresh one (new hash → create path). Inner call omits rotateToken, so
       // a still-dead fresh token surfaces an error instead of looping.
-      if (!rotateToken) throw new Error('この通知トークンは無効化されています')
+      if (!rotateToken) throw new Error('此通知權杖已失效')
       return saveToken({ uid, token: await rotateToken(), swScope })
     }
     const patch: Record<string, unknown> = {
@@ -147,7 +147,7 @@ export async function revokeStoredPushToken(
       await deleteCurrentFcmToken()
       return
     } catch (err) {
-      throw new AggregateError([err], '通知トークンを解除できませんでした', { cause: err })
+      throw new AggregateError([err], '無法解除通知權杖', { cause: err })
     }
   }
 
@@ -170,7 +170,7 @@ export async function revokeStoredPushToken(
     browserDelete.status === 'rejected'
       ? browserDelete.reason
       : new Error('browser token deleted but server disable did not complete'),
-  ], '通知トークンを解除できませんでした')
+  ], '無法解除通知權杖')
 }
 
 /** Resolve whether this device's token doc is live, so the UI can show

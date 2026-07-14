@@ -13,7 +13,7 @@ export default function TripsErrorState({ message, onRetry }: Props) {
   return (
     <div className="flex flex-col items-center justify-center h-full px-6 text-center gap-3">
       <div className="text-[40px] leading-none">⚠️</div>
-      <div className="text-[13px] text-ink leading-[1.6]">読み込みに失敗しました</div>
+      <div className="text-[13px] text-ink leading-[1.6]">載入失敗</div>
       <div className="text-[11px] text-muted leading-[1.6] max-w-[320px] break-words">
         {message}
       </div>
@@ -21,7 +21,7 @@ export default function TripsErrorState({ message, onRetry }: Props) {
         onClick={onRetry}
         className="mt-2 h-10 px-5 rounded-chip border border-border bg-surface text-ink text-[12.5px] font-semibold cursor-pointer hover:bg-tile transition-colors"
       >
-        再読み込み
+        重新載入
       </button>
     </div>
   )

@@ -110,10 +110,10 @@ describe('bookingDisplayName', () => {
   test('half route with no title falls back to generic word, never half-arrow', () => {
     expect(bookingDisplayName(
       makeBooking({ type: 'flight', origin: 'NRT' }),
-    )).toBe('予約')
+    )).toBe('訂單')
     expect(bookingDisplayName(
       makeBooking({ type: 'flight', destination: 'TPE' }),
-    )).toBe('予約')
+    )).toBe('訂單')
   })
 
   test('hotel uses title directly', () => {
@@ -123,7 +123,7 @@ describe('bookingDisplayName', () => {
 
   test('falls back to generic word when nothing is set', () => {
     const b = makeBooking({ type: 'other' })
-    expect(bookingDisplayName(b)).toBe('予約')
+    expect(bookingDisplayName(b)).toBe('訂單')
   })
 })
 

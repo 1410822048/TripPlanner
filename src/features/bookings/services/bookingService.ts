@@ -93,7 +93,7 @@ async function mintBookingFileIntents(args: {
 }) {
   const { tripId, bookingId, role, file, mode } = args
   if (role === 'coverImage' && !file.type.startsWith('image/')) {
-    throw new Error('カバー画像には画像ファイルを選択してください。')
+    throw new Error('請為封面圖片選擇圖片檔案。')
   }
   const compressed = await compressImage(file)
   return mintAndUploadEntityIntents({
@@ -490,8 +490,8 @@ export async function deleteBooking(
     })
     if (result === 'unrecoverable') {
       throw new Error(
-        '添付ファイルの削除に失敗し、再試行キューへの登録もできませんでした。' +
-        'しばらくしてから再度お試しください。',
+        '無法刪除附件，也無法加入重試佇列。' +
+        '請稍後再試一次。',
       )
     }
   }

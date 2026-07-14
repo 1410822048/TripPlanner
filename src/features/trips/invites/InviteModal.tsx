@@ -51,12 +51,12 @@ export default function InviteModal({ isOpen, onClose, trip }: Props) {
 
   async function handleGenerate() {
     if (state.status !== 'signed-in') {
-      toast.error('サインインが必要です')
+      toast.error('需要登入')
       return
     }
     try {
       await createMut.mutateAsync({ trip, role, user: state.user })
-      toast.success('邀請連結を作成しました')
+      toast.success('已建立邀請連結')
     } catch { /* hook onError already surfaced the toast */ }
   }
 
@@ -70,16 +70,16 @@ export default function InviteModal({ isOpen, onClose, trip }: Props) {
     const url = buildInviteUrl(invite.tripId, invite.id)
     try {
       await navigator.clipboard.writeText(url)
-      toast.success('コピーしました')
+      toast.success('已複製')
     } catch {
-      toast.error('コピーできませんでした')
+      toast.error('無法複製')
     }
   }
 
   async function handleRevoke(invite: Invite) {
     try {
       await revokeMut.mutateAsync(invite.id)
-      toast.success('取り消しました')
+      toast.success('已撤銷')
     } catch { /* hook onError already surfaced the toast */ }
   }
 
@@ -89,7 +89,7 @@ export default function InviteModal({ isOpen, onClose, trip }: Props) {
   // anyway, but we short-circuit with a clearer UX.
   if (state.status !== 'signed-in') {
     return (
-      <BottomSheet isOpen onClose={onClose} title="メンバーを招待">
+      <BottomSheet isOpen onClose={onClose} title="邀請成員">
         <div className="py-6 text-center text-muted text-[13px]">
           <LoadingText />
         </div>
@@ -98,14 +98,14 @@ export default function InviteModal({ isOpen, onClose, trip }: Props) {
   }
 
   return (
-    <BottomSheet isOpen onClose={onClose} title="メンバーを招待">
+    <BottomSheet isOpen onClose={onClose} title="邀請成員">
       <div className="flex flex-col gap-4">
 
         {/* Intro */}
         <p className="m-0 text-[12px] text-muted leading-[1.6] tracking-[0.02em]">
-          邀請連結で旅伴を招待できます。連結は <span className="font-semibold text-ink">5時間</span> 有効で、複数人で使用できます。
+          可用邀請連結邀請旅伴。連結有效期限為 <span className="font-semibold text-ink">5 小時</span>，可供多人使用。
           <br />
-          <span className="text-[11px] opacity-80">新しい連結を作成すると、古い連結は自動的に無効になります。</span>
+          <span className="text-[11px] opacity-80">建立新連結後，舊連結會自動失效。</span>
         </p>
 
         {/* Role picker */}
@@ -115,11 +115,11 @@ export default function InviteModal({ isOpen, onClose, trip }: Props) {
           </div>
           <div
             role="tablist"
-            aria-label="招待する権限"
+            aria-label="邀請權限"
             className="flex gap-1.5 p-1 rounded-xl bg-app border border-border"
           >
-            <RoleTab label="編輯者"  sub="日程・費用を編集可能" active={role === 'editor'} onClick={() => setRole('editor')} />
-            <RoleTab label="檢視者"  sub="閲覧のみ"             active={role === 'viewer'} onClick={() => setRole('viewer')} />
+            <RoleTab label="編輯者"  sub="可編輯行程與費用" active={role === 'editor'} onClick={() => setRole('editor')} />
+            <RoleTab label="檢視者"  sub="僅可查看"         active={role === 'viewer'} onClick={() => setRole('viewer')} />
           </div>
         </div>
 
@@ -134,7 +134,7 @@ export default function InviteModal({ isOpen, onClose, trip }: Props) {
           <LinkIcon size={14} strokeWidth={2.5} />
           {createMut.isPending
             ? '作成中…'
-            : currentInvite ? '邀請連結を再作成' : '邀請連結を作成'}
+            : currentInvite ? '重新建立邀請連結' : '建立邀請連結'}
         </button>
 
         {/* Current invite card (QR + URL + actions) or empty state. */}
@@ -153,7 +153,7 @@ export default function InviteModal({ isOpen, onClose, trip }: Props) {
           />
         ) : (
           <div className="py-6 text-center text-muted text-[12px] bg-app rounded-xl border border-dashed border-border">
-            まだ邀請連結がありません
+            尚未建立邀請連結
           </div>
         )}
       </div>
@@ -197,7 +197,7 @@ function InviteCard({ invite, now, url, revoking, onCopy, onRevoke }: {
             bgColor="transparent"
             fgColor="#1c1612"
             level="M"
-            aria-label="邀請連結の QR コード"
+            aria-label="邀請連結的 QR Code"
           />
         </div>
       </div>
@@ -217,13 +217,13 @@ function InviteCard({ invite, now, url, revoking, onCopy, onRevoke }: {
           className="flex-1 h-10 rounded-lg border border-border bg-surface text-ink text-[12.5px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer hover:bg-accent-pale hover:border-accent hover:text-accent transition-colors"
         >
           <Copy size={13} strokeWidth={2} />
-          連結をコピー
+          複製連結
         </button>
         <button
           onClick={onRevoke}
           disabled={revoking}
           className="h-10 w-10 rounded-lg border border-border bg-surface text-muted flex items-center justify-center cursor-pointer hover:bg-danger-pale hover:text-[#A04040] hover:border-[#E9C5C5] transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-          aria-label="取り消す"
+          aria-label="撤銷"
         >
           <Trash2 size={13} strokeWidth={2} />
         </button>
@@ -272,7 +272,7 @@ function RoleChip({ role }: { role: Role }) {
           : 'bg-app text-muted border border-border',
       ].join(' ')}
     >
-      {isEditor ? '編輯' : '閲覧'}
+      {isEditor ? '編輯' : '檢視'}
     </div>
   )
 }

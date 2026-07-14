@@ -43,10 +43,10 @@ export default function WishActionMenu({
     return (
       <ConfirmSheet
         isOpen
-        title="削除しますか？"
+        title="要刪除嗎？"
         layout="column"
         tone="danger"
-        confirmLabel="削除"
+        confirmLabel="刪除"
         icon={
           <span className="w-9 h-9 rounded-full bg-danger-pale flex items-center justify-center">
             <AlertTriangle size={18} strokeWidth={2.2} className="text-danger" />
@@ -55,10 +55,10 @@ export default function WishActionMenu({
         description={
           <>
             <div className="text-[14px] font-semibold text-ink leading-[1.5] break-words">
-              「{wish.title}」を削除
+              刪除「{wish.title}」
             </div>
             <div className="text-[11.5px] text-muted mt-1 leading-[1.5]">
-              元に戻せません。投票も一緒に消えます。
+              此操作無法復原，投票也會一併刪除。
             </div>
           </>
         }
@@ -81,7 +81,7 @@ export default function WishActionMenu({
             className="flex items-center gap-3 px-3 min-h-12 py-2 rounded-input bg-app border-none cursor-pointer text-left active:bg-border/40 transition-colors"
           >
             <Pencil size={18} strokeWidth={2} className="text-ink shrink-0" />
-            <span className="text-[14.5px] text-ink font-medium">編集</span>
+            <span className="text-[14.5px] text-ink font-medium">編輯</span>
           </button>
         )}
         {canDelete && (
@@ -91,7 +91,7 @@ export default function WishActionMenu({
             className="flex items-center gap-3 px-3 min-h-12 py-2 rounded-input bg-app border-none cursor-pointer text-left active:bg-danger-pale transition-colors"
           >
             <Trash2 size={18} strokeWidth={2} className="text-danger shrink-0" />
-            <span className="text-[14.5px] text-danger font-medium">削除</span>
+            <span className="text-[14.5px] text-danger font-medium">刪除</span>
           </button>
         )}
       </div>

@@ -23,7 +23,7 @@ export default function NotificationInboxButton({ uid, accessibleTripIds }: Prop
     <>
       <button
         type="button"
-        aria-label={hasUnread ? '通知ボックス(未読あり)' : '通知ボックス'}
+        aria-label={hasUnread ? '通知收件匣（有未讀通知）' : '通知收件匣'}
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen(true)}

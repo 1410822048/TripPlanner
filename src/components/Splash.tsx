@@ -51,7 +51,7 @@ export default function Splash({ onDone }: Props) {
           TripMate
         </h1>
         <p className="m-0 mt-1.5 text-[11.5px] text-muted tracking-[0.06em]">
-          旅行を、仲間と一緒に
+          與旅伴一起規劃旅程
         </p>
       </div>
     </div>

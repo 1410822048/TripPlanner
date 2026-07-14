@@ -118,7 +118,7 @@ describe('buildOcrExpenseDraft — fail-fast parse', () => {
         ctx({ tripCurrency: 'JPY' }),
         makeNewId(),
       ),
-    ).toThrow(/OCRの金額がJPY/)
+    ).toThrow(/OCR 金額不符合 JPY/)
   })
 
   it('throws when the total is malformed even if every item parses', () => {

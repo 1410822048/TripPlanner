@@ -57,7 +57,7 @@ export default function SettlementHistory({
       <div className="my-3 border-t border-dashed border-border" />
       <div className="flex items-center justify-between mb-2">
         <div className="text-[10.5px] font-semibold text-muted tracking-[0.08em] uppercase">
-          清算済み記録（{settlements.length}件）
+          已清算紀錄（{settlements.length} 筆）
         </div>
       </div>
 
@@ -115,7 +115,7 @@ export default function SettlementHistory({
             strokeWidth={2.5}
             className={`transition-transform ${expanded ? 'rotate-180' : ''}`}
           />
-          {expanded ? '折りたたむ' : `他 ${hiddenCount} 件を表示`}
+          {expanded ? '收起' : `顯示其他 ${hiddenCount} 筆`}
         </button>
       )}
     </>

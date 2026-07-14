@@ -61,7 +61,7 @@ export default function TimelineCard({ s, isLast, currency, onOpenDetails }: Pro
         tabIndex={0}
         onClick={onOpenDetails}
         onKeyDown={handleKeyDown}
-        aria-label={`${s.title} の詳細を表示`}
+        aria-label={`顯示 ${s.title} 的詳細資料`}
         className={[
           'relative ml-2.5 flex min-h-[92px] items-center gap-2 bg-surface border border-border rounded-[20px] pl-4 pr-3 py-3',
           'cursor-pointer transition-colors',
@@ -91,7 +91,7 @@ export default function TimelineCard({ s, isLast, currency, onOpenDetails }: Pro
                     onClick={e => e.stopPropagation()}
                     onPointerDown={e => e.stopPropagation()}
                     onKeyDown={e => e.stopPropagation()}
-                    aria-label={`${locationName} を地図で開く`}
+                    aria-label={`在地圖中開啟 ${locationName}`}
                     className="flex min-w-0 items-center gap-[3px] text-accent no-underline hover:underline"
                   >
                     <MapPin size={10} strokeWidth={2} className="shrink-0" />

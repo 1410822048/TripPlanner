@@ -37,7 +37,7 @@ interface Collaborator {
 
 function roleLabel(role: Member['role']): string {
   switch (role) {
-    case 'owner':  return 'オーナー'
+    case 'owner':  return '擁有者'
     case 'editor': return '編輯者'
     case 'viewer': return '檢視者'
   }
@@ -101,7 +101,7 @@ export default function SocialCirclePage() {
       <div className="flex items-center gap-2 px-4 pt-4 pb-2 shrink-0">
         <button
           onClick={() => navigate(-1)}
-          aria-label="戻る"
+          aria-label="返回"
           className="w-9 h-9 rounded-full flex items-center justify-center text-ink hover:bg-tile transition-colors cursor-pointer"
         >
           <ArrowLeft size={18} strokeWidth={2} />
@@ -112,7 +112,7 @@ export default function SocialCirclePage() {
           社交圈
         </h1>
         <p className="m-0 mt-1.5 text-[12px] text-muted leading-[1.6] tracking-[0.02em]">
-          これまで一緒に旅を計画した仲間の一覧です。
+          曾一起規劃旅程的旅伴清單。
         </p>
       </div>
 
@@ -120,8 +120,8 @@ export default function SocialCirclePage() {
       {!uid ? (
         <EmptyState
           emoji="☁️"
-          title="サインインが必要です"
-          description="一緒に旅を計画した仲間を確認するには、サインインしてください。"
+          title="需要登入"
+          description="請登入以查看曾一起規劃旅程的旅伴。"
         />
       ) : loading ? (
         <div className="flex-1 flex items-center justify-center text-muted text-[13px]">
@@ -130,8 +130,8 @@ export default function SocialCirclePage() {
       ) : collaborators.length === 0 ? (
         <EmptyState
           emoji="🧑‍🤝‍🧑"
-          title="まだ仲間がいません"
-          description="旅程に旅伴を招待すると、ここに表示されます。"
+          title="尚未有旅伴"
+          description="邀請旅伴加入旅程後，會顯示在這裡。"
         />
       ) : (
         <div className="px-4 pb-10 flex flex-col gap-3">
@@ -165,7 +165,7 @@ function CollaboratorCard({ collaborator, onTripTap }: {
             {displayName}
           </div>
           <div className="text-[10.5px] text-muted mt-0.5 tracking-[0.04em]">
-            {trips.length} 件の旅程
+            {trips.length} 趟旅程
           </div>
         </div>
       </div>

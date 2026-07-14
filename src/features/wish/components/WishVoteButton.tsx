@@ -38,7 +38,7 @@ export default function WishVoteButton({
       type="button"
       onClick={handleClick}
       disabled={disabled}
-      aria-label={isVoted ? '投票を取り消す' : '投票する'}
+      aria-label={isVoted ? '取消投票' : '投票'}
       aria-pressed={isVoted}
       className={[
         'inline-flex items-center justify-center gap-1 rounded-full border bg-surface cursor-pointer',
@@ -61,7 +61,7 @@ export default function WishVoteButton({
       </span>
       {!compact && (
         <span className={wide ? 'text-[13px] font-black' : 'text-[11px] font-bold'}>
-          {isVoted ? '投票済' : '投票'}
+          {isVoted ? '已投票' : '投票'}
         </span>
       )}
     </button>

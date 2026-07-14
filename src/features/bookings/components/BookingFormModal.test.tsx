@@ -105,16 +105,16 @@ describe('BookingFormModal link defaults', () => {
 
     expect(screen.getByPlaceholderText('ANA')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: 'ホテル' }))
+    fireEvent.click(screen.getByRole('button', { name: '飯店' }))
     expect(screen.getByPlaceholderText('Booking.com')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: '電車' }))
     expect(screen.getByPlaceholderText('JR東日本')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: 'バス' }))
+    fireEvent.click(screen.getByRole('button', { name: '巴士' }))
     expect(screen.getByPlaceholderText('WILLER EXPRESS')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: 'その他' }))
+    fireEvent.click(screen.getByRole('button', { name: '其他' }))
     expect(screen.getByPlaceholderText('Klook')).toBeTruthy()
   })
 
@@ -136,7 +136,7 @@ describe('BookingFormModal link defaults', () => {
 
     expect(screen.getAllByDisplayValue('Booking.com')).toHaveLength(2)
 
-    fireEvent.click(screen.getByRole('button', { name: '手動予約を追加' }))
+    fireEvent.click(screen.getByRole('button', { name: '手動新增訂單' }))
 
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
       input: expect.objectContaining({
@@ -160,11 +160,11 @@ describe('BookingFormModal link defaults', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'ホテル' }))
+    fireEvent.click(screen.getByRole('button', { name: '飯店' }))
     fireEvent.change(screen.getByLabelText(/hotel accommodation/i), {
       target: { value: '星のや東京 / Hoshinoya' },
     })
-    fireEvent.click(screen.getByRole('button', { name: '手動予約を追加' }))
+    fireEvent.click(screen.getByRole('button', { name: '手動新增訂單' }))
 
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
       input: expect.objectContaining({
@@ -198,7 +198,7 @@ describe('BookingFormModal link defaults', () => {
     expect(screen.getByDisplayValue('Manual title')).toBeTruthy()
     expect(screen.getByDisplayValue('Manual provider')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: '手動予約を追加' }))
+    fireEvent.click(screen.getByRole('button', { name: '手動新增訂單' }))
 
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
       input: expect.objectContaining({
@@ -240,7 +240,7 @@ describe('BookingFormModal PDF autofill intent', () => {
       />,
     )
 
-    expect(screen.getByRole('button', { name: /PDFから自動入力/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /從 PDF 自動填入/ })).toBeTruthy()
 
     const file = new File(['%PDF-1.7'], 'booking.pdf', { type: 'application/pdf' })
     fireEvent.change(fileInput(container, 'application/pdf,.pdf'), { target: { files: [file] } })
@@ -265,16 +265,16 @@ describe('BookingFormModal PDF autofill intent', () => {
 
     expect(bookingPdfExtractMocks.extractBookingPdfAutofill).not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getByRole('button', { name: /PDFを読み取る/ }))
+    fireEvent.click(screen.getByRole('button', { name: /讀取 PDF/ }))
 
     expect(bookingPdfExtractMocks.extractBookingPdfAutofill)
       .toHaveBeenCalledWith(file, expect.any(AbortSignal))
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /再読取/ })).toBeTruthy()
+      expect(screen.getByRole('button', { name: /重新讀取/ })).toBeTruthy()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /再読取/ }))
+    fireEvent.click(screen.getByRole('button', { name: /重新讀取/ }))
 
     expect(bookingPdfExtractMocks.extractBookingPdfAutofill).toHaveBeenCalledTimes(2)
     expect(bookingPdfExtractMocks.extractBookingPdfAutofill.mock.calls[1]?.[0]).toBe(file)
@@ -295,13 +295,13 @@ describe('BookingFormModal PDF autofill intent', () => {
     fireEvent.change(fileInput(container, 'application/pdf,.pdf'), { target: { files: [file] } })
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /再読取/ })).toBeTruthy()
+      expect(screen.getByRole('button', { name: /重新讀取/ })).toBeTruthy()
     })
 
     fireEvent.change(fileInput(container, 'image/*,application/pdf'), { target: { files: [file] } })
 
-    expect(screen.getByRole('button', { name: /PDFを読み取る/ })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /再読取/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /讀取 PDF/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /重新讀取/ })).toBeNull()
     expect(bookingPdfExtractMocks.extractBookingPdfAutofill).toHaveBeenCalledTimes(1)
   })
 
@@ -361,7 +361,7 @@ describe('BookingFormModal PDF autofill intent', () => {
     fireEvent.change(fileInput(container, 'application/pdf,.pdf'), { target: { files: [file] } })
 
     await waitFor(() => {
-      expect(screen.getByRole('status').textContent).toContain('2件の予約候補')
+      expect(screen.getByRole('status').textContent).toContain('找到 2 筆訂單候選資料')
     })
 
     expect(screen.queryByDisplayValue('MM626')).toBeNull()
@@ -372,7 +372,7 @@ describe('BookingFormModal PDF autofill intent', () => {
     expect((checkboxes[1] as HTMLInputElement).checked).toBe(true)
 
     fireEvent.click(checkboxes[1]!)
-    fireEvent.click(screen.getByRole('button', { name: '選択した予約を追加' }))
+    fireEvent.click(screen.getByRole('button', { name: '新增選取的訂單' }))
 
     expect(onCreateMany).toHaveBeenCalledWith({
       document: file,
@@ -432,7 +432,7 @@ describe('BookingFormModal PDF autofill intent', () => {
 
     expect(screen.getByRole('status').textContent).toBe(ATTACHMENT_SIZE_ERROR)
     expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
-    expect(screen.queryByRole('button', { name: '選択した予約を追加' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '新增選取的訂單' })).toBeNull()
   })
 
   test('keeps the candidate picker usable when only one batch candidate is createable', async () => {
@@ -472,11 +472,11 @@ describe('BookingFormModal PDF autofill intent', () => {
     fireEvent.change(fileInput(container, 'application/pdf,.pdf'), { target: { files: [file] } })
 
     await waitFor(() => {
-      expect(screen.getByRole('status').textContent).toContain('1件の予約候補')
+      expect(screen.getByRole('status').textContent).toContain('找到 1 筆訂單候選資料')
     })
 
     expect(screen.getAllByRole('checkbox')).toHaveLength(1)
-    fireEvent.click(screen.getByRole('button', { name: '選択した予約を追加' }))
+    fireEvent.click(screen.getByRole('button', { name: '新增選取的訂單' }))
 
     expect(onCreateMany).toHaveBeenCalledWith({
       document: file,

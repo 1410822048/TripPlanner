@@ -324,7 +324,7 @@ export function useSchedulePageState(): SchedulePageState {
       setActiveDate(null)
     }
     deleteTripMut.mutate(deletedId, {
-      onSuccess: () => toast.success('旅程を削除しました'),
+      onSuccess: () => toast.success('已刪除旅程'),
       onError:   () => { if (wasCurrent && restoreId) setSelectedTripId(restoreId) },
     })
   }
@@ -345,7 +345,7 @@ export function useSchedulePageState(): SchedulePageState {
     setSelectedTripId(remaining[0]?.id ?? null)
     setActiveDate(null)
     leaveTripMut.mutate(tripId, {
-      onSuccess: () => toast.success('旅程から退出しました'),
+      onSuccess: () => toast.success('已退出旅程'),
       onError:   () => setSelectedTripId(tripId),
     })
   }
@@ -394,7 +394,7 @@ export function useSchedulePageState(): SchedulePageState {
         // Exhaustiveness check: if MenuActionKey gains a member, TS will
         // flag this assignment until the new case is handled.
         const _exhaustive: never = key
-        toast.info(`${_exhaustive} は開発中です`)
+        toast.info(`${_exhaustive} 尚在開發中`)
       }
     }
   }
@@ -418,15 +418,15 @@ export function useSchedulePageState(): SchedulePageState {
       setSelectedTripId(trip.id)
       setActiveDate(null)
       setCopyTripOpen(false)
-      const parts = [`「${trip.title}」を作成`]
+      const parts = [`已建立「${trip.title}」`]
       if (input.copySchedules) parts.push(`行程 ${copiedSchedules} 件`)
       if (input.copyPlanning)  parts.push(`計畫 ${copiedPlanItems} 件`)
       toast.success(parts.join(' · '))
       if (orphanedSchedules > 0) {
-        toast.info(`${orphanedSchedules} 件の行程が新しい日付範圍外`)
+        toast.info(`${orphanedSchedules} 個行程位於新的日期範圍之外`)
       }
     } catch (e) {
-      toast.error(e instanceof Error ? `複製に失敗：${e.message}` : '複製に失敗しました')
+      toast.error(e instanceof Error ? `複製失敗：${e.message}` : '複製失敗')
     }
   }
 
@@ -434,7 +434,7 @@ export function useSchedulePageState(): SchedulePageState {
   // write with optimistic updates (hook surfaces toast on failure).
   async function onScheduleSave(data: CreateScheduleInput) {
     if (isDemo) { scheduleModal.close(); setSignInOpen(true); return }
-    if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+    if (!uid) { toast.error('正在準備登入，請稍候'); return }
     scheduleModal.clearError()
     try {
       await simulateFailureMaybe()
@@ -445,7 +445,7 @@ export function useSchedulePageState(): SchedulePageState {
       }
       scheduleModal.close()
     } catch (err) {
-      scheduleModal.setError(err instanceof Error ? err.message : '保存に失敗しました')
+      scheduleModal.setError(err instanceof Error ? err.message : '儲存失敗')
     }
   }
   async function onScheduleDelete() {

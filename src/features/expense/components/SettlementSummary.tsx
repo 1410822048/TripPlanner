@@ -91,7 +91,7 @@ export default function SettlementSummary({
           {allSettled && hasActiveExpenses && (
             <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-card bg-teal-pale text-teal text-[10px] font-bold tracking-[0.04em]">
               <Check size={10} strokeWidth={3} />
-              清算済み
+              已清算
             </div>
           )}
         </div>
@@ -116,8 +116,8 @@ export default function SettlementSummary({
                       {m.label}
                     </div>
                     <div className="text-[10px] text-muted tabular-nums mt-px">
-                      {m.isGhost && <span className="text-danger font-semibold">退出済み · </span>}
-                      立替 {formatMinorAmount(b.paid, currency)} · 分担 {formatMinorAmount(b.owed, currency)}
+                      {m.isGhost && <span className="text-danger font-semibold">已退出 · </span>}
+                      代墊 {formatMinorAmount(b.paid, currency)} · 分攤 {formatMinorAmount(b.owed, currency)}
                     </div>
                   </div>
                   <span
@@ -140,14 +140,14 @@ export default function SettlementSummary({
         {hasActiveExpenses && (allSettled ? (
           <div className="mt-3 pt-3 border-t border-dashed border-border text-center">
             <div className="text-[11.5px] text-muted leading-[1.5]">
-              全員の支払いがバランスしています 🎉
+              所有成員的帳務已平衡
             </div>
           </div>
         ) : (
           <>
             <div className="my-3 border-t border-dashed border-border" />
             <div className="text-[10.5px] font-semibold text-muted tracking-[0.08em] uppercase mb-2">
-              支払い提案（{suggestions.length}件）
+              付款建議（{suggestions.length} 筆）
             </div>
             <div className="flex flex-col gap-1.5">
               {suggestions.map((s, i) => {
@@ -186,23 +186,23 @@ export default function SettlementSummary({
                           toUid:       s.toId,
                           amountMinor: s.amountMinor,
                         })}
-                        aria-label={`${from.label}から ${formatMinorAmount(s.amountMinor, currency)} の受取を清算済みとして記録`}
+                        aria-label={`記錄已收到 ${from.label} 支付的 ${formatMinorAmount(s.amountMinor, currency)}`}
                         className="shrink-0 flex items-center gap-1 px-2.5 h-7 rounded-full border-none bg-teal text-white text-[10.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
                       >
                         <Check size={11} strokeWidth={2.8} />
-                        済み
+                        已收款
                       </button>
                     ) : (
                       <div
                         role="status"
                         aria-label={isPayer
-                          ? `受取人(${to.label})の確認待ち`
-                          : `${from.label}から${to.label}への清算は未確認`}
-                        title={isPayer ? '受取人(あなたではない側)が確認します' : undefined}
+                          ? `等待收款人（${to.label}）確認`
+                          : `尚未確認 ${from.label} 支付給 ${to.label} 的清算`}
+                        title={isPayer ? '由收款人（不是你）確認' : undefined}
                         className="shrink-0 flex items-center gap-1 px-2.5 h-7 rounded-full bg-app text-muted text-[10.5px] font-medium tracking-[0.04em] opacity-75"
                       >
                         <Clock size={11} strokeWidth={2.4} />
-                        受取待ち
+                        等待收款
                       </div>
                     )}
                   </div>

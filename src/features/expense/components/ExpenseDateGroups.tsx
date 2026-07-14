@@ -27,7 +27,7 @@ const DEFAULT_EXPANDED_DAYS = 2
 
 function formatDateHeading(date: string): string {
   return fromLocalDateString(date)
-    .toLocaleDateString('ja-JP', { month: 'long', day: 'numeric', weekday: 'short' })
+    .toLocaleDateString('zh-TW', { month: 'long', day: 'numeric', weekday: 'short' })
 }
 
 interface Props {
@@ -103,7 +103,7 @@ export default function ExpenseDateGroups({
                   {formatDateHeading(date)}
                 </span>
                 <span className="text-[10.5px] text-muted tabular-nums">
-                  · {items.length}件
+                  · {items.length} 筆
                 </span>
               </div>
               <span className="text-[11px] text-muted font-medium tabular-nums shrink-0">

@@ -60,7 +60,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
     const target = pendingRemove
     try {
       await removeMut.mutateAsync(target.id)
-      toast.success(`${target.displayName} を削除しました`)
+      toast.success(`已移除 ${target.displayName}`)
       setPendingRemove(null)  // success only → close confirm
     } catch { /* hook onError already surfaced the toast; keep sheet open */ }
   }
@@ -70,7 +70,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
     const target = pendingTransfer
     try {
       await transferMut.mutateAsync(target.userId)
-      toast.success(`${target.displayName} にオーナーを譲りました`)
+      toast.success(`已將擁有者轉讓給 ${target.displayName}`)
       setPendingTransfer(null)  // success only → close confirm
     } catch { /* MutationCache.onError already toasted; keep confirm open to retry/cancel */ }
   }
@@ -80,7 +80,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
     const next = m.role === 'editor' ? 'viewer' : 'editor'
     try {
       await updateRoleMut.mutateAsync({ memberId: m.id, role: next })
-      toast.success(`${m.displayName} を ${next === 'editor' ? '編輯者' : '檢視者'} に変更しました`)
+      toast.success(`已將 ${m.displayName} 變更為${next === 'editor' ? '編輯者' : '檢視者'}`)
     } catch { /* hook onError already surfaced the toast */ }
   }
 
@@ -125,13 +125,13 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
     <>
       {/* List sheet — only when no action sheet and no confirm is open. */}
       {!actionTarget && !anyConfirmOpen && (
-        <BottomSheet isOpen onClose={handleClose} title="メンバー管理">
+        <BottomSheet isOpen onClose={handleClose} title="成員管理">
           <div className="flex flex-col gap-3">
             <p className="m-0 text-[12px] text-muted leading-[1.6] tracking-[0.02em]">
-              この旅程のメンバー一覧です。
+              此旅程的成員清單。
               {isOwner
-                ? ' オーナーは各メンバーの「…」から権限変更・オーナー譲渡・削除ができます。'
-                : ' メンバーの追加・削除はオーナーのみが行えます。'}
+                ? ' 擁有者可從每位成員的「…」變更權限、轉讓擁有者或移除成員。'
+                : ' 只有擁有者可以新增或移除成員。'}
             </p>
 
             {membersQ.isLoading ? (
@@ -140,7 +140,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
               </div>
             ) : membersQ.isError ? (
               <div className="py-6 text-center text-[12px] text-[#A04040] bg-danger-pale rounded-xl border border-[#E9C5C5]">
-                読み込みに失敗しました
+                載入失敗
               </div>
             ) : (
               <ul className="flex flex-col gap-2 list-none m-0 p-0">
@@ -163,7 +163,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
                       <div className="flex-1 min-w-0">
                         <div className="text-[13px] font-semibold text-ink truncate">
                           {m.displayName}
-                          {isSelf && <span className="ml-1.5 text-[10.5px] text-muted font-normal">(あなた)</span>}
+                          {isSelf && <span className="ml-1.5 text-[10.5px] text-muted font-normal">(你)</span>}
                         </div>
                         <div className="text-[10.5px] text-muted mt-0.5">
                           {roleLabel(m.role)}
@@ -173,7 +173,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
                       {canManage && (
                         <button
                           onClick={() => setActionTarget(m)}
-                          aria-label={`${m.displayName} の操作`}
+                          aria-label={`${m.displayName} 的操作`}
                           className="w-8 h-8 rounded-lg border border-border bg-app text-muted hover:bg-tile hover:text-ink flex items-center justify-center cursor-pointer transition-colors shrink-0"
                         >
                           <MoreVertical size={15} strokeWidth={2} />
@@ -195,7 +195,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
                   className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border border-[#E9C5C5] bg-danger-pale text-[#A04040] text-[12.5px] font-semibold cursor-pointer transition-colors hover:brightness-95"
                 >
                   <LogOut size={14} strokeWidth={2} />
-                  この旅程から退出
+                  退出此旅程
                 </button>
               </>
             )}
@@ -206,7 +206,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
       {/* Per-member action sheet (owner drill-down). Mutually exclusive with
           the list + confirms. Its onClose returns to the list, not full-close. */}
       {actionTarget && !anyConfirmOpen && (
-        <BottomSheet isOpen onClose={() => setActionTarget(null)} title="メンバー操作">
+        <BottomSheet isOpen onClose={() => setActionTarget(null)} title="成員操作">
           <div className="flex flex-col gap-3">
             <div className="flex items-center gap-2.5">
               <MemberAvatar
@@ -228,7 +228,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
               >
                 <ArrowLeftRight size={18} strokeWidth={2} className="text-ink shrink-0" />
                 <span className="text-[14.5px] text-ink font-medium">
-                  {actionTarget.role === 'editor' ? '檢視者に変更' : '編輯者に変更'}
+                  {actionTarget.role === 'editor' ? '改為檢視者' : '改為編輯者'}
                 </span>
               </button>
               <button
@@ -237,7 +237,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
                 className="flex items-center gap-3 px-3 min-h-12 py-2 rounded-input bg-app border-none cursor-pointer text-left active:bg-teal-pale transition-colors"
               >
                 <Crown size={18} strokeWidth={2} className="text-teal shrink-0" />
-                <span className="text-[14.5px] text-teal font-medium">オーナーを譲る</span>
+                <span className="text-[14.5px] text-teal font-medium">轉讓擁有者</span>
               </button>
               <button
                 type="button"
@@ -245,7 +245,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
                 className="flex items-center gap-3 px-3 min-h-12 py-2 rounded-input bg-app border-none cursor-pointer text-left active:bg-danger-pale transition-colors"
               >
                 <Trash2 size={18} strokeWidth={2} className="text-danger shrink-0" />
-                <span className="text-[14.5px] text-danger font-medium">メンバーを削除</span>
+                <span className="text-[14.5px] text-danger font-medium">移除成員</span>
               </button>
             </div>
           </div>
@@ -254,11 +254,11 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
 
       <ConfirmSheet
         isOpen={pendingRemove !== null}
-        title="メンバーを削除しますか？"
+        title="要移除此成員嗎？"
         description={pendingRemove && (
           <>
-            <span className="font-bold text-ink">{pendingRemove.displayName}</span> を旅程から削除します。<br />
-            再度招待しない限り、この旅程へはアクセスできなくなります。
+            將從旅程移除 <span className="font-bold text-ink">{pendingRemove.displayName}</span>。<br />
+            除非再次收到邀請，否則無法存取此旅程。
           </>
         )}
         icon={
@@ -266,7 +266,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
             <Trash2 size={22} strokeWidth={2} className="text-[#A04040]" />
           </div>
         }
-        confirmLabel={removeMut.isPending ? '削除中…' : '削除'}
+        confirmLabel={removeMut.isPending ? '移除中…' : '移除'}
         tone="danger"
         loading={removeMut.isPending}
         onClose={() => setPendingRemove(null)}
@@ -275,11 +275,11 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
 
       <ConfirmSheet
         isOpen={pendingTransfer !== null}
-        title="オーナーを譲りますか？"
+        title="要轉讓擁有者嗎？"
         description={pendingTransfer && (
           <>
-            <span className="font-bold text-ink">{pendingTransfer.displayName}</span> を新しいオーナーにします。<br />
-            あなたは編集者になり、メンバー管理・旅程削除は新しいオーナーのみが行えます。
+            將 <span className="font-bold text-ink">{pendingTransfer.displayName}</span> 設為新的擁有者。<br />
+            你會成為編輯者，只有新的擁有者可以管理成員或刪除旅程。
           </>
         )}
         icon={
@@ -287,7 +287,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
             <Crown size={22} strokeWidth={2} className="text-teal" />
           </div>
         }
-        confirmLabel={transferMut.isPending ? '譲渡中…' : '譲渡する'}
+        confirmLabel={transferMut.isPending ? '轉讓中…' : '轉讓'}
         tone="danger"
         loading={transferMut.isPending}
         onClose={() => setPendingTransfer(null)}
@@ -296,11 +296,11 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
 
       <ConfirmSheet
         isOpen={confirmLeave}
-        title="この旅程から退出しますか？"
+        title="要退出此旅程嗎？"
         description={
           <>
-            退出すると、再度招待されるまでこの旅程にはアクセスできなくなります。<br />
-            未精算の費用がある場合も、記録は残ります。
+            退出後，在再次收到邀請前將無法存取此旅程。<br />
+            即使有尚未結清的費用，紀錄仍會保留。
           </>
         }
         icon={
@@ -308,7 +308,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
             <LogOut size={22} strokeWidth={2} className="text-[#A04040]" />
           </div>
         }
-        confirmLabel="退出する"
+        confirmLabel="退出旅程"
         tone="danger"
         onClose={() => setConfirmLeave(false)}
         onConfirm={handleConfirmLeave}
@@ -319,9 +319,9 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
 
 function roleLabel(role: Member['role']): string {
   switch (role) {
-    case 'owner':  return 'オーナー · 全権管理'
-    case 'editor': return '編輯者 · 編集可能'
-    case 'viewer': return '檢視者 · 閲覧のみ'
+    case 'owner':  return '擁有者 · 完整管理權限'
+    case 'editor': return '編輯者 · 可編輯'
+    case 'viewer': return '檢視者 · 僅可查看'
   }
 }
 
@@ -332,7 +332,7 @@ function roleLabel(role: Member['role']): string {
 function RoleChip({ role }: { role: Member['role'] }) {
   const isOwner  = role === 'owner'
   const isEditor = role === 'editor'
-  const label    = isOwner ? 'OWNER' : isEditor ? '編輯' : '閲覧'
+  const label    = isOwner ? 'OWNER' : isEditor ? '編輯' : '檢視'
   const palette  = isOwner
     ? 'bg-teal-pale text-teal border-teal/20'
     : isEditor

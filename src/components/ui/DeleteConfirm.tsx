@@ -35,21 +35,21 @@ export default function DeleteConfirm({ noun, onDelete }: Props) {
     return (
       <div className="flex gap-2 p-3 rounded-xl bg-danger-pale border border-danger-soft">
         <span className="flex-1 text-[12px] text-danger self-center leading-[1.5]">
-          この{noun}を削除しますか？
+          確定要刪除{noun}嗎？
         </span>
         <button
           type="button"
           onClick={() => setConfirming(false)}
           className="px-3 py-1.5 rounded-lg border border-border bg-transparent text-muted text-[12px] font-medium cursor-pointer whitespace-nowrap hover:bg-app transition-colors"
         >
-          キャンセル
+          取消
         </button>
         <button
           type="button"
           onClick={onDelete}
           className="px-3 py-1.5 rounded-lg border border-danger-soft bg-transparent text-danger text-[12px] font-medium cursor-pointer whitespace-nowrap hover:bg-danger-pale transition-colors"
         >
-          削除
+          刪除
         </button>
       </div>
     )
@@ -61,7 +61,7 @@ export default function DeleteConfirm({ noun, onDelete }: Props) {
       onClick={() => setConfirming(true)}
       className="w-full p-[11px] rounded-xl border border-danger-soft bg-transparent text-danger text-[13px] font-medium cursor-pointer tracking-[0.04em] hover:bg-danger-pale transition-colors"
     >
-      この{noun}を削除
+      刪除{noun}
     </button>
   )
 }

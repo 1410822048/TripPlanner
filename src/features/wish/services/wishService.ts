@@ -324,8 +324,8 @@ export async function deleteWish(
     })
     if (result === 'unrecoverable') {
       throw new Error(
-        'カバー画像の削除に失敗し、再試行キューへの登録もできませんでした。' +
-        'しばらくしてから再度お試しください。',
+        '無法刪除封面圖片，也無法加入重試佇列。' +
+        '請稍後再試一次。',
       )
     }
   }

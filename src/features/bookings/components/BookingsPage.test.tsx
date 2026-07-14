@@ -185,39 +185,39 @@ describe('BookingsPage read-first booking flow', () => {
   it('opens the read-only detail sheet before editing a booking', () => {
     render(<BookingsPage />)
 
-    const detailButton = screen.getByRole('button', { name: 'NRT → TPEの詳細を表示' })
+    const detailButton = screen.getByRole('button', { name: '顯示 NRT → TPE 的詳細資料' })
     expect(detailButton.tagName).toBe('BUTTON')
     fireEvent.click(detailButton)
 
-    const detail = screen.getByRole('dialog', { name: '予約詳細' })
+    const detail = screen.getByRole('dialog', { name: '訂單詳情' })
     expect(within(detail).getAllByText('NRT → TPE').length).toBeGreaterThan(0)
-    expect(within(detail).getByRole('button', { name: '編集' })).toBeTruthy()
+    expect(within(detail).getByRole('button', { name: '編輯' })).toBeTruthy()
     expect(harness.openEdit).not.toHaveBeenCalled()
   })
 
   it('opens edit only from the detail footer', () => {
     render(<BookingsPage />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'NRT → TPEの詳細を表示' }))
-    fireEvent.click(screen.getByRole('button', { name: '編集' }))
+    fireEvent.click(screen.getByRole('button', { name: '顯示 NRT → TPE 的詳細資料' }))
+    fireEvent.click(screen.getByRole('button', { name: '編輯' }))
 
     expect(harness.openEdit).toHaveBeenCalledWith(harness.bookings[0])
-    expect(screen.queryByRole('dialog', { name: '予約詳細' })).toBeNull()
+    expect(screen.queryByRole('dialog', { name: '訂單詳情' })).toBeNull()
   })
 
   it('opens attachment preview from detail and returns to detail on close', () => {
     render(<BookingsPage />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'NRT → TPEの詳細を表示' }))
-    fireEvent.click(screen.getByRole('button', { name: '添付を表示: confirmation.pdf' }))
+    fireEvent.click(screen.getByRole('button', { name: '顯示 NRT → TPE 的詳細資料' }))
+    fireEvent.click(screen.getByRole('button', { name: '顯示附件：confirmation.pdf' }))
 
     expect(screen.getByRole('dialog', { name: 'attachment-preview' })).toBeTruthy()
     expect(screen.getByText('preview:NRT → TPE')).toBeTruthy()
-    expect(screen.queryByRole('dialog', { name: '予約詳細' })).toBeNull()
+    expect(screen.queryByRole('dialog', { name: '訂單詳情' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'preview close' }))
 
-    expect(screen.getByRole('dialog', { name: '予約詳細' })).toBeTruthy()
+    expect(screen.getByRole('dialog', { name: '訂單詳情' })).toBeTruthy()
   })
 
   it('lets viewers open detail without exposing edit', () => {
@@ -225,11 +225,11 @@ describe('BookingsPage read-first booking flow', () => {
 
     render(<BookingsPage />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'NRT → TPEの詳細を表示' }))
+    fireEvent.click(screen.getByRole('button', { name: '顯示 NRT → TPE 的詳細資料' }))
 
-    const detail = screen.getByRole('dialog', { name: '予約詳細' })
+    const detail = screen.getByRole('dialog', { name: '訂單詳情' })
     expect(detail).toBeTruthy()
-    expect(within(detail).queryByRole('button', { name: '編集' })).toBeNull()
+    expect(within(detail).queryByRole('button', { name: '編輯' })).toBeNull()
   })
 
   it('opens add form with a draft from PWA share target params', async () => {

@@ -48,30 +48,30 @@ describe('ExpenseItemAllocationSheet', () => {
 
   it('クリア: removes every current allocation, touches nothing else', () => {
     const { onToggleAllocation, onSetAllocationShares } = renderSheet()
-    fireEvent.click(screen.getByText('クリア'))
+    fireEvent.click(screen.getByText('清除'))
     expect(onToggleAllocation.mock.calls).toEqual([[0, 'a'], [0, 'b']])
     expect(onSetAllocationShares).not.toHaveBeenCalled()
   })
 
   it('minus on shares>1 decrements; minus on shares=1 removes the member', () => {
     const { onToggleAllocation, onSetAllocationShares } = renderSheet()
-    fireEvent.click(screen.getByLabelText('Alice の分担数を減らす')) // shares 2 → 1
+    fireEvent.click(screen.getByLabelText('減少 Alice 的分攤數')) // shares 2 → 1
     expect(onSetAllocationShares).toHaveBeenCalledWith(0, 'a', 1)
     expect(onToggleAllocation).not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getByLabelText('Bob の分担数を減らす'))   // shares 1 → remove
+    fireEvent.click(screen.getByLabelText('減少 Bob 的分攤數'))   // shares 1 → remove
     expect(onToggleAllocation).toHaveBeenCalledWith(0, 'b')
   })
 
   it('plus increments shares', () => {
     const { onSetAllocationShares } = renderSheet()
-    fireEvent.click(screen.getByLabelText('Alice の分担数を増やす')) // 2 → 3
+    fireEvent.click(screen.getByLabelText('增加 Alice 的分攤數')) // 2 → 3
     expect(onSetAllocationShares).toHaveBeenCalledWith(0, 'a', 3)
   })
 
   it('追加: adds an unselected member', () => {
     const { onToggleAllocation } = renderSheet()
-    fireEvent.click(screen.getByText('追加')) // only Carol is unselected
+    fireEvent.click(screen.getByText('新增')) // only Carol is unselected
     expect(onToggleAllocation).toHaveBeenCalledWith(0, 'c')
   })
 })

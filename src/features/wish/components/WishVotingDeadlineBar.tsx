@@ -31,7 +31,7 @@ interface Props {
 function daysLeftLabel(deadlineAt: Timestamp, now: number): string {
   const msLeft = deadlineAt.toMillis() - now
   const daysLeft = Math.ceil(msLeft / 86_400_000)
-  return daysLeft > 1 ? `あと${daysLeft}日` : 'まもなく締切'
+  return daysLeft > 1 ? `剩 ${daysLeft} 天` : '即將截止'
 }
 
 function formatDeadline(deadlineAt: Timestamp): string {
@@ -50,7 +50,7 @@ export default function WishVotingDeadlineBar({
     return (
       <div className="shrink-0 mx-4 mb-2 flex items-center gap-2 px-3 py-2.5 rounded-xl bg-danger-pale border border-danger/20">
         <AlertCircle size={15} className="shrink-0 text-danger" />
-        <span className="text-[12px] font-semibold text-danger">投票は締め切られました</span>
+        <span className="text-[12px] font-semibold text-danger">投票已截止</span>
       </div>
     )
   }
@@ -66,7 +66,7 @@ export default function WishVotingDeadlineBar({
           className="w-full h-9 rounded-[14px] border border-border bg-transparent text-muted text-[11.5px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition-colors hover:bg-app disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Clock size={13} strokeWidth={2} />
-          投票締切を設定
+          設定投票截止時間
         </button>
       </div>
     )
@@ -86,7 +86,7 @@ export default function WishVotingDeadlineBar({
         ].join(' ')}
       >
         <Clock size={14} className="shrink-0 text-muted" />
-        <span className="flex-1 text-left">締切: {formatDeadline(deadlineAt)}</span>
+        <span className="flex-1 text-left">截止：{formatDeadline(deadlineAt)}</span>
         <span className="text-[10.5px] font-medium tabular-nums opacity-70">{daysLeftLabel(deadlineAt, now)}</span>
       </button>
     </div>

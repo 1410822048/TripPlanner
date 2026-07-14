@@ -37,9 +37,9 @@ const TABS = [
   { path: '/schedule', label: '行程', Icon: CalendarDays, feature: 'schedule' as const },
   { path: '/bookings', label: '訂單', Icon: Ticket,       feature: 'bookings' as const },
   { path: '/expense',  label: '費用', Icon: Receipt,      feature: 'expense'  as const },
-  { path: '/wish',     label: 'Wish', Icon: Heart,        feature: 'wish'     as const },
+  { path: '/wish',     label: '心願', Icon: Heart,        feature: 'wish'     as const },
   { path: '/planning', label: '規劃', Icon: ListChecks,   feature: 'planning' as const },
-  { path: '/account',  label: '我的', Icon: UserCircle,   feature: null },
+  { path: '/account',  label: '帳戶', Icon: UserCircle,   feature: null },
 ] as const
 
 function pathToFeature(pathname: string): BadgeFeature | null {
@@ -134,7 +134,7 @@ export default function AppLayout() {
         href="#main"
         className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:px-3 focus:py-2 focus:rounded focus:bg-accent focus:text-white focus:text-sm focus:font-medium focus:outline-2 focus:outline-offset-2 focus:outline-accent"
       >
-        本文へスキップ
+        跳至主要內容
       </a>
 
       <main
@@ -153,7 +153,7 @@ export default function AppLayout() {
       </main>
 
       <nav
-        aria-label="主要ナビゲーション"
+        aria-label="主要導覽"
         className="absolute bottom-0 inset-x-0 flex items-stretch border-t border-border/60 px-1 z-10"
         style={{
           height: 'var(--nav-h)',
@@ -195,7 +195,7 @@ export default function AppLayout() {
                 <Icon size={17} strokeWidth={active ? 2.2 : 1.6} />
                 {showDot && (
                   <span
-                    aria-label="未読の更新があります"
+                    aria-label="有未讀更新"
                     className="absolute top-[1px] right-[7px] w-[7px] h-[7px] rounded-full bg-danger border-2 border-[#FDFAF5]"
                   />
                 )}

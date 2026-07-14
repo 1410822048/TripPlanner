@@ -64,9 +64,9 @@ function readPermission(): PushPermission {
 function enableErrorMessage(err: unknown): string {
   const message = err instanceof Error ? err.message : ''
   if (/Importing a module script failed|Failed to fetch dynamically imported module|error loading dynamically imported module/i.test(message)) {
-    return 'アプリを更新してから、もう一度通知をオンにしてください'
+    return '請更新 App 後再重新啟用通知'
   }
-  return message || '通知を有効にできませんでした'
+  return message || '無法啟用通知'
 }
 
 export function usePushNotifications(uid: string | undefined): UsePushNotificationsResult {
@@ -166,7 +166,7 @@ export function usePushNotifications(uid: string | undefined): UsePushNotificati
       })
       if (!canApply()) return
       if (!token) {
-        setState('not-enabled'); setError('通知トークンを取得できませんでした')
+        setState('not-enabled'); setError('無法取得通知權杖')
         return
       }
       const hash = await saveToken({
@@ -182,7 +182,7 @@ export function usePushNotifications(uid: string | undefined): UsePushNotificati
             vapidKey: VAPID_KEY,
             serviceWorkerRegistration: registration,
           })
-          if (!fresh) throw new Error('通知トークンを取得できませんでした')
+          if (!fresh) throw new Error('無法取得通知權杖')
           return fresh
         },
       })
@@ -212,7 +212,7 @@ export function usePushNotifications(uid: string | undefined): UsePushNotificati
       setState('not-enabled')
     } catch (e) {
       if (canApply()) {
-        setError(e instanceof Error ? e.message : '通知を無効にできませんでした')
+        setError(e instanceof Error ? e.message : '無法關閉通知')
         setState('error')
       }
     } finally {

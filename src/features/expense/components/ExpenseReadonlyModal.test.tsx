@@ -42,7 +42,7 @@ function expense(overrides: Partial<Expense> = {}): Expense {
 describe('ExpenseReadonlyModal', () => {
   it('renders the settlement-locked detail with NO editable inputs / save button', () => {
     render(<ExpenseReadonlyModal isOpen isLocked expense={expense()} members={members} currency="JPY" onClose={() => {}} />)
-    expect(screen.getByText('清算済み')).toBeTruthy()    // lock banner
+    expect(screen.getByText('已清算')).toBeTruthy()    // lock banner
     expect(screen.getByText('寿司ランチ')).toBeTruthy()  // title
     // Alice is both the payer and a split member, so she appears more than
     // once — assert presence rather than uniqueness.
@@ -50,7 +50,7 @@ describe('ExpenseReadonlyModal', () => {
     // Read-only: nothing editable, nothing to save.
     expect(screen.queryByRole('textbox')).toBeNull()
     expect(screen.queryByRole('spinbutton')).toBeNull()
-    expect(screen.queryByRole('button', { name: /保存|記録|変更|追加/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /儲存|記錄|變更|新增/ })).toBeNull()
   })
 
   it('shows the foreign source amount when sourceCurrency differs from trip currency', () => {

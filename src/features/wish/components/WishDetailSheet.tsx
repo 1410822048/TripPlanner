@@ -48,7 +48,7 @@ export default function WishDetailSheet({
   return (
     <BottomSheet
       isOpen={isOpen}
-      title="候補の詳細"
+      title="候選項目詳情"
       onClose={onClose}
       footer={
         <div className="flex items-center gap-2">
@@ -59,7 +59,7 @@ export default function WishDetailSheet({
               className="h-11 px-3 rounded-full border border-border bg-surface text-ink flex items-center justify-center gap-1.5 cursor-pointer active:scale-[0.97] transition-all"
             >
               <Pencil size={14} strokeWidth={2.2} />
-              <span className="text-[12.5px] font-bold">編集</span>
+              <span className="text-[12.5px] font-bold">編輯</span>
             </button>
           )}
           <WishVoteButton
@@ -106,10 +106,10 @@ export default function WishDetailSheet({
 
         <section className="rounded-[16px] bg-app px-3.5 py-3">
           <div className="text-[10.5px] font-bold text-muted tracking-[0.12em] uppercase mb-1.5">
-            おすすめ理由
+            推薦原因
           </div>
           <p className="m-0 text-[13px] leading-[1.65] text-ink whitespace-pre-wrap break-words">
-            {wish.description?.trim() || 'まだ説明はありません'}
+            {wish.description?.trim() || '尚未提供說明'}
           </p>
         </section>
 
@@ -126,7 +126,7 @@ export default function WishDetailSheet({
                 ].join(' ')}
               >
                 <MapPin size={15} strokeWidth={2.2} />
-                <span className="text-[12.5px] font-bold">地図</span>
+                <span className="text-[12.5px] font-bold">地圖</span>
               </a>
             )}
             {siteHref && (
@@ -149,7 +149,7 @@ export default function WishDetailSheet({
         {wish.address && (
           <section className="rounded-[16px] border border-border bg-surface px-3.5 py-3">
             <div className="text-[10.5px] font-bold text-muted tracking-[0.12em] uppercase mb-1.5">
-              場所
+              地點
             </div>
             <p className="m-0 text-[13px] leading-[1.55] text-ink break-words">
               {wish.address}
@@ -169,7 +169,7 @@ export default function WishDetailSheet({
             </div>
             {proposer && (
               <div className="flex items-center gap-1.5 text-[11.5px] text-muted">
-                <span>提案</span>
+                <span>提案者</span>
                 <MemberAvatar member={proposer} size={22} />
               </div>
             )}
@@ -187,7 +187,7 @@ export default function WishDetailSheet({
               ))}
             </div>
           ) : (
-            <p className="m-0 text-[12px] text-muted">まだ投票はありません</p>
+            <p className="m-0 text-[12px] text-muted">尚未有投票</p>
           )}
         </section>
       </div>

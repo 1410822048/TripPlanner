@@ -16,13 +16,13 @@ export default function ExpenseListEmpty({ canWrite, onAdd }: Props) {
         <Receipt size={24} strokeWidth={1.6} />
       </div>
       <p className="m-0 mb-1 text-[13.5px] font-semibold text-ink tracking-[0.02em]">
-        まだ費用が記録されていません
+        尚未記錄費用
       </p>
       {canWrite ? (
         <>
           <p className="m-0 mb-4 text-[11.5px] text-muted tracking-[0.04em] leading-[1.5]">
-            レシートを撮るだけで、品目・金額・分類まで<br />
-            AI が自動で記録します
+            只要拍攝收據，品項、金額與分類都會<br />
+            由 AI 自動記錄
           </p>
           <button
             onClick={onAdd}
@@ -30,15 +30,15 @@ export default function ExpenseListEmpty({ canWrite, onAdd }: Props) {
             style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
           >
             <Camera size={14} strokeWidth={2.5} />
-            レシートから始める
+            從收據開始
           </button>
           <div className="mt-2.5 text-[10.5px] text-muted">
-            手動入力でも追加できます
+            也可以手動新增
           </div>
         </>
       ) : (
         <p className="m-0 text-[11.5px] text-muted tracking-[0.04em]">
-          閲覧者として参加中です。費用の追加はオーナー / 編集者のみ行えます。
+          你目前以檢視者身分加入。只有擁有者和編輯者可以新增費用。
         </p>
       )}
     </div>

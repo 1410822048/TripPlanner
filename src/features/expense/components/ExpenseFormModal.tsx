@@ -68,12 +68,12 @@ import AttachmentPreviewModal from '@/features/attachments/components/Attachment
 
 
 const CATEGORIES: { value: ExpenseCategory; label: string }[] = [
-  { value: 'food',          label: '食事'   },
+  { value: 'food',          label: '餐飲'   },
   { value: 'transport',     label: '交通'   },
-  { value: 'accommodation', label: '宿泊'   },
-  { value: 'activity',      label: '体験'   },
-  { value: 'shopping',      label: '買物'   },
-  { value: 'other',         label: 'その他' },
+  { value: 'accommodation', label: '住宿'   },
+  { value: 'activity',      label: '體驗'   },
+  { value: 'shopping',      label: '購物'   },
+  { value: 'other',         label: '其他' },
 ]
 
 // `type` (not `interface`): TS won't widen interfaces to satisfy
@@ -350,7 +350,7 @@ export default function ExpenseFormModal({
   // "請求額より多く" while the user is still typing the total.
   const receiptReconcileWarning =
     att.hasAttachment && items.hasItems && amountMinor > 0 && direction !== 'exact'
-      ? `明細が請求額より ${formatMinorAmount(Math.abs(itemsDiff), currency)} ${direction === 'short' ? '少なく' : '多く'}、合計が一致しません。読み取り結果を確認してください`
+      ? `明細比帳單金額${direction === 'short' ? '少了' : '多了'} ${formatMinorAmount(Math.abs(itemsDiff), currency)}，合計不一致。請確認讀取結果。`
       : null
   const includedArr = members.map(m => m.id).filter(id => splits.state.included.has(id))
   const equalSplits: Record<string, number> = Object.fromEntries(
@@ -422,12 +422,12 @@ export default function ExpenseFormModal({
     <FormModalShell
       isOpen={isOpen}
       isSaving={isSaving}
-      title={editTarget ? '費用を編集' : '費用を追加'}
-      saveLabel={editTarget ? '変更を保存' : '費用を追加'}
+      title={editTarget ? '編輯費用' : '新增費用'}
+      saveLabel={editTarget ? '儲存變更' : '新增費用'}
       onClose={onClose}
       onSave={handleSave}
     >
-      <FormField label="タイトル" error={errors.title} required>
+      <FormField label="標題" error={errors.title} required>
         <input
           ref={titleRef}
           value={state.title}
@@ -437,7 +437,7 @@ export default function ExpenseFormModal({
         />
       </FormField>
 
-      <FormField label="カテゴリ">
+      <FormField label="分類">
         <CategoryChipRow
           categories={CATEGORIES}
           icons={CATEGORY_ICON}
@@ -485,7 +485,7 @@ export default function ExpenseFormModal({
         onDateChange={v => setField("date", v)}
       />
 
-      <FormField label="立替えた人" error={errors.paidBy} required>
+      <FormField label="代墊者" error={errors.paidBy} required>
         {/* Avatar-only dot picker. The label inside the avatar IS the
             visual identifier (1-2 char initials with member colors), so
             a separate chip label would be redundant. Selected gets an
@@ -566,11 +566,11 @@ export default function ExpenseFormModal({
         />
       )}
 
-      <FormField label="メモ">
+      <FormField label="備註">
         <textarea
           value={state.note}
           onChange={e => setField('note', e.target.value)}
-          placeholder="備考など"
+          placeholder="備註等"
           rows={2}
           className={`${inputClass(false)} resize-none leading-[1.6] py-2.5 h-auto`}
         />

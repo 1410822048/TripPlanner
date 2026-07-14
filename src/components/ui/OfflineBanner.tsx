@@ -47,7 +47,7 @@ export default function OfflineBanner() {
         className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-[#FFF4E0] text-[#B5651D] border-b border-[#F0D49B] text-[11.5px] font-medium"
       >
         <WifiOff size={12} strokeWidth={2.2} className="shrink-0" />
-        <span>オフライン — 変更は接続後に同期されます</span>
+        <span>離線中，變更會在重新連線後同步</span>
       </div>
     )
   }
@@ -60,7 +60,7 @@ export default function OfflineBanner() {
       className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-teal-pale text-teal border-b border-teal/20 text-[11.5px] font-medium"
     >
       <CheckCircle2 size={12} strokeWidth={2.2} className="shrink-0" />
-      <span>同期しました</span>
+      <span>已同步</span>
     </div>
   )
 }

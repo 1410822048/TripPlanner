@@ -34,10 +34,10 @@ type PlanningMember = TripMember & { name: string }
 // get added (less disorienting than dynamic section visibility).
 const SECTIONS: { category: PlanCategory; label: string }[] = [
   { category: 'essentials', label: '必備'   },
-  { category: 'documents',  label: '予約確認' },
+  { category: 'documents',  label: '訂單確認' },
   { category: 'packing',    label: '荷物'   },
   { category: 'todo',       label: '行前 todo' },
-  { category: 'other',      label: 'その他' },
+  { category: 'other',      label: '其他' },
 ]
 
 function isCompletedBy(item: PlanItem, uid: string | undefined): boolean {
@@ -88,7 +88,7 @@ export default function PlanningPage() {
   const isSaving  = createMut.isPending || updateMut.isPending
 
   if (ctx.status === 'loading') return <PlanningPageSkeleton />
-  if (ctx.status === 'no-trip') return <NoTripEmptyState icon={ListChecks} reason="旅前準備のリストを管理" />
+  if (ctx.status === 'no-trip') return <NoTripEmptyState icon={ListChecks} reason="管理行前準備清單" />
 
   const title = ctx.trip.title
 
@@ -99,8 +99,8 @@ export default function PlanningPage() {
 
   async function handleSave(input: CreatePlanItemInput) {
     if (isDemo) { modal.close(); signIn.open(); return }
-    if (!canWrite) { toast.error('編集権限がありません'); return }
-    if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+    if (!canWrite) { toast.error('你沒有編輯權限'); return }
+    if (!uid) { toast.error('正在準備登入，請稍候'); return }
     modal.clearError()
     try {
       await simulateFailureMaybe()
@@ -111,14 +111,14 @@ export default function PlanningPage() {
       }
       modal.close()
     } catch (err) {
-      modal.setError(err instanceof Error ? err.message : '保存に失敗しました')
+      modal.setError(err instanceof Error ? err.message : '儲存失敗')
     }
   }
 
   async function handleDelete() {
     if (!modal.editTarget) return
     if (isDemo) { modal.close(); signIn.open(); return }
-    if (!canWrite) { toast.error('削除権限がありません'); return }
+    if (!canWrite) { toast.error('你沒有刪除權限'); return }
     try {
       await deleteMut.mutateAsync(modal.editTarget.id)
       modal.close()
@@ -127,14 +127,14 @@ export default function PlanningPage() {
 
   function handleToggle(item: PlanItem) {
     if (isDemo) { signIn.open(); return }
-    if (!uid)   { toast.error('ログイン準備中です。少々お待ちください'); return }
+    if (!uid)   { toast.error('正在準備登入，請稍候'); return }
     toggleMut.mutate({ itemId: item.id, uid, done: !isCompletedBy(item, uid) })
   }
 
   async function handleSwipeDelete(item: PlanItem) {
     swipe.closeAll()
     if (isDemo) { signIn.open(); return }
-    if (!canWrite) { toast.error('削除権限がありません'); return }
+    if (!canWrite) { toast.error('你沒有刪除權限'); return }
     await deleteMut.mutateAsync(item.id).catch(() => {})
   }
 
@@ -143,7 +143,7 @@ export default function PlanningPage() {
     // inner buttons stopPropagation, so this only fires for taps in the
     // gaps between rows, headers, and other non-row areas.
     <div className="bg-app min-h-full pb-8" onClick={swipe.closeAll}>
-      {isDemo && <DemoBanner reason="チェックリストを保存" onSignIn={signIn.open} />}
+      {isDemo && <DemoBanner reason="儲存清單" onSignIn={signIn.open} />}
 
       <div className="px-5 pt-4 pb-2 flex items-end justify-between gap-3">
         <div className="min-w-0">
@@ -160,7 +160,7 @@ export default function PlanningPage() {
               {doneCount}<span className="text-[14px] text-muted font-bold"> / {totalCount}</span>
             </div>
             <div className="text-[10px] text-muted mt-0.5 tracking-[0.06em]">
-              完了
+              已完成
             </div>
           </div>
         )}
@@ -170,7 +170,7 @@ export default function PlanningPage() {
         {members.length > 0 && totalCount > 0 && (
           <div className="mb-5">
             <p className="m-0 mb-2 px-1 text-[11px] font-extrabold tracking-[0.08em] text-muted">
-              全員の準備状況
+              全員準備進度
             </p>
             <div className="flex gap-3 overflow-x-auto pb-1">
               {members.map(member => {
@@ -211,10 +211,10 @@ export default function PlanningPage() {
               <ListChecks size={24} strokeWidth={1.6} />
             </div>
             <p className="m-0 mb-1 text-[13.5px] font-semibold text-ink tracking-[0.02em]">
-              リストはまだ空です
+              清單還是空的
             </p>
             <p className="m-0 mb-[18px] text-[11.5px] text-muted tracking-[0.04em]">
-              パスポート、充電器、行く前の手続きなど、忘れず準備
+              護照、充電器、出發前手續等，別忘了準備
             </p>
             {canWrite && (
               <button
@@ -223,7 +223,7 @@ export default function PlanningPage() {
                 style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
               >
                 <Plus size={14} strokeWidth={2.5} />
-                項目を追加
+                新增項目
               </button>
             )}
           </div>
@@ -283,7 +283,7 @@ export default function PlanningPage() {
                       </div>
                     ) : (
                       <div className="px-1 py-5 text-center text-[12px] font-semibold text-muted">
-                        まだ項目がありません
+                        尚未有項目
                       </div>
                     )}
                     {canWrite && (
@@ -292,7 +292,7 @@ export default function PlanningPage() {
                         className="mt-2 h-9 w-full rounded-[14px] border-[1.5px] border-dashed border-border bg-transparent text-muted text-[11.5px] font-medium flex items-center justify-center gap-1 cursor-pointer tracking-[0.04em] transition-all hover:bg-teal-pale hover:border-teal hover:text-teal"
                       >
                         <Plus size={12} strokeWidth={2} />
-                        追加
+                        新增
                       </button>
                     )}
                   </div>
@@ -320,7 +320,7 @@ export default function PlanningPage() {
       <SignInPromptModal
         isOpen={signIn.isOpen}
         onClose={signIn.close}
-        reason="チェックリストを保存するには、"
+        reason="若要儲存清單，"
       />
     </div>
   )

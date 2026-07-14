@@ -16,7 +16,7 @@
 
 const DEV = import.meta.env.DEV
 const FLAG = '__tripmate_force_save_fail'
-const DEFAULT_MSG = 'テスト用エラー(手動觸發)'
+const DEFAULT_MSG = '測試用錯誤（手動觸發）'
 
 interface DevHelpers {
   failNextSave:      (message?: string) => void

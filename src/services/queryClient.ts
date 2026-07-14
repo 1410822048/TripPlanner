@@ -19,27 +19,27 @@ import { captureError } from '@/services/sentry'
 export const MUTATION_ACTION = {
   // ── Generic verbs (update / delete reused across all entities) ─
   UPDATE: '更新',
-  DELETE: '削除',
+  DELETE: '刪除',
 
   // ── Entity-specific create labels ──────────────────────────────
   // All five list entities get their own create label so the failure
   // toast (`{label}に失敗`) reads naturally and the Sentry tag pinpoints
   // which entity broke. Don't fall back to a generic `ADD` — it
   // fragments aggregation and reads worse in the UI.
-  CREATE_BOOKING:    '予約の追加',
-  CREATE_EXPENSE:    '費用の追加',
-  CREATE_SCHEDULE:   '行程の追加',
-  CREATE_WISH:       '希望の追加',
-  CREATE_PLAN:       '準備項目の追加',
+  CREATE_BOOKING:    '新增訂單',
+  CREATE_EXPENSE:    '新增費用',
+  CREATE_SCHEDULE:   '新增行程',
+  CREATE_WISH:       '新增心願',
+  CREATE_PLAN:       '新增準備項目',
 
   // ── Specialty mutations ────────────────────────────────────────
   TOGGLE_VOTE:       '投票',
-  CHANGE_ROLE:       '権限変更',
-  TRANSFER_OWNER:    'オーナー譲渡',
+  CHANGE_ROLE:       '變更權限',
+  TRANSFER_OWNER:    '轉讓擁有者',
   RECORD_SETTLEMENT: '清算記録',
-  CANCEL_SETTLEMENT: '清算取り消し',
+  CANCEL_SETTLEMENT: '取消清算',
   CREATE_INVITE:     '邀請連結作成',
-  REVOKE_INVITE:     '取り消し',
+  REVOKE_INVITE:     '撤銷邀請',
 } as const
 
 export type MutationActionLabel = typeof MUTATION_ACTION[keyof typeof MUTATION_ACTION]
@@ -99,7 +99,7 @@ export const queryClient = new QueryClient({
       })
       if (meta?.silent) return
       if (isAmbiguous) {
-        toast.info('通信が不安定です。反映を確認しています')
+        toast.info('網路不穩定，正在確認是否已完成更新')
         return
       }
       toast.mutationError(err, meta?.action ?? '操作')

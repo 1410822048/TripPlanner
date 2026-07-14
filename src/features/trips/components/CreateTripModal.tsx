@@ -82,9 +82,9 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
       // notification paths and needed flushSync to align them.
       setSelectedTripId(trip.id)
       close()
-      toast.success(`「${trip.title}」を作成しました`)
+      toast.success(`已建立「${trip.title}」`)
     } catch (e) {
-      toast.error(e instanceof Error ? `作成に失敗：${e.message}` : '作成に失敗しました')
+      toast.error(e instanceof Error ? `建立失敗：${e.message}` : '建立失敗')
     }
   }
 
@@ -94,7 +94,7 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
     catch (e) {
       const code = (e as { code?: string })?.code
       if (code !== 'auth/popup-closed-by-user') {
-        toast.error(e instanceof Error ? e.message : 'サインインに失敗しました')
+        toast.error(e instanceof Error ? e.message : '登入失敗')
       }
     } finally { setSigningIn(false) }
   }
@@ -105,7 +105,7 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
   // self-bootstrap member doc required by Firestore rules.
   if (state.status === 'loading') {
     return (
-      <BottomSheet isOpen onClose={close} title="新しい旅程">
+      <BottomSheet isOpen onClose={close} title="新旅程">
         <div className="h-32 flex items-center justify-center text-muted text-[13px]">
           <LoadingText />
         </div>
@@ -114,12 +114,12 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
   }
   if (state.status !== 'signed-in') {
     return (
-      <BottomSheet isOpen onClose={close} title="サインインが必要です">
+      <BottomSheet isOpen onClose={close} title="需要登入">
         <div className="py-4 text-center">
           <div className="text-[44px] leading-none mb-3">☁️</div>
           <p className="m-0 mb-5 text-[13px] text-ink leading-[1.7] tracking-[0.02em]">
-            自分の旅程を作成するには、<br />
-            Google アカウントでサインインしてください。
+            若要建立自己的旅程，<br />
+            請使用 Google 帳戶登入。
           </p>
           <button
             onClick={handleSignIn}
@@ -128,11 +128,11 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
             style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}
           >
             <GoogleIcon size={18} />
-            {signingIn ? 'サインイン中…' : 'Google でサインイン'}
+            {signingIn ? '登入中…' : '使用 Google 登入'}
           </button>
           <p className="mt-5 text-[10.5px] text-muted leading-[1.6] tracking-[0.02em] max-w-[280px] mx-auto">
-            サインイン後、プレビュー中のデモデータは<br />
-            あなた自身の旅程に置き換わります。
+            登入後，預覽中的示範資料會<br />
+            改為你自己的旅程。
           </p>
         </div>
       </BottomSheet>
@@ -143,7 +143,7 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
     <BottomSheet
       isOpen
       onClose={close}
-      title="新しい旅程"
+      title="新旅程"
       footer={<SaveButton onClick={handleSave} isSaving={createMut.isPending} label="作成" />}
     >
       <FormField label="旅程名稱" error={errors.title} required>

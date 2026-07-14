@@ -104,9 +104,9 @@ function accountAgeLabel(creationTime: string | undefined): string | null {
   if (Number.isNaN(createdAt.getTime())) return null
   const diffMs = Date.now() - createdAt.getTime()
   const days   = Math.floor(diffMs / 86_400_000)
-  if (days < 30)  return `${Math.max(1, days)} 日`
+  if (days < 30)  return `${Math.max(1, days)} 天`
   const months = Math.floor(days / 30)
-  if (months < 12) return `${months} か月`
+  if (months < 12) return `${months} 個月`
   return `${Math.floor(months / 12)} 年`
 }
 
@@ -149,7 +149,7 @@ export default function AccountPage() {
     catch (e) {
       const code = (e as { code?: string })?.code
       if (code !== 'auth/popup-closed-by-user') {
-        toast.error(e instanceof Error ? e.message : 'サインインに失敗しました')
+        toast.error(e instanceof Error ? e.message : '登入失敗')
       }
     } finally { setSigningIn(false) }
   }
@@ -172,13 +172,13 @@ export default function AccountPage() {
       useTripStore.getState().clearTrip()
       await signOut()
       setLogoutOpen(false)
-      toast.success('ログアウトしました')
+      toast.success('已登出')
       if (pushRevokeResult === 'incomplete') {
-        toast.info('通知の解除は完了できませんでした。通信が戻ったら通知設定を確認してください')
+        toast.info('無法完整解除通知。網路恢復後請確認通知設定。')
       }
     } catch (e) {
       if (pushOwnerCleared && uid) void writePushOwnerUid(uid)
-      toast.error(e instanceof Error ? e.message : 'ログアウトに失敗しました')
+      toast.error(e instanceof Error ? e.message : '登出失敗')
     } finally { setSigningOut(false) }
   }
 
@@ -207,10 +207,10 @@ export default function AccountPage() {
       <div className="flex flex-col items-center justify-center min-h-full px-6 py-10 text-center">
         <div className="text-[44px] leading-none mb-3">☁️</div>
         <h2 className="m-0 mb-2 text-[18px] font-bold text-ink tracking-[0.02em] font-serif-ja">
-          アカウント
+          帳戶
         </h2>
         <p className="m-0 mb-6 text-[12.5px] text-muted leading-[1.7] tracking-[0.02em] max-w-[260px]">
-          サインインして、自分の旅程をクラウドに保存しましょう。
+          登入後，將自己的旅程儲存到雲端。
         </p>
         <button
           onClick={handleSignIn}
@@ -219,7 +219,7 @@ export default function AccountPage() {
           style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}
         >
           <GoogleIcon size={18} />
-          {signingIn ? 'サインイン中…' : 'Google でサインイン'}
+          {signingIn ? '登入中…' : '使用 Google 登入'}
         </button>
         <div className="mt-10 text-[10.5px] text-muted opacity-70 tracking-[0.04em]">
           TripMate v{__APP_VERSION__} · {__BUILD_DATE__}
@@ -239,7 +239,7 @@ export default function AccountPage() {
       {/* Header */}
       <div className="px-5 pt-6 pb-3 flex items-center justify-between gap-4">
         <h1 className="m-0 text-[26px] font-black text-ink -tracking-[0.4px] leading-[1.1]">
-          マイページ
+          我的帳戶
         </h1>
         <NotificationInboxButton uid={user.uid} accessibleTripIds={tripIds} />
       </div>
@@ -274,7 +274,7 @@ export default function AccountPage() {
           {/* Identity — centered, full-width so long names don't truncate */}
           <div className="mt-3 text-center px-2">
             <div className="text-[17px] font-black text-ink -tracking-[0.2px] truncate">
-              {user.displayName ?? 'ユーザー'}
+              {user.displayName ?? '使用者'}
             </div>
             {user.email && (
               <div className="text-[11px] text-muted truncate mt-0.5">
@@ -287,7 +287,7 @@ export default function AccountPage() {
               centered with the label beneath the number (matches Instagram/
               X profile metric rows). */}
           <div className="mt-5 pt-4 border-t border-border flex divide-x divide-border">
-            <StatCell label="旅程"  value={tripCount} unit="件" />
+            <StatCell label="旅程"  value={tripCount} unit="趟" />
             <StatCell label="日数"  value={totalDays} unit="日" />
             {ageLabel && <StatCell label="利用" rawValue={ageLabel} />}
           </div>
@@ -297,8 +297,8 @@ export default function AccountPage() {
       {/* 2-column feature grid */}
       <div className="mx-4 mt-3 grid grid-cols-2 gap-3">
         <FeatureCard
-          label="過往の旅程"
-          sublabel="住宿の記録"
+          label="過往旅程"
+          sublabel="住宿紀錄"
           onClick={openPastLodging}
         >
           {lodgingThumbs.length > 0
@@ -307,14 +307,14 @@ export default function AccountPage() {
         </FeatureCard>
 
         <FeatureCard
-          label="共同編集の仲間"
-          sublabel={collaboratorCount > 0 ? `${collaboratorCount} 人` : 'まだいません'}
+          label="共同規劃的旅伴"
+          sublabel={collaboratorCount > 0 ? `${collaboratorCount} 人` : '尚未有旅伴'}
           onClick={openSocialCircle}
           disabled={collaboratorCount === 0}
         >
           {collaboratorChips.length === 0 ? (
             <div className="h-full flex items-center justify-center text-[11px] text-muted">
-              旅伴を招待しよう
+              邀請旅伴
             </div>
           ) : (
             <StackedAvatarPreview chips={collaboratorChips} extra={collaboratorCount - collaboratorChips.length} />
@@ -336,10 +336,10 @@ export default function AccountPage() {
           </div>
           <div className="flex-1 min-w-0">
             <div className="text-[15px] font-black text-ink -tracking-[0.2px]">
-              旅程の作成者 / Planner
+              旅程建立者 / Planner
             </div>
             <div className="text-[11.5px] text-muted mt-1 leading-[1.5] tracking-[0.02em]">
-              新しい旅を計画して、仲間と一緒に共有しましょう。
+              規劃新旅程並與旅伴共享。
             </div>
           </div>
         </button>
@@ -353,17 +353,17 @@ export default function AccountPage() {
           className="w-full h-12 rounded-xl border border-border bg-surface text-[#A04040] text-[13.5px] font-semibold flex items-center justify-center gap-2 cursor-pointer transition-all hover:bg-danger-pale hover:border-[#E9C5C5] disabled:opacity-60 disabled:cursor-not-allowed"
         >
           <LogOut size={14} strokeWidth={2} />
-          {signingOut ? 'ログアウト中…' : 'ログアウト'}
+          {signingOut ? '登出中…' : '登出'}
         </button>
       </div>
 
       <ConfirmSheet
         isOpen={logoutOpen}
-        title="ログアウトしますか？"
+        title="要登出嗎？"
         description={
           <>
-            ログアウトすると、選択中の旅程は解除されます。<br />
-            再度サインインすればクラウドのデータを取り戻せます。
+            登出後，將取消目前選取的旅程。<br />
+            再次登入即可取回雲端資料。
           </>
         }
         icon={
@@ -371,7 +371,7 @@ export default function AccountPage() {
             <LogOut size={22} strokeWidth={2} className="text-[#A04040]" />
           </div>
         }
-        confirmLabel={signingOut ? 'ログアウト中…' : 'ログアウト'}
+        confirmLabel={signingOut ? '登出中…' : '登出'}
         tone="danger"
         loading={signingOut}
         onClose={() => setLogoutOpen(false)}

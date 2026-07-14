@@ -18,15 +18,15 @@ export default function NotificationSettings({ uid }: { uid: string }) {
     || state === 'blocked'
 
   const status =
-    checking                        ? '通知の状態を確認しています'
-    : state === 'enabling'          ? '通知を有効にしています'
-    : state === 'disabling'         ? '通知をオフにしています'
-    : support === 'unsupported'     ? 'この環境では通知を利用できません'
-    : support === 'ios-not-installed' ? 'ホーム画面に追加すると通知を利用できます'
-    : state === 'blocked'           ? 'ブラウザ設定で通知がブロックされています'
-    : state === 'error'             ? (error ?? '通知の設定に失敗しました')
-    : on                            ? '重要な更新を通知します'
-    : '通知はオフです'
+    checking                        ? '正在確認通知狀態'
+    : state === 'enabling'          ? '正在啟用通知'
+    : state === 'disabling'         ? '正在關閉通知'
+    : support === 'unsupported'     ? '此環境無法使用通知'
+    : support === 'ios-not-installed' ? '加入主畫面後即可使用通知'
+    : state === 'blocked'           ? '瀏覽器設定已封鎖通知'
+    : state === 'error'             ? (error ?? '通知設定失敗')
+    : on                            ? '將通知重要更新'
+    : '通知已關閉'
 
   const StatusIcon = checking ? Loader2 : unavailable ? AlertCircle : on ? Bell : BellOff
   const bannerIconClass = checking
@@ -100,10 +100,10 @@ export default function NotificationSettings({ uid }: { uid: string }) {
           <div className="rounded-card border border-accent/15 bg-accent-pale px-4 py-3.5">
             <div className="flex items-center gap-2 text-[13px] font-bold text-accent">
               <Info size={15} strokeWidth={2} aria-hidden />
-              ホーム画面から利用できます
+              可從主畫面使用
             </div>
             <div className="mt-2 text-[12px] leading-[1.7] text-accent/85">
-              Safari の共有メニューからホーム画面に追加し、追加した TripMate から開いてください。
+              請從 Safari 的分享選單加入主畫面，再由加入後的 TripMate 開啟。
             </div>
           </div>
         ) : null}
@@ -111,9 +111,9 @@ export default function NotificationSettings({ uid }: { uid: string }) {
         {support === 'supported' && state !== 'blocked' ? (
           <div className="rounded-card border border-border bg-surface px-4 py-3.5 flex items-center gap-3">
             <div className="min-w-0 flex-1">
-              <div className="text-[13.5px] font-bold text-ink">プッシュ通知</div>
+              <div className="text-[13.5px] font-bold text-ink">推播通知</div>
               <div className="mt-1 text-[11.5px] leading-[1.55] text-muted">
-                費用、予約、精算、メンバー参加を通知します
+                費用、訂單、清算與成員加入時通知你
               </div>
             </div>
             {busy ? (
@@ -123,7 +123,7 @@ export default function NotificationSettings({ uid }: { uid: string }) {
                 type="button"
                 role="switch"
                 aria-checked={on}
-                aria-label="プッシュ通知"
+                aria-label="推播通知"
                 onClick={onToggle}
                 className={[
                   'relative w-11 h-6 rounded-full transition-colors shrink-0 cursor-pointer',
@@ -145,7 +145,7 @@ export default function NotificationSettings({ uid }: { uid: string }) {
         {on ? (
           <div className="flex items-center gap-2 text-[11.5px] text-accent px-1">
             <Check size={14} strokeWidth={2.2} aria-hidden />
-            この端末で通知を受け取れます
+            此裝置可接收通知
           </div>
         ) : null}
       </BottomSheet>

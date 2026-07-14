@@ -57,7 +57,7 @@ export default function ImageCropDialog({ src, onCancel, onConfirm, aspect = 16 
       className="fixed inset-0 z-[400] flex flex-col"
       role="dialog"
       aria-modal="true"
-      aria-label="画像をトリミング"
+      aria-label="裁切圖片"
       style={{ background: 'rgba(15, 12, 10, 0.96)' }}
     >
       {/* Crop area fills available space above the footer. Cropper
@@ -87,7 +87,7 @@ export default function ImageCropDialog({ src, onCancel, onConfirm, aspect = 16 
           step={0.01}
           value={zoom}
           onChange={e => setZoom(Number(e.target.value))}
-          aria-label="ズーム"
+          aria-label="縮放"
           className="w-full accent-[#3D8B7A]"
         />
       </div>
@@ -104,7 +104,7 @@ export default function ImageCropDialog({ src, onCancel, onConfirm, aspect = 16 
           className="flex-1 h-11 rounded-chip border border-border bg-transparent text-ink text-[14px] font-semibold cursor-pointer flex items-center justify-center gap-1.5 transition-colors hover:bg-app"
         >
           <XIcon size={15} strokeWidth={2.2} />
-          キャンセル
+          取消
         </button>
         <button
           type="button"
@@ -114,7 +114,7 @@ export default function ImageCropDialog({ src, onCancel, onConfirm, aspect = 16 
           style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
         >
           <Check size={15} strokeWidth={2.4} />
-          切り抜く
+          裁切
         </button>
       </div>
     </div>,

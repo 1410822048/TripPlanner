@@ -51,7 +51,7 @@ function titleFromShare(title: string | null | undefined, text: string | null | 
   const textTitle = boundedText((text ?? '').replace(link, ''), 100)
   if (textTitle && textTitle !== link) return textTitle
 
-  return boundedText(provider || '予約ページ', 100)
+  return boundedText(provider || '訂單頁面', 100)
 }
 
 export function sharedBookingUrl(url: string | null | undefined, text: string | null | undefined): string {

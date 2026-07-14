@@ -24,7 +24,7 @@ interface Props {
 
 function formatDate(date: string): string {
   return fromLocalDateString(date)
-    .toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' })
+    .toLocaleDateString('zh-TW', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' })
 }
 
 function formatTime(schedule: Schedule): string {
@@ -48,7 +48,7 @@ export default function ScheduleReadonlyModal({
     <BottomSheet
       isOpen={isOpen}
       onClose={onClose}
-      title="行程詳細"
+      title="行程詳情"
       footer={onEdit ? (
         <button
           type="button"
@@ -57,7 +57,7 @@ export default function ScheduleReadonlyModal({
           style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
         >
           <Pencil size={15} strokeWidth={2.3} />
-          編集
+          編輯
         </button>
       ) : undefined}
     >
@@ -98,15 +98,15 @@ export default function ScheduleReadonlyModal({
       </section>
 
       <section className="overflow-hidden rounded-card border border-border bg-surface">
-        <DetailRow icon={CalendarDays} label="日付" value={formatDate(schedule.date)} accent={style.color} />
+        <DetailRow icon={CalendarDays} label="日期" value={formatDate(schedule.date)} accent={style.color} />
         <DetailRow icon={Clock} label="時間" value={formatTime(schedule)} mono accent={style.color} />
         {schedule.location?.name && (
-          <DetailRow icon={MapPin} label="場所" value={schedule.location.name} accent={style.color} />
+          <DetailRow icon={MapPin} label="地點" value={schedule.location.name} accent={style.color} />
         )}
         {typeof schedule.estimatedCostMinor === 'number' && schedule.estimatedCostMinor > 0 && (
           <DetailRow
             icon={Wallet}
-            label="予算"
+            label="預算"
             value={formatMinorAmount(schedule.estimatedCostMinor, currency)}
             mono
             accent={style.color}
@@ -125,10 +125,10 @@ export default function ScheduleReadonlyModal({
             borderColor: style.color,
             color: style.color,
           }}
-          aria-label={`${schedule.location?.name ?? ''} を地図で開く`}
+          aria-label={`在地圖中開啟 ${schedule.location?.name ?? ''}`}
         >
           <MapPin size={15} strokeWidth={2.2} />
-          <span className="text-[12.5px] font-bold">地図</span>
+          <span className="text-[12.5px] font-bold">地圖</span>
         </a>
       )}
 
@@ -136,7 +136,7 @@ export default function ScheduleReadonlyModal({
         <section className="rounded-card border border-border bg-surface px-4 py-3">
           <div className="flex items-center gap-1.5 text-[10px] font-black text-muted">
             <FileText size={12} strokeWidth={2} />
-            メモ
+            備註
           </div>
           <div className="mt-2 text-[12.5px] leading-6 text-ink whitespace-pre-wrap break-words">
             {schedule.description}

@@ -9,7 +9,7 @@
 // branch with `if (date)` instead of guarding with try/catch.
 import { diffDays } from '@/utils/dates'
 
-const WEEKDAYS_JA = ['日', '月', '火', '水', '木', '金', '土'] as const
+const WEEKDAYS_ZH = ['日', '一', '二', '三', '四', '五', '六'] as const
 
 /** Extract HH:mm from an ISO datetime. '' when absent or no time part. */
 export function fmtTime(s: string | undefined): string {
@@ -24,7 +24,7 @@ export function fmtDate(s: string | undefined): string {
   if (!s) return ''
   const d = new Date(s)
   if (Number.isNaN(d.getTime())) return ''
-  const wd = WEEKDAYS_JA[d.getDay()]
+  const wd = WEEKDAYS_ZH[d.getDay()]
   return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} (${wd})`
 }
 

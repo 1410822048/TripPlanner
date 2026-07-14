@@ -77,7 +77,7 @@ export function buildOcrExpenseDraft(
     try { return Math.max(0, parseMoneyToMinor(text, ocrCurrency)) }
     catch {
       throw new Error(
-        `OCRの金額が${ocrCurrency}の形式と一致しません(${label}: "${text}")。撮り直してください。`,
+        `OCR 金額不符合 ${ocrCurrency} 的格式（${label}："${text}"）。請重新拍攝。`,
       )
     }
   }

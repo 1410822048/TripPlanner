@@ -51,7 +51,7 @@ function TripHeaderCard({
             {canInvite && (
               <button
                 onClick={onInvite}
-                aria-label="メンバーを招待"
+                aria-label="邀請成員"
                 className="w-[34px] h-[34px] rounded-full bg-app text-muted border-2 border-surface -ml-2 relative flex items-center justify-center text-[15px] font-light shadow-[0_1px_4px_rgba(0,0,0,0.06)] cursor-pointer transition-colors hover:bg-accent-pale hover:text-accent hover:border-accent/30"
                 style={{ zIndex: 0 }}
               >
@@ -100,7 +100,7 @@ function TitleBlock({
   const body = (
     <>
       <p className="m-0 mb-[5px] text-[10.5px] font-semibold text-muted tracking-[0.12em] uppercase">
-        {year} · 旅の記録
+        {year} · 旅程紀錄
       </p>
       <div className="flex items-center gap-1.5 mb-[5px]">
         <h1 className="m-0 text-[26px] font-black text-teal -tracking-[0.5px] leading-[1.1]">

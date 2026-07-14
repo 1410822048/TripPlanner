@@ -175,19 +175,19 @@ export default function SettlementRecordSheet({
 
     if (isForeignMode) {
       if (settledOn > todayUtc()) {
-        next.settledOn = '未来日付は換算できません'
+        next.settledOn = '無法換算未來日期'
       }
       if (fxPreview.disabledReason === 'invalid-input') {
-        next.settledOn = '通貨または日付を確認してください'
+        next.settledOn = '請確認幣別或日期'
       }
       if (fxPreview.isError) {
-        next.fx = '換算レートを取得できません。再試行してください'
+        next.fx = '無法取得匯率，請再試一次'
       }
       if (fxPreview.isLoading) {
-        next.fx = '換算レートを取得中です'
+        next.fx = '正在取得匯率'
       }
       if (!fxPreview.rateDecimal) {
-        next.fx = next.fx ?? '換算レートを確定してから保存してください'
+        next.fx = next.fx ?? '請確認匯率後再儲存'
       }
       // Tiny remaining + weak rate can inverse to 0 source minor (no
       // source ≥ 1 fits at-most-remaining). Worker rejects this exact
@@ -200,7 +200,7 @@ export default function SettlementRecordSheet({
       // user picks a different source currency or uses TRIP_CURRENCY
       // mode for the tiny remainder.
       if (foreignDerived && foreignDerived.sourceMinor <= 0) {
-        next.fx = '換算後の金額が小さすぎます。別の通貨を選んでください'
+        next.fx = '換算後的金額過小，請選擇其他幣別'
       }
     }
 
@@ -257,8 +257,8 @@ export default function SettlementRecordSheet({
     <FormModalShell
       isOpen={isOpen}
       isSaving={isSaving}
-      title="清算を記録"
-      saveLabel="記録する"
+      title="記錄清算"
+      saveLabel="儲存紀錄"
       onClose={onClose}
       onSave={handleSubmit}
     >
@@ -273,9 +273,9 @@ export default function SettlementRecordSheet({
             <MemberAvatar member={toMember} size={32} />
             <div className="flex-1 min-w-0 text-[13px] text-muted leading-tight">
               <span className="font-semibold text-ink">{fromMember.label}</span>
-              <span> から </span>
+              <span> 支付給 </span>
               <span className="font-semibold text-ink">{toMember.label}</span>
-              <span> への清算</span>
+              <span> 的清算</span>
             </div>
           </div>
         )}
@@ -295,7 +295,7 @@ export default function SettlementRecordSheet({
             {isForeignMode && (
               !fxPreview.rateDecimal ? (
                 <span className="text-muted text-[14px]">
-                  （{fxPreview.isLoading ? '換算レート取得中…' : '受取通貨と日付を選んでください'}）
+                  （{fxPreview.isLoading ? '正在取得匯率…' : '請選擇收款幣別與日期'}）
                 </span>
               ) : foreignDerived ? (
                 <span className="text-muted text-[14px]">
@@ -345,30 +345,30 @@ export default function SettlementRecordSheet({
             {errors.fx ? (
               <span>{errors.fx}</span>
             ) : fxPreview.disabledReason === 'future-date' ? (
-              <span>未来日付は換算できません。受取日を変更してください。</span>
+              <span>無法換算未來日期，請變更收款日期。</span>
             ) : fxPreview.disabledReason === 'invalid-input' ? (
-              <span>通貨または受取日を確認してください。</span>
+              <span>請確認幣別或收款日期。</span>
             ) : fxPreview.isLoading ? (
               <>
                 <Loader2 size={14} strokeWidth={2.2} className="animate-spin shrink-0" />
-                <span>換算レートを取得中…</span>
+                <span>正在取得匯率…</span>
               </>
             ) : fxPreview.isError || !fxPreview.rateDecimal ? (
-              <span>換算レートを取得できません。再試行してください。</span>
+              <span>無法取得匯率，請再試一次。</span>
             ) : (
               <span className="tabular-nums opacity-90">
-                レート {fxPreview.rateDecimal}（{fxPreview.rateDate}）
+                匯率 {fxPreview.rateDecimal}（{fxPreview.rateDate}）
               </span>
             )}
           </div>
         )}
 
-        <FormField label="メモ（任意）">
+        <FormField label="備註（選填）">
           <input
             type="text"
             value={note}
             onChange={e => setNote(e.target.value)}
-            placeholder="例)焼肉の精算"
+            placeholder="例如：燒肉費用清算"
             maxLength={200}
             className="w-full min-h-12 px-3 py-2.5 bg-app rounded-input border-[1.5px] border-border text-[16px] leading-6 text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition-colors"
           />

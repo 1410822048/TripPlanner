@@ -73,7 +73,7 @@ describe('InviteRedeemPanel unavailable invite', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '再試行' }))
+    fireEvent.click(screen.getByRole('button', { name: '再試一次' }))
     expect(mocks.refetchMock).toHaveBeenCalledOnce()
   })
 })

@@ -273,13 +273,13 @@ function SwipeableTripItem({
         >
           {confirming ? (
             <div className="text-white text-[11px] font-bold tracking-[0.04em] text-center leading-[1.3]">
-              確認<br/>削除
+              確認<br/>刪除
             </div>
           ) : (
             <div className="flex flex-col items-center gap-0.5">
               <Trash2 size={18} color="white" strokeWidth={2.2} />
               <span className="text-white text-[10px] font-bold tracking-[0.04em]">
-                削除
+                刪除
               </span>
             </div>
           )}
@@ -341,7 +341,7 @@ function SwipeableTripItem({
                 <span
                   aria-hidden
                   className="text-muted/70 flex items-center justify-center w-7 h-7"
-                  title="長押しで並べ替え"
+                  title="長按以重新排序"
                 >
                   <GripVertical size={16} strokeWidth={2} />
                 </span>
@@ -351,7 +351,7 @@ function SwipeableTripItem({
                   type="button"
                   onClick={handleDeleteTap}
                   onPointerDown={e => e.stopPropagation()}
-                  aria-label={confirming ? '削除を確定' : `${trip.title}を削除`}
+                  aria-label={confirming ? '確認刪除' : `刪除 ${trip.title}`}
                   className={[
                     'w-7 h-7 rounded-full border-none flex items-center justify-center cursor-pointer transition-colors',
                     confirming ? 'bg-[#A83A3A] text-white' : 'bg-danger-pale text-danger hover:bg-danger-soft',

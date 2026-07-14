@@ -50,7 +50,7 @@ export default function InviteRedeemPanel({
     catch (e) {
       const code = (e as { code?: string })?.code
       if (code !== 'auth/popup-closed-by-user') {
-        toast.error(e instanceof Error ? e.message : 'サインインに失敗しました')
+        toast.error(e instanceof Error ? e.message : '登入失敗')
       }
     } finally { setSigningIn(false) }
   }
@@ -61,28 +61,28 @@ export default function InviteRedeemPanel({
       const { outcome, trip } = await acceptMut.mutateAsync({ tripId, token, user: state.user })
       if (isCurrent && !isCurrent()) return
       useTripStore.getState().setSelectedTripId(trip?.id ?? tripId)
-      toast.success(outcome === 'already-member' ? '既に参加中です' : '旅程に参加しました')
+      toast.success(outcome === 'already-member' ? '你已經是成員' : '已加入旅程')
       onDone()
     } catch (e) {
       if (isCurrent && !isCurrent()) return
-      toast.error(e instanceof Error ? `参加に失敗：${e.message}` : '参加に失敗しました')
+      toast.error(e instanceof Error ? `加入失敗：${e.message}` : '加入失敗')
     }
   }
 
   const paramsInvalid = !tripId || !token
   const inviteError = inviteQ.error instanceof InviteError ? inviteQ.error : null
   const errorMessage  = paramsInvalid
-    ? '不正な招待リンクです'
+    ? '無效的邀請連結'
     : inviteError
       ? messageFor(inviteError.code)
       : inviteQ.error instanceof Error
         ? inviteQ.error.message
-        : '読み込みに失敗しました'
+        : '載入失敗'
 
   if (paramsInvalid) return <ErrorCard message={errorMessage} onHome={onCancel} />
   if (state.status === 'loading') return <LoadingCard />
   if (state.status === 'signed-out') return <SignInCard signingIn={signingIn} onSignIn={handleSignIn} />
-  if (state.status === 'error') return <ErrorCard message="認証に失敗しました" onHome={onCancel} />
+  if (state.status === 'error') return <ErrorCard message="驗證失敗" onHome={onCancel} />
   if (inviteQ.isPending) return <LoadingCard />
   if (inviteQ.isError) {
     const canRetry = inviteError?.code === 'unavailable'
@@ -107,10 +107,10 @@ export default function InviteRedeemPanel({
 
 function messageFor(code: InviteError['code']): string {
   switch (code) {
-    case 'not-found': return 'この招待リンクは見つかりません'
-    case 'expired':   return 'この招待リンクは期限切れです'
-    case 'unavailable': return '招待を確認できません。通信状況を確認して再試行してください'
-    case 'failed': return '招待を読み込めませんでした'
+    case 'not-found': return '找不到此邀請連結'
+    case 'expired':   return '此邀請連結已過期'
+    case 'unavailable': return '無法確認邀請，請確認網路後再試一次'
+    case 'failed': return '無法載入邀請'
   }
 }
 
@@ -119,7 +119,7 @@ function LoadingCard() {
     <div className="bg-surface border border-border rounded-2xl p-8 text-center text-muted text-[13px]">
       <div className="inline-flex items-center gap-2">
         <div className="w-4 h-4 border-2 border-border border-t-accent rounded-full animate-spin" />
-        <span>読み込み中…</span>
+        <span>載入中…</span>
       </div>
     </div>
   )
@@ -130,8 +130,8 @@ function SignInCard({ signingIn, onSignIn }: { signingIn: boolean; onSignIn: () 
     <div className="bg-surface border border-border rounded-2xl p-6 text-center">
       <div className="text-[40px] leading-none mb-3">☁️</div>
       <p className="m-0 mb-5 text-[13px] text-ink leading-[1.7] tracking-[0.02em]">
-        招待内容を確認するには、<br />
-        Google アカウントでサインインしてください。
+        若要查看邀請內容，<br />
+        請使用 Google 帳戶登入。
       </p>
       <button
         onClick={onSignIn}
@@ -140,7 +140,7 @@ function SignInCard({ signingIn, onSignIn }: { signingIn: boolean; onSignIn: () 
         style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}
       >
         <GoogleIcon size={18} />
-        {signingIn ? 'サインイン中…' : 'Google でサインイン'}
+        {signingIn ? '登入中…' : '使用 Google 登入'}
       </button>
     </div>
   )
@@ -167,14 +167,14 @@ function ErrorCard({
           className="w-full max-w-[280px] h-11 mb-2 rounded-chip border border-border bg-surface text-ink text-[13px] font-semibold cursor-pointer hover:bg-app transition-colors inline-flex items-center justify-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed"
         >
           <RotateCcw size={14} strokeWidth={2.2} />
-          {retrying ? '再試行中…' : '再試行'}
+          {retrying ? '重試中…' : '再試一次'}
         </button>
       )}
       <button
         onClick={onHome}
         className="w-full max-w-[280px] h-11 rounded-chip border border-border bg-app text-ink text-[13px] font-semibold cursor-pointer hover:bg-tile transition-colors"
       >
-        ホームに戻る
+        返回首頁
       </button>
     </div>
   )
@@ -204,7 +204,7 @@ function ReadyCard({ invite, accepting, onAccept, onCancel }: {
 
       <div className="px-5 py-4 border-t border-border">
         <div className="flex items-center justify-center gap-2 mb-4">
-          <span className="text-[11.5px] text-muted">あなたの権限</span>
+          <span className="text-[11.5px] text-muted">你的權限</span>
           <span
             className={[
               'px-2.5 py-1 rounded-md text-[11px] font-bold tracking-[0.04em]',
@@ -213,7 +213,7 @@ function ReadyCard({ invite, accepting, onAccept, onCancel }: {
                 : 'bg-app text-muted border border-border',
             ].join(' ')}
           >
-            {isEditor ? '編輯者 · 編集可能' : '檢視者 · 閲覧のみ'}
+            {isEditor ? '編輯者 · 可編輯' : '檢視者 · 僅可查看'}
           </span>
         </div>
 
@@ -224,7 +224,7 @@ function ReadyCard({ invite, accepting, onAccept, onCancel }: {
             className="flex-1 h-11 rounded-xl border border-border bg-app text-ink text-[13px] font-semibold cursor-pointer hover:bg-tile transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <X size={13} strokeWidth={2.5} />
-            キャンセル
+            取消
           </button>
           <button
             onClick={onAccept}
@@ -233,7 +233,7 @@ function ReadyCard({ invite, accepting, onAccept, onCancel }: {
             style={{ boxShadow: '0 2px 8px rgba(61,139,122,0.25)' }}
           >
             <Check size={13} strokeWidth={2.5} />
-            {accepting ? '参加中…' : '参加する'}
+            {accepting ? '加入中…' : '加入旅程'}
           </button>
         </div>
       </div>

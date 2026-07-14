@@ -49,9 +49,9 @@ function StandardPassCard({ booking, whenLabel }: Props) {
   const hasAttachment = !!document?.filePath
   const attachmentIsImage = isImageAttachment(document)
   const facts = [
-    dateLabel ? { label: '日時', value: dateLabel, icon: CalendarDays } : null,
-    booking.confirmationCode ? { label: '確認番号', value: booking.confirmationCode, icon: Hash, mono: true } : null,
-    booking.provider && !subtitle ? { label: '事業者', value: booking.provider, icon: Building2 } : null,
+    dateLabel ? { label: '日期時間', value: dateLabel, icon: CalendarDays } : null,
+    booking.confirmationCode ? { label: '確認編號', value: booking.confirmationCode, icon: Hash, mono: true } : null,
+    booking.provider && !subtitle ? { label: '提供者', value: booking.provider, icon: Building2 } : null,
   ].filter(Boolean).slice(0, 3) as PassFact[]
 
   return (
@@ -108,7 +108,7 @@ function StandardPassCard({ booking, whenLabel }: Props) {
           </div>
         ) : (
           <div className="text-[12px] font-semibold text-muted">
-            詳細を表示
+            查看詳情
           </div>
         )}
       </div>
@@ -165,14 +165,14 @@ function HotelPassCard({ booking, whenLabel }: Props) {
             'rounded-full px-2.5 py-1 text-[10.5px] font-black shadow-[0_4px_12px_rgba(0,0,0,0.12)]',
             coverSrc || !hero.isBranded ? 'bg-white/90 text-ink' : 'bg-white/70 text-muted',
           ].join(' ')}>
-            ホテル
+            飯店
           </span>
           <BookingBrandPill theme={theme} variant={coverSrc || !hero.isBranded ? 'light' : 'soft'} />
           {hasAttachment && <AttachmentIndicator isImage={isImageAttachment(document)} />}
         </div>
         {nights !== null && (
           <div className="absolute right-3 top-3 rounded-full bg-black/45 px-2.5 py-1 text-[10.5px] font-black text-white backdrop-blur-sm">
-            {nights}泊
+            {nights} 晚
           </div>
         )}
 
@@ -200,9 +200,9 @@ function HotelPassCard({ booking, whenLabel }: Props) {
             <PassFactCell fact={{ label: 'Check-out', value: checkOutLabel, icon: CalendarDays }} />
           )}
           {booking.confirmationCode ? (
-            <PassFactCell fact={{ label: '確認番号', value: booking.confirmationCode, icon: Hash, mono: true }} />
+            <PassFactCell fact={{ label: '確認編號', value: booking.confirmationCode, icon: Hash, mono: true }} />
           ) : (
-            <PassFactCell fact={{ label: '予約', value: '詳細', icon: Building2 }} />
+            <PassFactCell fact={{ label: '訂單', value: '詳情', icon: Building2 }} />
           )}
         </div>
       </div>
@@ -233,8 +233,8 @@ function AttachmentIndicator({ isImage }: { isImage: boolean }) {
     <span
       className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/85 text-muted shadow-[0_2px_8px_rgba(0,0,0,0.08)]"
       role="img"
-      aria-label="添付あり"
-      title="添付あり"
+      aria-label="有附件"
+      title="有附件"
     >
       <Icon size={12} strokeWidth={2.2} aria-hidden="true" />
     </span>

@@ -35,7 +35,7 @@ interface Props {
 
 export default function ConfirmSheet({
   isOpen, title, description, icon,
-  confirmLabel, cancelLabel = 'キャンセル',
+  confirmLabel, cancelLabel = '取消',
   tone = 'neutral', layout = 'row', loading = false,
   onClose, onConfirm,
 }: Props) {

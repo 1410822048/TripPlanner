@@ -106,30 +106,30 @@ export type BuildExpenseFormResult =
  *  mismatch); the genuinely form-reachable one is OVER_DISCOUNT_ITEM, the rest
  *  are defense-in-depth. Kept local — only buildExpenseFormResult consumes it. */
 const MATERIALIZE_ERROR_COPY = {
-  ITEM_NOT_POSITIVE_INTEGER:              '明細金額を確認してください',
-  ITEM_NO_ALLOCATIONS:                    '明細の割り当て先を選択してください',
-  ITEM_ALLOCATION_NOT_POSITIVE_INTEGER:   '明細の分担数を確認してください',
-  NON_MEMBER_ALLOCATION:                  '明細の割り当て先に参加者以外が含まれています',
-  DUPLICATE_ITEM_ALLOCATION_MEMBER:       '同じ参加者が重複しています',
-  DUPLICATE_ITEM_ID:                      '明細IDが重複しています',
-  ADJUSTMENT_NOT_POSITIVE_INTEGER:        '割引・調整額を確認してください',
-  ADJUSTMENT_UNKNOWN_KIND:                '割引・調整の種類を確認してください',
-  UNKNOWN_SCOPE:                          '割引・調整の対象を確認してください',
-  ITEM_SCOPE_NO_TARGET:                   '対象の明細を選択してください',
-  EXPENSE_SCOPE_HAS_TARGET:               '全体対象の割引に明細指定はできません',
-  TARGET_ITEM_NOT_FOUND:                  '対象の明細が見つかりません',
-  OVER_DISCOUNT_ITEM:                     '割引が項目の金額を超えています',
-  OVER_DISCOUNT_EXPENSE:                  '割引の合計が明細の合計を超えています',
-  EXPENSE_SCOPE_NO_WEIGHT:                '割引を適用できる項目がありません',
-  SOURCE_AMOUNT_NOT_POSITIVE_INTEGER:     '外貨の合計金額を確認してください',
-  SOURCE_ITEM_NOT_POSITIVE_INTEGER:       '外貨の明細金額を確認してください',
-  SOURCE_ADJUSTMENT_NOT_POSITIVE_INTEGER: '外貨の割引・調整額を確認してください',
-  SOURCE_SUM_MISMATCH:                    '外貨の明細合計と請求書合計が一致しません',
-  SOURCE_SPLITS_EMPTY:                    '外貨の分担先を選択してください',
-  SOURCE_SPLIT_MEMBER_MISSING:            '外貨の分担先を確認してください',
-  SOURCE_SPLIT_NOT_NONNEGATIVE_INTEGER:   '外貨の分担金額を確認してください',
-  DUPLICATE_SOURCE_SPLIT_MEMBER:          '外貨の分担先が重複しています',
-  SOURCE_SPLIT_SUM_MISMATCH:              '外貨の分担合計が請求書合計と一致しません',
+  ITEM_NOT_POSITIVE_INTEGER:              '請確認明細金額',
+  ITEM_NO_ALLOCATIONS:                    '請選擇明細的分攤對象',
+  ITEM_ALLOCATION_NOT_POSITIVE_INTEGER:   '請確認明細的分攤數',
+  NON_MEMBER_ALLOCATION:                  '明細的分攤對象包含非成員',
+  DUPLICATE_ITEM_ALLOCATION_MEMBER:       '同一位成員重複出現',
+  DUPLICATE_ITEM_ID:                      '明細 ID 重複',
+  ADJUSTMENT_NOT_POSITIVE_INTEGER:        '請確認折扣或調整金額',
+  ADJUSTMENT_UNKNOWN_KIND:                '請確認折扣或調整類型',
+  UNKNOWN_SCOPE:                          '請確認折扣或調整範圍',
+  ITEM_SCOPE_NO_TARGET:                   '請選擇目標明細',
+  EXPENSE_SCOPE_HAS_TARGET:               '整筆費用的折扣不能指定明細',
+  TARGET_ITEM_NOT_FOUND:                  '找不到目標明細',
+  OVER_DISCOUNT_ITEM:                     '折扣超過項目金額',
+  OVER_DISCOUNT_EXPENSE:                  '折扣總額超過明細總額',
+  EXPENSE_SCOPE_NO_WEIGHT:                '沒有可套用折扣的項目',
+  SOURCE_AMOUNT_NOT_POSITIVE_INTEGER:     '請確認外幣總金額',
+  SOURCE_ITEM_NOT_POSITIVE_INTEGER:       '請確認外幣明細金額',
+  SOURCE_ADJUSTMENT_NOT_POSITIVE_INTEGER: '請確認外幣折扣或調整金額',
+  SOURCE_SUM_MISMATCH:                    '外幣明細總額與帳單總額不一致',
+  SOURCE_SPLITS_EMPTY:                    '請選擇外幣分攤對象',
+  SOURCE_SPLIT_MEMBER_MISSING:            '請確認外幣分攤對象',
+  SOURCE_SPLIT_NOT_NONNEGATIVE_INTEGER:   '請確認外幣分攤金額',
+  DUPLICATE_SOURCE_SPLIT_MEMBER:          '外幣分攤對象重複',
+  SOURCE_SPLIT_SUM_MISMATCH:              '外幣分攤總額與帳單總額不一致',
 } satisfies Record<MaterializeErrorCode, string>
 
 function materializeErrorMessage(code: MaterializeErrorCode): string {
@@ -186,10 +186,10 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
   // 各種「無 rate」狀態給可行動的精準理由(日期 / 幣別 / 網路)。
   if (isForeignOpen && !e.amount && !fx.rateDecimal) {
     e.amount =
-      fx.disabledReason === 'future-date'   ? '未来日付は換算できません' :
-      fx.disabledReason === 'invalid-input' ? '通貨または日付を確認してください' :
-      fx.isError                            ? '換算レートを取得できません。再試行してください' :
-                                              '換算レートを取得中です。少し待ってから再送信してください'
+      fx.disabledReason === 'future-date'   ? '無法換算未來日期' :
+      fx.disabledReason === 'invalid-input' ? '請確認幣別或日期' :
+      fx.isError                            ? '無法取得匯率，請再試一次' :
+                                              '正在取得匯率，請稍候再送出'
   }
 
   let resultSplits: ExpenseSplit[] = []
@@ -227,19 +227,19 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
       adj.scope === 'ITEM' && !items.some(it => it.id === adj.targetItemId),
     )
     if (noAllocationIdx >= 0) {
-      e.items = `行 ${noAllocationIdx + 1}：分担者を選択してください`
+      e.items = `第 ${noAllocationIdx + 1} 行：請選擇分攤者`
     } else if (blankNameIdx >= 0) {
-      e.items = `行 ${blankNameIdx + 1}：項目名を入力してください`
+      e.items = `第 ${blankNameIdx + 1} 行：請輸入項目名稱`
     } else if (zeroAmountIdx >= 0) {
-      e.items = `行 ${zeroAmountIdx + 1}：金額を入力してください`
+      e.items = `第 ${zeroAmountIdx + 1} 行：請輸入金額`
     } else if (blankAdjustmentIdx >= 0) {
-      e.items = `調整 ${blankAdjustmentIdx + 1}: ラベルを入力してください`
+      e.items = `調整 ${blankAdjustmentIdx + 1}：請輸入標籤`
     } else if (zeroAdjustmentIdx >= 0) {
-      e.items = `調整 ${zeroAdjustmentIdx + 1}: 金額を入力してください`
+      e.items = `調整 ${zeroAdjustmentIdx + 1}：請輸入金額`
     } else if (danglingAdjustmentIdx >= 0) {
-      e.items = `調整 ${danglingAdjustmentIdx + 1}: 対象項目を選択してください`
+      e.items = `調整 ${danglingAdjustmentIdx + 1}：請選擇目標項目`
     } else if (direction !== 'exact') {
-      e.items = `明細合計 ${formatMinorAmount(effectiveItemsTotal, currency)} と請求書合計 ${formatMinorAmount(amountMinor, currency)} が一致しません`
+      e.items = `明細總額 ${formatMinorAmount(effectiveItemsTotal, currency)} 與帳單總額 ${formatMinorAmount(amountMinor, currency)} 不一致`
     }
     if (!e.items && !isForeignOpen) {
       // 同幣別 by-item:client 端走 trip-currency materializer 算權威 split,
@@ -255,7 +255,7 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
       } catch (err) {
         e.items = err instanceof MaterializeError
           ? materializeErrorMessage(err.code)
-          : '明細の計算に失敗しました'
+          : '明細計算失敗'
       }
     }
   } else {
@@ -310,7 +310,7 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
           errors: {
             splits: err instanceof MaterializeError
               ? materializeErrorMessage(err.code)
-              : '換算の計算に失敗しました',
+              : '換算計算失敗',
           },
         }
       }
@@ -369,7 +369,7 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
         errors: {
           items: err instanceof MaterializeError
             ? materializeErrorMessage(err.code)
-            : '換算の計算に失敗しました',
+            : '換算計算失敗',
         },
       }
     }

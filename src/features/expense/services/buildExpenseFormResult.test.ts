@@ -249,17 +249,17 @@ describe('buildExpenseFormResult — base field validation', () => {
 
   it('rejects decimals for a zero-fraction currency (JPY)', () => {
     expect(expectErr(buildExpenseFormResult(baseInput({ amountText: '12.34' }))).amount)
-      .toBe('JPY は小数を入力できません')
+      .toBe('JPY 不支援小數')
   })
 
   it('rejects a non-positive amount', () => {
     expect(expectErr(buildExpenseFormResult(baseInput({ amountText: '0' }))).amount)
-      .toBe('金額は0より大きく入力してください')
+      .toBe('金額必須大於 0')
   })
 
   it('rejects an empty amount', () => {
     expect(expectErr(buildExpenseFormResult(baseInput({ amountText: '' }))).amount)
-      .toBe('金額を入力してください')
+      .toBe('請輸入金額')
   })
 
   it('requires a date', () => {
@@ -277,22 +277,22 @@ describe('buildExpenseFormResult — foreign FX gate (no rate yet)', () => {
 
   it('future-date reason', () => {
     expect(expectErr(foreign({ rateDecimal: null, disabledReason: 'future-date', isError: false })).amount)
-      .toBe('未来日付は換算できません')
+      .toBe('無法換算未來日期')
   })
 
   it('invalid-input reason', () => {
     expect(expectErr(foreign({ rateDecimal: null, disabledReason: 'invalid-input', isError: false })).amount)
-      .toBe('通貨または日付を確認してください')
+      .toBe('請確認幣別或日期')
   })
 
   it('hard error reason', () => {
     expect(expectErr(foreign({ rateDecimal: null, disabledReason: null, isError: true })).amount)
-      .toBe('換算レートを取得できません。再試行してください')
+      .toBe('無法取得匯率，請再試一次')
   })
 
   it('still-loading reason (no rate, no disabledReason, not error)', () => {
     expect(expectErr(foreign({ rateDecimal: null, disabledReason: null, isError: false })).amount)
-      .toBe('換算レートを取得中です。少し待ってから再送信してください')
+      .toBe('正在取得匯率，請稍候再送出')
   })
 
   it('does not gate when a rate is present', () => {
@@ -309,19 +309,19 @@ describe('buildExpenseFormResult — by-item validation surfaces', () => {
   it('flags an item with no allocation member', () => {
     expect(expectErr(buildExpenseFormResult(baseInput({
       items: [{ ...ok, allocations: [] }], amountText: '1000',
-    }))).items).toBe('行 1：分担者を選択してください')
+    }))).items).toBe('第 1 行：請選擇分攤者')
   })
 
   it('flags a blank item name', () => {
     expect(expectErr(buildExpenseFormResult(baseInput({
       items: [{ ...ok, name: '  ' }], amountText: '1000',
-    }))).items).toBe('行 1：項目名を入力してください')
+    }))).items).toBe('第 1 行：請輸入項目名稱')
   })
 
   it('flags a zero-amount item', () => {
     expect(expectErr(buildExpenseFormResult(baseInput({
       items: [{ ...ok, amountMinor: 0 }], amountText: '1000',
-    }))).items).toBe('行 1：金額を入力してください')
+    }))).items).toBe('第 1 行：請輸入金額')
   })
 
   it('flags a blank adjustment label', () => {
@@ -330,7 +330,7 @@ describe('buildExpenseFormResult — by-item validation surfaces', () => {
     ]
     expect(expectErr(buildExpenseFormResult(baseInput({
       items: [ok], adjustments, amountText: '900',
-    }))).items).toBe('調整 1: ラベルを入力してください')
+    }))).items).toBe('調整 1：請輸入標籤')
   })
 
   it('flags a zero-amount adjustment', () => {
@@ -339,14 +339,14 @@ describe('buildExpenseFormResult — by-item validation surfaces', () => {
     ]
     expect(expectErr(buildExpenseFormResult(baseInput({
       items: [ok], adjustments, amountText: '1000',
-    }))).items).toBe('調整 1: 金額を入力してください')
+    }))).items).toBe('調整 1：請輸入金額')
   })
 
   it('flags an items/total mismatch', () => {
     const errors = expectErr(buildExpenseFormResult(baseInput({
       items: [ok], amountText: '2000', // 1000 of items ≠ 2000 bill
     })))
-    expect(errors.items).toContain('一致しません')
+    expect(errors.items).toContain('不一致')
   })
 
   it('surfaces a materializer error (ITEM discount drives the item below zero)', () => {
@@ -360,7 +360,7 @@ describe('buildExpenseFormResult — by-item validation surfaces', () => {
     const errors = expectErr(buildExpenseFormResult(baseInput({
       items, adjustments, amountText: '1900', // 2100 − 200 = 1900, so itemsDiff passes
     })))
-    expect(errors.items).toBe('割引が項目の金額を超えています')
+    expect(errors.items).toBe('折扣超過項目金額')
   })
 })
 
@@ -399,6 +399,6 @@ describe('buildExpenseFormResult — foreign conversion error surface', () => {
       amountText: '19', // $19.00 = 1900 cents = 2100 − 200, itemsDiff passes
       fx: { rateDecimal: '100', disabledReason: null, isError: false },
     })))
-    expect(errors.items).toBe('割引が項目の金額を超えています')
+    expect(errors.items).toBe('折扣超過項目金額')
   })
 })

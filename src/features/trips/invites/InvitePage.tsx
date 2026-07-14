@@ -21,7 +21,7 @@ export default function InvitePage() {
             Trip Invitation
           </div>
           <h1 className="m-0 text-[22px] font-black text-teal -tracking-[0.3px]">
-            旅への招待
+            旅程邀請
           </h1>
         </div>
 

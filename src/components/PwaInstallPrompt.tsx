@@ -147,7 +147,7 @@ export default function PwaInstallPrompt() {
     <>
       <div
         role="dialog"
-        aria-label="ホーム画面に追加"
+        aria-label="加入主畫面"
         className="fixed left-1/2 -translate-x-1/2 z-[300] w-[min(94vw,400px)] bg-surface border border-border rounded-[18px] px-4 py-3 shadow-[0_8px_24px_rgba(0,0,0,0.15)] flex items-center gap-3"
         // Sit 12px above the nav's top edge. The nav already spans the
         // viewport's bottom var(--nav-h) — including the iOS home-
@@ -161,15 +161,15 @@ export default function PwaInstallPrompt() {
         </div>
         <div className="flex-1 min-w-0">
           <div className="text-[12.5px] font-bold text-ink tracking-[0.02em]">
-            ホーム画面に追加
+            加入主畫面
           </div>
           <div className="text-[10.5px] text-muted mt-0.5 truncate">
-            アプリのように起動できます
+            像 App 一樣直接開啟
           </div>
         </div>
         <button
           onClick={handleDismiss}
-          aria-label="あとで"
+          aria-label="稍後再說"
           className="w-8 h-8 rounded-full text-muted hover:bg-app transition-colors flex items-center justify-center cursor-pointer shrink-0"
         >
           <X size={14} strokeWidth={2} />
@@ -179,7 +179,7 @@ export default function PwaInstallPrompt() {
           className="shrink-0 h-8 px-3 rounded-full bg-accent text-white text-[11.5px] font-bold tracking-[0.04em] border-none cursor-pointer hover:brightness-110 active:scale-[0.97] transition-all"
           style={{ boxShadow: '0 2px 6px rgba(61,139,122,0.25)' }}
         >
-          {mode === 'native' ? 'インストール' : '方法を見る'}
+          {mode === 'native' ? '安裝' : '查看方法'}
         </button>
       </div>
 
@@ -195,7 +195,7 @@ function IosInstructions({ onClose, onDismiss }: { onClose: () => void; onDismis
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="ホーム画面に追加する方法"
+      aria-label="加入主畫面的方法"
       className="fixed inset-0 z-[400] bg-black/40 flex items-end justify-center"
       onClick={onClose}
     >
@@ -206,11 +206,11 @@ function IosInstructions({ onClose, onDismiss }: { onClose: () => void; onDismis
       >
         <div className="flex items-center justify-between mb-4">
           <h2 className="m-0 text-[15px] font-black text-ink -tracking-[0.3px]">
-            ホーム画面に追加
+            加入主畫面
           </h2>
           <button
             onClick={onClose}
-            aria-label="閉じる"
+            aria-label="關閉"
             className="w-8 h-8 rounded-full text-muted hover:bg-app transition-colors flex items-center justify-center cursor-pointer border-none bg-transparent"
           >
             <X size={16} strokeWidth={2} />
@@ -220,20 +220,20 @@ function IosInstructions({ onClose, onDismiss }: { onClose: () => void; onDismis
         <ol className="m-0 p-0 list-none flex flex-col gap-3">
           <Step
             n={1}
-            title="共有ボタンをタップ"
-            note="Safari 下部の共有アイコン"
+            title="點選分享按鈕"
+            note="Safari 底部的分享圖示"
             icon={<Share size={18} strokeWidth={1.8} className="text-accent" />}
           />
           <Step
             n={2}
-            title="「ホーム画面に追加」を選択"
-            note="メニューを下にスクロール"
+            title="選擇「加入主畫面」"
+            note="向下捲動選單"
             icon={<Plus size={18} strokeWidth={2} className="text-accent" />}
           />
           <Step
             n={3}
-            title="「追加」をタップ"
-            note="ホーム画面にアイコンが表示されます"
+            title="點選「加入」"
+            note="圖示會顯示在主畫面"
             icon={<Download size={18} strokeWidth={1.8} className="text-accent" />}
           />
         </ol>
@@ -242,7 +242,7 @@ function IosInstructions({ onClose, onDismiss }: { onClose: () => void; onDismis
           onClick={onDismiss}
           className="mt-4 w-full h-11 rounded-chip bg-app text-ink text-[13px] font-semibold border border-border cursor-pointer hover:bg-tile active:scale-[0.99] transition-all tracking-[0.04em]"
         >
-          表示しない
+          不再顯示
         </button>
       </div>
     </div>

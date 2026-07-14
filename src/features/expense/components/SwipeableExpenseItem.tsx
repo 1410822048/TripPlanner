@@ -93,12 +93,12 @@ function SwipeableExpenseItem({
                 {isPending ? (
                   <>
                     <Loader2 size={11} strokeWidth={2.2} className="animate-spin shrink-0" />
-                    <span>保存中…</span>
+                    <span>儲存中…</span>
                   </>
                 ) : isLocked ? (
                   <>
                     <Lock size={11} strokeWidth={2.2} className="shrink-0" />
-                    <span>清算済み</span>
+                    <span>已清算</span>
                   </>
                 ) : (
                   <>
@@ -148,7 +148,7 @@ function SwipeableExpenseItem({
                   onPreviewReceipt()
                 }}
                 disabled={isPending}
-                aria-label="レシートを表示"
+                aria-label="顯示收據"
                 className="w-11 h-11 rounded-input border-none bg-tile shrink-0 flex items-center justify-center text-muted overflow-hidden cursor-pointer disabled:cursor-default disabled:opacity-60 transition-transform active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 {thumb ? (
@@ -161,7 +161,7 @@ function SwipeableExpenseItem({
             {clickable ? (
               <button
                 {...selectButtonProps}
-                aria-label={`${expense.title}の詳細を表示`}
+                aria-label={`顯示 ${expense.title} 的詳細資料`}
                 className="flex flex-1 min-w-0 items-center gap-3 p-0 border-none bg-transparent text-left text-inherit cursor-pointer disabled:cursor-default focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 {rowMain}

@@ -149,7 +149,7 @@ export default function ExpensePage() {
   const receiptPreviewUrl = useAttachmentUrl(receiptPreview?.path, { kind: 'full' })
 
   if (ctx.status === 'loading') return <ExpensePageSkeleton />
-  if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Receipt} reason="費用を記録" />
+  if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Receipt} reason="記錄費用" />
 
   const title = ctx.trip.title
   const perPersonMinor = members.length > 0 ? Math.round(totalMinor / members.length) : 0
@@ -184,7 +184,7 @@ export default function ExpensePage() {
 
   function handleSave({ input, attachment }: ExpenseFormResult) {
     if (isDemo) { modal.close(); signIn.open(); return }
-    if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+    if (!uid) { toast.error('正在準備登入，請稍候'); return }
 
     // Optimistic close: the modal goes away IMMEDIATELY, the optimistic
     // patchListCache in onMutate makes the new row appear in the list
@@ -197,7 +197,7 @@ export default function ExpensePage() {
     // clears it synchronously (closures can stale if we read after close).
     const editing = modal.editTarget
     if (editing && !isOwner && lockedExpenseIds.has(editing.id)) {
-      toast.error('清算済みの費用はオーナーのみ編集できます')
+      toast.error('只有擁有者可以編輯已清算的費用')
       return
     }
     modal.close()
@@ -222,7 +222,7 @@ export default function ExpensePage() {
   }
   function handleRecordSettlement(submit: SettlementRecordSubmit) {
     if (isDemo) { setRecordTarget(null); signIn.open(); return }
-    if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+    if (!uid) { toast.error('正在準備登入，請稍候'); return }
     // Mint settlementId here (not inside the service) so the optimistic
     // cache row, the Worker request, and the Firestore doc all share
     // one id. Memory: [[settlement-id-hoist-load-bearing]] — any future
@@ -261,7 +261,7 @@ export default function ExpensePage() {
     swipe.closeAll()
     if (isDemo) { signIn.open(); return }
     if (!isOwner && lockedExpenseIds.has(e.id)) {
-      toast.error('清算済みの費用はオーナーのみ編集できます')
+      toast.error('只有擁有者可以編輯已清算的費用')
       return
     }
     // Hook onError rolls back the optimistic remove and shows the toast.
@@ -274,7 +274,7 @@ export default function ExpensePage() {
     // gaps between rows / headers / non-row areas.
     <div className="bg-app min-h-full pb-8" onClick={swipe.closeAll}>
 
-      {isDemo && <DemoBanner reason="費用を保存" onSignIn={signIn.open} />}
+      {isDemo && <DemoBanner reason="儲存費用" onSignIn={signIn.open} />}
 
       {/* ── HEADER ─────────────────────────────────────────── */}
       <div className="px-5 pt-4 pb-2">
@@ -317,9 +317,9 @@ export default function ExpensePage() {
 
           <div className="mt-4 pt-4 border-t border-border grid grid-cols-3 gap-2">
             {[
-              { value: String(expenses.length), unit: '件', label: '費用筆數' },
-              { value: String(members.length),  unit: '人', label: '参加' },
-              { value: formatMinorAmount(perPersonMinor, currency), unit: '', label: '1人あたり' },
+              { value: String(expenses.length), unit: '筆', label: '費用筆數' },
+              { value: String(members.length),  unit: '人', label: '參與人數' },
+              { value: formatMinorAmount(perPersonMinor, currency), unit: '', label: '每人' },
             ].map(({ value, unit, label }) => (
               <div key={label} className="flex flex-col items-center gap-1">
                 <div className="flex items-baseline gap-px">
@@ -340,7 +340,7 @@ export default function ExpensePage() {
               style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
             >
               <Plus size={14} strokeWidth={2.5} />
-              費用を追加
+              新增費用
             </button>
           )}
         </div>
@@ -356,7 +356,7 @@ export default function ExpensePage() {
         isOwner={isOwner}
         onRecordSettlement={suggestion => {
           if (isDemo) { signIn.open(); return }
-          if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+          if (!uid) { toast.error('正在準備登入，請稍候'); return }
           // Open the sheet preseeded with the suggestion. The mutate
           // happens inside handleRecordSettlement below; this just opens
           // the UI. Settlement FX Commit 3/4 + Phase 4.1: previously this
@@ -369,7 +369,7 @@ export default function ExpensePage() {
         }}
         onDeleteSettlement={id => {
           if (isDemo) { signIn.open(); return }
-          if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+          if (!uid) { toast.error('正在準備登入，請稍候'); return }
           deleteSettlementMut.mutate({ settlementId: id })
         }}
       />
@@ -463,7 +463,7 @@ export default function ExpensePage() {
       <SignInPromptModal
         isOpen={signIn.isOpen}
         onClose={signIn.close}
-        reason="費用を保存するには、"
+        reason="若要儲存費用，"
       />
     </div>
   )

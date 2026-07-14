@@ -38,13 +38,13 @@ export default function SplitsSection({
   onSwitchMode, onToggleIncluded, onSetCustom,
 }: SplitsSectionProps) {
   return (
-    <FormField label="割り勘" error={error}>
+    <FormField label="分攤" error={error}>
       <div className="flex flex-col gap-2">
         {/* 割勘方式切換 */}
         <div className="flex gap-1 p-1 rounded-full bg-app border border-border">
           {([
             { value: 'equal',  label: '均等' },
-            { value: 'custom', label: 'カスタム' },
+            { value: 'custom', label: '自訂' },
           ] as const).map(m => {
             const active = mode === m.value
             return (
@@ -123,7 +123,7 @@ export default function SplitsSection({
             ].join(' ')}
           >
             <span>
-              {customDiff === 0 ? '✓ 總和一致' : customDiff > 0 ? '残り' : '超過'}
+              {customDiff === 0 ? '✓ 總和一致' : customDiff > 0 ? '剩餘' : '超出'}
             </span>
             <span>
               {formatMinorAmount(customSum, currency)} / {formatMinorAmount(amountMinor, currency)}

@@ -206,7 +206,7 @@ describe('revokeStoredPushToken', () => {
     vi.stubGlobal('Notification', { permission: 'granted' })
     msg.deleteToken.mockRejectedValueOnce(new Error('chunk failed'))
 
-    await expect(revokeStoredPushToken('user-1')).rejects.toThrow('通知トークンを解除できませんでした')
+    await expect(revokeStoredPushToken('user-1')).rejects.toThrow('無法解除通知權杖')
 
     expect(fb.updateDoc).not.toHaveBeenCalled()
   })
@@ -234,7 +234,7 @@ describe('revokeStoredPushToken', () => {
     // Delivery is gated server-side on the doc staying enabled, so a failed
     // server disable means the token is still live — a successful browser
     // delete must NOT mask that. Surface it + keep the hint for a retry.
-    await expect(revokeStoredPushToken('user-1')).rejects.toThrow('通知トークンを解除できませんでした')
+    await expect(revokeStoredPushToken('user-1')).rejects.toThrow('無法解除通知權杖')
     expect(localStorage.getItem('tripmate.push.tokenHash')).toBe('a'.repeat(64))
   })
 
@@ -243,7 +243,7 @@ describe('revokeStoredPushToken', () => {
     fb.updateDoc.mockRejectedValueOnce(new Error('offline'))
     msg.deleteToken.mockRejectedValueOnce(new Error('chunk failed'))
 
-    await expect(revokeStoredPushToken('user-1')).rejects.toThrow('通知トークンを解除できませんでした')
+    await expect(revokeStoredPushToken('user-1')).rejects.toThrow('無法解除通知權杖')
 
     expect(localStorage.getItem('tripmate.push.tokenHash')).toBe('a'.repeat(64))
   })

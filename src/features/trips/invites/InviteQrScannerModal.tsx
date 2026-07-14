@@ -7,8 +7,8 @@ import { parseInviteUrl, type ParsedInviteUrl } from './inviteUrl'
 const SCAN_INTERVAL_MS = 240
 const MAX_SCAN_EDGE = 720
 const NATIVE_DETECT_ERROR_LIMIT = 3
-const DEFAULT_SCAN_HINT = 'QRコードを枠内に合わせてください'
-const INVALID_SCAN_HINT = 'TripMate の招待 QR ではありません'
+const DEFAULT_SCAN_HINT = '請將 QR Code 對準框線內'
+const INVALID_SCAN_HINT = '這不是 TripMate 的邀請 QR Code'
 
 type JsQrResult = { data: string } | null
 type JsQr = (
@@ -69,19 +69,19 @@ function cameraErrorMessage(err: unknown): string {
   switch (name) {
     case 'NotAllowedError':
     case 'SecurityError':
-      return 'カメラの使用が許可されていません'
+      return '未允許使用相機'
     case 'NotFoundError':
     case 'DevicesNotFoundError':
-      return 'カメラが見つかりません'
+      return '找不到相機'
     case 'NotReadableError':
     case 'TrackStartError':
-      return 'カメラを起動できません。他のアプリで使用中か確認してください'
+      return '無法啟動相機，請確認是否正被其他 App 使用'
     case 'OverconstrainedError':
-      return '背面カメラを使用できません'
+      return '無法使用後置相機'
     case 'AbortError':
-      return 'カメラの起動が中断されました'
+      return '相機啟動已中斷'
     default:
-      return 'カメラを起動できません'
+      return '無法啟動相機'
   }
 }
 
@@ -179,7 +179,7 @@ export default function InviteQrScannerModal({ isOpen, onClose }: Props) {
         if (cancelled) return
         if (handleScanValues(fallbackValue ? [fallbackValue] : [])) return
       } catch {
-        failCamera('QRコードの読み取りを開始できません。通信状況を確認してもう一度お試しください')
+        failCamera('無法開始讀取 QR Code。請確認網路後再試一次')
         return
       }
 
@@ -188,11 +188,11 @@ export default function InviteQrScannerModal({ isOpen, onClose }: Props) {
 
     async function startCamera() {
       if (!window.isSecureContext) {
-        setCameraError('HTTPS 環境でのみカメラを使用できます')
+        setCameraError('只能在 HTTPS 環境使用相機')
         return
       }
       if (!navigator.mediaDevices?.getUserMedia) {
-        setCameraError('この端末ではカメラを使用できません')
+        setCameraError('此裝置無法使用相機')
         return
       }
 
@@ -252,7 +252,7 @@ export default function InviteQrScannerModal({ isOpen, onClose }: Props) {
   const targetSession = sessionRef.current
 
   return (
-    <BottomSheet isOpen={isOpen} onClose={close} title="QRコードで参加">
+    <BottomSheet isOpen={isOpen} onClose={close} title="掃描 QR Code 加入">
       {target ? (
         <div className="flex flex-col gap-3">
           <InviteRedeemPanel
@@ -270,7 +270,7 @@ export default function InviteQrScannerModal({ isOpen, onClose }: Props) {
             className="h-10 rounded-xl border border-border bg-surface text-muted text-[12.5px] font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer hover:bg-app transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <RotateCcw size={13} strokeWidth={2.3} />
-            別の QR を読み取る
+            掃描其他 QR Code
           </button>
         </div>
       ) : (
@@ -287,7 +287,7 @@ export default function InviteQrScannerModal({ isOpen, onClose }: Props) {
                   onClick={resetScanner}
                   className="h-9 px-4 rounded-xl border border-white/25 bg-white/10 text-white text-[12px] font-semibold cursor-pointer hover:bg-white/15 transition-colors"
                 >
-                  もう一度試す
+                  再試一次
                 </button>
               </div>
             ) : (

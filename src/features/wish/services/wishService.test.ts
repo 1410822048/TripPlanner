@@ -194,7 +194,7 @@ describe('deleteWish strict-cleanup gate', () => {
     mocks.safePurgeMock.mockResolvedValueOnce('unrecoverable')
 
     await expect(deleteWish('t1', 'w1', 'u1', IMAGE))
-      .rejects.toThrow(/カバー画像|再試行/)
+      .rejects.toThrow(/封面圖片|再試一次/)
 
     expect(mocks.deleteDocMock).not.toHaveBeenCalled()
     expect(mocks.bumpTripActivityMock).not.toHaveBeenCalled()

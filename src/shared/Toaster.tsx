@@ -47,7 +47,7 @@ export default function Toaster() {
             <button
               type="button"
               onClick={() => dismiss(t.id)}
-              aria-label="閉じる"
+              aria-label="關閉"
               className="flex-1 text-left border-none bg-transparent p-0 cursor-pointer font-semibold"
               style={{ color: s.fg }}
             >

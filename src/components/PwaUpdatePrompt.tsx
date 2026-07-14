@@ -115,15 +115,15 @@ export default function PwaUpdatePrompt() {
       </div>
       <div className="flex-1 min-w-0">
         <div className="text-[12.5px] font-bold text-ink tracking-[0.02em]">
-          新しいバージョンがあります
+          有新版本可用
         </div>
         <div className="text-[10.5px] text-muted mt-0.5">
-          再読み込みでアップデートします
+          重新載入即可更新
         </div>
       </div>
       <button
         onClick={() => setNeedRefresh(false)}
-        aria-label="あとで"
+        aria-label="稍後再說"
         className="w-8 h-8 rounded-full text-muted hover:bg-app transition-colors flex items-center justify-center cursor-pointer shrink-0"
       >
         <X size={14} strokeWidth={2} />

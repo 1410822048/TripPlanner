@@ -20,12 +20,12 @@ import type { FormItem } from '../../hooks/useExpenseItems'
 
 const ADJUSTMENT_KIND_LABEL: Record<ExpenseAdjustmentKind, string> = {
   DISCOUNT:   '割引',
-  COUPON:     'クーポン',
+  COUPON:     '優惠券',
   TAX_EXEMPT: '免税',
   SURCHARGE:  '追加料金',
   TAX:        '税',
-  TIP:        'チップ',
-  OTHER:      'その他',
+  TIP:        '小費',
+  OTHER:      '其他',
 }
 
 const ADJUSTMENT_SCOPE_OPTIONS: { value: ExpenseAdjustmentScope; label: string }[] = [
@@ -77,7 +77,7 @@ export default function ExpenseAdjustmentRow({
           value={adj.label}
           onChange={e => onSetLabel(adj.id, e.target.value)}
           placeholder={`調整 ${index + 1}`}
-          aria-label={`調整 ${index + 1} ラベル`}
+          aria-label={`調整 ${index + 1} 的標籤`}
           className={compactInputClass(false)}
         />
         <div className="min-w-0">
@@ -125,7 +125,7 @@ export default function ExpenseAdjustmentRow({
         <button
           type="button"
           onClick={() => onRemove(adj.id)}
-          aria-label={`調整 ${index + 1} を削除`}
+          aria-label={`刪除調整 ${index + 1}`}
           className="w-7 h-7 rounded-full flex items-center justify-center bg-transparent text-muted border-none cursor-pointer hover:text-warn transition-colors shrink-0"
         >
           <Trash2 size={13} strokeWidth={2} />
@@ -139,7 +139,7 @@ export default function ExpenseAdjustmentRow({
           aria-label={`調整 ${index + 1} 対象項目`}
           className={compactInputClass(false)}
         >
-          <option value="" disabled>対象項目を選択</option>
+          <option value="" disabled>選擇目標項目</option>
           {items.map((item, itemIndex) => (
             <option key={item.id} value={item.id}>
               {item.name.trim() || `行 ${itemIndex + 1}`}

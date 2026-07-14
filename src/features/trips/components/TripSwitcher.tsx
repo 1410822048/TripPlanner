@@ -173,7 +173,7 @@ export default function TripSwitcher({
         onClick={() => open ? closeDropdown() : setOpen(true)}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`現在の旅程: ${selected.title}、切り替えメニューを開く`}
+        aria-label={`目前旅程：${selected.title}，開啟切換選單`}
         className={[
           'w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-2xl cursor-pointer transition-all',
           'border-[1.5px]',
@@ -197,7 +197,7 @@ export default function TripSwitcher({
             'text-[10px] font-bold tracking-[0.12em] uppercase mb-0.5',
             open ? 'text-pick' : 'text-muted',
           ].join(' ')}>
-            旅の記録
+            旅程紀錄
           </div>
           <div className={[
             'text-[15px] font-extrabold -tracking-[0.3px] overflow-hidden text-ellipsis whitespace-nowrap',
@@ -211,7 +211,7 @@ export default function TripSwitcher({
           'flex items-center gap-[3px] px-2 py-1 rounded-card text-[10px] font-semibold tracking-[0.04em] shrink-0 transition-all',
           open ? 'bg-pick text-white' : 'bg-app text-muted',
         ].join(' ')}>
-          {open ? '収む' : '切替'}
+          {open ? '收起' : '切換'}
           <ChevronDown
             size={12} strokeWidth={2.5}
             className={`transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
@@ -250,10 +250,10 @@ export default function TripSwitcher({
                 <div className="flex items-center gap-1.5">
                   <FolderOpen size={13} strokeWidth={2.2} className="text-pick" aria-hidden="true" />
                   <span className="text-[10px] font-bold text-muted tracking-[0.1em] uppercase">
-                    マイ旅程
+                    我的旅程
                   </span>
                   <span className="text-[9.5px] text-muted font-semibold">
-                    {trips.length} 件
+                    {trips.length} 趟
                   </span>
                 </div>
                 {/* Edit toggle — gated by trips.length > 1 so the affordance
@@ -271,7 +271,7 @@ export default function TripSwitcher({
                       editMode ? 'bg-pick text-white' : 'bg-app text-pick hover:bg-pick-pale',
                     ].join(' ')}
                   >
-                    {editMode ? '完了' : '編集'}
+                    {editMode ? '完成' : '編輯'}
                   </button>
                 )}
               </div>
@@ -309,13 +309,13 @@ export default function TripSwitcher({
               <button
                 onClick={() => {
                   if (onCreateTrip) onCreateTrip()
-                  else toast.info('新しい旅の追加は開発中です')
+                  else toast.info('新增旅程功能尚在開發中')
                   closeDropdown()
                 }}
                 className="mb-1.5 h-10 w-full rounded-xl border-[1.5px] border-dashed border-border bg-transparent text-muted text-[12.5px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer tracking-[0.04em] transition-all hover:bg-pick-pale hover:border-pick hover:text-pick"
               >
                 <Plus size={14} strokeWidth={2.5} />
-                新しい旅
+                新旅程
               </button>
             </div>
 
@@ -346,10 +346,10 @@ export default function TripSwitcher({
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="text-[13px] font-semibold text-ink">
-                      QRコードで参加
+                      掃描 QR Code 加入
                     </div>
                     <div className="text-[10.5px] mt-px text-muted">
-                      招待QRを読み取って旅に参加
+                      掃描邀請 QR Code 加入旅程
                     </div>
                   </div>
                 </button>

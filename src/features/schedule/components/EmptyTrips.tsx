@@ -11,11 +11,11 @@ export default function EmptyTrips({ onCreate, onScanInvite }: {
     <div className="bg-app min-h-full flex flex-col items-center justify-center px-6 py-10">
       <div className="text-[52px] leading-none mb-4">🗺️</div>
       <h2 className="m-0 mb-1.5 text-[20px] font-black text-ink -tracking-[0.3px]">
-        最初の旅を始めましょう
+        開始規劃第一趟旅程
       </h2>
       <p className="m-0 mb-7 text-[12.5px] text-muted text-center max-w-[280px] leading-[1.7] tracking-[0.02em]">
-        行程・費用・日記を一つのアプリで。<br />
-        まずは旅程を作成してください。
+        在同一個 App 管理行程、費用與心願。<br />
+        先建立一趟旅程吧。
       </p>
       <div className="flex flex-col items-center gap-2.5">
         <button
@@ -24,14 +24,14 @@ export default function EmptyTrips({ onCreate, onScanInvite }: {
           style={{ boxShadow: '0 6px 20px rgba(61,139,122,0.28)' }}
         >
           <Plus size={15} strokeWidth={2.5} />
-          新しい旅を作成
+          建立新旅程
         </button>
         <button
           onClick={onScanInvite}
           className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-chip border border-border bg-surface text-pick text-[12.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:bg-pick-pale hover:border-pick"
         >
           <QrCode size={14} strokeWidth={2.4} />
-          QRコードで参加
+          掃描 QR Code 加入
         </button>
       </div>
     </div>

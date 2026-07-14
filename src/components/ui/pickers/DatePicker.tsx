@@ -5,7 +5,7 @@ import PickerDialog from './PickerDialog'
 import { PICKER_COLORS } from './constants'
 import { fromLocalDateString } from '@/utils/dates'
 
-const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土']
+const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 const MONTHS   = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月']
 
 interface Props {
@@ -35,7 +35,7 @@ export interface DatePickerHandle {
 }
 
 const DatePicker = forwardRef<DatePickerHandle, Props>(function DatePicker(
-  { value, onChange, placeholder = '日付を選択', error = false, minDate, maxDate },
+  { value, onChange, placeholder = '選擇日期', error = false, minDate, maxDate },
   ref,
 ) {
   // Build a 'YYYY-MM-DD' from year/month/day for cheap lexicographic
@@ -182,7 +182,7 @@ const DatePicker = forwardRef<DatePickerHandle, Props>(function DatePicker(
             type="button"
             onClick={e => { e.stopPropagation(); onChange('') }}
             className="text-muted flex items-center cursor-pointer p-0.5 shrink-0 bg-transparent border-none"
-            aria-label="日付をクリア"
+            aria-label="清除日期"
           >
             <X size={13} strokeWidth={2} />
           </button>
@@ -190,11 +190,11 @@ const DatePicker = forwardRef<DatePickerHandle, Props>(function DatePicker(
       </div>
 
       {/* ── Centered Dialog ───────────────────────────────────── */}
-      <PickerDialog isOpen={open} onClose={() => setOpen(false)} title="日付を選択">
+      <PickerDialog isOpen={open} onClose={() => setOpen(false)} title="選擇日期">
 
         {/* Header row */}
         <div className="flex items-center px-3.5 pt-3 pb-2 gap-1">
-          <button onClick={prevMonth} className="w-7 h-7 rounded-lg bg-app text-muted flex items-center justify-center shrink-0 hover:bg-border transition-colors" aria-label="前の月">
+          <button onClick={prevMonth} className="w-7 h-7 rounded-lg bg-app text-muted flex items-center justify-center shrink-0 hover:bg-border transition-colors" aria-label="上個月">
             <ChevronLeft size={15} strokeWidth={2} />
           </button>
 
@@ -219,7 +219,7 @@ const DatePicker = forwardRef<DatePickerHandle, Props>(function DatePicker(
             </button>
           </div>
 
-          <button onClick={nextMonth} className="w-7 h-7 rounded-lg bg-app text-muted flex items-center justify-center shrink-0 hover:bg-border transition-colors" aria-label="次の月">
+          <button onClick={nextMonth} className="w-7 h-7 rounded-lg bg-app text-muted flex items-center justify-center shrink-0 hover:bg-border transition-colors" aria-label="下個月">
             <ChevronRight size={15} strokeWidth={2} />
           </button>
         </div>
@@ -348,7 +348,7 @@ const DatePicker = forwardRef<DatePickerHandle, Props>(function DatePicker(
                         : 'text-border cursor-not-allowed',
                     ].join(' ')}
                   >
-                    今日
+                    今天
                   </button>
                 )
               })()}

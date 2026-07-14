@@ -84,14 +84,14 @@ export interface UseOcrFlowResult {
  *  OcrError + kind enum stays as the lower-level machine signal. */
 function ocrErrorCopy(e: OcrError): string {
   switch (e.kind) {
-    case 'auth':       return 'セッションが切れました。再ログインしてください'
-    case 'rate-limit': return '読み取りの回数制限に達しました。少し時間を置いてから再試行してください'
-    case 'parse':      return 'レシートを読み取れませんでした。明るい場所で撮り直してみてください'
-    case 'network':    return 'ネットワークエラー。接続を確認してください'
-    case 'unavailable': return '読み取りサービスが混み合っています。少し時間を置いてからもう一度お試しください'
-    case 'stale':      return '費用が更新されました。もう一度読み取ってください'
-    case 'forbidden':  return 'この費用を編集する権限がありません。精算済みか、権限が変更された可能性があります'
-    default:           return e.message || '読み取りに失敗しました'
+    case 'auth':       return '工作階段已過期，請重新登入'
+    case 'rate-limit': return '已達讀取次數限制，請稍後再試一次'
+    case 'parse':      return '無法讀取收據，請在光線充足處重新拍攝'
+    case 'network':    return '網路錯誤，請確認連線'
+    case 'unavailable': return '讀取服務忙碌中，請稍後再試一次'
+    case 'stale':      return '費用已更新，請再次讀取'
+    case 'forbidden':  return '你沒有編輯此費用的權限。它可能已清算或權限已變更'
+    default:           return e.message || '讀取失敗'
   }
 }
 
@@ -215,7 +215,7 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
         // The receipt was swapped, or the expense was edited elsewhere,
         // while the request was in flight — applying would write OCR for a
         // different image / over a stale draft. Discard + nudge a re-read.
-        setError('費用が更新されました。もう一度読み取ってください')
+        setError('費用已更新，請再次讀取')
         return
       }
       onSuccess(result)

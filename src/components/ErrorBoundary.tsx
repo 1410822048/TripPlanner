@@ -51,17 +51,17 @@ export default class ErrorBoundary extends Component<Props, State> {
         <div className="max-w-sm w-full text-center">
           <div className="text-[44px] mb-2">😿</div>
           <h1 className="m-0 mb-2 text-[18px] font-black text-ink">
-            問題が発生しました
+            發生問題
           </h1>
           <p className="m-0 mb-4 text-[12.5px] text-muted tracking-[0.02em] break-words">
-            {error.message || '不明なエラー'}
+            {error.message || '未知錯誤'}
           </p>
           <button
             onClick={this.reset}
             className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-[24px] border-none bg-teal text-white text-[12.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
             style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
           >
-            再試行
+            再試一次
           </button>
         </div>
       </div>

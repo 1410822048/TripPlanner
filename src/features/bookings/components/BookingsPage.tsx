@@ -118,7 +118,7 @@ export default function BookingsPage() {
   }, [canWrite, modal])
 
   if (ctx.status === 'loading') return <BookingsPageSkeleton />
-  if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Ticket} reason="予約を管理" />
+  if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Ticket} reason="管理訂單" />
 
   const title = ctx.trip.title
 
@@ -144,7 +144,7 @@ export default function BookingsPage() {
   function handleSave({ input, coverImage, document }: BookingFormResult) {
     setSharedDraft(null)
     if (isDemo) { modal.close(); signIn.open(); return }
-    if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+    if (!uid) { toast.error('正在準備登入，請稍候'); return }
 
     // Optimistic close (mirrors ExpensePage). Modal closes immediately;
     // the hook's onMutate inserts a temp row into the list cache, the
@@ -175,7 +175,7 @@ export default function BookingsPage() {
   function handleCreateManyFromPdf({ inputs, document }: BookingFormBatchResult) {
     setSharedDraft(null)
     if (isDemo) { modal.close(); signIn.open(); return }
-    if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+    if (!uid) { toast.error('正在準備登入，請稍候'); return }
     modal.close()
 
     void (async () => {
@@ -257,12 +257,12 @@ export default function BookingsPage() {
     // gaps between rows / headers / non-row areas.
     <div className="bg-app min-h-full pb-8" onClick={swipe.closeAll}>
 
-      {isDemo && <DemoBanner reason="予約を保存" onSignIn={signIn.open} />}
+      {isDemo && <DemoBanner reason="儲存訂單" onSignIn={signIn.open} />}
 
       {/* ── HEADER ─────────────────────────────────────────── */}
       <div className="px-5 pt-4 pb-2">
         <p className="m-0 mb-1 text-[10.5px] font-semibold text-muted tracking-[0.12em] uppercase">
-          予約管理
+          訂單管理
         </p>
         <h1 className="m-0 text-[22px] font-black text-ink -tracking-[0.5px]">
           {title}
@@ -286,12 +286,12 @@ export default function BookingsPage() {
               <Ticket size={24} strokeWidth={1.6} />
             </div>
             <p className="m-0 mb-1 text-[13.5px] font-semibold text-ink tracking-[0.02em]">
-              まだ予約が登録されていません
+              尚未建立訂單
             </p>
             <p className="m-0 mb-[18px] text-[11.5px] text-muted tracking-[0.04em]">
               {canWrite
-                ? 'フライト・ホテル・電車などの確認書をここにまとめましょう'
-                : '閲覧者として参加中です。予約の追加はオーナー / 編集者のみ行えます。'}
+                ? '將航班、飯店、火車等確認文件集中在這裡吧'
+                : '你目前以檢視者身分加入。只有擁有者和編輯者可以新增訂單。'}
             </p>
             {canWrite && (
               <button
@@ -300,7 +300,7 @@ export default function BookingsPage() {
                 style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
               >
                 <Plus size={14} strokeWidth={2.5} />
-                予約を追加
+                新增訂單
               </button>
             )}
           </div>
@@ -318,7 +318,7 @@ export default function BookingsPage() {
                       {BOOKING_TYPE_META[t].label}
                     </span>
                     <span className="text-[11px] text-muted font-medium tabular-nums">
-                      {grouped[t].length} 件
+                      {grouped[t].length} 筆
                     </span>
                   </div>
 
@@ -353,7 +353,7 @@ export default function BookingsPage() {
                 className="w-full h-11 rounded-chip border-[1.5px] border-dashed border-border bg-transparent text-muted text-[13px] font-medium flex items-center justify-center gap-1.5 cursor-pointer tracking-[0.04em] transition-all hover:bg-teal-pale hover:border-teal hover:text-teal"
               >
                 <Plus size={14} strokeWidth={2} />
-                予約を追加
+                新增訂單
               </button>
             )}
           </>
@@ -385,7 +385,7 @@ export default function BookingsPage() {
       <SignInPromptModal
         isOpen={signIn.isOpen}
         onClose={signIn.close}
-        reason="予約を保存するには、"
+        reason="若要儲存訂單，"
       />
 
       {detailBooking && (

@@ -54,12 +54,12 @@ function DayTimeline({
         <div className="text-center px-6 py-10 pb-8 bg-surface rounded-card border-[1.5px] border-dashed border-border">
           <div className="text-[40px] mb-1.5 opacity-55">🗓</div>
           <p className="m-0 mb-1 text-[13.5px] font-semibold text-ink tracking-[0.02em]">
-            この日の予定はまだありません
+            這天還沒有行程
           </p>
           <p className="m-0 mb-[18px] text-[11.5px] text-muted tracking-[0.04em]">
             {canWrite
-              ? 'さあ、最初の行程を追加しましょう'
-              : '閲覧者として参加中です。行程の追加はオーナー / 編集者のみ行えます。'}
+              ? '先新增第一個行程吧'
+              : '你目前以檢視者身分加入。只有擁有者和編輯者可以新增行程。'}
           </p>
           {canWrite && (
             <button
@@ -68,7 +68,7 @@ function DayTimeline({
               style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
             >
               <Plus size={14} strokeWidth={2.5} />
-              行程を追加
+              新增行程
             </button>
           )}
         </div>
@@ -91,7 +91,7 @@ function DayTimeline({
                 className="w-full h-11 rounded-chip border-[1.5px] border-dashed border-border bg-transparent text-muted text-[13px] font-medium flex items-center justify-center gap-1.5 cursor-pointer tracking-[0.04em] transition-all hover:bg-teal-pale hover:border-teal hover:text-teal"
               >
                 <Plus size={14} strokeWidth={2} />
-                行程を追加
+                新增行程
               </button>
             </div>
           )}

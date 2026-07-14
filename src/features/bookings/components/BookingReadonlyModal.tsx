@@ -80,19 +80,19 @@ export default function BookingReadonlyModal({
   const hasRoute = !!booking.origin || !!booking.destination
   const infoRows = [
     booking.type !== 'hotel' && checkInLabel
-      ? { icon: CalendarDays, label: '日時', value: checkInLabel }
+      ? { icon: CalendarDays, label: '日期時間', value: checkInLabel }
       : null,
     booking.type !== 'hotel' && checkOutLabel
-      ? { icon: CalendarDays, label: '終了', value: checkOutLabel }
+      ? { icon: CalendarDays, label: '結束時間', value: checkOutLabel }
       : null,
     booking.provider
-      ? { icon: Building2, label: '事業者', value: booking.provider }
+      ? { icon: Building2, label: '提供者', value: booking.provider }
       : null,
     booking.confirmationCode
-      ? { icon: Hash, label: '確認番号', value: booking.confirmationCode, mono: true }
+      ? { icon: Hash, label: '確認編號', value: booking.confirmationCode, mono: true }
       : null,
     booking.address
-      ? { icon: MapPin, label: '住所', value: booking.address }
+      ? { icon: MapPin, label: '地址', value: booking.address }
       : null,
   ].filter(Boolean) as DetailRowData[]
 
@@ -100,7 +100,7 @@ export default function BookingReadonlyModal({
     <BottomSheet
       isOpen={isOpen}
       onClose={onClose}
-      title="予約詳細"
+      title="訂單詳情"
       footer={onEdit ? (
         <button
           type="button"
@@ -109,7 +109,7 @@ export default function BookingReadonlyModal({
           style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
         >
           <Pencil size={15} strokeWidth={2.3} />
-          編集
+          編輯
         </button>
       ) : undefined}
     >
@@ -155,7 +155,7 @@ export default function BookingReadonlyModal({
                         'inline-flex rounded-full px-2 py-0.5 text-[10px] font-black',
                         headerImage ? 'bg-black/45 text-white backdrop-blur-sm' : hero.isBranded ? 'bg-white/70 text-muted' : 'bg-white/20 text-current',
                       ].join(' ')}>
-                        {nights}泊
+                        {nights} 晚
                       </span>
                     )}
                   </div>
@@ -199,8 +199,8 @@ export default function BookingReadonlyModal({
               <ActionLink
                 href={mapHref}
                 icon={MapPin}
-                label="地図"
-                ariaLabel={`${booking.address ?? ''} を地図で開く`}
+                label="地圖"
+                ariaLabel={`在地圖中開啟 ${booking.address ?? ''}`}
                 accent={theme.accent}
                 fullWidth={!booking.link}
               />
@@ -212,8 +212,8 @@ export default function BookingReadonlyModal({
               <ActionLink
                 href={booking.link}
                 icon={ExternalLink}
-                label="予約ページ"
-                ariaLabel="予約ページを開く"
+                label="訂單頁面"
+                ariaLabel="開啟訂單頁面"
                 accent={theme.accent}
                 fullWidth={!mapHref}
               />
@@ -232,7 +232,7 @@ export default function BookingReadonlyModal({
         {booking.note && (
           <section className="rounded-card border border-border bg-surface px-4 py-3">
             <div className="text-[10px] font-black text-muted">
-              メモ
+              備註
             </div>
             <div className="mt-2 text-[12.5px] leading-6 text-ink whitespace-pre-wrap break-words">
               {booking.note}
@@ -245,12 +245,12 @@ export default function BookingReadonlyModal({
             <button
               type="button"
               onClick={() => onPreviewAttachment(booking)}
-              aria-label={`添付を表示: ${fileLabel(attachment.filePath)}`}
+              aria-label={`顯示附件：${fileLabel(attachment.filePath)}`}
               className={`${actionClassName()} w-full cursor-pointer`}
               style={actionStyle(theme.accent)}
             >
               {attachmentIsImage ? <ImageIcon size={15} strokeWidth={2.2} /> : <FileText size={15} strokeWidth={2.2} />}
-              <span className="text-[12.5px] font-bold">添付を表示</span>
+              <span className="text-[12.5px] font-bold">顯示附件</span>
             </button>
           </section>
         )}

@@ -23,21 +23,21 @@ export interface CurrencyMeta {
 // common reserve currencies. Add more as needed; the lookup degrades
 // gracefully (unknown code falls back to "{CODE} {amount}").
 const REGISTRY: Record<string, CurrencyMeta> = {
-  JPY: { code: 'JPY', symbol: '¥',   label: '日本円 (JPY)'    },
+  JPY: { code: 'JPY', symbol: '¥',   label: '日圓 (JPY)'      },
   TWD: { code: 'TWD', symbol: 'NT$', label: '新台幣 (TWD)'    },
-  USD: { code: 'USD', symbol: '$',   label: '米ドル (USD)'    },
-  EUR: { code: 'EUR', symbol: '€',   label: 'ユーロ (EUR)'    },
-  KRW: { code: 'KRW', symbol: '₩',   label: '韓国ウォン (KRW)' },
+  USD: { code: 'USD', symbol: '$',   label: '美元 (USD)'      },
+  EUR: { code: 'EUR', symbol: '€',   label: '歐元 (EUR)'      },
+  KRW: { code: 'KRW', symbol: '₩',   label: '韓元 (KRW)'      },
   CNY: { code: 'CNY', symbol: 'CN¥', label: '人民元 (CNY)'    },
-  HKD: { code: 'HKD', symbol: 'HK$', label: '香港ドル (HKD)'   },
-  THB: { code: 'THB', symbol: '฿',   label: 'タイバーツ (THB)' },
-  SGD: { code: 'SGD', symbol: 'S$',  label: 'シンガポール (SGD)' },
-  GBP: { code: 'GBP', symbol: '£',   label: 'ポンド (GBP)'    },
-  AUD: { code: 'AUD', symbol: 'A$',  label: '豪ドル (AUD)'    },
-  PHP: { code: 'PHP', symbol: '₱',   label: 'フィリピン (PHP)' },
-  VND: { code: 'VND', symbol: '₫',   label: 'ベトナム (VND)'  },
-  MYR: { code: 'MYR', symbol: 'RM',  label: 'マレーシア (MYR)' },
-  IDR: { code: 'IDR', symbol: 'Rp',  label: 'インドネシア (IDR)' },
+  HKD: { code: 'HKD', symbol: 'HK$', label: '港幣 (HKD)'      },
+  THB: { code: 'THB', symbol: '฿',   label: '泰銖 (THB)'      },
+  SGD: { code: 'SGD', symbol: 'S$',  label: '新加坡幣 (SGD)'  },
+  GBP: { code: 'GBP', symbol: '£',   label: '英鎊 (GBP)'      },
+  AUD: { code: 'AUD', symbol: 'A$',  label: '澳幣 (AUD)'      },
+  PHP: { code: 'PHP', symbol: '₱',   label: '菲律賓披索 (PHP)' },
+  VND: { code: 'VND', symbol: '₫',   label: '越南盾 (VND)'    },
+  MYR: { code: 'MYR', symbol: 'RM',  label: '馬來西亞令吉 (MYR)' },
+  IDR: { code: 'IDR', symbol: 'Rp',  label: '印尼盾 (IDR)'    },
 }
 
 /** Ordered list for the picker dropdown. JPY first (most-used in this

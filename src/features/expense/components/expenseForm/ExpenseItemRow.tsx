@@ -43,7 +43,7 @@ export default function ExpenseItemRow({
     .filter((member): member is TripMember => !!member)
   const totalShares = item.allocations.reduce((sum, allocation) => sum + allocation.shares, 0)
   const allocationLabel = item.allocations.length === 0
-    ? '分担者を選択'
+    ? '選擇分攤者'
     : `${item.allocations.length}人 / ${totalShares}份`
 
   return (
@@ -117,7 +117,7 @@ export default function ExpenseItemRow({
         <button
           type="button"
           onClick={() => onRemove(index)}
-          aria-label={`行 ${index + 1} を削除`}
+          aria-label={`刪除第 ${index + 1} 行`}
           className="w-7 h-7 rounded-full flex items-center justify-center bg-transparent text-muted border-none cursor-pointer hover:text-warn transition-colors shrink-0"
         >
           <Trash2 size={13} strokeWidth={2} />

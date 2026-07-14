@@ -149,7 +149,7 @@ export default function TripModalsHost({ state }: Props) {
       <SignInPromptModal
         isOpen={signInOpen}
         onClose={() => setSignInOpen(false)}
-        reason="行程を保存するには、"
+        reason="若要儲存行程，"
       />
     </>
   )

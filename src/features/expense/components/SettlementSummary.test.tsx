@@ -40,7 +40,7 @@ function base(over: Partial<Props> = {}): Props {
   }
 }
 
-const RECORD_BTN = { name: /受取を清算済みとして記録/ }
+const RECORD_BTN = { name: /記錄已收到/ }
 
 describe('SettlementSummary — empty state', () => {
   it('renders nothing when there are no live expenses and no settlements', () => {
@@ -53,12 +53,12 @@ describe('SettlementSummary — receiver-only record gate', () => {
   it('shows the 済み record button to the payee (receiver)', () => {
     render(<SettlementSummary {...base({ uid: 'u1' })} />) // u1 = payee
     expect(screen.getByRole('button', RECORD_BTN)).toBeTruthy()
-    expect(screen.queryByText('受取待ち')).toBeNull()
+    expect(screen.queryByText('等待收款')).toBeNull()
   })
 
   it('shows a 受取待ち status to the payer, not a button', () => {
     render(<SettlementSummary {...base({ uid: 'u2' })} />) // u2 = payer
-    expect(screen.getByText('受取待ち')).toBeTruthy()
+    expect(screen.getByText('等待收款')).toBeTruthy()
     expect(screen.queryByRole('button', RECORD_BTN)).toBeNull()
   })
 })
@@ -73,8 +73,8 @@ describe('SettlementSummary — balances + all-settled', () => {
   it('shows the all-settled chip when the balances net out', () => {
     const expenses = [mkExpense({ splits: [{ memberId: 'u1', amountMinor: 10_000 }] })]
     render(<SettlementSummary {...base({ expenses, uid: null })} />)
-    expect(screen.getByText('清算済み')).toBeTruthy()
-    expect(screen.getByText(/バランスしています/)).toBeTruthy()
+    expect(screen.getByText('已清算')).toBeTruthy()
+    expect(screen.getByText(/所有成員的帳務已平衡/)).toBeTruthy()
     expect(screen.queryByRole('button', RECORD_BTN)).toBeNull()
   })
 })

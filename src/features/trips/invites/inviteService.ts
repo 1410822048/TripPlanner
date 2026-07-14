@@ -74,14 +74,14 @@ export interface AcceptResult {
  */
 export function formatInviteExpiry(expiresAt: Timestamp, now: number): string {
   const diffMs = expiresAt.toMillis() - now
-  if (diffMs <= 0)     return '期限切れ'
+  if (diffMs <= 0)     return '已過期'
   const diffMin = Math.floor(diffMs / 60_000)
-  if (diffMin < 1)     return 'まもなく期限切れ'
+  if (diffMin < 1)     return '即將過期'
   const diffHr = Math.floor(diffMin / 60)
-  if (diffHr < 1)      return `あと ${diffMin} 分`
+  if (diffHr < 1)      return `剩 ${diffMin} 分鐘`
   const diffDay = Math.floor(diffHr / 24)
-  if (diffDay < 1)     return `あと ${diffHr} 時間`
-  return `あと ${diffDay} 日`
+  if (diffDay < 1)     return `剩 ${diffHr} 小時`
+  return `剩 ${diffDay} 天`
 }
 
 function toInvite(id: string, data: Record<string, unknown>): Invite {

@@ -64,7 +64,7 @@ function SwipeableBookingItem({
           {clickable ? (
             <button
               {...selectButtonProps}
-              aria-label={`${bookingDisplayName(booking)}の詳細を表示`}
+              aria-label={`顯示 ${bookingDisplayName(booking)} 的詳細資料`}
               className="block w-full p-0 border-none bg-transparent text-left text-inherit cursor-pointer disabled:cursor-default focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               {renderBody()}
@@ -75,7 +75,7 @@ function SwipeableBookingItem({
           {isPending && (
             <div className="absolute top-2 right-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/60 text-white text-[10.5px] font-semibold backdrop-blur-sm">
               <Loader2 size={11} strokeWidth={2.4} className="animate-spin" />
-              <span>保存中…</span>
+              <span>儲存中…</span>
             </div>
           )}
         </div>

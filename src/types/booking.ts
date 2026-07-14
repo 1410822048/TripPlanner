@@ -200,7 +200,7 @@ export const CreateBookingSchema = z.object({
   // 予約元 URL。http(s) のみ(href に出すため)。cap 500 は rules / Worker と lockstep。
   // '' はクリア用 sentinel として許可(stripEmpty / deleteField で
   // Firestore には届かないので rules 側は strict のまま)。
-  link:             z.string().max(500).refine(v => v === '' || isHttpUrl(v), 'URL は http:// または https:// で始まる必要があります').optional(),
+  link:             z.string().max(500).refine(v => v === '' || isHttpUrl(v), 'URL 必須以 http:// 或 https:// 開頭').optional(),
   note:             z.string().max(2000).optional(),
 })
 export type CreateBookingInput = z.infer<typeof CreateBookingSchema>

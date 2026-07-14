@@ -219,7 +219,7 @@ export async function extractBookingPdfAutofill(
   if (res.status === 401) throw new BookingPdfExtractError('Session expired', 'auth')
   if (res.status === 429) throw new BookingPdfExtractError('Rate limit reached', 'rate-limit')
   if (res.status === 400 || res.status === 413 || res.status === 422) {
-    throw new BookingPdfExtractError('PDFを読み取れませんでした。手入力してください', 'parse')
+    throw new BookingPdfExtractError('無法讀取 PDF，請手動輸入', 'parse')
   }
   if (res.status === 502 || res.status === 503 || res.status === 504) {
     throw new BookingPdfExtractError('Booking PDF extract service is temporarily unavailable', 'unavailable')

@@ -136,8 +136,8 @@ describe('ExpenseFormModal — re-OCR dispatch', () => {
     const receipt = new File(['prepared'], 'receipt.webp', { type: 'image/webp' })
     imageApi.compressReceiptImage.mockResolvedValueOnce({ full: receipt })
 
-    fireEvent.click(screen.getByRole('button', { name: /レシートを追加/ }))
-    fireEvent.click(screen.getByRole('button', { name: /ファイルを添付/ }))
+    fireEvent.click(screen.getByRole('button', { name: /新增收據/ }))
+    fireEvent.click(screen.getByRole('button', { name: /附加檔案/ }))
     fireEvent.change(uploadInput, { target: { files: [file] } })
 
     await waitFor(() => expect(ocrApi.setFile).toHaveBeenCalledWith(receipt))
@@ -151,8 +151,8 @@ describe('ExpenseFormModal — re-OCR dispatch', () => {
     const receipt = new File(['prepared'], 'capture.webp', { type: 'image/webp' })
     imageApi.compressReceiptImage.mockResolvedValueOnce({ full: receipt })
 
-    fireEvent.click(screen.getByRole('button', { name: /レシートを追加/ }))
-    fireEvent.click(screen.getByRole('button', { name: /撮影して読み取る/ }))
+    fireEvent.click(screen.getByRole('button', { name: /新增收據/ }))
+    fireEvent.click(screen.getByRole('button', { name: /拍攝並讀取/ }))
     fireEvent.change(cameraInput, { target: { files: [file] } })
 
     await waitFor(() => expect(ocrApi.run).toHaveBeenCalledWith(receipt))
@@ -160,7 +160,7 @@ describe('ExpenseFormModal — re-OCR dispatch', () => {
 
   it('existing foreign receipt → runExisting with currencyHint = the foreign source currency (not trip)', () => {
     renderModal(foreignExpense())
-    fireEvent.click(screen.getByRole('button', { name: /明細を読み取る/ }))
+    fireEvent.click(screen.getByRole('button', { name: /讀取明細/ }))
 
     expect(ocrApi.run).not.toHaveBeenCalled()
     expect(ocrApi.runExisting).toHaveBeenCalledTimes(1)
@@ -183,7 +183,7 @@ describe('ExpenseFormModal — re-OCR dispatch', () => {
     fireEvent.change(uploadInput, { target: { files: [file] } })
     await waitFor(() => expect(ocrApi.setFile).toHaveBeenCalledWith(receipt))
 
-    fireEvent.click(screen.getByRole('button', { name: /明細を読み取る/ }))
+    fireEvent.click(screen.getByRole('button', { name: /讀取明細/ }))
 
     expect(ocrApi.runExisting).not.toHaveBeenCalled()
     expect(ocrApi.run).toHaveBeenCalledTimes(1)
@@ -197,13 +197,13 @@ describe('ExpenseFormModal — re-OCR dispatch', () => {
     const receipt = new File(['prepared'], 'new.receipt.webp', { type: 'image/webp' })
     imageApi.compressReceiptImage.mockResolvedValueOnce({ full: receipt })
 
-    expect(screen.getByRole('button', { name: /もう一度読み取る/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^再次讀取$/ })).toBeTruthy()
 
     fireEvent.change(uploadInput, { target: { files: [file] } })
     await waitFor(() => expect(ocrApi.setFile).toHaveBeenCalledWith(receipt))
 
-    expect(screen.getByRole('button', { name: /明細を読み取る/ })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /もう一度読み取る/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /讀取明細/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^再次讀取$/ })).toBeNull()
   })
 
   it('drops a stale camera prepare result when a newer file finishes first', async () => {
@@ -245,12 +245,12 @@ describe('ExpenseFormModal — re-OCR dispatch', () => {
     let resolvePrepare!: (value: { full: File }) => void
     imageApi.compressReceiptImage.mockImplementationOnce(() => new Promise(resolve => { resolvePrepare = resolve }))
 
-    expect(screen.getByRole('button', { name: /明細を読み取る/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /讀取明細/ })).toBeTruthy()
 
     fireEvent.change(uploadInput, { target: { files: [file] } })
 
     expect(ocrApi.cancel).toHaveBeenCalledTimes(1)
-    expect(screen.queryByRole('button', { name: /明細を読み取る/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /讀取明細/ })).toBeNull()
     expect(ocrApi.runExisting).not.toHaveBeenCalled()
 
     await act(async () => {
@@ -278,8 +278,8 @@ describe('ExpenseFormModal — re-OCR dispatch', () => {
     // unanalyzed until onSuccess lands → first-read CTA.
     fireEvent.change(cameraInput, { target: { files: [file] } })
     await waitFor(() => expect(ocrApi.run).toHaveBeenCalledWith(receipt))
-    expect(screen.getByRole('button', { name: /明細を読み取る/ })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /もう一度読み取る/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /讀取明細/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^再次讀取$/ })).toBeNull()
 
     // Simulate the Worker returning a parseable receipt — runs the REAL
     // applyOcrResultToForm (items populate) + markAnalyzed(sourceKey).
@@ -292,8 +292,8 @@ describe('ExpenseFormModal — re-OCR dispatch', () => {
       })
     })
 
-    expect(screen.getByRole('button', { name: /もう一度読み取る/ })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /明細を読み取る/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /^再次讀取$/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /讀取明細/ })).toBeNull()
   })
 
   it('does not OCR a replacement receipt rejected by attachment validation', async () => {
@@ -313,8 +313,8 @@ describe('ExpenseFormModal — re-OCR dispatch', () => {
     expect(ocrApi.setFile).not.toHaveBeenCalled()
     expect(ocrApi.run).not.toHaveBeenCalled()
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /明細を読み取る/ })).toBeTruthy())
-    fireEvent.click(screen.getByRole('button', { name: /明細を読み取る/ }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /讀取明細/ })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /讀取明細/ }))
 
     expect(ocrApi.runExisting).toHaveBeenCalledTimes(1)
     expect(ocrApi.runExisting).toHaveBeenCalledWith(expect.objectContaining({

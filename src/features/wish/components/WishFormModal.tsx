@@ -99,7 +99,7 @@ export default function WishFormModal({
     e.target.value = ''
     if (!f) return
     if (f.size > MAX_FILE_BYTES) {
-      setImageError('画像サイズは 5MB 以下にしてください')
+      setImageError('圖片大小必須小於 5MB')
       return
     }
     setImageError(null)
@@ -119,9 +119,9 @@ export default function WishFormModal({
 
   function validate(): WishFormResult | null {
     const e: Record<string, string> = {}
-    if (!state.title.trim()) e.title = 'タイトルを入力してください'
+    if (!state.title.trim()) e.title = '請輸入標題'
     if (state.link.trim() && !/^https?:\/\//i.test(state.link.trim())) {
-      e.link = 'http:// または https:// で始まる URL'
+      e.link = 'URL 必須以 http:// 或 https:// 開頭'
     }
     setErrors(e)
     if (Object.keys(e).length > 0) return null
@@ -148,19 +148,19 @@ export default function WishFormModal({
   // presence-driven (not URL-driven) so the row doesn't flicker to the
   // upload prompt while the existing thumb's getBlob is in flight.
   const hasImage    = !!newFile || !!existing
-  const previewName = newFile?.name ?? '画像'
+  const previewName = newFile?.name ?? '圖片'
 
   return (
     <FormModalShell
       isOpen={isOpen}
       isSaving={isSaving}
-      title={editTarget ? 'ウィッシュを編集' : 'ウィッシュを追加'}
-      saveLabel={editTarget ? '変更を保存' : '追加'}
+      title={editTarget ? '編輯心願' : '新增心願'}
+      saveLabel={editTarget ? '儲存變更' : '新增'}
       saveError={saveError}
       onClose={onClose}
       onSave={handleSave}
     >
-      <FormField label="カテゴリ">
+      <FormField label="分類">
         <div className="flex gap-[7px] flex-wrap">
           {WISH_CATEGORIES.map(c => {
             const active = state.category === c.value
@@ -183,7 +183,7 @@ export default function WishFormModal({
         </div>
       </FormField>
 
-      <FormField label="タイトル" error={errors.title} required>
+      <FormField label="標題" error={errors.title} required>
         <input
           ref={titleRef}
           value={state.title}
@@ -197,26 +197,26 @@ export default function WishFormModal({
         <textarea
           value={state.description}
           onChange={e => setField('description', e.target.value)}
-          placeholder="どんなところ？なぜ行きたい？"
+          placeholder="是什麼地方？為什麼想去？"
           rows={2}
           className={`${inputClass(false)} resize-none leading-[1.6] py-2.5 h-auto`}
         />
       </FormField>
 
-      <FormField label="住所 / Google Maps URL（任意）">
+      <FormField label="地址 / Google Maps URL（選填）">
         {/* 住所テキスト or Google Maps の URL。テキストは Google Maps の検索
             クエリとして解決される(URL 整形は不要)、URL ならそのまま開く。
             カードではサムネタップで地図が開く。 */}
         <input
           value={state.address}
           onChange={e => setField('address', e.target.value)}
-          placeholder="例：東京都港区芝公園 4-2-8 / Google Maps の URL"
+          placeholder="例如：東京都港區芝公園 4-2-8 / Google Maps URL"
           maxLength={500}
           className={inputClass(false)}
         />
       </FormField>
 
-      <FormField label="リンク（公式・予約ページ等）" error={errors.link}>
+      <FormField label="連結（官方網站、預約頁面等）" error={errors.link}>
         {/* 地図ではなく、イベント/公式/予約などのページ URL。カードでは ⋮ 隣の
             「網站」ボタンで開く。 */}
         <input
@@ -229,7 +229,7 @@ export default function WishFormModal({
         />
       </FormField>
 
-      <FormField label="カバー画像" error={imageError ?? undefined}>
+      <FormField label="封面圖片" error={imageError ?? undefined}>
         <input
           ref={fileRef}
           type="file"
@@ -244,8 +244,8 @@ export default function WishFormModal({
             isImage={true}
             onReplace={pickFile}
             onClear={clearImage}
-            replaceAriaLabel="画像を変更"
-            clearAriaLabel="画像を削除"
+            replaceAriaLabel="更換圖片"
+            clearAriaLabel="刪除圖片"
           />
         ) : (
           <button
@@ -254,12 +254,12 @@ export default function WishFormModal({
             className="w-full h-[58px] rounded-input border-[1.5px] border-dashed border-border bg-app text-muted text-[12px] font-medium flex flex-col items-center justify-center gap-1 cursor-pointer hover:border-accent hover:text-accent transition-colors"
           >
             <Plus size={16} strokeWidth={1.8} />
-            <span>画像を追加（任意）</span>
+            <span>新增圖片（選填）</span>
           </button>
         )}
       </FormField>
 
-      {editTarget && onDelete && <DeleteConfirm noun="ウィッシュ" onDelete={onDelete} />}
+      {editTarget && onDelete && <DeleteConfirm noun="心願" onDelete={onDelete} />}
 
       {crop.dialog}
     </FormModalShell>

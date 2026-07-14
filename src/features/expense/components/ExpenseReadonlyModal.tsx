@@ -24,7 +24,7 @@ interface Props {
 
 function formatExpenseDate(date: string): string {
   return fromLocalDateString(date)
-    .toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' })
+    .toLocaleDateString('zh-TW', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' })
 }
 
 export default function ExpenseReadonlyModal({
@@ -45,7 +45,7 @@ export default function ExpenseReadonlyModal({
     <BottomSheet
       isOpen={isOpen}
       onClose={onClose}
-      title="費用詳細"
+      title="費用詳情"
       footer={onEdit ? (
         <button
           type="button"
@@ -54,14 +54,14 @@ export default function ExpenseReadonlyModal({
           style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
         >
           <Pencil size={15} strokeWidth={2.3} />
-          編集
+          編輯
         </button>
       ) : undefined}
     >
       {isLocked && (
         <div className="flex items-center gap-2 rounded-input border border-border bg-app px-3 py-2 text-[12px] font-semibold text-muted">
           <Lock size={13} strokeWidth={2.2} className="shrink-0" />
-          <span>清算済み</span>
+          <span>已清算</span>
         </div>
       )}
 
@@ -98,7 +98,7 @@ export default function ExpenseReadonlyModal({
         </div>
       </FormField>
 
-      <FormField label={`分担 - ${splitSummary(expense, members.length)}`}>
+      <FormField label={`分攤 - ${splitSummary(expense, members.length)}`}>
         <div className="rounded-input border border-border bg-surface overflow-hidden divide-y divide-border">
           {expense.splits
             .filter(split => split.amountMinor > 0)
@@ -181,7 +181,7 @@ export default function ExpenseReadonlyModal({
       )}
 
       {receipt && (
-        <FormField label="レシート">
+        <FormField label="收據">
           <button
             type="button"
             onClick={() => receipt.path && onPreviewReceipt?.(expense)}
@@ -205,7 +205,7 @@ export default function ExpenseReadonlyModal({
       )}
 
       {expense.note && (
-        <FormField label="メモ">
+        <FormField label="備註">
           <div className="rounded-input border border-border bg-app px-3 py-2 text-[13px] leading-6 text-ink whitespace-pre-wrap break-words">
             {expense.note}
           </div>

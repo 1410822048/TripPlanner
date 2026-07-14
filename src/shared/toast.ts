@@ -61,6 +61,6 @@ export const toast = {
   mutationError: (err: unknown, action: string) =>
     useToastStore.getState().push(
       'error',
-      err instanceof Error ? `${action}に失敗：${err.message}` : `${action}に失敗しました`,
+      err instanceof Error ? `${action}失敗：${err.message}` : `${action}失敗`,
     ),
 }

@@ -321,7 +321,7 @@ export default function PdfZoomViewport({ children }: Props) {
             <ZoomIn size={15} strokeWidth={2.2} />
           </ZoomButton>
           <ZoomButton
-            label="リセット"
+            label="重設"
             disabled={!isZoomed}
             onClick={() => commitScale(MIN_SCALE)}
           >

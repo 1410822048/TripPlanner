@@ -20,7 +20,7 @@ function snapMinute(m: number, step: number): number {
 }
 
 export default function TimePicker({
-  value, onChange, placeholder = '時間を選択', error = false, minuteStep = 5,
+  value, onChange, placeholder = '選擇時間', error = false, minuteStep = 5,
 }: Props) {
   const [open, setOpen] = useState(false)
 
@@ -98,7 +98,7 @@ export default function TimePicker({
             type="button"
             onClick={e => { e.stopPropagation(); onChange('') }}
             className="text-muted flex items-center cursor-pointer p-0.5 shrink-0 bg-transparent border-none"
-            aria-label="時間をクリア"
+            aria-label="清除時間"
           >
             <X size={13} strokeWidth={2} />
           </button>
@@ -106,7 +106,7 @@ export default function TimePicker({
       </div>
 
       {/* ── Wheel Dialog ──────────────────────────────────────── */}
-      <PickerDialog isOpen={open} onClose={() => setOpen(false)} title="時間を選択">
+      <PickerDialog isOpen={open} onClose={() => setOpen(false)} title="選擇時間">
 
         {/* Current draft display */}
         <div className="flex items-center justify-center pt-4 pb-2 gap-1.5">
@@ -173,7 +173,7 @@ export default function TimePicker({
             onClick={() => setOpen(false)}
             className="flex-1 py-2.5 rounded-input border border-border bg-transparent text-muted text-[13px] font-medium cursor-pointer tracking-[0.04em] hover:bg-app transition-colors"
           >
-            キャンセル
+            取消
           </button>
           <button
             onClick={commit}

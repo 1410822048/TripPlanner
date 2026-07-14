@@ -22,10 +22,10 @@ export default function RouteErrorFallback({ error, reset }: Props) {
     <div className="fixed inset-0 max-w-[430px] mx-auto bg-app flex flex-col items-center justify-center px-6 text-center">
       <div className="text-[44px] mb-2">⚠️</div>
       <h1 className="m-0 mb-2 text-[18px] font-black text-ink">
-        このページを表示できません
+        無法顯示此頁面
       </h1>
       <p className="m-0 mb-5 text-[12px] text-muted leading-[1.7] tracking-[0.02em] max-w-[280px] break-words">
-        {error.message || '不明なエラーが発生しました'}
+        {error.message || '發生未知錯誤'}
       </p>
       <div className="flex gap-2.5">
         <button
@@ -39,7 +39,7 @@ export default function RouteErrorFallback({ error, reset }: Props) {
           className="h-11 px-5 rounded-chip border-none bg-teal text-white text-[12.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
           style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
         >
-          ホームに戻る
+          返回首頁
         </button>
       </div>
     </div>

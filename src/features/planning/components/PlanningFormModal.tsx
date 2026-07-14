@@ -14,10 +14,10 @@ import { PLAN_CATEGORY_ICON } from '../categories'
 
 const CATEGORIES: { value: PlanCategory; label: string }[] = [
   { value: 'essentials', label: '必備'   },
-  { value: 'documents',  label: '予約'   },
+  { value: 'documents',  label: '訂單確認' },
   { value: 'packing',    label: '荷物'   },
   { value: 'todo',       label: '行前'   },
-  { value: 'other',      label: 'その他' },
+  { value: 'other',      label: '其他' },
 ]
 
 // `type` (not `interface`): TS won't widen interfaces to satisfy
@@ -62,7 +62,7 @@ export default function PlanningFormModal({
 
   function handleSave() {
     const e: Record<string, string> = {}
-    if (!state.title.trim()) e.title = 'タイトルを入力してください'
+    if (!state.title.trim()) e.title = '請輸入標題'
     setErrors(e)
     if (Object.keys(e).length > 0) return
     onSave({
@@ -76,13 +76,13 @@ export default function PlanningFormModal({
     <FormModalShell
       isOpen={isOpen}
       isSaving={isSaving}
-      title={editTarget ? '項目を編集' : '項目を追加'}
-      saveLabel={editTarget ? '変更を保存' : '追加'}
+      title={editTarget ? '編輯項目' : '新增項目'}
+      saveLabel={editTarget ? '儲存變更' : '新增'}
       saveError={saveError}
       onClose={onClose}
       onSave={handleSave}
     >
-      <FormField label="カテゴリ">
+      <FormField label="分類">
         <CategoryChipRow
           categories={CATEGORIES}
           icons={PLAN_CATEGORY_ICON}
@@ -91,21 +91,21 @@ export default function PlanningFormModal({
         />
       </FormField>
 
-      <FormField label="タイトル" error={errors.title} required>
+      <FormField label="標題" error={errors.title} required>
         <input
           ref={titleRef}
           value={state.title}
           onChange={e => setField('title', e.target.value)}
-          placeholder="例：パスポート、充電器、両替"
+          placeholder="例如：護照、充電器、換匯"
           className={inputClass(!!errors.title)}
         />
       </FormField>
 
-      <FormField label="メモ">
+      <FormField label="備註">
         <textarea
           value={state.note}
           onChange={e => setField('note', e.target.value)}
-          placeholder="数量・サイズ・補足など"
+          placeholder="數量、尺寸或補充說明"
           rows={3}
           className={`${inputClass(false)} resize-none leading-[1.6] py-2.5 h-auto`}
         />

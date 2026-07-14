@@ -97,7 +97,7 @@ export default function ScheduleFormModal({
     if (text === '') return { ok: true, value: undefined }
     try {
       const minor = parseMoneyToMinor(text, currency)
-      if (minor < 0) return { ok: false, error: '0 以上の金額を入力してください' }
+      if (minor < 0) return { ok: false, error: '請輸入大於或等於 0 的金額' }
       return { ok: true, value: minor }
     } catch (e) {
       if (e instanceof MoneyParseError) return { ok: false, error: '請輸入數字' }
@@ -114,7 +114,7 @@ export default function ScheduleFormModal({
     // 'HH:MM' strings sort lexicographically the same as time-of-day,
     // so a direct string compare correctly catches end < start.
     if (state.startTime && state.endTime && state.endTime < state.startTime) {
-      e.endTime = '終了は開始より後の時刻にしてください'
+      e.endTime = '結束時間必須晚於開始時間'
     }
     setErrors(e)
     return Object.keys(e).length === 0
@@ -141,23 +141,23 @@ export default function ScheduleFormModal({
     <FormModalShell
       isOpen={isOpen}
       isSaving={isSaving}
-      title={editTarget ? '行程を編集' : '行程を追加'}
-      saveLabel={editTarget ? '変更を保存' : '行程を追加'}
+      title={editTarget ? '編輯行程' : '新增行程'}
+      saveLabel={editTarget ? '儲存變更' : '新增行程'}
       saveError={saveError}
       onClose={onClose}
       onSave={handleSave}
     >
-      <FormField label="タイトル" error={errors.title} required>
+      <FormField label="標題" error={errors.title} required>
         <input
           ref={titleRef}
           value={state.title}
           onChange={e => setField('title', e.target.value)}
-          placeholder="例：淺草雷門を見学"
+          placeholder="例如：參觀淺草雷門"
           className={inputClass(!!errors.title)}
         />
       </FormField>
 
-      <FormField label="カテゴリ">
+      <FormField label="分類">
         <CategoryChipRow
           categories={SCHEDULE_CATEGORIES}
           icons={CATEGORY_ICON}
@@ -166,7 +166,7 @@ export default function ScheduleFormModal({
         />
       </FormField>
 
-      <FormField label="日付" error={errors.date} required>
+      <FormField label="日期" error={errors.date} required>
         <DatePicker
           value={state.date}
           onChange={v => setField('date', v)}
@@ -191,7 +191,7 @@ export default function ScheduleFormModal({
             }}
           />
         </FormField>
-        <FormField label="終了時間" error={errors.endTime}>
+        <FormField label="結束時間" error={errors.endTime}>
           <TimePicker
             value={state.endTime}
             onChange={v => {
@@ -204,7 +204,7 @@ export default function ScheduleFormModal({
         </FormField>
       </div>
 
-      <FormField label="場所">
+      <FormField label="地點">
         <div className="relative">
           <MapPin size={14} className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-muted" />
           <input
@@ -226,11 +226,11 @@ export default function ScheduleFormModal({
         />
       </FormField>
 
-      <FormField label="メモ">
+      <FormField label="備註">
         <textarea
           value={state.desc}
           onChange={e => setField('desc', e.target.value)}
-          placeholder="備考・注意事項など"
+          placeholder="備註或注意事項"
           rows={3}
           className={`${inputClass(false)} resize-none leading-[1.6] py-2.5 h-auto`}
         />

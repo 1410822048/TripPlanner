@@ -40,7 +40,7 @@ function OcrLoadingHint({ elapsedMs }: { elapsedMs: number }) {
       <div className="flex-1 min-w-0 leading-[1.45]">
         <div className="flex items-center justify-between gap-2">
           <span>
-            {slow ? 'もう少しで完了します…' : '明細を読み取り中…'}
+            {slow ? '即將完成…' : '正在讀取明細…'}
           </span>
           <span className="text-[10.5px] tabular-nums opacity-80 shrink-0">
             {elapsedSec}s
@@ -48,8 +48,8 @@ function OcrLoadingHint({ elapsedMs }: { elapsedMs: number }) {
         </div>
         <div className="text-[10.5px] opacity-75 mt-0.5">
           {slow
-            ? '複雑なレシートは少し時間がかかります'
-            : 'AI で店名・品目・金額を解析しています'}
+            ? '複雜收據可能需要多一點時間'
+            : 'AI 正在分析店名、品項與金額'}
         </div>
       </div>
     </div>
@@ -68,11 +68,11 @@ function ReceiptAddActionSheet({
   onUpload: () => void
 }) {
   return (
-    <PickerDialog isOpen={isOpen} onClose={onClose} title="レシートを追加" placement="bottom">
+    <PickerDialog isOpen={isOpen} onClose={onClose} title="新增收據" placement="bottom">
       <div className="shrink-0 border-b border-border px-5 pb-3 pt-3">
         <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-border" />
         <h3 className="m-0 text-[16px] font-black text-ink">
-          レシートを追加
+          新增收據
         </h3>
       </div>
 
@@ -89,9 +89,9 @@ function ReceiptAddActionSheet({
             <Camera size={17} strokeWidth={2.2} />
           </span>
           <span className="min-w-0">
-            <span className="block text-[13px] font-bold text-ink">撮影して読み取る</span>
+            <span className="block text-[13px] font-bold text-ink">拍攝並讀取</span>
             <span className="mt-0.5 block text-[11.5px] font-medium leading-[1.45] text-muted">
-              カメラで撮影後、自動で明細を読み取ります
+              使用相機拍攝後，自動讀取明細
             </span>
           </span>
         </button>
@@ -108,9 +108,9 @@ function ReceiptAddActionSheet({
             <Upload size={17} strokeWidth={2.2} />
           </span>
           <span className="min-w-0">
-            <span className="block text-[13px] font-bold text-ink">ファイルを添付</span>
+            <span className="block text-[13px] font-bold text-ink">附加檔案</span>
             <span className="mt-0.5 block text-[11.5px] font-medium leading-[1.45] text-muted">
-              画像 / PDF を追加します。必要なら後で読み取れます
+              新增圖片 / PDF，需要時可稍後讀取
             </span>
           </span>
         </button>
@@ -120,7 +120,7 @@ function ReceiptAddActionSheet({
           onClick={onClose}
           className="mt-1 h-11 rounded-input border border-border bg-app text-[13px] font-semibold text-ink cursor-pointer hover:bg-tile transition-colors"
         >
-          キャンセル
+          取消
         </button>
       </div>
     </PickerDialog>
@@ -175,7 +175,7 @@ export default function ReceiptSection({
     // レシート appears EARLY in the form because OCR auto-fills 金額 + 明細
     // below. Putting it after 金額 would mean the user types an amount only
     // to have OCR overwrite it.
-    <FormField label="レシート（任意）" error={error}>
+    <FormField label="收據（選填）" error={error}>
       <input ref={cameraRef} type="file" accept={IMAGE_ACCEPT} capture="environment" onChange={onCameraPicked} className="hidden" />
       <input ref={uploadRef} type="file" accept={ANY_ACCEPT}                          onChange={onUploadPicked} className="hidden" />
 
@@ -189,9 +189,9 @@ export default function ReceiptSection({
             onClear={onClear}
             onPreview={onPreview}
             canPreview={canPreview}
-            replaceAriaLabel="レシートを変更"
-            previewAriaLabel="レシートを拡大表示"
-            clearAriaLabel="レシートを削除"
+            replaceAriaLabel="更換收據"
+            previewAriaLabel="放大顯示收據"
+            clearAriaLabel="刪除收據"
           />
 
           {/* Manual read-items button (only when not yet OCR'd). ScanLine
@@ -204,7 +204,7 @@ export default function ReceiptSection({
               style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
             >
               <ScanLine size={16} strokeWidth={2.2} />
-              明細を読み取る
+              讀取明細
             </button>
           )}
 
@@ -215,7 +215,7 @@ export default function ReceiptSection({
               className="flex items-center gap-1 text-[11.5px] text-accent font-medium border-none bg-transparent p-0 cursor-pointer hover:underline self-start"
             >
               <ScanLine size={12} strokeWidth={2} />
-              もう一度読み取る
+              再次讀取
             </button>
           )}
 
@@ -226,7 +226,7 @@ export default function ReceiptSection({
               className="flex items-center gap-1 text-[11.5px] text-muted font-medium border-none bg-transparent p-0 cursor-pointer hover:text-accent hover:underline self-start"
             >
               <ScanLine size={12} strokeWidth={2} />
-              別モデルで再読み取り
+              使用其他模型再次讀取
             </button>
           )}
 
@@ -255,7 +255,7 @@ export default function ReceiptSection({
             className="h-[52px] w-full rounded-input border-[1.5px] border-dashed border-border bg-app text-muted text-[12px] font-semibold flex items-center justify-center gap-2 cursor-pointer hover:border-accent hover:text-accent transition-colors"
           >
             <Plus size={16} strokeWidth={2.2} />
-            <span>レシートを追加</span>
+            <span>新增收據</span>
           </button>
           <ReceiptAddActionSheet
             isOpen={addSheetOpen}

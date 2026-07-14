@@ -124,7 +124,7 @@ export default function ExpenseItemAllocationSheet({
     >
       <button
         type="button"
-        aria-label="閉じる"
+        aria-label="關閉"
         onClick={closeSheet}
         className="absolute inset-0 h-full w-full border-0 bg-black/35 p-0"
       />
@@ -143,10 +143,10 @@ export default function ExpenseItemAllocationSheet({
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="m-0 mb-1 text-[10.5px] font-bold uppercase tracking-[0.12em] text-muted">
-                分担
+                分攤
               </p>
               <h3 id={titleId} className="m-0 truncate text-[16px] font-black text-ink">
-                {item.name.trim() || `行 ${index + 1}`}
+                {item.name.trim() || `第 ${index + 1} 行`}
               </h3>
               <p className="m-0 mt-1 text-[11.5px] font-semibold tabular-nums text-muted">
                 {formatMinorAmount(item.amountMinor, currency)}
@@ -185,7 +185,7 @@ export default function ExpenseItemAllocationSheet({
                   : 'border-border bg-app text-muted hover:border-warn/25 hover:text-warn',
               ].join(' ')}
             >
-              クリア
+              清除
             </button>
           </div>
 
@@ -200,7 +200,7 @@ export default function ExpenseItemAllocationSheet({
                   <MemberAvatar member={member} size={30} />
                   <div className="min-w-0">
                     <div className="truncate text-[13px] font-bold text-ink">{member.label}</div>
-                    <div className="text-[10.5px] font-semibold text-teal">分担中</div>
+                    <div className="text-[10.5px] font-semibold text-teal">分攤中</div>
                   </div>
                   <div className="flex items-center gap-1">
                     <button
@@ -209,7 +209,7 @@ export default function ExpenseItemAllocationSheet({
                         if (shares <= 1) onToggleAllocation(index, member.id)
                         else onSetAllocationShares(index, member.id, shares - 1)
                       }}
-                      aria-label={`${member.label} の分担数を減らす`}
+                      aria-label={`減少 ${member.label} 的分攤數`}
                       className="grid h-9 w-9 place-items-center rounded-full border border-teal/20 bg-surface text-teal"
                     >
                       <Minus size={15} strokeWidth={2.4} />
@@ -222,7 +222,7 @@ export default function ExpenseItemAllocationSheet({
                       onClick={() => {
                         onSetAllocationShares(index, member.id, shares + 1)
                       }}
-                      aria-label={`${member.label} の分担数を増やす`}
+                      aria-label={`增加 ${member.label} 的分攤數`}
                       className="grid h-9 w-9 place-items-center rounded-full border border-teal/20 bg-surface text-teal"
                     >
                       <Plus size={15} strokeWidth={2.4} />
@@ -234,7 +234,7 @@ export default function ExpenseItemAllocationSheet({
 
             {unselectedRows.length > 0 && selectedRows.length > 0 && (
               <div className="px-1 pt-1 text-[10.5px] font-bold uppercase tracking-[0.1em] text-muted">
-                未選択
+                未選取
               </div>
             )}
 
@@ -246,7 +246,7 @@ export default function ExpenseItemAllocationSheet({
                 <MemberAvatar member={member} size={30} />
                 <div className="min-w-0">
                   <div className="truncate text-[13px] font-semibold text-ink">{member.label}</div>
-                  <div className="text-[10.5px] font-medium text-muted">未分担</div>
+                  <div className="text-[10.5px] font-medium text-muted">未分攤</div>
                 </div>
                 <button
                   type="button"
@@ -256,7 +256,7 @@ export default function ExpenseItemAllocationSheet({
                   className="inline-flex h-9 items-center gap-1 rounded-full border border-border bg-surface px-3 text-[12px] font-bold text-teal"
                 >
                   <Plus size={14} strokeWidth={2.5} />
-                  追加
+                  新增
                 </button>
               </div>
             ))}
@@ -270,7 +270,7 @@ export default function ExpenseItemAllocationSheet({
             className="flex h-11 w-full items-center justify-center gap-1.5 rounded-full border-0 bg-teal text-[14px] font-bold text-white shadow-[0_4px_14px_rgba(61,139,122,0.25)]"
           >
             <Check size={16} strokeWidth={2.5} />
-            完了
+            完成
           </button>
         </div>
       </div>

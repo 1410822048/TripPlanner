@@ -66,7 +66,7 @@ beforeEach(() => {
 describe('SettlementRecordSheet — double-submit latch', () => {
   it('a rapid double-tap on 記録する fires onSave exactly once (TRIP_CURRENCY)', () => {
     const onSave = renderSheet()
-    const btn = screen.getByRole('button', { name: '記録する' })
+    const btn = screen.getByRole('button', { name: '儲存紀錄' })
     fireEvent.click(btn)
     fireEvent.click(btn) // same-tick repeat, before any unmount re-render lands
     expect(onSave).toHaveBeenCalledTimes(1)
@@ -81,21 +81,21 @@ describe('SettlementRecordSheet — foreign-mode submit gate', () => {
   it('blocks submit (no onSave) until an FX rate is confirmed', () => {
     const onSave = renderSheet()
     fireEvent.click(screen.getByRole('button', { name: 'pick-foreign' })) // → FOREIGN, no rate yet
-    fireEvent.click(screen.getByRole('button', { name: '記録する' }))
+    fireEvent.click(screen.getByRole('button', { name: '儲存紀錄' }))
     expect(onSave).not.toHaveBeenCalled()
-    expect(screen.getByText(/換算レートを確定/)).toBeTruthy()
+    expect(screen.getByText(/確認匯率/)).toBeTruthy()
   })
 
   it('does NOT latch on a blocked submit — a retry after the rate lands succeeds', () => {
     const onSave = renderSheet()
     fireEvent.click(screen.getByRole('button', { name: 'pick-foreign' }))
-    fireEvent.click(screen.getByRole('button', { name: '記録する' })) // blocked (no rate) — must not latch
+    fireEvent.click(screen.getByRole('button', { name: '儲存紀錄' })) // blocked (no rate) — must not latch
     expect(onSave).not.toHaveBeenCalled()
 
     // Rate arrives; the SAME open retries and now goes through.
     fx.value = { rateDecimal: '0.218', rateDate: '2026-06-03', isLoading: false, isError: false, disabledReason: undefined }
     fireEvent.click(screen.getByRole('button', { name: 'pick-foreign' })) // re-render with the new fx value
-    fireEvent.click(screen.getByRole('button', { name: '記録する' }))
+    fireEvent.click(screen.getByRole('button', { name: '儲存紀錄' }))
     expect(onSave).toHaveBeenCalledTimes(1)
     const payload = onSave.mock.calls[0]![0]
     expect(payload).toMatchObject({ mode: 'FOREIGN_CURRENCY', sourceCurrency: 'TWD' })

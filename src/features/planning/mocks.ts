@@ -14,36 +14,36 @@ function completedBy(...uids: Array<typeof DEMO_MEMBER_IDS[number]>): PlanItem['
 
 export const MOCK_PLAN_ITEMS: PlanItem[] = [
   // 必備
-  { id: 'p1', tripId: 'demo', category: 'essentials', title: 'パスポート（残存 6 ヶ月以上）',
+  { id: 'p1', tripId: 'demo', category: 'essentials', title: '護照（效期至少剩 6 個月）',
     completedBy: completedBy('m1', 'm2', 'm3', 'm4'), ...DEMO_PLAN_AUDIT },
-  { id: 'p2', tripId: 'demo', category: 'essentials', title: '現金（5 万円）+ クレジットカード',
+  { id: 'p2', tripId: 'demo', category: 'essentials', title: '現金（5 萬日圓）+ 信用卡',
     completedBy: completedBy('m1'), ...DEMO_PLAN_AUDIT },
-  { id: 'p3', tripId: 'demo', category: 'essentials', title: 'スマホ + モバイルバッテリー',
+  { id: 'p3', tripId: 'demo', category: 'essentials', title: '手機 + 行動電源',
     completedBy: completedBy(), ...DEMO_PLAN_AUDIT },
 
   // 予約確認
-  { id: 'p4', tripId: 'demo', category: 'documents', title: 'フライト予約（往復）',
-    note: '出発 5/1 07:30、帰国 5/8 18:00', completedBy: completedBy('m1', 'm2'),
+  { id: 'p4', tripId: 'demo', category: 'documents', title: '航班訂單（來回）',
+    note: '出發 5/1 07:30，回程 5/8 18:00', completedBy: completedBy('m1', 'm2'),
     ...DEMO_PLAN_AUDIT },
-  { id: 'p5', tripId: 'demo', category: 'documents', title: 'ホテル予約（4 泊）',
+  { id: 'p5', tripId: 'demo', category: 'documents', title: '飯店訂單（4 晚）',
     note: 'Dormy Inn 淺草', completedBy: completedBy('m1', 'm2', 'm3'),
     ...DEMO_PLAN_AUDIT },
-  { id: 'p6', tripId: 'demo', category: 'documents', title: '海外旅行保険',
+  { id: 'p6', tripId: 'demo', category: 'documents', title: '海外旅遊保險',
     completedBy: completedBy(), ...DEMO_PLAN_AUDIT },
 
   // 荷物
-  { id: 'p7', tripId: 'demo', category: 'packing', title: '衣類 5 日分',
-    note: 'インナー + アウター + 部屋着', completedBy: completedBy('m1'),
+  { id: 'p7', tripId: 'demo', category: 'packing', title: '5 天份衣物',
+    note: '內搭 + 外套 + 睡衣', completedBy: completedBy('m1'),
     ...DEMO_PLAN_AUDIT },
-  { id: 'p8', tripId: 'demo', category: 'packing', title: '充電器 + 変換プラグ',
+  { id: 'p8', tripId: 'demo', category: 'packing', title: '充電器 + 轉接插頭',
     completedBy: completedBy(), ...DEMO_PLAN_AUDIT },
-  { id: 'p9', tripId: 'demo', category: 'packing', title: '常備薬',
-    note: '頭痛薬・胃薬・絆創膏', completedBy: completedBy('m2'),
+  { id: 'p9', tripId: 'demo', category: 'packing', title: '常備藥品',
+    note: '頭痛藥、胃藥、OK 繃', completedBy: completedBy('m2'),
     ...DEMO_PLAN_AUDIT },
 
   // 行前 todo
-  { id: 'p10', tripId: 'demo', category: 'todo', title: '空港リムジン予約',
+  { id: 'p10', tripId: 'demo', category: 'todo', title: '機場接駁巴士預約',
     completedBy: completedBy(), ...DEMO_PLAN_AUDIT },
-  { id: 'p11', tripId: 'demo', category: 'todo', title: '両替',
-    note: '銀行 vs 空港比較', completedBy: completedBy('m1', 'm3'), ...DEMO_PLAN_AUDIT },
+  { id: 'p11', tripId: 'demo', category: 'todo', title: '換匯',
+    note: '比較銀行與機場匯率', completedBy: completedBy('m1', 'm3'), ...DEMO_PLAN_AUDIT },
 ]

@@ -70,7 +70,7 @@ export default function AttachmentPreviewModal({ url, fileType, fileName, onClos
               href={url}
               target="_blank"
               rel="noopener noreferrer"
-              aria-label="別タブで開く"
+              aria-label="在新分頁開啟"
               className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center text-white transition-colors"
             >
               <ExternalLink size={16} strokeWidth={2} />
@@ -78,7 +78,7 @@ export default function AttachmentPreviewModal({ url, fileType, fileName, onClos
           )}
           <button
             onClick={onClose}
-            aria-label="閉じる"
+            aria-label="關閉"
             className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center text-white border-none cursor-pointer transition-colors"
           >
             <X size={18} strokeWidth={2} />
@@ -133,7 +133,7 @@ export default function AttachmentPreviewModal({ url, fileType, fileName, onClos
             {fileName}
           </div>
           <p className="text-white/60 text-[12px] leading-[1.6] max-w-[260px]">
-            このファイルはプレビューできません。別タブで開くと内容を確認できます。
+            無法預覽此檔案。請在新分頁開啟以查看內容。
           </p>
           <a
             href={url}
@@ -142,7 +142,7 @@ export default function AttachmentPreviewModal({ url, fileType, fileName, onClos
             className="mt-2 inline-flex items-center gap-2 px-5 py-2.5 rounded-chip bg-white text-ink text-[13px] font-bold no-underline transition-colors hover:bg-white/90"
           >
             <ExternalLink size={14} strokeWidth={2.2} />
-            別タブで開く
+            在新分頁開啟
           </a>
         </div>
       )}

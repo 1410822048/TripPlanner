@@ -43,12 +43,12 @@ export default function WishDeadlineSheet({
 
   function validate(): Date | null {
     const e: Record<string, string> = {}
-    if (!state.date) e.date = '日付を選択してください'
-    if (!state.time) e.time = '時刻を選択してください'
+    if (!state.date) e.date = '請選擇日期'
+    if (!state.time) e.time = '請選擇時間'
     if (Object.keys(e).length > 0) { setErrors(e); return null }
     const combined = new Date(`${state.date}T${state.time}:00`)
     if (combined.getTime() <= Date.now()) {
-      setErrors({ time: '締切は現在より後の時刻にしてください' })
+      setErrors({ time: '截止時間必須晚於現在' })
       return null
     }
     setErrors({})
@@ -64,11 +64,11 @@ export default function WishDeadlineSheet({
     <BottomSheet
       isOpen={isOpen}
       onClose={onClose}
-      title="投票締切を設定"
-      footer={<SaveButton onClick={handleSave} isSaving={isSaving} label="締切を保存" />}
+      title="設定投票截止時間"
+      footer={<SaveButton onClick={handleSave} isSaving={isSaving} label="儲存截止時間" />}
     >
       <div className="flex gap-2.5">
-        <FormField label="日付" error={errors.date} required className="flex-1">
+        <FormField label="日期" error={errors.date} required className="flex-1">
           <DatePicker value={state.date} onChange={v => setField('date', v)} error={!!errors.date} />
         </FormField>
         <FormField label="時刻" error={errors.time} required className="flex-1">
@@ -83,7 +83,7 @@ export default function WishDeadlineSheet({
           onClick={() => onSave(null)}
           className="w-full h-11 rounded-[16px] border border-danger/20 bg-danger-pale text-danger text-[12.5px] font-bold cursor-pointer transition-colors hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          締切を削除
+          移除截止時間
         </button>
       )}
     </BottomSheet>

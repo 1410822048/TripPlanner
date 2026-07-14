@@ -13,7 +13,7 @@ interface Props {
 }
 
 export default function SaveButton({
-  onClick, isSaving = false, label, loadingLabel = '保存中…', disabled,
+  onClick, isSaving = false, label, loadingLabel = '儲存中…', disabled,
 }: Props) {
   const busy = isSaving || disabled
   return (

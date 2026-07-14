@@ -102,10 +102,10 @@ export default function EditTripModal({
     <BottomSheet
       isOpen={isOpen}
       onClose={onClose}
-      title="旅程情報を編集"
-      footer={<SaveButton onClick={handleSave} isSaving={isSaving} label="変更を保存" />}
+      title="編輯旅程資料"
+      footer={<SaveButton onClick={handleSave} isSaving={isSaving} label="儲存變更" />}
     >
-      <FormField label="アイコン">
+      <FormField label="圖示">
         <div className="grid grid-cols-6 gap-1.5 p-2.5 bg-app rounded-input border-[1.5px] border-border">
           {EMOJI_OPTIONS.map(em => {
             const isActive = em === state.emoji
@@ -185,10 +185,10 @@ export default function EditTripModal({
           <AlertTriangle size={16} className="shrink-0 mt-px text-warn" />
           <div className="flex-1 text-[11.5px] text-warn leading-[1.6]">
             <div className="font-bold mb-0.5">
-              {orphanCount} 件の行程が範圍外になります
+              {orphanCount} 個行程將位於日期範圍之外
             </div>
             <div className="text-[#9A7A4A]">
-              新しい日付範圍に含まれない行程は表示されなくなります（削除はされません）。
+              不在新日期範圍內的行程會暫時隱藏，不會被刪除。
             </div>
           </div>
         </div>

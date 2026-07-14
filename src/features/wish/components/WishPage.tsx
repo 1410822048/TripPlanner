@@ -131,14 +131,14 @@ export default function WishPage() {
   )
 
   if (ctx.status === 'loading') return <WishPageSkeleton />
-  if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Heart} reason="ウィッシュを投票" />
+  if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Heart} reason="為心願投票" />
 
   const title = ctx.trip.title
 
   function handleSave({ input, attachment }: WishFormResult) {
-    if (votingClosed) { modal.close(); toast.error('投票は締め切られました'); return }
+    if (votingClosed) { modal.close(); toast.error('投票已截止'); return }
     if (isDemo) { modal.close(); signIn.open(); return }
-    if (!uid) { toast.error('ログイン準備中です。少々お待ちください'); return }
+    if (!uid) { toast.error('正在準備登入，請稍候'); return }
 
     // Optimistic close (mirrors ExpensePage). Modal closes immediately;
     // the hook's onMutate inserts a temp row into the list cache, the
@@ -162,7 +162,7 @@ export default function WishPage() {
 
   function handleDelete() {
     if (!modal.editTarget) return
-    if (votingClosed) { modal.close(); toast.error('投票は締め切られました'); return }
+    if (votingClosed) { modal.close(); toast.error('投票已截止'); return }
     if (isDemo) { modal.close(); signIn.open(); return }
     const target = modal.editTarget
     modal.close()
@@ -170,9 +170,9 @@ export default function WishPage() {
   }
 
   function handleToggleVote(w: Wish) {
-    if (votingClosed) { toast.error('投票は締め切られました'); return }
+    if (votingClosed) { toast.error('投票已截止'); return }
     if (isDemo) { signIn.open(); return }
-    if (!uid)   { toast.error('ログイン準備中です。少々お待ちください'); return }
+    if (!uid)   { toast.error('正在準備登入，請稍候'); return }
     voteMut.mutate({
       wishId:   w.id,
       uid,
@@ -200,7 +200,7 @@ export default function WishPage() {
   }
 
   function handleDeleteFromMenu(w: Wish) {
-    if (votingClosed) { toast.error('投票は締め切られました'); return }
+    if (votingClosed) { toast.error('投票已截止'); return }
     if (isDemo) { signIn.open(); return }
     deleteMut.mutate({ wishId: w.id, image: w.image })
   }
@@ -209,7 +209,7 @@ export default function WishPage() {
     if (!cloudTripId) return
     if (votingClosed) {
       setDeadlineSheetOpen(false)
-      toast.error('投票は締め切られました')
+      toast.error('投票已截止')
       return
     }
     setDeadlineMut.mutate({ tripId: cloudTripId, deadlineAt: deadlineAtInput })
@@ -223,12 +223,12 @@ export default function WishPage() {
 
   return (
     <div className="bg-app h-full flex flex-col overflow-hidden">
-      {isDemo && <DemoBanner reason="投票を保存" onSignIn={signIn.open} />}
+      {isDemo && <DemoBanner reason="儲存投票" onSignIn={signIn.open} />}
 
       <div className="shrink-0 px-5 pt-4 pb-2 flex items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="m-0 mb-1 text-[10.5px] font-semibold text-muted tracking-[0.12em] uppercase">
-            ウィッシュ
+            心願
           </p>
           <h1 className="m-0 text-[22px] font-black text-ink -tracking-[0.5px] truncate">
             {title}
@@ -301,11 +301,11 @@ export default function WishPage() {
               <button
                 type="button"
                 onClick={modal.openAdd}
-                aria-label={`${activeTabLabel}の候補を追加`}
+                aria-label={`新增${activeTabLabel}候選項目`}
                 className="w-full h-11 rounded-[16px] border border-teal/20 bg-teal-pale text-teal text-[12.5px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors hover:bg-teal/15 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 <Plus size={15} strokeWidth={2.5} />
-                {activeTabLabel}の候補を追加
+                新增{activeTabLabel}候選項目
               </button>
             </div>
           )}
@@ -334,22 +334,22 @@ export default function WishPage() {
             {hasAnyWishes ? (
               <>
                 <p className="m-0 mb-1 text-[13.5px] font-semibold text-ink tracking-[0.02em]">
-                  まだ{activeTabLabel}がありません
+                  尚未有{activeTabLabel}
                 </p>
                 <p className="m-0 text-[11.5px] text-muted tracking-[0.04em]">
                   {activeTab === 'place'
-                    ? '行きたい所をみんなで共有しましょう'
-                    : '食べたいお店をみんなで共有しましょう'}
+                    ? '和大家分享想去的地方吧'
+                    : '和大家分享想吃的店家吧'}
                 </p>
               </>
             ) : (
               <>
                 <p className="m-0 mb-1 text-[13.5px] font-semibold text-ink tracking-[0.02em]">
-                  まだ候補が登録されていません
+                  尚未建立候選項目
                 </p>
                 <p className="m-0 mb-4 text-[11.5px] text-muted tracking-[0.04em] leading-[1.5]">
-                  行きたい場所や食べたいお店を<br />
-                  みんなで集めましょう
+                  一起蒐集想去的地方與<br />
+                  想吃的店家吧
                 </p>
                 {!votingClosed && (
                 <button
@@ -359,7 +359,7 @@ export default function WishPage() {
                   style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
                 >
                   <Plus size={14} strokeWidth={2.5} />
-                  候補を追加
+                  新增候選項目
                 </button>
                 )}
               </>
@@ -375,7 +375,7 @@ export default function WishPage() {
                   <div className="flex items-center gap-3 px-1 pt-1" aria-hidden>
                     <div className="flex-1 h-px bg-border" />
                     <span className="text-[10.5px] font-semibold text-muted tracking-[0.06em]">
-                      ここまでが上位3件
+                      以上為前 3 名
                     </span>
                     <div className="flex-1 h-px bg-border" />
                   </div>
@@ -451,7 +451,7 @@ export default function WishPage() {
       <SignInPromptModal
         isOpen={signIn.isOpen}
         onClose={signIn.close}
-        reason="ウィッシュに投票するには、"
+        reason="若要為心願投票，"
       />
 
       {deadlineSheetOpen && (

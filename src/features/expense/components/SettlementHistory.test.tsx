@@ -40,7 +40,7 @@ function renderHistory(over: Partial<HistoryProps> = {}) {
   return onDelete
 }
 
-const DELETE = { name: '清算記録を削除' }
+const DELETE = { name: '刪除清算紀錄' }
 
 describe('SettlementHistory — fold', () => {
   it('shows only the most recent 3 rows, expanding to all on tap', () => {
@@ -48,9 +48,9 @@ describe('SettlementHistory — fold', () => {
     renderHistory({ settlements, isOwner: true, uid: 'x' })
     expect(screen.getAllByRole('button', DELETE)).toHaveLength(3)
 
-    fireEvent.click(screen.getByRole('button', { name: /他 2 件を表示/ }))
+    fireEvent.click(screen.getByRole('button', { name: /顯示其他 2 筆/ }))
     expect(screen.getAllByRole('button', DELETE)).toHaveLength(5)
-    expect(screen.getByRole('button', { name: /折りたたむ/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /收起/ })).toBeTruthy()
   })
 
   it('shows no fold control at or below the visible threshold', () => {
@@ -95,7 +95,7 @@ describe('SettlementHistory — delete gate + wiring', () => {
     expect(screen.getByTitle(ORPHAN_REASON_COPY.OVERPAYMENT).getAttribute('aria-label')).toContain('多付')
 
     fireEvent.click(screen.getByRole('button', DELETE))
-    fireEvent.click(screen.getByRole('button', { name: '清算記録の削除を確認' }))
+    fireEvent.click(screen.getByRole('button', { name: '確認刪除清算紀錄' }))
     expect(onDelete).toHaveBeenCalledWith('s1')
   })
 

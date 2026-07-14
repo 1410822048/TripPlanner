@@ -205,23 +205,23 @@ describe('ExpensePage read-first expense flow', () => {
   it('opens the read-only detail sheet before editing an expense', () => {
     render(<ExpensePage />)
 
-    const detailButton = screen.getByRole('button', { name: 'Cafe receiptの詳細を表示' })
+    const detailButton = screen.getByRole('button', { name: '顯示 Cafe receipt 的詳細資料' })
     expect(detailButton.tagName).toBe('BUTTON')
     fireEvent.click(detailButton)
 
-    expect(screen.getByRole('dialog', { name: '費用詳細' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: '編集' })).toBeTruthy()
+    expect(screen.getByRole('dialog', { name: '費用詳情' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '編輯' })).toBeTruthy()
     expect(harness.openEdit).not.toHaveBeenCalled()
   })
 
   it('opens the receipt preview from the thumbnail without opening detail', () => {
     render(<ExpensePage />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'レシートを表示' }))
+    fireEvent.click(screen.getByRole('button', { name: '顯示收據' }))
 
     expect(screen.getByRole('dialog', { name: 'attachment-preview' })).toBeTruthy()
     expect(screen.getByText('preview:receipt.webp')).toBeTruthy()
-    expect(screen.queryByRole('dialog', { name: '費用詳細' })).toBeNull()
+    expect(screen.queryByRole('dialog', { name: '費用詳情' })).toBeNull()
   })
 
   it('opens receipt preview from detail through the page overlay and returns to detail on close', () => {
@@ -229,15 +229,15 @@ describe('ExpensePage read-first expense flow', () => {
 
     fireEvent.click(screen.getByText('Cafe receipt'))
 
-    const detail = screen.getByRole('dialog', { name: '費用詳細' })
+    const detail = screen.getByRole('dialog', { name: '費用詳情' })
     fireEvent.click(within(detail).getByRole('button', { name: /receipt\.webp/ }))
 
     expect(screen.getByRole('dialog', { name: 'attachment-preview' })).toBeTruthy()
-    expect(screen.queryByRole('dialog', { name: '費用詳細' })).toBeNull()
+    expect(screen.queryByRole('dialog', { name: '費用詳情' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'preview close' }))
 
-    expect(screen.getByRole('dialog', { name: '費用詳細' })).toBeTruthy()
+    expect(screen.getByRole('dialog', { name: '費用詳情' })).toBeTruthy()
   })
 
   it('does not offer edit from detail for a locked expense when the viewer is not owner', () => {
@@ -249,10 +249,10 @@ describe('ExpensePage read-first expense flow', () => {
 
     fireEvent.click(screen.getByText('Cafe receipt'))
 
-    const detail = screen.getByRole('dialog', { name: '費用詳細' })
+    const detail = screen.getByRole('dialog', { name: '費用詳情' })
     expect(detail).toBeTruthy()
-    expect(within(detail).getByText('清算済み')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: '編集' })).toBeNull()
+    expect(within(detail).getByText('已清算')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '編輯' })).toBeNull()
   })
 
   it('downgrades an open edit form to read-only detail when the expense becomes settlement-locked', async () => {
@@ -267,9 +267,9 @@ describe('ExpensePage read-first expense flow', () => {
 
     expect(screen.queryByRole('dialog', { name: 'expense-edit' })).toBeNull()
 
-    const detail = screen.getByRole('dialog', { name: '費用詳細' })
-    expect(within(detail).getByText('清算済み')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: '編集' })).toBeNull()
+    const detail = screen.getByRole('dialog', { name: '費用詳情' })
+    expect(within(detail).getByText('已清算')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '編輯' })).toBeNull()
     expect(harness.closeModal).not.toHaveBeenCalled()
   })
 
@@ -289,6 +289,6 @@ describe('ExpensePage read-first expense flow', () => {
     render(<ExpensePage />)
 
     expect(screen.queryByRole('dialog', { name: 'expense-edit' })).not.toBeNull()
-    expect(screen.queryByRole('dialog', { name: '費用詳細' })).toBeNull()
+    expect(screen.queryByRole('dialog', { name: '費用詳情' })).toBeNull()
   })
 })

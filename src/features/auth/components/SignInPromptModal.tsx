@@ -31,7 +31,7 @@ export default function SignInPromptModal({ isOpen, onClose, reason, onSignedIn 
     } catch (e) {
       const code = (e as { code?: string })?.code
       if (code !== 'auth/popup-closed-by-user') {
-        toast.error(e instanceof Error ? e.message : 'サインインに失敗しました')
+        toast.error(e instanceof Error ? e.message : '登入失敗')
       }
     } finally { setSigningIn(false) }
   }
@@ -46,12 +46,12 @@ export default function SignInPromptModal({ isOpen, onClose, reason, onSignedIn 
   }
 
   return (
-    <BottomSheet isOpen onClose={onClose} title="サインインが必要です">
+    <BottomSheet isOpen onClose={onClose} title="需要登入">
       <div className="py-4 text-center">
         <div className="text-[44px] leading-none mb-3">☁️</div>
         <p className="m-0 mb-5 text-[13px] text-ink leading-[1.7] tracking-[0.02em]">
-          {reason ?? 'データをクラウドに保存するには、'}<br />
-          Google アカウントでサインインしてください。
+          {reason ?? '若要將資料儲存到雲端，'}<br />
+          請使用 Google 帳戶登入。
         </p>
         <button
           onClick={handleSignIn}
@@ -60,14 +60,13 @@ export default function SignInPromptModal({ isOpen, onClose, reason, onSignedIn 
           style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}
         >
           <GoogleIcon size={18} />
-          {signingIn ? 'サインイン中…' : 'Google でサインイン'}
+          {signingIn ? '登入中…' : '使用 Google 登入'}
         </button>
         <p className="mt-5 text-[10.5px] text-muted leading-[1.6] tracking-[0.02em] max-w-[280px] mx-auto">
-          サインイン後、プレビュー中のデモデータは<br />
-          あなた自身の旅程に置き換わります。
+          登入後，預覽中的示範資料會<br />
+          改為你自己的旅程。
         </p>
       </div>
     </BottomSheet>
   )
 }
-

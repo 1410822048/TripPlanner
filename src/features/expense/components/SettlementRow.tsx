@@ -123,8 +123,8 @@ export default function SettlementRow({ record, from, to, currency, expenses, ca
           }}
           onBlur={() => setConfirming(false)}
           aria-label={confirming
-            ? '清算記録の削除を確認'
-            : '清算記録を削除'}
+            ? '確認刪除清算紀錄'
+            : '刪除清算紀錄'}
           className={[
             'shrink-0 flex items-center gap-0.5 px-2 h-6 rounded-full border-none text-[10px] font-bold tracking-[0.04em] cursor-pointer transition-colors',
             confirming

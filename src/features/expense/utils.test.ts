@@ -101,7 +101,7 @@ describe('splitSummary', () => {
       { memberId: 'm1', amountMinor: 500 },
       { memberId: 'm2', amountMinor: 500 },
     ])
-    expect(splitSummary(e, 4)).toBe('2人で均等')
+    expect(splitSummary(e, 4)).toBe('2 人均分')
   })
 
   it('reports カスタム分担 when amounts diverge beyond ±1', () => {
@@ -109,7 +109,7 @@ describe('splitSummary', () => {
       { memberId: 'm1', amountMinor: 700 },
       { memberId: 'm2', amountMinor: 300 },
     ])
-    expect(splitSummary(e, 2)).toBe('カスタム分担')
+    expect(splitSummary(e, 2)).toBe('自訂分攤')
   })
 
   it('returns — when every split is zero', () => {
@@ -173,7 +173,7 @@ describe('parsePositiveMoneyToMinorResult / moneyErrorMessage', () => {
       ok: false,
       reason: 'DECIMALS_FORBIDDEN',
     })
-    expect(moneyErrorMessage('DECIMALS_FORBIDDEN', 'JPY')).toBe('JPY は小数を入力できません')
+    expect(moneyErrorMessage('DECIMALS_FORBIDDEN', 'JPY')).toBe('JPY 不支援小數')
   })
 
   it('treats zero and negative totals as UI-level non-positive errors', () => {
@@ -185,7 +185,7 @@ describe('parsePositiveMoneyToMinorResult / moneyErrorMessage', () => {
       ok: false,
       reason: 'NON_POSITIVE',
     })
-    expect(moneyErrorMessage('NON_POSITIVE', 'USD')).toBe('金額は0より大きく入力してください')
+    expect(moneyErrorMessage('NON_POSITIVE', 'USD')).toBe('金額必須大於 0')
   })
 
   it('returns positive minor units for valid input', () => {

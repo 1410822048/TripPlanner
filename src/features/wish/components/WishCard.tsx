@@ -134,7 +134,7 @@ function WishCard({
         <button
           type="button"
           onClick={tap}
-          aria-label={`${wish.title}の詳細を見る`}
+          aria-label={`查看 ${wish.title} 的詳細資料`}
           className="absolute inset-0 z-0 w-full bg-transparent border-none p-0 cursor-pointer"
         />
       )}
@@ -142,7 +142,7 @@ function WishCard({
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); setMenuOpen(true) }}
-          aria-label="その他の操作"
+          aria-label="其他操作"
           className="absolute top-1 right-2 z-10 w-8 h-8 rounded-full text-muted hover:bg-app flex items-center justify-center border-none bg-transparent cursor-pointer transition-colors"
         >
           <MoreVertical size={16} strokeWidth={2.2} />
@@ -213,7 +213,7 @@ function RankIndicator({ rank, showCrown, pending }: { rank: number; showCrown: 
   // pending 中は順位未確定。同幅の枠だけ残して中身を空にする(レイアウト維持)。
   if (pending) return <div className="shrink-0 w-5" aria-hidden />
   return (
-    <div className="shrink-0 w-5 flex items-center justify-center" aria-label={`${rank}位`}>
+    <div className="shrink-0 w-5 flex items-center justify-center" aria-label={`第 ${rank} 名`}>
       {showCrown ? (
         <Crown size={18} strokeWidth={2.2} style={{ color: GOLD }} fill="rgba(194,154,61,0.25)" />
       ) : (
@@ -269,7 +269,7 @@ function PendingPill() {
   return (
     <div className="absolute top-2.5 right-2.5 flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/60 text-white text-[10.5px] font-semibold backdrop-blur-sm">
       <Loader2 size={11} strokeWidth={2.4} className="animate-spin" />
-      <span>保存中…</span>
+      <span>儲存中…</span>
     </div>
   )
 }
@@ -281,8 +281,8 @@ function ProposerAvatar({ proposer }: { proposer?: TripMember }) {
   return (
     <span
       role="img"
-      title={`提案者: ${proposer.label}`}
-      aria-label={`提案者: ${proposer.label}`}
+      title={`提案者：${proposer.label}`}
+      aria-label={`提案者：${proposer.label}`}
       className="pointer-events-none absolute -bottom-1 left-1/2 -translate-x-1/2 inline-flex rounded-full shadow-[0_1px_3px_rgba(0,0,0,0.10)]"
       style={{ isolation: 'isolate' }}
     >

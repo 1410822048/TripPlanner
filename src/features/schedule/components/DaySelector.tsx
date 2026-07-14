@@ -20,9 +20,9 @@ export default function DaySelector({ dateRange, display, grouped, onSelectDay }
     <div className="mt-5">
       <div className="px-5 pb-0.5 flex items-center justify-between">
         <span className="text-[11px] font-bold text-muted tracking-[0.1em] uppercase">
-          日程選択
+          選擇日期
         </span>
-        <span className="text-[11px] text-muted">{dateRange.length} 日間</span>
+        <span className="text-[11px] text-muted">共 {dateRange.length} 天</span>
       </div>
 
       <div className="flex gap-2 px-5 pt-2.5 pb-1 overflow-x-auto overflow-y-visible no-scrollbar">
@@ -36,7 +36,7 @@ export default function DaySelector({ dateRange, display, grouped, onSelectDay }
               key={date}
               onClick={() => onSelectDay(date)}
               aria-current={active ? 'date' : undefined}
-              aria-label={`Day${i+1} ${date}${hasItems ? `（${dayItems.length}件）` : ''}`}
+              aria-label={`第 ${i + 1} 天 ${date}${hasItems ? `（${dayItems.length} 個行程）` : ''}`}
               className={[
                 'shrink-0 relative flex flex-col items-center px-3 pt-2.5 pb-2 rounded-2xl cursor-pointer transition-all min-w-[52px] gap-0.5',
                 active

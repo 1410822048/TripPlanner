@@ -56,7 +56,7 @@ export default function AttachmentRow({
   replaceAriaLabel,
   previewAriaLabel,
   clearAriaLabel,
-  changeHint = 'タップして変更',
+  changeHint = '點選以更換',
 }: Props) {
   const thumbInner = isImage && previewUrl
     ? <img src={previewUrl} alt="" className="w-full h-full object-cover" draggable={false} />

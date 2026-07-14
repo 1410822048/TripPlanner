@@ -40,21 +40,21 @@ const TRANSPORT_TYPES: ReadonlySet<Booking['type']> = new Set(['flight', 'train'
  *  other use it as the primary identifier. */
 function titleLabel(type: Booking['type']): string {
   switch (type) {
-    case 'flight': return '便名'
-    case 'train':  return '列車名'
-    case 'bus':    return 'バス名'
-    case 'hotel':  return 'ホテル名'
-    case 'other':  return 'タイトル'
+    case 'flight': return '航班編號'
+    case 'train':  return '列車名稱'
+    case 'bus':    return '巴士名稱'
+    case 'hotel':  return '飯店名稱'
+    case 'other':  return '標題'
   }
 }
 
 function titlePlaceholder(type: Booking['type']): string {
   switch (type) {
-    case 'flight': return '例：NH802（任意）'
-    case 'train':  return '例：のぞみ47号（任意）'
-    case 'bus':    return '例：夜行バス XYZ（任意）'
-    case 'hotel':  return '例：Dormy Inn 淺草'
-    case 'other':  return '例：現地ツアー予約'
+    case 'flight': return '例如：NH802（選填）'
+    case 'train':  return '例如：希望 47 號（選填）'
+    case 'bus':    return '例如：夜行巴士 XYZ（選填）'
+    case 'hotel':  return '例如：Dormy Inn 淺草'
+    case 'other':  return '例如：當地行程預約'
   }
 }
 
@@ -120,7 +120,7 @@ function HotelTitleTicketEditor({
                 id={titleId}
                 value={value}
                 onChange={e => onChange(e.target.value)}
-                placeholder="星のや東京 / Hoshinoya"
+                placeholder="東京虹夕諾雅 / Hoshinoya"
                 maxLength={100}
                 aria-invalid={!!error}
                 aria-describedby={error ? errorId : undefined}
@@ -311,7 +311,7 @@ export default function BookingFormModal({
     e.target.value = ''  // allow re-picking the same file
     if (!f) return
     if (!isPdfFile(f)) {
-      rejectPdfAutofillPick('PDFファイルを選択してください')
+      rejectPdfAutofillPick('請選擇 PDF 檔案')
       return
     }
     if (!docAtt.pickFile(f)) {
@@ -339,19 +339,19 @@ export default function BookingFormModal({
     if (e instanceof BookingPdfExtractError) {
       switch (e.kind) {
         case 'auth':
-          return 'ログイン後にもう一度お試しください'
+          return '請登入後再試一次'
         case 'rate-limit':
-          return '時間を置いてからもう一度お試しください'
+          return '請稍後再試一次'
         case 'network':
         case 'unavailable':
-          return '読み取りサービスに接続できませんでした'
+          return '無法連線至讀取服務'
         case 'parse':
-          return e.message || 'PDFを読み取れませんでした。手入力してください'
+          return e.message || '無法讀取 PDF，請手動輸入'
         case 'unknown':
-          return 'PDFの読み取りに失敗しました'
+          return '讀取 PDF 失敗'
       }
     }
-    return 'PDFの読み取りに失敗しました'
+    return '讀取 PDF 失敗'
   }
 
   function applyPdfAutofillPatch(patch: BookingFormDraft) {
@@ -368,7 +368,7 @@ export default function BookingFormModal({
     return candidate.segmentRole === 'outbound' ? '往路'
       : candidate.segmentRole === 'return' ? '復路'
       : candidate.segmentRole === 'connection' ? '乗継'
-      : `候補${index + 1}`
+      : `候選 ${index + 1}`
   }
 
   function applySelectedPdfCandidate(candidate: BookingPdfExtractCandidate) {
@@ -377,8 +377,8 @@ export default function BookingFormModal({
     })
     applyPdfAutofillPatch(patch)
     setPdfAutofill(appliedCount > 0
-      ? { status: 'applied', message: 'PDFから入力候補を反映しました' }
-      : { status: 'empty', message: '入力できる項目が見つかりませんでした' })
+      ? { status: 'applied', message: '已套用 PDF 的候選資料' }
+      : { status: 'empty', message: '找不到可填入的項目' })
   }
 
   function togglePdfCandidate(index: number) {
@@ -392,7 +392,7 @@ export default function BookingFormModal({
       .filter(({ index }) => selectedPdfCandidateIndexes.includes(index))
       .map(({ input }) => input)
     if (selected.length === 0) {
-      setPdfAutofill({ status: 'empty', message: '追加する候補を選択してください' })
+      setPdfAutofill({ status: 'empty', message: '請選擇要新增的候選資料' })
       return
     }
     onCreateMany({ inputs: selected, document: pdfAutofillSourceFile })
@@ -404,7 +404,7 @@ export default function BookingFormModal({
     pdfAutofillControllerRef.current?.abort()
     const controller = new AbortController()
     pdfAutofillControllerRef.current = controller
-    setPdfAutofill({ status: 'loading', message: 'PDFから予約情報を読み取っています…' })
+    setPdfAutofill({ status: 'loading', message: '正在從 PDF 讀取訂單資料…' })
     clearPdfAutofillCandidates()
 
     try {
@@ -422,8 +422,8 @@ export default function BookingFormModal({
         setPdfAutofill({
           status:  createableIndexes.length > 0 ? 'applied' : 'empty',
           message: createableIndexes.length > 0
-            ? `${createableIndexes.length}件の予約候補を見つけました`
-            : '追加できる候補が見つかりませんでした',
+            ? `找到 ${createableIndexes.length} 筆訂單候選資料`
+            : '找不到可新增的候選資料',
         })
         return
       }
@@ -463,18 +463,18 @@ export default function BookingFormModal({
     //     title (= flight number / train name) is supplementary
     //   hotel / other: require title; origin/destination not used
     if (isTransport) {
-      if (!state.origin.trim())      e.origin      = '出発地を入力してください'
-      if (!state.destination.trim()) e.destination = '到着地を入力してください'
+      if (!state.origin.trim())      e.origin      = '請輸入出發地'
+      if (!state.destination.trim()) e.destination = '請輸入目的地'
     } else if (!state.title.trim()) {
-      e.title = state.type === 'hotel' ? 'ホテル名を入力してください' : 'タイトルを入力してください'
+      e.title = state.type === 'hotel' ? '請輸入飯店名稱' : '請輸入標題'
     }
     if (showRange && state.checkIn && state.checkOut && state.checkOut < state.checkIn) {
-      e.checkOut = 'Check-out は Check-in 以降を選んでください'
+      e.checkOut = '退房日期必須不早於入住日期'
     }
     // link は href に出すので http(s) のみ。空欄は許可(任意項目)。
     const linkTrimmed = state.link.trim()
     if (linkTrimmed && !isHttpUrl(linkTrimmed)) {
-      e.link = 'http:// または https:// で始まる URL を入力してください'
+      e.link = '請輸入以 http:// 或 https:// 開頭的 URL'
     }
     setErrors(e)
     if (Object.keys(e).length > 0) return null
@@ -510,10 +510,10 @@ export default function BookingFormModal({
 
   const showPdfAutofillStatus = !editTarget && pdfAutofill.status !== 'idle' && pdfAutofill.status !== 'loading'
   const pdfAutofillButtonLabel = pdfAutofill.status === 'loading'
-    ? 'PDFを読み取っています…'
+    ? '正在讀取 PDF…'
     : pdfAutofillSourceFile
-      ? hasAnalyzedCurrentPdf ? 'PDFから自動入力' : 'PDFを読み取る'
-      : 'PDFから自動入力'
+      ? hasAnalyzedCurrentPdf ? '從 PDF 自動填入' : '讀取 PDF'
+      : '從 PDF 自動填入'
   const hasSelectedPdfCandidate = pdfAutofillCreateableCandidates
     .some(({ index }) => selectedPdfCandidateIndexes.includes(index))
   const CurrentTypeIcon = BOOKING_TYPE_META[state.type].icon
@@ -522,8 +522,8 @@ export default function BookingFormModal({
     <FormModalShell
       isOpen={isOpen}
       isSaving={isSaving}
-      title={editTarget ? '予約を編集' : '予約を追加'}
-      saveLabel={editTarget ? '変更を保存' : '手動予約を追加'}
+      title={editTarget ? '編輯訂單' : '新增訂單'}
+      saveLabel={editTarget ? '儲存變更' : '手動新增訂單'}
       saveError={saveError}
       onClose={onClose}
       onSave={handleSave}
@@ -575,7 +575,7 @@ export default function BookingFormModal({
                   className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-chip px-2.5 text-[12px] font-bold text-pick transition-colors hover:bg-surface/80 hover:text-accent disabled:cursor-wait disabled:opacity-60"
                 >
                   <RefreshCw size={13} strokeWidth={2.3} />
-                  <span>再読取</span>
+                  <span>重新讀取</span>
                 </button>
               )}
             </div>
@@ -622,7 +622,7 @@ export default function BookingFormModal({
                       onClick={pickPdfForAutofill}
                       className="shrink-0 text-[12px] font-bold text-accent"
                     >
-                      別のPDFを選択
+                      選擇其他 PDF
                     </button>
                   )}
                 </div>
@@ -689,7 +689,7 @@ export default function BookingFormModal({
                 disabled={!hasSelectedPdfCandidate || pdfAutofill.status === 'loading'}
                 className="inline-flex h-10 w-full items-center justify-center rounded-chip bg-accent px-3 text-[13px] font-black text-white transition-colors hover:bg-accent-pressed disabled:cursor-not-allowed disabled:opacity-55"
               >
-                選択した予約を追加
+                新增選取的訂單
               </button>
             </div>
           )}
@@ -699,12 +699,12 @@ export default function BookingFormModal({
       {!editTarget && (
         <div className="flex items-center gap-3 text-[11px] font-bold leading-none text-muted">
           <span className="h-px flex-1 bg-border" />
-          <span>または（手動入力）</span>
+          <span>或（手動輸入）</span>
           <span className="h-px flex-1 bg-border" />
         </div>
       )}
 
-      <FormField label="予約の種類">
+      <FormField label="訂單類型">
         <div className="-mx-5 overflow-x-auto px-5 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
           <div className="flex w-max gap-2">
             {BOOKING_TYPE_ORDER.map(value => {
@@ -732,7 +732,7 @@ export default function BookingFormModal({
 
       {isTransport && (
         <FormField
-          label={state.type === 'flight' ? '航路ルート' : 'ルート'}
+          label={state.type === 'flight' ? '航班航線' : '路線'}
           error={errors.origin ?? errors.destination}
           required
         >
@@ -768,7 +768,7 @@ export default function BookingFormModal({
           </div>
           {state.type === 'flight' && (
             <p className="mt-1.5 text-[11px] font-semibold leading-[1.45] text-pick">
-              空港コードがある場合は「Tokyo / NRT」のように入力できます
+              有機場代碼時，可輸入「Tokyo / NRT」
             </p>
           )}
         </FormField>
@@ -796,7 +796,7 @@ export default function BookingFormModal({
       )}
 
       <div className="flex gap-2.5">
-        <FormField label="確認番号" className="flex-1">
+        <FormField label="確認編號" className="flex-1">
           <input
             value={state.confirmationCode}
             onChange={e => setField('confirmationCode', e.target.value)}
@@ -804,7 +804,7 @@ export default function BookingFormModal({
             className={`${inputClass(false)} font-mono tracking-tight`}
           />
         </FormField>
-        <FormField label="提供元" className="flex-1">
+        <FormField label="提供者" className="flex-1">
           <input
             value={state.provider}
             onChange={e => setField('provider', e.target.value)}
@@ -829,7 +829,7 @@ export default function BookingFormModal({
                 // dialogs briefly overlap on iOS.
                 if (v) setTimeout(() => checkOutRef.current?.open({ viewDate: v }), 160)
               }}
-              placeholder="日付"
+              placeholder="日期"
               minDate={tripStartDate}
               maxDate={tripEndDate}
             />
@@ -839,7 +839,7 @@ export default function BookingFormModal({
               ref={checkOutRef}
               value={state.checkOut}
               onChange={v => setField('checkOut', v)}
-              placeholder="日付"
+              placeholder="日期"
               error={!!errors.checkOut}
               minDate={tripStartDate}
               maxDate={tripEndDate}
@@ -847,11 +847,11 @@ export default function BookingFormModal({
           </FormField>
         </div>
       ) : (
-        <FormField label="日付">
+        <FormField label="日期">
           <DatePicker
             value={state.checkIn}
             onChange={v => setField('checkIn', v)}
-            placeholder="日付"
+            placeholder="日期"
             minDate={tripStartDate}
             maxDate={tripEndDate}
           />
@@ -863,11 +863,11 @@ export default function BookingFormModal({
           Google Maps treats it as a search query so anything from a
           street address to a venue name resolves cleanly. */}
       {!isTransport && (
-        <FormField label="住所 / Google Maps URL（任意）">
+        <FormField label="地址 / Google Maps URL（選填）">
           <input
             value={state.address}
             onChange={e => setField('address', e.target.value)}
-            placeholder={state.type === 'hotel' ? '例：東京都台東区浅草 1-1-1 / Google Maps の URL' : '例：上野公園 / Google Maps の URL'}
+            placeholder={state.type === 'hotel' ? '例如：東京都台東區淺草 1-1-1 / Google Maps URL' : '例如：上野公園 / Google Maps URL'}
             maxLength={500}
             className={inputClass(false)}
           />
@@ -877,7 +877,7 @@ export default function BookingFormModal({
       {/* 予約 URL — OTA / 公式サイトの予約ページ。全 type 共通
           (機票も飯店も予約 URL を持ち得る)。href に出すため http(s)
           のみ(form validate + Zod + firestore.rules で三重 enforce)。 */}
-      <FormField label="予約 URL（任意）" error={errors.link}>
+      <FormField label="訂單 URL（選填）" error={errors.link}>
         <input
           value={state.link}
           onChange={e => setField('link', e.target.value)}
@@ -890,7 +890,7 @@ export default function BookingFormModal({
       </FormField>
 
       {showRange && (
-        <FormField label="カバー画像" error={coverAtt.error ?? undefined}>
+        <FormField label="封面圖片" error={coverAtt.error ?? undefined}>
           <input
             ref={coverFileRef}
             type="file"
@@ -905,7 +905,7 @@ export default function BookingFormModal({
                 onClick={() => (coverAtt.hasNewFile || coverAtt.fullPath) && setPreviewTarget('cover')}
                 disabled={!coverAtt.hasNewFile && !coverAtt.fullPath}
                 className="relative block h-[154px] w-full overflow-hidden border-0 bg-tile p-0 text-left cursor-pointer disabled:cursor-default"
-                aria-label="カバー画像を表示"
+                aria-label="顯示封面圖片"
               >
                 {coverAtt.previewUrl ? (
                   <img
@@ -917,7 +917,7 @@ export default function BookingFormModal({
                 ) : (
                   <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted">
                     <ImageIcon size={28} strokeWidth={1.7} />
-                    <span className="text-[12px] font-bold">カバー画像</span>
+                    <span className="text-[12px] font-bold">封面圖片</span>
                   </div>
                 )}
               </button>
@@ -931,14 +931,14 @@ export default function BookingFormModal({
                     onClick={pickCoverImage}
                     className="h-8 rounded-chip border border-border bg-surface px-3 text-[11.5px] font-bold text-muted"
                   >
-                    変更
+                    更換
                   </button>
                   <button
                     type="button"
                     onClick={coverAtt.clear}
                     className="h-8 rounded-chip border border-danger-soft bg-danger-pale px-3 text-[11.5px] font-bold text-danger"
                   >
-                    削除
+                    刪除
                   </button>
                 </div>
               </div>
@@ -950,13 +950,13 @@ export default function BookingFormModal({
               className="w-full h-[132px] rounded-card border-[1.5px] border-dashed border-border bg-app text-muted text-[12px] font-medium flex flex-col items-center justify-center gap-2 cursor-pointer hover:border-accent hover:text-accent transition-colors"
             >
               <ImageIcon size={22} strokeWidth={1.7} />
-              <span>ホテルカード用の画像を追加</span>
+              <span>新增飯店卡片圖片</span>
             </button>
           )}
         </FormField>
       )}
 
-      <FormField label="予約確認書（PDF / 画像）" error={docAtt.error ?? undefined}>
+      <FormField label="訂單確認文件（PDF / 圖片）" error={docAtt.error ?? undefined}>
         <input
           ref={docFileRef}
           type="file"
@@ -976,9 +976,9 @@ export default function BookingFormModal({
             }}
             onPreview={() => (docAtt.hasNewFile || docAtt.fullPath) && setPreviewTarget('document')}
             canPreview={docAtt.hasNewFile || !!docAtt.fullPath}
-            replaceAriaLabel="ファイルを変更"
-            previewAriaLabel="添付を表示"
-            clearAriaLabel="添付を削除"
+            replaceAriaLabel="更換檔案"
+            previewAriaLabel="顯示附件"
+            clearAriaLabel="刪除附件"
           />
         ) : (
           <button
@@ -987,22 +987,22 @@ export default function BookingFormModal({
             className="w-full h-[58px] rounded-input border-[1.5px] border-dashed border-border bg-app text-muted text-[12px] font-medium flex flex-col items-center justify-center gap-1 cursor-pointer hover:border-accent hover:text-accent transition-colors"
           >
             <Paperclip size={16} strokeWidth={1.8} />
-            <span>確認書をアップロード</span>
+            <span>上傳確認文件</span>
           </button>
         )}
       </FormField>
 
-      <FormField label="メモ">
+      <FormField label="備註">
         <textarea
           value={state.note}
           onChange={e => setField('note', e.target.value)}
-          placeholder="備考（座席、空港カウンター情報など）"
+          placeholder="備註（座位、機場櫃檯資訊等）"
           rows={2}
           className={`${inputClass(false)} resize-none leading-[1.6] py-2.5 h-auto`}
         />
       </FormField>
 
-      {editTarget && onDelete && <DeleteConfirm noun="予約" onDelete={onDelete} />}
+      {editTarget && onDelete && <DeleteConfirm noun="訂單" onDelete={onDelete} />}
 
       {previewTarget && previewAtt && (previewAtt.hasNewFile || previewAtt.fullPath) && (
         <AttachmentPreviewModal
