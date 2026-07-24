@@ -5,8 +5,8 @@
 import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
-import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
 import { createTripScopedListServices } from '@/services/tripScopedList'
+import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
 import { validateUpdateOrThrow } from '@/services/validateUpdate'
 import { auditCreate, auditUpdate } from '@/utils/audit'
 import { getTripMemberIds } from '@/services/tripMemberIds'
@@ -18,7 +18,43 @@ import { ScheduleDocSchema, UpdateScheduleSchema, type Schedule, type CreateSche
 const LIST_LIMIT = 200
 
 function scheduleFromDoc(d: QueryDocumentSnapshot): Schedule {
-  return firestoreDocFromSchema(ScheduleDocSchema, d, 'scheduleFromDoc')
+  return firestoreDocFromSchema(ScheduleDocSchema, d, 'scheduleFromDoc') as Schedule
+}
+
+function sameLocation(left: Schedule['location'], right: CreateScheduleInput['location']): boolean {
+  if (left === right) return true
+  if (!left || !right || left.status !== right.status) return false
+  if (left.status === 'unresolved' && right.status === 'unresolved') {
+    return left.query === right.query
+  }
+  if (left.status !== 'resolved' || right.status !== 'resolved') return false
+  const a = left.place
+  const b = right.place
+  return a.provider === b.provider
+    && a.providerPlaceId === b.providerPlaceId
+    && a.name === b.name
+    && a.address === b.address
+    && a.lat === b.lat
+    && a.lng === b.lng
+    && a.timeZone === b.timeZone
+    && a.countryCode === b.countryCode
+}
+
+/** Build the smallest Firestore patch from the form snapshot. Explicit
+ * `undefined` values mean "delete this optional field" and are materialized
+ * as deleteField() at the service boundary. */
+export function buildScheduleUpdate(current: Schedule, next: CreateScheduleInput): UpdateScheduleInput {
+  const patch: UpdateScheduleInput = {}
+  if (current.title !== next.title) patch.title = next.title
+  if (current.date !== next.date) patch.date = next.date
+  if (current.startTime !== next.startTime) patch.startTime = next.startTime
+  if (current.timeMode !== next.timeMode) patch.timeMode = next.timeMode
+  if (current.durationMinutes !== next.durationMinutes) patch.durationMinutes = next.durationMinutes
+  if (current.category !== next.category) patch.category = next.category
+  if (current.description !== next.description) patch.description = next.description
+  if (current.estimatedCostMinor !== next.estimatedCostMinor) patch.estimatedCostMinor = next.estimatedCostMinor
+  if (!sameLocation(current.location, next.location)) patch.location = next.location
+  return patch
 }
 
 // ─── Read ─────────────────────────────────────────────────────────
@@ -48,6 +84,7 @@ export async function createSchedule(
   ])
   const ref = await addDoc(collection(db, ...P.schedules(tripId)), {
     ...input,
+    routeRevision: null,
     tripId,
     order,
     memberIds,
@@ -67,9 +104,22 @@ export async function updateSchedule(
   const validated = validateUpdateOrThrow(UpdateScheduleSchema, updates, {
     source: 'updateSchedule', tripId, scheduleId,
   })
-  const { db, doc, updateDoc, serverTimestamp } = await getFirebase()
+  const constraintFields = ['date', 'location', 'durationMinutes', 'startTime', 'timeMode'] as const
+  const clearsOptimization = constraintFields.some(field => field in validated)
+  if ('routeRevision' in validated && validated.routeRevision != null) {
+    throw new Error('routeRevision is Worker-owned')
+  }
+  const { db, doc, updateDoc, deleteField, serverTimestamp } = await getFirebase()
+  const writePatch: Record<string, unknown> = { ...validated }
+  const clearableFields = ['description', 'estimatedCostMinor', 'location', 'startTime'] as const
+  for (const field of clearableFields) {
+    if (field in validated && validated[field] === undefined) {
+      writePatch[field] = deleteField()
+    }
+  }
   await updateDoc(doc(db, ...P.schedule(tripId, scheduleId)), {
-    ...validated,
+    ...writePatch,
+    ...(clearsOptimization ? { routeRevision: null } : {}),
     ...auditUpdate(uid, serverTimestamp()),
   })
   void bumpTripActivity(tripId, 'schedule', uid)

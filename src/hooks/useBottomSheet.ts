@@ -13,6 +13,7 @@ const CLOSE_ANIM_MS    = 220
 export interface UseBottomSheetOpts {
   isOpen: boolean
   onClose: () => void
+  dismissible?: boolean
   dismissRatio?: number
 }
 
@@ -37,6 +38,7 @@ export interface UseBottomSheetResult {
 export function useBottomSheet({
   isOpen,
   onClose,
+  dismissible = true,
   dismissRatio = DISMISS_RATIO,
 }: UseBottomSheetOpts): UseBottomSheetResult {
   const [dragY, setDragY] = useState(0)
@@ -95,6 +97,7 @@ export function useBottomSheet({
   }
 
   function onPointerDown(e: React.PointerEvent) {
+    if (!dismissible) return
     drag.current.startY    = e.clientY
     drag.current.startTime = Date.now()
     setDragActive(true)
@@ -107,7 +110,7 @@ export function useBottomSheet({
   }
 
   function onPointerMove(e: React.PointerEvent) {
-    if (!drag.current.dragging) return
+    if (!dismissible || !drag.current.dragging) return
     const dy = e.clientY - drag.current.startY
     // 向上拖帶阻尼（rubber band），避免 sheet 被拉出上邊界
     const translated = dy < 0 ? dy / 5 : dy
@@ -120,6 +123,12 @@ export function useBottomSheet({
     setDragActive(false)
     try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) }
     catch { /* release 於已釋放或瀏覽器不支援時會拋錯 — 可忽略 */ }
+
+    if (!dismissible) {
+      setDragY(0)
+      dragYRef.current = 0
+      return
+    }
 
     // Read live position from ref — React state from the last render may lag
     // by 1 frame, making fast-flick velocity checks unreliable.

@@ -8,6 +8,8 @@ import BottomSheet from '@/components/ui/BottomSheet'
 import GoogleIcon from '@/components/icons/GoogleIcon'
 import { useAuth } from '@/hooks/useAuth'
 import { toast } from '@/shared/toast'
+import { DEV_EMULATOR_USERS, signInWithEmulatorRole, type EmulatorRole } from '@/services/emulatorAuth'
+import { FIREBASE_EMULATOR_MODE } from '@/services/firebase'
 
 interface Props {
   isOpen:   boolean
@@ -33,6 +35,17 @@ export default function SignInPromptModal({ isOpen, onClose, reason, onSignedIn 
       if (code !== 'auth/popup-closed-by-user') {
         toast.error(e instanceof Error ? e.message : '登入失敗')
       }
+    } finally { setSigningIn(false) }
+  }
+
+  async function handleDevSignIn(role: EmulatorRole) {
+    setSigningIn(true)
+    try {
+      await signInWithEmulatorRole(role)
+      onSignedIn?.()
+      onClose()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'DEV 登入失敗')
     } finally { setSigningIn(false) }
   }
 
@@ -62,6 +75,24 @@ export default function SignInPromptModal({ isOpen, onClose, reason, onSignedIn 
           <GoogleIcon size={18} />
           {signingIn ? '登入中…' : '使用 Google 登入'}
         </button>
+        {import.meta.env.DEV && FIREBASE_EMULATOR_MODE && (
+          <div className="mt-4 border-t border-border pt-3">
+            <p className="mb-2 text-[10px] font-semibold text-muted">Emulator role login</p>
+            <div className="grid grid-cols-3 gap-1.5">
+              {(Object.entries(DEV_EMULATOR_USERS) as Array<[EmulatorRole, { email: string; label: string }]>).map(([role, account]) => (
+                <button
+                  key={role}
+                  type="button"
+                  disabled={signingIn}
+                  onClick={() => void handleDevSignIn(role)}
+                  className="h-8 rounded-full border border-border bg-app px-2 text-[10px] font-semibold text-ink disabled:opacity-50"
+                >
+                  {account.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         <p className="mt-5 text-[10.5px] text-muted leading-[1.6] tracking-[0.02em] max-w-[280px] mx-auto">
           登入後，預覽中的示範資料會<br />
           改為你自己的旅程。

@@ -3,7 +3,7 @@
 // the wrapper is what closes the stale-read race that was the
 // motivating P1, so the retry-on-ABORTED behaviour is load-bearing.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { runFirestoreTransaction, TxCommitAmbiguous } from '../src/firestore-tx'
+import { runFirestoreTransaction, TxCancelled, TxCommitAmbiguous } from '../src/firestore-tx'
 
 /** A portable stand-in for the DOMException AbortSignal.timeout throws.
  *  isRpcTimeout keys on `.name`, so a plain Error tagged 'TimeoutError'
@@ -56,6 +56,41 @@ function mockFetchSequence(responses: Array<{
 }
 
 describe('runFirestoreTransaction', () => {
+	it.each([
+		['read', ':batchGet'],
+		['query', ':runQuery'],
+	] as const)('external cancellation aborts an in-flight %s and never retries', async (kind, rpcPath) => {
+		const controller = new AbortController()
+		let beginCalls = 0
+		let rpcCalls = 0
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input)
+			if (url.includes(':beginTransaction')) {
+				beginCalls += 1
+				return new Response(JSON.stringify({ transaction: 'tx-1' }), { status: 200 })
+			}
+			if (url.includes(rpcPath)) {
+				rpcCalls += 1
+				return new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+				})
+			}
+			throw new Error(`unexpected URL ${url}`)
+		}) as typeof fetch
+
+		const request = runFirestoreTransaction('fake-token', 'demo', async tx => {
+			if (kind === 'read') await tx.get('trips/t1')
+			else await tx.runQuery({ parent: 'trips/t1', collection: 'schedules' })
+			return { writes: [], result: 'unreachable' }
+		}, { signal: controller.signal })
+
+		await vi.waitFor(() => expect(rpcCalls).toBe(1))
+		controller.abort('preview deadline')
+		await expect(request).rejects.toBeInstanceOf(TxCancelled)
+		expect(beginCalls).toBe(1)
+		expect(rpcCalls).toBe(1)
+	})
+
 	it('happy path: begin → batchGet → commit, returns body.result', async () => {
 		mockFetchSequence([
 			{ matches: ':beginTransaction', status: 200, body: { transaction: 'tx-1' } },
@@ -229,6 +264,42 @@ describe('runFirestoreTransaction', () => {
 
 		expect(bodyCalls).toBe(1)
 		expect(commitCalls).toBe(1)
+	})
+
+	it('read-only commit timeout is retried because no write can be double-applied', async () => {
+		let bodyCalls   = 0
+		let commitCalls = 0
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const url = typeof input === 'string' ? input : input.toString()
+			if (url.includes(':beginTransaction')) {
+				return new Response(JSON.stringify({ transaction: `tx-${bodyCalls + 1}` }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				})
+			}
+			if (url.includes(':batchGet')) {
+				return new Response(JSON.stringify([{ missing: 'projects/demo/databases/(default)/documents/trips/t1' }]), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				})
+			}
+			if (url.includes(':commit')) {
+				commitCalls += 1
+				if (commitCalls === 1) throw timeoutError()
+				return new Response(JSON.stringify({ commitTime: 't', writeResults: [] }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				})
+			}
+			throw new Error(`unexpected URL ${url}`)
+		}) as typeof fetch
+
+		const result = await runFirestoreTransaction('fake-token', 'demo', async tx => {
+			bodyCalls += 1
+			await tx.get('trips/t1')
+			return { writes: [], result: bodyCalls }
+		})
+
+		expect(result).toBe(2)
+		expect(bodyCalls).toBe(2)
+		expect(commitCalls).toBe(2)
 	})
 
 	it('read (batchGet) timeout IS retried -- pre-commit, nothing written', async () => {

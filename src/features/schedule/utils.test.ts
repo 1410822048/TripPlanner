@@ -1,7 +1,5 @@
-// Pin groupByDate's secondary sort. The DayTimeline relies on this
-// ordering: items with `startTime` show chronologically, items without
-// it fall to the bottom in manual `order`. Regressions in the sort
-// produce a confusing visible-but-jumbled timeline.
+// Pin `order` as the within-day single source of truth. startTime remains a
+// displayed user constraint and must never silently override route order.
 import { describe, expect, test } from 'vitest'
 import { groupByDate } from './utils'
 import type { Schedule } from '@/types'
@@ -15,6 +13,8 @@ function s(over: Partial<Schedule>): Schedule {
     date:      '2026-05-15',
     order:     0,
     category:  'activity',
+    timeMode:  'flexible',
+    durationMinutes: 60,
     memberIds: ['u'],
     createdBy: 'u',
     updatedBy: 'u',
@@ -36,19 +36,19 @@ describe('groupByDate', () => {
     expect(out['2026-05-16']!.map(x => x.id)).toEqual(['b'])
   })
 
-  test('within-day: timed items sort chronologically by startTime', () => {
+  test('within-day: order is the only sort source, even when times differ', () => {
     const out = groupByDate([
-      s({ id: 'noon',  startTime: '12:00' }),
-      s({ id: 'morn',  startTime: '08:00' }),
-      s({ id: 'eve',   startTime: '18:00' }),
+      s({ id: 'noon',  order: 2, startTime: '12:00' }),
+      s({ id: 'morn',  order: 1, startTime: '08:00' }),
+      s({ id: 'eve',   order: 0, startTime: '18:00' }),
     ])
-    expect(out['2026-05-15']!.map(x => x.id)).toEqual(['morn', 'noon', 'eve'])
+    expect(out['2026-05-15']!.map(x => x.id)).toEqual(['eve', 'morn', 'noon'])
   })
 
-  test('within-day: timed items come before untimed ones', () => {
+  test('within-day: untimed items stay at their explicit order', () => {
     const out = groupByDate([
-      s({ id: 'untimed', order: 0 }),
-      s({ id: 'timed',   order: 1, startTime: '10:00' }),
+      s({ id: 'untimed', order: 1 }),
+      s({ id: 'timed',   order: 0, startTime: '10:00' }),
     ])
     expect(out['2026-05-15']!.map(x => x.id)).toEqual(['timed', 'untimed'])
   })

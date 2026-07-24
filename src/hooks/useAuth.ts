@@ -142,7 +142,11 @@ function initAuth(): Promise<void> {
         // (lastObservedUid null → same uid, no-op).
         const nextUid = u?.uid ?? null
         if (nextUid !== lastObservedUid) {
-          if (lastObservedUid !== null) clearAttachmentUrlCache()
+          if (lastObservedUid !== null) {
+            clearAttachmentUrlCache()
+            void import('@/features/schedule/services/routeOptimizationService')
+              .then(({ clearRoutePlaceSearchCache }) => clearRoutePlaceSearchCache())
+          }
           lastObservedUid = nextUid
         }
         if (!u && redirectError) {

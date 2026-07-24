@@ -49,6 +49,7 @@ export function useCreateSchedule(tripId: string, options?: MutationOptions) {
         tripId,
         order:     nextOrderInDay(prev, input.date),
         memberIds: [createdBy],
+        routeRevision: null,
         ...auditCreateMock(createdBy),
         ...input,
       },

@@ -53,6 +53,7 @@ export default function TripModalsHost({ state }: Props) {
         <ScheduleFormModal
           key={scheduleModal.key}
           isOpen
+          tripId={selectedTrip.id}
           editTarget={scheduleModal.editTarget}
           defaultDate={display ?? new Date().toISOString().slice(0, 10)}
           // Trip date range — the picker disables days outside this
@@ -61,6 +62,8 @@ export default function TripModalsHost({ state }: Props) {
           // owner shrunk the trip after the schedule was created).
           tripStartDate={selectedTrip.startDate}
           tripEndDate={selectedTrip.endDate}
+          schedules={schedules}
+          defaultCountryCode={selectedTrip.defaultCountryCode}
           isSaving={scheduleIsSaving}
           saveError={scheduleModal.saveError}
           onClose={scheduleModal.close}

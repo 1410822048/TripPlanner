@@ -26,6 +26,7 @@ export type TemplateKey =
   | 'schedule.created'
   | 'schedule.updated'
   | 'schedule.deleted'
+  | 'route.optimized'
   | 'wish.created'
   | 'wish.updated'
   | 'wish.deleted'
@@ -102,30 +103,31 @@ export interface NormalizedPushEvent {
 // codes never leave in the FCM payload). The richer inbox body with actor /
 // subject names lives in notifications.ts BODY_TEMPLATES.
 export const TEMPLATES: Record<TemplateKey, string> = {
-  'member.joined':            'メンバーが参加しました',
-  'member.role_changed':      '権限が変更されました',
-  'member.removed':           'メンバーが削除されました',
-  'member.removed_self':      '旅程から削除されました',
-  'member.left':              'メンバーが退出しました',
-  'expense.created':          '費用が追加されました',
-  'expense.updated':          '費用が更新されました',
-  'expense.deleted':          '費用が削除されました',
-  'settlement.created':       '精算が記録されました',
-  'settlement.deleted':       '精算が取り消されました',
-  'booking.created':          '予約が追加されました',
-  'booking.updated':          '予約が更新されました',
-  'booking.deleted':          '予約が削除されました',
-  'schedule.created':         '予定が追加されました',
-  'schedule.updated':         '予定が更新されました',
-  'schedule.deleted':         '予定が削除されました',
-  'wish.created':             '行きたい場所が追加されました',
-  'wish.updated':             '行きたい場所が更新されました',
-  'wish.deleted':             '行きたい場所が削除されました',
-  'planning.created':         '準備リストが追加されました',
-  'planning.updated':         '準備リストが更新されました',
-  'planning.deleted':         '準備リストが削除されました',
-  'trip.title_updated':       '旅程名が変更されました',
-  'trip.dates_updated':       '日程が変更されました',
-  'trip.destination_updated': '目的地が変更されました',
-  'wish.deadline_closed':     'ウィッシュの投票が締め切られました',
+  'member.joined':            '成員已加入',
+  'member.role_changed':      '權限已變更',
+  'member.removed':           '成員已被移除',
+  'member.removed_self':      '你已被移出行程',
+  'member.left':              '成員已退出',
+  'expense.created':          '已新增費用',
+  'expense.updated':          '費用已更新',
+  'expense.deleted':          '費用已刪除',
+  'settlement.created':       '已記錄清算',
+  'settlement.deleted':       '清算已取消',
+  'booking.created':          '已新增訂單',
+  'booking.updated':          '訂單已更新',
+  'booking.deleted':          '訂單已刪除',
+  'schedule.created':         '已新增行程',
+  'schedule.updated':         '行程已更新',
+  'schedule.deleted':         '行程已刪除',
+  'route.optimized':          '行程順序已整理',
+  'wish.created':             '已新增心願',
+  'wish.updated':             '心願已更新',
+  'wish.deleted':             '心願已刪除',
+  'planning.created':         '已新增準備項目',
+  'planning.updated':         '準備項目已更新',
+  'planning.deleted':         '準備項目已刪除',
+  'trip.title_updated':       '行程名稱已變更',
+  'trip.dates_updated':       '日期已變更',
+  'trip.destination_updated': '目的地已變更',
+  'wish.deadline_closed':     '心願投票已截止',
 }

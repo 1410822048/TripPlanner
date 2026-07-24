@@ -20,6 +20,7 @@ import type { CreateScheduleInput, CreateTripInput, Schedule, Trip } from '@/typ
 import type { MenuActionKey, TripItem } from '@/features/trips/types'
 import { MOCK_SCHEDULES } from '../mocks'
 import { buildDateRange, groupByDate } from '../utils'
+import { buildScheduleUpdate } from '../services/scheduleService'
 import { toLocalDateString } from '@/utils/dates'
 import { toast } from '@/shared/toast'
 import { simulateFailureMaybe } from '@/utils/devFailures'
@@ -40,6 +41,7 @@ function cloudTripToItem(trip: Trip, uid: string | undefined): TripItem {
     members:   [],
     ownedByMe: !!uid && trip.ownerId === uid,
     currency:  trip.currency,
+    defaultCountryCode: trip.defaultCountryCode,
   }
 }
 
@@ -305,6 +307,8 @@ export function useSchedulePageState(): SchedulePageState {
     if (data.endDate !== toLocalDateString(currentTrip.endDate.toDate()))
       updates.endDate = data.endDate
     if (data.currency !== currentTrip.currency) updates.currency = data.currency
+    if (data.defaultCountryCode !== currentTrip.defaultCountryCode)
+      updates.defaultCountryCode = data.defaultCountryCode
     setActiveDate(null)
     if (Object.keys(updates).length === 0) return
     updateTripMut.mutate({ tripId: data.id, updates })
@@ -437,10 +441,16 @@ export function useSchedulePageState(): SchedulePageState {
     if (!uid) { toast.error('正在準備登入，請稍候'); return }
     scheduleModal.clearError()
     try {
-      await simulateFailureMaybe()
       if (scheduleModal.editTarget) {
-        await updateMut.mutateAsync({ scheduleId: scheduleModal.editTarget.id, updates: data, uid })
+        const updates = buildScheduleUpdate(scheduleModal.editTarget, data)
+        if (Object.keys(updates).length === 0) {
+          scheduleModal.close()
+          return
+        }
+        await simulateFailureMaybe()
+        await updateMut.mutateAsync({ scheduleId: scheduleModal.editTarget.id, updates, uid })
       } else {
+        await simulateFailureMaybe()
         await createMut.mutateAsync({ input: data, createdBy: uid })
       }
       scheduleModal.close()

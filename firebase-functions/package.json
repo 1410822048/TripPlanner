@@ -10,7 +10,8 @@
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --config vitest.config.ts"
+    "test": "vitest run --config vitest.config.ts",
+    "emulator:seed": "node scripts/emulator-seed.mjs"
   },
   "dependencies": {
     "firebase-admin": "^13.10.0",

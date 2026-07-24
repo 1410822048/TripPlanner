@@ -9,7 +9,8 @@
 // every return branch, so while a modal is open it's the same element in
 // all of them — CreateTripModal still survives the EmptyTrips → main
 // transition without remounting (hasOpenModal stays true across the swap).
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useState } from 'react'
+import { Route } from 'lucide-react'
 import TripSwitcher from '@/features/trips/components/TripSwitcher'
 import TripHeaderCard from '@/features/trips/components/TripHeaderCard'
 import SchedulePageSkeleton from './SchedulePageSkeleton'
@@ -18,11 +19,14 @@ import DayTimeline from './DayTimeline'
 import EmptyTrips from './EmptyTrips'
 import TripsErrorState from './TripsErrorState'
 import { useSchedulePageState } from '../hooks/useSchedulePageState'
+import { routeOptimizationAvailability } from '../routeModel'
 
 const TripModalsHost = lazy(() => import('./TripModalsHost'))
+const RoutePreviewModal = lazy(() => import('./RoutePreviewModal'))
 
 export default function SchedulePage() {
   const state = useSchedulePageState()
+  const [routePreviewOpen, setRoutePreviewOpen] = useState(false)
   const {
     isDemo, canWrite, isOwner,
     cloudTripsLoading, cloudTripsError, cloudTripsEmpty, refetchTrips,
@@ -77,6 +81,27 @@ export default function SchedulePage() {
     </>
   }
 
+  const routeAvailability = routeOptimizationAvailability({
+    canWrite,
+    hasDate: Boolean(display),
+    isDemo,
+    locations: items.map(item => item.location),
+  })
+  let routeBlockedCopy: string | undefined
+  if (routeAvailability.status === 'blocked') {
+    switch (routeAvailability.reason) {
+      case 'unresolved-locations':
+        routeBlockedCopy = `還有 ${routeAvailability.count} 個地點需要從搜尋結果確認`
+        break
+      case 'too-many-schedules':
+        routeBlockedCopy = `單日最多支援 12 個行程，目前有 ${routeAvailability.count} 個`
+        break
+      case 'mixed-time-zones':
+        routeBlockedCopy = '同一天的地點時區不同，請先拆分行程'
+        break
+    }
+  }
+
   return (
     <>
       <div className="bg-app min-h-full pb-8">
@@ -129,6 +154,34 @@ export default function SchedulePage() {
           onSelectDay={setActiveDate}
         />
 
+        {routeAvailability.status !== 'hidden' && (
+          <div className="mx-5 mt-3">
+            <button
+              type="button"
+              aria-disabled={routeAvailability.status === 'blocked'}
+              aria-describedby={routeBlockedCopy ? 'route-optimization-prerequisite' : undefined}
+              onClick={() => {
+                if (routeAvailability.status !== 'ready') return
+                if (isDemo) setSignInOpen(true)
+                else setRoutePreviewOpen(true)
+              }}
+              className={`inline-flex h-10 w-full items-center justify-center gap-2 rounded-chip border text-[12px] font-bold ${
+                routeAvailability.status === 'blocked'
+                  ? 'cursor-not-allowed border-border bg-surface text-muted'
+                  : 'border-teal/30 bg-teal-pale text-teal'
+              }`}
+            >
+              <Route size={15} aria-hidden="true" />
+              {isDemo ? '登入後優化行程' : '優化行程'}
+            </button>
+            {routeBlockedCopy && (
+              <p id="route-optimization-prerequisite" className="mt-1.5 px-1 text-[11px] leading-4 text-muted">
+                {routeBlockedCopy}
+              </p>
+            )}
+          </div>
+        )}
+
         <DayTimeline
           display={display}
           items={items}
@@ -141,6 +194,18 @@ export default function SchedulePage() {
         />
       </div>
       {modals}
+      {!isDemo && selectedTrip && display && (
+        <Suspense fallback={null}>
+          <RoutePreviewModal
+            key={`${selectedTrip.id}:${display}:${routePreviewOpen ? 'open' : 'closed'}`}
+            isOpen={routePreviewOpen}
+            tripId={selectedTrip.id}
+            date={display}
+            schedules={items}
+            onClose={() => setRoutePreviewOpen(false)}
+          />
+        </Suspense>
+      )}
     </>
   )
 }

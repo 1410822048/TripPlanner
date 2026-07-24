@@ -181,17 +181,38 @@ service cloud.firestore {
     // allowlist. Mirrors how Zod's ScheduleLocationSchema would reject
     // these client-side, kept at the rules layer too as defense-in-depth.
     function validScheduleLocation(loc) {
-      return loc is map
-        && loc.keys().hasOnly(['name', 'address', 'lat', 'lng', 'placeId'])
-        && loc.name is string
-        && loc.name.size() > 0
-        && loc.name.size() <= 200
-        && (!('address' in loc)
-              || (loc.address is string && loc.address.size() <= 400))
-        && (!('lat' in loc) || loc.lat is number)
-        && (!('lng' in loc) || loc.lng is number)
-        && (!('placeId' in loc)
-              || (loc.placeId is string && loc.placeId.size() <= 200));
+      return loc is map && (
+        // Canonical PlaceRef union. Only resolved Geoapify data may carry
+        // coordinates; unresolved text is never treated as a route point.
+        (loc.status == 'unresolved'
+          && loc.keys().hasOnly(['status', 'query'])
+          && loc.query is string && loc.query.size() > 0 && loc.query.size() <= 200)
+        ||
+        (loc.status == 'resolved'
+          && loc.keys().hasOnly(['status', 'place'])
+          && loc.place is map
+          && loc.place.keys().hasOnly(['provider','providerPlaceId','name','address','lat','lng','timeZone','countryCode'])
+          && loc.place.provider in ['geoapify', 'google-maps']
+          && loc.place.providerPlaceId is string && loc.place.providerPlaceId.size() > 0 && loc.place.providerPlaceId.size() <= 200
+          && loc.place.name is string && loc.place.name.size() > 0 && loc.place.name.size() <= 200
+          && (!('address' in loc.place) || (loc.place.address is string && loc.place.address.size() <= 500))
+          && loc.place.lat is number && loc.place.lat >= -90 && loc.place.lat <= 90
+          && loc.place.lng is number && loc.place.lng >= -180 && loc.place.lng <= 180
+          && loc.place.timeZone is string && loc.place.timeZone.size() > 0 && loc.place.timeZone.size() <= 80
+          && loc.place.countryCode is string
+          && loc.place.countryCode.matches('^[A-Z]{2}$'))
+      );
+    }
+
+    function validScheduleTiming(d) {
+      return d.timeMode in ['fixed', 'preferred', 'flexible']
+        && d.durationMinutes is int
+        && d.durationMinutes >= 1 && d.durationMinutes <= 720
+        && ((d.timeMode == 'flexible' && !('startTime' in d))
+          || (d.timeMode in ['fixed', 'preferred']
+              && ('startTime' in d)
+              && d.startTime is string
+              && d.startTime.matches('^(?:[01][0-9]|2[0-3]):[0-5][0-9]$')));
     }
     // Note: validExpenseReceipt + validBookingAttachment + validWishImage
     // USED to live here. Removed once each entity's media field moved to
@@ -259,7 +280,7 @@ service cloud.firestore {
       allow create: if isSignedIn()
                     && request.resource.data.keys().hasOnly([
                          'ownerId','title','destination','startDate','endDate',
-                         'currency','icon','memberIds','lastActivityByFeature',
+                         'currency','defaultCountryCode','icon','memberIds','lastActivityByFeature',
                          'wishVotingDeadlineAt','wishVotingDeadlineNotifiedAt',
                          'createdAt','updatedAt'
                        ])
@@ -277,6 +298,8 @@ service cloud.firestore {
                     && (!('currency' in request.resource.data)
                           || (request.resource.data.currency is string
                               && request.resource.data.currency.size() == 3))
+                    && request.resource.data.defaultCountryCode is string
+                    && request.resource.data.defaultCountryCode.matches('^[A-Z]{2}$')
                     && (!('icon' in request.resource.data)
                           || (request.resource.data.icon is string
                               && request.resource.data.icon.size() <= 8))
@@ -303,7 +326,7 @@ service cloud.firestore {
         isTripOwner(tripId)
         && request.resource.data.keys().hasOnly([
              'ownerId','title','destination','startDate','endDate',
-             'currency','icon','memberIds','lastActivityByFeature',
+             'currency','defaultCountryCode','icon','memberIds','lastActivityByFeature',
              'deletingAt','wishVotingDeadlineAt','wishVotingDeadlineNotifiedAt',
              'createdAt','updatedAt'
            ])
@@ -340,6 +363,8 @@ service cloud.firestore {
         && (!('currency' in request.resource.data)
               || (request.resource.data.currency is string
                   && request.resource.data.currency.size() == 3))
+        && request.resource.data.defaultCountryCode is string
+        && request.resource.data.defaultCountryCode.matches('^[A-Z]{2}$')
         && (!('icon' in request.resource.data)
               || (request.resource.data.icon is string
                   && request.resource.data.icon.size() <= 8))
@@ -425,8 +450,9 @@ service cloud.firestore {
                       && tripNotDeleting(tripId)
                       && request.resource.data.keys().hasOnly([
                            'tripId','date','order','title','description',
-                           'location','startTime','endTime','category',
-                           'estimatedCostMinor','memberIds','createdBy','updatedBy',
+                            'location','startTime','timeMode','durationMinutes',
+                            'routeRevision','category',
+                            'estimatedCostMinor','memberIds','createdBy','updatedBy',
                            'createdAt','updatedAt'
                          ])
                       && request.resource.data.tripId == tripId
@@ -448,21 +474,24 @@ service cloud.firestore {
                       && (!('startTime' in request.resource.data)
                             || (request.resource.data.startTime is string
                                 && request.resource.data.startTime.size() <= 16))
-                      && (!('endTime' in request.resource.data)
-                            || (request.resource.data.endTime is string
-                                && request.resource.data.endTime.size() <= 16))
                       && (!('estimatedCostMinor' in request.resource.data)
                             || (request.resource.data.estimatedCostMinor is int
                                 && request.resource.data.estimatedCostMinor >= 0
                                 && request.resource.data.estimatedCostMinor <= 1000000000))
-                      && (!('location' in request.resource.data)
-                            || validScheduleLocation(request.resource.data.location));
+                       && (!('location' in request.resource.data)
+                             || validScheduleLocation(request.resource.data.location))
+                       && 'timeMode' in request.resource.data
+                       && 'durationMinutes' in request.resource.data
+                       && validScheduleTiming(request.resource.data)
+                       && (!('routeRevision' in request.resource.data)
+                             || request.resource.data.routeRevision == null);
         allow update: if (
           canWrite(tripId)
           && request.resource.data.keys().hasOnly([
                'tripId','date','order','title','description',
-               'location','startTime','endTime','category',
-               'estimatedCostMinor','memberIds','createdBy','updatedBy',
+                'location','startTime','timeMode','durationMinutes',
+                'routeRevision','category',
+                'estimatedCostMinor','memberIds','createdBy','updatedBy',
                'createdAt','updatedAt'
              ])
           && unchanged('tripId')
@@ -485,17 +514,42 @@ service cloud.firestore {
           && (!('startTime' in request.resource.data)
                 || (request.resource.data.startTime is string
                     && request.resource.data.startTime.size() <= 16))
-          && (!('endTime' in request.resource.data)
-                || (request.resource.data.endTime is string
-                    && request.resource.data.endTime.size() <= 16))
           && (!('estimatedCostMinor' in request.resource.data)
                 || (request.resource.data.estimatedCostMinor is int
                     && request.resource.data.estimatedCostMinor >= 0
                     && request.resource.data.estimatedCostMinor <= 1000000000))
           && (!('location' in request.resource.data)
-                || validScheduleLocation(request.resource.data.location))
+                 || validScheduleLocation(request.resource.data.location))
+          && 'timeMode' in request.resource.data
+          && 'durationMinutes' in request.resource.data
+          && validScheduleTiming(request.resource.data)
+          && (!('routeRevision' in request.resource.data)
+                || request.resource.data.routeRevision == null
+                || (request.resource.data.routeRevision is string
+                    && request.resource.data.routeRevision.size() <= 128))
+          // routeRevision remains Worker-owned: clients may only preserve or clear it.
+          && ((!('routeRevision' in request.resource.data)
+                || unchanged('routeRevision')
+                || request.resource.data.routeRevision == null))
+          // Any user-owned route constraint edit invalidates the applied
+          // revision. Optional routeRevision may remain absent, but an
+          // existing non-null revision must be explicitly cleared.
+          && ((unchanged('date')
+                && unchanged('location')
+                && unchanged('durationMinutes')
+                && unchanged('startTime')
+                && unchanged('timeMode'))
+              || !('routeRevision' in request.resource.data)
+              || request.resource.data.routeRevision == null)
         );
         allow delete: if canWrite(tripId);
+      }
+
+      // Route apply receipts are Worker-owned idempotency records. Clients
+      // never read or forge these documents; `/route-apply-status` is the
+      // authenticated Worker recovery surface.
+      match /routeApplications/{revision} {
+        allow read, write: if false;
       }
 
       match /expenses/{expenseId} {

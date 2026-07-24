@@ -10,6 +10,14 @@
       ]
     },
     {
+      "collectionGroup": "schedules",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "date",  "order": "ASCENDING" },
+        { "fieldPath": "order", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "expenses",
       "queryScope": "COLLECTION",
       "fields": [
@@ -160,6 +168,12 @@
       "indexes": [
         { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" }
       ]
+    },
+    {
+      "collectionGroup": "routeApplications",
+      "fieldPath": "expiresAt",
+      "ttl": true,
+      "indexes": []
     }
   ]
 }

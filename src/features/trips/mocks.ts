@@ -11,7 +11,7 @@ const DEMO_MEMBERS: TripMember[] = [
 ]
 
 export const INITIAL_TRIPS: TripItem[] = [
-  { id:'demo',  title:'東京五日間',   dest:'東京 · 淺草 · 新宿',   emoji:'🗼', startDate:'2026-05-01', endDate:'2026-05-08', members:DEMO_MEMBERS,            ownedByMe:true, currency:'JPY' },
-  { id:'trip2', title:'京都賞楓之旅', dest:'京都 · 嵐山 · 奈良',   emoji:'🍁', startDate:'2026-11-10', endDate:'2026-11-14', members:DEMO_MEMBERS.slice(0, 2), ownedByMe:true, currency:'JPY' },
-  { id:'trip3', title:'北海道雪祭',   dest:'札幌 · 函館 · 富良野', emoji:'⛄', startDate:'2027-02-05', endDate:'2027-02-09', members:DEMO_MEMBERS.slice(0, 3), ownedByMe:true, currency:'JPY' },
+  { id:'demo',  title:'東京五日間',   dest:'東京 · 淺草 · 新宿',   emoji:'🗼', startDate:'2026-05-01', endDate:'2026-05-08', members:DEMO_MEMBERS,            ownedByMe:true, currency:'JPY', defaultCountryCode:'JP' },
+  { id:'trip2', title:'京都賞楓之旅', dest:'京都 · 嵐山 · 奈良',   emoji:'🍁', startDate:'2026-11-10', endDate:'2026-11-14', members:DEMO_MEMBERS.slice(0, 2), ownedByMe:true, currency:'JPY', defaultCountryCode:'JP' },
+  { id:'trip3', title:'北海道雪祭',   dest:'札幌 · 函館 · 富良野', emoji:'⛄', startDate:'2027-02-05', endDate:'2027-02-09', members:DEMO_MEMBERS.slice(0, 3), ownedByMe:true, currency:'JPY', defaultCountryCode:'JP' },
 ]

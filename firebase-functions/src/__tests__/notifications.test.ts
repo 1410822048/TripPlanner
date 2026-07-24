@@ -86,9 +86,9 @@ describe('writeNotificationDocs', () => {
       recipientUid: 'u1',
       tripId: 'trip-1',
       tripTitle: 'Tokyo Trip',
-      actorName: 'メンバー',
-      title: '費用が追加されました',
-      body: 'メンバーさんが費用を追加しました',
+      actorName: '成員',
+      title: '已新增費用',
+      body: '成員 新增了費用',
       route: '/expense',
       readAt: null,
       dismissedAt: null,
@@ -136,7 +136,7 @@ describe('writeNotificationDocs', () => {
     }), ['to-1'])
 
     const [, doc] = firestoreMock.txCreate.mock.calls[0]!
-    expect(doc.body).toBe('佐藤さんが 田中さん → 佐藤さん の ¥500,000 を取り消しました')
+    expect(doc.body).toBe('佐藤 取消了 田中 → 佐藤 的 ¥500,000')
     expect(doc.settlement).toEqual({
       fromUid: 'from-1', fromName: '田中', toUid: 'to-1', toName: '佐藤',
       amountMinor: 500000, currency: 'JPY',
@@ -154,7 +154,7 @@ describe('writeNotificationDocs', () => {
     }), ['to-1'])
 
     const [, doc] = firestoreMock.txCreate.mock.calls[0]!
-    expect(doc.body).toBe('佐藤さんが清算記録を取り消しました')
+    expect(doc.body).toBe('佐藤 取消了一筆清算')
     expect(doc.settlement).toBeUndefined()
   })
 
@@ -200,7 +200,7 @@ describe('writeNotificationDocs', () => {
     }), ['u2'])
 
     const [, doc] = firestoreMock.txCreate.mock.calls[0]!
-    expect(doc.body).toBe('あなたの権限が編集者に変更されました')
+    expect(doc.body).toBe('你的權限已變更為編輯者')
     expect(doc.scope).toBe('trip')
     expect(doc.actorUid).toBeNull()
   })
@@ -212,7 +212,7 @@ describe('writeNotificationDocs', () => {
       entityType: 'member', entityId: 'u2', action: 'removed', templateKey: 'member.removed',
       route: '/schedule', actorUid: null, actorUnknown: true, subjectUid: 'u2', subjectName: 'Aki',
     }), ['u3'])
-    expect(firestoreMock.txCreate.mock.calls[0]![1].body).toBe('Akiさんが旅程から削除されました')
+    expect(firestoreMock.txCreate.mock.calls[0]![1].body).toBe('Aki 已被移出行程')
 
     firestoreMock.txCreate.mockClear()
     await writeNotificationDocs(baseEvent({
@@ -221,7 +221,7 @@ describe('writeNotificationDocs', () => {
       actorUid: null, actorUnknown: true, subjectUid: 'u2', subjectName: 'Aki',
     }), ['u2'])
     const [, doc] = firestoreMock.txCreate.mock.calls[0]!
-    expect(doc.body).toBe('旅程から削除されました')
+    expect(doc.body).toBe('你已被移出行程')
     expect(doc.scope).toBe('account')
     expect(doc.route).toBe('/account')
   })
@@ -234,7 +234,7 @@ describe('writeNotificationDocs', () => {
       route: '/schedule', actorUid: null, actorUnknown: true, subjectUid: 'u2', subjectName: 'Aki',
     }), ['u3'])
 
-    expect(firestoreMock.txCreate.mock.calls[0]![1].body).toBe('Akiさんが旅程から退出しました')
+    expect(firestoreMock.txCreate.mock.calls[0]![1].body).toBe('Aki 已退出行程')
   })
 
   test('wish.deadline_closed is a fixed system body, no actor resolution', async () => {
@@ -247,7 +247,7 @@ describe('writeNotificationDocs', () => {
     }), ['u1', 'u2'])
 
     const [, doc] = firestoreMock.txCreate.mock.calls[0]!
-    expect(doc.body).toBe('ウィッシュの投票が締め切られました。結果を確認しましょう')
+    expect(doc.body).toBe('心願投票已截止，來看看結果吧')
     expect(doc.route).toBe('/wish')
     expect(doc.entityType).toBe('wish')
     expect(doc.actorUid).toBeNull()

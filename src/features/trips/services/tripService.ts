@@ -193,6 +193,7 @@ export async function createTrip(input: CreateTripInput, user: User): Promise<Tr
     startDate:   startTs,
     endDate:     endTs,
     currency:    data.currency,
+    defaultCountryCode: data.defaultCountryCode,
     ownerId:     user.uid,
     memberIds,
     wishVotingDeadlineAt:         null,
@@ -229,6 +230,7 @@ export async function createTrip(input: CreateTripInput, user: User): Promise<Tr
     startDate:   startTs,
     endDate:     endTs,
     currency:    data.currency,
+    defaultCountryCode: data.defaultCountryCode,
     ownerId:     user.uid,
     memberIds,
     wishVotingDeadlineAt:         null,
@@ -260,6 +262,7 @@ export async function updateTrip(
   if (validated.destination !== undefined) patch.destination = validated.destination
   if (validated.icon        !== undefined) patch.icon        = validated.icon
   if (validated.currency    !== undefined) patch.currency    = validated.currency
+  if (validated.defaultCountryCode !== undefined) patch.defaultCountryCode = validated.defaultCountryCode
   if (validated.startDate) patch.startDate = toLocalMidnightTimestamp(validated.startDate, Timestamp)
   if (validated.endDate)   patch.endDate   = toLocalMidnightTimestamp(validated.endDate,   Timestamp)
   await updateDoc(doc(db, ...P.trip(tripId)), patch)

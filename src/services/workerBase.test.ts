@@ -90,6 +90,40 @@ describe('workerFetch — HTTP error classification', () => {
     ).rejects.toBeInstanceOf(WorkerRejected)
   })
 
+  it('preserves stable Worker code and field metadata on explicit rejections', async () => {
+    stubFetchStatus(409, JSON.stringify({
+      error: 'schedule constraints changed while previewing',
+      code: 'PREVIEW_STALE',
+      field: 'schedules',
+      precommit: true,
+    }))
+    const { workerFetch } = await import('./workerBase')
+    await expect(
+      workerFetch('https://w.example.dev', 'tok', '/route-preview', {}),
+    ).rejects.toMatchObject({
+      name: 'WorkerRejected',
+      status: 409,
+      code: 'PREVIEW_STALE',
+      field: 'schedules',
+    })
+  })
+
+  it('allows a route preview to opt into a longer client timeout', async () => {
+    globalThis.fetch = vi.fn(async () => new Response('{}', { status: 200 })) as typeof fetch
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout')
+    const { workerFetch } = await import('./workerBase')
+
+    await workerFetch(
+      'https://w.example.dev',
+      'tok',
+      '/route-preview',
+      {},
+      { timeoutMs: 35_000 },
+    )
+
+    expect(timeoutSpy).toHaveBeenCalledWith(35_000)
+  })
+
   it('4xx JSON error body uses the Worker error message instead of raw JSON', async () => {
     const error = pdfPageLimitMessageJa('PDF_PAGE_LIMIT_EXCEEDED')
     stubFetchStatus(413, JSON.stringify({

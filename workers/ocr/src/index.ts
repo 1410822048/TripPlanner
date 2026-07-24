@@ -150,6 +150,21 @@ import {
 }                                                 from './attachment-url'
 import { checkGlobalRateLimit }                   from './rate-limiter'
 import {
+  autocompleteRoutePlace,
+  previewRoute,
+  resolveRoutePlaceForTrip,
+  routeProviderErrorCatcher,
+  routeValidationErrorCatcher,
+}                                                 from './route-preview'
+import { applyRoute, routeApplyErrorCatcher, routeApplyStatus } from './route-apply'
+import {
+  RouteApplyRequestSchema,
+  RouteApplyStatusRequestSchema,
+  RouteAutocompleteRequestSchema,
+  RoutePreviewRequestSchema,
+  RouteResolvePlaceRequestSchema,
+}                                                 from './route-schema'
+import {
   handleJsonRoute,
   validationErrorCatcher,
   fxErrorCatcher,
@@ -163,21 +178,13 @@ import {
 
 export { GlobalRateLimiter } from './rate-limiter'
 
-interface WorkerEnv {
-  FIREBASE_PROJECT_ID:      string
-  FIREBASE_STORAGE_BUCKET:  string
-  ALLOWED_ORIGINS:          string  // comma-separated
+type WorkerEnv = Env & {
   ANTHROPIC_FOUNDRY_API_KEY: string // secret — Microsoft Foundry (Azure AI Foundry) Claude API key
-  ANTHROPIC_FOUNDRY_RESOURCE: string // var — Foundry resource name (e.g. aic-claude-eus2)
-  CLAUDE_DEPLOYMENT:        string  // var — Foundry deployment name (e.g. claude-haiku-4-5-2)
-  BOOKING_CLAUDE_DEPLOYMENT?: string // var — optional faster deployment for booking PDF import
   FIREBASE_SERVICE_ACCOUNT: string  // secret — JSON string of service account key
   QWEN_API_KEY:             string  // secret; OpenAI-compatible Qwen provider API key
-  QWEN_BASE_URL:            string  // var; without /chat/completions
-  QWEN_MODEL:               string  // var; e.g. qwen3-vl-flash / qwen3.6-flash
-  OCR_PRIMARY_PROVIDER?:    string  // var; qwen | claude, default qwen
-  OCR_FALLBACK_PROVIDER?:   string  // var; claude | qwen | none, default claude
-  OCR_COMPARE_ENABLED?:     string  // var; true only for dev / QA environments
+  GEOAPIFY_API_KEY?:        string  // secret
+  ORS_API_KEY?:             string  // secret
+  ROUTE_PREVIEW_HMAC_SECRET?: string // secret
   /** Sentry DSN for Worker-side telemetry (abuse alerts, future error
    *  reporting). Same DSN as the frontend's VITE_SENTRY_DSN -- events
    *  land in the same project, filterable by `server_name: 'tripmate-ocr'`.
@@ -186,31 +193,24 @@ interface WorkerEnv {
   SENTRY_DSN:               string
   /** Per-PoP per-uid rate limiter for the OCR endpoint. Cheap first-line
    *  filter (~0ms). Counters are local to each Cloudflare location. */
-  OCR_RATE_LIMITER:         RateLimit
   /** Per-PoP per-uid rate limiter for the member-cascade endpoint. */
-  CASCADE_RATE_LIMITER:     RateLimit
   /** Per-PoP per-uid rate limiter for the trip-delete endpoint.
    *  Tighter than member cascade because trip-delete is heavy
    *  (O(100) docs + Storage purge per call). */
-  TRIP_CASCADE_RATE_LIMITER: RateLimit
   /** Per-PoP per-uid rate limiter for expense create/update. Same
    *  cap as OCR (30/min) -- one expense per ~2s sustained covers
    *  rapid form retries without blowing through Firestore admin
    *  write quotas. */
-  EXPENSE_RATE_LIMITER:     RateLimit
   /** Per-PoP per-uid rate limiter for settlement create/delete.
    *  Tighter (5/min) than expense -- settlement is a clicked-button
    *  rare event, and create runs a full pairwise debt computation
    *  (tx + 2 runQuery reads) per request. */
-  SETTLEMENT_RATE_LIMITER:  RateLimit
   /** Per-PoP per-uid rate limiter for the attachment signed-URL endpoint
    *  (/attachment-url, full/pdf entity-ref). Looser (120/min) than expense
    *  -- the work is a local RSA sign (no OCR / no Firestore write). */
-  ATTACHMENT_URL_RATE_LIMITER: RateLimit
   /** Cross-PoP global rate limiter. Durable Object — strongly
    *  consistent counter per-uid that catches multi-PoP abuse that
    *  would slip past the per-PoP binding. ~10-50ms latency cost. */
-  GLOBAL_LIMITER:           DurableObjectNamespace
 }
 
 /** Resolve CORS headers for a given request origin. We allowlist
@@ -305,6 +305,9 @@ export const RATE_CLASSES = {
   'booking-write':    { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'booking-write',    globalLimit: 60 },
   'settlement-write': { limiter: 'SETTLEMENT_RATE_LIMITER',     scope: 'settlement-write', globalLimit: 10 },
   'attachment-url':   { limiter: 'ATTACHMENT_URL_RATE_LIMITER', scope: 'attachment-url',   globalLimit: 300 },
+  'route-search':     { limiter: 'ROUTE_SEARCH_RATE_LIMITER',    scope: 'route-search',     globalLimit: 60 },
+  'route-preview':    { limiter: 'ROUTE_PREVIEW_RATE_LIMITER',   scope: 'route-preview',    globalLimit: 10 },
+  'route-write':      { limiter: 'ROUTE_WRITE_RATE_LIMITER',     scope: 'route-write',      globalLimit: 10 },
   membership:         { limiter: 'CASCADE_RATE_LIMITER',        scope: 'cascade',          globalLimit: 10 },
 } as const satisfies Record<string, RateClass>
 
@@ -317,6 +320,8 @@ interface DispatchCtx {
   uid:     string
   traceId: string | undefined
   env:     WorkerEnv
+  executionCtx: ExecutionContext
+  requestUrl: string
 }
 
 interface RouteDescriptor {
@@ -799,6 +804,78 @@ export const ROUTES: RouteDescriptor[] = [
       catchDomain: ocrErrorCatcher,
     }),
   },
+  {
+    path: '/route-autocomplete', rate: 'route-search',
+    dispatch: c => handleJsonRoute({
+      endpoint: 'route-autocomplete', body: c.body, cors: c.cors, uid: c.uid,
+      schema: RouteAutocompleteRequestSchema,
+      handle: data => autocompleteRoutePlace(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_PROJECT_ID, c.env),
+      formatLog: (_data, result) => `candidates=${result.length}`,
+      catchDomain: chainCatchers(
+        routeProviderErrorCatcher,
+        routeValidationErrorCatcher,
+      ),
+    }),
+  },
+  {
+    path: '/route-resolve-place', rate: 'route-search',
+    dispatch: c => handleJsonRoute({
+      endpoint: 'route-resolve-place', body: c.body, cors: c.cors, uid: c.uid,
+      schema: RouteResolvePlaceRequestSchema,
+      handle: data => resolveRoutePlaceForTrip(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_PROJECT_ID, c.env),
+      formatLog: (_data, result) => `candidates=${result.candidates.length}`,
+      catchDomain: chainCatchers(
+        routeProviderErrorCatcher,
+        routeValidationErrorCatcher,
+      ),
+    }),
+  },
+  {
+    path: '/route-preview', rate: 'route-preview',
+    dispatch: c => handleJsonRoute({
+      endpoint: 'route-preview', body: c.body, cors: c.cors, uid: c.uid,
+      schema: RoutePreviewRequestSchema,
+      handle: data => previewRoute(
+        c.uid,
+        data,
+        c.env.FIREBASE_SERVICE_ACCOUNT,
+        c.env.FIREBASE_PROJECT_ID,
+        c.env,
+        {
+          cache: caches.default,
+          cacheOrigin: c.requestUrl,
+          waitUntil: promise => c.executionCtx.waitUntil(promise),
+        },
+      ),
+      formatLog: (_data, result) => `revision=${result.previewRevision} legs=${result.legs.length} canApply=${result.canApply}`,
+      catchDomain: chainCatchers(
+        routeProviderErrorCatcher,
+        routeValidationErrorCatcher,
+      ),
+    }),
+  },
+  {
+    path: '/route-apply', rate: 'route-write',
+    dispatch: c => handleJsonRoute({
+      endpoint: 'route-apply', body: c.body, cors: c.cors, uid: c.uid,
+      schema: RouteApplyRequestSchema,
+      handle: data => applyRoute(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_PROJECT_ID, c.env.ROUTE_PREVIEW_HMAC_SECRET),
+      formatLog: (_data, result) => `revision=${result.revision} status=${result.status}`,
+      catchDomain: routeApplyErrorCatcher,
+      cascadePrecommit: true,
+    }),
+  },
+  {
+    path: '/route-apply-status', rate: 'route-write',
+    dispatch: c => handleJsonRoute({
+      endpoint: 'route-apply-status', body: c.body, cors: c.cors, uid: c.uid,
+      schema: RouteApplyStatusRequestSchema,
+      handle: data => routeApplyStatus(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_PROJECT_ID),
+      formatLog: (_data, result) => `revision=${result.revision} status=${result.status}`,
+      catchDomain: routeApplyErrorCatcher,
+      cascadePrecommit: true,
+    }),
+  },
 ]
 
 // Two independent schedules on the same Worker (wrangler.jsonc
@@ -809,7 +886,7 @@ const DAILY_MAINTENANCE_CRON = '0 3 * * *'
 const WISH_DEADLINE_SWEEP_CRON = '*/5 * * * *'
 
 export default {
-  async fetch(request, env): Promise<Response> {
+  async fetch(request, env, ctx): Promise<Response> {
     const url     = new URL(request.url)
     const cors    = corsHeaders(env, request.headers.get('Origin'))
 
@@ -900,7 +977,7 @@ export default {
     // Per-route variation (schema / handle / formatLog / catchDomain /
     // cascadePrecommit) lives in the descriptor; auth + rate-limit + body
     // size were handled above. See route-dispatch.ts for the wrapper.
-    return route.dispatch({ body, cors, uid, traceId, env })
+    return route.dispatch({ body, cors, uid, traceId, env, executionCtx: ctx, requestUrl: request.url })
   },
 
   // ─── Cron dispatch ──────────────────────────────────────────────────

@@ -204,6 +204,18 @@ export class TxAbort extends Error {
   }
 }
 
+/** Caller-owned deadline/cancellation fired before a transaction could
+ * produce a definitive result. Unlike a commit timeout, read-only preview
+ * cancellation is never ambiguous and must not enter the retry loop. */
+export class TxCancelled extends Error {
+  readonly cause: unknown
+  constructor(cause: unknown) {
+    super('transaction cancelled by caller')
+    this.name = 'TxCancelled'
+    this.cause = cause
+  }
+}
+
 const MAX_RETRIES = 5
 /** Base + cap + jitter for retry backoff. Without backoff a contended
  *  doc (e.g. two near-simultaneous expense updates on the same trip)
@@ -243,8 +255,24 @@ function backoffDelay(attempt: number): number {
   return Math.min(exp + jitter, BACKOFF_CAP_MS)
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
+function throwIfCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new TxCancelled(signal.reason)
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return new Promise(resolve => setTimeout(resolve, ms))
+  throwIfCancelled(signal)
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(new TxCancelled(signal.reason))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 /**
@@ -266,21 +294,23 @@ export async function runFirestoreTransaction<T>(
   accessToken: string,
   projectId:   string,
   body:        (tx: TxContext) => Promise<TxResult<T>>,
+  options:     { signal?: AbortSignal } = {},
 ): Promise<T> {
   let lastError: unknown
   const startMs = Date.now()
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      const txId = await beginTransaction(accessToken, projectId)
+      throwIfCancelled(options.signal)
+      const txId = await beginTransaction(accessToken, projectId, options.signal)
       const ctx: TxContext = {
-        get:      path  => readDocInTransaction (accessToken, projectId, path,  txId),
-        runQuery: query => runQueryInTransaction(accessToken, projectId, query, txId),
+        get:      path  => readDocInTransaction (accessToken, projectId, path,  txId, options.signal),
+        runQuery: query => runQueryInTransaction(accessToken, projectId, query, txId, options.signal),
       }
       // The body only READS + computes + returns writes -- the actual
       // writes land in commitTransaction below. So re-running the body
       // on a retry is always safe: nothing has been written yet.
       const bodyResult = await body(ctx)
-      await commitTransaction(accessToken, projectId, txId, bodyResult.writes)
+      await commitTransaction(accessToken, projectId, txId, bodyResult.writes, options.signal)
       return bodyResult.result
     } catch (e) {
       lastError = e
@@ -298,6 +328,9 @@ export async function runFirestoreTransaction<T>(
       // create's id-probe short-circuit makes a *client* retry safe, but
       // that is the client's call, not a blind tx re-run here.)
       if (e instanceof TxCommitAmbiguous) throw e
+      if (e instanceof TxCancelled || options.signal?.aborted) {
+        throw e instanceof TxCancelled ? e : new TxCancelled(options.signal?.reason)
+      }
 
       // Expired admin token -- refresh and let the caller retry.
       if (isUnauthorized(e)) {
@@ -328,7 +361,7 @@ export async function runFirestoreTransaction<T>(
         console.warn(`[firestore-tx] ${kind} attempt ${attempt + 1}/${MAX_RETRIES}: ${(e as Error)?.message ?? e}`)
         const elapsed = Date.now() - startMs
         if (attempt < MAX_RETRIES - 1 && elapsed < TX_TOTAL_DEADLINE_MS) {
-          await sleep(backoffDelay(attempt))
+          await sleep(backoffDelay(attempt), options.signal)
           continue
         }
         throw new TxRetryExhausted(attempt + 1, e)
@@ -380,7 +413,12 @@ export class TxCommitAmbiguous extends Error {
 
 // ─── REST primitives ──────────────────────────────────────────────
 
-async function beginTransaction(accessToken: string, projectId: string): Promise<string> {
+function rpcSignal(externalSignal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(TX_RPC_TIMEOUT_MS)
+  return externalSignal ? AbortSignal.any([timeout, externalSignal]) : timeout
+}
+
+async function beginTransaction(accessToken: string, projectId: string, signal?: AbortSignal): Promise<string> {
   const url = `${BASE}/projects/${projectId}/databases/(default)/documents:beginTransaction`
   const res = await fetch(url, {
     cache: 'no-store',
@@ -390,7 +428,7 @@ async function beginTransaction(accessToken: string, projectId: string): Promise
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ options: { readWrite: {} } }),
-    signal: AbortSignal.timeout(TX_RPC_TIMEOUT_MS),
+    signal: rpcSignal(signal),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
@@ -405,6 +443,7 @@ async function readDocInTransaction(
   projectId:   string,
   path:        string,
   txId:        string,
+  signal?:     AbortSignal,
 ): Promise<TxReadDoc> {
   // Single-doc read within a transaction uses documents:batchGet,
   // NOT the GET endpoint (the GET endpoint accepts `?transaction=`
@@ -423,7 +462,7 @@ async function readDocInTransaction(
       documents: [fullName],
       transaction: txId,
     }),
-    signal: AbortSignal.timeout(TX_RPC_TIMEOUT_MS),
+    signal: rpcSignal(signal),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
@@ -457,6 +496,7 @@ async function runQueryInTransaction(
   projectId:   string,
   query:       TxQuery,
   txId:        string,
+  signal?:     AbortSignal,
 ): Promise<TxReadDoc[]> {
   // Firestore's :runQuery accepts an arbitrary parent prefix; the
   // structuredQuery's `from.collectionId` selects the child collection
@@ -501,7 +541,7 @@ async function runQueryInTransaction(
     // the open tx so their snapshots feed the commit-time conflict
     // check -- same protocol as :batchGet's `transaction` field.
     body: JSON.stringify({ structuredQuery, transaction: txId }),
-    signal: AbortSignal.timeout(TX_RPC_TIMEOUT_MS),
+    signal: rpcSignal(signal),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
@@ -534,6 +574,7 @@ async function commitTransaction(
   projectId:   string,
   txId:        string,
   writes:      TxWrite[],
+  signal?:     AbortSignal,
 ): Promise<void> {
   const url = `${BASE}/projects/${projectId}/databases/(default)/documents:commit`
   const restWrites = writes.map(w => {
@@ -571,17 +612,21 @@ async function commitTransaction(
         transaction: txId,
         writes:      restWrites,
       }),
-      signal: AbortSignal.timeout(TX_RPC_TIMEOUT_MS),
+      signal: rpcSignal(signal),
     })
   } catch (e) {
-    // A commit that overran the per-RPC timeout is AMBIGUOUS -- Firestore
-    // may have applied the write before we stopped waiting for the
-    // response. Tag it so the wrapper never blind-retries (see the
-    // TxCommitAmbiguous handling in runFirestoreTransaction). Other
-    // fetch rejections (genuine network failure) propagate as-is: they
-    // predate this timeout, are also non-retried, and surface as a
-    // generic 5xx -> client ambiguous, which is the original behaviour.
-    if (isRpcTimeout(e)) throw new TxCommitAmbiguous(e)
+    if (signal?.aborted) {
+      if (writes.length === 0) throw new TxCancelled(signal.reason)
+      throw new TxCommitAmbiguous(e)
+    }
+    // A write-bearing commit timeout is AMBIGUOUS: Firestore may have
+    // applied the write before we stopped waiting. A read-only commit has
+    // nothing to double-apply, so preserve its timeout for the wrapper's
+    // existing bounded retry path.
+    if (isRpcTimeout(e)) {
+      if (writes.length === 0) throw e
+      throw new TxCommitAmbiguous(e)
+    }
     throw e
   }
   if (!res.ok) {

@@ -8,6 +8,8 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import type { Schedule } from '@/types'
+import { resolvedPlace, scheduleLocationName } from '@/types/schedule'
+import { effectiveEndTime } from '../routeModel'
 import BottomSheet from '@/components/ui/BottomSheet'
 import { CATEGORY_ICON, SCHEDULE_CATEGORY_LABEL, SCHEDULE_CATEGORY_STYLE } from '@/shared/categoryMeta'
 import { fromLocalDateString } from '@/utils/dates'
@@ -28,9 +30,11 @@ function formatDate(date: string): string {
 }
 
 function formatTime(schedule: Schedule): string {
-  if (!schedule.startTime && !schedule.endTime) return '時間未定'
-  if (schedule.startTime && schedule.endTime) return `${schedule.startTime} — ${schedule.endTime}`
-  return schedule.startTime ?? schedule.endTime ?? '時間未定'
+  const start = schedule.startTime
+  const end = effectiveEndTime(schedule)
+  if (!start && !end) return '時間未定'
+  if (start && end) return `${start} — ${end}`
+  return start ?? end ?? '時間未定'
 }
 
 export default function ScheduleReadonlyModal({
@@ -42,7 +46,8 @@ export default function ScheduleReadonlyModal({
 }: Props) {
   const CategoryIcon = CATEGORY_ICON[schedule.category]
   const style = SCHEDULE_CATEGORY_STYLE[schedule.category]
-  const mapHref = addressMapHref(schedule.location?.address ?? schedule.location?.name)
+  const locationName = scheduleLocationName(schedule.location)
+  const mapHref = addressMapHref(resolvedPlace(schedule.location)?.address ?? locationName)
 
   return (
     <BottomSheet
@@ -87,10 +92,10 @@ export default function ScheduleReadonlyModal({
             <h3 className="mt-2 m-0 text-[19px] font-black leading-snug text-ink break-words">
               {schedule.title}
             </h3>
-            {schedule.location?.name && (
+            {locationName && (
               <div className="mt-1.5 flex items-center gap-1 text-[12px] font-semibold text-muted min-w-0">
                 <MapPin size={12} strokeWidth={2} className="shrink-0" />
-                <span className="truncate">{schedule.location.name}</span>
+                <span className="truncate">{locationName}</span>
               </div>
             )}
           </div>
@@ -100,8 +105,8 @@ export default function ScheduleReadonlyModal({
       <section className="overflow-hidden rounded-card border border-border bg-surface">
         <DetailRow icon={CalendarDays} label="日期" value={formatDate(schedule.date)} accent={style.color} />
         <DetailRow icon={Clock} label="時間" value={formatTime(schedule)} mono accent={style.color} />
-        {schedule.location?.name && (
-          <DetailRow icon={MapPin} label="地點" value={schedule.location.name} accent={style.color} />
+        {locationName && (
+          <DetailRow icon={MapPin} label="地點" value={locationName} accent={style.color} />
         )}
         {typeof schedule.estimatedCostMinor === 'number' && schedule.estimatedCostMinor > 0 && (
           <DetailRow
@@ -125,7 +130,7 @@ export default function ScheduleReadonlyModal({
             borderColor: style.color,
             color: style.color,
           }}
-          aria-label={`在地圖中開啟 ${schedule.location?.name ?? ''}`}
+          aria-label={`在地圖中開啟 ${locationName ?? ''}`}
         >
           <MapPin size={15} strokeWidth={2.2} />
           <span className="text-[12.5px] font-bold">地圖</span>

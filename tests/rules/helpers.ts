@@ -87,6 +87,7 @@ export async function seedFixture(env: RulesTestEnvironment): Promise<void> {
       startDate:   now,
       endDate:     now,
       currency:    'JPY',
+      defaultCountryCode: 'JP',
       ownerId:     OWNER_UID,
       memberIds:   allMembers,
       // Always-present invariant (see firestore.rules trip create rule +

@@ -7,6 +7,7 @@ import { WHEEL_ITEM_HEIGHT, WHEEL_VISIBLE, WHEEL_PAD_ROWS } from './constants'
 interface Props {
   value:       string        // 'HH:MM' or ''
   onChange:    (v: string) => void
+  ariaLabel?:  string
   placeholder?: string
   error?:      boolean
   /** 分鐘間隔（預設 5）— 5 分鐘粒度足以涵蓋旅行行程 */
@@ -20,7 +21,7 @@ function snapMinute(m: number, step: number): number {
 }
 
 export default function TimePicker({
-  value, onChange, placeholder = '選擇時間', error = false, minuteStep = 5,
+  value, onChange, ariaLabel, placeholder = '選擇時間', error = false, minuteStep = 5,
 }: Props) {
   const [open, setOpen] = useState(false)
 
@@ -75,6 +76,9 @@ export default function TimePicker({
       <div
         role="button"
         tabIndex={0}
+        aria-label={ariaLabel}
+        aria-haspopup="dialog"
+        aria-expanded={open}
         onClick={() => setOpen(true)}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(true) } }}
         className={[

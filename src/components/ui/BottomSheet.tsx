@@ -7,6 +7,8 @@ interface Props {
   isOpen:   boolean
   title:    ReactNode
   onClose:  () => void
+  /** Temporarily false while a commit result is unresolved. */
+  dismissible?: boolean
   footer?:  ReactNode
   children: ReactNode
 }
@@ -20,9 +22,9 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
 
-export default function BottomSheet({ isOpen, title, onClose, footer, children }: Props) {
+export default function BottomSheet({ isOpen, title, onClose, dismissible = true, footer, children }: Props) {
   const { sheetRef, sheetTransform, backdropOpacity, pointerActive, dragHandlers } =
-    useBottomSheet({ isOpen, onClose })
+    useBottomSheet({ isOpen, onClose, dismissible })
 
   const titleId    = useId()
   const returnRef  = useRef<HTMLElement | null>(null)
@@ -34,6 +36,8 @@ export default function BottomSheet({ isOpen, title, onClose, footer, children }
   // the user is typing into.
   const onCloseRef = useRef(onClose)
   useEffect(() => { onCloseRef.current = onClose })
+  const dismissibleRef = useRef(dismissible)
+  useEffect(() => { dismissibleRef.current = dismissible })
 
   // 開啟時鎖住 <main> scroll（app 的實際滾動容器）
   // iOS Safari: overflow:hidden 單獨不足以阻止 rubberband，需搭配 touch-action:none
@@ -80,7 +84,10 @@ export default function BottomSheet({ isOpen, title, onClose, footer, children }
     const raf = requestAnimationFrame(() => sheetRef.current?.focus())
 
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { onCloseRef.current(); return }
+      if (e.key === 'Escape') {
+        if (dismissibleRef.current) onCloseRef.current()
+        return
+      }
       if (e.key !== 'Tab') return
       const sheet = sheetRef.current
       if (!sheet) return
@@ -108,7 +115,7 @@ export default function BottomSheet({ isOpen, title, onClose, footer, children }
   return (
     <>
       <div
-        onClick={onClose}
+        onClick={dismissible ? onClose : undefined}
         className="fixed inset-0 z-[200]"
         style={{
           background: `rgba(0,0,0,${backdropOpacity})`,
@@ -133,9 +140,10 @@ export default function BottomSheet({ isOpen, title, onClose, footer, children }
 
         <div
           {...dragHandlers}
+          aria-disabled={!dismissible}
           className={[
             'shrink-0 select-none',
-            pointerActive ? 'cursor-grabbing' : 'cursor-grab',
+            !dismissible ? 'cursor-default' : pointerActive ? 'cursor-grabbing' : 'cursor-grab',
           ].join(' ')}
           style={{ touchAction: 'none' }}
         >
@@ -151,10 +159,12 @@ export default function BottomSheet({ isOpen, title, onClose, footer, children }
               {title}
             </h3>
             <button
+              type="button"
+              disabled={!dismissible}
               onClick={onClose}
               onPointerDown={e => e.stopPropagation()}
               aria-label="關閉"
-              className="w-[30px] h-[30px] rounded-full border-none bg-app text-muted flex items-center justify-center cursor-pointer touch-auto hover:bg-border transition-colors"
+              className="w-[30px] h-[30px] rounded-full border-none bg-app text-muted flex items-center justify-center cursor-pointer touch-auto hover:bg-border transition-colors disabled:cursor-not-allowed disabled:opacity-45"
             >
               <X size={16} strokeWidth={2} />
             </button>

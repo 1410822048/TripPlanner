@@ -158,6 +158,27 @@ describe('normalizeScheduleWrite', () => {
     })).templateKey).toBe('schedule.updated')
 
     expect(single(normalizeScheduleWrite({
+      eventId: 'sc-duration', tripId: 'trip-1', scheduleId: 's-1',
+      before: { ...base, durationMinutes: 60 },
+      after: { ...base, durationMinutes: 90, updatedBy: 'u2' },
+    })).templateKey).toBe('schedule.updated')
+
+    expect(single(normalizeScheduleWrite({
+      eventId: 'sc-time-mode', tripId: 'trip-1', scheduleId: 's-1',
+      before: { ...base, timeMode: 'preferred' },
+      after: { ...base, timeMode: 'fixed', updatedBy: 'u2' },
+    })).templateKey).toBe('schedule.updated')
+
+    const optimized = single(normalizeScheduleWrite({
+      eventId: 'sc-route-doc', tripId: 'trip-1', scheduleId: 's-1',
+      before: { ...base, routeRevision: null },
+      after: { ...base, order: 0, routeRevision: 'route-revision-1', updatedBy: 'u2' },
+    }))
+    expect(optimized.eventId).toBe('route-revision-1')
+    expect(optimized.entityId).toBe('route-revision-1')
+    expect(optimized.templateKey).toBe('route.optimized')
+
+    expect(single(normalizeScheduleWrite({
       eventId: 'sc4', tripId: 'trip-1', scheduleId: 's-1', before: base, after: null,
     })).templateKey).toBe('schedule.deleted')
   })

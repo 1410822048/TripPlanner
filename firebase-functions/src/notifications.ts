@@ -21,7 +21,7 @@ export const NOTIFICATION_RETENTION_MS = 30 * 24 * 3600 * 1000
  *  chunk under that cap while preserving create-only retry semantics. */
 const MAX_BATCH_WRITES = 500
 
-const FALLBACK_NAME = 'メンバー'
+const FALLBACK_NAME = '成員'
 
 async function loadMemberName(tripId: string, uid: string): Promise<string> {
   const snap = await getFirestore().doc(`trips/${tripId}/members/${uid}`).get()
@@ -57,7 +57,7 @@ function formatMoney(amountMinor: number, currency: string): string {
   return currency === 'JPY' ? `¥${formatted}` : `${currency} ${formatted}`
 }
 
-// Actor-based bodies: "○○さんが〜しました". Excludes settlement (custom
+// Actor-based bodies: "○○ 新增了〜". Excludes settlement (custom
 // direction/amount body), the member-subject templates (role_changed /
 // removed / removed_self name the SUBJECT, not the actor — which is often
 // unresolvable on admin/Worker writes), and system templates (no actor at
@@ -74,7 +74,7 @@ type ActorTemplateKey = Exclude<
 type SystemTemplateKey = 'wish.deadline_closed'
 
 const SYSTEM_BODY: Record<SystemTemplateKey, string> = {
-  'wish.deadline_closed': 'ウィッシュの投票が締め切られました。結果を確認しましょう',
+  'wish.deadline_closed': '心願投票已截止，來看看結果吧',
 }
 
 function isSystemTemplate(templateKey: NormalizedPushEvent['templateKey']): templateKey is SystemTemplateKey {
@@ -82,31 +82,32 @@ function isSystemTemplate(templateKey: NormalizedPushEvent['templateKey']): temp
 }
 
 const BODY_TEMPLATES: Record<ActorTemplateKey, (actorName: string) => string> = {
-  'member.joined':            name => `${name}さんが旅程に参加しました`,
-  'expense.created':          name => `${name}さんが費用を追加しました`,
-  'expense.updated':          name => `${name}さんが費用を更新しました`,
-  'expense.deleted':          name => `${name}さんが費用を削除しました`,
-  'booking.created':          name => `${name}さんが予約を追加しました`,
-  'booking.updated':          name => `${name}さんが予約を更新しました`,
-  'booking.deleted':          name => `${name}さんが予約を削除しました`,
-  'schedule.created':         name => `${name}さんが予定を追加しました`,
-  'schedule.updated':         name => `${name}さんが予定を更新しました`,
-  'schedule.deleted':         name => `${name}さんが予定を削除しました`,
-  'wish.created':             name => `${name}さんが行きたい場所を追加しました`,
-  'wish.updated':             name => `${name}さんが行きたい場所を更新しました`,
-  'wish.deleted':             name => `${name}さんが行きたい場所を削除しました`,
-  'planning.created':         name => `${name}さんが準備リストを追加しました`,
-  'planning.updated':         name => `${name}さんが準備リストを更新しました`,
-  'planning.deleted':         name => `${name}さんが準備リストを削除しました`,
-  'trip.title_updated':       name => `${name}さんが旅程名を変更しました`,
-  'trip.dates_updated':       name => `${name}さんが日程を変更しました`,
-  'trip.destination_updated': name => `${name}さんが目的地を変更しました`,
+  'member.joined':            name => `${name} 加入了行程`,
+  'expense.created':          name => `${name} 新增了費用`,
+  'expense.updated':          name => `${name} 更新了費用`,
+  'expense.deleted':          name => `${name} 刪除了費用`,
+  'booking.created':          name => `${name} 新增了訂單`,
+  'booking.updated':          name => `${name} 更新了訂單`,
+  'booking.deleted':          name => `${name} 刪除了訂單`,
+  'schedule.created':         name => `${name} 新增了行程`,
+  'schedule.updated':         name => `${name} 更新了行程`,
+  'schedule.deleted':         name => `${name} 刪除了行程`,
+  'route.optimized':          name => `${name} 已整理行程順序`,
+  'wish.created':             name => `${name} 新增了心願`,
+  'wish.updated':             name => `${name} 更新了心願`,
+  'wish.deleted':             name => `${name} 刪除了心願`,
+  'planning.created':         name => `${name} 新增了準備項目`,
+  'planning.updated':         name => `${name} 更新了準備項目`,
+  'planning.deleted':         name => `${name} 刪除了準備項目`,
+  'trip.title_updated':       name => `${name} 變更了行程名稱`,
+  'trip.dates_updated':       name => `${name} 變更了日期`,
+  'trip.destination_updated': name => `${name} 變更了目的地`,
 }
 
 const ROLE_LABEL: Record<'owner' | 'editor' | 'viewer', string> = {
-  owner:  'オーナー',
-  editor: '編集者',
-  viewer: '閲覧者',
+  owner:  '擁有者',
+  editor: '編輯者',
+  viewer: '檢視者',
 }
 
 type MemberSubjectTemplateKey = 'member.role_changed' | 'member.removed' | 'member.removed_self' | 'member.left'
@@ -130,14 +131,14 @@ function memberSubjectBody(
   switch (templateKey) {
     case 'member.role_changed':
       return subjectRole
-        ? `あなたの権限が${ROLE_LABEL[subjectRole]}に変更されました`
-        : 'あなたの権限が変更されました'
+        ? `你的權限已變更為${ROLE_LABEL[subjectRole]}`
+        : '你的權限已變更'
     case 'member.removed':
-      return `${name}さんが旅程から削除されました`
+      return `${name} 已被移出行程`
     case 'member.removed_self':
-      return '旅程から削除されました'
+      return '你已被移出行程'
     case 'member.left':
-      return `${name}さんが旅程から退出しました`
+      return `${name} 已退出行程`
   }
 }
 
@@ -153,13 +154,13 @@ function settlementBody(
   amountMinor: number,
   currency: string,
 ): string {
-  const verb = action === 'deleted' ? '取り消しました' : '記録しました'
-  return `${actorName}さんが ${fromName}さん → ${toName}さん の ${formatMoney(amountMinor, currency)} を${verb}`
+  const verb = action === 'deleted' ? '取消了' : '記錄了'
+  return `${actorName} ${verb} ${fromName} → ${toName} 的 ${formatMoney(amountMinor, currency)}`
 }
 
 function settlementFallbackBody(actorName: string, action: PushAction): string {
-  const verb = action === 'deleted' ? '取り消しました' : '記録しました'
-  return `${actorName}さんが清算記録を${verb}`
+  const verb = action === 'deleted' ? '取消了' : '記錄了'
+  return `${actorName} ${verb}一筆清算`
 }
 
 function isSettlementTemplate(templateKey: NormalizedPushEvent['templateKey']): templateKey is 'settlement.created' | 'settlement.deleted' {

@@ -105,10 +105,14 @@ export function requireWorkerWriteBase(): string {
  */
 export class WorkerRejected extends Error {
   readonly status: number
-  constructor(status: number, message: string) {
+  readonly code: string | undefined
+  readonly field: string | undefined
+  constructor(status: number, message: string, code?: string, field?: string) {
     super(message)
     this.name = 'WorkerRejected'
     this.status = status
+    this.code = code
+    this.field = field
   }
 }
 
@@ -182,7 +186,7 @@ export async function workerFetch(
   idToken:  string,
   endpoint: string,
   body:     unknown,
-  opts?:    { traceId?: string },
+  opts?:    { traceId?: string; timeoutMs?: number },
 ): Promise<unknown> {
   const headers: Record<string, string> = {
     Authorization:  `Bearer ${idToken}`,
@@ -191,13 +195,17 @@ export async function workerFetch(
   if (opts?.traceId) {
     headers[UPLOAD_TRACE_HEADER] = opts.traceId
   }
+  const timeoutMs = opts?.timeoutMs ?? WORKER_FETCH_TIMEOUT_MS
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 120_000) {
+    throw new Error('workerFetch timeoutMs must be between 1 and 120000')
+  }
   let res: Response
   try {
     res = await fetch(`${base}${endpoint}`, {
       method:  'POST',
       headers,
       body:    JSON.stringify(body),
-      signal:  AbortSignal.timeout(WORKER_FETCH_TIMEOUT_MS),
+      signal:  AbortSignal.timeout(timeoutMs),
     })
   } catch (e) {
     // fetch() throws on AbortError (timeout), CORS preflight fail,
@@ -214,8 +222,10 @@ export async function workerFetch(
   const detail = await res.text().catch(() => '<unreadable>')
   const parsedError = parseWorkerErrorBody(detail)
   const message = workerErrorMessage(endpoint, res.status, detail, parsedError)
+  const code = typeof parsedError?.code === 'string' ? parsedError.code : undefined
+  const field = typeof parsedError?.field === 'string' ? parsedError.field : undefined
   if (DEFINITIVE_REJECT_STATUSES.has(res.status)) {
-    throw new WorkerRejected(res.status, message)
+    throw new WorkerRejected(res.status, message, code, field)
   }
   // 5xx / unknown -- ambiguous BY DEFAULT (the Worker may have committed
   // before the response was lost). EXCEPTION: a JSON body with
@@ -225,13 +235,15 @@ export async function workerFetch(
   // it as WorkerRejected instead of leaving a phantom optimistic row +
   // misleading "still confirming" toast.
   if (parsedError?.precommit === true) {
-    throw new WorkerRejected(res.status, message)
+    throw new WorkerRejected(res.status, message, code, field)
   }
   throw new WorkerAmbiguous(message, undefined)
 }
 
 type WorkerErrorBody = {
   error?: unknown
+  code?: unknown
+  field?: unknown
   precommit?: unknown
 }
 

@@ -33,6 +33,7 @@ export interface Trip {
   startDate: Timestamp
   endDate: Timestamp
   currency: string          // 'TWD' | 'JPY' | 'USD' ...
+  defaultCountryCode: string // ISO 3166-1 alpha-2; independent from currency after create
   ownerId: string
   /**
    * Denormalised list of all member uids. Mirrored from
@@ -102,6 +103,7 @@ export const CreateTripSchema = z.object({
   startDate:   z.string().min(1, '請選擇開始日期'),
   endDate:     z.string().min(1, '請選擇結束日期'),
   currency:    z.string().default('TWD'),
+  defaultCountryCode: z.string().regex(/^[A-Z]{2}$/, '請選擇旅程國家'),
 })
 export type CreateTripInput = z.infer<typeof CreateTripSchema>
 
@@ -122,6 +124,7 @@ export const TripDocSchema = z.object({
   startDate:   TimestampSchema,
   endDate:     TimestampSchema,
   currency:    z.string(),
+  defaultCountryCode: z.string().regex(/^[A-Z]{2}$/),
   ownerId:     z.string().min(1),
   memberIds:   z.array(z.string().min(1)).min(1),
   lastActivityByFeature: z.object({

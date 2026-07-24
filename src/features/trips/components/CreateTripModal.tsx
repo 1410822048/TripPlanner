@@ -9,12 +9,15 @@ import { inputClass } from '@/components/ui/inputStyle'
 import LoadingText from '@/components/ui/LoadingText'
 import SaveButton from '@/components/ui/SaveButton'
 import CurrencyPicker from '@/components/ui/CurrencyPicker'
+import CountryPicker from '@/components/ui/CountryPicker'
 import { DEFAULT_CURRENCY } from '@/utils/currency'
+import { currencyCountrySuggestion } from '@/utils/country'
 import { useAuth } from '@/hooks/useAuth'
 import { useCreateTrip } from '@/features/trips/hooks/useTrips'
 import { useTripStore } from '@/store/tripStore'
 import { CreateTripSchema } from '@/types/trip'
 import { toast } from '@/shared/toast'
+import { countryAfterCurrencyChange } from '@/features/trips/countryContext'
 
 interface Props {
   isOpen:  boolean
@@ -33,6 +36,10 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
   const [startDate,   setStartDate]   = useState('')
   const [endDate,     setEndDate]     = useState('')
   const [currency,    setCurrency]    = useState(DEFAULT_CURRENCY)
+  const [defaultCountryCode, setDefaultCountryCode] = useState(
+    () => currencyCountrySuggestion(DEFAULT_CURRENCY) ?? '',
+  )
+  const [countryWasSelected, setCountryWasSelected] = useState(false)
   const [errors,      setErrors]      = useState<Record<string, string>>({})
   const [signingIn,   setSigningIn]   = useState(false)
 
@@ -40,14 +47,17 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
 
   function resetForm() {
     setTitle(''); setDestination(''); setStartDate(''); setEndDate('')
-    setCurrency(DEFAULT_CURRENCY); setErrors({})
+    setCurrency(DEFAULT_CURRENCY)
+    setDefaultCountryCode(currencyCountrySuggestion(DEFAULT_CURRENCY) ?? '')
+    setCountryWasSelected(false)
+    setErrors({})
   }
 
   function close() { onClose(); resetForm() }
 
   function validate() {
     const parsed = CreateTripSchema.safeParse({
-      title, destination, startDate, endDate, currency,
+      title, destination, startDate, endDate, currency, defaultCountryCode,
     })
     if (!parsed.success) {
       const errs: Record<string, string> = {}
@@ -144,7 +154,7 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
       isOpen
       onClose={close}
       title="新旅程"
-      footer={<SaveButton onClick={handleSave} isSaving={createMut.isPending} label="作成" />}
+      footer={<SaveButton onClick={handleSave} isSaving={createMut.isPending} label="建立旅程" />}
     >
       <FormField label="旅程名稱" error={errors.title} required>
         <input
@@ -183,8 +193,29 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
         </FormField>
       </div>
 
-      <FormField label="通貨">
-        <CurrencyPicker value={currency} onChange={setCurrency} />
+      <FormField label="幣別">
+        <CurrencyPicker
+          value={currency}
+          onChange={nextCurrency => {
+            setCurrency(nextCurrency)
+            setDefaultCountryCode(current => countryAfterCurrencyChange(
+              current,
+              nextCurrency,
+              countryWasSelected,
+            ))
+          }}
+        />
+      </FormField>
+
+      <FormField label="旅程國家" error={errors.defaultCountryCode} required>
+        <CountryPicker
+          value={defaultCountryCode}
+          onChange={countryCode => {
+            setDefaultCountryCode(countryCode)
+            setCountryWasSelected(true)
+          }}
+          error={!!errors.defaultCountryCode}
+        />
       </FormField>
     </BottomSheet>
   )

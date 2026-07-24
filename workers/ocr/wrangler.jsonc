@@ -2,7 +2,7 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "tripmate-ocr",
 	"main": "src/index.ts",
-	"compatibility_date": "2026-05-12",
+	"compatibility_date": "2026-07-02",
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
 	"upload_source_maps": true,
@@ -20,7 +20,7 @@
 		// and receipt-purge cron. Single source of truth; if the project
 		// ever moves bucket, this is the only line to update.
 		"FIREBASE_STORAGE_BUCKET": "tripplanner-80a4f.firebasestorage.app",
-		"ALLOWED_ORIGINS": "https://tripmate-2wg.pages.dev,*.tripmate-2wg.pages.dev,http://localhost:5173",
+		"ALLOWED_ORIGINS": "https://tripmate-2wg.pages.dev,*.tripmate-2wg.pages.dev,http://localhost:5173,http://127.0.0.1:5173",
 		// Sentry DSN — same project as the frontend (VITE_SENTRY_DSN in
 		// the SPA bundle). Public key in a DSN is not a secret (frontend
 		// ships it in plaintext); ingest endpoint accepts events from
@@ -94,6 +94,8 @@
 	//   /attachment-*-url[s]  signed-URL minting (local RSA sign,      → 120/min
 	//                         no OCR / no Firestore write). Looser:
 	//                         a list screen issues a few thumb batches.
+	//   /route-*               search / preview / write use separate
+	//                         counters so autocomplete cannot starve apply.
 	"ratelimits": [
 		{
 			"name": "OCR_RATE_LIMITER",
@@ -124,6 +126,21 @@
 			"name": "ATTACHMENT_URL_RATE_LIMITER",
 			"namespace_id": "1006",
 			"simple": { "limit": 120, "period": 60 }
+		},
+		{
+			"name": "ROUTE_SEARCH_RATE_LIMITER",
+			"namespace_id": "1007",
+			"simple": { "limit": 60, "period": 60 }
+		},
+		{
+			"name": "ROUTE_PREVIEW_RATE_LIMITER",
+			"namespace_id": "1008",
+			"simple": { "limit": 10, "period": 60 }
+		},
+		{
+			"name": "ROUTE_WRITE_RATE_LIMITER",
+			"namespace_id": "1009",
+			"simple": { "limit": 10, "period": 60 }
 		}
 	],
 	// Durable Object for cross-PoP rate limiting. Each instance is
@@ -148,4 +165,7 @@
 	//   ANTHROPIC_FOUNDRY_API_KEY ← Microsoft Foundry (Azure AI Foundry) Claude API key
 	//   QWEN_API_KEY               ← Qwen/OpenAI-compatible provider API key
 	//   FIREBASE_SERVICE_ACCOUNT  ← service account JSON for Firestore/GCS admin REST
+	//   GEOAPIFY_API_KEY           ← place autocomplete / geocoding
+	//   ORS_API_KEY                ← walking matrix + final walking geometry
+	//   ROUTE_PREVIEW_HMAC_SECRET  ← signs preview/apply payloads
 }

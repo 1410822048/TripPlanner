@@ -223,7 +223,7 @@ describe('/trips/{tripId} wishVotingDeadline', () => {
     const now = Timestamp.now()
     return {
       title: 'Fresh', destination: 'Tokyo', ownerId: OWNER_UID, memberIds: [OWNER_UID],
-      currency: 'JPY', startDate: now, endDate: now,
+      currency: 'JPY', defaultCountryCode: 'JP', startDate: now, endDate: now,
       wishVotingDeadlineAt: null, wishVotingDeadlineNotifiedAt: null,
       createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
       ...overrides,
@@ -234,6 +234,20 @@ describe('/trips/{tripId} wishVotingDeadline', () => {
     await assertSucceeds(
       setDoc(doc(asOwner(env).firestore(), 'trips', 'wvd-fresh-1'), freshTripPayload()),
     )
+  })
+
+  test('trip country is required, uppercase, and protected by the field allowlist', async () => {
+    const missing = freshTripPayload() as Record<string, unknown>
+    delete missing.defaultCountryCode
+    await assertFails(setDoc(doc(asOwner(env).firestore(), 'trips', 'country-missing'), missing))
+    await assertFails(setDoc(
+      doc(asOwner(env).firestore(), 'trips', 'country-lower'),
+      freshTripPayload({ defaultCountryCode: 'jp' }),
+    ))
+    await assertFails(setDoc(
+      doc(asOwner(env).firestore(), 'trips', 'country-extra'),
+      freshTripPayload({ countryName: 'Japan' }),
+    ))
   })
 
   test('create fails when wishVotingDeadlineAt is omitted', async () => {
@@ -1539,6 +1553,7 @@ describe('fresh trip — immediate listener attach (post-batch-commit)', () => {
       ownerId:     OWNER_UID,
       memberIds:   [OWNER_UID],
       currency:    'JPY',
+      defaultCountryCode: 'JP',
       startDate:   serverTimestamp(),
       endDate:     serverTimestamp(),
       wishVotingDeadlineAt:         null,
@@ -1627,8 +1642,11 @@ describe('fresh trip — immediate listener attach (post-batch-commit)', () => {
       ownerId:     STRANGER_UID,
       memberIds:   [STRANGER_UID],
       currency:    'JPY',
+      defaultCountryCode: 'JP',
       startDate:   serverTimestamp(),
       endDate:     serverTimestamp(),
+      wishVotingDeadlineAt:         null,
+      wishVotingDeadlineNotifiedAt: null,
       createdAt:   serverTimestamp(),
       updatedAt:   serverTimestamp(),
     })
@@ -2211,6 +2229,8 @@ describe('/trips/{tripId}/schedules shape guards', () => {
     order: 0,
     title: 'Tokyo Tower',
     category: 'activity' as const,
+    timeMode: 'flexible' as const,
+    durationMinutes: 60,
     memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
     createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
     createdAt: serverTimestamp(),
@@ -2232,17 +2252,27 @@ describe('/trips/{tripId}/schedules shape guards', () => {
     )
   })
 
-  test('schedule create with non-string `location.name` is rejected', async () => {
+  test('schedule create rejects the removed `endTime` field', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-endtime'),
+        baseSchedule({ startTime: '10:00', endTime: '11:00', timeMode: 'preferred' })),
+    )
+  })
+
+  test('schedule create with a legacy location object is rejected', async () => {
     await assertFails(
       setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-loc1'),
         baseSchedule({ location: { name: ['evil', 'array'] } })),
     )
   })
 
-  test('schedule create with non-number `location.lat` is rejected', async () => {
+  test('schedule create with invalid canonical latitude is rejected', async () => {
     await assertFails(
       setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-loc2'),
-        baseSchedule({ location: { name: 'OK', lat: 'thirty-five' } })),
+        baseSchedule({ location: { status: 'resolved', place: {
+          provider: 'geoapify', providerPlaceId: 'p1', name: 'OK', lat: 'thirty-five', lng: 139,
+          timeZone: 'Asia/Tokyo', countryCode: 'JP',
+        } } })),
     )
   })
 
@@ -2250,9 +2280,47 @@ describe('/trips/{tripId}/schedules shape guards', () => {
     await assertSucceeds(
       setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-locok'),
         baseSchedule({
-          location: { name: 'Tokyo Tower', lat: 35.6586, lng: 139.7454 },
+          location: { status: 'resolved', place: {
+            provider: 'geoapify', providerPlaceId: 'tokyo-tower', name: 'Tokyo Tower',
+            lat: 35.6586, lng: 139.7454, timeZone: 'Asia/Tokyo', countryCode: 'JP',
+          } },
         })),
     )
+  })
+
+  test('schedule location allows google-maps but rejects arbitrary providers', async () => {
+    const place = {
+      providerPlaceId: 'google-pin', name: '澀谷 SKY',
+      lat: 35.6586719, lng: 139.7019848, timeZone: 'Asia/Tokyo', countryCode: 'JP',
+    }
+    await assertSucceeds(setDoc(
+      doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-google-place'),
+      baseSchedule({ location: { status: 'resolved', place: { ...place, provider: 'google-maps' } } }),
+    ))
+    await assertFails(setDoc(
+      doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-bad-provider'),
+      baseSchedule({ location: { status: 'resolved', place: { ...place, provider: 'arbitrary' } } }),
+    ))
+  })
+
+  test('resolved place country is required, uppercase, and rejects extra fields', async () => {
+    const place = {
+      provider: 'geoapify', providerPlaceId: 'p1', name: 'Tokyo Tower',
+      lat: 35.6586, lng: 139.7454, timeZone: 'Asia/Tokyo', countryCode: 'JP',
+    }
+    const { countryCode: _countryCode, ...placeWithoutCountry } = place
+    await assertFails(setDoc(
+      doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-country-missing'),
+      baseSchedule({ location: { status: 'resolved', place: placeWithoutCountry } }),
+    ))
+    await assertFails(setDoc(
+      doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-country-lower'),
+      baseSchedule({ location: { status: 'resolved', place: { ...place, countryCode: 'jp' } } }),
+    ))
+    await assertFails(setDoc(
+      doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-country-extra'),
+      baseSchedule({ location: { status: 'resolved', place: { ...place, countryName: 'Japan' } } }),
+    ))
   })
 
   // Money domain post-refactor: schedule budget is stored as integer
@@ -2278,6 +2346,52 @@ describe('/trips/{tripId}/schedules shape guards', () => {
       setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-cost-legacy'),
         baseSchedule({ estimatedCost: 100 })),
     )
+  })
+
+  test('schedule create cannot forge Worker-owned route output', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-route-forge'),
+        baseSchedule({ optimizedStartTime: '11:00', routeRevision: 'forged-revision' })),
+    )
+  })
+
+  test('schedule update rejects the removed optimizedStartTime field', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'schedules', 's-route-strict'), baseSchedule())
+    })
+    await assertFails(updateDoc(
+      doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-route-strict'),
+      { optimizedStartTime: null, updatedBy: EDITOR_UID, updatedAt: serverTimestamp() },
+    ))
+  })
+
+  test('schedule route constraints can change only when routeRevision is cleared', async () => {
+    const path = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-route-clear')
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'schedules', 's-route-clear'), baseSchedule({
+        routeRevision: 'revision-1',
+      }))
+    })
+
+    await assertFails(updateDoc(path, {
+      durationMinutes: 90,
+      updatedBy: EDITOR_UID,
+      updatedAt: serverTimestamp(),
+    }))
+    await assertSucceeds(updateDoc(path, {
+      durationMinutes: 90,
+      routeRevision: null,
+      updatedBy: EDITOR_UID,
+      updatedAt: serverTimestamp(),
+    }))
+  })
+})
+
+describe('route application receipt rules', () => {
+  test('clients cannot read or write Worker-owned route receipts', async () => {
+    const receipt = doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'routeApplications', 'route-1')
+    await assertFails(getDoc(receipt))
+    await assertFails(setDoc(receipt, { actorUid: OWNER_UID, payloadHash: 'x' }))
   })
 })
 

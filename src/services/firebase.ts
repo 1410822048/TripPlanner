@@ -64,6 +64,12 @@ const firebaseConfig = {
   appId:             import.meta.env.VITE_FIREBASE_APP_ID              ?? '1:000000:web:demo',
 }
 
+/** Local emulator mode is explicit and dev-only. It uses memory caches so a
+ * reset cannot leak IndexedDB state between role/browser scenarios. */
+export const FIREBASE_EMULATOR_MODE = import.meta.env.DEV && import.meta.env.VITE_USE_FIREBASE_EMULATORS === 'true'
+const EMULATOR_HOST = import.meta.env.VITE_FIREBASE_EMULATOR_HOST ?? '127.0.0.1'
+const EMULATOR_PORTS = { auth: 9099, firestore: 8080, storage: 9199 } as const
+
 let appPromise: Promise<FirebaseApp> | null = null
 function getApp(): Promise<FirebaseApp> {
   if (appPromise) return appPromise
@@ -75,6 +81,7 @@ function getApp(): Promise<FirebaseApp> {
 }
 
 let bundlePromise: Promise<FirebaseBundle> | null = null
+let firestoreEmulatorConnected = false
 
 /**
  * Lazy-load + initialize the Firestore bundle. Cached: subsequent calls
@@ -103,17 +110,23 @@ export function getFirebase(): Promise<FirebaseBundle> {
     try {
       fs.initializeFirestore(app, {
         ignoreUndefinedProperties: true,
-        localCache: fs.persistentLocalCache({
-          tabManager: fs.persistentMultipleTabManager(),
-        }),
+        localCache: FIREBASE_EMULATOR_MODE
+          ? fs.memoryLocalCache()
+          : fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }),
       })
     } catch { /* already initialized (HMR or second call) */ }
-    return { db: fs.getFirestore(app), ...fs }
+    const db = fs.getFirestore(app)
+    if (FIREBASE_EMULATOR_MODE && !firestoreEmulatorConnected) {
+      fs.connectFirestoreEmulator(db, EMULATOR_HOST, EMULATOR_PORTS.firestore)
+      firestoreEmulatorConnected = true
+    }
+    return { db, ...fs }
   })()
   return bundlePromise
 }
 
 let authBundlePromise: Promise<AuthBundle> | null = null
+let authEmulatorConnected = false
 
 /**
  * Lazy-load + initialize the Auth bundle. Kept separate from the Firestore
@@ -124,12 +137,18 @@ export function getFirebaseAuth(): Promise<AuthBundle> {
   if (authBundlePromise) return authBundlePromise
   authBundlePromise = (async () => {
     const [app, authMod] = await Promise.all([getApp(), import('firebase/auth')])
-    return { auth: authMod.getAuth(app), ...authMod }
+    const auth = authMod.getAuth(app)
+    if (FIREBASE_EMULATOR_MODE && !authEmulatorConnected) {
+      authMod.connectAuthEmulator(auth, `http://${EMULATOR_HOST}:${EMULATOR_PORTS.auth}`, { disableWarnings: true })
+      authEmulatorConnected = true
+    }
+    return { auth, ...authMod }
   })()
   return authBundlePromise
 }
 
 let storageBundlePromise: Promise<StorageBundle> | null = null
+let storageEmulatorConnected = false
 
 /**
  * Lazy-load + initialize the Storage bundle. Pulled separately from
@@ -142,7 +161,12 @@ export function getFirebaseStorage(): Promise<StorageBundle> {
   if (storageBundlePromise) return storageBundlePromise
   storageBundlePromise = (async () => {
     const [app, storageMod] = await Promise.all([getApp(), import('firebase/storage')])
-    return { storage: storageMod.getStorage(app), ...storageMod }
+    const storage = storageMod.getStorage(app)
+    if (FIREBASE_EMULATOR_MODE && !storageEmulatorConnected) {
+      storageMod.connectStorageEmulator(storage, EMULATOR_HOST, EMULATOR_PORTS.storage)
+      storageEmulatorConnected = true
+    }
+    return { storage, ...storageMod }
   })()
   return storageBundlePromise
 }

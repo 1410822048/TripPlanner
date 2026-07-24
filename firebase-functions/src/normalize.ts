@@ -46,7 +46,8 @@ const SCHEDULE_MEANINGFUL_FIELDS = [
   'description',
   'location',
   'startTime',
-  'endTime',
+  'timeMode',
+  'durationMinutes',
   'category',
   'estimatedCostMinor',
 ] as const
@@ -344,6 +345,27 @@ export function normalizeScheduleWrite(input: {
   after: Doc | null
 }): NormalizedPushEvent[] {
   const { eventId, tripId, scheduleId, auth, before, after } = input
+
+  // Worker route-apply updates every schedule with one shared revision. Use
+  // that revision as the dedupe event id so concurrent Firestore triggers
+  // collapse to one inbox/push notification for the whole optimization.
+  // `order`/audit fields are intentionally excluded from
+  // SCHEDULE_MEANINGFUL_FIELDS, so an ordinary reorder remains silent.
+  if (before && after
+      && isString(after.routeRevision)
+      && after.routeRevision !== before.routeRevision
+      && !changedAny(before, after, SCHEDULE_MEANINGFUL_FIELDS)) {
+    return actorEvent({
+      eventId: after.routeRevision,
+      tripId,
+      entityType: 'schedule',
+      entityId: after.routeRevision,
+      action: 'updated',
+      actorUid: resolveActorUid(auth, [after, before], ['updatedBy', 'createdBy']),
+      route: '/schedule',
+      templateKey: 'route.optimized',
+    })
+  }
 
   if (!before && after) {
     return actorEvent({

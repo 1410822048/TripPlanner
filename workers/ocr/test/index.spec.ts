@@ -213,6 +213,11 @@ describe('route descriptor table (rate-limit classification)', () => {
 		'/member-leave':        { limiter: 'CASCADE_RATE_LIMITER',        scope: 'cascade',          globalLimit: 10 },
 		'/member-role-update':  { limiter: 'CASCADE_RATE_LIMITER',        scope: 'cascade',          globalLimit: 10 },
 		'/owner-transfer':      { limiter: 'CASCADE_RATE_LIMITER',        scope: 'cascade',          globalLimit: 10 },
+		'/route-autocomplete':  { limiter: 'ROUTE_SEARCH_RATE_LIMITER',  scope: 'route-search',  globalLimit: 60 },
+		'/route-resolve-place': { limiter: 'ROUTE_SEARCH_RATE_LIMITER',  scope: 'route-search',  globalLimit: 60 },
+		'/route-preview':       { limiter: 'ROUTE_PREVIEW_RATE_LIMITER', scope: 'route-preview', globalLimit: 10 },
+		'/route-apply':         { limiter: 'ROUTE_WRITE_RATE_LIMITER',   scope: 'route-write',   globalLimit: 10 },
+		'/route-apply-status':  { limiter: 'ROUTE_WRITE_RATE_LIMITER',   scope: 'route-write',   globalLimit: 10 },
 	}
 
 	it('every route resolves to its expected (binding, scope, cap)', () => {
@@ -234,4 +239,5 @@ describe('route descriptor table (rate-limit classification)', () => {
 		const paths = ROUTES.map(r => r.path)
 		expect(new Set(paths).size).toBe(paths.length)
 	})
+
 })

@@ -47,6 +47,8 @@ export interface TripItem {
    * formatMinorAmount(); see utils/money.ts + utils/currency.ts.
    */
   currency:  string
+  /** ISO 3166-1 alpha-2 country used as the place-search fallback. */
+  defaultCountryCode: string
 }
 
 export type MenuActionKey = 'edit' | 'members' | 'copy' | 'share'

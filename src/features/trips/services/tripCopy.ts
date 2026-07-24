@@ -46,7 +46,10 @@ export interface CopyTripResult {
 /** Skipped fields when rebuilding doc payloads from source. Planning
  *  explicitly resets per-member completion so a copied checklist starts
  *  unticked for the new trip. */
-const SCHEDULE_SKIP = new Set(['createdAt', 'updatedAt', 'createdBy', 'updatedBy', 'memberIds', 'tripId'])
+const SCHEDULE_SKIP = new Set([
+  'createdAt', 'updatedAt', 'createdBy', 'updatedBy', 'memberIds', 'tripId',
+  'optimizedStartTime', 'routeRevision',
+])
 const PLAN_SKIP     = new Set(['createdAt', 'updatedAt', 'createdBy', 'updatedBy', 'memberIds', 'tripId', 'completedBy'])
 
 /**
@@ -124,6 +127,7 @@ export async function copyTrip(
     startDate:   newStartTs,
     endDate:     newEndTs,
     currency:    source.currency,
+    defaultCountryCode: source.defaultCountryCode,
     ownerId:     user.uid,
     memberIds,
     wishVotingDeadlineAt:         null,
@@ -205,6 +209,7 @@ export async function copyTrip(
     startDate:   newStartTs,
     endDate:     newEndTs,
     currency:    source.currency,
+    defaultCountryCode: source.defaultCountryCode,
     ownerId:     user.uid,
     memberIds,
     wishVotingDeadlineAt:         null,

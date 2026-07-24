@@ -15,6 +15,7 @@ import { useFormReducer } from '@/hooks/useFormReducer'
 import type { TripItem } from '@/features/trips/types'
 import { DEFAULT_CURRENCY } from '@/utils/currency'
 import CurrencyPicker from '@/components/ui/CurrencyPicker'
+import CountryPicker from '@/components/ui/CountryPicker'
 
 const EMOJI_OPTIONS = [
   '🗼','🏯','⛩️','🗾','🌸','🍁',
@@ -41,6 +42,7 @@ type FormState = {
   startDate: string
   endDate:   string
   currency:  string
+  defaultCountryCode: string
 }
 
 function initFormState(t: TripItem | null): FormState {
@@ -51,6 +53,7 @@ function initFormState(t: TripItem | null): FormState {
     startDate: t?.startDate ?? '',
     endDate:   t?.endDate   ?? '',
     currency:  t?.currency  ?? DEFAULT_CURRENCY,
+    defaultCountryCode: t?.defaultCountryCode ?? '',
   }
 }
 
@@ -76,6 +79,7 @@ export default function EditTripModal({
     if (!state.dest.trim())  e.dest  = '請輸入目的地'
     if (!state.startDate)    e.startDate = '請選擇開始日期'
     if (!state.endDate)      e.endDate   = '請選擇結束日期'
+    if (!/^[A-Z]{2}$/.test(state.defaultCountryCode)) e.defaultCountryCode = '請選擇旅程國家'
     if (state.startDate && state.endDate && state.endDate < state.startDate) {
       e.endDate = '結束日期不可早於開始日期'
     }
@@ -93,6 +97,7 @@ export default function EditTripModal({
       startDate: state.startDate,
       endDate:   state.endDate,
       currency:  state.currency,
+      defaultCountryCode: state.defaultCountryCode,
     })
   }
 
@@ -173,10 +178,18 @@ export default function EditTripModal({
         </FormField>
       </div>
 
-      <FormField label="通貨">
+      <FormField label="幣別">
         <CurrencyPicker
           value={state.currency}
           onChange={v => setField('currency', v)}
+        />
+      </FormField>
+
+      <FormField label="旅程國家" error={errors.defaultCountryCode} required>
+        <CountryPicker
+          value={state.defaultCountryCode}
+          onChange={countryCode => setField('defaultCountryCode', countryCode)}
+          error={!!errors.defaultCountryCode}
         />
       </FormField>
 

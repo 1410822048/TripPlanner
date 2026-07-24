@@ -1,6 +1,8 @@
 // src/features/schedule/components/TimelineCard.tsx
 import { Clock, MapPin } from 'lucide-react'
 import type { Schedule } from '@/types'
+import { scheduleLocationName } from '@/types/schedule'
+import { effectiveEndTime } from '../routeModel'
 import { mapsSearchUrl } from '@/utils/maps'
 import { formatMinorAmount } from '@/utils/money'
 import { CATEGORY_ICON, SCHEDULE_CATEGORY_STYLE } from '@/shared/categoryMeta'
@@ -20,7 +22,9 @@ export default function TimelineCard({ s, isLast, currency, onOpenDetails }: Pro
   // timeline noticeably across many cards). The whole pin + name is the
   // tap target; stopPropagation peels the click off the parent so it
   // doesn't double-fire as tap-to-edit.
-  const locationName = s.location?.name
+  const locationName = scheduleLocationName(s.location)
+  const displayStartTime = s.startTime
+  const displayEndTime = effectiveEndTime(s)
   const mapHref      = locationName ? mapsSearchUrl(locationName) : null
 
   // role="button" + keyboard handler instead of a real <button>: an
@@ -76,10 +80,10 @@ export default function TimelineCard({ s, isLast, currency, onOpenDetails }: Pro
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-center gap-2 text-[11px] text-muted min-w-0 pt-0.5">
-              {s.startTime && (
+              {displayStartTime && (
                 <span className="flex items-center gap-[3px] shrink-0">
                   <Clock size={10} strokeWidth={2} />
-                  {s.startTime}{s.endTime ? ` — ${s.endTime}` : ''}
+                  {displayStartTime}{displayEndTime ? ` — ${displayEndTime}` : ''}
                 </span>
               )}
               {locationName && (
