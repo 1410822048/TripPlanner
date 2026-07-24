@@ -209,6 +209,12 @@ export default defineConfig({
           '**/vendor-firebase-auth-*.js',
           '**/vendor-firebase-messaging-*.js',
           '**/jsQR-*.js',
+          // Mapbox is only needed after opening a route preview. Keeping its
+          // ~500 KB gzipped engine out of precache preserves the lazy-load
+          // boundary; src/sw.ts caches these hashed assets after first use.
+          '**/mapbox-gl-*.js',
+          '**/RoutePreviewMap-*.js',
+          '**/RoutePreviewMap-*.css',
         ],
       },
     }),

@@ -94,6 +94,20 @@ registerRoute(
   }),
 )
 
+registerRoute(
+  ({ url }) => url.origin === sw.location.origin
+    && /\/assets\/(?:mapbox-gl|RoutePreviewMap)-.*\.(?:js|css)$/.test(url.pathname),
+  new CacheFirst({
+    cacheName: 'route-map-assets-cache',
+    plugins: [
+      new ExpirationPlugin({
+        maxEntries:    6,
+        maxAgeSeconds: 10 * 24 * 60 * 60,
+      }),
+    ],
+  }),
+)
+
 function toSameOriginUrl(raw: unknown): string {
   const fallback = new URL('/schedule', sw.location.origin)
   if (typeof raw !== 'string' || raw.length > 300) return fallback.href
