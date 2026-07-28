@@ -282,6 +282,7 @@ export async function applyRoutePreview(tripId: string, preview: RoutePreview): 
       date: preview.applyPlan.date,
       previewToken: preview.previewToken,
       schedules: preview.applyPlan.schedules,
+      legs: preview.legs,
     })
     return parseResponse(z.object({ status: z.enum(['applied', 'already_applied']), revision: z.string() }).strict(), result)
   } catch (reason) {

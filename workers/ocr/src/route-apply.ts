@@ -25,6 +25,54 @@ function encodeInteger(value: number): FsValue {
   return { integerValue: String(value) }
 }
 
+type PersistedRouteLeg =
+  | { fromId: string; toId: string; kind: 'walking'; minutes: number }
+  | { fromId: string; toId: string; kind: 'transit'; minMinutes: number; maxMinutes: number }
+
+function normalizeRouteLegs(input: RouteApplyRequest): PersistedRouteLeg[] | undefined {
+  if (!input.legs) return undefined
+  if (input.legs.length !== input.schedules.length - 1) {
+    throw new RouteApplyError(409, 'PREVIEW_PAYLOAD_MISMATCH', 'preview legs do not match the signed schedule order')
+  }
+  return input.legs.map((leg, index) => {
+    const from = input.schedules[index]
+    const to = input.schedules[index + 1]
+    if (!from || !to || leg.legIndex !== index || leg.fromId !== from.id || leg.toId !== to.id) {
+      throw new RouteApplyError(409, 'PREVIEW_PAYLOAD_MISMATCH', 'preview legs do not match the signed schedule order')
+    }
+    return leg.kind === 'walking'
+      ? {
+          fromId: leg.fromId,
+          toId: leg.toId,
+          kind: 'walking' as const,
+          minutes: Math.round(leg.walkingMinutes),
+        }
+      : {
+          fromId: leg.fromId,
+          toId: leg.toId,
+          kind: 'transit' as const,
+          minMinutes: leg.transitEstimate.minMinutes,
+          maxMinutes: leg.transitEstimate.maxMinutes,
+        }
+  })
+}
+
+function encodeTravelToNext(leg: PersistedRouteLeg): FsValue {
+  const fields: Record<string, FsValue> = {
+    toId: encodeString(leg.toId),
+    kind: encodeString(leg.kind),
+  }
+  if (leg.kind === 'walking') {
+    fields.minutes = encodeInteger(leg.minutes)
+  } else {
+    fields.minMinutes = encodeInteger(leg.minMinutes)
+    fields.maxMinutes = encodeInteger(leg.maxMinutes)
+  }
+  return {
+    mapValue: { fields },
+  }
+}
+
 function routeApplyErrorCatcher(error: unknown): { log: string; body: unknown; status: number; precommit?: boolean } | null {
   return error instanceof RouteApplyError
     ? { log: `${error.code}: ${error.message}`, body: { error: error.message, code: error.code }, status: error.status, precommit: true }
@@ -62,6 +110,13 @@ export async function applyRoute(
   if (claims.payloadHash !== payloadHash) {
     throw new RouteApplyError(409, 'PREVIEW_PAYLOAD_MISMATCH', 'preview payload does not match the signed preview')
   }
+  if (input.legs) {
+    const legsHash = await stableHash(input.legs)
+    if (!claims.legsHash || claims.legsHash !== legsHash) {
+      throw new RouteApplyError(409, 'PREVIEW_PAYLOAD_MISMATCH', 'preview legs do not match the signed preview')
+    }
+  }
+  const routeLegs = normalizeRouteLegs(input)
   const accessToken = await getAdminToken(serviceAccountJson)
   return runFirestoreTransaction<{ status: 'applied' | 'already_applied'; revision: string }>(accessToken, projectId, async tx => {
     const { member } = await requireTripMember(tx, input.tripId, uid)
@@ -98,17 +153,21 @@ export async function applyRoute(
     const currentHash = await routeScheduleFingerprint(current)
     if (currentHash !== claims.inputHash) throw new RouteApplyError(409, 'PREVIEW_STALE', 'schedule constraints changed after preview')
 
-    const writes: TxWrite[] = input.schedules.map(schedule => ({
-      document: docResourceName(projectId, `trips/${input.tripId}/schedules/${schedule.id}`),
-      fields: {
-        order: encodeInteger(schedule.order),
-        routeRevision: encodeString(input.revision),
-        updatedBy: encodeString(uid),
-      },
-      updateMask: ['order', 'routeRevision', 'updatedBy'],
-      updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
-      currentDocument: { exists: true },
-    }))
+    const writes: TxWrite[] = input.schedules.map((schedule, index) => {
+      const routeLeg = routeLegs?.[index]
+      return {
+        document: docResourceName(projectId, `trips/${input.tripId}/schedules/${schedule.id}`),
+        fields: {
+          order: encodeInteger(schedule.order),
+          routeRevision: encodeString(input.revision),
+          travelToNext: routeLeg ? encodeTravelToNext(routeLeg) : { nullValue: null },
+          updatedBy: encodeString(uid),
+        },
+        updateMask: ['order', 'routeRevision', 'travelToNext', 'updatedBy'],
+        updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+        currentDocument: { exists: true },
+      }
+    })
     writes.push({
       document: docResourceName(projectId, receiptPath),
       fields: {

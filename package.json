@@ -42,6 +42,7 @@
     "@tripmate/expense-materialize": "file:./packages/expense-materialize",
     "@tripmate/fx-core": "file:./packages/fx-core",
     "@tripmate/pdf-page-limit": "file:./packages/pdf-page-limit",
+    "@tripmate/route-estimate-core": "file:./packages/route-estimate-core",
     "@tripmate/settlement-core": "file:./packages/settlement-core",
     "firebase": "^12.14.0",
     "jsqr": "^1.4.0",

@@ -8,6 +8,7 @@ import {
   createSchedule,
   updateSchedule,
   deleteSchedule,
+  invalidatesRouteOptimization,
 } from '../services/scheduleService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
 import { useTripListMutation } from '@/hooks/useTripListMutation'
@@ -49,9 +50,10 @@ export function useCreateSchedule(tripId: string, options?: MutationOptions) {
         tripId,
         order:     nextOrderInDay(prev, input.date),
         memberIds: [createdBy],
-        routeRevision: null,
-        ...auditCreateMock(createdBy),
         ...input,
+        routeRevision: null,
+        travelToNext: null,
+        ...auditCreateMock(createdBy),
       },
     ],
     action:     MUTATION_ACTION.CREATE_SCHEDULE,
@@ -68,8 +70,15 @@ export function useUpdateSchedule(tripId: string, options?: MutationOptions) {
     tripId,
     keyFactory: scheduleKeys.all,
     mutate:     ({ scheduleId, updates, uid }) => updateSchedule(tripId, scheduleId, updates, { uid }),
-    patch:      (prev, { scheduleId, updates, uid }) =>
-      prev.map(s => s.id === scheduleId ? { ...s, ...updates, ...auditUpdateMock(uid) } : s),
+    patch:      (prev, { scheduleId, updates, uid }) => {
+      const clearsOptimization = invalidatesRouteOptimization(updates)
+      return prev.map(s => s.id === scheduleId ? {
+        ...s,
+        ...updates,
+        ...(clearsOptimization ? { routeRevision: null, travelToNext: null } : {}),
+        ...auditUpdateMock(uid),
+      } : s)
+    },
     action:     MUTATION_ACTION.UPDATE,
     silent:     options?.silent,
   })

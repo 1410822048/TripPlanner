@@ -103,6 +103,20 @@ describe('cascadeTripDelete - Storage prefix boundary', () => {
 		expect('trips/abc2/some-file'.startsWith('trips/abc/')).toBe(false)
 	})
 
+	it('drains route receipts before deleting the trip', async () => {
+		await cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', 'bucket')
+		expect(firestore.listDocNames).toHaveBeenCalledWith(
+			'fake-admin-token',
+			'demo-project',
+			'trips/abc/routeApplications',
+		)
+		expect(firestore.listDocNames).not.toHaveBeenCalledWith(
+			'fake-admin-token',
+			'demo-project',
+			'trips/abc/routePlans',
+		)
+	})
+
 	it('rejects when caller uid does not match trip ownerId', async () => {
 		vi.mocked(firestore.getDocFields).mockResolvedValueOnce({
 			ownerId: { stringValue: 'someone-else' },

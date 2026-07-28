@@ -40,12 +40,37 @@ export const ApplyScheduleSchema = z.object({
   order: z.number().int().min(0).max(100),
 }).strict()
 
+const ApplyRouteLegBaseSchema = {
+  legIndex: z.number().int().min(0).max(10),
+  fromId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+  toId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+  walkingMinutes: z.number().finite().min(0).max(10_080),
+  geometryAvailable: z.boolean(),
+}
+
+const ApplyRouteLegSchema = z.discriminatedUnion('kind', [
+  z.object({ ...ApplyRouteLegBaseSchema, kind: z.literal('walking') }).strict(),
+  z.object({
+    ...ApplyRouteLegBaseSchema,
+    kind: z.literal('transit-check'),
+    transitEstimate: z.object({
+      minMinutes: z.number().int().min(1).max(1440),
+      maxMinutes: z.number().int().min(1).max(1440),
+      basis: z.literal('ors-walking-distance'),
+    }).strict().refine(value => value.maxMinutes > value.minMinutes),
+  }).strict(),
+])
+
 export const RouteApplyRequestSchema = z.object({
   tripId: TripIdSchema,
   revision: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/),
   date: DateSchema,
   previewToken: z.string().min(32).max(2048),
   schedules: z.array(ApplyScheduleSchema).min(2).max(12),
+  // Optional for rolling compatibility with clients deployed before route
+  // estimates were persisted. When present, the HMAC token binds the exact
+  // array and applyRoute validates its topology before writing it.
+  legs: z.array(ApplyRouteLegSchema).max(11).optional(),
 }).strict()
 export type RouteApplyRequest = z.infer<typeof RouteApplyRequestSchema>
 

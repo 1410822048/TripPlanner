@@ -514,9 +514,17 @@ async function previewRouteWithDeadline(
     schedules: schedules.map((schedule, order) => ({ id: schedule.id, order })),
   }
   const payloadHash = await stableHash(applyPlan)
+  const legsHash = await stableHash(legs)
   const secret = env.ROUTE_PREVIEW_HMAC_SECRET
   if (!secret) throw new RouteProviderError('route', 503, 'preview signing is not configured')
-  const previewToken = await createPreviewToken({ uid, tripId: input.tripId, revision, inputHash: scheduleInputHash, payloadHash }, secret)
+  const previewToken = await createPreviewToken({
+    uid,
+    tripId: input.tripId,
+    revision,
+    inputHash: scheduleInputHash,
+    payloadHash,
+    legsHash,
+  }, secret)
   const geometryDegraded = legs.some(leg => leg.kind === 'walking' && !leg.geometryAvailable)
 
   return {

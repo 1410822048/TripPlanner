@@ -13,7 +13,7 @@ export const MOCK_EXPENSES: Expense[] = [
     date:'2026-05-01', adjustments: [], deletedAt: null, receiptPurgedAt: null, ...DEMO_AUDIT,
   },
   {
-    id:'e2', tripId:'demo', title:'Dormy Inn 淺草（4泊）', amountMinor:67200, currency:'JPY', category:'accommodation',
+    id:'e2', tripId:'demo', title:'Dormy Inn EXPRESS 淺草（4泊）', amountMinor:67200, currency:'JPY', category:'accommodation',
     paidBy:'m2', splits: equal(67200, ['m1','m2','m3','m4']),
     date:'2026-05-01', adjustments: [], deletedAt: null, receiptPurgedAt: null, ...DEMO_AUDIT,
   },

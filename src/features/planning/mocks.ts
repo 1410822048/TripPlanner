@@ -26,7 +26,7 @@ export const MOCK_PLAN_ITEMS: PlanItem[] = [
     note: '出發 5/1 07:30，回程 5/8 18:00', completedBy: completedBy('m1', 'm2'),
     ...DEMO_PLAN_AUDIT },
   { id: 'p5', tripId: 'demo', category: 'documents', title: '飯店訂單（4 晚）',
-    note: 'Dormy Inn 淺草', completedBy: completedBy('m1', 'm2', 'm3'),
+    note: 'Dormy Inn EXPRESS 淺草', completedBy: completedBy('m1', 'm2', 'm3'),
     ...DEMO_PLAN_AUDIT },
   { id: 'p6', tripId: 'demo', category: 'documents', title: '海外旅遊保險',
     completedBy: completedBy(), ...DEMO_PLAN_AUDIT },

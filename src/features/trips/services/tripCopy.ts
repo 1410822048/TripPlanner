@@ -48,7 +48,7 @@ export interface CopyTripResult {
  *  unticked for the new trip. */
 const SCHEDULE_SKIP = new Set([
   'createdAt', 'updatedAt', 'createdBy', 'updatedBy', 'memberIds', 'tripId',
-  'optimizedStartTime', 'routeRevision',
+  'optimizedStartTime', 'routeRevision', 'travelToNext',
 ])
 const PLAN_SKIP     = new Set(['createdAt', 'updatedAt', 'createdBy', 'updatedBy', 'memberIds', 'tripId', 'completedBy'])
 
@@ -166,6 +166,8 @@ export async function copyTrip(
           date:   newDate,
           tripId: tripRef.id,
           memberIds,
+          routeRevision: null,
+          travelToNext: null,
           ...auditCreate(user.uid, serverTimestamp()),
         }))
         copiedSchedules++

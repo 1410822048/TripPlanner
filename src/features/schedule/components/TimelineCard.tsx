@@ -1,11 +1,15 @@
 // src/features/schedule/components/TimelineCard.tsx
-import { Clock, MapPin } from 'lucide-react'
+import { FileText, MapPin, SquarePen } from 'lucide-react'
 import type { Schedule } from '@/types'
 import { scheduleLocationName } from '@/types/schedule'
 import { effectiveEndTime } from '../routeModel'
 import { mapsSearchUrl } from '@/utils/maps'
 import { formatMinorAmount } from '@/utils/money'
-import { CATEGORY_ICON, SCHEDULE_CATEGORY_STYLE } from '@/shared/categoryMeta'
+import {
+  CATEGORY_ICON,
+  SCHEDULE_CATEGORY_LABEL,
+  SCHEDULE_CATEGORY_STYLE,
+} from '@/shared/categoryMeta'
 
 interface Props {
   s:        Schedule
@@ -17,15 +21,14 @@ interface Props {
 export default function TimelineCard({ s, isLast, currency, onOpenDetails }: Props) {
   const cat  = SCHEDULE_CATEGORY_STYLE[s.category]
   const Icon = CATEGORY_ICON[s.category]
-  // Inline maps link on the location label — keeps the meta row to one
-  // line instead of stacking a separate chip below (which thickened the
-  // timeline noticeably across many cards). The whole pin + name is the
-  // tap target; stopPropagation peels the click off the parent so it
-  // doesn't double-fire as tap-to-edit.
+  // 地點列本身就是 Maps 連結；阻止事件冒泡，避免同時觸發卡片詳情。
   const locationName = scheduleLocationName(s.location)
   const displayStartTime = s.startTime
   const displayEndTime = effectiveEndTime(s)
-  const mapHref      = locationName ? mapsSearchUrl(locationName) : null
+  const displayTime = displayStartTime
+    ? `${displayStartTime}${displayEndTime ? ` – ${displayEndTime}` : ''}`
+    : '時間未定'
+  const mapHref = locationName ? mapsSearchUrl(locationName) : null
 
   // role="button" + keyboard handler instead of a real <button>: an
   // <a> can't nest inside <button> per HTML spec, and we need the
@@ -42,22 +45,20 @@ export default function TimelineCard({ s, isLast, currency, onOpenDetails }: Pro
   return (
     <div className={[
       'relative pl-4',
-      isLast ? 'pb-0' : 'pb-4',
+      isLast ? 'pb-0' : 'pb-2',
     ].join(' ')}>
       <div
         className={[
-          'absolute left-[13px] top-0 w-[1.5px]',
+          'absolute left-[15px] top-0 w-[1.5px]',
           isLast ? 'h-[18px]' : 'bottom-0',
         ].join(' ')}
-        style={{
-          background: `repeating-linear-gradient(to bottom, var(--color-dot) 0, var(--color-dot) 3px, transparent 3px, transparent 7px)`,
-        }}
+        style={{ background: 'var(--color-dot)' }}
       />
       <div
-        className="absolute left-0 top-1 z-10 w-[28px] h-[28px] rounded-full border-[2px] border-app flex items-center justify-center shadow-[0_2px_8px_rgba(32,42,45,0.08)]"
+        className="absolute left-0 top-0.5 z-10 w-8 h-8 rounded-[11px] border-[2px] border-app flex items-center justify-center shadow-[0_2px_8px_rgba(32,42,45,0.08)]"
         style={{ background: cat.bg, color: cat.color }}
       >
-        <Icon size={14} strokeWidth={2} />
+        <Icon size={15} strokeWidth={2} aria-hidden="true" />
       </div>
 
       <div
@@ -67,68 +68,90 @@ export default function TimelineCard({ s, isLast, currency, onOpenDetails }: Pro
         onKeyDown={handleKeyDown}
         aria-label={`顯示 ${s.title} 的詳細資料`}
         className={[
-          'relative ml-2.5 flex min-h-[92px] items-center gap-2 bg-surface border border-border rounded-[20px] pl-4 pr-3 py-3',
+          'relative ml-3 min-h-[104px] bg-surface border border-border rounded-[20px] px-3.5 py-3',
           'cursor-pointer transition-colors',
           'hover:bg-[#F5F1EA] focus-visible:outline-2 focus-visible:outline-accent',
         ].join(' ')}
         style={{
           WebkitTapHighlightColor: 'transparent',
-          borderLeftColor: cat.color,
-          borderLeftWidth: 4,
         }}
       >
-        <div className="flex-1 min-w-0">
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex items-center gap-2 text-[11px] text-muted min-w-0 pt-0.5">
-              {displayStartTime && (
-                <span className="flex items-center gap-[3px] shrink-0">
-                  <Clock size={10} strokeWidth={2} />
-                  {displayStartTime}{displayEndTime ? ` — ${displayEndTime}` : ''}
-                </span>
-              )}
-              {locationName && (
-                mapHref ? (
-                  <a
-                    href={mapHref}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={e => e.stopPropagation()}
-                    onPointerDown={e => e.stopPropagation()}
-                    onKeyDown={e => e.stopPropagation()}
-                    aria-label={`在地圖中開啟 ${locationName}`}
-                    className="flex min-w-0 items-center gap-[3px] text-accent no-underline hover:underline"
-                  >
-                    <MapPin size={10} strokeWidth={2} className="shrink-0" />
-                    <span className="truncate">{locationName}</span>
-                  </a>
-                ) : (
-                  <span className="flex min-w-0 items-center gap-[3px] text-muted">
-                    <MapPin size={10} strokeWidth={2} className="shrink-0" />
-                    <span className="truncate">{locationName}</span>
-                  </span>
-                )
-              )}
-            </div>
-            {typeof s.estimatedCostMinor === 'number' && s.estimatedCostMinor > 0 && (
-              <span
-                className="text-[11px] font-semibold px-2.5 py-1 rounded-full shrink-0 whitespace-nowrap tabular-nums leading-none"
-                style={{ color: cat.color, background: cat.bg }}
-              >
-                {formatMinorAmount(s.estimatedCostMinor, currency)}
-              </span>
-            )}
-          </div>
-          <div className="mt-1.5">
-            <span className="text-[14px] font-semibold text-ink leading-[1.3] break-words">
-              {s.title}
+        <div className={`-mx-3.5 -mt-3 flex min-w-0 flex-wrap items-center gap-1 px-3.5 pb-2.5 pt-3 ${s.description ? 'pr-[82px]' : ''}`}>
+          <span className={`inline-flex min-h-6 items-center rounded-[8px] px-1.5 text-[10.5px] font-bold tabular-nums ${
+            displayStartTime ? 'bg-teal-pale text-teal' : 'bg-app text-muted'
+          }`}>
+            {displayTime}
+          </span>
+          <span className="inline-flex min-h-6 items-center rounded-[8px] border border-border bg-app px-1.5 text-[10.5px] font-semibold text-muted tabular-nums">
+            停留 {s.durationMinutes} 分
+          </span>
+        </div>
+
+        <h3 className="mt-2.5 mb-0 text-[14px] font-bold leading-[1.35] text-ink break-words">
+          {s.title}
+        </h3>
+
+        {locationName && (
+          mapHref ? (
+            <a
+              href={mapHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={e => e.stopPropagation()}
+              onPointerDown={e => e.stopPropagation()}
+              onKeyDown={e => e.stopPropagation()}
+              aria-label={`在地圖中開啟 ${locationName}`}
+              className="mt-1.5 inline-flex min-h-6 max-w-full min-w-0 items-center gap-1 text-[11px] text-muted no-underline hover:text-accent hover:underline"
+            >
+              <MapPin size={11} strokeWidth={2} className="shrink-0" aria-hidden="true" />
+              <span className="truncate">{locationName}</span>
+            </a>
+          ) : (
+            <span className="mt-1.5 inline-flex min-h-6 max-w-full min-w-0 items-center gap-1 text-[11px] text-muted">
+              <MapPin size={11} strokeWidth={2} className="shrink-0" aria-hidden="true" />
+              <span className="truncate">{locationName}</span>
             </span>
-          </div>
-          {s.description && (
-            <span className="block mt-3 border-t border-border pt-3 text-[11.5px] text-[#AEA9A2] leading-[1.55]">
-              {s.description}
+          )
+        )}
+
+        <div className="mt-2.5 flex min-w-0 flex-wrap items-center gap-1.5">
+          <span
+            className="inline-flex min-h-6 items-center rounded-[8px] px-2 text-[10.5px] font-bold"
+            style={{ color: cat.color, background: cat.bg }}
+          >
+            {SCHEDULE_CATEGORY_LABEL[s.category]}
+          </span>
+          {typeof s.estimatedCostMinor === 'number' && s.estimatedCostMinor > 0 && (
+            <span className="inline-flex min-h-6 items-center rounded-[8px] border border-border bg-app px-2 text-[10.5px] font-semibold text-muted tabular-nums">
+              {formatMinorAmount(s.estimatedCostMinor, currency)}
             </span>
           )}
         </div>
+
+        {s.description && (
+          <details
+            className="group"
+            onClick={event => event.stopPropagation()}
+            onKeyDown={event => event.stopPropagation()}
+          >
+            <summary className="absolute right-3 top-3 flex min-h-8 w-fit cursor-pointer list-none items-center gap-1.5 rounded-[9px] border border-warn/35 bg-warn-bg px-2.5 text-[10.5px] font-bold text-warn hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-warn [&::-webkit-details-marker]:hidden">
+              <FileText size={12} strokeWidth={2} aria-hidden="true" />
+              <span className="group-open:hidden">備註</span>
+              <span className="hidden group-open:inline">收起</span>
+            </summary>
+            <div className="-mx-3.5 mt-3 border-t border-border px-3.5 pt-3">
+              <div className="flex items-center gap-1.5 text-[10.5px] font-bold text-warn">
+                <SquarePen size={12} strokeWidth={2.2} aria-hidden="true" />
+                備註事項
+              </div>
+              <div className="mt-2 rounded-[14px] border border-warn/45 bg-surface px-3 py-2.5">
+                <p className="m-0 text-[11.5px] leading-[1.6] text-ink whitespace-pre-wrap break-words">
+                  {s.description}
+                </p>
+              </div>
+            </div>
+          </details>
+        )}
       </div>
     </div>
   )

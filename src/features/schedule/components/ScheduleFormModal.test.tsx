@@ -61,7 +61,7 @@ describe('ScheduleFormModal duration', () => {
   test('lets a flexible schedule persist an explicit duration without a start time', () => {
     const onSave = renderCreateForm()
     fireEvent.change(screen.getByPlaceholderText('例如：參觀淺草雷門'), { target: { value: '自由散步' } })
-    fireEvent.change(screen.getByRole('spinbutton', { name: '預計停留時間（分鐘）' }), {
+    fireEvent.change(screen.getByRole('spinbutton', { name: '停留分鐘' }), {
       target: { value: '90' },
     })
     fireEvent.click(screen.getByRole('button', { name: '新增行程' }))
@@ -73,14 +73,18 @@ describe('ScheduleFormModal duration', () => {
     }))
   })
 
-  test('shows a read-only derived end time for a timed schedule', () => {
+  test('groups timing fields and shows a read-only derived time range', () => {
     renderCreateForm()
     fireEvent.change(screen.getByRole('textbox', { name: '開始時間' }), { target: { value: '10:00' } })
-    fireEvent.change(screen.getByRole('spinbutton', { name: '預計停留時間（分鐘）' }), {
-      target: { value: '90' },
+    fireEvent.change(screen.getByRole('spinbutton', { name: '停留分鐘' }), {
+      target: { value: '120' },
     })
 
-    expect(screen.getByText('預計結束 11:30')).toBeTruthy()
+    expect(screen.getByRole('group', { name: '時間安排' })).toBeTruthy()
+    expect(screen.getByText('2 小時')).toBeTruthy()
+    expect(screen.getByText('預計行程時間')).toBeTruthy()
+    expect(screen.getByText('10:00 → 12:00')).toBeTruthy()
+    expect(screen.queryByText('自動推算結束時間')).toBeNull()
     expect(screen.queryByText('結束時間')).toBeNull()
   })
 
@@ -88,7 +92,7 @@ describe('ScheduleFormModal duration', () => {
     const onSave = renderCreateForm()
     fireEvent.change(screen.getByPlaceholderText('例如：參觀淺草雷門'), { target: { value: '深夜行程' } })
     fireEvent.change(screen.getByRole('textbox', { name: '開始時間' }), { target: { value: '23:30' } })
-    fireEvent.change(screen.getByRole('spinbutton', { name: '預計停留時間（分鐘）' }), {
+    fireEvent.change(screen.getByRole('spinbutton', { name: '停留分鐘' }), {
       target: { value: '60' },
     })
     fireEvent.click(screen.getByRole('button', { name: '新增行程' }))
@@ -103,6 +107,37 @@ describe('ScheduleFormModal location autocomplete', () => {
     vi.clearAllMocks()
     requestRouteAutocomplete.mockRejectedValue(new Error('provider unavailable'))
     requestRoutePlaceResolution.mockRejectedValue(new Error('provider unavailable'))
+  })
+
+  test('keeps a disabled location search as a plain text field without issuing requests', async () => {
+    vi.useFakeTimers()
+    try {
+      render(
+        <ScheduleFormModal
+          tripId="demo"
+          editTarget={null}
+          defaultDate="2026-07-20"
+          schedules={[]}
+          defaultCountryCode="JP"
+          locationSearchEnabled={false}
+          isOpen
+          isSaving={false}
+          onClose={() => undefined}
+          onSave={() => undefined}
+        />,
+      )
+
+      fireEvent.change(screen.getByPlaceholderText('例：淺草寺'), { target: { value: '成田國際機場' } })
+      await act(async () => { await vi.advanceTimersByTimeAsync(150) })
+
+      expect(requestRouteAutocomplete).not.toHaveBeenCalled()
+      expect(requestRoutePlaceResolution).not.toHaveBeenCalled()
+      expect(screen.queryByRole('combobox')).toBeNull()
+      expect(screen.queryByText('搜尋地點中…')).toBeNull()
+      expect(screen.queryByRole('status')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   test('announces an inline Traditional Chinese error when autocomplete fails', async () => {

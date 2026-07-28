@@ -18,7 +18,7 @@ export const MOCK_BOOKINGS: Booking[] = [
   },
   {
     id: 'b2', tripId: 'demo', type: 'hotel',
-    title: 'Dormy Inn 淺草',
+    title: 'Dormy Inn EXPRESS 淺草',
     confirmationCode: 'DI-7745201',
     provider: 'Booking.com',
     checkIn: '2026-05-01', checkOut: '2026-05-05',

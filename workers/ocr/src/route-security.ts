@@ -7,6 +7,7 @@ const PreviewTokenClaimsSchema = z.object({
   revision: z.string().min(1).max(128),
   inputHash: z.string().min(1).max(128),
   payloadHash: z.string().min(1).max(128),
+  legsHash: z.string().min(1).max(128).optional(),
   exp: z.number().int().positive(),
 }).strict()
 

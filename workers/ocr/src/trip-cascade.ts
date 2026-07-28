@@ -29,7 +29,8 @@
 //        cascade window.
 //   2.   Storage purge (sweep #1) — recursive delete of trips/{tripId}/*
 //   3.   Subcollections  — schedules / expenses / wishes / bookings /
-//                          planning / settlements / invites / members
+//                          planning / settlements / routeApplications /
+//                          invites / members
 //                          (members LAST: every other subcollection's
 //                          rules dereference members/{uid}, but admin
 //                          token bypasses rules anyway — order is
@@ -88,7 +89,7 @@ export type TripDeleteRequest = z.infer<typeof TripDeleteRequestSchema>
 const TRIP_SUBCOLLECTIONS = [
   'schedules', 'expenses', 'wishes', 'bookings',
   'planning', 'settlements', 'settlementPairLocks',
-  '_purges', 'invites', 'inviteState', 'members',
+  'routeApplications', '_purges', 'invites', 'inviteState', 'members',
 ] as const
 
 export interface CascadeTripResult {

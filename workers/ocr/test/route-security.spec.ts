@@ -34,6 +34,19 @@ describe('route preview security', () => {
     await expect(stableHash({ b: 2, a: 1 })).resolves.toBe(await stableHash({ a: 1, b: 2 }))
   })
 
+  test('binds persisted route estimates into the preview token', async () => {
+    const secret = 'test-secret-with-at-least-16-bytes'
+    const token = await createPreviewToken({
+      uid: 'u1',
+      tripId: 't1',
+      revision: 'rev-1234567890',
+      inputHash: 'i',
+      payloadHash: 'p',
+      legsHash: 'legs-hash',
+    }, secret)
+    await expect(verifyPreviewToken(token, secret)).resolves.toMatchObject({ legsHash: 'legs-hash' })
+  })
+
   test('rejects preview tokens that are not bound to an apply payload', async () => {
     const secret = 'test-secret-with-at-least-16-bytes'
     const token = await createPreviewToken({ uid: 'u1', tripId: 't1', revision: 'rev-legacy-1234', inputHash: 'i' }, secret)

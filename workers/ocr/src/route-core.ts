@@ -1,4 +1,9 @@
-export const WALKING_DIRECT_THRESHOLD_MINUTES = 15
+import {
+  estimateTransitRange,
+  WALKING_DIRECT_THRESHOLD_MINUTES,
+} from '@tripmate/route-estimate-core'
+
+export { WALKING_DIRECT_THRESHOLD_MINUTES }
 export const ROUTE_PREVIEW_DEADLINE_MS = 30_000
 
 export interface RoutePreviewDeadline {
@@ -43,28 +48,11 @@ export interface StaticTransitEstimate {
   basis: 'ors-walking-distance'
 }
 
-const TRANSIT_WAIT_MINUTES = 5
-const TRANSIT_REFERENCE_SPEED_KMH = 40
-const TRANSIT_RANGE_STEP_MINUTES = 5
-
 /** A display-only range derived from ORS walking-network distance. It is not
  * a timetable, is never used to validate fixed schedules, and does not affect
  * route ordering or the signed apply plan. */
 export function estimateStaticTransitRange(distanceMeters: number): StaticTransitEstimate {
-  if (!Number.isFinite(distanceMeters) || distanceMeters < 0) {
-    throw new Error('route distance must be a finite non-negative number')
-  }
-  const centralMinutes = TRANSIT_WAIT_MINUTES
-    + (distanceMeters / 1000 / TRANSIT_REFERENCE_SPEED_KMH) * 60
-  const minMinutes = Math.max(
-    10,
-    Math.round((centralMinutes * 0.85) / TRANSIT_RANGE_STEP_MINUTES) * TRANSIT_RANGE_STEP_MINUTES,
-  )
-  const maxMinutes = Math.max(
-    minMinutes + TRANSIT_RANGE_STEP_MINUTES,
-    Math.ceil((centralMinutes * 1.3) / TRANSIT_RANGE_STEP_MINUTES) * TRANSIT_RANGE_STEP_MINUTES,
-  )
-  return { minMinutes, maxMinutes, basis: 'ors-walking-distance' }
+  return { ...estimateTransitRange(distanceMeters), basis: 'ors-walking-distance' }
 }
 
 interface PathState {

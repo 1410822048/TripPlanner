@@ -10,6 +10,8 @@ interface Props {
   ariaLabel?:  string
   placeholder?: string
   error?:      boolean
+  /** 在觸發框內顯示欄位名稱，供緊湊的雙欄表單對齊使用。 */
+  embeddedLabel?: string
   /** 分鐘間隔（預設 5）— 5 分鐘粒度足以涵蓋旅行行程 */
   minuteStep?: number
 }
@@ -21,7 +23,8 @@ function snapMinute(m: number, step: number): number {
 }
 
 export default function TimePicker({
-  value, onChange, ariaLabel, placeholder = '選擇時間', error = false, minuteStep = 5,
+  value, onChange, ariaLabel, placeholder = '選擇時間', error = false,
+  embeddedLabel, minuteStep = 5,
 }: Props) {
   const [open, setOpen] = useState(false)
 
@@ -82,31 +85,40 @@ export default function TimePicker({
         onClick={() => setOpen(true)}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(true) } }}
         className={[
-          'w-full min-h-12 rounded-input bg-app px-3 py-2.5 gap-2',
-          'flex items-center cursor-pointer',
+          'flex w-full cursor-pointer rounded-input bg-app px-3',
+          embeddedLabel
+            ? 'min-h-[74px] flex-col items-stretch gap-0 py-2'
+            : 'min-h-12 items-center py-2.5',
           'border-[1.5px] transition-colors',
           triggerBorder,
         ].join(' ')}
       >
-        <Clock size={14} className="text-muted shrink-0" />
-        <span
-          className={[
-            'flex-1 text-left text-[14px] leading-6 min-w-0 truncate',
-            value ? 'text-ink tracking-[0.02em]' : 'text-muted tracking-[0.04em]',
-          ].join(' ')}
-        >
-          {value || placeholder}
-        </span>
-        {value && (
-          <button
-            type="button"
-            onClick={e => { e.stopPropagation(); onChange('') }}
-            className="text-muted flex items-center cursor-pointer p-0.5 shrink-0 bg-transparent border-none"
-            aria-label="清除時間"
-          >
-            <X size={13} strokeWidth={2} />
-          </button>
+        {embeddedLabel && (
+          <span className="text-[10px] font-medium leading-4 text-muted">
+            {embeddedLabel}
+          </span>
         )}
+        <div className={`flex min-w-0 items-center gap-2 ${embeddedLabel ? 'mt-0.5' : 'flex-1'}`}>
+          <Clock size={14} className="shrink-0 text-muted" />
+          <span
+            className={[
+              'min-w-0 flex-1 truncate text-left text-[14px] leading-6',
+              value ? 'text-ink tracking-[0.02em]' : 'text-muted tracking-[0.04em]',
+            ].join(' ')}
+          >
+            {value || placeholder}
+          </span>
+          {value && (
+            <button
+              type="button"
+              onClick={e => { e.stopPropagation(); onChange('') }}
+              className="flex shrink-0 cursor-pointer items-center border-none bg-transparent p-0.5 text-muted"
+              aria-label="清除時間"
+            >
+              <X size={13} strokeWidth={2} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ── Wheel Dialog ──────────────────────────────────────── */}

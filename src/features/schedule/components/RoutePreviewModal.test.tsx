@@ -49,6 +49,8 @@ function schedule(id: string, title: string, order: number, startTime?: string):
     category: 'activity',
     timeMode: startTime ? 'preferred' : 'flexible',
     durationMinutes: 60,
+    routeRevision: null,
+    travelToNext: null,
     ...(startTime ? { startTime } : {}),
     location: {
       status: 'resolved',

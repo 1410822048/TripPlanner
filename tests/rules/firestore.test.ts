@@ -2231,6 +2231,8 @@ describe('/trips/{tripId}/schedules shape guards', () => {
     category: 'activity' as const,
     timeMode: 'flexible' as const,
     durationMinutes: 60,
+    routeRevision: null,
+    travelToNext: null,
     memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
     createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
     createdAt: serverTimestamp(),
@@ -2351,7 +2353,10 @@ describe('/trips/{tripId}/schedules shape guards', () => {
   test('schedule create cannot forge Worker-owned route output', async () => {
     await assertFails(
       setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-route-forge'),
-        baseSchedule({ optimizedStartTime: '11:00', routeRevision: 'forged-revision' })),
+        baseSchedule({
+          routeRevision: 'forged-revision',
+          travelToNext: { toId: 'next', kind: 'walking', minutes: 5 },
+        })),
     )
   })
 
@@ -2365,11 +2370,12 @@ describe('/trips/{tripId}/schedules shape guards', () => {
     ))
   })
 
-  test('schedule route constraints can change only when routeRevision is cleared', async () => {
+  test('schedule route constraints can change only when route output is cleared as a pair', async () => {
     const path = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-route-clear')
     await env.withSecurityRulesDisabled(async ctx => {
       await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'schedules', 's-route-clear'), baseSchedule({
         routeRevision: 'revision-1',
+        travelToNext: { toId: 'next', kind: 'walking', minutes: 5 },
       }))
     })
 
@@ -2378,9 +2384,81 @@ describe('/trips/{tripId}/schedules shape guards', () => {
       updatedBy: EDITOR_UID,
       updatedAt: serverTimestamp(),
     }))
+    await assertFails(updateDoc(path, {
+      order: 2,
+      updatedBy: EDITOR_UID,
+      updatedAt: serverTimestamp(),
+    }))
+    await assertFails(updateDoc(path, {
+      durationMinutes: 90,
+      routeRevision: null,
+      updatedBy: EDITOR_UID,
+      updatedAt: serverTimestamp(),
+    }))
     await assertSucceeds(updateDoc(path, {
       durationMinutes: 90,
       routeRevision: null,
+      travelToNext: null,
+      updatedBy: EDITOR_UID,
+      updatedAt: serverTimestamp(),
+    }))
+  })
+
+  test('schedule clients may preserve or clear travelToNext but cannot forge it', async () => {
+    const path = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-route-owned')
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'schedules', 's-route-owned'), baseSchedule({
+        routeRevision: 'revision-1',
+        travelToNext: { toId: 'next', kind: 'walking', minutes: 5 },
+      }))
+    })
+
+    await assertSucceeds(updateDoc(path, {
+      title: 'Title-only edit',
+      updatedBy: EDITOR_UID,
+      updatedAt: serverTimestamp(),
+    }))
+    await assertFails(updateDoc(path, {
+      travelToNext: { toId: 'another', kind: 'walking', minutes: 1 },
+      updatedBy: EDITOR_UID,
+      updatedAt: serverTimestamp(),
+    }))
+    await assertSucceeds(updateDoc(path, {
+      travelToNext: null,
+      updatedBy: EDITOR_UID,
+      updatedAt: serverTimestamp(),
+    }))
+  })
+
+  test('schedule title updates preserve a valid transit travelToNext shape', async () => {
+    const path = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-route-transit')
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'schedules', 's-route-transit'), baseSchedule({
+        routeRevision: 'revision-1',
+        travelToNext: { toId: 'next', kind: 'transit', minMinutes: 15, maxMinutes: 25 },
+      }))
+    })
+
+    await assertSucceeds(updateDoc(path, {
+      title: 'Transit title-only edit',
+      updatedBy: EDITOR_UID,
+      updatedAt: serverTimestamp(),
+    }))
+  })
+
+  test('schedule updates reject malformed persisted transit travelToNext shapes', async () => {
+    const path = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-route-transit-bad')
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'schedules', 's-route-transit-bad'), baseSchedule({
+        routeRevision: 'revision-1',
+        travelToNext: {
+          toId: 'next', kind: 'transit', minMinutes: 15, maxMinutes: 25, minutes: 20,
+        },
+      }))
+    })
+
+    await assertFails(updateDoc(path, {
+      title: 'Must fail closed',
       updatedBy: EDITOR_UID,
       updatedAt: serverTimestamp(),
     }))
@@ -2388,10 +2466,24 @@ describe('/trips/{tripId}/schedules shape guards', () => {
 })
 
 describe('route application receipt rules', () => {
-  test('clients cannot read or write Worker-owned route receipts', async () => {
-    const receipt = doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'routeApplications', 'route-1')
-    await assertFails(getDoc(receipt))
-    await assertFails(setDoc(receipt, { actorUid: OWNER_UID, payloadHash: 'x' }))
+  test('clients cannot read, enumerate, or write Worker-owned receipts', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'routeApplications', 'route-1234567890'), {
+        actorUid: OWNER_UID,
+        inputHash: 'input-hash',
+        payloadHash: 'payload-hash',
+      })
+    })
+    await assertFails(getDoc(doc(
+      asOwner(env).firestore(), 'trips', TRIP_ID, 'routeApplications', 'route-1234567890',
+    )))
+    await assertFails(getDocs(collection(
+      asOwner(env).firestore(), 'trips', TRIP_ID, 'routeApplications',
+    )))
+    await assertFails(setDoc(
+      doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'routeApplications', 'route-forged-1234'),
+      { actorUid: OWNER_UID, payloadHash: 'x' },
+    ))
   })
 })
 

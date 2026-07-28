@@ -64,6 +64,7 @@ export default function TripModalsHost({ state }: Props) {
           tripEndDate={selectedTrip.endDate}
           schedules={schedules}
           defaultCountryCode={selectedTrip.defaultCountryCode}
+          locationSearchEnabled={!isDemo}
           isSaving={scheduleIsSaving}
           saveError={scheduleModal.saveError}
           onClose={scheduleModal.close}

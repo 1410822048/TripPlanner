@@ -59,6 +59,7 @@ const current = {
   category: 'activity',
   estimatedCostMinor: 500,
   routeRevision: 'revision-1',
+  travelToNext: { toId: 'schedule-2', kind: 'walking', minutes: 5 },
 } as Schedule
 
 function nextInput(overrides: Partial<CreateScheduleInput> = {}): CreateScheduleInput {
@@ -100,9 +101,22 @@ describe('schedule update diff', () => {
     expect(mocks.firestoreDocFromSchema).toHaveBeenCalledWith(expect.anything(), doc, 'scheduleFromDoc')
   })
 
-  it('does not clear routeRevision for title-only updates', async () => {
+  it('does not clear route output for title-only updates', async () => {
     await updateSchedule('trip-1', 'schedule-1', { title: '新標題' }, { uid: 'user-1' })
-    expect(mocks.updateDoc).toHaveBeenCalledWith(expect.anything(), expect.not.objectContaining({ routeRevision: null }))
+    expect(mocks.updateDoc).toHaveBeenCalledWith(expect.anything(), expect.not.objectContaining({
+      routeRevision: null,
+    }))
+    expect(mocks.updateDoc).toHaveBeenCalledWith(expect.anything(), expect.not.objectContaining({
+      travelToNext: null,
+    }))
+  })
+
+  it('clears route output as a pair when a route constraint changes', async () => {
+    await updateSchedule('trip-1', 'schedule-1', { durationMinutes: 90 }, { uid: 'user-1' })
+    expect(mocks.updateDoc).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      routeRevision: null,
+      travelToNext: null,
+    }))
   })
 
   it('materializes optional clears as Firestore deleteField sentinels', async () => {

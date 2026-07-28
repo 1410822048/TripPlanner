@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { Timestamp } from 'firebase/firestore'
-import { CreateScheduleSchema, ScheduleDocSchema, ScheduleLocationSchema } from './schedule'
+import { CreateScheduleSchema, ScheduleDocSchema, ScheduleLocationSchema, UpdateScheduleSchema } from './schedule'
 
 const audit = {
   createdBy: 'u1', updatedBy: 'u1', memberIds: ['u1'],
@@ -50,11 +50,46 @@ describe('Schedule route fields', () => {
     }).success).toBe(false)
   })
 
+  test('canonical docs validate the bounded travelToNext projection', () => {
+    const base = {
+      tripId: 'trip', date: '2026-05-01', order: 0, title: 'Stop', category: 'activity',
+      timeMode: 'preferred', durationMinutes: 60, startTime: '10:00',
+      routeRevision: 'revision-1234567890', ...audit,
+    }
+    expect(ScheduleDocSchema.safeParse({
+      ...base,
+      travelToNext: { toId: 'next', kind: 'walking', minutes: 6 },
+    }).success).toBe(true)
+    expect(ScheduleDocSchema.safeParse({
+      ...base,
+      travelToNext: { toId: 'next', kind: 'transit', minMinutes: 25, maxMinutes: 15 },
+    }).success).toBe(false)
+    expect(ScheduleDocSchema.safeParse({
+      ...base,
+      routeRevision: null,
+      travelToNext: { toId: 'next', kind: 'walking', minutes: 6 },
+    }).success).toBe(false)
+  })
+
   test('new schedule writes reject the removed optimizedStartTime field', () => {
     expect(CreateScheduleSchema.safeParse({
       title: 'Stop', date: '2026-05-01', timeMode: 'preferred', durationMinutes: 60,
       startTime: '10:00', optimizedStartTime: '11:00', category: 'activity',
     }).success).toBe(false)
+  })
+
+  test('client input schemas reject Worker-owned route fields', () => {
+    const input = {
+      title: 'Stop', date: '2026-05-01', timeMode: 'preferred', durationMinutes: 60,
+      startTime: '10:00', category: 'activity',
+    }
+    for (const workerField of [
+      { routeRevision: null },
+      { travelToNext: null },
+    ]) {
+      expect(CreateScheduleSchema.safeParse({ ...input, ...workerField }).success).toBe(false)
+      expect(UpdateScheduleSchema.safeParse(workerField).success).toBe(false)
+    }
   })
 
   test('new writes and canonical documents reject the removed endTime field', () => {

@@ -26,6 +26,10 @@ export type ScheduleLocation =
   | { status: 'unresolved'; query: string }
   | { status: 'resolved'; place: PlaceRef }
 
+export type TravelToNext =
+  | { toId: string; kind: 'walking'; minutes: number }
+  | { toId: string; kind: 'transit'; minMinutes: number; maxMinutes: number }
+
 export interface Schedule {
   id: string
   tripId: string
@@ -37,7 +41,8 @@ export interface Schedule {
   startTime?: string
   timeMode: TimeMode
   durationMinutes: number
-  routeRevision?: string | null
+  routeRevision: string | null
+  travelToNext: TravelToNext | null
   category: ScheduleCategory
   estimatedCostMinor?: number
   createdBy: string
@@ -58,6 +63,7 @@ export type ScheduleCategory =
 const TIME_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/
 const DateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
 const TimeSchema = z.string().regex(TIME_RE)
+const ScheduleIdSchema = z.string().min(1).max(128)
 
 export const PlaceRefSchema = z.object({
   provider:          z.enum(['geoapify', 'google-maps']),
@@ -88,8 +94,21 @@ const TimingFields = {
   startTime:          TimeSchema.optional(),
   timeMode:           z.enum(['fixed', 'preferred', 'flexible']),
   durationMinutes:   z.number().int().min(MIN_DURATION_MINUTES).max(MAX_DURATION_MINUTES),
-  routeRevision:      z.string().min(1).max(128).nullable().optional(),
 } as const
+
+export const TravelToNextSchema = z.discriminatedUnion('kind', [
+  z.object({
+    toId: ScheduleIdSchema,
+    kind: z.literal('walking'),
+    minutes: z.number().int().min(0).max(10_080),
+  }).strict(),
+  z.object({
+    toId: ScheduleIdSchema,
+    kind: z.literal('transit'),
+    minMinutes: z.number().int().min(1).max(1440),
+    maxMinutes: z.number().int().min(1).max(1440),
+  }).strict().refine(value => value.maxMinutes > value.minMinutes),
+])
 
 const ScheduleInputBase = z.object({
   title:              z.string().trim().min(1).max(100),
@@ -128,7 +147,8 @@ export const ScheduleDocSchema = z.object({
   startTime:          TimeSchema.optional(),
   timeMode:           z.enum(['fixed','preferred','flexible']),
   durationMinutes:    z.number().int().min(MIN_DURATION_MINUTES).max(MAX_DURATION_MINUTES),
-  routeRevision:      z.string().min(1).max(128).nullable().optional(),
+  routeRevision:      z.string().min(1).max(128).nullable(),
+  travelToNext:       TravelToNextSchema.nullable(),
   category:           z.enum(['transport','accommodation','food','activity','shopping','other']),
   estimatedCostMinor: z.number().int().min(0).max(1_000_000_000).optional(),
   createdBy:          z.string().min(1),
@@ -136,4 +156,12 @@ export const ScheduleDocSchema = z.object({
   memberIds:          z.array(z.string().min(1)).min(1),
   createdAt:          TimestampSchema,
   updatedAt:          TimestampSchema,
-}).strict()
+}).strict().superRefine((value, ctx) => {
+  if (value.travelToNext && !value.routeRevision) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['travelToNext'],
+      message: 'travelToNext requires routeRevision',
+    })
+  }
+})

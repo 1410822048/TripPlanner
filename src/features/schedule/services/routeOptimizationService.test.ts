@@ -292,10 +292,19 @@ describe('requestRoutePreview', () => {
       .rejects.toThrow('Worker 回傳的路線資料格式不相容，請確認 Worker 已更新')
   })
 
-  it('applies only the signed schedule order', async () => {
+  it('applies the signed schedule order together with its route estimates', async () => {
     workerFetch.mockResolvedValueOnce({ status: 'applied', revision: 'r'.repeat(16) })
+    const legs: RoutePreview['legs'] = [{
+      legIndex: 0,
+      fromId: 'a',
+      toId: 'b',
+      kind: 'walking',
+      walkingMinutes: 8,
+      geometryAvailable: true,
+    }]
     await applyRoutePreview('trip-1', {
       ...previewResponse,
+      legs,
       applyPlan: {
         revision: 'r'.repeat(16),
         date: '2026-07-20',
@@ -309,6 +318,7 @@ describe('requestRoutePreview', () => {
       '/route-apply',
       expect.objectContaining({
         schedules: [{ id: 'a', order: 0 }, { id: 'b', order: 1 }],
+        legs,
       }),
     )
   })

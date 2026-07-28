@@ -16,6 +16,11 @@ import { ScheduleDocSchema, UpdateScheduleSchema, type Schedule, type CreateSche
 /** Defensive cap — schedules can run higher per trip (multi-day with
  *  multiple stops per day) so 200 vs bookings' 100. */
 const LIST_LIMIT = 200
+const ROUTE_CONSTRAINT_FIELDS = ['date', 'location', 'durationMinutes', 'startTime', 'timeMode'] as const
+
+export function invalidatesRouteOptimization(updates: UpdateScheduleInput): boolean {
+  return ROUTE_CONSTRAINT_FIELDS.some(field => field in updates)
+}
 
 function scheduleFromDoc(d: QueryDocumentSnapshot): Schedule {
   return firestoreDocFromSchema(ScheduleDocSchema, d, 'scheduleFromDoc') as Schedule
@@ -85,6 +90,7 @@ export async function createSchedule(
   const ref = await addDoc(collection(db, ...P.schedules(tripId)), {
     ...input,
     routeRevision: null,
+    travelToNext: null,
     tripId,
     order,
     memberIds,
@@ -104,11 +110,7 @@ export async function updateSchedule(
   const validated = validateUpdateOrThrow(UpdateScheduleSchema, updates, {
     source: 'updateSchedule', tripId, scheduleId,
   })
-  const constraintFields = ['date', 'location', 'durationMinutes', 'startTime', 'timeMode'] as const
-  const clearsOptimization = constraintFields.some(field => field in validated)
-  if ('routeRevision' in validated && validated.routeRevision != null) {
-    throw new Error('routeRevision is Worker-owned')
-  }
+  const clearsOptimization = invalidatesRouteOptimization(validated)
   const { db, doc, updateDoc, deleteField, serverTimestamp } = await getFirebase()
   const writePatch: Record<string, unknown> = { ...validated }
   const clearableFields = ['description', 'estimatedCostMinor', 'location', 'startTime'] as const
@@ -119,7 +121,7 @@ export async function updateSchedule(
   }
   await updateDoc(doc(db, ...P.schedule(tripId, scheduleId)), {
     ...writePatch,
-    ...(clearsOptimization ? { routeRevision: null } : {}),
+    ...(clearsOptimization ? { routeRevision: null, travelToNext: null } : {}),
     ...auditUpdate(uid, serverTimestamp()),
   })
   void bumpTripActivity(tripId, 'schedule', uid)

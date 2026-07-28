@@ -15,6 +15,8 @@ function s(over: Partial<Schedule>): Schedule {
     category:  'activity',
     timeMode:  'flexible',
     durationMinutes: 60,
+    routeRevision: null,
+    travelToNext: null,
     memberIds: ['u'],
     createdBy: 'u',
     updatedBy: 'u',

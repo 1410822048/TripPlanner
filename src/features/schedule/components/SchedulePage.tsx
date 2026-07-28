@@ -10,7 +10,6 @@
 // all of them — CreateTripModal still survives the EmptyTrips → main
 // transition without remounting (hasOpenModal stays true across the swap).
 import { lazy, Suspense, useState } from 'react'
-import { Route } from 'lucide-react'
 import TripSwitcher from '@/features/trips/components/TripSwitcher'
 import TripHeaderCard from '@/features/trips/components/TripHeaderCard'
 import SchedulePageSkeleton from './SchedulePageSkeleton'
@@ -101,6 +100,17 @@ export default function SchedulePage() {
         break
     }
   }
+  const routeAction = routeAvailability.status === 'hidden'
+    ? undefined
+    : {
+        status: routeAvailability.status,
+        description: routeBlockedCopy,
+        onClick: () => {
+          if (routeAvailability.status !== 'ready') return
+          if (isDemo) setSignInOpen(true)
+          else setRoutePreviewOpen(true)
+        },
+      }
 
   return (
     <>
@@ -154,34 +164,6 @@ export default function SchedulePage() {
           onSelectDay={setActiveDate}
         />
 
-        {routeAvailability.status !== 'hidden' && (
-          <div className="mx-5 mt-3">
-            <button
-              type="button"
-              aria-disabled={routeAvailability.status === 'blocked'}
-              aria-describedby={routeBlockedCopy ? 'route-optimization-prerequisite' : undefined}
-              onClick={() => {
-                if (routeAvailability.status !== 'ready') return
-                if (isDemo) setSignInOpen(true)
-                else setRoutePreviewOpen(true)
-              }}
-              className={`inline-flex h-10 w-full items-center justify-center gap-2 rounded-chip border text-[12px] font-bold ${
-                routeAvailability.status === 'blocked'
-                  ? 'cursor-not-allowed border-border bg-surface text-muted'
-                  : 'border-teal/30 bg-teal-pale text-teal'
-              }`}
-            >
-              <Route size={15} aria-hidden="true" />
-              {isDemo ? '登入後優化行程' : '優化行程'}
-            </button>
-            {routeBlockedCopy && (
-              <p id="route-optimization-prerequisite" className="mt-1.5 px-1 text-[11px] leading-4 text-muted">
-                {routeBlockedCopy}
-              </p>
-            )}
-          </div>
-        )}
-
         <DayTimeline
           display={display}
           items={items}
@@ -189,6 +171,7 @@ export default function SchedulePage() {
           isLoading={isLoading && !isDemo}
           canWrite={canWrite}
           currency={selectedTrip.currency}
+          routeAction={routeAction}
           onAdd={scheduleModal.openAdd}
           onOpenDetails={state.openScheduleDetail}
         />

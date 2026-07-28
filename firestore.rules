@@ -214,6 +214,24 @@ service cloud.firestore {
               && d.startTime is string
               && d.startTime.matches('^(?:[01][0-9]|2[0-3]):[0-5][0-9]$')));
     }
+
+    function validTravelToNext(value) {
+      return value == null || (value is map
+        && value.toId is string
+        && value.toId.size() > 0 && value.toId.size() <= 128
+        && value.kind is string
+        && ((value.kind == 'walking'
+              && value.keys().hasOnly(['toId', 'kind', 'minutes'])
+              && value.minutes is int
+              && value.minutes >= 0 && value.minutes <= 10080)
+            || (value.kind == 'transit'
+              && value.keys().hasOnly(['toId', 'kind', 'minMinutes', 'maxMinutes'])
+              && value.minMinutes is int
+              && value.maxMinutes is int
+              && value.minMinutes >= 1 && value.minMinutes <= 1440
+              && value.maxMinutes >= 1 && value.maxMinutes <= 1440
+              && value.maxMinutes > value.minMinutes)));
+    }
     // Note: validExpenseReceipt + validBookingAttachment + validWishImage
     // USED to live here. Removed once each entity's media field moved to
     // a Worker-authoritative write path:
@@ -451,7 +469,7 @@ service cloud.firestore {
                       && request.resource.data.keys().hasOnly([
                            'tripId','date','order','title','description',
                             'location','startTime','timeMode','durationMinutes',
-                            'routeRevision','category',
+                            'routeRevision','travelToNext','category',
                             'estimatedCostMinor','memberIds','createdBy','updatedBy',
                            'createdAt','updatedAt'
                          ])
@@ -483,14 +501,16 @@ service cloud.firestore {
                        && 'timeMode' in request.resource.data
                        && 'durationMinutes' in request.resource.data
                        && validScheduleTiming(request.resource.data)
-                       && (!('routeRevision' in request.resource.data)
-                             || request.resource.data.routeRevision == null);
+                       && 'routeRevision' in request.resource.data
+                       && request.resource.data.routeRevision == null
+                       && 'travelToNext' in request.resource.data
+                       && request.resource.data.travelToNext == null;
         allow update: if (
           canWrite(tripId)
           && request.resource.data.keys().hasOnly([
                'tripId','date','order','title','description',
                 'location','startTime','timeMode','durationMinutes',
-                'routeRevision','category',
+                'routeRevision','travelToNext','category',
                 'estimatedCostMinor','memberIds','createdBy','updatedBy',
                'createdAt','updatedAt'
              ])
@@ -523,31 +543,38 @@ service cloud.firestore {
           && 'timeMode' in request.resource.data
           && 'durationMinutes' in request.resource.data
           && validScheduleTiming(request.resource.data)
-          && (!('routeRevision' in request.resource.data)
-                || request.resource.data.routeRevision == null
+          && 'routeRevision' in request.resource.data
+          && (request.resource.data.routeRevision == null
                 || (request.resource.data.routeRevision is string
+                    && request.resource.data.routeRevision.size() > 0
                     && request.resource.data.routeRevision.size() <= 128))
+          && 'travelToNext' in request.resource.data
+          && validTravelToNext(request.resource.data.travelToNext)
+          && (request.resource.data.travelToNext == null
+                || request.resource.data.routeRevision != null)
           // routeRevision remains Worker-owned: clients may only preserve or clear it.
-          && ((!('routeRevision' in request.resource.data)
-                || unchanged('routeRevision')
-                || request.resource.data.routeRevision == null))
+          && (unchanged('routeRevision')
+                || request.resource.data.routeRevision == null)
+          // travelToNext is the bounded Worker-owned projection of the
+          // applied edge. Clients may preserve or clear it, never forge it.
+          && (unchanged('travelToNext')
+                || request.resource.data.travelToNext == null)
           // Any user-owned route constraint edit invalidates the applied
-          // revision. Optional routeRevision may remain absent, but an
-          // existing non-null revision must be explicitly cleared.
-          && ((unchanged('date')
+          // revision and its edge projection as one atomic pair.
+          && ((unchanged('order')
+                && unchanged('date')
                 && unchanged('location')
                 && unchanged('durationMinutes')
                 && unchanged('startTime')
                 && unchanged('timeMode'))
-              || !('routeRevision' in request.resource.data)
-              || request.resource.data.routeRevision == null)
+              || (request.resource.data.routeRevision == null
+                && request.resource.data.travelToNext == null))
         );
         allow delete: if canWrite(tripId);
       }
 
-      // Route apply receipts are Worker-owned idempotency records. Clients
-      // never read or forge these documents; `/route-apply-status` is the
-      // authenticated Worker recovery surface.
+      // Immutable idempotency receipts remain Worker-only;
+      // `/route-apply-status` is the authenticated recovery surface.
       match /routeApplications/{revision} {
         allow read, write: if false;
       }

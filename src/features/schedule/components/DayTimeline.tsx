@@ -1,11 +1,14 @@
 // src/features/schedule/components/DayTimeline.tsx
 // Renders the schedule cards for a single day plus the "add" affordance.
 // Three states: loading skeleton / empty card with CTA / timeline + add row.
-import { Plus } from 'lucide-react'
+import { Fragment } from 'react'
+import { Plus, Route } from 'lucide-react'
 import TimelineSkeleton from './TimelineSkeleton'
 import TimelineCard from './TimelineCard'
+import TravelSegmentRow from './TravelSegmentRow'
 import type { Schedule } from '@/types'
 import { formatMinorAmount } from '@/utils/money'
+import type { TravelSegmentEstimate } from '../routePlanner'
 
 interface Props {
   display:    string | undefined        // active 'YYYY-MM-DD'
@@ -21,29 +24,61 @@ interface Props {
    *  it. Without that the daily total + per-card costs would stay in
    *  the old symbol after the user changes currency. */
   currency:   string
+  routeAction: {
+    status:      'ready' | 'blocked'
+    description: string | undefined
+    onClick:     () => void
+  } | undefined
   onAdd:      () => void
   onOpenDetails: (s: Schedule) => void
 }
 
 function DayTimeline({
-  display, items, dayTotal, isLoading, canWrite, currency, onAdd, onOpenDetails,
+  display, items, dayTotal, isLoading, canWrite, currency, routeAction, onAdd, onOpenDetails,
 }: Props) {
   return (
     <div className="mx-5 mt-5">
       {display && (
-        <div className="flex justify-between items-center mb-3.5">
-          <div>
-            <span className="text-[15px] font-bold text-ink">
-              {new Date(display).toLocaleDateString('zh-TW', { month:'long', day:'numeric' })}
-            </span>
-            <span className="text-[12px] text-muted ml-1.5">
-              {new Date(display).toLocaleDateString('zh-TW', { weekday:'long' })}
-            </span>
-          </div>
-          {dayTotal > 0 && (
-            <div className="bg-[#F2EAE0] text-[#906848] text-[11px] font-semibold px-2.5 py-1 rounded-card tabular-nums">
-              合計 {formatMinorAmount(dayTotal, currency)}
+        <div className="mb-3.5">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div>
+                <span className="text-[15px] font-bold text-ink">
+                  {new Date(display).toLocaleDateString('zh-TW', { month:'long', day:'numeric' })}
+                </span>
+                <span className="text-[12px] text-muted ml-1.5">
+                  {new Date(display).toLocaleDateString('zh-TW', { weekday:'long' })}
+                </span>
+              </div>
+              {!isLoading && items.length > 0 && (
+                <p className="mt-1 text-[11px] font-medium text-muted tabular-nums">
+                  {items.length} 個行程
+                  {items.length > 1 && ` · ${items.length - 1} 段交通`}
+                  {dayTotal > 0 && ` · 合計 ${formatMinorAmount(dayTotal, currency)}`}
+                </p>
+              )}
             </div>
+            {routeAction && (
+              <button
+                type="button"
+                aria-disabled={routeAction.status === 'blocked'}
+                aria-describedby={routeAction.description ? 'route-optimization-prerequisite' : undefined}
+                onClick={routeAction.onClick}
+                className={`inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-chip border px-3 text-[11px] font-bold ${
+                  routeAction.status === 'blocked'
+                    ? 'cursor-not-allowed border-border bg-surface text-muted'
+                    : 'border-teal/30 bg-teal-pale text-teal'
+                }`}
+              >
+                <Route size={14} aria-hidden="true" />
+                優化行程
+              </button>
+            )}
+          </div>
+          {routeAction?.description && (
+            <p id="route-optimization-prerequisite" className="mt-1.5 px-1 text-[11px] leading-4 text-muted">
+              {routeAction.description}
+            </p>
           )}
         </div>
       )}
@@ -74,15 +109,21 @@ function DayTimeline({
         </div>
       ) : (
         <>
-          {items.map((s, idx) => (
-            <TimelineCard
-              key={s.id}
-              s={s}
-              isLast={idx === items.length - 1}
-              currency={currency}
-              onOpenDetails={() => onOpenDetails(s)}
-            />
-          ))}
+          {items.map((s, idx) => {
+            const next = items[idx + 1]
+            const appliedEstimate = next ? appliedRouteEstimate(s, next) : undefined
+            return (
+              <Fragment key={s.id}>
+                <TimelineCard
+                  s={s}
+                  isLast={!next}
+                  currency={currency}
+                  onOpenDetails={() => onOpenDetails(s)}
+                />
+                {next && <TravelSegmentRow from={s} to={next} appliedEstimate={appliedEstimate} />}
+              </Fragment>
+            )
+          })}
 
           {canWrite && (
             <div className="mt-2.5 pl-[26px]">
@@ -99,6 +140,19 @@ function DayTimeline({
       )}
     </div>
   )
+}
+
+function appliedRouteEstimate(
+  from: Schedule,
+  to: Schedule,
+): TravelSegmentEstimate | undefined {
+  const revision = from.routeRevision
+  if (!revision || to.routeRevision !== revision) return undefined
+  const leg = from.travelToNext
+  if (!leg || leg.toId !== to.id) return undefined
+  return leg.kind === 'walking'
+    ? { kind: 'walking', minutes: leg.minutes }
+    : { kind: 'transit', minMinutes: leg.minMinutes, maxMinutes: leg.maxMinutes }
 }
 
 export default DayTimeline

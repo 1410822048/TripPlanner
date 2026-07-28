@@ -4,7 +4,7 @@
 // fresh mount. That lets all form state initialize directly from props via
 // useState initializers — no sync-in-effect, no mid-typing state wipes.
 import { useEffect, useRef, useState } from 'react'
-import { Lock, MapPin, Unlock } from 'lucide-react'
+import { Clock3, Lock, MapPin, Unlock } from 'lucide-react'
 import type { Schedule, ScheduleCategory, CreateScheduleInput, ScheduleLocation } from '@/types'
 import { scheduleLocationName } from '@/types/schedule'
 import {
@@ -106,6 +106,7 @@ interface Props {
   tripEndDate?:   string
   schedules:    Schedule[]
   defaultCountryCode: string
+  locationSearchEnabled?: boolean
   isOpen:      boolean
   isSaving:    boolean
   saveError?:  string | null
@@ -116,7 +117,7 @@ interface Props {
 
 export default function ScheduleFormModal({
   tripId, editTarget, defaultDate, tripStartDate, tripEndDate,
-  schedules, defaultCountryCode,
+  schedules, defaultCountryCode, locationSearchEnabled = true,
   isOpen, isSaving, saveError, onClose, onSave, onDelete,
 }: Props) {
   const currency = useTripCurrency()
@@ -129,7 +130,7 @@ export default function ScheduleFormModal({
   const [activeSuggestion, setActiveSuggestion] = useState(-1)
   const [isLocationSearching, setIsLocationSearching] = useState(false)
   const [autocompleteError, setAutocompleteError] = useState<string | null>(null)
-  const autocompleteActive = shouldRequestLocationAutocomplete({
+  const autocompleteActive = locationSearchEnabled && shouldRequestLocationAutocomplete({
     isOpen,
     query: state.location,
     location: state.locationRef,
@@ -150,6 +151,7 @@ export default function ScheduleFormModal({
   useAutoFocus(titleRef, isOpen)
 
   useEffect(() => {
+    if (!locationSearchEnabled) return
     const query = state.location.trim()
     if (!shouldRequestLocationAutocomplete({ isOpen, query, location: state.locationRef })) return
     const controller = new AbortController()
@@ -195,6 +197,7 @@ export default function ScheduleFormModal({
       controller.abort()
     }
   }, [
+    locationSearchEnabled,
     isOpen,
     state.location,
     state.locationRef,
@@ -334,65 +337,99 @@ export default function ScheduleFormModal({
         />
       </FormField>
 
-      <FormField label="日期" error={errors.date} required>
-        <DatePicker
-          value={state.date}
-          onChange={v => setField('date', v)}
-          error={!!errors.date}
-          minDate={tripStartDate}
-          maxDate={tripEndDate}
-        />
-      </FormField>
+      <fieldset className="rounded-[18px] border border-border bg-surface px-3.5 pb-3.5 pt-3">
+        <legend className="sr-only">時間安排</legend>
+        <div className="mb-3 flex items-center gap-1.5 text-[12px] font-bold text-ink">
+          <Clock3 size={14} className="text-accent" aria-hidden="true" />
+          時間安排
+        </div>
 
-      <div className="grid grid-cols-2 gap-2.5 items-start">
-        <FormField label="開始時間" error={errors.startTime}>
-          <TimePicker
-            value={state.startTime}
-            ariaLabel="開始時間"
-            error={!!errors.startTime}
-            onChange={v => {
-              setField('startTime', v)
-              if (!v && state.locked) setField('locked', false)
-              clearError('startTime')
-              clearError('durationMinutes')
-            }}
+        <FormField label="日期" error={errors.date} required>
+          <DatePicker
+            value={state.date}
+            onChange={v => setField('date', v)}
+            error={!!errors.date}
+            minDate={tripStartDate}
+            maxDate={tripEndDate}
           />
         </FormField>
-        <FormField label="預計停留時間" error={errors.durationMinutes} required>
-          <div className={[
-            'flex min-h-12 min-w-0 items-center rounded-input bg-app px-3 py-2.5',
-            'border-[1.5px] transition-colors focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20',
-            errors.durationMinutes ? 'border-danger' : 'border-border',
-          ].join(' ')}>
-            <input
-              type="number"
-              inputMode="numeric"
-              min={1}
-              max={720}
-              step={5}
-              value={state.durationMinutes}
-              aria-label="預計停留時間（分鐘）"
-              aria-invalid={errors.durationMinutes ? true : undefined}
-              aria-describedby="schedule-duration-hint"
-              onChange={event => {
-                setField('durationMinutes', event.target.value)
+
+        <div className="mt-3 grid grid-cols-2 items-start gap-2.5">
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <TimePicker
+              value={state.startTime}
+              ariaLabel="開始時間"
+              embeddedLabel="開始時間"
+              error={!!errors.startTime}
+              onChange={v => {
+                setField('startTime', v)
+                if (!v && state.locked) setField('locked', false)
+                clearError('startTime')
                 clearError('durationMinutes')
               }}
-              className="min-w-0 flex-1 bg-transparent text-[16px] leading-6 text-ink outline-none tabular-nums"
             />
-            <span className="shrink-0 pl-1.5 text-[12px] text-muted">分鐘</span>
+            {errors.startTime && (
+              <span role="alert" className="text-[11px] text-danger">
+                {errors.startTime}
+              </span>
+            )}
           </div>
-          <span id="schedule-duration-hint" className="text-[11px] text-muted">
-            {parsedDuration.ok ? formatDuration(parsedDuration.value) : '1 到 720 分鐘'}
-          </span>
-        </FormField>
-      </div>
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <div className={[
+              'min-h-[74px] min-w-0 rounded-input bg-app px-3 py-2',
+              'border-[1.5px] transition-colors focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20',
+              errors.durationMinutes ? 'border-danger' : 'border-border',
+            ].join(' ')}>
+              <label
+                htmlFor="schedule-duration-minutes"
+                className="block text-[10px] font-medium leading-4 text-muted"
+              >
+                停留分鐘
+                <span className="ml-[3px] text-danger" aria-hidden="true">*</span>
+              </label>
+              <div className="mt-0.5 flex min-w-0 items-center gap-2">
+                <input
+                  id="schedule-duration-minutes"
+                  name="durationMinutes"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={720}
+                  step={5}
+                  required
+                  value={state.durationMinutes}
+                  aria-invalid={errors.durationMinutes ? true : undefined}
+                  aria-describedby={errors.durationMinutes ? 'schedule-duration-error' : undefined}
+                  onChange={event => {
+                    setField('durationMinutes', event.target.value)
+                    clearError('durationMinutes')
+                  }}
+                  className="min-w-0 flex-1 bg-transparent text-[16px] font-semibold leading-6 text-ink outline-none tabular-nums"
+                />
+                {parsedDuration.ok && (
+                  <span className="shrink-0 rounded-chip bg-surface px-2 py-1 text-[10px] font-semibold text-accent">
+                    {formatDuration(parsedDuration.value)}
+                  </span>
+                )}
+              </div>
+            </div>
+            {errors.durationMinutes && (
+              <span id="schedule-duration-error" role="alert" className="text-[11px] text-danger">
+                {errors.durationMinutes}
+              </span>
+            )}
+          </div>
+        </div>
 
-      {state.startTime && parsedDuration.ok && derivedEndTime && (
-        <p className="-mt-2 text-[11px] text-muted">
-          預計結束 {derivedEndTime}
-        </p>
-      )}
+        {state.startTime && parsedDuration.ok && derivedEndTime && (
+          <div className="mt-3 flex items-center justify-between gap-3 border-t border-border/70 pt-3 text-[11px]">
+            <span className="text-muted">預計行程時間</span>
+            <span className="shrink-0 rounded-chip bg-app px-2 py-1 font-bold tabular-nums text-ink">
+              {state.startTime} → {derivedEndTime}
+            </span>
+          </div>
+        )}
+      </fieldset>
 
       <FormField label="時間約束">
         <button
@@ -413,17 +450,19 @@ export default function ScheduleFormModal({
             <MapPin size={14} className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-muted" />
             <input
               value={state.location}
-              role="combobox"
-              aria-autocomplete="list"
-              aria-expanded={visibleSuggestions.length > 0}
-              aria-controls="schedule-location-options"
+              role={locationSearchEnabled ? 'combobox' : undefined}
+              aria-autocomplete={locationSearchEnabled ? 'list' : undefined}
+              aria-expanded={locationSearchEnabled ? visibleSuggestions.length > 0 : undefined}
+              aria-controls={locationSearchEnabled ? 'schedule-location-options' : undefined}
               aria-invalid={errors.location ? true : undefined}
               aria-describedby={errors.location
                 ? 'schedule-location-validation-error'
-                : isLocationSearching
+                : !locationSearchEnabled
+                  ? undefined
+                  : isLocationSearching
                   ? 'schedule-location-loading'
                   : autocompleteError ? 'schedule-location-error' : undefined}
-              aria-activedescendant={activeSuggestion >= 0 && activeSuggestion < visibleSuggestions.length ? `schedule-location-option-${activeSuggestion}` : undefined}
+              aria-activedescendant={locationSearchEnabled && activeSuggestion >= 0 && activeSuggestion < visibleSuggestions.length ? `schedule-location-option-${activeSuggestion}` : undefined}
               onKeyDown={e => {
                 if (e.key === 'ArrowDown' && visibleSuggestions.length > 0) {
                   e.preventDefault()
@@ -476,12 +515,12 @@ export default function ScheduleFormModal({
               {errors.location}
             </p>
           )}
-          {!errors.location && isLocationSearching && (
+          {locationSearchEnabled && !errors.location && isLocationSearching && (
             <p id="schedule-location-loading" className="mt-1.5 text-[11px] text-muted">
               搜尋地點中…
             </p>
           )}
-          {!errors.location && !isLocationSearching && autocompleteError && (
+          {locationSearchEnabled && !errors.location && !isLocationSearching && autocompleteError && (
             <p id="schedule-location-error" role="status" className="mt-1.5 text-[11px] text-danger">
               {autocompleteError}
             </p>
