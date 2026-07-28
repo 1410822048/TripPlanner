@@ -63,27 +63,27 @@ export default defineConfig({
     // optimizeDeps bundling picks up `react/compiler-runtime` for free.
     babel({ presets: [reactCompilerPreset({ target: '19' })] }),
     tailwindcss(),
-    // Conditional modulepreload for Firestore. An inline script runs
+    // Conditional preconnect + modulepreload for Firestore. An inline script runs
     // synchronously during HTML parse, reads the `tripmate.auth.hint`
     // localStorage marker (set by useAuth on sign-in / cleared on
-    // sign-out), and only then appends <link rel="modulepreload"> for
-    // the firestore chunk. Two layers must agree with main.tsx's
+    // sign-out), and only then warms the Firestore origin and appends
+    // <link rel="modulepreload"> for the firestore chunk. Two layers
+    // must agree with main.tsx's
     // `if (readAuthHint())` gate around `void getFirebase()`:
     //
-    //   - Hinted (returning signed-in user): preload fires during HTML
-    //     parse → chunk downloads in parallel with main.js → first
-    //     useMyTrips()'s firestore needs land hot. Matches the original
-    //     unconditional-preload speed for the common case.
-    //   - Unhinted (first visit / demo / signed-out): nothing is
-    //     preloaded AND main.tsx skips `void getFirebase()`, so the
+    //   - Hinted (returning signed-in user): preconnect + preload fire
+    //     during HTML parse → chunk downloads in parallel with main.js →
+    //     first useMyTrips()'s firestore needs land hot.
+    //   - Unhinted (first visit / demo / signed-out): Firestore is neither
+    //     preconnected nor preloaded AND main.tsx skips `void getFirebase()`, so the
     //     104 KB gz vendor-firebase-firestore chunk doesn't even get
     //     downloaded until the user explicitly signs in. Closes the
     //     "demo browser pays signed-in bandwidth" gap.
     //
-    // Why an inline script instead of a static <link>:
-    //   - Static <link> fires unconditionally; the browser pays full
-    //     bandwidth cost even when main.tsx never imports the chunk
-    //     (modulepreload reserves and warms the parse cache).
+    // Why an inline script instead of static <link> hints:
+    //   - Static hints fire unconditionally; unhinted visitors would still
+    //     pay the connection setup, while modulepreload would additionally
+    //     reserve bandwidth and warm the parse cache.
     //   - <link rel="prefetch"> downgrades to "low-priority idle" which
     //     hurts hinted users' first-paint.
     //   - SSR / per-user HTML would be cleanest but we're a pure SPA.
@@ -110,7 +110,7 @@ export default defineConfig({
           // Inline script — minified by hand because vite's HTML pass
           // doesn't run our terser config over transformIndexHtml output.
           // try/catch guards against private-mode / SSR localStorage throws.
-          const script = `<script>(function(){try{if(localStorage.getItem('tripmate.auth.hint')==='1'){var hs=${hrefs};for(var i=0;i<hs.length;i++){var l=document.createElement('link');l.rel='modulepreload';l.href=hs[i];l.crossOrigin='';document.head.appendChild(l);}}}catch(e){}})();</script>`
+          const script = `<script>(function(){try{if(localStorage.getItem('tripmate.auth.hint')==='1'){var p=document.createElement('link');p.rel='preconnect';p.href='https://firestore.googleapis.com';p.crossOrigin='';document.head.appendChild(p);var hs=${hrefs};for(var i=0;i<hs.length;i++){var l=document.createElement('link');l.rel='modulepreload';l.href=hs[i];l.crossOrigin='';document.head.appendChild(l);}}}catch(e){}})();</script>`
           return html.replace('</head>', `    ${script}\n  </head>`)
         },
       },

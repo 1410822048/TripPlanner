@@ -24,28 +24,14 @@
     <title>TripMate</title>
     <meta name="description" content="一起規劃與分享旅程的協作應用程式" />
 
-    <!-- Preconnect to Firebase backends so DNS + TLS happen in parallel
-         with bundle + chunk downloads. Saves ~100-300ms on cold start,
-         especially over mobile networks where the first handshake is
-         the slowest part of a fresh request. -->
-    <link rel="preconnect" href="https://firestore.googleapis.com" crossorigin />
-    <link rel="preconnect" href="https://securetoken.googleapis.com" crossorigin />
-    <link rel="preconnect" href="https://identitytoolkit.googleapis.com" crossorigin />
-    <!-- Storage: receipt + cover image up/download on first ExpensePage / WishPage hit. -->
-    <link rel="preconnect" href="https://firebasestorage.googleapis.com" crossorigin />
-    <!-- OCR worker: called the moment user taps 撮影 / ✨ 明細を読み取る on a receipt. -->
-    <link rel="preconnect" href="https://tripmate-ocr.tripmate.workers.dev" crossorigin />
-
-    <!-- LINE Seed JP via Google Fonts. Phase-1 minimal-impl: dynamic
-         subsetting handled by Google's CSS API (only the glyphs the
-         page actually uses get downloaded), font-display=swap so text
-         is never invisible during the network hop, only 400/700 (LINE
-         Seed JP has no real 500). preconnect saves the TLS handshake
-         for fonts.gstatic.com on cold start. -->
+    <!-- LINE Seed JP via Google Fonts. Google serves unicode-range WOFF2
+         subsets for the requested 400/700 weights. display=optional keeps
+         the cold-load LCP on the system fallback when the font is not ready;
+         subsequent visits can use the cached font without a late swap. -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=LINE+Seed+JP:wght@400;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=LINE+Seed+JP:wght@400;700&display=optional"
       rel="stylesheet"
     />
   </head>

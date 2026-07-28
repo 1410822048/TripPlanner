@@ -47,7 +47,7 @@ registerRoute(
     cacheName: 'google-fonts-cache',
     plugins: [
       new ExpirationPlugin({
-        maxEntries:    30,
+        maxEntries:    6,
         maxAgeSeconds: 365 * 24 * 60 * 60,
       }),
     ],
