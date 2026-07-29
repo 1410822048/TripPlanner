@@ -4,28 +4,18 @@
 // stay in deploy-pages-prod.mjs, which requires main == origin/main and a clean
 // worktree.
 import { execSync } from 'node:child_process'
-import fs from 'node:fs'
-import { loadEnv } from 'vite'
-
-const PROJECT_NAME = 'tripmate'
-const PAGES_DEV_DOMAIN = 'tripmate-2wg.pages.dev'
-const PRODUCTION_BRANCH = 'main'
-const WORKER_URL = 'https://tripmate-ocr.tripmate.workers.dev'
-const REQUIRED_CLIENT_ENV = [
-  'VITE_WORKER_BASE_URL',
-  'VITE_FIREBASE_API_KEY',
-  'VITE_FIREBASE_AUTH_DOMAIN',
-  'VITE_FIREBASE_PROJECT_ID',
-  'VITE_FIREBASE_STORAGE_BUCKET',
-  'VITE_FIREBASE_MESSAGING_SENDER_ID',
-  'VITE_FIREBASE_VAPID_KEY',
-  'VITE_FIREBASE_APP_ID',
-]
-
-const abort = (message) => {
-  console.error(message)
-  process.exit(1)
-}
+import {
+  PAGES_DEV_DOMAIN,
+  PRODUCTION_BRANCH,
+  PROJECT_NAME,
+  REQUIRED_CLIENT_ENV,
+  WORKER_URL,
+  abort,
+  assertDistReady,
+  git,
+  loadClientEnv,
+  run,
+} from './pagesDeployCommon.mjs'
 
 const rawArgs = process.argv.slice(2)
 const ALLOWED_FLAGS = new Set(['--help', '--preflight-only', '--build-only', '--deploy-only'])
@@ -73,7 +63,6 @@ if (modeCount > 1) {
 
 process.env.VITE_WORKER_BASE_URL = WORKER_URL
 
-const git = (args) => execSync(`git ${args}`, { encoding: 'utf8' }).trim()
 const currentBranch = git('branch --show-current')
 const explicitBranch = branchArgs[0]?.slice('--branch='.length).trim()
 const deploymentBranch = explicitBranch || currentBranch
@@ -102,7 +91,7 @@ if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(previewBranchAlias)) {
   )
 }
 
-const resolved = { ...loadEnv('production', process.cwd(), 'VITE_'), ...process.env }
+const resolved = loadClientEnv()
 const PAGES_AUTH_DOMAIN =
   process.env.TRIPMATE_PAGES_AUTH_DOMAIN?.trim()
   || `${previewBranchAlias}.${PAGES_DEV_DOMAIN}`
@@ -142,9 +131,6 @@ const assertWranglerPagesAccess = () => {
   }
 }
 
-const run = (cmd, extraEnv) =>
-  execSync(cmd, { stdio: 'inherit', env: { ...process.env, ...extraEnv } })
-
 assertWranglerPagesAccess()
 
 if (preflightOnly) {
@@ -171,9 +157,7 @@ if (!deployOnly) {
   }
 }
 
-if (!fs.existsSync('dist/index.html')) {
-  abort('[deploy:pages:preview] ABORT: dist/index.html not found; run without --deploy-only first.')
-}
+assertDistReady('deploy:pages:preview')
 
 run(
   `npx wrangler pages deploy dist --project-name=${PROJECT_NAME} --branch=${deploymentBranch} ` +

@@ -119,7 +119,7 @@ export default defineConfig({
     // so the normal build stays fast and doesn't open browser tabs.
     ...(process.env.ANALYZE
       ? [visualizer({
-          filename: 'dist/stats.html',
+          filename: 'stats.html',
           open:     true,
           gzipSize: true,
           brotliSize: true,

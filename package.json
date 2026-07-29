@@ -16,6 +16,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "analyze:bundle": "node scripts/analyze-bundle.mjs",
     "test:rules": "npx -y firebase-tools@latest emulators:exec --project=demo-tripmate-rules --only firestore,storage \"vitest run --config vitest.rules.config.ts\"",
     "emulator:seed": "npm --workspace firebase-functions run emulator:seed",
     "functions:build": "npm --workspace firebase-functions run build",

@@ -139,7 +139,7 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 | `useBlobUrl` | 唯一一個合理用 useEffect+useState 的 blob URL 生命週期 hook |
 | `useSwipeRow` / `useSwipeOpen` | 滑刪 row 手勢 + list-level 「目前打開的 row」狀態(haptic light/medium/success 觸發) |
 | `useOcrFlow` | OCR pipeline(compressImage → worker → onSuccess);loading 顯示 elapsed seconds + 8s 慢路徑切換文案。被 `useReceiptOcr` 包覆 |
-| `useReceiptOcr` | ExpenseFormModal 的 OCR 編排層:組合 `useOcrFlow` + receipt source machine(`sourceKey`/`analyzedSourceKey` 驅動「明細を読み取る↔もう一度読み取る」CTA)+ compare 子功能 + camera/upload pick handlers + `pendingSourceKey` 記帳。回傳分層 `{ status, caps, compare, handlers }`。form-apply(`applyOcrResultToForm`)與 sibling clear(att/items/adjustments)留在 component |
+| `useReceiptOcr` | ExpenseFormModal 的 OCR 編排層:組合 `useOcrFlow` + receipt source machine(`sourceKey`/`analyzedSourceKey` 驅動 OCR CTA)+ camera/upload pick handlers + `pendingSourceKey` 記帳。回傳分層 `{ status, caps, handlers }`。form-apply(`applyOcrResultToForm`)與 sibling clear(att/items/adjustments)留在 component |
 | `useExpenseItems` | items state machine + chip 分擔者 |
 | `useSettlements` / `useCreateSettlement` / `useDeleteSettlement` | Settlement 記錄 CRUD + realtime listener。**受取人(toUid)唯一可建立**(rule + UI 雙層 gate);delete 由 `settledBy` 或 trip owner 觸發。算法層在 `services/settlement.ts` 的 `computeBalancesFull` 回 `{ balances, orphans }` |
 | `useFeatureBadges` | **AppLayout 內 5 個 always-on Firestore listener**,對比 `lastViewedStore` 算 unread,驅動 BottomNav 紅點 |
@@ -367,9 +367,9 @@ Demo / not-signed-in 使用者點任何「寫入」action 都會跳 SignInModal�
 - **目錄**: `workers/ocr/`
 - **端點**: `POST /ocr` — Bearer Firebase ID token,body `{ image: base64, mimeType, currency? }`
 - **驗證**: `jose` + `createRemoteJWKSet` 驗 Firebase JWT
-- **AI**: `/ocr` 走 `OCR_PRIMARY_PROVIDER`(預設 `qwen`),`/ocr-fallback` 走 `OCR_FALLBACK_PROVIDER`(預設 `claude`),`/ocr-compare` 需 `OCR_COMPARE_ENABLED=true` 才開。Qwen 用 OpenAI-compatible Chat Completions(`QWEN_BASE_URL` / `QWEN_MODEL`);Claude 用 Microsoft Foundry 原生 Anthropic Messages API(`ANTHROPIC_FOUNDRY_RESOURCE` / `CLAUDE_DEPLOYMENT`)。兩者共用 OCR JSON schema + prompt。
+- **AI**: `/ocr` 走 `OCR_PRIMARY_PROVIDER`(預設 `qwen`),`/ocr-fallback` 走 `OCR_FALLBACK_PROVIDER`(預設 `claude`)。Qwen 用 OpenAI-compatible Chat Completions(`QWEN_BASE_URL` / `QWEN_MODEL`);Claude 用 Microsoft Foundry 原生 Anthropic Messages API(`ANTHROPIC_FOUNDRY_RESOURCE` / `CLAUDE_DEPLOYMENT`)。兩者共用 OCR JSON schema + prompt。
 - **Wrangler**: `npx wrangler tail` 看即時 log(找 `[qwen]` / `[claude]` 前綴);`npx wrangler deploy` 部署
-- **secrets**: `QWEN_API_KEY`(primary 為 qwen 時必填)、`ANTHROPIC_FOUNDRY_API_KEY`(fallback/compare 用 Claude 時必填)
+- **secrets**: `QWEN_API_KEY`(primary 為 qwen 時必填)、`ANTHROPIC_FOUNDRY_API_KEY`(fallback 用 Claude 時必填)
 
 ### Firebase
 - **Auth**: Google sign-in(popup → redirect fallback iOS PWA)

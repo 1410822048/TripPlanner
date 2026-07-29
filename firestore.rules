@@ -102,6 +102,12 @@ service cloud.firestore {
     function unchanged(field) {
       return !(field in request.resource.data.diff(resource.data).affectedKeys());
     }
+    function immutableEntityFieldsUnchanged() {
+      return unchanged('tripId')
+        && unchanged('createdBy')
+        && unchanged('createdAt')
+        && unchanged('memberIds');
+    }
     function affectedKeys() {
       return request.resource.data.diff(resource.data).affectedKeys();
     }
@@ -514,10 +520,7 @@ service cloud.firestore {
                 'estimatedCostMinor','memberIds','createdBy','updatedBy',
                'createdAt','updatedAt'
              ])
-          && unchanged('tripId')
-          && unchanged('createdBy')
-          && unchanged('createdAt')
-          && unchanged('memberIds')
+          && immutableEntityFieldsUnchanged()
           && request.resource.data.updatedBy == uid()
           && request.resource.data.title is string
           && request.resource.data.title.size() > 0
@@ -606,10 +609,7 @@ service cloud.firestore {
           && (isTripOwner(tripId)
               || !('settlementLockIds' in resource.data)
               || resource.data.settlementLockIds.size() == 0)
-          && unchanged('tripId')
-          && unchanged('createdBy')
-          && unchanged('createdAt')
-          && unchanged('memberIds')
+          && immutableEntityFieldsUnchanged()
           // receiptPurgedAt is Worker-controlled (cron stamps it via
           // Admin SDK, bypassing rules). Clients MUST NOT touch it --
           // forging it to a Timestamp would make the doc invisible to
@@ -891,10 +891,7 @@ service cloud.firestore {
                'address','link','note','coverImage','document','sortDate','memberIds',
                'createdBy','updatedBy','createdAt','updatedAt'
              ])
-          && unchanged('tripId')
-          && unchanged('createdBy')
-          && unchanged('createdAt')
-          && unchanged('memberIds')
+          && immutableEntityFieldsUnchanged()
           && request.resource.data.updatedBy == uid()
           && request.resource.data.type in ['flight','hotel','train','bus','other']
           && (!('title' in request.resource.data)
@@ -1021,12 +1018,6 @@ service cloud.firestore {
                   || (request.resource.data.note is string
                       && request.resource.data.note.size() <= 500));
         }
-        function immutablePlanningFieldsUnchanged() {
-          return unchanged('tripId')
-            && unchanged('createdBy')
-            && unchanged('createdAt')
-            && unchanged('memberIds');
-        }
         function selfProgressOnly() {
           return changedOnly(['completedBy', 'updatedBy', 'updatedAt'])
             && request.resource.data.completedBy.diff(resource.data.completedBy)
@@ -1044,7 +1035,7 @@ service cloud.firestore {
                       && memberIdsMatchTrip(tripId)
                       && request.resource.data.completedBy.size() == 0;
         allow update: if validPlanningDoc()
-          && immutablePlanningFieldsUnchanged()
+          && immutableEntityFieldsUnchanged()
           && request.resource.data.updatedBy == uid()
           && (
             (
@@ -1198,6 +1189,15 @@ service cloud.firestore {
               && request.resource.data.appVersion.size() <= 64);
       }
 
+      function pushTokenIdentityUnchanged() {
+        return unchanged('token')
+          && unchanged('tokenHash')
+          && unchanged('platform')
+          && unchanged('provider')
+          && unchanged('permission')
+          && unchanged('createdAt');
+      }
+
       // Create: full token doc, identity fields pinned, timestamps ==
       // request.time, disabledAt null + no disabledReason. The server-only
       // disable reasons (fcm-unregistered/send-failed) can't be forged.
@@ -1227,12 +1227,7 @@ service cloud.firestore {
 
       // Refresh: bump only lastSeenAt/updatedAt/appVersion.
       function validPushTokenRefresh() {
-        return unchanged('token')
-          && unchanged('tokenHash')
-          && unchanged('platform')
-          && unchanged('provider')
-          && unchanged('permission')
-          && unchanged('createdAt')
+        return pushTokenIdentityUnchanged()
           && changedOnly(['updatedAt','lastSeenAt','appVersion'])
           && validPushTokenAppVersion()
           && request.resource.data.updatedAt == request.time
@@ -1243,12 +1238,7 @@ service cloud.firestore {
       // getToken returned it again. Client may only re-enable user-origin
       // disables; server-origin invalid-token cleanup is authoritative.
       function validPushTokenReenable() {
-        return unchanged('token')
-          && unchanged('tokenHash')
-          && unchanged('platform')
-          && unchanged('provider')
-          && unchanged('permission')
-          && unchanged('createdAt')
+        return pushTokenIdentityUnchanged()
           && changedOnly(['updatedAt','lastSeenAt','appVersion','disabledAt','disabledReason'])
           && validPushTokenAppVersion()
           && request.resource.data.updatedAt == request.time
@@ -1266,12 +1256,7 @@ service cloud.firestore {
       // (fcm-unregistered) with a user-origin one and then re-enable, washing
       // out the server's invalid-token tombstone.
       function validPushTokenUserDisable() {
-        return unchanged('token')
-          && unchanged('tokenHash')
-          && unchanged('platform')
-          && unchanged('provider')
-          && unchanged('permission')
-          && unchanged('createdAt')
+        return pushTokenIdentityUnchanged()
           && changedOnly(['updatedAt','disabledAt','disabledReason'])
           && resource.data.disabledAt == null
           && request.resource.data.updatedAt == request.time

@@ -28,13 +28,16 @@
 //   來自控制輸入(這裡注入 + preflight),不是事後掃輸出。
 
 import { execSync } from 'node:child_process'
-import fs from 'node:fs'
-import { loadEnv } from 'vite'
-
-const abort = (message) => {
-  console.error(message)
-  process.exit(1)
-}
+import {
+  PRODUCTION_BRANCH,
+  REQUIRED_CLIENT_ENV,
+  WORKER_URL,
+  abort,
+  assertDistReady,
+  git,
+  loadClientEnv,
+  run,
+} from './pagesDeployCommon.mjs'
 
 const rawArgs = process.argv.slice(2)
 const ALLOWED_FLAGS = new Set(['--preflight-only', '--build-only', '--deploy-only'])
@@ -58,7 +61,6 @@ if (modeCount > 1) {
 //   1. workers/ocr/wrangler.jsonc  name=tripmate-ocr (workers_dev:true)
 //   2. src/services/workerBase.ts  FALLBACK 常數
 //   3. 本檔
-const WORKER_URL = 'https://tripmate-ocr.tripmate.workers.dev'
 // 防呆:有人把上面清空 / 改壞時直接中止,別 build 出壞 bundle。
 if (!/^https:\/\/\S+$/.test(WORKER_URL)) {
   console.error(`[deploy:pages:prod] ABORT: WORKER_URL 不合法: ${JSON.stringify(WORKER_URL)}`)
@@ -72,7 +74,7 @@ process.env.VITE_WORKER_BASE_URL = WORKER_URL
 // loadEnv = build 實際會看到的 merged env(.env* + process.env,後者優先)。
 // authDomain を決める前に読むことで、.env.production / CI が設定した
 // VITE_FIREBASE_AUTH_DOMAIN を尊重する。
-const resolved = { ...loadEnv('production', process.cwd(), 'VITE_'), ...process.env }
+const resolved = loadClientEnv()
 
 // Firebase Auth redirect helper is proxied by /functions/__/auth/[[path]].ts.
 // Production must bake the Pages/custom domain into authDomain so the helper
@@ -102,17 +104,6 @@ resolved.VITE_FIREBASE_AUTH_DOMAIN = PAGES_AUTH_DOMAIN
 // VITE_WORKER_BASE_URL。這些值由 gitignored .env 或 CI/部署環境的 env var
 // 提供 —— 公開的 Firebase web config 刻意不進版控,所以這裡只「檢查存在」
 // 而非硬寫死(與 Worker URL 不同;後者本就已是 source 內的常數)。
-const REQUIRED_CLIENT_ENV = [
-  'VITE_WORKER_BASE_URL',
-  'VITE_FIREBASE_API_KEY',
-  'VITE_FIREBASE_AUTH_DOMAIN',
-  'VITE_FIREBASE_PROJECT_ID',
-  'VITE_FIREBASE_STORAGE_BUCKET',
-  'VITE_FIREBASE_MESSAGING_SENDER_ID',
-  'VITE_FIREBASE_VAPID_KEY',
-  'VITE_FIREBASE_APP_ID',
-]
-
 const missing = REQUIRED_CLIENT_ENV.filter((k) => !resolved[k]?.trim())
 if (missing.length > 0) {
   console.error(
@@ -124,13 +115,6 @@ if (missing.length > 0) {
   )
   process.exit(1)
 }
-
-const run = (cmd, extraEnv) =>
-  execSync(cmd, { stdio: 'inherit', env: { ...process.env, ...extraEnv } })
-
-const PRODUCTION_BRANCH = 'main'
-
-const git = (args) => execSync(`git ${args}`, { encoding: 'utf8' }).trim()
 
 const assertProductionGitRef = () => {
   const currentBranch = git('branch --show-current')
@@ -221,9 +205,7 @@ if (!deployOnly) {
 
 // 2. deploy —— --commit-dirty=false 強制乾淨 worktree。deploy-only 用於
 //    deploy:prod:production build 已在任何遠端變更前完成,這裡只上傳同一份 dist。
-if (!fs.existsSync('dist/index.html')) {
-  abort('[deploy:pages:prod] ABORT: dist/index.html not found; run without --deploy-only first.')
-}
+assertDistReady('deploy:pages:prod')
 
 run(
   'npx wrangler pages deploy dist --project-name=tripmate --branch=main ' +

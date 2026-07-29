@@ -1,14 +1,20 @@
 // scripts/analyze-bundle.mjs
-// Parse rollup-plugin-visualizer's stats.html to print a per-module size
-// table for the main bundle. Run after `ANALYZE=1 npm run build`.
+// Build with rollup-plugin-visualizer enabled, then parse stats.html to print
+// a per-module size table for the main bundle.
 //
 // The visualizer's tree uses path-segment-per-node nesting (e.g.
 // `node_modules` → `firebase` → `firestore` → `dist` → `index.esm.js`),
 // not full paths in each node, so we walk recursively and bucket by the
 // first node-modules child we see.
 import { readFileSync } from 'node:fs'
+import { execSync } from 'node:child_process'
 
-const html = readFileSync('dist/stats.html', 'utf8')
+execSync('npm run build', {
+  stdio: 'inherit',
+  env: { ...process.env, ANALYZE: '1' },
+})
+
+const html = readFileSync('stats.html', 'utf8')
 const idx = html.indexOf('const data = ')
 const end = html.indexOf('};', idx)
 const data = JSON.parse(html.slice(idx + 'const data = '.length, end + 1))
