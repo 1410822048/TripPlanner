@@ -372,7 +372,6 @@ export default function AccountPage() {
           </div>
         }
         confirmLabel={signingOut ? '登出中…' : '登出'}
-        tone="danger"
         loading={signingOut}
         onClose={() => setLogoutOpen(false)}
         onConfirm={handleSignOut}

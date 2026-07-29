@@ -44,10 +44,7 @@ function PlanningRow({
       <div
         ref={bindBg}
         {...deleteProps}
-        className={[
-          'absolute top-0 right-0 bottom-0 flex items-center justify-center cursor-pointer',
-          confirming ? 'bg-[#A83A3A]' : 'bg-[#D85A5A]',
-        ].join(' ')}
+        className="absolute top-0 right-0 bottom-0 flex items-stretch justify-center bg-transparent py-2 cursor-pointer"
         style={{
           width: SWIPE_WIDTH,
           transform: `translate3d(${SWIPE_WIDTH + openX}px,0,0)`,
@@ -55,18 +52,23 @@ function PlanningRow({
           pointerEvents: openX < 0 ? 'auto' : 'none',
         }}
       >
-        {confirming ? (
-          <div className="text-white text-[11px] font-bold tracking-[0.04em] text-center leading-[1.3]">
-            確認<br />刪除
-          </div>
-        ) : (
-          <div className="flex flex-col items-center gap-0.5">
-            <Trash2 size={18} color="white" strokeWidth={2.2} />
-            <span className="text-white text-[10px] font-bold tracking-[0.04em]">
-              刪除
-            </span>
-          </div>
-        )}
+        <div className={[
+          'flex w-[52px] flex-col items-center justify-center rounded-[16px] text-white transition-colors duration-150',
+          confirming ? 'bg-[#A83A3A]' : 'bg-[#E96B63]',
+        ].join(' ')}>
+          {confirming ? (
+            <div className="text-[11px] font-bold tracking-[0.04em] text-center leading-[1.3]">
+              確認<br />刪除
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-1">
+              <Trash2 size={15} strokeWidth={2.2} />
+              <span className="text-[10px] font-bold tracking-[0.04em]">
+                刪除
+              </span>
+            </div>
+          )}
+        </div>
       </div>
 
       <div

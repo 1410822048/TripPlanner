@@ -20,7 +20,7 @@ import { tempId } from '@/utils/tempId'
 import { auditUpdateMock } from '@/utils/audit'
 import type { CreateWishInput, Wish, WishImage } from '@/types'
 import { mockTimestampNow } from '@/mocks/utils'
-import { MUTATION_ACTION, type MutationOptions } from '@/services/queryClient'
+import { MUTATION_ACTION } from '@/services/queryClient'
 
 const wishKeys = {
   all: (tripId: string, uid?: string) => ['wishes', tripId, uid ?? ''] as const,
@@ -34,7 +34,7 @@ export const useWishes = createRealtimeListHook<Wish>({
   requiresUid:     true,
 })
 
-export function useCreateWish(tripId: string, options?: MutationOptions) {
+export function useCreateWish(tripId: string) {
   return useTripListMutation<Wish, {
     input:      CreateWishInput
     file:       File | null
@@ -60,7 +60,6 @@ export function useCreateWish(tripId: string, options?: MutationOptions) {
       ...prev,
     ]),
     action:     MUTATION_ACTION.CREATE_WISH,
-    silent:     options?.silent,
     // Phase 3.7: no partial-create recovery needed. Worker-authoritative
     // /wish-file-create is atomic — either the wish doc lands (with
     // image) or nothing lands, so the realtime listener never observes
@@ -75,7 +74,7 @@ export function useCreateWish(tripId: string, options?: MutationOptions) {
  *  this key + `'wishId'` to derive the set of in-flight update ids. */
 export const wishUpdateMutationKey = ['wishes', 'update'] as const
 
-export function useUpdateWish(tripId: string, options?: MutationOptions) {
+export function useUpdateWish(tripId: string) {
   return useTripListMutation<Wish, {
     wishId:        string
     updates:       Partial<CreateWishInput>
@@ -91,7 +90,6 @@ export function useUpdateWish(tripId: string, options?: MutationOptions) {
     patch:       (prev, { wishId, updates, uid }) =>
       prev.map(w => w.id === wishId ? { ...w, ...updates, ...auditUpdateMock(uid) } : w),
     action:      MUTATION_ACTION.UPDATE,
-    silent:      options?.silent,
   })
 }
 

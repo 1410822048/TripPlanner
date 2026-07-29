@@ -31,7 +31,7 @@ import { captureError } from '@/services/sentry'
 import { getFirebase } from '@/services/firebase'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
 import { toLocalMidnightTimestamp } from '@/utils/dates'
-import { MUTATION_ACTION, type MutationMeta, type MutationOptions } from '@/services/queryClient'
+import { MUTATION_ACTION, type MutationMeta } from '@/services/queryClient'
 import { markPerf } from '@/utils/perf'
 import { useLastViewedStore } from '@/store/lastViewedStore'
 import { tripKeys } from '../queryKeys'
@@ -197,12 +197,12 @@ export function useCopyTrip() {
   })
 }
 
-export function useUpdateTrip(uid: string | undefined, options?: MutationOptions) {
+export function useUpdateTrip(uid: string | undefined) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ tripId, updates }: { tripId: string; updates: Partial<CreateTripInput> }) =>
       updateTrip(tripId, updates),
-    meta: { action: MUTATION_ACTION.UPDATE, silent: options?.silent } satisfies MutationMeta,
+    meta: { action: MUTATION_ACTION.UPDATE } satisfies MutationMeta,
     onMutate: async ({ tripId, updates }) => {
       if (!uid) return { prev: undefined as Trip[] | undefined }
       const key  = tripKeys.mine(uid)
@@ -235,12 +235,12 @@ export function useUpdateTrip(uid: string | undefined, options?: MutationOptions
 
 /** Owner-only shared Wish voting deadline. Same optimistic-patch shape as
  *  useUpdateTrip, scoped to the one field it owns. */
-export function useSetWishVotingDeadline(uid: string | undefined, options?: MutationOptions) {
+export function useSetWishVotingDeadline(uid: string | undefined) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ tripId, deadlineAt }: { tripId: string; deadlineAt: Date | null }) =>
       setWishVotingDeadline(tripId, deadlineAt),
-    meta: { action: MUTATION_ACTION.UPDATE, silent: options?.silent } satisfies MutationMeta,
+    meta: { action: MUTATION_ACTION.UPDATE } satisfies MutationMeta,
     onMutate: async ({ tripId, deadlineAt }) => {
       if (!uid) return { prev: undefined as Trip[] | undefined }
       const key  = tripKeys.mine(uid)

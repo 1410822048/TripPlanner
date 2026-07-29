@@ -6,7 +6,6 @@ import {
   Hash,
   Image as ImageIcon,
   MapPin,
-  Pencil,
   Route,
   type LucideIcon,
 } from 'lucide-react'
@@ -24,6 +23,8 @@ import {
 import { fmtDate, fmtTime, nightsBetween } from './cards/dateFormat'
 import { bookingPassHeroChrome, bookingPassTheme, colorWithAlpha } from './bookingPassTheme'
 import BookingBrandPill from './BookingBrandPill'
+import ReadonlyEditFooter from '@/components/ui/ReadonlyEditFooter'
+import ReadonlyDetailRow from '@/components/ui/ReadonlyDetailRow'
 
 interface Props {
   isOpen: boolean
@@ -101,17 +102,7 @@ export default function BookingReadonlyModal({
       isOpen={isOpen}
       onClose={onClose}
       title="訂單詳情"
-      footer={onEdit ? (
-        <button
-          type="button"
-          onClick={onEdit}
-          className="w-full h-12 rounded-chip border-none bg-teal text-white text-[14px] font-bold flex items-center justify-center gap-2 cursor-pointer transition-transform active:scale-[0.99]"
-          style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
-        >
-          <Pencil size={15} strokeWidth={2.3} />
-          編輯
-        </button>
-      ) : undefined}
+      footer={onEdit ? <ReadonlyEditFooter onEdit={onEdit} /> : undefined}
     >
       <div className="space-y-3">
         <section className="overflow-hidden rounded-card border border-border bg-surface shadow-[0_10px_28px_rgba(32,42,45,0.08)]">
@@ -224,7 +215,14 @@ export default function BookingReadonlyModal({
         {infoRows.length > 0 && (
           <section className="overflow-hidden rounded-card border border-border bg-surface">
             {infoRows.map(row => (
-              <DetailRow key={row.label} row={row} accent={theme.accent} />
+              <ReadonlyDetailRow
+                key={row.label}
+                icon={row.icon}
+                label={row.label}
+                value={row.value}
+                mono={row.mono}
+                accent={theme.accent}
+              />
             ))}
           </section>
         )}
@@ -324,31 +322,6 @@ function TimelinePoint({
       </div>
       <div className="mt-1 text-[13px] font-bold text-ink leading-snug break-words">
         {value}
-      </div>
-    </div>
-  )
-}
-
-function DetailRow({ row, accent }: { row: DetailRowData; accent: string }) {
-  const Icon = row.icon
-  return (
-    <div className="flex items-start gap-3 border-b border-border last:border-b-0 px-4 py-3">
-      <div
-        className="mt-0.5 w-8 h-8 rounded-full flex items-center justify-center shrink-0"
-        style={{ backgroundColor: colorWithAlpha(accent, '14'), color: accent }}
-      >
-        <Icon size={15} strokeWidth={2} />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="text-[10px] font-black text-muted">
-          {row.label}
-        </div>
-        <div className={[
-          'mt-1 text-[13px] font-bold text-ink break-words',
-          row.mono ? 'font-mono tabular-nums' : '',
-        ].join(' ')}>
-          {row.value}
-        </div>
       </div>
     </div>
   )

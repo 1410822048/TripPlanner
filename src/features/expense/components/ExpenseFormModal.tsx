@@ -17,7 +17,7 @@
 //   - useSplitsState   — 均等/カスタム split mode
 //   - useAttachment    — receipt file lifecycle (existing/new/cleared)
 //   - useExpenseItems  — by-item state + mutators
-//   - useReceiptOcr    — OCR orchestration (source + worker flow + compare +
+//   - useReceiptOcr    — OCR orchestration (source + worker flow +
 //                        camera/upload pick handlers)
 import { useRef, useState } from 'react'
 import type {

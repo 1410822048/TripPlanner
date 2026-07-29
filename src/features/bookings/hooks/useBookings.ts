@@ -27,7 +27,7 @@ import { useTripListMutation } from '@/hooks/useTripListMutation'
 import { tempId } from '@/utils/tempId'
 import { auditCreateMock, auditUpdateMock } from '@/utils/audit'
 import type { Booking, CreateBookingInput } from '@/types'
-import { MUTATION_ACTION, type MutationOptions } from '@/services/queryClient'
+import { MUTATION_ACTION } from '@/services/queryClient'
 
 export const bookingKeys = {
   all:       (tripId: string, uid?: string) => ['bookings', tripId, uid ?? ''] as const,
@@ -54,7 +54,7 @@ export const useBookings = createRealtimeListHook<Booking>({
   requiresUid:     true,
 })
 
-export function useCreateBooking(tripId: string, options?: MutationOptions) {
+export function useCreateBooking(tripId: string) {
   // Phase 3.7: the Worker writes doc + attachment atomically (or not at
   // all on rejection), so there is no partial-failure state to reconcile
   // — the factory's optimistic rollback alone is sufficient.
@@ -67,7 +67,6 @@ export function useCreateBooking(tripId: string, options?: MutationOptions) {
       ...prev,
     ],
     action:     MUTATION_ACTION.CREATE_BOOKING,
-    silent:     options?.silent,
   })
 }
 
@@ -76,7 +75,7 @@ export function useCreateBooking(tripId: string, options?: MutationOptions) {
  *  with this key + `'bookingId'` to derive the set of in-flight ids. */
 export const bookingUpdateMutationKey = ['bookings', 'update'] as const
 
-export function useUpdateBooking(tripId: string, options?: MutationOptions) {
+export function useUpdateBooking(tripId: string) {
   return useTripListMutation<Booking, {
     bookingId:  string
     updates:    Partial<CreateBookingInput>
@@ -92,7 +91,6 @@ export function useUpdateBooking(tripId: string, options?: MutationOptions) {
     patch:       (prev, { bookingId, updates, uid }) =>
       prev.map(b => b.id === bookingId ? { ...b, ...updates, ...auditUpdateMock(uid) } : b),
     action:      MUTATION_ACTION.UPDATE,
-    silent:      options?.silent,
   })
 }
 

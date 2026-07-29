@@ -110,7 +110,7 @@ export interface Booking {
   address?: string
   /** External booking URL — the OTA / hotel reservation page (Airbnb,
    *  Booking.com, the hotel's own site, …). Surfaced as a one-tap
-   *  ActionChip so the user can reopen the source listing. Restricted to
+   *  external link so the user can reopen the source listing. Restricted to
    *  http(s) at every write boundary (Zod here, Worker, firestore.rules)
    *  because it renders into an `<a href>`. Mirrors Wish.link. */
   link?: string

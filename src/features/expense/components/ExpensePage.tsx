@@ -26,6 +26,7 @@ import ExpenseListEmpty from './ExpenseListEmpty'
 import ExpenseDateGroups from './ExpenseDateGroups'
 import { CATEGORY_ICON } from '@/shared/categoryMeta'
 import SignInPromptModal from '@/features/auth/components/SignInPromptModal'
+import PageHeader from '@/components/ui/PageHeader'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
 import DemoBanner from '@/components/ui/DemoBanner'
 import { useTripCurrency } from '@/hooks/useTripCurrency'
@@ -277,20 +278,13 @@ export default function ExpensePage() {
       {isDemo && <DemoBanner reason="儲存費用" onSignIn={signIn.open} />}
 
       {/* ── HEADER ─────────────────────────────────────────── */}
-      <div className="px-5 pt-4 pb-2">
-        <p className="m-0 mb-1 text-[10.5px] font-semibold text-muted tracking-[0.12em] uppercase">
-          費用記録
-        </p>
-        <h1 className="m-0 text-[22px] font-black text-ink -tracking-[0.5px]">
-          {title}
-        </h1>
-      </div>
+      <PageHeader eyebrow="費用紀錄" title={title} />
 
       {/* ── SUMMARY CARD ───────────────────────────────────── */}
       <div className="px-4 mt-2">
         <div className="bg-surface border border-border rounded-2xl p-5 shadow-[0_2px_10px_rgba(0,0,0,0.04)]">
           <div className="text-[10.5px] font-semibold text-muted tracking-[0.12em] uppercase">
-            旅行総支出
+            旅程總支出
           </div>
           <div className="mt-1 flex items-baseline gap-0.5">
             <span className="text-[18px] font-bold text-muted leading-none">{symbol}</span>

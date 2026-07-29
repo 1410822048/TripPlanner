@@ -16,6 +16,8 @@ import WishListSkeleton from './WishListSkeleton'
 import WishPageSkeleton from './WishPageSkeleton'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
 import DemoBanner from '@/components/ui/DemoBanner'
+import PageHeader from '@/components/ui/PageHeader'
+import ListEmptyCard from '@/components/ui/ListEmptyCard'
 import SignInPromptModal from '@/features/auth/components/SignInPromptModal'
 import {
   useWishes, useCreateWish, useUpdateWish, useDeleteWish, useToggleWishVote,
@@ -225,27 +227,25 @@ export default function WishPage() {
     <div className="bg-app h-full flex flex-col overflow-hidden">
       {isDemo && <DemoBanner reason="儲存投票" onSignIn={signIn.open} />}
 
-      <div className="shrink-0 px-5 pt-4 pb-2 flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="m-0 mb-1 text-[10.5px] font-semibold text-muted tracking-[0.12em] uppercase">
-            心願
-          </p>
-          <h1 className="m-0 text-[22px] font-black text-ink -tracking-[0.5px] truncate">
-            {title}
-          </h1>
-        </div>
-
-        {/* 右側クラスタ:投票中の人数ピル。追加入口は分類タブ直下に固定し、
-            header の丸 + と一覧内 CTA の二重導線を解消する。 */}
-        <div className="flex items-center gap-2 shrink-0">
-          {members.length > 0 && (
-            <span className="inline-flex items-center gap-1.5 h-7 pl-2.5 pr-3 rounded-full text-[11.5px] font-semibold text-teal bg-teal-pale">
-              <span className="w-1.5 h-1.5 rounded-full bg-teal" />
-              {members.length}人投票
-            </span>
-          )}
-        </div>
-      </div>
+      {/* 右側クラスタ:投票中の人数ピル。追加入口は分類タブ直下に固定し、
+          header 的圓形加號與列表 CTA 不再重複。 */}
+      <PageHeader
+        eyebrow="心願"
+        title={title}
+        align="center"
+        className="shrink-0"
+        truncateTitle
+        right={(
+          <div className="flex items-center gap-2 shrink-0">
+            {members.length > 0 && (
+              <span className="inline-flex items-center gap-1.5 h-7 pl-2.5 pr-3 rounded-full text-[11.5px] font-semibold text-teal bg-teal-pale">
+                <span className="w-1.5 h-1.5 rounded-full bg-teal" />
+                {members.length}人投票
+              </span>
+            )}
+          </div>
+        )}
+      />
 
       {!isDemo && (
         <WishVotingDeadlineBar
@@ -327,31 +327,25 @@ export default function WishPage() {
         {isLoading && !isDemo ? (
           <WishListSkeleton />
         ) : boardRows.length === 0 ? (
-          <div className="text-center px-6 py-12 bg-surface rounded-card border-[1.5px] border-dashed border-border">
-            <div className="w-14 h-14 rounded-full bg-app flex items-center justify-center mx-auto mb-3 text-muted">
-              <Heart size={24} strokeWidth={1.6} />
-            </div>
-            {hasAnyWishes ? (
-              <>
-                <p className="m-0 mb-1 text-[13.5px] font-semibold text-ink tracking-[0.02em]">
-                  尚未有{activeTabLabel}
-                </p>
-                <p className="m-0 text-[11.5px] text-muted tracking-[0.04em]">
-                  {activeTab === 'place'
-                    ? '和大家分享想去的地方吧'
-                    : '和大家分享想吃的店家吧'}
-                </p>
-              </>
-            ) : (
-              <>
-                <p className="m-0 mb-1 text-[13.5px] font-semibold text-ink tracking-[0.02em]">
-                  尚未建立候選項目
-                </p>
-                <p className="m-0 mb-4 text-[11.5px] text-muted tracking-[0.04em] leading-[1.5]">
+          <ListEmptyCard
+            className="py-12"
+            icon={(
+              <div className="w-14 h-14 rounded-full bg-app flex items-center justify-center mx-auto mb-3 text-muted">
+                <Heart size={24} strokeWidth={1.6} />
+              </div>
+            )}
+            title={hasAnyWishes ? `尚未有${activeTabLabel}` : '尚未建立候選項目'}
+            description={hasAnyWishes
+              ? activeTab === 'place'
+                ? '和大家分享想去的地方吧'
+                : '和大家分享想吃的店家吧'
+              : (
+                <span className="leading-[1.5]">
                   一起蒐集想去的地方與<br />
                   想吃的店家吧
-                </p>
-                {!votingClosed && (
+                </span>
+              )}
+            actions={!hasAnyWishes && !votingClosed ? (
                 <button
                   type="button"
                   onClick={modal.openAdd}
@@ -361,10 +355,8 @@ export default function WishPage() {
                   <Plus size={14} strokeWidth={2.5} />
                   新增候選項目
                 </button>
-                )}
-              </>
-            )}
-          </div>
+            ) : undefined}
+          />
         ) : (
           <div className="flex flex-col gap-3">
             {boardRows.map(({ wish: w, rank, proposer, consensus }) => (

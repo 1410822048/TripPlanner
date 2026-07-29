@@ -15,7 +15,7 @@ import { PLAN_CATEGORY_ICON } from '../categories'
 const CATEGORIES: { value: PlanCategory; label: string }[] = [
   { value: 'essentials', label: '必備'   },
   { value: 'documents',  label: '訂單確認' },
-  { value: 'packing',    label: '荷物'   },
+  { value: 'packing',    label: '行李'   },
   { value: 'todo',       label: '行前'   },
   { value: 'other',      label: '其他' },
 ]

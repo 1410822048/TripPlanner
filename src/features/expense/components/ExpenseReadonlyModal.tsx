@@ -1,4 +1,4 @@
-import { FileText, Image as ImageIcon, Lock, Pencil } from 'lucide-react'
+import { FileText, Image as ImageIcon, Lock } from 'lucide-react'
 import type { Expense } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import BottomSheet from '@/components/ui/BottomSheet'
@@ -10,6 +10,7 @@ import { adjustmentSign } from '@tripmate/expense-materialize'
 import { fromLocalDateString } from '@/utils/dates'
 import { formatMinorAmount } from '@/utils/money'
 import { splitSummary } from '../utils'
+import ReadonlyEditFooter from '@/components/ui/ReadonlyEditFooter'
 
 interface Props {
   isOpen:   boolean
@@ -46,17 +47,7 @@ export default function ExpenseReadonlyModal({
       isOpen={isOpen}
       onClose={onClose}
       title="費用詳情"
-      footer={onEdit ? (
-        <button
-          type="button"
-          onClick={onEdit}
-          className="w-full h-12 rounded-chip border-none bg-teal text-white text-[14px] font-bold tracking-[0.04em] flex items-center justify-center gap-2 cursor-pointer transition-transform active:scale-[0.99]"
-          style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
-        >
-          <Pencil size={15} strokeWidth={2.3} />
-          編輯
-        </button>
-      ) : undefined}
+      footer={onEdit ? <ReadonlyEditFooter onEdit={onEdit} /> : undefined}
     >
       {isLocked && (
         <div className="flex items-center gap-2 rounded-input border border-border bg-app px-3 py-2 text-[12px] font-semibold text-muted">

@@ -19,6 +19,7 @@
 //     Safari (e.g. desktop Firefox — no install support at all).
 import { useEffect, useRef, useState } from 'react'
 import { Download, Share, Plus, X } from 'lucide-react'
+import PwaPromptBanner from '@/components/ui/PwaPromptBanner'
 
 const DISMISSED_KEY = 'tripmate-install-dismissed-at'
 const DISMISS_TTL_MS = 14 * 24 * 60 * 60 * 1000  // 14 days
@@ -145,43 +146,21 @@ export default function PwaInstallPrompt() {
 
   return (
     <>
-      <div
+      <PwaPromptBanner
         role="dialog"
-        aria-label="加入主畫面"
-        className="fixed left-1/2 -translate-x-1/2 z-[300] w-[min(94vw,400px)] bg-surface border border-border rounded-[18px] px-4 py-3 shadow-[0_8px_24px_rgba(0,0,0,0.15)] flex items-center gap-3"
+        ariaLabel="加入主畫面"
         // Sit 12px above the nav's top edge. The nav already spans the
         // viewport's bottom var(--nav-h) — including the iOS home-
         // indicator safe area on standalone PWAs — so layering an extra
         // env(safe-area-inset-bottom) here would double-count that space
         // and push the banner ~34px higher than the user expects on iPhone.
-        style={{ bottom: 'calc(var(--nav-h) + 12px)' }}
-      >
-        <div className="w-9 h-9 rounded-full bg-accent-pale shrink-0 flex items-center justify-center text-accent">
-          <Download size={16} strokeWidth={2} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="text-[12.5px] font-bold text-ink tracking-[0.02em]">
-            加入主畫面
-          </div>
-          <div className="text-[10.5px] text-muted mt-0.5 truncate">
-            像 App 一樣直接開啟
-          </div>
-        </div>
-        <button
-          onClick={handleDismiss}
-          aria-label="稍後再說"
-          className="w-8 h-8 rounded-full text-muted hover:bg-app transition-colors flex items-center justify-center cursor-pointer shrink-0"
-        >
-          <X size={14} strokeWidth={2} />
-        </button>
-        <button
-          onClick={mode === 'native' ? handleNativeInstall : () => setShowSteps(true)}
-          className="shrink-0 h-8 px-3 rounded-full bg-accent text-white text-[11.5px] font-bold tracking-[0.04em] border-none cursor-pointer hover:brightness-110 active:scale-[0.97] transition-all"
-          style={{ boxShadow: '0 2px 6px rgba(61,139,122,0.25)' }}
-        >
-          {mode === 'native' ? '安裝' : '查看方法'}
-        </button>
-      </div>
+        icon={<Download size={16} strokeWidth={2} />}
+        title="加入主畫面"
+        description="像 App 一樣直接開啟"
+        actionLabel={mode === 'native' ? '安裝' : '查看方法'}
+        onDismiss={handleDismiss}
+        onAction={mode === 'native' ? handleNativeInstall : () => setShowSteps(true)}
+      />
 
       {mode === 'ios' && showSteps && (
         <IosInstructions onClose={() => setShowSteps(false)} onDismiss={handleDismiss} />

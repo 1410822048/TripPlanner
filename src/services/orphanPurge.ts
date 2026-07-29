@@ -177,9 +177,17 @@ export async function safePurgeWithEnqueueFallback(args: {
       await enqueueOrphanPurges(args.enqueue)
       return 'queued'
     } catch (enqueueErr) {
+      const enqueueFailure = enqueueErr instanceof EnqueueOrphanPurgeError
+        ? {
+            totalPaths:   enqueueErr.totalPaths,
+            failedCount:  enqueueErr.causes.length,
+            succeededIds: enqueueErr.succeededIds,
+          }
+        : {}
       captureError(enqueueErr, {
         ...args.sentry,
         original: String((cleanupErr as Error)?.message ?? cleanupErr),
+        ...enqueueFailure,
       })
       return 'unrecoverable'
     }

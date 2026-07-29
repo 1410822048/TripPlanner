@@ -45,7 +45,6 @@ export default function WishActionMenu({
         isOpen
         title="要刪除嗎？"
         layout="column"
-        tone="danger"
         confirmLabel="刪除"
         icon={
           <span className="w-9 h-9 rounded-full bg-danger-pale flex items-center justify-center">

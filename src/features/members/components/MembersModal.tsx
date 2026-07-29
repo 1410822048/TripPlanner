@@ -267,7 +267,6 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
           </div>
         }
         confirmLabel={removeMut.isPending ? '移除中…' : '移除'}
-        tone="danger"
         loading={removeMut.isPending}
         onClose={() => setPendingRemove(null)}
         onConfirm={handleConfirmRemove}
@@ -288,7 +287,6 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
           </div>
         }
         confirmLabel={transferMut.isPending ? '轉讓中…' : '轉讓'}
-        tone="danger"
         loading={transferMut.isPending}
         onClose={() => setPendingTransfer(null)}
         onConfirm={handleConfirmTransfer}
@@ -309,7 +307,6 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
           </div>
         }
         confirmLabel="退出旅程"
-        tone="danger"
         onClose={() => setConfirmLeave(false)}
         onConfirm={handleConfirmLeave}
       />

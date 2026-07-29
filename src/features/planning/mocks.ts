@@ -31,7 +31,7 @@ export const MOCK_PLAN_ITEMS: PlanItem[] = [
   { id: 'p6', tripId: 'demo', category: 'documents', title: '海外旅遊保險',
     completedBy: completedBy(), ...DEMO_PLAN_AUDIT },
 
-  // 荷物
+  // 行李
   { id: 'p7', tripId: 'demo', category: 'packing', title: '5 天份衣物',
     note: '內搭 + 外套 + 睡衣', completedBy: completedBy('m1'),
     ...DEMO_PLAN_AUDIT },

@@ -3,9 +3,7 @@ import {
   Clock,
   FileText,
   MapPin,
-  Pencil,
   Wallet,
-  type LucideIcon,
 } from 'lucide-react'
 import type { Schedule } from '@/types'
 import { resolvedPlace, scheduleLocationName } from '@/types/schedule'
@@ -15,6 +13,8 @@ import { CATEGORY_ICON, SCHEDULE_CATEGORY_LABEL, SCHEDULE_CATEGORY_STYLE } from 
 import { fromLocalDateString } from '@/utils/dates'
 import { addressMapHref } from '@/utils/maps'
 import { formatMinorAmount } from '@/utils/money'
+import ReadonlyEditFooter from '@/components/ui/ReadonlyEditFooter'
+import ReadonlyDetailRow from '@/components/ui/ReadonlyDetailRow'
 
 interface Props {
   isOpen:   boolean
@@ -54,17 +54,7 @@ export default function ScheduleReadonlyModal({
       isOpen={isOpen}
       onClose={onClose}
       title="行程詳情"
-      footer={onEdit ? (
-        <button
-          type="button"
-          onClick={onEdit}
-          className="w-full h-12 rounded-chip border-none bg-teal text-white text-[14px] font-bold tracking-[0.04em] flex items-center justify-center gap-2 cursor-pointer transition-transform active:scale-[0.99]"
-          style={{ boxShadow: '0 4px 14px rgba(61,139,122,0.25)' }}
-        >
-          <Pencil size={15} strokeWidth={2.3} />
-          編輯
-        </button>
-      ) : undefined}
+      footer={onEdit ? <ReadonlyEditFooter onEdit={onEdit} /> : undefined}
     >
       <section
         className="rounded-[20px] border bg-surface px-4 py-4"
@@ -103,13 +93,13 @@ export default function ScheduleReadonlyModal({
       </section>
 
       <section className="overflow-hidden rounded-card border border-border bg-surface">
-        <DetailRow icon={CalendarDays} label="日期" value={formatDate(schedule.date)} accent={style.color} />
-        <DetailRow icon={Clock} label="時間" value={formatTime(schedule)} mono accent={style.color} />
+        <ReadonlyDetailRow icon={CalendarDays} label="日期" value={formatDate(schedule.date)} accent={style.color} />
+        <ReadonlyDetailRow icon={Clock} label="時間" value={formatTime(schedule)} mono accent={style.color} />
         {locationName && (
-          <DetailRow icon={MapPin} label="地點" value={locationName} accent={style.color} />
+          <ReadonlyDetailRow icon={MapPin} label="地點" value={locationName} accent={style.color} />
         )}
         {typeof schedule.estimatedCostMinor === 'number' && schedule.estimatedCostMinor > 0 && (
-          <DetailRow
+          <ReadonlyDetailRow
             icon={Wallet}
             label="預算"
             value={formatMinorAmount(schedule.estimatedCostMinor, currency)}
@@ -149,41 +139,5 @@ export default function ScheduleReadonlyModal({
         </section>
       )}
     </BottomSheet>
-  )
-}
-
-function DetailRow({
-  icon: Icon,
-  label,
-  value,
-  accent,
-  mono = false,
-}: {
-  icon: LucideIcon
-  label: string
-  value: string
-  accent: string
-  mono?: boolean
-}) {
-  return (
-    <div className="flex items-start gap-3 border-b border-border last:border-b-0 px-4 py-3">
-      <div
-        className="mt-0.5 w-8 h-8 rounded-full flex items-center justify-center shrink-0"
-        style={{ backgroundColor: `${accent}18`, color: accent }}
-      >
-        <Icon size={15} strokeWidth={2} />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="text-[10px] font-black text-muted">
-          {label}
-        </div>
-        <div className={[
-          'mt-1 text-[13px] font-bold text-ink break-words',
-          mono ? 'font-mono tabular-nums' : '',
-        ].join(' ')}>
-          {value}
-        </div>
-      </div>
-    </div>
   )
 }

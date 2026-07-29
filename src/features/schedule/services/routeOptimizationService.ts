@@ -304,11 +304,6 @@ export async function applyRoutePreview(tripId: string, preview: RoutePreview): 
   }
 }
 
-export async function getRouteApplyStatus(tripId: string, revision: string): Promise<{ status: 'applied' | 'not_found'; revision: string }> {
-  const token = await preflightIdToken()
-  return fetchRouteApplyStatus(requireWorkerWriteBase(), token, tripId, revision)
-}
-
 async function fetchRouteApplyStatus(
   base: string,
   token: string,

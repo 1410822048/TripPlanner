@@ -115,6 +115,9 @@ describe('enqueueOrphanPurges partial-failure visibility', () => {
     expect(ctx).toMatchObject({
       source: 'updateExpense/purge-old-receipt',
       original: expect.stringContaining('storage 503'),
+      totalPaths: 2,
+      failedCount: 1,
+      succeededIds: [expect.stringMatching(/^auto-id-/)],
     })
   })
 

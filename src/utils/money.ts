@@ -125,21 +125,7 @@ export function parseMoneyToMinor(text: string, code: string): number {
  *  width (zero-fraction currencies omit the dot). Sign sits between
  *  symbol and digits, matching the pre-minor-units display layout. */
 export function formatMinorAmount(minor: number, code: string | undefined): string {
-  const symbol = currencySymbol(code)
-  if (!Number.isSafeInteger(minor)) {
-    return `${symbol}${minor}`
-  }
-  const digits = currencyFractionDigits(code)
-  const sign   = minor < 0 ? '-' : ''
-  const abs    = Math.abs(minor)
-  if (digits === 0) {
-    return `${symbol}${sign}${abs.toLocaleString()}`
-  }
-  const divisor   = Math.pow(10, digits)
-  const wholePart = Math.floor(abs / divisor)
-  const fracPart  = abs % divisor
-  const fracStr   = String(fracPart).padStart(digits, '0')
-  return `${symbol}${sign}${wholePart.toLocaleString()}.${fracStr}`
+  return currencySymbol(code) + formatMinorNumber(minor, code)
 }
 
 /** Format integer minor units as a locale-formatted decimal string

@@ -7,7 +7,6 @@
 import type { ReactNode } from 'react'
 import BottomSheet from '@/components/ui/BottomSheet'
 
-type ConfirmSheetTone = 'danger' | 'neutral'
 type ConfirmSheetLayout = 'row' | 'column'
 
 interface Props {
@@ -16,9 +15,6 @@ interface Props {
   description?:    ReactNode
   icon?:           ReactNode
   confirmLabel:    string
-  cancelLabel?:    string
-  /** `danger` styles the confirm button in the app's danger palette. */
-  tone?:           ConfirmSheetTone
   /** Button stack direction. `'row'` (default) is the historical side-
    *  by-side layout. `'column'` stacks confirm above cancel — used for
    *  destructive confirms on tall phones (iPhone 14 Pro+) where the
@@ -35,15 +31,10 @@ interface Props {
 
 export default function ConfirmSheet({
   isOpen, title, description, icon,
-  confirmLabel, cancelLabel = '取消',
-  tone = 'neutral', layout = 'row', loading = false,
+  confirmLabel, layout = 'row', loading = false,
   onClose, onConfirm,
 }: Props) {
   if (!isOpen) return null
-
-  const confirmClass = tone === 'danger'
-    ? 'border-[#E9C5C5] bg-danger-pale text-[#A04040] hover:brightness-95'
-    : 'border-accent bg-accent text-white hover:brightness-110'
 
   // In column mode the confirm button is rendered first (above cancel)
   // so the destructive action is visually + ergonomically separated
@@ -59,7 +50,7 @@ export default function ConfirmSheet({
         'h-12 rounded-xl border border-border bg-app text-ink text-[13px] font-semibold cursor-pointer hover:bg-tile transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
       ].join(' ')}
     >
-      {cancelLabel}
+      取消
     </button>
   )
 
@@ -73,7 +64,7 @@ export default function ConfirmSheet({
         'active:scale-[0.98] transition-all',
         'disabled:opacity-60 disabled:cursor-not-allowed',
         'flex items-center justify-center gap-1.5',
-        confirmClass,
+        'border-[#E9C5C5] bg-danger-pale text-[#A04040] hover:brightness-95',
       ].join(' ')}
     >
       {confirmLabel}
