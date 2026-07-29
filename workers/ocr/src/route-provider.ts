@@ -752,17 +752,6 @@ export async function geoapifyForwardGeocode(
   return parseGeoapifyFeatures(response.features, query)
 }
 
-export async function geoapifyReverseGeocode(
-  coordinates: { lat: number; lng: number },
-  env: RouteProviderEnv,
-  fetchImpl?: FetchLike,
-  options?: PlaceSearchOptions,
-  queryHint?: string,
-): Promise<PlaceCandidate[]> {
-  const features = await fetchGeoapifyReverseFeatures(coordinates, env, fetchImpl, options)
-  return parseGeoapifyFeatures(features, queryHint)
-}
-
 async function fetchGeoapifyReverseFeatures(
   coordinates: { lat: number; lng: number },
   env: RouteProviderEnv,

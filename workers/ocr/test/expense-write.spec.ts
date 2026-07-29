@@ -19,6 +19,7 @@
 // firestore-tx.spec) for sharper assertions on the TxResult shape
 // that expense-write builds.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { createFirestoreTxMock, type MockReadDoc } from './helpers/tx-mock'
 
 vi.mock('../src/admin', () => ({
 	getAdminToken:        vi.fn(async () => 'fake-admin-token'),
@@ -49,8 +50,8 @@ vi.mock('../src/pdf-page-limit', () => {
 // `path → TxReadDoc` and an optional `capturedWrites` array; the body
 // runs once against this fake context and we assert on what it
 // returned. No actual fetch traffic.
-const txGetResponses = new Map<string, { exists: boolean; fields: Record<string, unknown>; name: string; updateTime: string | null }>()
-const txQueryResponses = new Map<string, { exists: boolean; fields: Record<string, unknown>; name: string; updateTime: string | null }[]>()
+const txGetResponses = new Map<string, MockReadDoc>()
+const txQueryResponses = new Map<string, MockReadDoc[]>()
 const txQueryCalls: Array<{ parent: string; collection: string; filters?: unknown; limit?: number }> = []
 let capturedTxResult: { writes: unknown[]; result: unknown } | null = null
 
@@ -87,26 +88,23 @@ function matchesMockFilters(
 	return true
 }
 
-vi.mock('../src/firestore-tx', () => ({
-	runFirestoreTransaction: vi.fn(async (_token, _pid, body) => {
-		const ctx = {
-			get: async (path: string) => {
-				const resp = txGetResponses.get(path)
-				if (!resp) throw new Error(`unexpected tx.get('${path}') -- not seeded`)
-				return resp
-			},
-			runQuery: async (q: { parent: string; collection: string; filters?: unknown; limit?: number }) => {
-				txQueryCalls.push({ parent: q.parent, collection: q.collection, filters: q.filters, limit: q.limit })
-				return (txQueryResponses.get(`${q.parent}|${q.collection}`) ?? [])
-					.filter(doc => matchesMockFilters(doc, q.filters))
-			},
-		}
-		const result = await body(ctx)
-		capturedTxResult = result
-		return result.result
-	}),
-	docResourceName: (pid: string, path: string) =>
-		`projects/${pid}/databases/(default)/documents/${path}`,
+vi.mock('../src/firestore-tx', () => createFirestoreTxMock({
+	get: async (path) => {
+		const response = txGetResponses.get(path)
+		if (!response) throw new Error(`unexpected tx.get('${path}') -- not seeded`)
+		return response
+	},
+	runQuery: async (query) => {
+		txQueryCalls.push({
+			parent: query.parent,
+			collection: query.collection,
+			filters: query.filters,
+			limit: query.limit,
+		})
+		return (txQueryResponses.get(`${query.parent}|${query.collection}`) ?? [])
+			.filter(doc => matchesMockFilters(doc, query.filters))
+	},
+	onResult: result => { capturedTxResult = result },
 }))
 
 // Pass-through: each test's mocks set up the right tx.get fan-out

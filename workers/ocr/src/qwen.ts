@@ -1,5 +1,4 @@
-// Qwen receipt OCR client. Used by the configured primary / fallback /
-// comparison OCR routes.
+// Qwen receipt OCR client. Used by the configured primary / fallback routes.
 //
 // Provider API: OpenAI-compatible Chat Completions. Keep baseUrl + model in
 // env because Alibaba Model Studio regions, OpenRouter, and self-hosted

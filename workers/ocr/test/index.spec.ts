@@ -191,7 +191,6 @@ describe('route descriptor table (rate-limit classification)', () => {
 	const EXPECTED: Record<string, { limiter: string; scope: string; globalLimit: number }> = {
 		'/ocr':                 { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
 		'/ocr-fallback':        { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
-		'/ocr-compare':         { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
 		'/booking-pdf-extract': { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
 		'/expense-receipt-ocr': { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
 		'/expense-receipt-ocr-fallback': { limiter: 'OCR_RATE_LIMITER',    scope: 'ocr',              globalLimit: 60 },

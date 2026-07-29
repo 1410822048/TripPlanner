@@ -23,6 +23,31 @@ function fullName(projectId: string, path: string): string {
 // staleness would be a correctness bug, not a perf gain.
 const NO_CACHE: RequestInit = { cache: 'no-store' }
 
+async function assertOk(response: Response, operation: string): Promise<void> {
+  if (response.ok) return
+  const detail = await response.text().catch(() => '')
+  throw new Error(`${operation} → ${response.status}: ${detail.slice(0, 200)}`)
+}
+
+async function runQueryRows<T>(
+  accessToken: string,
+  parent: string,
+  structuredQuery: Record<string, unknown>,
+  operation: string,
+): Promise<T[]> {
+  const response = await fetch(`${BASE}/${parent}:runQuery`, {
+    ...NO_CACHE,
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ structuredQuery }),
+  })
+  await assertOk(response, operation)
+  return response.json() as Promise<T[]>
+}
+
 /** Check whether a doc exists at the given path. Returns true on 200,
  *  false on 404, throws on any other status. Used to verify the
  *  invitee really wrote their member doc before we cascade. */
@@ -52,10 +77,7 @@ export async function getDocMemberIds(
     ...NO_CACHE,
     headers: { Authorization: `Bearer ${accessToken}` },
   })
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    throw new Error(`getDocMemberIds ${path} → ${res.status}: ${detail.slice(0, 200)}`)
-  }
+  await assertOk(res, `getDocMemberIds ${path}`)
   const data = await res.json() as { fields?: Record<string, FsValue> }
   return readStringArray(data.fields, 'memberIds')
 }
@@ -97,10 +119,7 @@ export async function arrayUnionMembersOnDoc(
       }),
     },
   )
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    throw new Error(`arrayUnionMembersOnDoc → ${res.status}: ${detail.slice(0, 200)}`)
-  }
+  await assertOk(res, 'arrayUnionMembersOnDoc')
 }
 
 /** List every document name in a collection. Handles pagination so
@@ -129,10 +148,7 @@ export async function listDocNames(
       ...NO_CACHE,
       headers: { Authorization: `Bearer ${accessToken}` },
     })
-    if (!res.ok) {
-      const detail = await res.text().catch(() => '')
-      throw new Error(`listDocNames ${collection} → ${res.status}: ${detail.slice(0, 200)}`)
-    }
+    await assertOk(res, `listDocNames ${collection}`)
     const data = await res.json() as {
       documents?: { name: string }[]
       nextPageToken?: string
@@ -181,10 +197,7 @@ export async function batchArrayUnionMemberIds(
         body: JSON.stringify({ writes }),
       },
     )
-    if (!res.ok) {
-      const detail = await res.text().catch(() => '')
-      throw new Error(`batchArrayUnion → ${res.status}: ${detail.slice(0, 200)}`)
-    }
+    await assertOk(res, 'batchArrayUnion')
   }
 }
 
@@ -254,10 +267,7 @@ export async function batchStripDepartedMember(
         body: JSON.stringify({ writes }),
       },
     )
-    if (!res.ok) {
-      const detail = await res.text().catch(() => '')
-      throw new Error(`batchStripDepartedMember → ${res.status}: ${detail.slice(0, 200)}`)
-    }
+    await assertOk(res, 'batchStripDepartedMember')
   }
 }
 
@@ -284,10 +294,7 @@ export async function getDocFields(
     headers: { Authorization: `Bearer ${accessToken}` },
   })
   if (res.status === 404) return null
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    throw new Error(`getDocFields ${path} → ${res.status}: ${detail.slice(0, 200)}`)
-  }
+  await assertOk(res, `getDocFields ${path}`)
   const data = await res.json() as { fields?: Record<string, FsValue> }
   return data.fields ?? {}
 }
@@ -321,10 +328,7 @@ export async function batchDeleteDocs(
         body: JSON.stringify({ writes }),
       },
     )
-    if (!res.ok) {
-      const detail = await res.text().catch(() => '')
-      throw new Error(`batchDeleteDocs → ${res.status}: ${detail.slice(0, 200)}`)
-    }
+    await assertOk(res, 'batchDeleteDocs')
   }
 }
 
@@ -372,20 +376,12 @@ async function queryUserTripNotificationDocNames(
     }
   }
 
-  const res = await fetch(`${BASE}/${parent}:runQuery`, {
-    ...NO_CACHE,
-    method:  'POST',
-    headers: {
-      Authorization:  `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ structuredQuery }),
-  })
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    throw new Error(`queryUserTripNotificationDocNames -> ${res.status}: ${detail.slice(0, 200)}`)
-  }
-  const rows = await res.json() as { document?: { name: string } }[]
+  const rows = await runQueryRows<{ document?: { name: string } }>(
+    accessToken,
+    parent,
+    structuredQuery,
+    'queryUserTripNotificationDocNames',
+  )
   return rows
     .map(row => row.document?.name)
     .filter((name): name is string => typeof name === 'string' && name.length > 0)
@@ -567,23 +563,12 @@ export async function queryReceiptPurgeCandidates(
     }
   }
 
-  const res = await fetch(`${BASE}/${parent}:runQuery`, {
-    ...NO_CACHE,
-    method:  'POST',
-    headers: {
-      Authorization:  `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ structuredQuery }),
-  })
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    throw new Error(`queryReceiptPurgeCandidates → ${res.status}: ${detail.slice(0, 200)}`)
-  }
+  const rows = await runQueryRows<{
+    document?: { name: string; fields?: Record<string, FsValue> }
+  }>(accessToken, parent, structuredQuery, 'queryReceiptPurgeCandidates')
   // runQuery streams an array of { document, readTime, skippedResults }.
   // Empty result still returns [{}], so we filter to docs that actually
   // have a document field.
-  const rows = await res.json() as { document?: { name: string; fields?: Record<string, FsValue> } }[]
   const docs = rows
     .filter(r => r.document)
     .map(r => ({
@@ -654,26 +639,13 @@ export async function queryWishDeadlineSweepCandidates(
     }
   }
 
-  const res = await fetch(`${BASE}/${parent}:runQuery`, {
-    ...NO_CACHE,
-    method:  'POST',
-    headers: {
-      Authorization:  `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ structuredQuery }),
-  })
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    throw new Error(`queryWishDeadlineSweepCandidates → ${res.status}: ${detail.slice(0, 200)}`)
-  }
-  const rows = await res.json() as {
+  const rows = await runQueryRows<{
     document?: {
       name:        string
       fields?:     Record<string, FsValue>
       updateTime?: string
     }
-  }[]
+  }>(accessToken, parent, structuredQuery, 'queryWishDeadlineSweepCandidates')
   const docs = rows.flatMap(row => {
     const document = row.document
     if (!document || typeof document.updateTime !== 'string') return []
@@ -805,20 +777,9 @@ export async function queryUploadIntents(
     }
   }
 
-  const res = await fetch(`${BASE}/${parent}:runQuery`, {
-    ...NO_CACHE,
-    method:  'POST',
-    headers: {
-      Authorization:  `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ structuredQuery }),
-  })
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    throw new Error(`queryUploadIntents → ${res.status}: ${detail.slice(0, 200)}`)
-  }
-  const rows = await res.json() as { document?: { name: string; fields?: Record<string, FsValue> } }[]
+  const rows = await runQueryRows<{
+    document?: { name: string; fields?: Record<string, FsValue> }
+  }>(accessToken, parent, structuredQuery, 'queryUploadIntents')
   const docs = rows
     .filter(r => r.document)
     .map(r => ({
@@ -899,10 +860,7 @@ export async function setScanCursor(
     },
     body: JSON.stringify(body),
   })
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    throw new Error(`setScanCursor ${path} → ${res.status}: ${detail.slice(0, 200)}`)
-  }
+  await assertOk(res, `setScanCursor ${path}`)
 }
 
 /** Delete the cursor. Called when a scan completes naturally (drained
@@ -973,20 +931,9 @@ export async function queryOrphanPurgeCandidates(
     }
   }
 
-  const res = await fetch(`${BASE}/${parent}:runQuery`, {
-    ...NO_CACHE,
-    method:  'POST',
-    headers: {
-      Authorization:  `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ structuredQuery }),
-  })
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    throw new Error(`queryOrphanPurgeCandidates → ${res.status}: ${detail.slice(0, 200)}`)
-  }
-  const rows = await res.json() as { document?: { name: string; fields?: Record<string, FsValue> } }[]
+  const rows = await runQueryRows<{
+    document?: { name: string; fields?: Record<string, FsValue> }
+  }>(accessToken, parent, structuredQuery, 'queryOrphanPurgeCandidates')
   const docs = rows
     .filter(r => r.document)
     .map(r => ({

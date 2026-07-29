@@ -19,6 +19,7 @@
 //     parity with expense-write.
 //   - Request body cannot smuggle a client-built `image` object.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { createFirestoreTxMock, type MockReadDoc } from './helpers/tx-mock'
 
 vi.mock('../src/admin', () => ({
 	getAdminToken:        vi.fn(async () => 'fake-admin-token'),
@@ -34,24 +35,16 @@ vi.mock('../src/storage', () => ({
 	deleteObject:         vi.fn(() => Promise.resolve(true)),
 }))
 
-const txGetResponses = new Map<string, { exists: boolean; fields: Record<string, unknown>; name: string; updateTime: string | null }>()
+const txGetResponses = new Map<string, MockReadDoc>()
 let capturedTxResult: { writes: unknown[]; result: unknown } | null = null
 
-vi.mock('../src/firestore-tx', () => ({
-	runFirestoreTransaction: vi.fn(async (_token, _pid, body) => {
-		const ctx = {
-			get: async (path: string) => {
-				const resp = txGetResponses.get(path)
-				if (!resp) throw new Error(`unexpected tx.get('${path}') -- not seeded`)
-				return resp
-			},
-		}
-		const result = await body(ctx)
-		capturedTxResult = result
-		return result.result
-	}),
-	docResourceName: (pid: string, path: string) =>
-		`projects/${pid}/databases/(default)/documents/${path}`,
+vi.mock('../src/firestore-tx', () => createFirestoreTxMock({
+	get: async (path) => {
+		const response = txGetResponses.get(path)
+		if (!response) throw new Error(`unexpected tx.get('${path}') -- not seeded`)
+		return response
+	},
+	onResult: result => { capturedTxResult = result },
 }))
 
 vi.mock('../src/cascade', async () => {

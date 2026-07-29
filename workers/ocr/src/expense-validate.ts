@@ -27,15 +27,13 @@ import {
   type MaterializeAdjustment,
   type MaterializeItem,
 } from '@tripmate/expense-materialize'
+import { FieldValidationError } from './field-validation'
 
 /** Thrown for any validation failure. `field` is a dotted path the
  *  caller can surface in form-level error UI. */
-export class ExpenseValidationError extends Error {
-  readonly field: string
+export class ExpenseValidationError extends FieldValidationError {
   constructor(field: string, message: string) {
-    super(`${field}: ${message}`)
-    this.name = 'ExpenseValidationError'
-    this.field = field
+    super('ExpenseValidationError', field, message)
   }
 }
 

@@ -51,10 +51,9 @@ import {
   consumeEntityIntents,
   type PdfValidationCache,
 }                                                                   from './upload-intent'
+import { TripIdRe }                                                  from './field-validation'
 
 // ─── Request body schemas ─────────────────────────────────────────
-
-const TripIdRe = /^[A-Za-z0-9_-]{1,60}$/
 
 export const ExpenseCreateRequestSchema = z.object({
   tripId:    z.string().regex(TripIdRe),

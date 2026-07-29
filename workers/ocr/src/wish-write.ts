@@ -44,10 +44,9 @@ import {
   buildAttachmentMapValue,
   type ConsumedIntent,
 }                                                                   from './upload-intent'
+import { FieldValidationError, TripIdRe }                            from './field-validation'
 
 // ─── Request body schema ──────────────────────────────────────────
-
-const TripIdRe = /^[A-Za-z0-9_-]{1,60}$/
 
 export const WishFileCreateRequestSchema = z.object({
   tripId:    z.string().regex(TripIdRe),
@@ -74,12 +73,9 @@ export type WishFileCreateRequest = z.infer<typeof WishFileCreateRequestSchema>
  *  path the caller can surface in form-level error UI. Mirrors
  *  ExpenseValidationError's contract so index.ts handles both the
  *  same way. */
-export class WishValidationError extends Error {
-  readonly field: string
+export class WishValidationError extends FieldValidationError {
   constructor(field: string, message: string) {
-    super(`${field}: ${message}`)
-    this.name = 'WishValidationError'
-    this.field = field
+    super('WishValidationError', field, message)
   }
 }
 

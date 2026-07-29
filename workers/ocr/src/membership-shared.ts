@@ -23,10 +23,12 @@ import {
   type TxReadDoc,
   type TxWrite,
 }                                                           from './firestore-tx'
+import { FieldValidationError, TripIdRe }                    from './field-validation'
+
+export { TripIdRe } from './field-validation'
 
 // ─── Shared constants (request-schema building blocks) ─────────────
 /** Trip id shape — shared by every membership request schema. */
-export const TripIdRe = /^[A-Za-z0-9_-]{1,60}$/
 /** Firebase uid length cap — bounds uid-shaped string fields. */
 export const UID_MAX  = 128
 
@@ -35,12 +37,9 @@ export const UID_MAX  = 128
 /** Thrown for any membership validation failure. Same `{ field, message }`
  *  shape as Expense/Wish/Booking/Settlement so
  *  route-dispatch.validationErrorCatcher handles all five identically. */
-export class MembershipValidationError extends Error {
-  readonly field: string
+export class MembershipValidationError extends FieldValidationError {
   constructor(field: string, message: string) {
-    super(`${field}: ${message}`)
-    this.name  = 'MembershipValidationError'
-    this.field = field
+    super('MembershipValidationError', field, message)
   }
 }
 

@@ -23,8 +23,7 @@ import { getObjectMetadata, downloadObject }  from './storage'
 import { expenseIsSettlementLocked }          from './expense-write'
 import { CascadeError }                       from './cascade'
 import { OCR_SUPPORTED_IMAGE_MIME_TYPES, type OcrResponse, type OcrSupportedImageMimeType } from './schema'
-
-const TripIdRe = /^[A-Za-z0-9_-]{1,60}$/
+import { TripIdRe }                           from './field-validation'
 
 /** Hard ceiling on the receipt object we'll pull into memory + hand to
  *  the OCR model. Mirrors storage.rules' 5MB expense-receipt cap. */

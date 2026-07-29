@@ -46,7 +46,7 @@
 		"BOOKING_CLAUDE_DEPLOYMENT": "claude-haiku-4-5-2",
 		// Qwen OCR provider. API key is a SECRET (QWEN_API_KEY via
 		// `wrangler secret put`). Required whenever OCR_PRIMARY_PROVIDER or
-		// OCR_FALLBACK_PROVIDER is qwen; /ocr-compare also uses it when enabled.
+		// OCR_FALLBACK_PROVIDER is qwen.
 		// This uses Alibaba Cloud Model Studio Singapore's workspace-scoped
 		// OpenAI-compatible endpoint; the older dashscope-intl.aliyuncs.com
 		// domain is legacy.
@@ -55,12 +55,10 @@
 		// Clean OCR routing:
 		//   /ocr                     -> OCR_PRIMARY_PROVIDER
 		//   /ocr-fallback            -> OCR_FALLBACK_PROVIDER
-		//   /ocr-compare             -> only when OCR_COMPARE_ENABLED=true
 		// Default product path is Qwen because receipt preprocessing made it
 		// faster with acceptable quality; Claude remains an explicit backup.
 		"OCR_PRIMARY_PROVIDER": "qwen",
-		"OCR_FALLBACK_PROVIDER": "claude",
-		"OCR_COMPARE_ENABLED": "false"
+		"OCR_FALLBACK_PROVIDER": "claude"
 	},
 	// Two independent schedules — index.ts's scheduled() branches on
 	// event.cron so neither ever runs the other's jobs:

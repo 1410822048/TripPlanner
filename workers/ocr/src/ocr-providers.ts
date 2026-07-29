@@ -17,24 +17,6 @@ export interface OcrProviderConfig {
   qwen:   QwenConfig
 }
 
-export function parseBooleanEnv(value: string | undefined, fallback: boolean): boolean {
-  if (value === undefined || value.trim() === '') return fallback
-  switch (value.trim().toLowerCase()) {
-    case '1':
-    case 'true':
-    case 'yes':
-    case 'on':
-      return true
-    case '0':
-    case 'false':
-    case 'no':
-    case 'off':
-      return false
-    default:
-      throw new OcrError(`Invalid boolean env value: ${value}`, 502)
-  }
-}
-
 export function parseOcrProvider(
   value: string | undefined,
   envName: string,

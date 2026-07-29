@@ -65,10 +65,10 @@ import {
   type ConsumedIntent,
   type PdfValidationCache,
 }                                                                   from './upload-intent'
+import { FieldValidationError, TripIdRe }                            from './field-validation'
 
 // ─── Request body schema ──────────────────────────────────────────
 
-const TripIdRe = /^[A-Za-z0-9_-]{1,60}$/
 const IntentIdsSchema = z.array(z.string().min(1).max(60)).min(1).max(2)
 const BookingAttachmentRoleSchema = z.enum(['coverImage', 'document'])
 type BookingAttachmentRole = z.infer<typeof BookingAttachmentRoleSchema>
@@ -109,12 +109,9 @@ export type BookingFileCreateRequest = z.infer<typeof BookingFileCreateRequestSc
  *  dotted path the caller can surface in form-level error UI.
  *  Mirrors WishValidationError / ExpenseValidationError's contract
  *  so index.ts handles all three the same way. */
-export class BookingValidationError extends Error {
-  readonly field: string
+export class BookingValidationError extends FieldValidationError {
   constructor(field: string, message: string) {
-    super(`${field}: ${message}`)
-    this.name  = 'BookingValidationError'
-    this.field = field
+    super('BookingValidationError', field, message)
   }
 }
 

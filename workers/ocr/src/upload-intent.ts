@@ -70,10 +70,9 @@ import {
   assertPdfPageLimitBytes,
 }                                                                   from './pdf-page-limit'
 import { PdfPageLimitError }                                        from '@tripmate/pdf-page-limit'
+import { TripIdRe }                                                  from './field-validation'
 
 // ─── Constants ────────────────────────────────────────────────────
-
-const TripIdRe = /^[A-Za-z0-9_-]{1,60}$/
 
 /** Intent TTL. 30 min covers the realistic upload + retry envelope
  *  (compress 5MB image + slow 3G upload + iOS Safari background

@@ -23,8 +23,7 @@ import { getAdminToken, getProjectId, getSigningCredentials } from './admin'
 import { getDocFields, readNestedString, readTimestampMs, type FsValue }    from './firestore'
 import { CascadeError, withTokenRetry }                  from './cascade'
 import { signV4Url }                                     from './gcs-sign'
-
-const TripIdRe = /^[A-Za-z0-9_-]{1,60}$/
+import { TripIdRe }                                      from './field-validation'
 
 /** TTLs (seconds). full/pdf are short because they're opened deliberately and
  *  are higher-value bytes. */

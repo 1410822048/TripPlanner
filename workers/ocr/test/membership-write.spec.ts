@@ -15,6 +15,7 @@
 // and let them keep reading via collection-group queries. This is the
 // only place that load-bearing order shows up at the assertion layer.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { createFirestoreTxMock, type MockReadDoc } from './helpers/tx-mock'
 
 vi.mock('../src/admin', () => ({
 	getAdminToken:        vi.fn(async () => 'fake-admin-token'),
@@ -22,49 +23,33 @@ vi.mock('../src/admin', () => ({
 	invalidateAdminToken: vi.fn(),
 }))
 
-interface MockReadDoc {
-	exists:     boolean
-	fields:     Record<string, unknown>
-	name:       string
-	updateTime: string | null
-}
-
 const txGetResponses = new Map<string, MockReadDoc>()
 const txGetCalls: string[] = []
 let capturedTxResult: { writes: unknown[]; result: unknown } | null = null
 
-vi.mock('../src/firestore-tx', () => ({
-	runFirestoreTransaction: vi.fn(async (_token, _pid, body) => {
-		const ctx = {
-			get: async (path: string) => {
-				txGetCalls.push(path)
-				const resp = txGetResponses.get(path)
-				if (resp) return resp
-				// /invite-redeem reads inviteState/current on EVERY tx (the
-				// single-active gate). Default it to a valid pointer naming the
-				// happy-path token so the pre-existing redeem tests don't each
-				// need a 4th explicit seed; the gate-specific tests (missing /
-				// mismatched) and the create/revoke tests seed this path
-				// explicitly to override. Inline literal token ('a'×64 ==
-				// VALID_TOK) avoids a vi.mock-factory out-of-scope reference.
-				if (path.endsWith('/inviteState/current')) {
-					return {
-						exists:     true,
-						name:       `projects/demo/databases/(default)/documents/${path}`,
-						updateTime: '2026-05-28T00:00:00Z',
-						fields:     { token: { stringValue: 'a'.repeat(64) }, role: { stringValue: 'editor' } },
-					}
-				}
-				throw new Error(`unexpected tx.get('${path}') -- not seeded`)
-			},
-			runQuery: async () => [],
+vi.mock('../src/firestore-tx', () => createFirestoreTxMock({
+	get: async (path) => {
+		txGetCalls.push(path)
+		const response = txGetResponses.get(path)
+		if (response) return response
+		// /invite-redeem reads inviteState/current on EVERY tx (the
+		// single-active gate). Default it to a valid pointer naming the
+		// happy-path token so the pre-existing redeem tests don't each
+		// need a 4th explicit seed; the gate-specific tests (missing /
+		// mismatched) and the create/revoke tests seed this path
+		// explicitly to override. Inline literal token ('a'×64 ==
+		// VALID_TOK) avoids a vi.mock-factory out-of-scope reference.
+		if (path.endsWith('/inviteState/current')) {
+			return {
+				exists:     true,
+				name:       `projects/demo/databases/(default)/documents/${path}`,
+				updateTime: '2026-05-28T00:00:00Z',
+				fields:     { token: { stringValue: 'a'.repeat(64) }, role: { stringValue: 'editor' } },
+			}
 		}
-		const result = await body(ctx)
-		capturedTxResult = result
-		return result.result
-	}),
-	docResourceName: (pid: string, path: string) =>
-		`projects/${pid}/databases/(default)/documents/${path}`,
+		throw new Error(`unexpected tx.get('${path}') -- not seeded`)
+	},
+	onResult: result => { capturedTxResult = result },
 }))
 
 // Non-tx REST helpers used by /member-remove cascade phase. Each is

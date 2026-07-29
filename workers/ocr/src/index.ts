@@ -72,7 +72,6 @@ import { verifyFirebaseToken, extractBearerToken } from './auth'
 import { OcrError }                               from './claude'
 import { OcrRequestSchema, type OcrRequest, type OcrResponse } from './schema'
 import {
-  parseBooleanEnv,
   parseOcrProvider,
   parseOptionalOcrProvider,
   runOcrProvider,
@@ -333,10 +332,6 @@ interface RouteDescriptor {
   dispatch: (c: DispatchCtx) => Response | Promise<Response>
 }
 
-type OcrCompareResult =
-  | { provider: OcrProvider; ok: true;  elapsedMs: number; result: OcrResponse }
-  | { provider: OcrProvider; ok: false; elapsedMs: number; error: { message: string; status: number } }
-
 function ocrProviderConfig(env: WorkerEnv): OcrProviderConfig {
   return {
     claude: {
@@ -366,10 +361,6 @@ function primaryOcrProvider(env: WorkerEnv): OcrProvider {
 
 function fallbackOcrProvider(env: WorkerEnv): OcrProvider | 'none' {
   return parseOptionalOcrProvider(env.OCR_FALLBACK_PROVIDER, 'OCR_FALLBACK_PROVIDER', 'claude')
-}
-
-function compareEnabled(env: WorkerEnv): boolean {
-  return parseBooleanEnv(env.OCR_COMPARE_ENABLED, false)
 }
 
 function runConfiguredOcrProvider(env: WorkerEnv, provider: OcrProvider, data: OcrRequest): Promise<OcrResponse> {
@@ -409,40 +400,6 @@ function pdfPageLimitErrorCatcher() {
         status: pdfPageLimitStatus(e.code),
       }
     : null
-}
-
-function clientSafeCompareError(status: number): string {
-  return clientSafeOcrError(status)
-}
-
-async function timedOcrProvider(
-  provider: OcrProvider,
-  run: () => Promise<OcrResponse>,
-): Promise<OcrCompareResult> {
-  const started = Date.now()
-  try {
-    const result = await run()
-    return { provider, ok: true, elapsedMs: Date.now() - started, result }
-  } catch (e) {
-    const err = e as Error
-    const status = e instanceof OcrError ? e.status : 500
-    console.error(`[ocr-compare] ${provider} failed: status=${status} msg=${err.message}`)
-    return {
-      provider,
-      ok: false,
-      elapsedMs: Date.now() - started,
-      error: {
-        message: clientSafeCompareError(status),
-        status,
-      },
-    }
-  }
-}
-
-function formatCompareResult(r: OcrCompareResult): string {
-  return r.ok
-    ? `${r.provider}:ok items=${r.result.items.length} adjustments=${r.result.adjustments.length} ignored=${r.result.ignoredLines.length} ms=${r.elapsedMs}`
-    : `${r.provider}:err status=${r.error.status} ms=${r.elapsedMs}`
 }
 
 function bookingPdfFieldCount(result: BookingPdfExtractResponse): number {
@@ -782,25 +739,6 @@ export const ROUTES: RouteDescriptor[] = [
         return runConfiguredOcrProvider(c.env, provider, data)
       },
       formatLog: (_data, result) => `items=${result.items.length}`,
-      catchDomain: ocrErrorCatcher,
-    }),
-  },
-  {
-    path: '/ocr-compare', rate: 'ocr',
-    dispatch: c => handleJsonRoute({
-      endpoint:  'ocr-compare', body: c.body, cors: c.cors, uid: c.uid,
-      schema:    OcrRequestSchema,
-      handle:    async data => {
-        if (!compareEnabled(c.env)) throw new OcrError('OCR comparison is disabled', 404)
-        const cfg = ocrProviderConfig(c.env)
-        const [claude, qwen] = await Promise.all([
-          timedOcrProvider('claude', () => runOcrProvider('claude', data.image, data.mimeType, data.currency, cfg)),
-          timedOcrProvider('qwen', () => runOcrProvider('qwen', data.image, data.mimeType, data.currency, cfg)),
-        ])
-        return { claude, qwen }
-      },
-      formatLog: (_data, result) =>
-        `${formatCompareResult(result.claude)} ${formatCompareResult(result.qwen)}`,
       catchDomain: ocrErrorCatcher,
     }),
   },

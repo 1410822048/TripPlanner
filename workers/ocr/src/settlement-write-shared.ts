@@ -13,10 +13,10 @@
 // cross-field reconciliation), so a single shared module is proportionate
 // here — unlike expense, which warrants a separate expense-validate.ts.
 import { z } from 'zod'
+import { FieldValidationError, TripIdRe } from './field-validation'
 
 // ─── Request body schemas ─────────────────────────────────────────
 
-const TripIdRe = /^[A-Za-z0-9_-]{1,60}$/
 const UID_MAX  = 128
 const AMOUNT_MINOR_MAX = 999_999_999_999
 
@@ -86,12 +86,9 @@ export type SettlementDeleteRequest = z.infer<typeof SettlementDeleteRequestSche
 /** Thrown for any settlement validation failure. Mirrors the
  *  Expense/Wish/Booking shape so route-dispatch.validationErrorCatcher
  *  handles all four the same way. */
-export class SettlementValidationError extends Error {
-  readonly field: string
+export class SettlementValidationError extends FieldValidationError {
   constructor(field: string, message: string) {
-    super(`${field}: ${message}`)
-    this.name  = 'SettlementValidationError'
-    this.field = field
+    super('SettlementValidationError', field, message)
   }
 }
 
