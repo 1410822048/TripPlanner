@@ -29,7 +29,9 @@ describe('fetchAttachmentBlob', () => {
 
     const blob = await fetchAttachmentBlob(PATH)
 
-    expect(blob).toBeInstanceOf(Blob)
+    expect(blob).not.toBeNull()
+    expect(blob?.size).toBe(5)
+    await expect(blob!.text()).resolves.toBe('image')
     const [url, init] = fetchMock.mock.calls[0]!
     expect(String(url)).toBe('https://worker.example.test/attachment-content')
     const headers = new Headers(init?.headers)
@@ -47,7 +49,10 @@ describe('fetchAttachmentBlob', () => {
     const pending = fetchAttachmentBlob(PATH)
     await vi.runAllTimersAsync()
 
-    await expect(pending).resolves.toBeInstanceOf(Blob)
+    const blob = await pending
+    expect(blob).not.toBeNull()
+    expect(blob?.size).toBe(5)
+    await expect(blob!.text()).resolves.toBe('image')
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
