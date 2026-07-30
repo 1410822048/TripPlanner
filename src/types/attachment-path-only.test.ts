@@ -1,6 +1,6 @@
 // path-only attachment schemas: the three media schemas persist ONLY
 // Storage paths (path / thumbPath / filePath), never a bearer download
-// URL. Reads go through getBlob(path) gated by Storage Rules. These pin
+// URL. Reads go through the authenticated Worker/R2 proxy. These pin
 // that a path-only doc parses, and that any stray legacy url/fileUrl/
 // thumbUrl key is dropped on parse (never carried into the typed model)
 // so a bearer URL can't leak back into an entity.

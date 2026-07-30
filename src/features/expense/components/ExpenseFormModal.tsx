@@ -185,7 +185,7 @@ export default function ExpenseFormModal({
     type:        editTarget?.receipt?.type      ?? null,
   })
   // Full-size receipt preview: new file → its local blob; existing →
-  // resolve fullPath via getBlob only while the modal is open (path-driven).
+  // resolve fullPath through the Worker only while the modal is open (path-driven).
   const previewFullUrl  = useAttachmentUrl(previewOpen && !att.hasNewFile ? att.fullPath : null, { kind: 'full' })
   const previewModalUrl = att.hasNewFile ? att.previewUrl : previewFullUrl
 

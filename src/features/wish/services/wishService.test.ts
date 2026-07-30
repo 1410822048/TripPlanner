@@ -81,9 +81,6 @@ vi.mock('@/services/firebase', () => ({
     arrayUnion:      vi.fn((x: unknown) => ({ _kind: 'arrayUnion', x })),
     arrayRemove:     vi.fn((x: unknown) => ({ _kind: 'arrayRemove', x })),
   })),
-  // wishService imports getFirebaseStorage at module load; provide a
-  // noop so the import chain resolves.
-  getFirebaseStorage: vi.fn(async () => ({})),
 }))
 
 vi.mock('@/services/orphanPurge', () => ({
@@ -287,18 +284,20 @@ describe('createWish', () => {
     expect(mocks.uploadToIntentMock).toHaveBeenCalledTimes(2)
     // (intent, file, label) MUST be correctly paired per call — a swap
     // (e.g., full file uploaded to thumb intent's path) would mean
-    // mismatched bytes land at each path. Storage.rules would 403 in
-    // prod via size + customMetadata checks, but mockResolvedValue
+    // mismatched bytes land at each path. The Worker upload endpoint rejects
+    // size/metadata drift, but mockResolvedValue
     // tolerates the swap silently. Pin the triples here.
     expect(mocks.uploadToIntentMock).toHaveBeenNthCalledWith(1,
       expect.objectContaining({ intentId: 'i-w-new-F', path: 'trips/t1/wishes/w-new/F.webp' }),
       expect.objectContaining({ name: 'full.webp', type: 'image/webp' }),
       'wish-full',
+      { traceId: expect.any(String) },
     )
     expect(mocks.uploadToIntentMock).toHaveBeenNthCalledWith(2,
       expect.objectContaining({ intentId: 'i-w-new-T', path: 'trips/t1/wishes/w-new/T.webp' }),
       expect.objectContaining({ name: 'thumb.webp', type: 'image/webp' }),
       'wish-thumb',
+      { traceId: expect.any(String) },
     )
 
     // workerFetch body: (base, idToken, endpoint, body, opts). Pin the
@@ -497,11 +496,13 @@ describe('updateWish', () => {
       expect.objectContaining({ intentId: 'i-w1-F', path: 'trips/t1/wishes/w1/F.webp' }),
       expect.objectContaining({ name: 'full.webp', type: 'image/webp' }),
       'wish-full',
+      { traceId: expect.any(String) },
     )
     expect(mocks.uploadToIntentMock).toHaveBeenNthCalledWith(2,
       expect.objectContaining({ intentId: 'i-w1-T', path: 'trips/t1/wishes/w1/T.webp' }),
       expect.objectContaining({ name: 'thumb.webp', type: 'image/webp' }),
       'wish-thumb',
+      { traceId: expect.any(String) },
     )
 
     // Worker call: patch carries validated text fields, intentIds bound

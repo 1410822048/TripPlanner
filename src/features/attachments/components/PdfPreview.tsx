@@ -89,10 +89,9 @@ export default function PdfPreview({ url }: { url: string }) {
   // pdf.js fetching a blob: URL directly can fail with "Unexpected server
   // response (0)" (its range-request / worker-context handling of object
   // URLs). Read the resolved URL into a Blob once and hand that to <Document>;
-  // pdf.js then reads it via arrayBuffer(). In production this is usually a
-  // cross-origin GCS signed URL, so preview depends on bucket CORS allowing the
-  // Pages origin. In getBlob/dev mode it is a blob: URL owned by useAttachmentUrl
-  // for the modal lifetime.
+  // pdf.js then reads it via arrayBuffer(). useAttachmentUrl always exposes a
+  // same-origin blob: URL backed by the authenticated Worker/R2 response and
+  // revokes it when the cache entry is evicted.
   const [file, setFile] = useState<Blob>()
   useEffect(() => {
     const controller = new AbortController()

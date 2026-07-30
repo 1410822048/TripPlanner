@@ -209,7 +209,7 @@ export default function BookingFormModal({
   const [pdfAutofillSourceKey, setPdfAutofillSourceKey] = useState<PdfAutofillSourceKey | null>(null)
   const [analyzedPdfSourceKey, setAnalyzedPdfSourceKey] = useState<PdfAutofillSourceKey | null>(null)
   // Full-size preview URL: a newly-picked file uses its local blob (already
-  // full-res); an existing attachment resolves its fullPath via getBlob only
+  // full-res); an existing attachment resolves its fullPath through the Worker only
   // while the modal is open (path-driven). null → modal shows a spinner.
   const coverFullUrl = useAttachmentUrl(previewTarget === 'cover' && !coverAtt.hasNewFile ? coverAtt.fullPath : null, { kind: 'full' })
   const docFullUrl = useAttachmentUrl(previewTarget === 'document' && !docAtt.hasNewFile ? docAtt.fullPath : null, { kind: 'full' })

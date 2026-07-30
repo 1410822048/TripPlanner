@@ -36,9 +36,9 @@ export function isHttpUrl(v: string): boolean {
  */
 export interface BookingAttachment {
   /**
-   * Storage object path (`trips/{tripId}/bookings/{bookingId}/file.webp`).
-   * path-only: this IS the canonical reference — getBlob(filePath) reads
-   * the bytes (Storage Rules), and deleteObject(filePath) removes them.
+   * Private R2 object path (`trips/{tripId}/bookings/{bookingId}/file.webp`).
+   * This is the canonical reference; the authenticated Worker proxy reads and
+   * deletes the bytes after trip/role authorization.
    * No bearer download URL is ever persisted.
    */
   filePath:   string
@@ -137,7 +137,7 @@ export const BOOKING_ATTACHMENT_MIME_TYPES = [
 ] as const
 
 export const BookingAttachmentSchema = z.object({
-  // path-only: reads go through getBlob(filePath); no bearer URL persisted.
+  // Path-only: reads go through the Worker proxy; no bearer URL persisted.
   filePath:  z.string().min(1).max(500),
   fileType:  z.enum(BOOKING_ATTACHMENT_MIME_TYPES),
   thumbPath: z.string().min(1).max(500).optional(),

@@ -8,7 +8,7 @@
 //   - Existing slot (previewPath / fullPath / type from a doc being edited)
 //   - Newly-picked File (transient until save)
 //   - Blob URL lifecycle for the preview (auto-revoke on change)
-//   - Size cap error (5MB, mirrors storage.rules)
+//   - Size cap error (5MB, mirrors the Worker upload boundary)
 //   - Tri-state diff for the service layer (undefined / null / File)
 //
 // path-only: the existing attachment is identified by Storage PATHS, not a
@@ -29,7 +29,7 @@ import { useRef, useState } from 'react'
 import { useBlobUrl } from './useBlobUrl'
 import { useAttachmentUrl } from './useAttachmentUrl'
 
-/** Mirrors storage.rules cap. Files larger than this are rejected. */
+/** Mirrors the Worker upload cap. Files larger than this are rejected. */
 const MAX_FILE_BYTES = 5 * 1024 * 1024
 export const ATTACHMENT_SIZE_ERROR = '檔案大小必須小於 5MB'
 
@@ -91,9 +91,8 @@ export function useAttachment(initial: ExistingAttachment): UseAttachmentResult 
   // semantics, just without inlining the useMemo + useEffect pair.
   const newFileBlobUrl = useBlobUrl(newFile)
 
-  // path-only: resolve the EXISTING attachment's thumbnail for the form-
-  // row preview via getBlob (Storage Rules). The new-file blob (above)
-  // takes priority when present.
+  // Resolve the existing private R2 thumbnail through the Worker proxy.
+  // The new-file blob above takes priority when present.
   const existingThumbUrl = useAttachmentUrl(existing.previewPath ?? undefined, { kind: 'thumb' })
 
   // Compiler memoises these. The useMemo above for blob URL stays

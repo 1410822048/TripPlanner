@@ -32,10 +32,10 @@ export interface ExpenseSplit {
  *  expenseStorage; same dual-variant pattern as booking attachments
  *  (full + thumbnail). path-only: only Storage paths are persisted (no
  *  bearer download URL); `thumbPath` is optional (PDFs upload without a
- *  thumb). */
+ *  thumb). Only canonical R2 object paths are persisted. */
 export interface ExpenseReceipt {
-  /** Storage object path. Reads go through getBlob(path) gated by Storage
-   *  Rules — no bearer download URL is ever persisted. */
+  /** Private R2 object path. Reads go through the authenticated Worker proxy;
+   *  no bearer download URL is ever persisted. */
   path:       string
   /** Mime type at upload time. Drives image-vs-PDF rendering choice. */
   type:       string
@@ -460,7 +460,7 @@ export const EXPENSE_RECEIPT_MIME_TYPES = [
 ] as const
 
 export const ExpenseReceiptSchema = z.object({
-  // path-only: reads go through getBlob(path); no bearer URL persisted.
+  // Path-only: reads go through the Worker proxy; no bearer URL persisted.
   path:      z.string().min(1).max(500),
   type:      z.enum(EXPENSE_RECEIPT_MIME_TYPES),
   thumbPath: z.string().min(1).max(500).optional(),

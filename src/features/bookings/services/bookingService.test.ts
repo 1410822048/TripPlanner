@@ -312,11 +312,13 @@ describe('createBooking', () => {
       expect.objectContaining({ intentId: 'i-b-new-P' }),
       expect.objectContaining({ name: 'full.webp', type: 'image/webp' }),
       'booking-full',
+      { traceId: expect.any(String) },
     )
     expect(mocks.uploadToIntentMock).toHaveBeenNthCalledWith(2,
       expect.objectContaining({ intentId: 'i-b-new-T' }),
       expect.objectContaining({ name: 'thumb.webp', type: 'image/webp' }),
       'booking-thumb',
+      { traceId: expect.any(String) },
     )
 
     // workerFetch body: pin so a regression that drops document intents /

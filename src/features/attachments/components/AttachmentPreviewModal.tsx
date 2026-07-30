@@ -5,7 +5,7 @@
 //
 // path-only: the caller resolves the full-size blob objectURL via
 // `useAttachmentUrl(fullPath, { kind: 'full' })` and passes it as `url`.
-// While that getBlob is in flight `url` is null → we show a spinner (the
+// While the authenticated Worker fetch is in flight `url` is null → we show a spinner (the
 // modal is opened path-driven by the caller, not gated on the URL). The
 // objectURL's lifetime is owned by the caller's hook (revoked on close).
 //

@@ -124,7 +124,7 @@ export default function AccountPage() {
   // URLs by useThreeHotelThumbUrls below.
   const totalDays = (trips ?? []).reduce((s, t) => s + tripDays(t), 0)
 
-  // path-only: resolve up to 3 hotel-thumb paths to blob URLs via getBlob.
+  // Resolve up to 3 private hotel-thumb paths to blob URLs via the Worker.
   const lodgingThumbs = useThreeHotelThumbUrls(hotelBookings)
 
   const collabSeen  = new Set<string>()

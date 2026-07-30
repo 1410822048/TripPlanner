@@ -16,7 +16,7 @@ export function bookingProviderFromUrl(link: string): string {
   }
 }
 
-/** Thumbnail Storage PATH for getBlob (path-only model). The small WebP
+/** Thumbnail R2 path for Worker-proxied reads. The small WebP
  *  variant ONLY -- deliberately no fall-back to the full filePath so a
  *  thumb-less attachment (PDF, or a pre-thumb upload) renders the type-
  *  emoji / placeholder instead of pulling a full-size blob into the

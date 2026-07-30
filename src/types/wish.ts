@@ -17,8 +17,8 @@ import { TimestampSchema } from './_shared'
 export type WishCategory = 'place' | 'food'
 
 export interface WishImage {
-  /** Storage object path. path-only: reads via getBlob(path) + Storage
-   *  Rules — no bearer download URL is ever persisted. */
+  /** Private R2 object path. Reads use the authenticated Worker proxy;
+   *  no bearer download URL is ever persisted. */
   path:       string
   /** Small-variant path. Optional: thumb-less uploads (HEIC/HEIF pass-
    *  through) omit it rather than collapse to the full path, so the card
@@ -62,7 +62,7 @@ export interface Wish {
   updatedAt: Timestamp
 }
 
-// Shape + size guards only. The Storage-origin + path-binding contract
+// Shape + size guards only. The R2-origin + path-binding contract
 // (URL must point at this wish's own Storage folder) is enforced by the
 // Worker's /wish-file-create + /wish-file-update endpoints after verifying
 // the upload-intent doc — image is Worker-authoritative since Phase 3.7,
@@ -70,7 +70,7 @@ export interface Wish {
 // stays bucket-agnostic so a future bucket move doesn't require both
 // layers to update in lockstep.
 export const WishImageSchema = z.object({
-  // path-only: reads go through getBlob(path); no bearer URL persisted.
+  // Path-only: reads go through the Worker proxy; no bearer URL persisted.
   // thumbPath optional (omitted for thumb-less uploads, no full-path collapse).
   path:      z.string().min(1).max(500),
   thumbPath: z.string().min(1).max(500).optional(),

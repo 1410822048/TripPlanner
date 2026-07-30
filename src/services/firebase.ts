@@ -6,16 +6,13 @@
 import type { FirebaseApp } from 'firebase/app'
 import type { Firestore } from 'firebase/firestore'
 import type { Auth } from 'firebase/auth'
-import type { FirebaseStorage } from 'firebase/storage'
 import type { Messaging } from 'firebase/messaging'
 import type * as firestoreModule from 'firebase/firestore'
 import type * as authModule from 'firebase/auth'
-import type * as storageModule from 'firebase/storage'
 import type * as messagingModule from 'firebase/messaging'
 
 export type FirestoreModule = typeof firestoreModule
 export type AuthModule      = typeof authModule
-export type StorageModule   = typeof storageModule
 export type MessagingModule = typeof messagingModule
 
 export interface FirebaseBundle extends FirestoreModule {
@@ -23,9 +20,6 @@ export interface FirebaseBundle extends FirestoreModule {
 }
 export interface AuthBundle extends AuthModule {
   auth: Auth
-}
-export interface StorageBundle extends StorageModule {
-  storage: FirebaseStorage
 }
 export interface MessagingBundle extends MessagingModule {
   messaging: Messaging
@@ -40,7 +34,6 @@ const REQUIRED_FIREBASE_ENV = [
   'VITE_FIREBASE_API_KEY',
   'VITE_FIREBASE_AUTH_DOMAIN',
   'VITE_FIREBASE_PROJECT_ID',
-  'VITE_FIREBASE_STORAGE_BUCKET',
   'VITE_FIREBASE_MESSAGING_SENDER_ID',
   'VITE_FIREBASE_VAPID_KEY',
   'VITE_FIREBASE_APP_ID',
@@ -59,7 +52,6 @@ const firebaseConfig = {
   apiKey:            import.meta.env.VITE_FIREBASE_API_KEY             ?? 'demo',
   authDomain:        import.meta.env.VITE_FIREBASE_AUTH_DOMAIN         ?? 'demo.firebaseapp.com',
   projectId:         import.meta.env.VITE_FIREBASE_PROJECT_ID          ?? 'demo',
-  storageBucket:     import.meta.env.VITE_FIREBASE_STORAGE_BUCKET      ?? 'demo.appspot.com',
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID ?? '000000',
   appId:             import.meta.env.VITE_FIREBASE_APP_ID              ?? '1:000000:web:demo',
 }
@@ -68,7 +60,7 @@ const firebaseConfig = {
  * reset cannot leak IndexedDB state between role/browser scenarios. */
 export const FIREBASE_EMULATOR_MODE = import.meta.env.DEV && import.meta.env.VITE_USE_FIREBASE_EMULATORS === 'true'
 const EMULATOR_HOST = import.meta.env.VITE_FIREBASE_EMULATOR_HOST ?? '127.0.0.1'
-const EMULATOR_PORTS = { auth: 9099, firestore: 8080, storage: 9199 } as const
+const EMULATOR_PORTS = { auth: 9099, firestore: 8080 } as const
 
 let appPromise: Promise<FirebaseApp> | null = null
 function getApp(): Promise<FirebaseApp> {
@@ -104,9 +96,7 @@ export function getFirebase(): Promise<FirebaseBundle> {
     // `ignoreUndefinedProperties` lets optional form fields pass through as
     // `undefined` without triggering "Unsupported field value: undefined".
     // Second call on HMR throws; swallow and fall through to the existing instance.
-    // Targets the auto-created `(default)` database (no third arg). The
-    // default DB is required so Cloud Storage rules can use cross-service
-    // firestore.exists() — that feature only supports `(default)`.
+    // Targets the auto-created `(default)` database (no third arg).
     try {
       fs.initializeFirestore(app, {
         ignoreUndefinedProperties: true,
@@ -145,30 +135,6 @@ export function getFirebaseAuth(): Promise<AuthBundle> {
     return { auth, ...authMod }
   })()
   return authBundlePromise
-}
-
-let storageBundlePromise: Promise<StorageBundle> | null = null
-let storageEmulatorConnected = false
-
-/**
- * Lazy-load + initialize the Storage bundle. Pulled separately from
- * Firestore + Auth so pages that never touch attachments (Schedule,
- * Expense pre-receipt-upload, etc.) don't ship the ~25KB gz of Storage
- * code. Bookings is the primary consumer; Journal will join later when
- * image uploads ship.
- */
-export function getFirebaseStorage(): Promise<StorageBundle> {
-  if (storageBundlePromise) return storageBundlePromise
-  storageBundlePromise = (async () => {
-    const [app, storageMod] = await Promise.all([getApp(), import('firebase/storage')])
-    const storage = storageMod.getStorage(app)
-    if (FIREBASE_EMULATOR_MODE && !storageEmulatorConnected) {
-      storageMod.connectStorageEmulator(storage, EMULATOR_HOST, EMULATOR_PORTS.storage)
-      storageEmulatorConnected = true
-    }
-    return { storage, ...storageMod }
-  })()
-  return storageBundlePromise
 }
 
 let messagingBundlePromise: Promise<MessagingBundle | null> | null = null

@@ -1,22 +1,18 @@
 // src/services/storageDelete.ts
-// Single Storage object deletion that tolerates the "already gone" case.
+// Single private-R2 object deletion that tolerates the "already gone" case.
 // Used by every feature that stores per-doc files (bookings / expenses /
 // wishes). Centralised because each previously hand-rolled the same
 // try/catch on the same error code — easy to miss the swallow on a new
 // caller, which would surface as a misleading "delete failed" toast for
 // orphaned-object cleanup.
-import { getFirebaseStorage } from './firebase'
-import { retry, isTransientStorageError } from '@/utils/retry'
+import { deleteAttachmentObject } from './attachmentStorage'
 
 /**
- * Delete a Storage object by path. Two layers of resilience:
+ * Delete an attachment object by path. Two layers of resilience:
  *
- *   1. Swallow `object-not-found` — the doc may reference a path
- *      that's already been cleaned up by a prior failed attempt,
- *      and callers care only about the post-condition.
- *   2. Retry transient failures (network blip, token refresh window,
- *      Storage 5xx) using the same predicate that gates upload
- *      retries. Without this, every "best-effort purge.catch" in
+ *   1. Worker/R2 delete is idempotent — an absent key is already success.
+ *   2. Retry ambiguous failures (network timeout or Worker 5xx).
+ *      Without this, every "best-effort purge.catch" in
  *      the calling services (expense / booking / wish) accepted
  *      ONE failure as permanent and would have pushed every blip
  *      down the rest of the ladder (queue write + cron retry).
@@ -32,17 +28,5 @@ import { retry, isTransientStorageError } from '@/utils/retry'
  * "orphan-blob-durability" memory for the full escalation ladder.
  */
 export async function deleteStorageObject(filePath: string): Promise<void> {
-  const { storage, ref, deleteObject } = await getFirebaseStorage()
-  await retry(
-    async () => {
-      try {
-        await deleteObject(ref(storage, filePath))
-      } catch (e) {
-        const code = (e as { code?: string }).code
-        if (code === 'storage/object-not-found') return
-        throw e
-      }
-    },
-    { shouldRetry: isTransientStorageError },
-  )
+  await deleteAttachmentObject(filePath)
 }

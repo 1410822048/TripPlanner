@@ -141,12 +141,12 @@ export default function WishFormModal({
     if (r) onSave(r)
   }
 
-  // path-only: resolve the existing image's thumb via getBlob (Storage
-  // Rules). New file blob takes priority.
+  // Resolve the existing private R2 thumb through the Worker. A new file blob
+  // takes priority.
   const existingThumbUrl = useAttachmentUrl(existing?.thumbPath, { kind: 'thumb' })
   const previewUrl  = newFileBlobUrl ?? existingThumbUrl ?? null
   // presence-driven (not URL-driven) so the row doesn't flicker to the
-  // upload prompt while the existing thumb's getBlob is in flight.
+  // upload prompt while the existing thumb fetch is in flight.
   const hasImage    = !!newFile || !!existing
   const previewName = newFile?.name ?? '圖片'
 

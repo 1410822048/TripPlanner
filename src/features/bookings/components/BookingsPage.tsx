@@ -82,8 +82,8 @@ export default function BookingsPage() {
     bookingOverlay?.kind === 'attachment'
       ? bookings.find(booking => booking.id === bookingOverlay.bookingId) ?? null
       : null
-  // path-only: resolve the full-size blob for the preview modal via getBlob
-  // (Storage Rules). Starts fetching the instant a booking is set; the modal
+  // Resolve the full-size private R2 blob for the preview modal via the Worker.
+  // Starts fetching the instant a booking is set; the modal
   // shows a spinner until it lands, and the URL is revoked when closed.
   const attachmentPreview = attachmentBooking?.document
   const previewUrl = useAttachmentUrl(attachmentPreview?.filePath, { kind: 'full' })

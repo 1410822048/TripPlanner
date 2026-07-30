@@ -1,16 +1,12 @@
-// Tests for the path-only attachment resolver/hook. Mocks getFirebaseStorage
-// (so getBlob is programmable) and stubs URL.createObjectURL/revokeObjectURL
+// Tests for the path-only attachment resolver/hook. Mocks Worker-proxied bytes
+// and stubs URL.createObjectURL/revokeObjectURL
 // (jsdom doesn't implement them).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 
-const getBlobMock = vi.fn()
-vi.mock('@/services/firebase', () => ({
-  getFirebaseStorage: vi.fn(async () => ({
-    storage: {},
-    ref:     (_s: unknown, path: string) => ({ path }),
-    getBlob: getBlobMock,
-  })),
+const fetchAttachmentBlobMock = vi.fn()
+vi.mock('@/services/attachmentStorage', () => ({
+  fetchAttachmentBlob: (...args: unknown[]) => fetchAttachmentBlobMock(...args),
 }))
 
 import { useAttachmentUrl, clearAttachmentUrlCache } from './useAttachmentUrl'
@@ -25,48 +21,48 @@ beforeEach(() => {
   revokeSpy = vi.fn()
   ;(URL as unknown as { createObjectURL: unknown }).createObjectURL = createSpy
   ;(URL as unknown as { revokeObjectURL: unknown }).revokeObjectURL = revokeSpy
-  getBlobMock.mockReset()
-  getBlobMock.mockImplementation(async () => new Blob(['x']))
+  fetchAttachmentBlobMock.mockReset()
+  fetchAttachmentBlobMock.mockImplementation(async () => new Blob(['x']))
   clearAttachmentUrlCache()        // start each test with an empty module cache
   createSpy.mockClear()            // ignore the revokes/creates from clear()
   revokeSpy.mockClear()
 })
 
 describe('useAttachmentUrl: thumb', () => {
-  it('resolves a thumb path to a blob objectURL via getBlob', async () => {
+  it('resolves a thumb path to a blob objectURL via the Worker proxy', async () => {
     const { result } = renderHook(() => useAttachmentUrl('trips/t/e/r.webp', { kind: 'thumb' }))
     expect(result.current).toBeNull()                       // null while fetching
     await waitFor(() => expect(result.current).toBe('blob:mock-1'))
-    expect(getBlobMock).toHaveBeenCalledTimes(1)
+    expect(fetchAttachmentBlobMock).toHaveBeenCalledTimes(1)
   })
 
   it('serves a cached thumb SYNCHRONOUSLY on a later mount (no flash, no refetch)', async () => {
     const first = renderHook(() => useAttachmentUrl('p-cache', { kind: 'thumb' }))
     await waitFor(() => expect(first.result.current).toBe('blob:mock-1'))
-    getBlobMock.mockClear()
+    fetchAttachmentBlobMock.mockClear()
     // A fresh mount for the same path returns the cached URL on first render.
     const second = renderHook(() => useAttachmentUrl('p-cache', { kind: 'thumb' }))
     expect(second.result.current).toBe('blob:mock-1')
-    expect(getBlobMock).not.toHaveBeenCalled()
+    expect(fetchAttachmentBlobMock).not.toHaveBeenCalled()
   })
 
-  it('de-dups concurrent getBlob for the same path (one fetch, shared objectURL)', async () => {
+  it('de-dups concurrent fetches for the same path (one fetch, shared objectURL)', async () => {
     const a = renderHook(() => useAttachmentUrl('p-dedup', { kind: 'thumb' }))
     const b = renderHook(() => useAttachmentUrl('p-dedup', { kind: 'thumb' }))
     await waitFor(() => expect(a.result.current).toBe('blob:mock-1'))
     await waitFor(() => expect(b.result.current).toBe('blob:mock-1'))
-    expect(getBlobMock).toHaveBeenCalledTimes(1)            // one bytes fetch
+    expect(fetchAttachmentBlobMock).toHaveBeenCalledTimes(1) // one bytes fetch
     expect(createSpy).toHaveBeenCalledTimes(1)              // one shared objectURL
   })
 
   it('null/undefined path → null, no fetch', () => {
     const { result } = renderHook(() => useAttachmentUrl(undefined, { kind: 'thumb' }))
     expect(result.current).toBeNull()
-    expect(getBlobMock).not.toHaveBeenCalled()
+    expect(fetchAttachmentBlobMock).not.toHaveBeenCalled()
   })
 
-  it('getBlob failure resolves to null (placeholder), not a throw', async () => {
-    getBlobMock.mockRejectedValue(new Error('CORS'))
+  it('proxy failure resolves to null (placeholder), not a throw', async () => {
+    fetchAttachmentBlobMock.mockRejectedValue(new Error('network'))
     const { result } = renderHook(() => useAttachmentUrl('p-fail', { kind: 'thumb' }))
     // stays null; give the rejected promise a tick to settle.
     await new Promise(r => setTimeout(r, 0))
@@ -81,7 +77,7 @@ describe('useAttachmentUrl: full', () => {
     await waitFor(() => expect(a.result.current).not.toBeNull())
     await waitFor(() => expect(b.result.current).not.toBeNull())
     // Per-caller: two distinct objectURLs from one shared bytes fetch.
-    expect(getBlobMock).toHaveBeenCalledTimes(1)
+    expect(fetchAttachmentBlobMock).toHaveBeenCalledTimes(1)
     expect(createSpy).toHaveBeenCalledTimes(2)
     expect(a.result.current).not.toBe(b.result.current)
     const aUrl = a.result.current!
@@ -135,11 +131,11 @@ describe('clearAttachmentUrlCache', () => {
   })
 
   it('drops an in-flight fetch that resolves AFTER clear (no repopulation, P1)', async () => {
-    // getBlob stays pending until we resolve it manually.
+    // Worker fetch stays pending until we resolve it manually.
     let resolveBlob!: (b: Blob) => void
-    getBlobMock.mockImplementation(() => new Promise<Blob>(r => { resolveBlob = r }))
+    fetchAttachmentBlobMock.mockImplementation(() => new Promise<Blob>(r => { resolveBlob = r }))
     renderHook(() => useAttachmentUrl('p-epoch', { kind: 'thumb' }))
-    await waitFor(() => expect(getBlobMock).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(fetchAttachmentBlobMock).toHaveBeenCalledTimes(1))
 
     // Sign-out happens while the fetch is in flight.
     clearAttachmentUrlCache()
@@ -149,10 +145,10 @@ describe('clearAttachmentUrlCache', () => {
     expect(createSpy).not.toHaveBeenCalled()
 
     // Cache is genuinely empty: a fresh mount re-fetches.
-    getBlobMock.mockImplementation(async () => new Blob(['y']))
+    fetchAttachmentBlobMock.mockImplementation(async () => new Blob(['y']))
     const fresh = renderHook(() => useAttachmentUrl('p-epoch', { kind: 'thumb' }))
     await waitFor(() => expect(fresh.result.current).not.toBeNull())
-    expect(getBlobMock).toHaveBeenCalledTimes(2)
+    expect(fetchAttachmentBlobMock).toHaveBeenCalledTimes(2)
   })
 })
 

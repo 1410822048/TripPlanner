@@ -143,7 +143,7 @@ export class WorkerAmbiguous extends Error {
  *    429 rate limit (per-uid PoP + global Durable Object)
  *  Everything else (500 internal, 502/503/504 CF gateway) is
  *  ambiguous -- could fire pre-commit OR mid-commit. */
-const DEFINITIVE_REJECT_STATUSES = new Set([400, 401, 403, 404, 409, 410, 413, 429])
+const DEFINITIVE_REJECT_STATUSES = new Set([400, 401, 403, 404, 409, 410, 413, 415, 429])
 
 /** Wall-clock cap on a single Worker write call. 30s comfortably
  *  covers the Worker's p99 (~1-2s for Firestore admin writes; up to
@@ -167,7 +167,7 @@ export const UPLOAD_TRACE_HEADER = 'X-Upload-Trace-Id'
  *
  * Token MUST be pre-fetched by the caller (see `preflightIdToken`)
  * -- a missing or rejected token is a preflight failure that should
- * fail closed BEFORE any Storage / Firestore side effect, not slip
+ * fail closed BEFORE any attachment / Firestore side effect, not slip
  * into the ambiguous-rollback branch with bytes already on disk.
  *
  * Error discrimination: 400/401/403/404/409/410/413/429 → throw
@@ -177,7 +177,7 @@ export const UPLOAD_TRACE_HEADER = 'X-Upload-Trace-Id'
  *
  * `opts.traceId` (optional) is forwarded as the `X-Upload-Trace-Id`
  * header so the Worker log + Sentry breadcrumbs share a single
- * correlation id across mint-intents → storage uploads → entity write.
+ * correlation id across mint-intents → R2 uploads → entity write.
  * Only upload-flow callers (expense/booking/wish file paths) set it;
  * membership / settlement / trip-cascade leave it unset.
  */
@@ -240,6 +240,57 @@ export async function workerFetch(
   throw new WorkerAmbiguous(message, undefined)
 }
 
+/**
+ * Binary sibling of workerFetch used only by R2 attachment upload. Kept as a
+ * separate function so the existing JSON write surface and its 21 callers do
+ * not acquire body-mode branches. The canonical path is never sent by the
+ * client; tripId is lookup scope and the Worker re-derives path from intentId.
+ */
+export async function workerRawUpload(
+  base: string,
+  idToken: string,
+  endpoint: string,
+  query: { tripId: string; intentId: string },
+  body: Blob,
+  opts?: { traceId?: string; timeoutMs?: number },
+): Promise<unknown> {
+  const url = new URL(`${base}${endpoint}`)
+  url.searchParams.set('tripId', query.tripId)
+  url.searchParams.set('intentId', query.intentId)
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${idToken}`,
+    'Content-Type': body.type,
+  }
+  if (opts?.traceId) headers[UPLOAD_TRACE_HEADER] = opts.traceId
+  const timeoutMs = opts?.timeoutMs ?? WORKER_FETCH_TIMEOUT_MS
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 120_000) {
+    throw new Error('workerRawUpload timeoutMs must be between 1 and 120000')
+  }
+
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method: 'POST', headers, body, signal: AbortSignal.timeout(timeoutMs),
+    })
+  } catch (error) {
+    throw new WorkerAmbiguous(
+      `${endpoint}: did not receive response (${(error as Error)?.message ?? 'unknown'})`,
+      error,
+    )
+  }
+  if (res.ok) return res.json()
+
+  const detail = await res.text().catch(() => '<unreadable>')
+  const parsedError = parseWorkerErrorBody(detail)
+  const message = workerErrorMessage(endpoint, res.status, detail, parsedError)
+  const code = typeof parsedError?.code === 'string' ? parsedError.code : undefined
+  const field = typeof parsedError?.field === 'string' ? parsedError.field : undefined
+  if (DEFINITIVE_REJECT_STATUSES.has(res.status) || parsedError?.precommit === true) {
+    throw new WorkerRejected(res.status, message, code, field)
+  }
+  throw new WorkerAmbiguous(message, undefined)
+}
+
 type WorkerErrorBody = {
   error?: unknown
   code?: unknown
@@ -271,7 +322,7 @@ function parseWorkerErrorBody(text: string): WorkerErrorBody | null {
 }
 
 /**
- * Resolve the current Firebase ID token BEFORE any Storage / Firestore
+ * Resolve the current Firebase ID token BEFORE any attachment / Firestore
  * side effect. Callers should invoke this at the top of any function
  * that uploads a blob or writes a Firestore doc; the thrown error
  * propagates to mutation onError → toast → user re-auth + retry.

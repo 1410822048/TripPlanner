@@ -1,7 +1,7 @@
 // src/features/account/hooks/useThreeHotelThumbUrls.ts
 // Resolve up to 3 hotel-booking thumbnail blob URLs for the AccountPage
-// lodging deck. path-only: each thumbPath is fetched via getBlob (Storage
-// Rules) → objectURL. Hooks can't be called in a loop, so we resolve a
+// lodging deck. Each private R2 thumbPath is fetched through the Worker and
+// converted to an objectURL. Hooks can't be called in a loop, so we resolve a
 // FIXED three slots (the deck shows at most 3) and drop the nulls.
 import type { Booking } from '@/types'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'

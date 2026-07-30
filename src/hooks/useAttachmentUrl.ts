@@ -1,14 +1,11 @@
 // src/hooks/useAttachmentUrl.ts
 //
-// path-only attachment reads. Firestore stores only the Storage object
-// PATH (no bearer ?alt=media&token= URL); the bytes are fetched via the
-// Firebase Storage SDK `getBlob(ref(path))`, which re-derives access from
-// Firebase Auth + Storage Rules (`allow read: if isMember(tripId)`). The
-// fetched Blob becomes an `objectURL` that <img>/<a> render.
+// Path-only attachment reads. Firestore stores only the private R2 object
+// path; bytes are fetched through the authenticated Worker proxy. The
+// fetched Blob becomes an object URL that <img>/<a> can render.
 //
-// Single resolver underneath two cache policies so a future swap to
-// Worker-minted signed URLs only touches `fetchBlob` -- the three feature
-// UIs keep calling `useAttachmentUrl(path, { kind })` unchanged.
+// The public hook contract is intentionally unchanged from the former
+// Firebase Storage implementation, so feature UIs remain storage-agnostic.
 //
 //   kind: 'thumb' -> list/grid thumbnails. SHARED objectURL in a module
 //         LRU (many rows reference the same path across scroll / remount;
@@ -30,38 +27,29 @@
 // everything on sign-out / account switch (see useAuth.ts).
 
 import { useEffect, useLayoutEffect, useState } from 'react'
-import { getFirebaseStorage } from '@/services/firebase'
-import {
-  attachmentUrlMode,
-  resolveSignedUrl,
-  peekSignedUrl,
-  clearSignedUrlCache,
-  REFRESH_SKEW_MS,
-} from '@/services/attachmentUrlResolver'
+import { fetchAttachmentBlob } from '@/services/attachmentStorage'
 
 // ─── Shared blob-bytes fetch (in-flight dedup) ─────────────────────
 // Keyed by path; the bytes are identical regardless of kind, so a thumb
-// hook and a full hook for the same path share ONE getBlob round-trip.
+// hook and a full hook for the same path share one Worker round-trip.
 const blobInFlight = new Map<string, Promise<Blob | null>>()
 
-// Dev-only: warn ONCE so a misconfigured bucket CORS (every getBlob
-// fails) is visible in the console instead of looking like a silent
-// "no thumbnail" fallback. Tree-shaken out of prod by Vite.
-let warnedGetBlobFailure = false
+// Dev-only: warn once so an auth, Worker, or R2 failure is visible instead
+// of looking like a silent "no thumbnail" fallback. Tree-shaken in prod.
+let warnedAttachmentFailure = false
 
 async function fetchBlob(path: string): Promise<Blob | null> {
   const existing = blobInFlight.get(path)
   if (existing) return existing
   const p = (async () => {
     try {
-      const { storage, ref, getBlob } = await getFirebaseStorage()
-      return await getBlob(ref(storage, path))
+      return await fetchAttachmentBlob(path)
     } catch (e) {
-      if (import.meta.env.DEV && !warnedGetBlobFailure) {
-        warnedGetBlobFailure = true
+      if (import.meta.env.DEV && !warnedAttachmentFailure) {
+        warnedAttachmentFailure = true
         console.warn(
-          '[useAttachmentUrl] getBlob failed — bucket CORS not set, not signed in, ' +
-          'or missing read permission. First failure only:', path, e,
+          '[useAttachmentUrl] attachment fetch failed — Worker unavailable, ' +
+          'not signed in, or missing read permission. First failure only:', path, e,
         )
       }
       return null
@@ -136,7 +124,7 @@ type AttachmentUrlState = {
 }
 
 /**
- * Resolve a Storage object path to a renderable objectURL, or `null`
+ * Resolve a private attachment object path to a renderable objectURL, or `null`
  * while loading / on failure (callers treat null as "show placeholder",
  * exactly as they treated an absent thumbUrl before).
  *
@@ -162,13 +150,10 @@ export function useAttachmentUrl(
   const [state, setState] = useState<AttachmentUrlState>(
     () => {
       // Seed a synchronous cache hit so a re-mount of an already-resolved
-      // attachment shows the URL without a null flash. signed mode (full/PDF
-      // only) peeks the signed-URL cache; getBlob mode peeks the thumb LRU.
+      // thumbnail shows the URL without a null flash.
       let seed: string | null = null
       if (key) {
-        seed = attachmentUrlMode(kind) === 'signed'
-          ? peekSignedUrl(key)?.url ?? null
-          : kind === 'thumb' ? thumbUrls.get(key) ?? null : null
+        seed = kind === 'thumb' ? thumbUrls.get(key) ?? null : null
       }
       return { path: key, kind, url: seed, epoch: cacheEpoch }
     },
@@ -176,10 +161,9 @@ export function useAttachmentUrl(
 
   // Thumb ref-count: taken at DOM commit (useLayoutEffect), released on
   // unmount / path change. Keeps a visible thumbnail from being evicted.
-  // getBlob-mode only — the LRU/ref-count guards objectURLs, which signed
-  // mode never creates (it returns a plain https GCS URL).
+  // The LRU/ref-count guards object URLs created for thumbnail blobs.
   useLayoutEffect(() => {
-    if (attachmentUrlMode(kind) !== 'getBlob' || kind !== 'thumb' || !key) return
+    if (kind !== 'thumb' || !key) return
     acquireThumb(key)
     return () => releaseThumb(key)
   }, [kind, key])
@@ -193,28 +177,6 @@ export function useAttachmentUrl(
     const settle = (url: string | null) => {
       if (cancelled || epoch !== cacheEpoch) return   // unmounted or cache cleared
       setState({ path: key, kind, url, epoch })
-    }
-
-    // ── signed mode (FULL/PDF only): Worker-minted GCS URL ──
-    // Thumbnails never reach here — attachmentUrlMode pins them to getBlob
-    // (signed thumb was removed; see design §7). resolveSignedUrl caches +
-    // de-dups; we set the URL and re-mint just before expiry so a long-open
-    // preview (PDF iframe range requests, full image) never 403s mid-view.
-    if (attachmentUrlMode(kind) === 'signed') {
-      let active = true
-      let timer: ReturnType<typeof setTimeout> | undefined
-      const load = () => {
-        void resolveSignedUrl(key).then(entry => {
-          if (!active) return
-          settle(entry?.url ?? null)
-          if (entry) {
-            const ms = Math.max(0, entry.expiresAtMs - Date.now() - REFRESH_SKEW_MS)
-            timer = setTimeout(load, ms)
-          }
-        })
-      }
-      load()
-      return () => { active = false; cancelled = true; if (timer) clearTimeout(timer) }
     }
 
     if (kind === 'thumb') {
@@ -258,10 +220,10 @@ export function useAttachmentUrl(
     return null
   }
 
-  // Full getBlob URLs are per-caller and revoked on close. The React state can
+  // Full object URLs are per-caller and revoked on close. The React state can
   // still remember that old (path, url) pair; reopening the same path must not
   // surface a revoked blob: URL for one render before the next fetch settles.
-  if (kind === 'full' && attachmentUrlMode(kind) === 'getBlob' && state.url && !fullUrls.has(state.url)) {
+  if (kind === 'full' && state.url && !fullUrls.has(state.url)) {
     return null
   }
 
@@ -280,5 +242,4 @@ export function clearAttachmentUrlCache(): void {
   thumbLastUsed.clear()
   fullUrls.clear()
   blobInFlight.clear()
-  clearSignedUrlCache()                   // signed mode: drop cached GCS URLs + in-flight resolves
 }

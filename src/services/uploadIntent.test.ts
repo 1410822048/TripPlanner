@@ -3,48 +3,33 @@
 // Coverage focus per reviewer's pre-rules-tightening ask:
 //   1. requestUploadIntents -- body shape sent to Worker /upload-intents
 //      (tripId / entityType / entityId / uploads array structure).
-//   2. uploadToIntent       -- metadata (contentType + customMetadata)
-//      verbatim pass-through to uploadBytesResumable. This is the
-//      load-bearing contract: storage.rules verifies a subset of the
-//      customMetadata claims (uploaderUid == auth uid, tripId /
-//      entityType / entityId match URL params, schemaVersion literal,
-//      uploadIntentId shape), and the Worker entity-write endpoints
-//      then compare the uploaded object's full customMetadata against
+//   2. uploadToIntent       -- raw bytes and trace headers are sent to the
+//      authenticated /attachment-upload endpoint. The Worker loads the
+//      intent-bound canonical path and metadata instead of trusting client
+//      claims, then entity-write endpoints compare the R2 object's metadata against
 //      the intent doc's stored customMetadata for exact-match
 //      equality. Drift in any claimed field caught at one layer or
 //      the other; verbatim pass-through is the only safe path.
 //
-// Both are pure orchestration on top of workerFetch + Firebase
-// Storage SDK; tests stub the boundary calls and assert on arguments
+// Both are pure orchestration on top of workerFetch; tests stub the
+// boundary calls and assert on arguments
 // + return.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const workerFetchMock = vi.fn()
-const uploadBytesResumableMock = vi.fn()
+const workerRawUploadMock = vi.fn()
 // Inline implementations on these two are typed deliberately loose
 // (using vi.fn() with no impl gives a Mock<any[], any> that tolerates
 // the `(...args: unknown[])` spread pattern below; vi.fn(typedImpl)
 // would lock the param shape and break strict-mode tsc on the spread).
-const refMock = vi.fn()
-const uploadFileMock = vi.fn()
 
 vi.mock('./workerBase', () => ({
 	requireWorkerWriteBase: vi.fn(() => 'https://worker.example.com'),
 	preflightIdToken:       vi.fn(async () => 'fake-id-token'),
 	workerFetch:            (...args: unknown[]) => workerFetchMock(...args),
-}))
-
-vi.mock('./firebase', () => ({
-	getFirebaseStorage: vi.fn(async () => ({
-		storage:               {},
-		ref:                   refMock,
-		uploadBytesResumable:  uploadBytesResumableMock,
-	})),
-}))
-
-vi.mock('./storageUpload', () => ({
-	uploadFile:        (...args: unknown[]) => uploadFileMock(...args),
-	UPLOAD_TIMEOUT_MS: 30_000,
+	workerRawUpload:         (...args: unknown[]) => workerRawUploadMock(...args),
+	WorkerAmbiguous:         class WorkerAmbiguous extends Error {},
+	WORKER_FETCH_TIMEOUT_MS: 30_000,
 }))
 
 // retry pass-through so the primitive's retry wrapping is transparent
@@ -64,10 +49,8 @@ import {
 
 beforeEach(() => {
 	workerFetchMock.mockReset()
-	uploadBytesResumableMock.mockReset()
-	refMock.mockReset()
-	uploadFileMock.mockReset()
-	uploadFileMock.mockResolvedValue({ _kind: 'storage-ref' })
+	workerRawUploadMock.mockReset()
+	workerRawUploadMock.mockResolvedValue({ path: 'server-path', replayed: false })
 })
 
 // ─── requestUploadIntents ─────────────────────────────────────────
@@ -168,42 +151,43 @@ describe('uploadToIntent', () => {
 		expiresAt: '2026-05-23T01:00:00Z',
 	}
 
-	it('uploads to intent.path with intent.metadata verbatim', async () => {
-		// Headline assertion: customMetadata passed to uploadBytesResumable
-		// MUST be byte-identical to intent.metadata.customMetadata. The
-		// upload is gated at TWO layers: storage.rules checks the claims
-		// it can verify locally (uploaderUid == auth uid, tripId /
-		// entityType / entityId match URL params, schemaVersion == 'v1'),
-		// and the Worker entity-write endpoints re-read the intent doc
-		// and assert the stored customMetadata equals the uploaded
-		// object's customMetadata exactly. Drift anywhere → upload 403
-		// (rules) or entity-write 400 (Worker).
+	it('uploads raw bytes through the Worker using intentId + trip lookup scope', async () => {
 		const file = new Blob(['x'], { type: 'image/webp' })
-		await uploadToIntent(sampleIntent, file, 'expense-full')
+		await uploadToIntent(sampleIntent, file, 'expense-full', { traceId: 'trace-123456789' })
 
-		expect(refMock).toHaveBeenCalledWith({}, 'trips/T/expenses/E/file.webp')
-		expect(uploadBytesResumableMock).toHaveBeenCalledTimes(1)
-		const [_ref, payload, metadata] = uploadBytesResumableMock.mock.calls[0]!
-		expect(payload).toBe(file)
-		expect(metadata).toEqual({
-			contentType:    'image/webp',
-			customMetadata: sampleIntent.metadata.customMetadata,
-		})
+		expect(workerRawUploadMock).toHaveBeenCalledWith(
+			'https://worker.example.com',
+			'fake-id-token',
+			'/attachment-upload',
+			{ tripId: 'T', intentId: 'i-x' },
+			file,
+			{ traceId: 'trace-123456789', timeoutMs: 30_000 },
+		)
 	})
 
-	it('uses the intent\'s path for ref(), not any caller-supplied path', async () => {
-		// Pin the server-owned-path contract: no parameter overrides path.
+	it('does not send intent.path as the upload destination', async () => {
 		await uploadToIntent(
 			{ ...sampleIntent, path: 'server-mandated/path.bin' },
-			new Blob(['y']),
+			new Blob(['RIFFxxxxWEBP'], { type: 'image/webp' }),
 			'test',
 		)
-		expect(refMock).toHaveBeenCalledWith({}, 'server-mandated/path.bin')
+		const query = workerRawUploadMock.mock.calls[0]![3]
+		expect(query).toEqual({ tripId: 'T', intentId: 'i-x' })
+		expect(JSON.stringify(query)).not.toContain('server-mandated')
 	})
 
-	it('propagates uploadFile errors (timeout / transient SDK error)', async () => {
-		uploadFileMock.mockRejectedValueOnce(new Error('upload timeout'))
-		await expect(uploadToIntent(sampleIntent, new Blob(['x']), 'expense-full'))
+	it('propagates Worker upload errors', async () => {
+		workerRawUploadMock.mockRejectedValueOnce(new Error('upload timeout'))
+		await expect(uploadToIntent(sampleIntent, new Blob(['x'], { type: 'image/webp' }), 'expense-full'))
 			.rejects.toThrow(/upload timeout/)
+	})
+
+	it('rejects MIME drift instead of relabelling unchanged bytes', async () => {
+		await expect(uploadToIntent(
+			sampleIntent,
+			new Blob(['not-webp'], { type: 'image/jpeg' }),
+			'expense-full',
+		)).rejects.toThrow(/does not match intent/)
+		expect(workerRawUploadMock).not.toHaveBeenCalled()
 	})
 })

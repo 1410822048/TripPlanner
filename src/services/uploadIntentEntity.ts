@@ -114,7 +114,7 @@ export async function mintAndUploadEntityIntents(args: {
       message:  'storage-upload-start',
       data:     { traceId, kind, path: intent.path },
     })
-    await uploadToIntent(intent, file, label)
+    await uploadToIntent(intent, file, label, { traceId })
     breadcrumb({
       category: 'upload',
       message:  'storage-upload-done',

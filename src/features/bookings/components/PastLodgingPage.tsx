@@ -113,7 +113,7 @@ export default function PastLodgingPage() {
 
 function BookingRow({ booking }: { booking: Booking }) {
   const range = formatRange(booking.checkIn, booking.checkOut)
-  // path-only: resolve the thumb path via getBlob + Storage Rules. No thumb
+  // Resolve the private thumb path through the Worker. No thumb
   // path (PDF / pre-thumbnail upload) → null → Hotel icon fallback shows.
   const thumb = useAttachmentUrl(attachmentThumbPath(booking.coverImage), { kind: 'thumb' })
   return (

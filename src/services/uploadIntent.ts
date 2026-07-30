@@ -4,9 +4,8 @@
 //
 //   1. requestUploadIntents  — POST /upload-intents → batch of intents
 //      with server-minted path + customMetadata.
-//   2. uploadToIntent        — Firebase Storage SDK upload to the
-//      intent's path with the intent's metadata, wrapped in the same
-//      retry + timeout pattern legacy uploads used.
+//   2. uploadToIntent        — authenticated raw-byte upload to the Worker;
+//      the Worker validates and stores at the intent's canonical R2 path.
 //
 // Compose into entity-shaped flows in src/services/uploadIntentEntity.ts
 // (mintAndUploadEntityIntents) + each feature service. Keeping the
@@ -20,11 +19,15 @@
 // caller. No console logging here -- the wrappers' purge.catch +
 // safePurgeWithEnqueueFallback path handles cleanup and Sentry.
 
-import type { UploadMetadata } from 'firebase/storage'
-import { getFirebaseStorage } from './firebase'
-import { uploadFile, UPLOAD_TIMEOUT_MS } from './storageUpload'
-import { requireWorkerWriteBase, preflightIdToken, workerFetch } from './workerBase'
-import { retry, isTransientStorageError } from '@/utils/retry'
+import {
+  requireWorkerWriteBase,
+  preflightIdToken,
+  workerFetch,
+  workerRawUpload,
+  WorkerAmbiguous,
+  WORKER_FETCH_TIMEOUT_MS,
+} from './workerBase'
+import { retry } from '@/utils/retry'
 
 // ─── Types ────────────────────────────────────────────────────────
 
@@ -96,11 +99,9 @@ export async function requestUploadIntents(
 // ─── Primitive 2: upload to a single intent ───────────────────────
 
 /**
- * Upload `file` to `intent.path` with `intent.metadata` via
- * uploadBytesResumable + the same retry/timeout pattern legacy
- * uploads used. Returns void -- only `intent.path` is persisted (the
- * entity doc stores the path, not a download URL; the Worker strips the
- * download token at consume and reads go through getBlob + Storage Rules).
+ * Upload `file` to the intent-bound Worker endpoint. The client never writes
+ * directly to R2 and only `intent.path` is persisted; private reads also flow
+ * through the authenticated Worker proxy.
  *
  * `label` is a short tag used in the timeout error message
  * ('expense-full', 'booking-thumb', 'wish-full', etc).
@@ -109,18 +110,26 @@ export async function uploadToIntent(
   intent: UploadIntent,
   file:   Blob | File,
   label:  string,
+  opts?:  { traceId?: string },
 ): Promise<void> {
-  const { storage, ref, uploadBytesResumable } = await getFirebaseStorage()
-  const metadata: UploadMetadata = {
-    contentType:    intent.metadata.contentType,
-    customMetadata: intent.metadata.customMetadata,
+  const workerBase = requireWorkerWriteBase()
+  const idToken = await preflightIdToken()
+  const tripId = intent.metadata.customMetadata.tripId
+  if (!tripId) throw new Error(`${label}: upload intent is missing tripId`)
+  if (file.type !== intent.metadata.contentType) {
+    throw new Error(
+      `${label}: file type '${file.type || '<empty>'}' does not match intent '${intent.metadata.contentType}'`,
+    )
   }
   await retry(
-    () => uploadFile(
-      uploadBytesResumable(ref(storage, intent.path), file, metadata),
-      label,
-      UPLOAD_TIMEOUT_MS,
+    () => workerRawUpload(
+      workerBase,
+      idToken,
+      '/attachment-upload',
+      { tripId, intentId: intent.intentId },
+      file,
+      { traceId: opts?.traceId, timeoutMs: WORKER_FETCH_TIMEOUT_MS },
     ),
-    { shouldRetry: isTransientStorageError },
+    { shouldRetry: error => error instanceof WorkerAmbiguous },
   )
 }
