@@ -28,9 +28,9 @@ export default function EmptyTrips({ onCreate, onScanInvite }: {
         </button>
         <button
           onClick={onScanInvite}
-          className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-chip border border-border bg-surface text-pick text-[12.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:bg-pick-pale hover:border-pick"
+          className="inline-flex items-center gap-1.5 whitespace-nowrap px-5 py-2.5 rounded-chip border border-border bg-surface text-pick text-[12.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:bg-pick-pale hover:border-pick"
         >
-          <QrCode size={14} strokeWidth={2.4} />
+          <QrCode size={14} strokeWidth={2.4} className="shrink-0" />
           掃描 QR Code 加入
         </button>
       </div>
