@@ -96,7 +96,7 @@
 
 ---
 
-### 4. Cloud Storage（圖片附檔）
+### 4. Cloudflare R2（圖片附檔）
 
 | 來源 | 平均大小 | 數量 | 小計 |
 |---|---|---|---|
@@ -107,25 +107,26 @@
 
 **總計**：~80 MB
 
-**免費額度**：5 GB 儲存 → **使用率 1.6%** ✅
+**免費額度**：10 GB-month / 月 → **使用率 0.8%** ✅
 
 ---
 
-### 5. Cloud Storage egress（下載量）
+### 5. R2 讀取與 egress
 
 每次列表頁進入會載縮圖：
 - 進 BookingsPage：載 ~5 個縮圖 × 30 KB = 150 KB
 - 進 WishPage：載 ~10 個縮圖 × 20 KB = 200 KB
 - 點縮圖看大圖：偶發
 
-**每人每天**：~1 MB（含 PWA cache 後幾乎為 0）
+**每人每天**：~1 MB。v1 回應為 `private, no-store`，只靠頁面內 blob URL LRU；
+因此成本估算以每次實際 R2 GET 計，不假設 PWA cache。
 
 **全體每天**：
 ```
 20 × 1 MB = 20 MB/天
 ```
 
-**免費額度**：1 GB/天（30 GB/月）→ **使用率 2%** ✅
+**免費額度**：egress 免費；Class B 讀取 10M 次/月免費。此規模遠低於門檻 ✅
 
 ---
 
@@ -158,8 +159,9 @@
 | Firestore reads | 4,000 | 50,000 | **8%** |
 | Firestore writes | 200 | 20,000 | 1% |
 | Firestore 儲存 | 1.3 MB | 1 GB | 0.13% |
-| Storage 儲存 | 80 MB | 5 GB | 1.6% |
-| Storage egress | 20 MB | 1 GB | 2% |
+| R2 儲存 | 80 MB | 10 GB-month/月 | 0.8% |
+| R2 Class B reads | 低於 1K/日 | 10M/月 | <0.3% |
+| R2 egress | 20 MB/日 | 免費 | - |
 | Hosting egress | 1.6 MB（每月 50 MB） | 360 MB（每月 10 GB） | 0.5% |
 | Auth | - | 無限 | - |
 
@@ -187,8 +189,10 @@
 | Firestore reads | 1.5M | $0.06 / 100K |
 | Firestore writes | 600K | $0.18 / 100K |
 | Firestore 儲存 | 1 GB | $0.18 / GB / 月 |
-| Storage 儲存 | 5 GB | $0.026 / GB / 月 |
-| Storage egress | 30 GB | $0.12 / GB |
+| R2 儲存 | 10 GB-month | $0.015 / GB-month |
+| R2 Class A | 1M | $4.50 / 1M |
+| R2 Class B | 10M | $0.36 / 1M |
+| R2 egress | 免費 | 免費 |
 | Cloud Functions invocations | 2M | $0.40 / 1M |
 | Cloud Functions egress | 5 GB | $0.12 / GB |
 
@@ -211,7 +215,7 @@
 - [ ] 若有：[Sentry](https://sentry.io) 看是否有大量 schema validation 失敗（reads 燒爆的常見前兆）
 
 ### 每月一次
-- [ ] 看 Storage 儲存增長率（多少 GB / 月）
+- [ ] Cloudflare Dashboard → R2：看儲存量與 Class A/B operations 增長率
 - [ ] Hosting → 看 traffic 是否異常
 
 ### 設定告警
@@ -238,12 +242,13 @@
 
 > 留給未來自己 / 接手者參考。發生新事故記得補上來。
 
-### 2026-04-30：Storage cascade delete 規則漏洞
+### 2026-04-30：Firebase Storage cascade delete 規則漏洞（歷史）
 - **症狀**：刪除 trip 時 listAll 被擋（403）
 - **原因**：`storage.rules` 只覆蓋葉子檔案路徑，沒覆蓋 `/trips/{tripId}/**` 的 list 權限
 - **影響**：無金錢損失，但使用者無法刪除有附檔的 trip
 - **修補**：加 wildcard read rule on `match /trips/{tripId}/{allPaths=**}`
-- **保險**：rules integration test（`tests/rules/storage.test.ts`）已加固，後不會再復發
+- **後續**：2026-07 已遷移至 private R2 + Worker authorization；`storage.rules` 與其測試退役，
+  此 cross-service rules 類型的競態已結構性移除
 
 ### 2026-04-30：Firestore LIST 規則 vs `where(documentId, 'in')`
 - **症狀**：刪除完任一 trip 後，整個 trip list 變空白並 403

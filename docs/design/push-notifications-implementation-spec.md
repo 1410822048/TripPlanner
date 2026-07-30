@@ -37,7 +37,7 @@ P1 不推：
 
 ### 1.2 既有 Firebase lazy loading
 
-目前 `src/services/firebase.ts` 已把 Firestore / Auth / Storage 拆成 lazy bundle。Messaging 必須照同樣模式處理，不能讓未登入 / demo 使用者載入 messaging SDK。
+目前 `src/services/firebase.ts` 已把 Firestore / Auth 拆成 lazy bundle；附件已改由 Worker/R2 處理。Messaging 必須照同樣模式處理，不能讓未登入 / demo 使用者載入 messaging SDK。
 
 決策：
 
@@ -697,7 +697,6 @@ const app = initializeApp({
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
 })

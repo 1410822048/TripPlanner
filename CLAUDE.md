@@ -1,6 +1,6 @@
 # TripMate — 架構速查
 
-> 旅遊行程協作 PWA(React 19 + Firebase + Cloudflare Worker)。日文 UI、繁中註解。
+> 旅遊行程協作 PWA(React 19 + Firebase + Cloudflare Worker)。繁體中文 UI、繁中註解。
 > 設計取向:**preview-first / optimistic / realtime**。
 
 ---
@@ -11,7 +11,7 @@
 |---|---|
 | Frontend | **React 19** + Vite 8 + TanStack Query v5 + Zustand v5 + Tailwind v4 + React Router v7 |
 | Compiler | **babel-plugin-react-compiler v1**(自動 memoise,所以幾乎沒有手寫 useCallback/useMemo) |
-| Backend | **Firebase v12**: Auth(Google)/ Firestore(+ IndexedDB persistence)/ Storage |
+| Backend | **Firebase v12**: Auth(Google)/ Firestore(+ IndexedDB persistence) + **Cloudflare R2** private attachments |
 | 即時同步 | Firestore `onSnapshot` 包裝在 `createRealtimeListHook` factory |
 | 收據 OCR | **Cloudflare Worker** + **Qwen primary / Claude fallback**(workers/ocr/) |
 | Hosting | **Cloudflare Pages**(`tripmate-2wg.pages.dev`) |
@@ -38,12 +38,12 @@ invites/{token}                  # token 在 URL fragment(不進 server log)
 
 **所有 5 個 feature entity(schedules/expenses/bookings/wishes/plannings)都帶有 `createdBy` + `updatedBy` + `createdAt` + `updatedAt`。`updatedBy` 在每次 create / update / toggle / vote 都會被服務層寫入當前 uid,rules 用 `request.resource.data.updatedBy == uid()` 鎖死,client 偽造會被 Firestore 拒。底部 tab 紅點過濾自己的寫入就是靠這個欄位(`useFeatureBadges`)。Booking 在加 updatedBy 同時補了 createdBy / updatedAt(過去只有 createdAt)。**
 
-Storage:`trips/{tripId}/expenses/{expenseId}/receipt.webp` + `thumb.webp` 等(WebP 壓縮過,thumbnail variants)。
+R2:`trips/{tripId}/expenses/{expenseId}/receipt.webp` + `thumb.webp` 等(private bucket,WebP thumbnail variants)。
 
-## 三層權限(Firestore + Storage rules 雙層 enforce)
+## 三層權限(Firestore rules + Worker R2 authorization)
 
 - **owner**(`isTripOwner`): trip 編輯 / 邀請 / 成員管理 / 刪除
-- **editor / owner**(`canWrite`): schedule/booking/expense/planning 的 CRUD,Storage 上傳
+- **editor / owner**(`canWrite`): schedule/booking/expense/planning 的 CRUD,R2 附件上傳
 - **viewer**(`isMember`): 唯讀全部 + Wish 投票 / 提案(Wish 寬鬆)
 
 UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTripRole.ts`)。
@@ -297,7 +297,7 @@ materializeExpenseSplits(items, adjustments, members) → ExpenseSplit[] → 進
   - `copy` → CopyTripModal(可勾「複製 schedules / planning」+ 改日期)
   - `share` → InviteModal(產生 invite link with token in URL fragment)
   - `members` → MembersModal(查看 + 移除成員,owner only)
-  - `delete` → DeleteConfirm inline → 刪 trip + cascade Storage
+  - `delete` → DeleteConfirm inline → 刪 trip + cascade R2
 - **AccountPage 點「新規旅程」** → navigate to `/schedule` with `state.openCreateTrip = true` → SchedulePage 偵測 location state 自動開 CreateTripModal
 
 ### Schedule day timeline
@@ -365,8 +365,9 @@ Demo / not-signed-in 使用者點任何「寫入」action 都會跳 SignInModal�
 ### Cloudflare Worker(收據 OCR)
 - **URL**: `https://tripmate-ocr.tripmate.workers.dev`
 - **目錄**: `workers/ocr/`
-- **端點**: `POST /ocr` — Bearer Firebase ID token,body `{ image: base64, mimeType, currency? }`
+- **端點**: `POST /ocr`；附件走 `POST /attachment-upload`、`GET /attachment-content`、`POST /attachment-delete`
 - **驗證**: `jose` + `createRemoteJWKSet` 驗 Firebase JWT
+- **附件**: private R2 `ATTACHMENTS` binding；production=`tripmate-attachments-production`；無 public domain / S3 credentials。Pages preview 直接共用 production Worker / R2
 - **AI**: `/ocr` 走 `OCR_PRIMARY_PROVIDER`(預設 `qwen`),`/ocr-fallback` 走 `OCR_FALLBACK_PROVIDER`(預設 `claude`)。Qwen 用 OpenAI-compatible Chat Completions(`QWEN_BASE_URL` / `QWEN_MODEL`);Claude 用 Microsoft Foundry 原生 Anthropic Messages API(`ANTHROPIC_FOUNDRY_RESOURCE` / `CLAUDE_DEPLOYMENT`)。兩者共用 OCR JSON schema + prompt。
 - **Wrangler**: `npx wrangler tail` 看即時 log(找 `[qwen]` / `[claude]` 前綴);`npx wrangler deploy` 部署
 - **secrets**: `QWEN_API_KEY`(primary 為 qwen 時必填)、`ANTHROPIC_FOUNDRY_API_KEY`(fallback 用 Claude 時必填)
@@ -374,8 +375,7 @@ Demo / not-signed-in 使用者點任何「寫入」action 都會跳 SignInModal�
 ### Firebase
 - **Auth**: Google sign-in(popup → redirect fallback iOS PWA)
 - **Firestore**: persistentLocalCache 開啟(離線可讀 + cross-tab)
-- **Storage**: bucket `tripplanner-80a4f.firebasestorage.app`
-- **rules**: `firestore.rules` 三層分權 + `storage.rules` 角色 gate + 5MB cap + mime 白名單
+- **rules**: `firestore.rules` 三層分權；附件的 5MB/MIME/path/BOLA 驗證由 Worker enforce
 
 ## 開發指令速查
 
@@ -387,8 +387,7 @@ npx vitest run                             # 全測試
 npx tsc --noEmit                           # typecheck only
 npx eslint src                             # lint
 firebase deploy --only firestore           # firestore rules + indexes
-firebase deploy --only storage             # storage rules
-cd workers/ocr && npx wrangler deploy      # Worker 上線
+cd workers/ocr && npm run deploy            # production Worker + production R2 binding
 cd workers/ocr && npx wrangler tail        # Worker 即時 log
 ```
 
@@ -399,7 +398,7 @@ cd workers/ocr && npx wrangler tail        # Worker 即時 log
 
 ## 慣例 / 風格
 
-- **註解語言**: TypeScript 程式碼內註解用**繁體中文 / 英文**,UI 文案用**日文**(這個 app 主要服務日本旅遊情境)
+- **語言規範**: TypeScript 程式碼內註解用**繁體中文 / 英文**；所有使用者可見的 UI 文案、錯誤訊息與無障礙名稱一律使用**繁體中文**。日本旅遊情境中的正式地名、品牌名與使用者輸入內容保留原文。
 - **emoji 用法**: 禁止寫進程式碼,除非使用者明確要求(現有 emoji 是 UI 內容如 ✈️🏨 等,屬功能性)
 - **型別 vs interface**: 表單 state 用 `type`(才能塞進 `Record<string, unknown>` 約束);entity / props 用 `interface`
 - **錯誤處理**:

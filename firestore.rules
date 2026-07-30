@@ -1142,14 +1142,9 @@ service cloud.firestore {
       // /booking-file-create, /booking-file-update, /wish-file-create,
       // /wish-file-update, /expense-create, /expense-update Firestore
       // transactions (admin SDK, bypasses rules). The
-      // storage.rules layer does NOT cross-service-read this doc
-      // (the 2026-05-24 prod 403 incident demonstrated the
-      // read-after-write race on freshly-minted docs from the
-      // Storage rules service agent); storage.rules is a STABLE
-      // GATE that verifies only self-contained claimed metadata
-      // + role / membership / tripNotDeleting. See storage.rules
-      // header for the full STABLE GATE vs AUTHORITATIVE GATE
-      // split.
+      // Attachment bytes are accepted only by the Worker proxy. It reads this
+      // intent as the authoritative source for path, MIME, size and digest,
+      // then writes the private R2 object through its binding.
       //
       // Why trip-scoped subcollection (Phase-3.5-bis, 2026-05-25):
       // shipped together with the race fix to consolidate intent

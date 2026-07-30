@@ -30,9 +30,9 @@
 **後端 / 服務**
 - Firebase Auth（Google OAuth）
 - Cloud Firestore（`(default)` database，asia-east1）
-- Cloud Storage（asia-east1，含 cross-service rules）
+- Cloudflare R2（private bucket；附件只能經 Worker 存取）
 - Cloudflare Pages（`tripmate-2wg.pages.dev`，主 host）
-- Cloudflare Worker（`workers/ocr/`，OCR + Worker-authoritative writes）
+- Cloudflare Worker（`workers/ocr/`，OCR + Worker-authoritative writes + R2 附件 proxy）
 
 **工具**
 - vite-plugin-pwa（service worker + manifest）
@@ -64,7 +64,6 @@ cp .env.example .env
 VITE_FIREBASE_API_KEY=...
 VITE_FIREBASE_AUTH_DOMAIN=<project-id>.firebaseapp.com
 VITE_FIREBASE_PROJECT_ID=<project-id>
-VITE_FIREBASE_STORAGE_BUCKET=<project-id>.firebasestorage.app
 VITE_FIREBASE_MESSAGING_SENDER_ID=...
 VITE_FIREBASE_APP_ID=...
 VITE_USE_EMULATOR=false
@@ -72,17 +71,18 @@ VITE_SENTRY_DSN=                 # 可選，留空則停用錯誤回報
 ```
 
 Firebase 端需要：
-- Firestore：建立 **`(default)` database**（**不要**用 named database，Storage 跨服務 rules 只支援 `(default)`），region 選 asia-east1
-- Storage：啟用，region 跟 Firestore 一致
+- Firestore：建立 **`(default)` database**，region 選 asia-east1
 - Auth：啟用 Google provider
+
+Cloudflare 端需要一個 private R2 bucket：`tripmate-attachments-production`。
+Bucket 不設 public/custom domain，也不建立 S3 API token；production Worker 透過
+`ATTACHMENTS` binding 讀寫。
 
 ### 3. Deploy rules / indexes
 
 ```bash
-firebase deploy --only firestore,storage
+firebase deploy --only firestore
 ```
-
-第一次部署時會被問是否授予 IAM 角色給 cross-service rules——**選 Y**。
 
 ### 4. 開發
 
@@ -92,13 +92,13 @@ npm run typecheck    # tsc --noEmit
 npm run lint         # eslint
 npm run test         # vitest run（單元測試，無 emulator 依賴）
 npm run test:watch   # vitest watch mode
-npm run test:rules   # firestore + storage rules 整合測試（需 JDK + emulator）
+npm run test:rules   # Firestore rules 整合測試（需 JDK + emulator）
 ```
 
 ### Rules tests 環境
 
 `npm run test:rules` 會自動啟動 Firebase emulator → 跑 `tests/rules/*.test.ts` →
-關掉 emulator。測試直接讀 `firestore.rules` / `storage.rules` 作為輸入，所以
+關掉 emulator。測試直接讀 `firestore.rules` 作為輸入，所以
 通過代表**部署到 production 的規則就是被測過的那份**。
 
 需要：
@@ -111,10 +111,10 @@ CI 不跑 rules tests（emulator 啟動時間 + 額外服務），只在本地 +
 
 ## Build & Deploy
 
-目前部署策略是 **production fail-closed / preview-first**：
+目前部署策略是 **production fail-closed / single production backend**：
 
 - **production 只允許 `main`**：`npm run deploy:prod`、`npm run deploy:pages`、`npm run worker:deploy`、`npm run functions:deploy`、artifact/revision prune、`notifications:clear` 都走 production guard。真執行時必須在 `main`，且 local `HEAD == origin/main`、worktree clean。
-- **feature branch 只跑 Pages preview**：在 `feat/*` 或其他非 main branch 測前端時，用 `npm run deploy:pages:preview`。它會部署到 Cloudflare Pages preview branch，不會更新 production。
+- **feature branch 只隔離 Pages 前端**：`npm run deploy:pages:preview` 會 build/upload Pages preview，但直接連 production Worker 與 production R2。Preview 上的寫入會影響正式資料，僅適合目前單一使用者的部署模式。
 - **dry-run 是唯一可繞過 production git gate 的模式**：`--dry-run` 只列出會跑的 production 流程，不改遠端狀態。
 - **未知參數直接 abort**：例如 `--dryrun`、`--preflightonly` 這類 typo 不會被忽略。
 - **互斥 mode 只能擇一**：`--worker-only`、`--functions-only`、`--artifacts-only`、`--revisions-only`、`--clear-notifications-only` 不能混用。
@@ -122,7 +122,7 @@ CI 不跑 rules tests（emulator 啟動時間 + 額外服務），只在本地 +
 ```bash
 npm run build                          # tsc + vite build → dist/
 npm run deploy:pages                   # production Pages only：要求 main == origin/main + clean worktree
-npm run deploy:pages:preview           # feature branch Pages preview deploy
+npm run deploy:pages:preview           # preview Pages（共用 production Worker / R2）
 npm run deploy:pages:preview -- --preflight-only
 npm run deploy:pages:preview -- --build-only
 npm run deploy:pages:preview -- --branch=feat/example
@@ -134,11 +134,10 @@ production build 的 `VITE_FIREBASE_AUTH_DOMAIN` 必須是 Pages/custom domain�
 
 Pages preview build 會依 branch 推導 preview auth domain，例如 `feat/push-notifications` 會使用 `feat-push-notifications.tripmate-2wg.pages.dev`。若 Cloudflare preview host 不是這個格式，可用 `TRIPMATE_PAGES_AUTH_DOMAIN` 明確覆蓋。
 
-Rules / indexes（Firebase 那邊還在管 Firestore + Storage）：
+Rules / indexes（Firebase 只負責 Firestore）：
 
 ```bash
 firebase deploy --only firestore       # firestore rules + indexes
-firebase deploy --only storage         # storage rules
 ```
 
 Push notifications（Firestore rules/indexes 必須先於 Pages client 上線，否則 token opt-in / inbox query 會被擋）：
@@ -201,24 +200,24 @@ src/
 
 - 全部資料 scoped 在 `/trips/{tripId}/...` 下
 - Firestore rules：每個 collection 各自驗證 isMember / canWrite / isTripOwner
-- Storage rules：透過 cross-service `firestore.exists()` 對 `(default)` 資料庫做角色驗證
+- R2 bucket 完全私有；`/attachment-upload`、`/attachment-content`、`/attachment-delete`
+  在 Worker 驗 Firebase ID token、trip membership／角色與 canonical path
 - 邀請 token 放在 URL fragment（`#`），不會進 server / CDN log
 
-`firestore.rules` + `storage.rules` 是真實守門員，UI 端的權限檢查只是 UX 防呆。
+`firestore.rules` + Worker 附件授權是實際守門員，UI 端的權限檢查只是 UX 防呆。
 
 ## 已知限制
 
 - Wish 排序在 client 端做（票數 desc），對應限制：**單 trip 最多 100 個 wish**
 - Bookings 列表 100 筆上限、Schedules 200 上限——資料超過上限會 Sentry 警報
 - HEIC 上傳走原檔（canvas 無法 decode），其他圖片自動轉 WebP（full 1920px + thumb 192px）
-- PWA 離線寫入靠 Firestore 內建 IndexedDB cache；Storage 上傳沒離線 queue
+- PWA 離線寫入靠 Firestore 內建 IndexedDB cache；R2 附件上傳沒有離線 queue
 
 ## 部署檢查清單（第一次 / 重大改動後）
 
 ```bash
 npm run typecheck && npm run lint && npm run test  # 本地驗證
 npm run build                                       # 確認 build 通
-firebase deploy --only storage                      # storage rules
 npm run deploy:prod                                 # Pages build gate + indexes/functions/rules + Pages upload
 gcloud firestore export gs://<bucket>/backups/$(date +%F)  # 手動備份基準
 ```

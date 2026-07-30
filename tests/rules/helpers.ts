@@ -1,10 +1,10 @@
 // tests/rules/helpers.ts
-// Shared bootstrap for Firestore + Storage rules tests.
+// Shared bootstrap for Firestore rules tests.
 //
 // Pattern: each test gets its own RulesTestEnvironment via beforeAll, then
 // per-test we ask the env for an authenticated context (or unauthenticated)
 // and run real SDK calls against it. The emulator interprets firestore.rules
-// / storage.rules byte-for-byte the same as production, so a test that
+// byte-for-byte the same as production, so a test that
 // asserts "viewer can't delete a booking" is the closest thing we have to
 // proof short of staging.
 //
@@ -54,11 +54,6 @@ export async function setupTestEnv(): Promise<RulesTestEnvironment> {
       rules: readFileSync(resolve(__dirname, '../../firestore.rules'), 'utf8'),
       host:  '127.0.0.1',
       port:  8080,
-    },
-    storage: {
-      rules: readFileSync(resolve(__dirname, '../../storage.rules'), 'utf8'),
-      host:  '127.0.0.1',
-      port:  9199,
     },
   })
   return cachedEnv

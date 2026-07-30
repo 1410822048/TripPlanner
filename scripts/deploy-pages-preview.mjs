@@ -43,7 +43,7 @@ Usage:
   npm run deploy:pages:preview -- --branch=feat/example
 
 Options:
-  --preflight-only    Validate env, branch, and Cloudflare Pages access only.
+  --preflight-only    Validate env, branch, and Cloudflare access only.
   --build-only        Build the preview bundle without uploading it.
   --deploy-only       Upload the existing dist/ without rebuilding.
   --branch=<branch>   Override the Cloudflare Pages preview branch label.

@@ -2702,13 +2702,11 @@ describe('/trips/{tripId}/_purges enqueue', () => {
 // ─── Phase 3.5-bis: trip-scoped uploadIntents subcollection is admin-only ─
 describe('/trips/{tripId}/uploadIntents/{intentId} client deny-all (Phase 3.5-bis)', () => {
   // Worker admin SDK writes AND reads intent docs (admin SDK bypasses
-  // rules); clients NEVER read or write them directly. storage.rules
-  // does NOT cross-service-read this subcollection -- after the
-  // 2026-05-24 race incident the storage rules layer became a STABLE
-  // GATE that verifies only self-contained claimed metadata, and the
-  // authoritative intent-bound check (status / expiresAt / path-
-  // exactness / customMetadata equality / single-use markUsed) moved
-  // to the Worker's entity-write consume paths (/booking-file-*,
+  // rules); clients NEVER read or write them directly. The private R2
+  // bucket has no client credential path; authoritative intent checks
+  // (status / expiresAt / path exactness / customMetadata equality /
+  // single-use markUsed) live in the Worker's upload and entity-write
+  // consume paths (/attachment-upload, /booking-file-*,
   // /wish-file-*, /expense-create, /expense-update).
   // The `if false` rule below is what this suite locks in: even with
   // valid editor / owner credentials, no client SDK access path
