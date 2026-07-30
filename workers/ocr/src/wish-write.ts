@@ -220,7 +220,7 @@ export async function wishFileCreate(
   callerUid:          string,
   req:                WishFileCreateRequest,
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
 ): Promise<{ wishId: string }> {
   return withTokenRetry(() => doCreate(callerUid, req, serviceAccountJson, bucket))
 }
@@ -229,7 +229,7 @@ async function doCreate(
   callerUid:          string,
   req:                WishFileCreateRequest,
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
 ): Promise<{ wishId: string }> {
   // Parse the wish body BEFORE entering the tx — Zod parse is local,
   // no value in burning a tx retry on a malformed body.
@@ -244,7 +244,7 @@ async function doCreate(
     // Consume intents inside the tx so the markUsed writes commit
     // atomically with the wish doc write. Mirrors expense-create.
     const { consumed, markUsedWrites } = await consumeEntityIntents(
-      tx, req.intentIds, callerUid, accessToken, projectId, bucket,
+      tx, req.intentIds, callerUid, projectId, bucket,
       { tripId: req.tripId, entityType: 'wish', entityId: req.wishId },
     )
 
@@ -427,7 +427,7 @@ export async function wishFileUpdate(
   callerUid:          string,
   req:                WishFileUpdateRequest,
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
 ): Promise<{ ok: true }> {
   return withTokenRetry(() => doUpdate(callerUid, req, serviceAccountJson, bucket))
 }
@@ -436,7 +436,7 @@ async function doUpdate(
   callerUid:          string,
   req:                WishFileUpdateRequest,
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
 ): Promise<{ ok: true }> {
   // Parse the patch body BEFORE entering the tx — pure-local check, no
   // value in burning a tx retry on a malformed patch.
@@ -453,7 +453,7 @@ async function doUpdate(
     // Consume intents inside the tx so markUsed commits atomically
     // with the wish doc patch. Mirrors expense-update's pattern.
     const { consumed, markUsedWrites } = await consumeEntityIntents(
-      tx, req.intentIds, callerUid, accessToken, projectId, bucket,
+      tx, req.intentIds, callerUid, projectId, bucket,
       { tripId: req.tripId, entityType: 'wish', entityId: req.wishId },
     )
 

@@ -34,8 +34,7 @@
 //                                P1 accepted-risk. Other subcollections
 //                                still use ordinary canWrite-style
 //                                delete rules for normal editing UX.
-//   POST /upload-intents       — mint Worker-issued upload intents for
-//                                Firebase Storage uploads (Phase 3.5).
+//   POST /upload-intents       — mint Worker-issued canonical R2 upload intents.
 //   POST /expense-create       — Worker-authoritative expense create
 //   POST /expense-update         + update, consuming intentIds atomically
 //                                with the doc write (Phase 3.5+).
@@ -144,9 +143,12 @@ import {
   pdfPageLimitStatus,
 }                                                 from '@tripmate/pdf-page-limit'
 import {
-  signEntityUrl,
-  AttachmentUrlRequestSchema,
-}                                                 from './attachment-url'
+  handleAttachmentUpload,
+  handleAttachmentContent,
+  handleAttachmentDelete,
+  ATTACHMENT_PATH_HEADER,
+  ATTACHMENT_TRIP_HEADER,
+}                                                 from './attachment-content'
 import { checkGlobalRateLimit }                   from './rate-limiter'
 import {
   autocompleteRoutePlace,
@@ -167,7 +169,6 @@ import {
   handleJsonRoute,
   validationErrorCatcher,
   fxErrorCatcher,
-  attachmentHardeningErrorCatcher,
   chainCatchers,
   extractTraceId,
   UPLOAD_TRACE_HEADER,
@@ -195,7 +196,7 @@ type WorkerEnv = Env & {
   /** Per-PoP per-uid rate limiter for the member-cascade endpoint. */
   /** Per-PoP per-uid rate limiter for the trip-delete endpoint.
    *  Tighter than member cascade because trip-delete is heavy
-   *  (O(100) docs + Storage purge per call). */
+   *  (O(100) docs + R2 purge per call). */
   /** Per-PoP per-uid rate limiter for expense create/update. Same
    *  cap as OCR (30/min) -- one expense per ~2s sustained covers
    *  rapid form retries without blowing through Firestore admin
@@ -204,9 +205,6 @@ type WorkerEnv = Env & {
    *  Tighter (5/min) than expense -- settlement is a clicked-button
    *  rare event, and create runs a full pairwise debt computation
    *  (tx + 2 runQuery reads) per request. */
-  /** Per-PoP per-uid rate limiter for the attachment signed-URL endpoint
-   *  (/attachment-url, full/pdf entity-ref). Looser (120/min) than expense
-   *  -- the work is a local RSA sign (no OCR / no Firestore write). */
   /** Cross-PoP global rate limiter. Durable Object — strongly
    *  consistent counter per-uid that catches multi-PoP abuse that
    *  would slip past the per-PoP binding. ~10-50ms latency cost. */
@@ -253,14 +251,17 @@ function corsHeaders(env: WorkerEnv, originHeader: string | null): Record<string
     : allowed[0]
   return {
     'Access-Control-Allow-Origin':  allow,
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     // UPLOAD_TRACE_HEADER is a custom (non-CORS-safelisted) request
     // header set by mintAndUploadEntityIntents; without it on this
     // allow-list, browsers reject the preflight for every upload-flow
     // endpoint (/upload-intents, /expense-*, /booking-file-*,
     // /wish-file-*). Sourced from the same constant the server uses
     // to read the header so the two stay in lockstep.
-    'Access-Control-Allow-Headers': `Authorization, Content-Type, ${UPLOAD_TRACE_HEADER}`,
+    'Access-Control-Allow-Headers': [
+      'Authorization', 'Content-Type', UPLOAD_TRACE_HEADER,
+      ATTACHMENT_TRIP_HEADER, ATTACHMENT_PATH_HEADER,
+    ].join(', '),
     'Access-Control-Max-Age':       '86400',
     'Vary':                          'Origin',
   }
@@ -285,7 +286,12 @@ type RateLimiterBinding = {
  *  wish-write / booking-write all share the EXPENSE_RATE_LIMITER per-PoP
  *  counter but keep distinct L2 scopes (separate cross-PoP ceilings). A
  *  scope string is the Durable Object counter namespace — changing it
- *  re-buckets live counters, so treat these strings as a wire contract. */
+ *  re-buckets live counters, so treat these strings as a wire contract.
+ *
+ *  Effective capacity is the intersection of both layers, not the L2 number
+ *  alone. In particular attachment-content is L1 600/min per PoP + L2
+ *  900/min cross-PoP; attachment-delete is L1 60/min + L2 120/min. The
+ *  tighter per-PoP cap is intentional abuse containment. */
 interface RateClass {
   limiter:     RateLimiterBinding
   scope:       string
@@ -303,7 +309,9 @@ export const RATE_CLASSES = {
   'wish-write':       { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'wish-write',       globalLimit: 60 },
   'booking-write':    { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'booking-write',    globalLimit: 60 },
   'settlement-write': { limiter: 'SETTLEMENT_RATE_LIMITER',     scope: 'settlement-write', globalLimit: 10 },
-  'attachment-url':   { limiter: 'ATTACHMENT_URL_RATE_LIMITER', scope: 'attachment-url',   globalLimit: 300 },
+  'attachment-upload': { limiter: 'ATTACHMENT_UPLOAD_RATE_LIMITER', scope: 'attachment-upload', globalLimit: 60 },
+  'attachment-content': { limiter: 'ATTACHMENT_CONTENT_RATE_LIMITER', scope: 'attachment-content', globalLimit: 900 },
+  'attachment-delete': { limiter: 'ATTACHMENT_DELETE_RATE_LIMITER', scope: 'attachment-delete', globalLimit: 120 },
   'route-search':     { limiter: 'ROUTE_SEARCH_RATE_LIMITER',    scope: 'route-search',     globalLimit: 60 },
   'route-preview':    { limiter: 'ROUTE_PREVIEW_RATE_LIMITER',   scope: 'route-preview',    globalLimit: 10 },
   'route-write':      { limiter: 'ROUTE_WRITE_RATE_LIMITER',     scope: 'route-write',      globalLimit: 10 },
@@ -315,6 +323,7 @@ type RateClassKey = keyof typeof RATE_CLASSES
 /** Request-scoped values threaded into each route's dispatch closure. */
 interface DispatchCtx {
   body:    unknown
+  request: Request
   cors:    Record<string, string>
   uid:     string
   traceId: string | undefined
@@ -324,8 +333,11 @@ interface DispatchCtx {
 }
 
 interface RouteDescriptor {
-  /** Exact pathname; POST only (every endpoint is POST). */
+  /** Exact pathname. Existing routes default to POST. */
   path:     string
+  method?:  'GET' | 'POST'
+  /** Existing routes default to JSON. Raw/none routes never consume JSON. */
+  bodyMode?: 'json' | 'raw' | 'none'
   /** Rate class → (L1 binding, L2 scope, L2 cap). */
   rate:     RateClassKey
   /** Per-route parse → handle → catch, wrapped by handleJsonRoute. */
@@ -420,11 +432,29 @@ function bookingPdfFieldCount(result: BookingPdfExtractResponse): number {
 
 export const ROUTES: RouteDescriptor[] = [
   {
+    path: '/attachment-upload', rate: 'attachment-upload', bodyMode: 'raw',
+    dispatch: c => handleAttachmentUpload({
+      request: c.request, uid: c.uid, cors: c.cors, traceId: c.traceId, env: c.env,
+    }),
+  },
+  {
+    path: '/attachment-content', method: 'GET', bodyMode: 'none', rate: 'attachment-content',
+    dispatch: c => handleAttachmentContent({
+      request: c.request, uid: c.uid, cors: c.cors, traceId: c.traceId, env: c.env,
+    }),
+  },
+  {
+    path: '/attachment-delete', rate: 'attachment-delete',
+    dispatch: c => handleAttachmentDelete({
+      body: c.body, uid: c.uid, cors: c.cors, traceId: c.traceId, env: c.env,
+    }),
+  },
+  {
     path: '/expense-create', rate: 'expense',
     dispatch: c => handleJsonRoute({
       endpoint:       'expense-create', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
       schema:         ExpenseCreateRequestSchema,
-      handle:         data => expenseCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_STORAGE_BUCKET),
+      handle:         data => expenseCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.ATTACHMENTS),
       formatLog:      (data, result) => `trip=${data.tripId} exp=${result.expenseId}`,
       formatResponse: result => ({ ok: true, ...result }),
       // FOREIGN_CURRENCY path calls getFxSnapshot → FxError on future
@@ -434,7 +464,6 @@ export const ROUTES: RouteDescriptor[] = [
         validationErrorCatcher(ExpenseValidationError),
         fxErrorCatcher(),
         pdfPageLimitErrorCatcher(),
-        attachmentHardeningErrorCatcher(),
       ),
     }),
   },
@@ -443,14 +472,13 @@ export const ROUTES: RouteDescriptor[] = [
     dispatch: c => handleJsonRoute({
       endpoint:    'expense-update', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
       schema:      ExpenseUpdateRequestSchema,
-      handle:      data => expenseUpdate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_STORAGE_BUCKET),
+      handle:      data => expenseUpdate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.ATTACHMENTS),
       formatLog:   data => `trip=${data.tripId} exp=${data.expenseId}`,
       // Same FX-touch + chain as expense-create above.
       catchDomain: chainCatchers(
         validationErrorCatcher(ExpenseValidationError),
         fxErrorCatcher(),
         pdfPageLimitErrorCatcher(),
-        attachmentHardeningErrorCatcher(),
       ),
     }),
   },
@@ -459,13 +487,10 @@ export const ROUTES: RouteDescriptor[] = [
     dispatch: c => handleJsonRoute({
       endpoint:       'wish-file-create', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
       schema:         WishFileCreateRequestSchema,
-      handle:         data => wishFileCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_STORAGE_BUCKET),
+      handle:         data => wishFileCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.ATTACHMENTS),
       formatLog:      (data, result) => `trip=${data.tripId} wish=${result.wishId}`,
       formatResponse: result => ({ ok: true, ...result }),
-      catchDomain:    chainCatchers(
-        validationErrorCatcher(WishValidationError),
-        attachmentHardeningErrorCatcher(),
-      ),
+      catchDomain:    validationErrorCatcher(WishValidationError),
     }),
   },
   {
@@ -473,12 +498,9 @@ export const ROUTES: RouteDescriptor[] = [
     dispatch: c => handleJsonRoute({
       endpoint:    'wish-file-update', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
       schema:      WishFileUpdateRequestSchema,
-      handle:      data => wishFileUpdate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_STORAGE_BUCKET),
+      handle:      data => wishFileUpdate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.ATTACHMENTS),
       formatLog:   data => `trip=${data.tripId} wish=${data.wishId}`,
-      catchDomain: chainCatchers(
-        validationErrorCatcher(WishValidationError),
-        attachmentHardeningErrorCatcher(),
-      ),
+      catchDomain: validationErrorCatcher(WishValidationError),
     }),
   },
   {
@@ -486,13 +508,12 @@ export const ROUTES: RouteDescriptor[] = [
     dispatch: c => handleJsonRoute({
       endpoint:       'booking-file-create', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
       schema:         BookingFileCreateRequestSchema,
-      handle:         data => bookingFileCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_STORAGE_BUCKET),
+      handle:         data => bookingFileCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.ATTACHMENTS),
       formatLog:      (data, result) => `trip=${data.tripId} booking=${result.bookingId}`,
       formatResponse: result => ({ ok: true, ...result }),
       catchDomain:    chainCatchers(
         validationErrorCatcher(BookingValidationError),
         pdfPageLimitErrorCatcher(),
-        attachmentHardeningErrorCatcher(),
       ),
     }),
   },
@@ -501,12 +522,11 @@ export const ROUTES: RouteDescriptor[] = [
     dispatch: c => handleJsonRoute({
       endpoint:    'booking-file-update', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
       schema:      BookingFileUpdateRequestSchema,
-      handle:      data => bookingFileUpdate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_STORAGE_BUCKET),
+      handle:      data => bookingFileUpdate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.ATTACHMENTS),
       formatLog:   data => `trip=${data.tripId} booking=${data.bookingId}`,
       catchDomain: chainCatchers(
         validationErrorCatcher(BookingValidationError),
         pdfPageLimitErrorCatcher(),
-        attachmentHardeningErrorCatcher(),
       ),
     }),
   },
@@ -561,21 +581,11 @@ export const ROUTES: RouteDescriptor[] = [
     }),
   },
   {
-    path: '/attachment-url', rate: 'attachment-url',
-    dispatch: c => handleJsonRoute({
-      endpoint:  'attachment-url', body: c.body, cors: c.cors, uid: c.uid,
-      schema:    AttachmentUrlRequestSchema,
-      handle:    data => signEntityUrl(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_STORAGE_BUCKET),
-      // entity coordinates + variant only; the minted URL is never logged.
-      formatLog: data => `trip=${data.tripId} entity=${data.entityType}/${data.entityId} variant=${data.variant}`,
-    }),
-  },
-  {
     path: '/cascade-trip-delete', rate: 'trip-cascade',
     dispatch: c => handleJsonRoute({
       endpoint:       'trip-cascade', body: c.body, cors: c.cors, uid: c.uid,
       schema:         TripDeleteRequestSchema,
-      handle:         data => cascadeTripDelete(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_STORAGE_BUCKET),
+      handle:         data => cascadeTripDelete(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.ATTACHMENTS),
       formatLog:      (data, result) => `trip=${data.tripId} docs=${result.deletedDocs} objects=${result.deletedObjects}`,
       formatResponse: result => ({ ok: true, ...result }),
     }),
@@ -586,8 +596,8 @@ export const ROUTES: RouteDescriptor[] = [
       endpoint:       'invite-create', body: c.body, cors: c.cors, uid: c.uid,
       schema:         InviteCreateRequestSchema,
       handle:         data => inviteCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
-      // Token is a fresh bearer secret -- never logged (mirrors attachment-url
-      // "minted URL is never logged"). trip + role are enough to correlate.
+      // Token is a fresh bearer secret -- never log it. Trip + role are
+      // enough to correlate the request.
       formatLog:      data => `trip=${data.tripId} role=${data.role}`,
       formatResponse: result => ({ ok: true, ...result }),
       catchDomain:    validationErrorCatcher(MembershipValidationError),
@@ -674,7 +684,7 @@ export const ROUTES: RouteDescriptor[] = [
           c.uid,
           data,
           c.env.FIREBASE_SERVICE_ACCOUNT,
-          c.env.FIREBASE_STORAGE_BUCKET,
+          c.env.ATTACHMENTS,
           (image, mimeType, currency) =>
             runOcrProvider(provider, image, mimeType, currency, ocrProviderConfig(c.env)),
         )
@@ -695,7 +705,7 @@ export const ROUTES: RouteDescriptor[] = [
           c.uid,
           data,
           c.env.FIREBASE_SERVICE_ACCOUNT,
-          c.env.FIREBASE_STORAGE_BUCKET,
+          c.env.ATTACHMENTS,
           (image, mimeType, currency) =>
             runOcrProvider(provider, image, mimeType, currency, ocrProviderConfig(c.env)),
         )
@@ -836,9 +846,9 @@ export default {
     // ─── Routing ──────────────────────────────────────────────────────
     // One descriptor per endpoint (see ROUTES). A known path with a non-
     // POST method falls through to 404, same as the old isXxx + big-OR.
-    const route = request.method === 'POST'
-      ? ROUTES.find(r => r.path === url.pathname)
-      : undefined
+    const route = ROUTES.find(r =>
+      r.path === url.pathname && (r.method ?? 'POST') === request.method,
+    )
     if (!route) {
       return json({ error: 'Not found' }, 404, cors)
     }
@@ -903,19 +913,21 @@ export default {
     }
 
     // ─── Body parsing ─────────────────────────────────────────────────
-    let body: unknown
-    try {
-      body = await request.json()
-    } catch {
-      console.warn(`[body] not valid JSON${trace}`)
-      return json({ error: 'Invalid JSON' }, 400, cors)
+    let body: unknown = undefined
+    if ((route.bodyMode ?? 'json') === 'json') {
+      try {
+        body = await request.json()
+      } catch {
+        console.warn(`[body] not valid JSON${trace}`)
+        return json({ error: 'Invalid JSON' }, 400, cors)
+      }
     }
 
     // ─── Dispatch ─────────────────────────────────────────────────────
     // Per-route variation (schema / handle / formatLog / catchDomain /
     // cascadePrecommit) lives in the descriptor; auth + rate-limit + body
     // size were handled above. See route-dispatch.ts for the wrapper.
-    return route.dispatch({ body, cors, uid, traceId, env, executionCtx: ctx, requestUrl: request.url })
+    return route.dispatch({ body, request, cors, uid, traceId, env, executionCtx: ctx, requestUrl: request.url })
   },
 
   // ─── Cron dispatch ──────────────────────────────────────────────────
@@ -952,7 +964,7 @@ export default {
     // filter is naturally idempotent across runs.
     console.log('[cron] receipt-purge starting')
     ctx.waitUntil(
-      purgeExpiredReceipts(env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)
+      purgeExpiredReceipts(env.FIREBASE_SERVICE_ACCOUNT, env.ATTACHMENTS)
         .then(report => {
           console.log(
             `[cron] receipt-purge done scanned=${report.scanned} ` +
@@ -975,7 +987,7 @@ export default {
     // starve the other.
     console.log('[cron] orphan-purge starting')
     ctx.waitUntil(
-      drainOrphanPurges(env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET)
+      drainOrphanPurges(env.FIREBASE_SERVICE_ACCOUNT, env.ATTACHMENTS)
         .then(report => {
           console.log(
             `[cron] orphan-purge done scanned=${report.scanned} ` +
@@ -989,21 +1001,15 @@ export default {
     )
     // Storage-class maintenance: token scrubber + Level 4 orphan-blob
     // reconciliation, run SEQUENTIALLY inside one waitUntil so they share
-    // a single subrequest-budget envelope rather than two parallel tasks
-    // racing the invocation's ~1000-subrequest pool. The scrubber strips
-    // leftover firebaseStorageDownloadTokens (never-consumed / bypass
-    // backstop, no 24h grace); the orphan scan deletes unreferenced blobs
-    // (24h grace + entity recheck). Each pass is independently best-effort.
+    // a single subrequest-budget envelope rather than parallel tasks racing
+    // the invocation's ~1000-subrequest pool. R2 has no Firebase download
+    // tokens, so maintenance only performs verify-before-delete orphan scan.
     console.log('[cron] storage-maintenance starting')
     ctx.waitUntil(
       // sentryEnv passed through to the orphan scan's abuse-detection
       // branch; sentry.ts no-ops when SENTRY_DSN is empty, so always safe.
-      runStorageMaintenance(env.FIREBASE_SERVICE_ACCOUNT, env.FIREBASE_STORAGE_BUCKET, { sentryEnv: env })
-        .then(({ scrub, orphan }) => {
-          const scrubLine = scrub
-            ? `scrub{scanned=${scrub.scanned} scrubbed=${scrub.scrubbed} ` +
-              `errors=${scrub.scrubErrors} budgetHit=${scrub.budgetHit} deadlineHit=${scrub.deadlineHit}}`
-            : 'scrub{failed}'
+      runStorageMaintenance(env.FIREBASE_SERVICE_ACCOUNT, env.ATTACHMENTS, { sentryEnv: env })
+        .then(({ orphan }) => {
           let orphanLine = 'orphan{failed}'
           if (orphan) {
             // Top-3 uids so operators see attribution without digging Sentry.
@@ -1019,7 +1025,7 @@ export default {
               `deleteErrors=${orphan.deleteErrors} deadlineHit=${orphan.deadlineHit} ` +
               `budgetHit=${orphan.budgetHit} topUids=${topUids}}`
           }
-          console.log(`[cron] storage-maintenance done ${scrubLine} ${orphanLine}`)
+          console.log(`[cron] storage-maintenance done ${orphanLine}`)
         })
         .catch(err => {
           console.error(`[cron] storage-maintenance failed: ${(err as Error).message}`)
@@ -1037,7 +1043,8 @@ export default {
         .then(report => {
           console.log(
             `[cron] upload-intent-purge done scanned=${report.scanned} ` +
-            `deletedPending=${report.deletedPending} deletedUsed=${report.deletedUsed} ` +
+            `deletedPending=${report.deletedPending} deletedUploaded=${report.deletedUploaded} ` +
+            `deletedUsed=${report.deletedUsed} ` +
             `deleteErrors=${report.deleteErrors} ` +
             `deadlineHit=${report.deadlineHit} budgetHit=${report.budgetHit}`,
           )

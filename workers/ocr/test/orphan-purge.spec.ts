@@ -17,8 +17,8 @@
 //      in-flight retries finish naturally before cron races them).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('../src/storage', () => ({
-	deleteObject: vi.fn(async (..._args: unknown[]) => true),
+vi.mock('../src/r2-storage', () => ({
+	deleteR2Object: vi.fn(async () => undefined),
 }))
 vi.mock('../src/firestore', async () => {
 	const actual = await vi.importActual<typeof import('../src/firestore')>('../src/firestore')
@@ -41,11 +41,11 @@ vi.mock('../src/admin', () => ({
 }))
 
 import { drainOrphanPurges } from '../src/orphan-purge'
-import * as storage from '../src/storage'
+import * as storage from '../src/r2-storage'
 import * as firestore from '../src/firestore'
 
 const PROJECT_ID = 'demo-project'
-const BUCKET = 'demo.firebasestorage.app'
+const BUCKET = 'tripmate-attachments-test'
 const TRIP_ID = 'trip-1'
 
 /** Hour-old purge entry — passes the 1h age gate. */
@@ -78,6 +78,7 @@ function mockOrphanPurgePage(docs: { name: string; fields: Record<string, unknow
 
 beforeEach(() => {
 	vi.clearAllMocks()
+	vi.mocked(storage.deleteR2Object).mockResolvedValue()
 })
 
 describe('drainOrphanPurges', () => {
@@ -96,8 +97,8 @@ describe('drainOrphanPurges', () => {
 
 		const report = await drainOrphanPurges('{}', BUCKET)
 
-		expect(storage.deleteObject).toHaveBeenCalledWith(
-			'fake-admin-token', BUCKET, `trips/${TRIP_ID}/expenses/exp-1/abc.webp`,
+		expect(storage.deleteR2Object).toHaveBeenCalledWith(
+			BUCKET, `trips/${TRIP_ID}/expenses/exp-1/abc.webp`,
 		)
 		expect(firestore.deleteDoc).toHaveBeenCalledWith(
 			'fake-admin-token', PROJECT_ID, `trips/${TRIP_ID}/_purges/p1`,
@@ -119,7 +120,7 @@ describe('drainOrphanPurges', () => {
 
 		const report = await drainOrphanPurges('{}', BUCKET)
 
-		expect(storage.deleteObject).not.toHaveBeenCalled()
+		expect(storage.deleteR2Object).not.toHaveBeenCalled()
 		expect(firestore.deleteDoc).toHaveBeenCalledTimes(1)
 		expect(report.blobsDeleted).toBe(0)
 		expect(report.falseOrphans).toBe(1)
@@ -142,7 +143,7 @@ describe('drainOrphanPurges', () => {
 
 		await drainOrphanPurges('{}', BUCKET)
 
-		expect(storage.deleteObject).not.toHaveBeenCalled()
+		expect(storage.deleteR2Object).not.toHaveBeenCalled()
 		// Cross-trip queue entries are parser-rejected → dropped.
 		expect(firestore.deleteDoc).toHaveBeenCalledOnce()
 	})
@@ -166,7 +167,7 @@ describe('drainOrphanPurges', () => {
 		await drainOrphanPurges('{}', BUCKET)
 
 		// Storage NOT touched -- we couldn't verify the path is orphan.
-		expect(storage.deleteObject).not.toHaveBeenCalled()
+		expect(storage.deleteR2Object).not.toHaveBeenCalled()
 		// Queue entry NOT deleted -- next cron run retries when the
 		// transient condition clears.
 		expect(firestore.deleteDoc).not.toHaveBeenCalled()
@@ -192,7 +193,7 @@ describe('drainOrphanPurges', () => {
 
 		await drainOrphanPurges('{}', BUCKET)
 
-		expect(storage.deleteObject).not.toHaveBeenCalled()
+		expect(storage.deleteR2Object).not.toHaveBeenCalled()
 		expect(firestore.deleteDoc).toHaveBeenCalledOnce()  // queue entry dropped
 	})
 
@@ -209,7 +210,7 @@ describe('drainOrphanPurges', () => {
 
 		await drainOrphanPurges('{}', BUCKET)
 
-		expect(storage.deleteObject).not.toHaveBeenCalled()
+		expect(storage.deleteR2Object).not.toHaveBeenCalled()
 		expect(firestore.deleteDoc).toHaveBeenCalledOnce()
 	})
 
@@ -221,7 +222,7 @@ describe('drainOrphanPurges', () => {
 
 		const report = await drainOrphanPurges('{}', BUCKET)
 
-		expect(storage.deleteObject).toHaveBeenCalledOnce()
+		expect(storage.deleteR2Object).toHaveBeenCalledOnce()
 		expect(report.blobsDeleted).toBe(1)
 	})
 
@@ -233,7 +234,7 @@ describe('drainOrphanPurges', () => {
 		}])
 		// Entity deleted → confirmed orphan path.
 		vi.mocked(firestore.getDocFields).mockResolvedValueOnce(null)
-		vi.mocked(storage.deleteObject).mockRejectedValueOnce(new Error('5xx blip'))
+		vi.mocked(storage.deleteR2Object).mockRejectedValueOnce(new Error('5xx blip'))
 
 		await drainOrphanPurges('{}', BUCKET)
 
@@ -254,7 +255,7 @@ describe('drainOrphanPurges', () => {
 			fields: purgeDoc({ attempts: { integerValue: '9' } }),
 		}])
 		vi.mocked(firestore.getDocFields).mockResolvedValueOnce(null)
-		vi.mocked(storage.deleteObject).mockRejectedValueOnce(new Error('still failing'))
+		vi.mocked(storage.deleteR2Object).mockRejectedValueOnce(new Error('still failing'))
 
 		const report = await drainOrphanPurges('{}', BUCKET)
 
@@ -281,7 +282,7 @@ describe('drainOrphanPurges', () => {
 
 		const report = await drainOrphanPurges('{}', BUCKET)
 
-		expect(storage.deleteObject).not.toHaveBeenCalled()
+		expect(storage.deleteR2Object).not.toHaveBeenCalled()
 		expect(firestore.deleteDoc).not.toHaveBeenCalled()
 		expect(firestore.updateDocFields).not.toHaveBeenCalled()
 		// `scanned` ticks up (we did read the doc) but nothing else happened.
@@ -308,8 +309,8 @@ describe('drainOrphanPurges', () => {
 
 		await drainOrphanPurges('{}', BUCKET)
 
-		expect(storage.deleteObject).toHaveBeenCalledWith(
-			'fake-admin-token', BUCKET, orphanPath,
+		expect(storage.deleteR2Object).toHaveBeenCalledWith(
+			BUCKET, orphanPath,
 		)
 	})
 
@@ -330,7 +331,7 @@ describe('drainOrphanPurges', () => {
 		await drainOrphanPurges('{}', BUCKET)
 
 		// Storage NOT touched (we don't know what to verify against).
-		expect(storage.deleteObject).not.toHaveBeenCalled()
+		expect(storage.deleteR2Object).not.toHaveBeenCalled()
 		// Queue entry deleted to stop infinite retry on a doc the cron
 		// can never reason about.
 		expect(firestore.deleteDoc).toHaveBeenCalledWith(
@@ -349,7 +350,7 @@ describe('drainOrphanPurges', () => {
 
 		await drainOrphanPurges('{}', BUCKET)
 
-		expect(storage.deleteObject).not.toHaveBeenCalled()
+		expect(storage.deleteR2Object).not.toHaveBeenCalled()
 		expect(firestore.deleteDoc).toHaveBeenCalledOnce()
 		expect(firestore.updateDocFields).not.toHaveBeenCalled()
 	})
@@ -373,7 +374,7 @@ describe('drainOrphanPurges', () => {
 
 		const report = await drainOrphanPurges('{}', BUCKET)
 
-		expect(storage.deleteObject).not.toHaveBeenCalled()
+		expect(storage.deleteR2Object).not.toHaveBeenCalled()
 		expect(report.falseOrphans).toBe(1)
 	})
 

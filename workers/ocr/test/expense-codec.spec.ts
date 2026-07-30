@@ -136,7 +136,7 @@ describe('encodeExpense', () => {
   it('encodes receipt path-only (path/type/thumbPath, no bearer URL)', () => {
     const noThumb = encodeExpense(createPayload(), TRIP, MEMBERS, 'u1', RECEIPT)
     // path-only: only path / type are written when there's no thumb; reads
-    // go through getBlob(path). The exact-shape match excludes any url.
+    // go through the Worker proxy. The exact-shape match excludes any url.
     expect(noThumb.receipt).toEqual({
       mapValue: { fields: {
         path: { stringValue: 'trips/trip1/expenses/e1/receipt.webp' },

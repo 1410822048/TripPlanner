@@ -4,7 +4,7 @@
 // receipt-purge / orphan-purge / storage-scan under the same
 // scheduled handler (UTC 03:00).
 //
-// Two passes, each paginated + budget-bounded:
+// Three passes, each paginated + budget-bounded:
 //   Pass 1 (expired pending): status='pending' AND
 //       expiresAt < now - GRACE_MS.
 //     Catches intents whose client either never uploaded or never
@@ -12,7 +12,14 @@
 //     uploads / finalize calls a 5-min buffer so the cron doesn't
 //     race the legitimate slow path.
 //
-//   Pass 2 (stale used / retention): status='used' AND
+//   Pass 2 (expired uploaded): status='uploaded' AND
+//       expiresAt < now - GRACE_MS.
+//     Catches clients that completed /attachment-upload but exited
+//     before the entity-write transaction consumed the intent. The
+//     R2 object is reconciled independently by storage-scan; this pass
+//     prevents the Firestore intent document from accumulating forever.
+//
+//   Pass 3 (stale used / retention): status='used' AND
 //       usedAt < now - USED_RETENTION_MS.
 //     Used intents are kept 7 days for audit / debug visibility
 //     before getting cleaned up. The cron handles the deletion --
@@ -43,7 +50,7 @@
 import { queryUploadIntents, deleteDoc, readTimestampMs }      from './firestore'
 import { getAdminToken, getProjectId }                          from './admin'
 
-/** Grace period past `expiresAt` before deleting a pending intent.
+/** Grace period past `expiresAt` before deleting a pending/uploaded intent.
  *  5 min covers the realistic "intent created, client started
  *  uploading slowly, hit Storage close to expiry" window without
  *  the cron racing a legitimate in-flight upload. */
@@ -73,10 +80,12 @@ const SOFT_DEADLINE_MS = 14 * 60 * 1000
 const SUBREQUEST_BUDGET = 200
 
 export interface UploadIntentPurgeReport {
-  /** Total docs the query returned across both passes. */
+  /** Total docs the query returned across all passes. */
   scanned:        number
   /** Pending intents past grace successfully deleted. */
   deletedPending: number
+  /** Uploaded-but-never-consumed intents past grace successfully deleted. */
+  deletedUploaded: number
   /** Used intents past retention successfully deleted. */
   deletedUsed:    number
   /** Non-404 deleteDoc errors. 404 (already gone) doesn't count
@@ -89,7 +98,7 @@ export interface UploadIntentPurgeReport {
 }
 
 /**
- * Drain expired pending + stale used uploadIntents docs. Two passes,
+ * Drain expired pending/uploaded + stale used uploadIntents docs. Three passes,
  * each paginated. Returns the per-run report; throws on entry-level
  * query failure with partial counts encoded in the error message.
  *
@@ -114,7 +123,7 @@ export async function purgeExpiredUploadIntents(
   const startedAt = Date.now()
   const subreq    = { used: 0 }
   const report: UploadIntentPurgeReport = {
-    scanned: 0, deletedPending: 0, deletedUsed: 0,
+    scanned: 0, deletedPending: 0, deletedUploaded: 0, deletedUsed: 0,
     deleteErrors: 0, deadlineHit: false, budgetHit: false,
   }
 
@@ -128,7 +137,17 @@ export async function purgeExpiredUploadIntents(
   )
   if (report.deadlineHit || report.budgetHit) return report
 
-  // Pass 2: stale used. Cutoff is `now - USED_RETENTION_MS`.
+  // Pass 2: upload completed but the entity-write never consumed the intent.
+  // The same expiry + grace boundary applies: after it, consume rejects the
+  // intent anyway, so deleting the doc cannot race legitimate completion.
+  await drainPass(
+    accessToken, projectId, 'uploaded', 'expiresAt', pendingCutoffMs,
+    startedAt, subreq, pageSize, subrequestBudget, report,
+    n => { report.deletedUploaded += n },
+  )
+  if (report.deadlineHit || report.budgetHit) return report
+
+  // Pass 3: stale used. Cutoff is `now - USED_RETENTION_MS`.
   const usedCutoffMs = startedAt - USED_RETENTION_MS
   await drainPass(
     accessToken, projectId, 'used', 'usedAt', usedCutoffMs,
@@ -140,12 +159,12 @@ export async function purgeExpiredUploadIntents(
 }
 
 /** One purge pass: paginated query → delete each → advance cursor.
- *  Status + field combinations: ('pending', 'expiresAt') or
- *  ('used', 'usedAt'). Each pass uses its own composite index. */
+ *  Status + field combinations: ('pending'|'uploaded', 'expiresAt') or
+ *  ('used', 'usedAt'). Equality values share the existing status/field index. */
 async function drainPass(
   accessToken:    string,
   projectId:      string,
-  status:         'pending' | 'used',
+  status:         'pending' | 'uploaded' | 'used',
   field:          'expiresAt' | 'usedAt',
   cutoffMs:       number,
   startedAt:      number,
@@ -182,7 +201,8 @@ async function drainPass(
       throw new Error(
         `purgeExpiredUploadIntents (${status}/${field}) failed mid-scan ` +
         `(scanned=${report.scanned} deletedPending=${report.deletedPending} ` +
-        `deletedUsed=${report.deletedUsed} deleteErrors=${report.deleteErrors}): ` +
+        `deletedUploaded=${report.deletedUploaded} deletedUsed=${report.deletedUsed} ` +
+        `deleteErrors=${report.deleteErrors}): ` +
         `${(e as Error).message}`,
       )
     }

@@ -113,26 +113,11 @@ export async function getAdminToken(serviceAccountJson: string): Promise<string>
   const exp = iat + 3600  // 1h is the max Google accepts
 
   // Service-account self-signed JWT → exchanged for an access token.
-  // Scopes:
-  //   - datastore               (Firestore REST: cascade member/trip-delete)
-  //   - devstorage.full_control (GCS REST: list/get/delete trip Storage assets
-  //                              for trip-cascade + receipt purge, AND
-  //                              objects.patch to strip download tokens at
-  //                              consume / in the cron scrubber). NOTE:
-  //                              read_write covers get/list/delete but NOT
-  //                              objects.patch (metadata update) — GCS returns
-  //                              403 "Provided scope(s) are not authorized" —
-  //                              so the token-strip needs full_control.
-  // Both scopes go on the SAME access token so we keep one cache slot —
-  // splitting per-scope would double JWT-sign + token-exchange overhead
-  // for no real isolation benefit (the underlying service account already
-  // has full IAM on both APIs).
+  // Only Firestore REST is accessed with this token. Attachments use the
+  // in-process R2 binding and require no Google Cloud Storage OAuth scope.
   const key = await importPKCS8(sa.private_key, 'RS256')
   const jwt = await new SignJWT({
-    scope: [
-      'https://www.googleapis.com/auth/datastore',
-      'https://www.googleapis.com/auth/devstorage.full_control',
-    ].join(' '),
+    scope: 'https://www.googleapis.com/auth/datastore',
   })
     .setProtectedHeader({ alg: 'RS256', typ: 'JWT' })
     .setIssuer(sa.client_email)
@@ -155,18 +140,6 @@ export async function getAdminToken(serviceAccountJson: string): Promise<string>
  *  env var that already lives in the JSON. */
 export function getProjectId(serviceAccountJson: string): string {
   return parseServiceAccount(serviceAccountJson).project_id
-}
-
-/** The two SA fields needed to mint a GCS V4 signed URL with a LOCAL
- *  RSA signature (no IAM signBlob round-trip):
- *    - clientEmail → the X-Goog-Credential principal
- *    - privateKey  → the PKCS#8 PEM we import as an RSASSA-PKCS1-v1_5
- *                    SHA-256 signing key (gcs-sign.ts)
- *  Reuses the same parsed-JSON cache as getAdminToken / getProjectId so
- *  the signed-URL endpoints don't re-JSON.parse the SA on every request. */
-export function getSigningCredentials(serviceAccountJson: string): { clientEmail: string; privateKey: string } {
-  const sa = parseServiceAccount(serviceAccountJson)
-  return { clientEmail: sa.client_email, privateKey: sa.private_key }
 }
 
 /** Drop the cached OAuth token. Call when a downstream Firestore REST

@@ -33,9 +33,10 @@ describe('OCR worker routing', () => {
 		expect(res.status).toBe(204)
 		expect(res.headers.get('Access-Control-Allow-Origin')).toBe('http://localhost:5173')
 		expect(res.headers.get('Access-Control-Allow-Methods')).toContain('POST')
+		expect(res.headers.get('Access-Control-Allow-Methods')).toContain('GET')
 	})
 
-	it('CORS preflight allows Authorization, Content-Type, and X-Upload-Trace-Id', async () => {
+	it('CORS preflight allows upload trace and fixed attachment locator headers', async () => {
 		// Regression pin for the upload-flow observability header:
 		// mintAndUploadEntityIntents sends `X-Upload-Trace-Id` on every
 		// /upload-intents + /expense-* + /booking-file-* + /wish-file-*
@@ -48,7 +49,7 @@ describe('OCR worker routing', () => {
 				Origin:                          'http://localhost:5173',
 				'Access-Control-Request-Method': 'POST',
 				'Access-Control-Request-Headers':
-					'authorization, content-type, x-upload-trace-id',
+					'authorization, content-type, x-upload-trace-id, x-attachment-trip-id, x-attachment-path',
 			},
 		})
 		expect(res.status).toBe(204)
@@ -56,6 +57,8 @@ describe('OCR worker routing', () => {
 		expect(allow).toMatch(/Authorization/i)
 		expect(allow).toMatch(/Content-Type/i)
 		expect(allow).toMatch(/X-Upload-Trace-Id/i)
+		expect(allow).toMatch(/X-Attachment-Trip-Id/i)
+		expect(allow).toMatch(/X-Attachment-Path/i)
 	})
 
 	it('unknown path returns 404', async () => {
@@ -204,7 +207,9 @@ describe('route descriptor table (rate-limit classification)', () => {
 		'/booking-file-update': { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'booking-write',    globalLimit: 60 },
 		'/settlement-create':   { limiter: 'SETTLEMENT_RATE_LIMITER',     scope: 'settlement-write', globalLimit: 10 },
 		'/settlement-delete':   { limiter: 'SETTLEMENT_RATE_LIMITER',     scope: 'settlement-write', globalLimit: 10 },
-		'/attachment-url':      { limiter: 'ATTACHMENT_URL_RATE_LIMITER', scope: 'attachment-url',   globalLimit: 300 },
+		'/attachment-upload':   { limiter: 'ATTACHMENT_UPLOAD_RATE_LIMITER', scope: 'attachment-upload', globalLimit: 60 },
+		'/attachment-content':  { limiter: 'ATTACHMENT_CONTENT_RATE_LIMITER', scope: 'attachment-content', globalLimit: 900 },
+		'/attachment-delete':   { limiter: 'ATTACHMENT_DELETE_RATE_LIMITER', scope: 'attachment-delete', globalLimit: 120 },
 		'/invite-create':       { limiter: 'CASCADE_RATE_LIMITER',        scope: 'cascade',          globalLimit: 10 },
 		'/invite-revoke':       { limiter: 'CASCADE_RATE_LIMITER',        scope: 'cascade',          globalLimit: 10 },
 		'/invite-redeem':       { limiter: 'CASCADE_RATE_LIMITER',        scope: 'cascade',          globalLimit: 10 },
@@ -235,7 +240,7 @@ describe('route descriptor table (rate-limit classification)', () => {
 	})
 
 	it('has no duplicate paths', () => {
-		const paths = ROUTES.map(r => r.path)
+		const paths = ROUTES.map(r => `${r.method ?? 'POST'} ${r.path}`)
 		expect(new Set(paths).size).toBe(paths.length)
 	})
 

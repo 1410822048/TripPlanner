@@ -25,14 +25,19 @@ vi.mock('../src/firestore', async () => {
   }
 })
 
-vi.mock('../src/storage', () => ({
-  getObjectMetadata: vi.fn(async () => {
+vi.mock('../src/r2-storage', () => ({
+  getR2Object: vi.fn(async () => {
     if (storageState.metaThrows) throw new Error('boom')
-    return storageState.meta
-  }),
-  downloadObject: vi.fn(async () => {
-    if (storageState.bytesThrows) throw new Error('boom')
-    return storageState.bytes
+    const meta = storageState.meta as { size: number; contentType: string } | null
+    if (!meta) return null
+    return {
+      size: meta.size,
+      httpMetadata: { contentType: meta.contentType },
+      arrayBuffer: async () => {
+        if (storageState.bytesThrows) throw new Error('boom')
+        return (storageState.bytes as { bytes: ArrayBuffer } | null)?.bytes ?? new ArrayBuffer(meta.size)
+      },
+    }
   }),
 }))
 
@@ -122,7 +127,7 @@ describe('expenseReceiptOcr — happy paths', () => {
     expect(out.result.items.length).toBeGreaterThan(0)
     expect(out.sourceReceiptPath).toBe(RECEIPT_PATH)
     expect(out.expenseUpdatedAt).toBe('2026-06-04T08:00:00Z')
-    // The OCR core is handed the GCS contentType (authoritative), not a client mime.
+    // The OCR core is handed the R2 contentType (authoritative), not a client mime.
     expect(ocrCalls[0].mimeType).toBe('image/webp')
   })
 

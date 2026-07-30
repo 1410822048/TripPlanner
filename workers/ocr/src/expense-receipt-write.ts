@@ -1,7 +1,7 @@
 // workers/ocr/src/expense-receipt-write.ts
 // Receipt domain for the expense-write endpoints: assemble the Worker-side
 // receipt field from consumed upload intents, then validate it (defense-in-
-// depth against malformed Storage metadata). Split out of expense-write.ts
+// depth against malformed R2 metadata). Split out of expense-write.ts
 // (P4 boundary extraction) -- pure receipt assembly, no auth / Firestore tx /
 // money math. The intent CONSUMPTION (consumeEntityIntents) stays in
 // upload-intent.ts; this module only turns already-consumed intents into a
@@ -16,7 +16,7 @@ import type { ConsumedIntent } from './upload-intent'
 /** Run the Worker-built receipt through `makeReceiptSchema` so the
  *  same path-binding + mime invariants that used to gate the legacy
  *  direct-from-client path still apply to intent-derived receipts.
- *  Defense-in-depth: if Storage metadata ever returns an unexpected
+ *  Defense-in-depth: if R2 metadata ever returns an unexpected
  *  shape (mime drift, path mismatch, etc.) we want a clear
  *  ExpenseValidationError at write time rather than a corrupt
  *  `receipt` field landing in Firestore. */
@@ -39,8 +39,7 @@ export function validateBuiltReceipt(
 /** Build an ExpenseReceipt-shaped object (path-only) from consumed
  *  intents. Required: at least one intent with kind='full' or kind='pdf'
  *  (the primary blob). Optional: a single thumb. No url/thumbUrl -- the
- *  download token was stripped at consume time; reads go through
- *  getBlob(path/thumbPath) gated by Storage Rules. */
+ *  object is private; reads go through the authenticated Worker proxy. */
 export function buildReceiptFromIntents(consumed: ConsumedIntent[]): {
   path:       string
   type:       string

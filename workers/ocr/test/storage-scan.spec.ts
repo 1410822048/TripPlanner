@@ -13,10 +13,38 @@
 //      the message (so cron failure log line stays informative).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('../src/storage', () => ({
-	listObjects:          vi.fn(),
-	deleteObject:         vi.fn(async (..._args: unknown[]) => true),
-	updateObjectMetadata: vi.fn(async (..._args: unknown[]) => true),
+const { listObjectsMock, headObjectMock, deleteObjectMock } = vi.hoisted(() => ({
+	listObjectsMock: vi.fn(),
+	headObjectMock: vi.fn(async () => ({ key: 'present' })),
+	deleteObjectMock: vi.fn(async (..._args: unknown[]) => true),
+}))
+
+vi.mock('../src/r2-storage', () => ({
+	// Compatibility names keep the existing assertions readable while the
+	// production-facing mocks expose the R2 helper contract.
+	listObjects:  listObjectsMock,
+	deleteObject: deleteObjectMock,
+	listR2Objects: vi.fn(async (bucket: unknown, prefix: string, cursor?: string, limit?: number) => {
+		const page = await listObjectsMock('fake-admin-token', bucket, prefix, cursor, limit) as {
+			items: Array<{ name: string; timeCreated?: string; metadata?: Record<string, string> }>
+			nextPageToken?: string
+		}
+		return {
+			objects: page.items.map(item => ({
+				key: item.name, version: 'v1', size: 1,
+				uploaded: new Date(item.timeCreated ?? Date.now()),
+				contentType: 'application/octet-stream',
+				customMetadata: item.metadata ?? {},
+			})),
+			truncated: Boolean(page.nextPageToken),
+			cursor: page.nextPageToken,
+		}
+	}),
+	deleteR2Object: vi.fn(async (bucket: unknown, path: string) => {
+		await deleteObjectMock('fake-admin-token', bucket, path)
+	}),
+	headR2Object: vi.fn(async (bucket: unknown, path: string) =>
+		headObjectMock('fake-admin-token', bucket, path)),
 }))
 vi.mock('../src/sentry', () => ({
 	captureMessage: vi.fn(async () => undefined),
@@ -51,12 +79,12 @@ vi.mock('../src/admin', () => ({
 	getProjectId:  vi.fn(() => 'demo-project'),
 }))
 
-import { scanOrphanStorage, scanAndScrubTokens } from '../src/storage-scan'
-import * as storage          from '../src/storage'
+import { scanOrphanStorage } from '../src/storage-scan'
+import * as storage          from '../src/r2-storage'
 import * as firestore        from '../src/firestore'
 import * as sentry           from '../src/sentry'
 
-const BUCKET   = 'demo.firebasestorage.app'
+const BUCKET   = 'tripmate-attachments-test'
 const TRIP_ID  = 'trip-1'
 
 // Two hours ago in ISO → comfortably outside the 24h grace window when
@@ -72,6 +100,7 @@ function mockSinglePage(items: { name: string; timeCreated?: string }[]) {
 
 beforeEach(() => {
 	vi.clearAllMocks()
+	headObjectMock.mockResolvedValue({ key: 'present' })
 })
 
 describe('scanOrphanStorage', () => {
@@ -89,6 +118,19 @@ describe('scanOrphanStorage', () => {
 		expect(report.deleted).toBe(1)
 		expect(report.referenced).toBe(0)
 		expect(report.readErrors).toBe(0)
+	})
+
+	it('does not count a listed object that disappeared before delete', async () => {
+		const orphanPath = `trips/${TRIP_ID}/expenses/exp-1/receipt.webp`
+		mockSinglePage([{ name: orphanPath, timeCreated: OLD_ISO }])
+		vi.mocked(firestore.getDocFields).mockResolvedValueOnce(null)
+		headObjectMock.mockResolvedValueOnce(null)
+
+		const report = await scanOrphanStorage('{}', BUCKET)
+
+		expect(storage.deleteObject).not.toHaveBeenCalled()
+		expect(report.deleted).toBe(0)
+		expect(report.orphansByUid).toEqual({})
 	})
 
 	it('confirmed orphan: entity exists but does NOT reference blob path → delete', async () => {
@@ -220,7 +262,7 @@ describe('scanOrphanStorage', () => {
 				nextPageToken: 'token-1',
 			})
 			// Page 2 throws (e.g. auth blip, 5xx).
-			.mockRejectedValueOnce(new Error('503 GCS overload'))
+			.mockRejectedValueOnce(new Error('503 R2 overload'))
 		vi.mocked(firestore.getDocFields).mockResolvedValueOnce(null)
 
 		await expect(scanOrphanStorage('{}', BUCKET)).rejects.toThrow(
@@ -312,6 +354,70 @@ describe('scanOrphanStorage', () => {
 		expect(report.deleted).toBeGreaterThanOrEqual(1)
 	})
 
+	it('counts each Firestore read once so a referenced item leaves budget for the next page', async () => {
+		const intentId = 'f'.repeat(32)
+		const livePath = `trips/${TRIP_ID}/expenses/live-budget/p.webp`
+		const listMock = vi.mocked(storage.listObjects)
+		listMock.mockImplementation(async (_token, _bucket, _prefix, cursor) =>
+			cursor === 'page-2'
+				? { items: [], nextPageToken: undefined }
+				: {
+				items: [{
+					name: livePath,
+					timeCreated: OLD_ISO,
+					metadata: { uploadIntentId: intentId },
+				}],
+				nextPageToken: 'page-2',
+			},
+		)
+		vi.mocked(firestore.getDocFields)
+			.mockResolvedValueOnce({ status: { stringValue: 'used' } })
+			.mockResolvedValueOnce({
+				receipt: { mapValue: { fields: {
+					path: { stringValue: livePath },
+				} } },
+			})
+
+		// Worst-case reservation is 4, so budget 5 admits the candidate;
+		// actual work is list page 1 + two reads + list page 2 = 4.
+		try {
+			const report = await scanOrphanStorage('{}', BUCKET, { subrequestBudget: 5 })
+
+			expect(report.budgetHit).toBe(false)
+			expect(report.referenced).toBe(1)
+			expect(storage.listObjects).toHaveBeenCalledTimes(2)
+		} finally {
+			listMock.mockReset()
+			vi.mocked(firestore.getDocFields).mockReset()
+		}
+	})
+
+	it('charges both R2 head and delete operations against the subrequest budget', async () => {
+		const intentId = '9'.repeat(32)
+		const orphanPath = `trips/${TRIP_ID}/expenses/orphan-budget/p.webp`
+		vi.mocked(storage.listObjects).mockResolvedValueOnce({
+			items: [{
+				name: orphanPath,
+				timeCreated: OLD_ISO,
+				metadata: { uploadIntentId: intentId },
+			}],
+			nextPageToken: 'page-2',
+		})
+		vi.mocked(firestore.getDocFields)
+			.mockResolvedValueOnce({ status: { stringValue: 'used' } })
+			.mockResolvedValueOnce(null)
+
+		// list + intent read + entity read + head + delete exhausts all 5;
+		// the next page must remain for the following run.
+		const report = await scanOrphanStorage('{}', BUCKET, { subrequestBudget: 5 })
+
+		expect(report.deleted).toBe(1)
+		expect(report.budgetHit).toBe(true)
+		expect(headObjectMock).toHaveBeenCalledTimes(1)
+		expect(deleteObjectMock).toHaveBeenCalledTimes(1)
+		expect(storage.listObjects).toHaveBeenCalledTimes(1)
+	})
+
 	it('P2 starvation guard: budget-hit on all-live page advances cursor for next run', async () => {
 		// Critical regression: without cross-run cursor persistence, a
 		// bucket whose first page is mostly live-referenced blobs would
@@ -361,6 +467,12 @@ describe('scanOrphanStorage', () => {
 		expect(report1.deleted).toBe(0)             // all references confirmed live
 		expect(mockCursorState).not.toBeNull()      // cursor SAVED, not cleared
 		expect(mockCursorState?.pageToken).toBe('cursor-after-page-1')
+		expect(firestore.getScanCursor).toHaveBeenCalledWith(
+			'fake-admin-token', 'demo-project', 'storageScanR2',
+		)
+		expect(firestore.setScanCursor).toHaveBeenCalledWith(
+			'fake-admin-token', 'demo-project', 'storageScanR2', 'cursor-after-page-1',
+		)
 
 		// Run 2: now stage page 2. listObjects must be called with the
 		// saved cursor, NOT undefined (which would mean "restart from
@@ -669,109 +781,4 @@ describe('scanOrphanStorage', () => {
 		expect(report.deleted).toBe(0)
 	})
 
-	it('deleteObject returns false (404, already gone) → NOT counted as deleted', async () => {
-		// Polish: trip-cascade or another scheduled handler can race us
-		// between the listObjects page and our delete call. deleteObject
-		// returns false on 404 (idempotent already-gone); the scan's
-		// `deleted` stat is "blobs WE removed", not "blobs that no
-		// longer exist". Counting 404s would inflate the metric and
-		// mislead observability ("scan caught N orphans" → really N-K
-		// orphans, K already-gone).
-		const path = `trips/${TRIP_ID}/expenses/exp-1/p.webp`
-		mockSinglePage([{ name: path, timeCreated: OLD_ISO }])
-		vi.mocked(firestore.getDocFields).mockResolvedValueOnce(null)
-		// deleteObject returns false (object already gone).
-		vi.mocked(storage.deleteObject).mockResolvedValueOnce(false)
-
-		const report = await scanOrphanStorage('{}', BUCKET)
-
-		expect(storage.deleteObject).toHaveBeenCalledTimes(1)
-		expect(report.deleted).toBe(0)
-		expect(report.deleteErrors).toBe(0)
-	})
-})
-
-// ─── Token scrubber (path-only hardening backstop) ─────────────────
-//
-// scanAndScrubTokens strips leftover firebaseStorageDownloadTokens from
-// any trips/ object, with semantics deliberately different from the
-// orphan scan: NO 24h grace, WIDER scope (unparseable paths too), and an
-// independent budget/cursor.
-describe('scanAndScrubTokens', () => {
-	beforeEach(() => {
-		vi.mocked(storage.listObjects).mockReset()
-		vi.mocked(storage.updateObjectMetadata).mockReset()
-		vi.mocked(storage.updateObjectMetadata).mockResolvedValue(true)
-		vi.mocked(firestore.getScanCursor).mockResolvedValue(null)
-		vi.mocked(firestore.setScanCursor).mockResolvedValue(undefined)
-		vi.mocked(firestore.clearScanCursor).mockResolvedValue(undefined)
-	})
-
-	const withTok  = (name: string, timeCreated?: string) =>
-		({ name, timeCreated, metadata: { firebaseStorageDownloadTokens: 'tok-1,tok-2' } })
-	const noTok    = (name: string) => ({ name, metadata: {} as Record<string, string> })
-
-	it('strips a FRESH token-bearing object (NO 24h grace, unlike orphan scan)', async () => {
-		vi.mocked(storage.listObjects).mockResolvedValueOnce({
-			items: [withTok(`trips/${TRIP_ID}/expenses/e1/r.webp`, FRESH_ISO)],
-		})
-		const report = await scanAndScrubTokens('{}', BUCKET)
-		expect(storage.updateObjectMetadata).toHaveBeenCalledWith(
-			expect.anything(), BUCKET, `trips/${TRIP_ID}/expenses/e1/r.webp`,
-			{ firebaseStorageDownloadTokens: null },
-		)
-		expect(report.scrubbed).toBe(1)
-	})
-
-	it('scrubs an UNPARSEABLE path (wider scope than orphan delete) and skips no-token objects', async () => {
-		vi.mocked(storage.listObjects).mockResolvedValueOnce({
-			items: [
-				withTok(`trips/${TRIP_ID}/other/weird/blob.bin`, OLD_ISO),  // parsePath would reject
-				noTok(`trips/${TRIP_ID}/expenses/e2/r.webp`),               // already stripped → skip
-			],
-		})
-		const report = await scanAndScrubTokens('{}', BUCKET)
-		expect(report.scanned).toBe(2)
-		expect(report.scrubbed).toBe(1)
-		expect(storage.updateObjectMetadata).toHaveBeenCalledTimes(1)
-		expect(storage.updateObjectMetadata).toHaveBeenCalledWith(
-			expect.anything(), BUCKET, `trips/${TRIP_ID}/other/weird/blob.bin`,
-			{ firebaseStorageDownloadTokens: null },
-		)
-	})
-
-	it('honours an independent SCRUB_BUDGET and reports budgetHit', async () => {
-		vi.mocked(storage.listObjects).mockResolvedValueOnce({
-			items: [
-				withTok(`trips/${TRIP_ID}/expenses/a/r.webp`),
-				withTok(`trips/${TRIP_ID}/expenses/b/r.webp`),
-				withTok(`trips/${TRIP_ID}/expenses/c/r.webp`),
-			],
-			nextPageToken: 'page-2',
-		})
-		// budget=2 → 1 list (used=1) + 1 strip (used=2) then budget hit.
-		const report = await scanAndScrubTokens('{}', BUCKET, { subrequestBudget: 2 })
-		expect(report.budgetHit).toBe(true)
-		expect(report.scrubbed).toBe(1)
-		// Budget hit mid-page → save the CURRENT page token (undefined here =
-		// first page) so we re-list it next run, never skipping un-scrubbed
-		// tokens. First page has no pageToken → cursor cleared (restart top).
-		expect(firestore.setScanCursor).not.toHaveBeenCalled()
-		expect(firestore.clearScanCursor).toHaveBeenCalled()
-	})
-
-	it('records scrubErrors but keeps going when a strip PATCH throws', async () => {
-		vi.mocked(storage.listObjects).mockResolvedValueOnce({
-			items: [
-				withTok(`trips/${TRIP_ID}/expenses/x/r.webp`),
-				withTok(`trips/${TRIP_ID}/expenses/y/r.webp`),
-			],
-		})
-		vi.mocked(storage.updateObjectMetadata)
-			.mockRejectedValueOnce(new Error('GCS 503'))
-			.mockResolvedValueOnce(true)
-		const report = await scanAndScrubTokens('{}', BUCKET)
-		expect(report.scrubErrors).toBe(1)
-		expect(report.scrubbed).toBe(1)
-	})
 })

@@ -6,18 +6,14 @@
 //   1. Service-layer process crashes between upload success and the
 //      `_purges` enqueue write (rare, but possible on iOS suspend /
 //      tab kill mid-await).
-//   2. Manual Firebase Console writes / deletes that bypass app logic
-//      and so never trigger client-side enqueue.
-//   3. Editor abuse via raw SDK loops: editor uploads under random
-//      `trips/{tripId}/expenses/RANDOM/blob.webp` paths with no
-//      corresponding expense doc; no doc to reference the path, no
-//      `_purges` entry, nothing to clean up (until now).
+//   2. Manual/operator writes that bypass app logic and enqueueing.
+//   3. Worker failures after an R2 put but before the entity transaction.
 //   4. Future entity types added without wiring `safePurgeWithEnqueueFallback`
 //      around them -- this cron is the structural safety net.
 //   5. Bytes pre-dating Level 3 entirely (no `_purges` mechanism existed
 //      when they were uploaded).
 //
-// Strategy: page-scan Storage under the `trips/` prefix, parse each
+// Strategy: page-scan R2 under the `trips/` prefix, parse each
 // object's path into (tripId, collection, entityId), apply a 24h grace
 // window from `timeCreated`, then for each candidate read the entity
 // doc and compare against `referencedPaths()` (same exact-match contract
@@ -41,7 +37,7 @@
 // → skip + report, do NOT delete. Same invariant as orphan-purge.ts.
 // Storage delete failures bubble up to the per-candidate try/catch and
 // log; no retry budget (this is a daily cron, tomorrow tries again).
-import { listObjects, deleteObject, updateObjectMetadata } from './storage'
+import { deleteR2Object, headR2Object, listR2Objects } from './r2-storage'
 import { getDocFields, getScanCursor, setScanCursor, clearScanCursor, readString, readTimestampMs } from './firestore'
 import { referencedPaths, type ValidCollection } from './orphan-purge'
 import { getAdminToken, getProjectId } from './admin'
@@ -59,7 +55,7 @@ const MIN_AGE_MS = 24 * 60 * 60 * 1000
  *  persistence yet; not needed at projected scale). */
 const SOFT_DEADLINE_MS = 14 * 60 * 1000
 
-/** GCS list pageSize cap is 1000; scan opts for max to halve round-trip
+/** R2 list supports 1000 keys; scan opts for max to halve round-trip
  *  count vs the default 500 used by trip-cascade / receipt-purge. */
 const PAGE_SIZE = 1000
 
@@ -81,7 +77,7 @@ const CONCURRENCY = 5
  *  Budget hit alone would starve later pages: a bucket where page 1
  *  is mostly live-referenced (no deletes) would re-read the same head
  *  items every run, never reaching later pages with actual orphans.
- *  Paired with cross-run cursor persistence (`_scanState/storageScan`),
+ *  Paired with cross-run cursor persistence (`_scanState/storageScanR2`),
  *  budget exhaustion saves `page.nextPageToken` so tomorrow advances. */
 const SUBREQUEST_BUDGET = 300
 
@@ -94,7 +90,7 @@ const CURSOR_STALENESS_MS = 7 * 24 * 60 * 60 * 1000
 
 /** Firestore doc key under `_scanState/{key}` for THIS scan's cursor.
  *  Future scans can reuse the same helpers with different keys. */
-const SCAN_KEY = 'storageScan'
+const SCAN_KEY = 'storageScanR2'
 
 /** Abuse-detection threshold: a single uploaderUid producing more than
  *  this many confirmed orphan blobs in one scan run fires a Sentry
@@ -126,9 +122,7 @@ const PATH_RE = /^trips\/([^/]+)\/(expenses|bookings|wishes)\/([^/]+)\//
  *  count that as `readErrors` and skip delete -- a fail-closed leak
  *  that lets the orphan persist indefinitely.
  *
- *  Tightening here (not in storage.rules) on purpose: the rules layer
- *  is intentionally a "stable gate" of size + path bindings; this
- *  scanner is the defence-in-depth catch-all. Anything that doesn't
+ *  This scanner is a defence-in-depth catch-all. Anything that doesn't
  *  match this regex falls through to the entity recheck unchanged --
  *  including the legitimate "pre-Phase-3.5 blob has no intentId" case. */
 const VALID_INTENT_ID = /^[0-9a-f]{32}$/
@@ -148,7 +142,8 @@ function parsePath(name: string): ParsedPath | null {
 export interface StorageScanReport {
   /** Total objects we paged through (includes unparseable + fresh). */
   scanned:       number
-  /** Confirmed orphans we actually deleted. */
+  /** Approximate count: R2 head + delete is not atomic, so a concurrent
+   *  removal between those operations can make this slightly high. */
   deleted:       number
   /** Skipped: entity doc still references this path -- false alarm. */
   referenced:    number
@@ -197,7 +192,7 @@ export interface StorageScanReport {
 }
 
 /**
- * Drain orphan blobs under `trips/` in Cloud Storage. See file header
+ * Drain orphan blobs under `trips/` in R2. See file header
  * for the failure modes this catches and the design rationale.
  *
  * Throws on the entry-level listObjects call failing (run-aborting --
@@ -210,7 +205,7 @@ export interface StorageScanReport {
  */
 export async function scanOrphanStorage(
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
   opts: {
     subrequestBudget?: number
     /** Sentry env object passed through to captureMessage for abuse
@@ -269,10 +264,21 @@ export async function scanOrphanStorage(
       break
     }
 
-    let page
+    let page: {
+      items: Array<{ name: string; timeCreated?: string; metadata?: Record<string, string> }>
+      nextPageToken?: string
+    }
     try {
       subreq.used += 1
-      page = await listObjects(accessToken, bucket, 'trips/', pageToken, PAGE_SIZE)
+      const r2Page = await listR2Objects(bucket, 'trips/', pageToken, PAGE_SIZE)
+      page = {
+        items: r2Page.objects.map(object => ({
+          name: object.key,
+          timeCreated: object.uploaded.toISOString(),
+          metadata: object.customMetadata,
+        })),
+        nextPageToken: r2Page.cursor,
+      }
       lastPage = page
     } catch (e) {
       // List failure is run-aborting (no way to discover any further
@@ -330,13 +336,14 @@ export async function scanOrphanStorage(
       const intentId = obj.metadata?.uploadIntentId
       const hasValidIntent = typeof intentId === 'string' && VALID_INTENT_ID.test(intentId)
 
-      // Per-candidate subrequest reservation: 1 entity read + 1
-      // optional Storage delete, plus 1 intent recheck when applicable.
-      // Reserving precisely (2 or 3) keeps the budget gate accurate for
+      // Per-candidate subrequest reservation: 1 entity read + 2
+      // optional Storage operations (head + delete), plus 1 intent
+      // recheck when applicable. Reserving precisely (3 or 4) keeps
+      // the budget gate accurate for
       // pre-Phase-3.5 blobs without metadata -- a flat reservation of 3
       // would prematurely trip budgetHit on a page dominated by legacy
       // blobs that only need 2 subrequests each.
-      const reservation = hasValidIntent ? 3 : 2
+      const reservation = hasValidIntent ? 4 : 3
       if (subreq.used + reservation > budget) {
         report.budgetHit = true
         return
@@ -379,8 +386,7 @@ export async function scanOrphanStorage(
         if (fields === null) {
           // Entity doc gone (or never existed -- e.g. editor abuse
           // upload to random entityId). Confirmed orphan, delete.
-          subreq.used += 1
-          await tryDelete(accessToken, bucket, obj, report)
+          await tryDelete(bucket, obj, report, subreq)
           return
         }
         // Entity exists -- check exact-match against its current
@@ -396,8 +402,7 @@ export async function scanOrphanStorage(
         // Entity exists but doesn't reference this blob -- the doc was
         // updated to point at a different path (e.g. user replaced the
         // attachment) and the old blob is stranded. Confirmed orphan.
-        subreq.used += 1
-        await tryDelete(accessToken, bucket, obj, report)
+        await tryDelete(bucket, obj, report, subreq)
       } catch (e) {
         // Firestore read failure -- treat as transient, fail-closed.
         // Tomorrow's run retries; the blob is still discoverable.
@@ -472,32 +477,30 @@ export async function scanOrphanStorage(
 }
 
 /** Delete one confirmed-orphan blob + attribute the orphan back to its
- *  uploader. deleteObject throws on non-404 failures; we count + log
- *  but don't re-throw (cron continues with remaining candidates;
- *  tomorrow retries failed deletes).
- *
- *  Honors deleteObject's boolean return: `false` means 404 (the blob
- *  was already gone, e.g. trip-cascade or another cron raced us between
- *  list and delete). Don't credit ourselves for those -- it would
- *  inflate the `deleted` stat in a way that misleads "did our scan
- *  actually find orphans?" observability.
+ *  uploader. R2 delete is idempotent and doesn't report whether the key
+ *  existed, so the preceding head keeps the observability counter tied
+ *  to objects confirmed immediately before deletion. This is still a
+ *  TOCTOU-aware approximation: another actor can delete between head
+ *  and delete, but we no longer count objects already absent at head.
  *
  *  Phase 2 uploaderUid attribution: when the blob's customMetadata
  *  carries an uploaderUid, count this orphan against that uid. Blobs
  *  without metadata (legacy / pre-Phase-2 uploads) bucket as
  *  `'<unknown>'` so they don't get attributed to nobody-in-particular. */
 async function tryDelete(
-  accessToken: string,
-  bucket:      string,
+  bucket:      R2Bucket,
   obj:         { name: string; metadata?: Record<string, string> },
   report:      StorageScanReport,
+  subreq:      { used: number },
 ): Promise<void> {
   try {
-    if (await deleteObject(accessToken, bucket, obj.name)) {
-      report.deleted += 1
-      const uploaderUid = obj.metadata?.uploaderUid ?? '<unknown>'
-      report.orphansByUid[uploaderUid] = (report.orphansByUid[uploaderUid] ?? 0) + 1
-    }
+    subreq.used += 1
+    if (!await headR2Object(bucket, obj.name)) return
+    subreq.used += 1
+    await deleteR2Object(bucket, obj.name)
+    report.deleted += 1
+    const uploaderUid = obj.metadata?.uploaderUid ?? '<unknown>'
+    report.orphansByUid[uploaderUid] = (report.orphansByUid[uploaderUid] ?? 0) + 1
   } catch (e) {
     report.deleteErrors += 1
     console.warn(
@@ -529,155 +532,17 @@ async function pMap<T>(
   await Promise.all(workers)
 }
 
-// ─── Token scrubber (path-only hardening backstop) ─────────────────
-
-/** Independent cursor + budget for the token scrubber -- deliberately
- *  NOT shared with the orphan scan's SCAN_KEY/SUBREQUEST_BUDGET (see
- *  scanAndScrubTokens for why). Smaller budget: in steady state almost
- *  no object carries a token (consume strips it fail-closed on write),
- *  so this does real work only during a migration backlog or after a
- *  never-consumed / bypass upload. */
-const SCRUB_KEY = 'tokenScrub'
-const SCRUB_BUDGET = 150
-
-export interface ScrubTokensReport {
-  scanned:     number
-  scrubbed:    number
-  scrubErrors: number
-  budgetHit:   boolean
-  deadlineHit: boolean
-}
-
-/** Strip leftover `firebaseStorageDownloadTokens` from any object under
- *  `trips/`. Backstops the never-consumed / bypass case: a blob uploaded
- *  via the Firebase SDK (which auto-adds the token) whose Worker consume
- *  -- the fail-closed strip point -- never ran, leaving a bearer
- *  `?alt=media&token=` URL the uploader could mint and share.
- *
- *  Deliberately a SEPARATE pass from scanOrphanStorage, not folded into
- *  its per-object loop:
- *   - NO 24h grace: stripping a token is non-destructive and doesn't touch
- *     the intent-bound consume contract (the token is not one of
- *     uploadIntentId/uploaderUid/tripId/entityType/entityId/kind/
- *     schemaVersion), so a freshly-uploaded token-bearing blob is cleaned
- *     immediately rather than waiting out the orphan-delete grace window.
- *   - WIDER scope than the orphan parser: scrubs ANY trips/ object with a
- *     token, including paths parsePath() rejects -- orphan DELETE needs a
- *     parseable path + entity recheck, a metadata PATCH does not.
- *   - INDEPENDENT cursor + budget: on SCRUB_BUDGET exhaustion we re-list
- *     the SAME page next run (not nextPageToken), so un-scrubbed tokens
- *     are never skipped by an advancing cursor; and orphan delete keeps
- *     its own budget.
- *
- *  Reads the token straight from the listObjects partial-response
- *  `metadata` (no extra getObjectMetadata). Idempotent: an already-
- *  stripped object lists without the key and is skipped. */
-export async function scanAndScrubTokens(
-  serviceAccountJson: string,
-  bucket:             string,
-  opts: { subrequestBudget?: number } = {},
-): Promise<ScrubTokensReport> {
-  const accessToken = await getAdminToken(serviceAccountJson)
-  const projectId   = getProjectId(serviceAccountJson)
-
-  const startedAt = Date.now()
-  const budget    = opts.subrequestBudget ?? SCRUB_BUDGET
-  let used = 0
-  const report: ScrubTokensReport = {
-    scanned: 0, scrubbed: 0, scrubErrors: 0, budgetHit: false, deadlineHit: false,
-  }
-
-  let pageToken: string | undefined
-  try {
-    const cursor = await getScanCursor(accessToken, projectId, SCRUB_KEY)
-    if (cursor && Date.now() - cursor.savedAtMs < CURSOR_STALENESS_MS) {
-      pageToken = cursor.pageToken
-    }
-  } catch (e) {
-    console.warn(`[token-scrub] cursor load failed; starting from top: ${(e as Error).message}`)
-  }
-
-  while (true) {
-    if (Date.now() - startedAt > SOFT_DEADLINE_MS) { report.deadlineHit = true; break }
-    if (used + 1 > budget) { report.budgetHit = true; break }
-
-    let page
-    try {
-      used += 1
-      page = await listObjects(accessToken, bucket, 'trips/', pageToken, PAGE_SIZE)
-    } catch (e) {
-      throw new Error(
-        `token-scrub listObjects failed mid-scan ` +
-        `(scanned=${report.scanned} scrubbed=${report.scrubbed}): ${(e as Error).message}`,
-      )
-    }
-
-    let budgetHitMidPage = false
-    for (const obj of page.items) {
-      report.scanned += 1
-      if (!obj.metadata?.firebaseStorageDownloadTokens) continue
-      if (used + 1 > budget) { report.budgetHit = true; budgetHitMidPage = true; break }
-      used += 1
-      try {
-        await updateObjectMetadata(accessToken, bucket, obj.name, {
-          firebaseStorageDownloadTokens: null,
-        })
-        report.scrubbed += 1
-      } catch (e) {
-        report.scrubErrors += 1
-        console.warn(`[token-scrub] strip failed obj=${obj.name}: ${(e as Error).message}`)
-      }
-    }
-
-    // Budget hit mid-page → stop WITHOUT advancing pageToken, so next run
-    // re-lists this same page and finishes its un-scrubbed tokens (already-
-    // stripped ones list without the key and no-op). This is the load-
-    // bearing difference from orphan-scan, which advances on budget hit.
-    if (budgetHitMidPage) break
-    pageToken = page.nextPageToken
-    if (!pageToken) break
-  }
-
-  // Cursor: budget/deadline → save the token that fetched the page we
-  // STOPPED on (re-list it; no skip). Natural drain → clear (restart top).
-  try {
-    if (report.budgetHit || report.deadlineHit) {
-      if (pageToken) await setScanCursor(accessToken, projectId, SCRUB_KEY, pageToken)
-      else           await clearScanCursor(accessToken, projectId, SCRUB_KEY)
-    } else {
-      await clearScanCursor(accessToken, projectId, SCRUB_KEY)
-    }
-  } catch (e) {
-    console.warn(`[token-scrub] cursor maintenance failed: ${(e as Error).message}`)
-  }
-
-  return report
-}
-
-/** Storage-class daily maintenance: token scrubber THEN orphan scan,
- *  SEQUENTIALLY under ONE cron `ctx.waitUntil` so they share a single
- *  subrequest-budget envelope (SCRUB_BUDGET 150 + SUBREQUEST_BUDGET 300 =
- *  ≤450, leaving headroom under the invocation's ~1000-subrequest pool
- *  that receipt-purge + upload-intent-purge also draw from) instead of
- *  two parallel waitUntils racing for the pool. Each pass is independently
- *  best-effort: a throw in scrub is logged and orphan still runs. Returns
- *  both reports for the cron's combined log line. */
+/** R2 daily maintenance: verify-before-delete orphan reconciliation only. */
 export async function runStorageMaintenance(
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
   opts: { sentryEnv?: { SENTRY_DSN?: string } } = {},
-): Promise<{ scrub: ScrubTokensReport | null; orphan: StorageScanReport | null }> {
-  let scrub: ScrubTokensReport | null = null
-  try {
-    scrub = await scanAndScrubTokens(serviceAccountJson, bucket)
-  } catch (e) {
-    console.error(`[token-scrub] failed: ${(e as Error).message}`)
-  }
+): Promise<{ orphan: StorageScanReport | null }> {
   let orphan: StorageScanReport | null = null
   try {
     orphan = await scanOrphanStorage(serviceAccountJson, bucket, { sentryEnv: opts.sentryEnv })
   } catch (e) {
     console.error(`[storage-scan] failed: ${(e as Error).message}`)
   }
-  return { scrub, orphan }
+  return { orphan }
 }

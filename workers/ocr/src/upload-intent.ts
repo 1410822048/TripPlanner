@@ -1,50 +1,20 @@
 // workers/ocr/src/upload-intent.ts
 // Phase 3.5: server-issued upload intents.
 //
-// Why this endpoint exists: under direct-client-to-Storage uploads,
-// `storage.rules` was the only contract enforcement point. Any change
-// to the metadata schema, allowed content types, or path layout
-// required coordinating client + rules deploys with a PWA rollout
-// window (old clients lag behind, get 403s). Worker-issued intents
-// move the binding contract (allowedContentTypes, maxBytes,
-// path-exactness, single-use, expiresAt) off of storage.rules and
-// onto the Worker's authoritative consume step.
-//
-// Two-gate split (post 2026-05-24 race fix -- see the long block
-// in storage.rules for the incident):
-//   - storage.rules = STABLE GATE. Checks self-contained claimed
-//     metadata (uploadIntentId shape, claimed tripId/entityType/
-//     entityId match URL params, size cap, content-type allowlist
-//     by kind, schemaVersion literal), uploader uid match, and
-//     upload-time permission (role / membership / tripNotDeleting).
-//     Does NOT read the intent doc -- the cross-service read on a
-//     freshly-minted doc races and 403s legitimate uploads.
-//   - Worker entity-write endpoints (/booking-file-create,
-//     /booking-file-update, /wish-file-create, /wish-file-update,
-//     /expense-create, /expense-update) = AUTHORITATIVE GATE. Each
-//     reads the matched intent docs inside a Firestore tx, verifies
-//     status='pending', expiresAt, path exactness, single-use
-//     markUsed, AND re-checks the uploaded object's customMetadata /
-//     contentType / size against the intent's allowedContentTypes /
-//     maxBytes / customMetadata. Entity doc write commits in the
-//     same tx -- atomic doc-and-attachment, no separate finalize
-//     round-trip (the Phase-3.6 /upload-finalize endpoint was deleted
-//     after Phase 3.7 moved booking/wish file writes to dedicated
-//     /booking-file-* and /wish-file-* endpoints).
+// The Worker is the only R2 writer. An intent binds caller, canonical path,
+// entity, MIME, byte length, expiry and metadata before any bytes are accepted.
+// Upload advances pending → uploaded; entity-write consumption re-verifies the
+// immutable R2 object and atomically advances uploaded → used with the entity.
 //
 // Client flow:
 //   1. POST /upload-intents → Worker returns { intents: [...] }
 //      with canonical path + customMetadata for each blob.
-//   2. Client uses Firebase Storage SDK uploadBytesResumable to
-//      upload to Worker-provided path with Worker-provided metadata.
+//   2. Client POSTs raw bytes to /attachment-upload with the intent id.
+//      The Worker validates size, MIME, magic bytes and digest, then writes R2.
 //   3. POST the matching entity-write endpoint with the intentIds.
-//      Worker consumes the intents (path + customMetadata + size
-//      re-verified) and writes the entity doc atomically in one tx.
-//
-// Worker doesn't proxy upload bytes. PDF uploads are the only exception:
-// "PDF <= 10 pages" is a product data invariant (not a viewer-only
-// render cap), so the consume step downloads the already-uploaded <=5MB
-// object to parse page count before any entity doc can reference it.
+//      Worker consumes the intents and writes the entity doc atomically.
+// PDF page count remains a consume-time product invariant, so the <=5MB object
+// is parsed before any entity doc may reference it.
 import { z }                                                        from 'zod'
 import { getAdminToken, getProjectId }                              from './admin'
 import {
@@ -52,7 +22,7 @@ import {
   readTimestampMs,
   type FsValue,
 }                                                                   from './firestore'
-import { withTokenRetry, CascadeError, AttachmentHardeningError }    from './cascade'
+import { withTokenRetry, CascadeError }                              from './cascade'
 import {
   runFirestoreTransaction,
   docResourceName,
@@ -60,12 +30,12 @@ import {
   type TxWrite,
 }                                                                   from './firestore-tx'
 import {
-  getObjectMetadata,
-  downloadObject,
-  updateObjectMetadata,
-  deleteObject,
-  type ObjectMetadata,
-}                                                                   from './storage'
+  createR2Object,
+  deleteR2Object,
+  getR2Object,
+  headR2Object,
+  type R2StoredObject,
+}                                                                   from './r2-storage'
 import {
   assertPdfPageLimitBytes,
 }                                                                   from './pdf-page-limit'
@@ -79,23 +49,11 @@ import { TripIdRe }                                                  from './fie
  *  suspension) without leaving long-lived stale-permission tokens. */
 const EXPIRE_MS = 30 * 60 * 1000
 
-/** Hard cap on object size, matches the existing storage.rules check.
- *  Per-entityType caps live below in case we ever want booking < wish. */
+/** Hard cap on object size, mirrored by the raw upload endpoint and client. */
 const MAX_BYTES = 5 * 1024 * 1024
 
-/** Customer-controlled metadata schema version. Bump when the
- *  customMetadata shape changes. Clients pass through whatever the
- *  Worker mints (they don't know schema details), so bumps avoid
- *  the PWA rollout window for client code -- but the literal value
- *  IS asserted at two places, both of which must move together:
- *    1. storage.rules' `intentMatches` (`schemaVersion == 'v1'`).
- *    2. Worker entity-write endpoints' customMetadata equality check
- *       against the intent doc's stored customMetadata (booking-write
- *       / wish-write / expense-write all consume intents the same way).
- *  A bump is therefore Worker constant + storage.rules literal +
- *  the usual two-deploy sequence (rules first to accept both old
- *  and new, then Worker switches; or rules-only-new with a brief
- *  in-flight upload denial window). */
+/** Worker-owned metadata schema version. The client passes it through
+ *  opaquely; upload and consume both compare the exact intent-bound shape. */
 const SCHEMA_VERSION = 'v1'
 
 /** Cap per request. full + thumb is the realistic usage; PDF only
@@ -149,9 +107,7 @@ export const UploadIntentsRequestSchema = z.object({
 })
 export type UploadIntentsRequest = z.infer<typeof UploadIntentsRequestSchema>
 
-/** Single intent the Worker mints. Returned to client; client uses
- *  `path` as the Storage target and `metadata` verbatim as the
- *  uploadBytesResumable metadata arg. */
+/** Single intent the Worker mints. Path and metadata are opaque to clients. */
 export interface UploadIntentResponse {
   intentId: string
   path:     string
@@ -176,12 +132,11 @@ function extForContentType(ct: string): string {
   return 'bin'   // unreachable: schema gate above rejects others
 }
 
-/** Map entityType to its Storage path collection segment. */
-function collectionFor(entityType: EntityType): 'expenses' | 'bookings' | 'wishes' {
-  if (entityType === 'expense') return 'expenses'
-  if (entityType === 'booking') return 'bookings'
-  return 'wishes'
-}
+const COLLECTION_BY_ENTITY = {
+  expense: 'expenses',
+  booking: 'bookings',
+  wish:    'wishes',
+} as const satisfies Record<EntityType, 'expenses' | 'bookings' | 'wishes'>
 
 /** Random ID for an intent document or Storage filename suffix.
  *  Full UUID hex (32 chars = 128 bits) -- collision-resistant at any
@@ -225,6 +180,9 @@ async function authorizeUpload(
   // 2. Member doc + role.
   const member = await tx.get(`trips/${tripId}/members/${callerUid}`)
   if (!member.exists) throw new CascadeError(403, 'caller is not a trip member')
+  if ('removingAt' in member.fields) {
+    throw new CascadeError(403, 'caller is being removed from the trip')
+  }
   const role = readString(member.fields, 'role')
 
   if (entityType === 'wish') {
@@ -327,7 +285,7 @@ async function doCreate(
     const expiresAt   = new Date(expiresAtMs).toISOString()
     const writes:    TxWrite[]              = []
     const responses: UploadIntentResponse[] = []
-    const collection = collectionFor(req.entityType)
+    const collection = COLLECTION_BY_ENTITY[req.entityType]
 
     for (const upload of req.uploads) {
       const intentId = newId()
@@ -353,11 +311,7 @@ async function doCreate(
       // (the exact CT the client declared) intentionally -- locking
       // the upload to the declared CT closes the trick where a
       // client requests intent for image/webp but uploads as
-      // image/jpeg. storage.rules CANNOT cross-service-read this
-      // freshly-minted intent doc (see the 2026-05-24 race note in
-      // storage.rules), so it can only verify that the upload's
-      // contentType is within the per-entity-kind allowlist (any
-      // image CT for kind='full'/'thumb'). The exact-CT lock fires
+      // image/jpeg. The exact-CT lock fires
       // at consume time inside consumeIntentInTx below, which
       // re-reads the intent doc and rejects when the uploaded
       // object's contentType is not in allowedContentTypes.
@@ -366,12 +320,14 @@ async function doCreate(
         tripId:     { stringValue: req.tripId },
         entityType: { stringValue: req.entityType },
         entityId:   { stringValue: req.entityId },
+        mode:       { stringValue: mode },
         kind:       { stringValue: upload.kind },
         path:       { stringValue: path },
         allowedContentTypes: {
           arrayValue: { values: [{ stringValue: upload.contentType }] },
         },
         maxBytes:   { integerValue: String(MAX_BYTES) },
+        expectedBytes: { integerValue: String(upload.size) },
         customMetadata: {
           mapValue: {
             fields: Object.fromEntries(
@@ -410,7 +366,7 @@ async function doCreate(
  *
  *  Atomicity story: intent markUsed write + entity doc write commit
  *  in the SAME Firestore tx, so there's no half-state to recover from.
- *  All consumers (consumeEntityIntents) require status='pending' and
+ *  All consumers (consumeEntityIntents) require status='uploaded' and
  *  always receive a non-null `markUsedWrite` to include in commit
  *  writes. A retry hits a 409 (status='used') and the client restarts
  *  from /upload-intents -- simpler than idempotent replay and the
@@ -423,31 +379,342 @@ export interface ConsumedIntent {
   entityId:       string
   kind:           UploadKind
   path:           string
-  storage:        ObjectMetadata
+  storage:        R2StoredObject
 }
 
 interface ConsumeResult {
   consumed:       ConsumedIntent
-  /** The pending → used transition write. Caller MUST include this in
-   *  their tx commit writes -- otherwise the intent stays pending and
+  /** The uploaded → used transition write. Caller MUST include this in
+   *  their tx commit writes -- otherwise the intent stays uploaded and
    *  a replay re-consumes the same blob. */
   markUsedWrite:  TxWrite
 }
 
 /** Per-request PDF page-count cache. Firestore may re-run the tx body on
- * ABORTED/pre-commit retry; tying the cache key to GCS generation avoids
+ * ABORTED/pre-commit retry; tying the cache key to the R2 version avoids
  * re-downloading/re-parsing the same immutable bytes while still revalidating
  * if the object was deleted and recreated at the same path. */
 export type PdfValidationCache = Set<string>
 
-/** Read an intent doc inside a tx, validate all the consume-time
- *  preconditions, and verify the corresponding Storage object exists.
+export interface AttachmentUploadInput {
+  tripId:     string
+  intentId:   string
+  contentType: string
+  bytes:      ArrayBuffer
+  sha256:     string
+}
+
+type UploadMode = 'create' | 'update'
+type UploadStatus = 'pending' | 'uploaded' | 'used'
+
+interface UploadContract {
+  path:             string
+  status:           UploadStatus
+  entityType:       EntityType
+  entityId:         string
+  mode:             UploadMode
+  recordedDigest?:  string
+  expiresAtMs?:     number
+  customMetadata:   Record<string, string>
+}
+
+type UploadPhaseResult =
+  | { kind: 'upload'; path: string; customMetadata: Record<string, string>; replayed: boolean }
+  | { kind: 'skip'; path: string; replayed: true }
+  | { kind: 'finalized'; path: string }
+  | { kind: 'rejected'; path: string; status: number; message: string; cleanupObject: boolean }
+
+function readUploadContract(
+  fields:     Record<string, FsValue>,
+  callerUid: string,
+  input:     AttachmentUploadInput,
+): UploadContract {
+  const uid = readString(fields, 'uid')
+  if (uid !== callerUid) throw new CascadeError(403, `intent ${input.intentId} not owned by caller`)
+
+  const tripId = readString(fields, 'tripId')
+  const path = readString(fields, 'path')
+  if (tripId !== input.tripId || !path) {
+    throw new CascadeError(400, `intent ${input.intentId} scope mismatch`)
+  }
+
+  const entityTypeRaw = readString(fields, 'entityType')
+  if (entityTypeRaw !== 'expense' && entityTypeRaw !== 'booking' && entityTypeRaw !== 'wish') {
+    throw new CascadeError(500, `intent ${input.intentId} has invalid entityType`)
+  }
+  const entityId = readString(fields, 'entityId')
+  if (!entityId) throw new CascadeError(500, `intent ${input.intentId} missing entityId`)
+
+  const modeRaw = readString(fields, 'mode')
+  if (modeRaw !== undefined && modeRaw !== 'create' && modeRaw !== 'update') {
+    throw new CascadeError(500, `intent ${input.intentId} has invalid mode`)
+  }
+
+  const statusRaw = readString(fields, 'status')
+  if (statusRaw !== 'pending' && statusRaw !== 'uploaded' && statusRaw !== 'used') {
+    throw new CascadeError(409, `intent ${input.intentId} status=${statusRaw ?? 'unknown'} cannot accept upload`)
+  }
+
+  const allowed = (fields.allowedContentTypes as { arrayValue?: { values?: FsValue[] } } | undefined)
+    ?.arrayValue?.values
+    ?.map(value => value.stringValue)
+    .filter((value): value is string => typeof value === 'string') ?? []
+  const expectedBytesRaw = (fields.expectedBytes as { integerValue?: string | number } | undefined)?.integerValue
+  const expectedBytes = expectedBytesRaw === undefined ? undefined : Number(expectedBytesRaw)
+  if (!allowed.includes(input.contentType)) {
+    throw new CascadeError(415, `contentType '${input.contentType}' does not match intent`)
+  }
+  if (expectedBytes === undefined || expectedBytes !== input.bytes.byteLength) {
+    throw new CascadeError(400, `upload size ${input.bytes.byteLength} does not match intent size ${expectedBytes ?? 'missing'}`)
+  }
+  if (input.bytes.byteLength > MAX_BYTES) {
+    throw new CascadeError(413, `upload size ${input.bytes.byteLength} exceeds maxBytes ${MAX_BYTES}`)
+  }
+
+  const metadataFields = (fields.customMetadata as { mapValue?: { fields?: Record<string, FsValue> } } | undefined)?.mapValue?.fields
+  if (!metadataFields) throw new CascadeError(500, `intent ${input.intentId} missing customMetadata`)
+  const customMetadata = Object.fromEntries(
+    Object.entries(metadataFields)
+      .map(([key, value]) => [key, value.stringValue] as const)
+      .filter((entry): entry is readonly [string, string] => typeof entry[1] === 'string'),
+  )
+  customMetadata.sha256 = input.sha256
+
+  return {
+    path,
+    status: statusRaw,
+    entityType: entityTypeRaw,
+    entityId,
+    mode: modeRaw ?? 'update',
+    recordedDigest: readString(fields, 'sha256'),
+    expiresAtMs: readTimestampMs(fields, 'expiresAt'),
+    customMetadata,
+  }
+}
+
+function assertDigest(contract: UploadContract, input: AttachmentUploadInput): void {
+  if (contract.recordedDigest !== undefined && contract.recordedDigest !== input.sha256) {
+    throw new CascadeError(409, `intent ${input.intentId} already contains different bytes`)
+  }
+}
+
+function assertUnexpired(contract: UploadContract, input: AttachmentUploadInput): void {
+  if (contract.expiresAtMs === undefined) {
+    throw new CascadeError(500, `intent ${input.intentId} missing expiresAt`)
+  }
+  if (Date.now() > contract.expiresAtMs) {
+    throw new CascadeError(410, `intent ${input.intentId} expired`)
+  }
+}
+
+function matchesUpload(object: R2StoredObject, input: AttachmentUploadInput): boolean {
+  return object.customMetadata.sha256 === input.sha256
+    && object.contentType === input.contentType
+    && object.size === input.bytes.byteLength
+}
+
+function isAuthorizationStateError(error: unknown): error is CascadeError {
+  return error instanceof CascadeError
+    && (error.status === 403 || error.status === 404 || error.status === 410)
+}
+
+async function uploadAuthorizationFailure(
+  tx:        TxContext,
+  contract:  UploadContract,
+  tripId:    string,
+  callerUid: string,
+): Promise<CascadeError | null> {
+  try {
+    await authorizeUpload(
+      tx, tripId, contract.entityType, contract.entityId, callerUid, contract.mode,
+    )
+    return null
+  } catch (error) {
+    if (isAuthorizationStateError(error)) return error
+    throw error
+  }
+}
+
+function rejectedUploadResult(
+  projectId: string,
+  docPath:   string,
+  contract:  UploadContract,
+  error:     CascadeError,
+) {
+  const cleanupObject = contract.status !== 'used'
+  return {
+    writes: cleanupObject ? [{
+      op: 'delete' as const,
+      document: docResourceName(projectId, docPath),
+      currentDocument: { exists: true },
+    }] : [],
+    result: {
+      kind: 'rejected' as const,
+      path: contract.path,
+      status: error.status,
+      message: error.message,
+      cleanupObject,
+    },
+  }
+}
+
+async function throwRejectedUpload(
+  result: Extract<UploadPhaseResult, { kind: 'rejected' }>,
+  bucket: R2Bucket,
+): Promise<never> {
+  if (result.cleanupObject) await deleteRejectedObject(bucket, result.path)
+  throw new CascadeError(result.status, result.message)
+}
+
+/**
+ * Reserve the digest in a Firestore transaction, write the create-only R2
+ * object outside the retryable transaction body, then re-authorize and mark
+ * the intent uploaded in a second transaction. This deliberately avoids an
+ * irreversible R2 side effect inside `runFirestoreTransaction`, whose body
+ * may run again after a conflict or a definitive pre-commit timeout.
+ */
+export async function uploadAttachmentToIntent(
+  callerUid:          string,
+  input:              AttachmentUploadInput,
+  serviceAccountJson: string,
+  bucket:             R2Bucket,
+): Promise<{ path: string; replayed: boolean }> {
+  return withTokenRetry(async () => {
+    const accessToken = await getAdminToken(serviceAccountJson)
+    const projectId   = getProjectId(serviceAccountJson)
+
+    const docPath = `trips/${input.tripId}/uploadIntents/${input.intentId}`
+
+    const prepared = await runFirestoreTransaction<UploadPhaseResult>(accessToken, projectId, async (tx) => {
+      const intent = await tx.get(docPath)
+      if (!intent.exists) throw new CascadeError(404, `intent ${input.intentId} not found`)
+      const contract = readUploadContract(intent.fields, callerUid, input)
+      const authError = await uploadAuthorizationFailure(tx, contract, input.tripId, callerUid)
+      if (authError) return rejectedUploadResult(projectId, docPath, contract, authError)
+
+      assertDigest(contract, input)
+      if (contract.status === 'used') {
+        return { writes: [], result: { kind: 'skip', path: contract.path, replayed: true } }
+      }
+      if (contract.status === 'uploaded') {
+        const existing = await headR2Object(bucket, contract.path)
+        if (existing) {
+          if (!matchesUpload(existing, input)) {
+            throw new CascadeError(409, `canonical path ${contract.path} already contains different bytes`)
+          }
+          return { writes: [], result: { kind: 'skip', path: contract.path, replayed: true } }
+        }
+      }
+      assertUnexpired(contract, input)
+
+      const reserveWrite: TxWrite = {
+        document: docResourceName(projectId, docPath),
+        fields: {
+          status: { stringValue: 'pending' },
+          sha256: { stringValue: input.sha256 },
+        },
+        updateMask: ['status', 'sha256'],
+        currentDocument: { exists: true },
+        updateTransforms: [
+          { fieldPath: 'uploadAuthorizedAt', setToServerValue: 'REQUEST_TIME' },
+        ],
+      }
+      return {
+        writes: [reserveWrite],
+        result: {
+          kind: 'upload',
+          path: contract.path,
+          customMetadata: contract.customMetadata,
+          replayed: contract.status === 'uploaded' || contract.recordedDigest !== undefined,
+        },
+      }
+    })
+
+    if (prepared.kind === 'rejected') return throwRejectedUpload(prepared, bucket)
+    if (prepared.kind === 'skip') return { path: prepared.path, replayed: true }
+    if (prepared.kind !== 'upload') {
+      throw new CascadeError(500, `unexpected upload preparation result: ${prepared.kind}`)
+    }
+
+    const created = await createR2Object(
+      bucket, prepared.path, input.bytes, input.contentType, prepared.customMetadata,
+    )
+    const stored = created ?? await headR2Object(bucket, prepared.path)
+    if (!stored) throw new CascadeError(502, `R2 object missing after create at ${prepared.path}`)
+    if (!matchesUpload(stored, input)) {
+      throw new CascadeError(409, `canonical path ${prepared.path} already contains different bytes`)
+    }
+
+    let finalized: UploadPhaseResult
+    try {
+      finalized = await runFirestoreTransaction<UploadPhaseResult>(accessToken, projectId, async (tx) => {
+        const intent = await tx.get(docPath)
+        if (!intent.exists) throw new CascadeError(404, `intent ${input.intentId} not found`)
+        const contract = readUploadContract(intent.fields, callerUid, input)
+        const authError = await uploadAuthorizationFailure(tx, contract, input.tripId, callerUid)
+        if (authError) return rejectedUploadResult(projectId, docPath, contract, authError)
+
+        assertDigest(contract, input)
+        if (contract.status === 'used') {
+          return { writes: [], result: { kind: 'skip', path: contract.path, replayed: true } }
+        }
+        if (contract.status === 'uploaded') {
+          const existing = await headR2Object(bucket, contract.path)
+          if (!existing || !matchesUpload(existing, input)) {
+            throw new CascadeError(409, `uploaded intent ${input.intentId} no longer matches R2`)
+          }
+          return { writes: [], result: { kind: 'skip', path: contract.path, replayed: true } }
+        }
+        assertUnexpired(contract, input)
+
+        const current = await headR2Object(bucket, contract.path)
+        if (!current || !matchesUpload(current, input)) {
+          throw new CascadeError(409, `R2 object does not match reserved intent ${input.intentId}`)
+        }
+        const fields: Record<string, FsValue> = {
+          status:              { stringValue: 'uploaded' },
+          sha256:              { stringValue: input.sha256 },
+          uploadedBytes:       { integerValue: String(current.size) },
+          uploadedContentType: { stringValue: current.contentType },
+          r2Version:           { stringValue: current.version },
+        }
+        return {
+          writes: [{
+            document: docResourceName(projectId, docPath),
+            fields,
+            updateMask: Object.keys(fields),
+            currentDocument: { exists: true },
+            updateTransforms: [
+              { fieldPath: 'uploadedAt', setToServerValue: 'REQUEST_TIME' },
+            ],
+          }],
+          result: { kind: 'finalized', path: contract.path },
+        }
+      })
+    } catch (error) {
+      if (isAuthorizationStateError(error)) await deleteRejectedObject(bucket, prepared.path)
+      throw error
+    }
+
+    if (finalized.kind === 'rejected') return throwRejectedUpload(finalized, bucket)
+    if (finalized.kind === 'upload') {
+      throw new CascadeError(500, 'unexpected nested upload reservation during finalize')
+    }
+    return {
+      path: prepared.path,
+      replayed: prepared.replayed || created === null || finalized.kind === 'skip',
+    }
+  })
+}
+
+/** Read an intent doc inside a tx, validate all consume-time preconditions,
+ *  and verify the corresponding R2 object exists.
  *  Returns the consumed intent + the tx write to mark it used; caller
  *  must include the write in their TxResult.writes.
  *
  *  Validation order is deliberate -- cheaper local checks before the
  *  remote Storage roundtrip:
- *    intent exists → status=pending → uid match → not expired →
+ *    intent exists → status=uploaded → uid match → not expired →
  *    storage object exists → entity scope matches (caller-supplied)
  *
  *  `expected` lets callers reject intents that belong to a different
@@ -459,9 +726,8 @@ async function consumeIntentInTx(
   tx:           TxContext,
   intentId:     string,
   callerUid:    string,
-  accessToken:  string,
   projectId:    string,
-  bucket:       string,
+  bucket:       R2Bucket,
   /** Trip-scoped lookup: intents live under
    *  `trips/{lookupTripId}/uploadIntents/{intentId}`. Caller MUST
    *  supply the tripId it expects the intent to belong to -- this
@@ -482,8 +748,8 @@ async function consumeIntentInTx(
   if (!intent.exists) throw new CascadeError(404, `intent ${intentId} not found`)
 
   const status = readString(intent.fields, 'status')
-  if (status !== 'pending') {
-    throw new CascadeError(409, `intent ${intentId} status=${status ?? 'unknown'} (must be pending)`)
+  if (status !== 'uploaded') {
+    throw new CascadeError(409, `intent ${intentId} status=${status ?? 'unknown'} (must be uploaded)`)
   }
 
   const uid = readString(intent.fields, 'uid')
@@ -507,21 +773,15 @@ async function consumeIntentInTx(
   if (expected?.entityId   && expected.entityId   !== entityId)   throw new CascadeError(400, `intent ${intentId} entityId mismatch`)
   if (expected?.kind       && expected.kind       !== kind)       throw new CascadeError(400, `intent ${intentId} kind mismatch (expected ${expected.kind}, got ${kind})`)
 
-  // Extract the intent's binding fields -- the contract the Storage
-  // upload MUST match. Worker-minted at /upload-intents time; read
-  // here as the AUTHORITATIVE intent-bound check. storage.rules is
-  // a STABLE GATE only (claimed-metadata self-consistency, role,
-  // membership, tripNotDeleting); it does NOT read this intent doc
-  // because cross-service reads on freshly-written docs race (see
-  // the 2026-05-24 prod 403 incident note in storage.rules). The
-  // bypass cases this catches -- non-Firebase-SDK direct GCS upload,
-  // manual customMetadata tamper, contentType drift between intent
-  // request and upload -- all land here and get rejected before the
-  // intent transitions to 'used' or the entity doc is patched.
+  // Extract the Worker-minted binding fields. Consume verifies the R2 object
+  // again so a stale/replayed request cannot attach bytes from another intent.
   const intentMetadataFields = (intent.fields.customMetadata as { mapValue?: { fields?: Record<string, FsValue> } } | undefined)?.mapValue?.fields
   const intentAllowedCtValues = (intent.fields.allowedContentTypes as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values
   const intentMaxBytesRaw = (intent.fields.maxBytes as { integerValue?: string | number } | undefined)?.integerValue
-  if (!intentMetadataFields || !intentAllowedCtValues || intentMaxBytesRaw === undefined) {
+  const uploadedBytesRaw = (intent.fields.uploadedBytes as { integerValue?: string | number } | undefined)?.integerValue
+  const uploadedContentType = readString(intent.fields, 'uploadedContentType')
+  const uploadedDigest = readString(intent.fields, 'sha256')
+  if (!intentMetadataFields || !intentAllowedCtValues || intentMaxBytesRaw === undefined || uploadedBytesRaw === undefined || !uploadedContentType || !uploadedDigest) {
     throw new CascadeError(500, `intent ${intentId} missing required binding fields (allowedContentTypes / maxBytes / customMetadata)`)
   }
   const intentMaxBytes = Number(intentMaxBytesRaw)
@@ -529,15 +789,15 @@ async function consumeIntentInTx(
     .map(v => v.stringValue)
     .filter((s): s is string => typeof s === 'string')
 
-  // Storage object existence + metadata. Done inside the tx body so a
+  // R2 object existence + metadata. Done inside the tx body so a
   // concurrent consume / cron-cleanup race shows up as ABORTED commit
   // (the intent doc would change). The fetch itself doesn't participate
-  // in Firestore tx, but the intent.status='pending' read above + the
+  // in Firestore tx, but the intent.status='uploaded' read above + the
   // commit-time write below pin the moment of consumption.
-  const storage = await getObjectMetadata(accessToken, bucket, path)
+  const storage = await headR2Object(bucket, path)
   if (!storage) throw new CascadeError(404, `storage object missing at ${path} (upload not yet committed?)`)
 
-  // Storage object MUST match the intent's contract. Three classes
+  // R2 object MUST match the intent's contract. Three classes
   // of check, ordered cheapest first:
   //   1. contentType -- intent allowedContentTypes is single-element
   //      (locked to the requested CT), so this is exact-match.
@@ -547,15 +807,8 @@ async function consumeIntentInTx(
   //      kind, schemaVersion) must be present on the object with the
   //      exact same value. Missing OR mismatched both fail.
   //
-  // Why all three at the Worker: storage.rules is a STABLE GATE
-  // only -- it accepts any image-CT for kind='full'/'thumb', any
-  // claimed tripId/entityType/entityId that matches the URL params,
-  // and any uploadIntentId of the right shape. It does NOT read
-  // this intent doc, so it cannot enforce the exact-CT lock, the
-  // intent's maxBytes (it has a static 5MB cap instead), or the
-  // intent-vs-upload customMetadata equality. This block is the
-  // ONLY layer where the intent-bound contract is verified -- the
-  // consume-time chokepoint.
+  // The Worker is the sole R2 trust boundary; these checks are the
+  // consume-time chokepoint before an entity may reference the object.
   if (!intentAllowedCts.includes(storage.contentType)) {
     throw new CascadeError(400,
       `storage contentType '${storage.contentType}' does not match intent allowedContentTypes [${intentAllowedCts.join(', ')}]`)
@@ -563,6 +816,12 @@ async function consumeIntentInTx(
   if (storage.size > intentMaxBytes) {
     throw new CascadeError(413,
       `storage object size ${storage.size} exceeds intent maxBytes ${intentMaxBytes}`)
+  }
+  if (storage.size !== Number(uploadedBytesRaw) || storage.contentType !== uploadedContentType) {
+    throw new CascadeError(409, `R2 object no longer matches uploaded intent ${intentId}`)
+  }
+  if (storage.customMetadata.sha256 !== uploadedDigest) {
+    throw new CascadeError(409, `R2 object digest mismatch for intent ${intentId}`)
   }
   const expectedKeys = ['uploadIntentId', 'uploaderUid', 'tripId', 'entityType', 'entityId', 'kind', 'schemaVersion'] as const
   for (const key of expectedKeys) {
@@ -582,18 +841,8 @@ async function consumeIntentInTx(
   }
 
   if (kind === 'pdf') {
-    await validatePdfPageLimitOrDelete(accessToken, bucket, path, storage, pdfValidationCache)
+    await validatePdfPageLimitOrDelete(bucket, path, storage, pdfValidationCache)
   }
-
-  // path-only hardening: strip the Firebase download token from the
-  // uploaded object's customMetadata so NO bearer `?alt=media&token=` URL
-  // can ever be constructed. The client reads bytes via getBlob() gated by
-  // Storage Rules instead. This runs AFTER the contract checks above and
-  // BEFORE the entity doc write (the markUsedWrite + doc write commit later
-  // in the caller's tx), so it is fail-closed: if the strip can't be made
-  // to stick, we delete the just-uploaded blob and abort the whole write —
-  // we never persist a doc that references a token-bearing object.
-  await stripDownloadTokenOrFail(accessToken, bucket, path)
 
   // updateMask MUST contain only fields actually present in
   // `fields` -- listing 'usedAt' there would be Firestore's
@@ -628,93 +877,53 @@ async function consumeIntentInTx(
 }
 
 async function validatePdfPageLimitOrDelete(
-  accessToken: string,
-  bucket:      string,
+  bucket:      R2Bucket,
   path:        string,
-  storage:     ObjectMetadata,
+  storage:     R2StoredObject,
   cache?:      PdfValidationCache,
 ): Promise<void> {
   const cacheKey = pdfValidationCacheKey(path, storage)
   if (cacheKey && cache?.has(cacheKey)) return
 
-  const object = await downloadObject(accessToken, bucket, path)
+  const object = await getR2Object(bucket, path)
   if (!object) throw new CascadeError(404, `storage object missing at ${path} during PDF page validation`)
-  if (object.contentType !== 'application/pdf') {
-    await deleteRejectedObject(accessToken, bucket, path)
-    throw new CascadeError(400, `downloaded PDF contentType mismatch: ${object.contentType}`)
+  const contentType = object.httpMetadata?.contentType ?? 'application/octet-stream'
+  if (contentType !== 'application/pdf') {
+    await deleteRejectedObject(bucket, path)
+    throw new CascadeError(400, `downloaded PDF contentType mismatch: ${contentType}`)
   }
-  if (object.bytes.byteLength > storage.size || object.bytes.byteLength > MAX_BYTES) {
-    await deleteRejectedObject(accessToken, bucket, path)
-    throw new CascadeError(413, `downloaded PDF size ${object.bytes.byteLength} exceeds validated metadata size ${storage.size}`)
+  if (object.size > MAX_BYTES) {
+    await deleteRejectedObject(bucket, path)
+    throw new CascadeError(413, `downloaded PDF size ${object.size} exceeds limit ${MAX_BYTES}`)
+  }
+  const bytes = await object.arrayBuffer()
+  if (bytes.byteLength !== storage.size || bytes.byteLength > MAX_BYTES) {
+    await deleteRejectedObject(bucket, path)
+    throw new CascadeError(413, `downloaded PDF size ${bytes.byteLength} differs from validated metadata size ${storage.size}`)
   }
 
   try {
-    await assertPdfPageLimitBytes(object.bytes)
+    await assertPdfPageLimitBytes(bytes)
     if (cacheKey) cache?.add(cacheKey)
   } catch (e) {
     if (e instanceof PdfPageLimitError) {
-      await deleteRejectedObject(accessToken, bucket, path)
+      await deleteRejectedObject(bucket, path)
     }
     throw e
   }
 }
 
-function pdfValidationCacheKey(path: string, storage: ObjectMetadata): string | null {
-  return storage.generation ? `${path}@${storage.generation}` : null
+function pdfValidationCacheKey(path: string, storage: R2StoredObject): string | null {
+  return storage.version ? `${path}@${storage.version}` : null
 }
 
 async function deleteRejectedObject(
-  accessToken: string,
-  bucket:      string,
+  bucket:      R2Bucket,
   path:        string,
 ): Promise<void> {
   try {
-    await deleteObject(accessToken, bucket, path)
+    await deleteR2Object(bucket, path)
   } catch { /* best-effort; orphan storage-scan backstops */ }
-}
-
-/** Strip `firebaseStorageDownloadTokens` from an uploaded object, fail-
- *  closed. Bounded retry (3 attempts, short backoff) absorbs transient
- *  GCS blips; on persistent failure we best-effort delete the blob (so no
- *  token-bearing orphan lingers between now and the cron scrubber) and
- *  throw AttachmentHardeningError. Idempotent: a tx retry that re-reaches
- *  here re-PATCHes an already-tokenless object (200 no-op) or hits a 404
- *  (object gone → treated as success). */
-async function stripDownloadTokenOrFail(
-  accessToken: string,
-  bucket:      string,
-  path:        string,
-): Promise<void> {
-  const ATTEMPTS = 3
-  let lastErr: unknown
-  for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
-    try {
-      const stripped = await updateObjectMetadata(accessToken, bucket, path, {
-        firebaseStorageDownloadTokens: null,
-      })
-      if (stripped) return
-      // false === 404: the object vanished between the existence check and
-      // this PATCH. TERMINAL -- committing the doc would point at a missing
-      // blob. Don't retry (it won't reappear) and don't delete (already gone).
-      throw new AttachmentHardeningError(`object missing at ${path} during token strip`)
-    } catch (e) {
-      if (e instanceof AttachmentHardeningError) throw e   // 404 → terminal, no retry/delete
-      lastErr = e
-      if (attempt < ATTEMPTS - 1) {
-        // 60ms, 180ms backoff -- well within the tx wall-clock budget.
-        await new Promise(r => setTimeout(r, 60 * (attempt + 1) ** 2))
-      }
-    }
-  }
-  // Persistent failure: remove the token-bearing blob so it can't be read
-  // via a self-minted bearer URL while waiting for the cron scrubber.
-  // Delete is best-effort -- if it also fails the scrubber is the backstop.
-  try {
-    await deleteObject(accessToken, bucket, path)
-  } catch { /* best-effort; cron scrubber backstops */ }
-  throw new AttachmentHardeningError(
-    `failed to strip download token at ${path}: ${(lastErr as Error)?.message ?? 'unknown'}`,
-  )
 }
 
 /** Public consume helper for Worker-side entity write paths
@@ -733,9 +942,8 @@ export async function consumeEntityIntents(
   tx:           TxContext,
   intentIds:    string[],
   callerUid:    string,
-  accessToken:  string,
   projectId:    string,
-  bucket:       string,
+  bucket:       R2Bucket,
   expected: {
     tripId:     string
     entityType: EntityType
@@ -753,7 +961,7 @@ export async function consumeEntityIntents(
   const markUsedWrites:  TxWrite[]        = []
   for (const intentId of intentIds) {
     const r = await consumeIntentInTx(
-      tx, intentId, callerUid, accessToken, projectId, bucket,
+      tx, intentId, callerUid, projectId, bucket,
       expected.tripId,
       { tripId: expected.tripId, entityType: expected.entityType, entityId: expected.entityId },
       pdfValidationCache,
@@ -785,7 +993,7 @@ export function buildAttachmentMapValue(
   if (entityType === 'booking') {
     // BookingAttachment (path-only): filePath + fileType required;
     // thumbPath optional (PDFs ship without thumbs). No url/thumbUrl --
-    // reads go through getBlob(filePath/thumbPath) gated by Storage Rules.
+    // reads go through the authenticated Worker proxy.
     const fields: Record<string, FsValue> = {
       filePath: { stringValue: primary.path },
       fileType: { stringValue: primary.storage.contentType },
@@ -801,7 +1009,7 @@ export function buildAttachmentMapValue(
   // failure -- see src/utils/image.ts PASSTHROUGH_TYPES): that would pull a
   // full-size blob into the client thumbnail LRU. The card shows its
   // gradient placeholder for those edge cases instead. No url/thumbUrl --
-  // reads go through getBlob() gated by Storage Rules.
+  // reads go through the authenticated Worker proxy.
   const fields: Record<string, FsValue> = {
     path: { stringValue: primary.path },
   }

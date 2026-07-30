@@ -27,21 +27,6 @@ vi.mock('../src/admin', () => ({
 	invalidateAdminToken: vi.fn(),
 }))
 
-// `getObjectMetadata` mocked at module boundary -- entity-write
-// intent consumption calls it to verify the Storage object exists
-// and to read the Firebase download token from customMetadata.
-vi.mock('../src/storage', () => ({
-	getObjectMetadata:      vi.fn(),
-	downloadObject:         vi.fn(),
-	updateObjectMetadata:   vi.fn(),
-	deleteObject:           vi.fn(),
-	downloadUrlFromMetadata: (bucket: string, path: string, meta?: Record<string, string>) => {
-		const token = meta?.firebaseStorageDownloadTokens?.split(',')[0]?.trim()
-		if (!token) return null
-		return `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(path)}?alt=media&token=${token}`
-	},
-}))
-
 const txGetResponses = new Map<string, { exists: boolean; fields: Record<string, unknown>; name: string; updateTime: string | null }>()
 let capturedTxResult: { writes: unknown[]; result: unknown } | null = null
 let txGetSpy: ReturnType<typeof vi.fn> | null = null
@@ -71,7 +56,6 @@ vi.mock('../src/cascade', async () => {
 })
 
 import { createUploadIntents, type UploadIntentsRequest } from '../src/upload-intent'
-import * as storage from '../src/storage'
 import { CascadeError } from '../src/cascade'
 
 const TRIP_ID    = 'trip-1'
@@ -92,12 +76,15 @@ function tripDoc(opts: { deletingAt?: boolean } = {}) {
 	}
 }
 
-function memberDoc(role: 'owner' | 'editor' | 'viewer', uid = CALLER_UID) {
+function memberDoc(role: 'owner' | 'editor' | 'viewer', uid = CALLER_UID, removing = false) {
 	return {
 		exists: true,
 		name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/members/${uid}`,
 		updateTime: '2026-05-23T00:00:00Z',
-		fields: { role: { stringValue: role } },
+		fields: {
+			role: { stringValue: role },
+			...(removing ? { removingAt: { timestampValue: '2026-05-23T00:00:00Z' } } : {}),
+		},
 	}
 }
 
@@ -238,6 +225,14 @@ describe('authorization (expense/booking: editor+; wish: proposer)', () => {
 		await expect(
 			createUploadIntents(CALLER_UID, imageFullReq(), SERVICE_ACCOUNT_JSON),
 		).rejects.toMatchObject({ status: 403, message: expect.stringMatching(/owner\/editor/) })
+	})
+
+	it('member removingAt set → 403 before minting an intent', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberDoc('editor', CALLER_UID, true))
+		await expect(
+			createUploadIntents(CALLER_UID, imageFullReq(), SERVICE_ACCOUNT_JSON),
+		).rejects.toMatchObject({ status: 403, message: expect.stringMatching(/removed/) })
 	})
 
 	it('booking: viewer role → 403', async () => {
@@ -423,7 +418,7 @@ describe('intent doc + response shape', () => {
 		// declared will fail at the Worker entity-write endpoints
 		// when consumeIntentInTx checks the uploaded object's contentType
 		// against intent.allowedContentTypes -- the single-element array
-		// makes that an exact-match. storage.rules can't enforce this
+		// makes that an exact-match. The R2 binding cannot enforce this
 		// because it doesn't read the intent doc (STABLE GATE only).
 		seedAuthorizedExpense()
 		await createUploadIntents(CALLER_UID, imageFullReq(), SERVICE_ACCOUNT_JSON)
@@ -431,6 +426,7 @@ describe('intent doc + response shape', () => {
 		const writes = capturedTxResult!.writes as Array<{ fields: Record<string, unknown> }>
 		expect(writes).toHaveLength(1)
 		const intentFields = writes[0]!.fields
+		expect((intentFields.mode as { stringValue: string }).stringValue).toBe('update')
 		const allowed = intentFields.allowedContentTypes as { arrayValue: { values: Array<{ stringValue: string }> } }
 		expect(allowed.arrayValue.values).toHaveLength(1)
 		expect(allowed.arrayValue.values[0]!.stringValue).toBe('image/webp')

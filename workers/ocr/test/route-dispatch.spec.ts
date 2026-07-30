@@ -127,6 +127,7 @@ describe('handleJsonRoute — tx failure → status mapping', () => {
 		expect(res.status).toBe(409)
 		const body = await res.json() as { error: string; code: string }
 		expect(body.code).toBe('TX_RETRY_EXHAUSTED')
+		expect(body.error).toBe('伺服器忙碌，請稍後再試')
 	})
 
 	it('lets TxCommitAmbiguous fall through to 500 (ambiguous; client keeps optimistic)', async () => {

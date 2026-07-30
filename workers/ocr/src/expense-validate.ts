@@ -83,7 +83,7 @@ export function makeReceiptSchema(tripId: string, expenseId: string) {
   const pathRe = new RegExp(`^trips/${tripId}/expenses/${expenseId}/.+`)
   return z.object({
     // path-only: only path / thumbPath are persisted (thumbPath optional =
-    // no thumb variant). Reads go through getBlob(path); no bearer URL.
+    // no thumb variant). Reads go through the Worker proxy; no bearer URL.
     path:      z.string().min(1).max(500).regex(pathRe, 'receipt.path must match trips/<tripId>/expenses/<expenseId>/...'),
     type:      z.enum(RECEIPT_MIME),
     thumbPath: z.string().min(1).max(500).regex(pathRe, 'receipt.thumbPath must match trips/<tripId>/expenses/<expenseId>/...').optional(),

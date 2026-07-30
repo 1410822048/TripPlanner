@@ -44,7 +44,7 @@ import {
   stripDocPrefix,
   type FsValue,
 }                                            from './firestore'
-import { deleteObject }                      from './storage'
+import { deleteR2Object }                     from './r2-storage'
 import { getAdminToken, getProjectId }       from './admin'
 
 /** Don't process queue entries newer than this -- gives in-process
@@ -63,6 +63,8 @@ const SOFT_DEADLINE_MS = 14 * 60 * 1000
 
 export interface OrphanPurgeReport {
   scanned:         number
+  /** Successful idempotent cleanup operations. R2 delete does not
+   * distinguish an existing object from an already-absent key. */
   blobsDeleted:    number
   falseOrphans:    number
   giveUps:         number
@@ -240,7 +242,7 @@ function parsePurgeEntry(
  */
 export async function drainOrphanPurges(
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
 ): Promise<OrphanPurgeReport> {
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
@@ -339,7 +341,7 @@ export async function drainOrphanPurges(
 async function processPurgeEntry(
   accessToken:    string,
   projectId:      string,
-  bucket:         string,
+  bucket:         R2Bucket,
   purgeDocName:   string,                              // full resource name from runQuery
   purgeFields:    Record<string, FsValue>,             // inline from runQuery, no extra read
   ageCutoffMs:    number,
@@ -408,9 +410,8 @@ async function processPurgeEntry(
   }
 
   // Step 3: confirmed orphan -- delete the blob.
-  let deleted: boolean
   try {
-    deleted = await deleteObject(accessToken, bucket, parsed.path)
+    await deleteR2Object(bucket, parsed.path)
   } catch (e) {
     // Storage delete failed (5xx, network). Bump attempts and let
     // tomorrow's cron retry.
@@ -434,9 +435,9 @@ async function processPurgeEntry(
     return
   }
 
-  if (deleted) report.blobsDeleted += 1
-  // Either we deleted the blob (success) OR storage returned 404
-  // (already gone). Both cases: drop the queue entry.
+  report.blobsDeleted += 1
+  // Existing and already-absent keys are both successful idempotent
+  // cleanup outcomes. In either case, drop the queue entry.
   await tryDeletePurgeDoc(accessToken, projectId, purgeDocName)
 }
 

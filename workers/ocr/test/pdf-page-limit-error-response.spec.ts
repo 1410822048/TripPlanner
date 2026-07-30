@@ -44,7 +44,6 @@ async function dispatchBookingFileCreate(body: unknown): Promise<Response> {
 		traceId: undefined,
 		env: {
 			FIREBASE_SERVICE_ACCOUNT: '{}',
-			FIREBASE_STORAGE_BUCKET:  'bucket',
 		},
 	} as never)
 }

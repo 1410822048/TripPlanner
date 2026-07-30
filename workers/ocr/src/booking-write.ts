@@ -380,9 +380,8 @@ async function consumeBookingAttachmentGroups(
   tx:          TxContext,
   groups:      Partial<Record<BookingAttachmentRole, string[]>>,
   callerUid:   string,
-  accessToken: string,
   projectId:   string,
-  bucket:      string,
+  bucket:      R2Bucket,
   scope:       { tripId: string; bookingId: string },
   pdfValidationCache: PdfValidationCache,
 ): Promise<{
@@ -396,7 +395,7 @@ async function consumeBookingAttachmentGroups(
     const intentIds = groups[role]
     if (!intentIds) continue
     const { consumed, markUsedWrites } = await consumeEntityIntents(
-      tx, intentIds, callerUid, accessToken, projectId, bucket,
+      tx, intentIds, callerUid, projectId, bucket,
       { tripId: scope.tripId, entityType: 'booking', entityId: scope.bookingId },
       pdfValidationCache,
     )
@@ -484,7 +483,7 @@ export async function bookingFileCreate(
   callerUid:          string,
   req:                BookingFileCreateRequest,
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
 ): Promise<{ bookingId: string }> {
   return withTokenRetry(() => doCreate(callerUid, req, serviceAccountJson, bucket))
 }
@@ -493,7 +492,7 @@ async function doCreate(
   callerUid:          string,
   req:                BookingFileCreateRequest,
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
 ): Promise<{ bookingId: string }> {
   // Parse the booking body BEFORE entering the tx -- Zod parse is
   // local, no value in burning a tx retry on a malformed body.
@@ -508,7 +507,7 @@ async function doCreate(
 
     const attachmentGroups = requestAttachmentGroups(req)
     const { fields: attachmentFields, markUsedWrites } = await consumeBookingAttachmentGroups(
-      tx, attachmentGroups, callerUid, accessToken, projectId, bucket,
+      tx, attachmentGroups, callerUid, projectId, bucket,
       { tripId: req.tripId, bookingId: req.bookingId },
       pdfValidationCache,
     )
@@ -661,7 +660,7 @@ export async function bookingFileUpdate(
   callerUid:          string,
   req:                BookingFileUpdateRequest,
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
 ): Promise<{ ok: true }> {
   return withTokenRetry(() => doUpdate(callerUid, req, serviceAccountJson, bucket))
 }
@@ -670,7 +669,7 @@ async function doUpdate(
   callerUid:          string,
   req:                BookingFileUpdateRequest,
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
 ): Promise<{ ok: true }> {
   // Parse the patch body BEFORE entering the tx -- pure-local check,
   // no value in burning a tx retry on a malformed patch.
@@ -688,7 +687,7 @@ async function doUpdate(
     )
 
     const { fields: attachmentFields, markUsedWrites } = await consumeBookingAttachmentGroups(
-      tx, attachmentGroups, callerUid, accessToken, projectId, bucket,
+      tx, attachmentGroups, callerUid, projectId, bucket,
       { tripId: req.tripId, bookingId: req.bookingId },
       pdfValidationCache,
     )

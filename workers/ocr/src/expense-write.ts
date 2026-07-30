@@ -253,7 +253,7 @@ export async function expenseCreate(
   callerUid:          string,
   req:                ExpenseCreateRequest,
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
 ): Promise<{ expenseId: string }> {
   return withTokenRetry(() => doCreate(callerUid, req, serviceAccountJson, bucket))
 }
@@ -262,7 +262,7 @@ async function doCreate(
   callerUid:          string,
   req:                ExpenseCreateRequest,
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
 ): Promise<{ expenseId: string }> {
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
@@ -295,7 +295,7 @@ async function doCreate(
     const intentMarkUsedWrites: TxWrite[] = []
     if (req.intentIds && req.intentIds.length > 0) {
       const { consumed, markUsedWrites } = await consumeEntityIntents(
-        tx, req.intentIds, callerUid, accessToken, projectId, bucket,
+        tx, req.intentIds, callerUid, projectId, bucket,
         { tripId: req.tripId, entityType: 'expense', entityId: req.expenseId },
         pdfValidationCache,
       )
@@ -434,7 +434,7 @@ export async function expenseUpdate(
   callerUid:          string,
   req:                ExpenseUpdateRequest,
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
 ): Promise<{ ok: true }> {
   return withTokenRetry(() => doUpdate(callerUid, req, serviceAccountJson, bucket))
 }
@@ -443,7 +443,7 @@ async function doUpdate(
   callerUid:          string,
   req:                ExpenseUpdateRequest,
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
 ): Promise<{ ok: true }> {
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
@@ -514,7 +514,7 @@ async function doUpdate(
     const intentMarkUsedWrites: TxWrite[] = []
     if (req.intentIds && req.intentIds.length > 0) {
       const { consumed, markUsedWrites } = await consumeEntityIntents(
-        tx, req.intentIds, callerUid, accessToken, projectId, bucket,
+        tx, req.intentIds, callerUid, projectId, bucket,
         { tripId: req.tripId, entityType: 'expense', entityId: req.expenseId },
         pdfValidationCache,
       )

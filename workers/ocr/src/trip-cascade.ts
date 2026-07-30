@@ -15,19 +15,15 @@
 //     invariant. The Worker also drains those subcollections during
 //     a cascade, but it isn't the only path that can delete a
 //     schedule / booking / etc.
-//   - Storage cleanup runs with admin GCS scope, so we don't need
-//     storage.rules to grant the caller perm to delete every nested
-//     object — the rule can stay tight ("members only, no bulk").
+//   - Attachment cleanup uses the private R2 binding after ownership check;
+//     clients never receive bucket credentials or bulk-delete authority.
 //
 // Cascade order (matches the contract documented in the design):
 //   1.   Verify ownership — GET trip doc, compare ownerId == callerUid
 //   1.5. Stamp deletingAt — write-quiesce flag. firestore.rules
-//        `tripNotDeleting(tripId)` AND'd into every subcollection
-//        CREATE; storage.rules mirrors the same check via
-//        cross-service firestore.get(). Blocks in-flight editors
-//        on other devices from racing new docs / uploads into the
-//        cascade window.
-//   2.   Storage purge (sweep #1) — recursive delete of trips/{tripId}/*
+//        `tripNotDeleting(tripId)` AND'd into every subcollection CREATE and
+//        checked while minting upload intents. Blocks new docs/uploads.
+//   2.   R2 purge (sweep #1) — recursive delete of trips/{tripId}/*
 //   3.   Subcollections  — schedules / expenses / wishes / bookings /
 //                          planning / settlements / routeApplications /
 //                          invites / members
@@ -36,12 +32,8 @@
 //                          token bypasses rules anyway — order is
 //                          defensive in case we ever fall back to a
 //                          rules-respecting path)
-//   3.5. Storage purge (sweep #2) — final defence-in-depth pass that
-//        catches uploads whose storage.rules eval read the trip doc
-//        BEFORE the stamp at step 1.5 but whose actual write
-//        completes AFTER. Must run before trip-doc delete so
-//        cross-service tripNotDeleting can still resolve (post-
-//        delete the get() throws and we'd lose the admin path).
+//   3.5. R2 purge (sweep #2) — catches an already-issued upload intent whose
+//        byte stream completes after sweep #1.
 //   4.   Trip doc        — DELETE the root doc
 //
 // Core delete ops are idempotent (404 on a re-run = success). On any
@@ -62,7 +54,7 @@ import {
   updateDocFields,
   type FsValue,
 }                                                                   from './firestore'
-import { purgeObjectsByPrefix }                                     from './storage'
+import { purgeR2Prefix }                                            from './r2-storage'
 import { CascadeError, withTokenRetry }                             from './cascade'
 import { mapWithConcurrency }                                       from './concurrency'
 
@@ -97,7 +89,7 @@ export interface CascadeTripResult {
    *  trip doc itself. Used by the client to surface a friendly
    *  «delete X items» toast. */
   deletedDocs:    number
-  /** Storage objects deleted under `trips/{tripId}/*`. */
+  /** R2 objects deleted under `trips/{tripId}/*`. */
   deletedObjects: number
 }
 
@@ -107,7 +99,7 @@ export async function cascadeTripDelete(
   callerUid:          string,
   req:                TripDeleteRequest,
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
 ): Promise<CascadeTripResult> {
   return withTokenRetry(() => runCascade(callerUid, req, serviceAccountJson, bucket))
 }
@@ -116,7 +108,7 @@ async function runCascade(
   callerUid:          string,
   req:                TripDeleteRequest,
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
 ): Promise<CascadeTripResult> {
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
@@ -174,22 +166,22 @@ async function runCascade(
     handleStepError('write-quiesce stamp', e)
   }
 
-  // ── 2. Storage purge ─────────────────────────────────────────
-  // Run before Firestore so a Storage failure leaves the trip doc
+  // ── 2. R2 purge ──────────────────────────────────────────────
+  // Run before Firestore so an R2 failure leaves the trip doc
   // intact → owner sees the trip, retries, and we converge. If we
-  // wiped Firestore first and Storage failed, the user would see a
-  // ghost trip-less directory in GCS with no UI to clean it up.
+  // wiped Firestore first and R2 failed, the user would see a
+  // ghost trip-less prefix with no UI to clean it up.
   //
-  // TRAILING SLASH IS LOAD-BEARING. GCS `prefix=trips/abc` matches
+  // TRAILING SLASH IS LOAD-BEARING. R2 `prefix=trips/abc` matches
   // BOTH `trips/abc/...` and `trips/abc2/...` (string starts-with,
   // no folder semantics). Without the slash, deleting trip "abc"
   // would also purge attachments of trip "abc2" / "abcdef" / etc.
   // The "/" pins the prefix to a single-trip boundary.
   let deletedObjects = 0
   try {
-    deletedObjects = await purgeObjectsByPrefix(accessToken, bucket, `trips/${req.tripId}/`)
+    deletedObjects = await purgeR2Prefix(bucket, `trips/${req.tripId}/`)
   } catch (e) {
-    handleStepError('storage purge', e)
+    handleStepError('R2 purge', e)
   }
 
   // ── 3. Subcollections ─────────────────────────────────────────
@@ -213,22 +205,17 @@ async function runCascade(
     }
   }
 
-  // ── 3.5. Final Storage sweep ─────────────────────────────────
-  // Defence-in-depth against the upload-race window: storage.rules
-  // checks `tripNotDeleting` cross-service, but rules eval against
-  // Firestore is not strictly transactional with the cascade itself.
-  // An upload that started just before step 1.5 stamped deletingAt
-  // can still complete (its rule eval read the trip doc BEFORE the
-  // stamp landed). A second sweep here catches those stragglers
-  // BEFORE we delete the trip root -- after which storage.rules
-  // tripNotDeleting would 500 (parent doc missing) and we'd lose
-  // the ability to admin-purge cleanly.
+  // ── 3.5. Final R2 sweep ──────────────────────────────────────
+  // Best-effort crash backstop for an upload that reserved its digest before
+  // deletingAt and wrote R2 after sweep #1. Normal requests re-authorize in
+  // the upload finalize transaction and compensate-delete on rejection; this
+  // sweep is not the authorization invariant and cannot cover a Worker crash
+  // that lands an R2 put after both sweeps. Daily storage-scan handles that
+  // residual orphan case.
   try {
-    deletedObjects += await purgeObjectsByPrefix(
-      accessToken, bucket, `trips/${req.tripId}/`,
-    )
+    deletedObjects += await purgeR2Prefix(bucket, `trips/${req.tripId}/`)
   } catch (e) {
-    handleStepError('final storage sweep', e)
+    handleStepError('final R2 sweep', e)
   }
 
   // ── 4. Trip doc itself ────────────────────────────────────────

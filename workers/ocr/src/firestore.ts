@@ -706,24 +706,26 @@ export async function stampWishDeadlineNotifiedIfUnchanged(
 /**
  * Page through uploadIntents that match `status` AND `field < beforeMs`.
  *
- * Used by `purgeExpiredUploadIntents` cron for two passes:
+ * Used by `purgeExpiredUploadIntents` cron for three passes:
  *   1. expired pending intents (status='pending', expiresAt < cutoff)
- *   2. stale used intents (status='used', usedAt < retention cutoff)
+ *   2. expired uploaded intents (status='uploaded', expiresAt < cutoff)
+ *   3. stale used intents (status='used', usedAt < retention cutoff)
  *
  * Each pass needs its own composite index, declared in
  * firestore.indexes.json:
  *   - uploadIntents (status ASC, expiresAt ASC)
  *   - uploadIntents (status ASC, usedAt ASC)
  *
- * Cursor uses (field, __name__) -- matching the orderBy. Mirrors
+ * Pending/uploaded share the same status+expiresAt index; equality values do
+ * not require separate indexes. Cursor uses (field, __name__) -- matching the orderBy. Mirrors
  * `queryOrphanPurgeCandidates` + `queryReceiptPurgeCandidates`
- * structurally; one parameterized helper for the two passes keeps
+ * structurally; one parameterized helper for all three passes keeps
  * the structuredQuery shape in one place.
  */
 export async function queryUploadIntents(
   accessToken:              string,
   projectId:                string,
-  status:                   'pending' | 'used',
+  status:                   'pending' | 'uploaded' | 'used',
   field:                    'expiresAt' | 'usedAt',
   beforeMs:                 number,
   pageSize:                 number,

@@ -25,7 +25,7 @@ import {
   stripDocPrefix,
   type FsValue,
 }                                            from './firestore'
-import { deleteObject }                      from './storage'
+import { deleteR2Object }                     from './r2-storage'
 import { getAdminToken, getProjectId }       from './admin'
 
 /** How long after soft-delete we keep receipts. Constant lives here so
@@ -47,6 +47,8 @@ const SOFT_DEADLINE_MS = 14 * 60 * 1000
 
 export interface PurgeReport {
   scanned:         number
+  /** Successful idempotent cleanup operations. The key may already
+   * have been absent when R2 accepted the delete. */
   receiptsDeleted: number
   docsPatched:     number
   /** Whether the soft deadline fired (vs. natural end of scan). Lets
@@ -59,13 +61,11 @@ export interface PurgeReport {
  * patch docs to clear receipt URLs. Returns a summary report — the
  * cron handler logs it for observability.
  *
- * `bucket` is the Firebase Storage bucket name (e.g.
- * `tripplanner-80a4f.firebasestorage.app`); passed in so this module
- * stays env-agnostic and testable in isolation.
+ * The R2 binding is passed in so this module stays env-agnostic and testable.
  */
 export async function purgeExpiredReceipts(
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
 ): Promise<PurgeReport> {
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
@@ -107,14 +107,12 @@ export async function purgeExpiredReceipts(
       const receiptThumbPath = readNestedString(doc.fields, 'receipt', 'thumbPath')
 
       if (receiptPath) {
-        if (await deleteObject(accessToken, bucket, receiptPath)) {
-          report.receiptsDeleted += 1
-        }
+        await deleteR2Object(bucket, receiptPath)
+        report.receiptsDeleted += 1
       }
       if (receiptThumbPath) {
-        if (await deleteObject(accessToken, bucket, receiptThumbPath)) {
-          report.receiptsDeleted += 1
-        }
+        await deleteR2Object(bucket, receiptThumbPath)
+        report.receiptsDeleted += 1
       }
 
       // Two-step write because the operations have different schema

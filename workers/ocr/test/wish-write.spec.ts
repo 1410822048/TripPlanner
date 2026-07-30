@@ -4,7 +4,7 @@
 // `runFirestoreTransaction` boundary so the test seeds tx.get
 // responses per-test, capture the TxResult to assert on writes +
 // result shape. Storage object metadata is mocked at the
-// getObjectMetadata boundary for intent consumption.
+// headR2Object boundary for intent consumption.
 //
 // What this file pins down:
 //   - Worker-authoritative wish create with intentIds: caller must
@@ -27,12 +27,10 @@ vi.mock('../src/admin', () => ({
 	invalidateAdminToken: vi.fn(),
 }))
 
-vi.mock('../src/storage', () => ({
-	getObjectMetadata:    vi.fn(),
-	downloadObject:       vi.fn(),
-	// path-only: consume strips the download token fail-closed.
-	updateObjectMetadata: vi.fn(() => Promise.resolve(true)),
-	deleteObject:         vi.fn(() => Promise.resolve(true)),
+vi.mock('../src/r2-storage', () => ({
+	headR2Object:   vi.fn(),
+	getR2Object:    vi.fn(),
+	deleteR2Object: vi.fn(() => Promise.resolve()),
 }))
 
 const txGetResponses = new Map<string, MockReadDoc>()
@@ -56,13 +54,13 @@ vi.mock('../src/cascade', async () => {
 })
 
 import { wishFileCreate, wishFileUpdate, WishValidationError } from '../src/wish-write'
-import * as storage from '../src/storage'
+import * as storage from '../src/r2-storage'
 import { CascadeError } from '../src/cascade'
 
 const TRIP_ID    = 'trip-1'
 const WISH_ID    = 'wish-1'
 const CALLER_UID = 'viewer-uid'
-const BUCKET     = 'tripplanner-80a4f.firebasestorage.app'
+const BUCKET     = 'tripmate-attachments-test'
 const MEMBERS    = ['owner-uid', 'editor-uid', 'viewer-uid']
 
 const FULL_INTENT_ID  = 'i-full'
@@ -119,12 +117,12 @@ function intentDoc(opts: {
 	path:        string
 	entityType?: 'expense' | 'booking' | 'wish'
 	entityId?:   string
-	status?:     'pending' | 'used'
+	status?:     'pending' | 'uploaded' | 'used'
 	expiresAtMs?: number
 	contentType?: string
 }) {
 	const uid         = opts.uid         ?? CALLER_UID
-	const status      = opts.status      ?? 'pending'
+	const status      = opts.status      ?? 'uploaded'
 	const entityId    = opts.entityId    ?? WISH_ID
 	const entityType  = opts.entityType  ?? 'wish'
 	const expiresAt   = new Date(opts.expiresAtMs ?? Date.now() + 30 * 60_000).toISOString()
@@ -146,6 +144,9 @@ function intentDoc(opts: {
 				arrayValue: { values: [{ stringValue: contentType }] },
 			},
 			maxBytes: { integerValue: String(5 * 1024 * 1024) },
+			uploadedBytes:       { integerValue: '50000' },
+			uploadedContentType: { stringValue: contentType },
+			sha256:              { stringValue: 'a'.repeat(64) },
 			customMetadata: {
 				mapValue: {
 					fields: {
@@ -180,12 +181,13 @@ function storageMeta(opts: {
 		kind:           opts.kind,
 		schemaVersion:  'v1',
 	}
-	if (opts.token) customMetadata.firebaseStorageDownloadTokens = opts.token
+	customMetadata.sha256 = 'a'.repeat(64)
 	return {
-		name:        opts.path,
+		key:         opts.path,
 		size:        opts.size ?? 50_000,
+		version:     'v1',
+		uploaded:    new Date('2026-05-26T00:00:00Z'),
 		contentType: opts.contentType ?? 'image/webp',
-		timeCreated: '2026-05-26T00:00:00Z',
 		customMetadata,
 	}
 }
@@ -208,6 +210,9 @@ beforeEach(() => {
 	txGetResponses.clear()
 	capturedTxResult = null
 	vi.clearAllMocks()
+	vi.mocked(storage.headR2Object).mockReset()
+	vi.mocked(storage.getR2Object).mockReset()
+	vi.mocked(storage.deleteR2Object).mockReset()
 })
 
 // ─── Happy paths ───────────────────────────────────────────────────
@@ -220,7 +225,7 @@ describe('wishFileCreate: happy paths', () => {
 		seedAuth('viewer')
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 
@@ -287,7 +292,7 @@ describe('wishFileCreate: happy paths', () => {
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full',  path: FULL_PATH }))
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${THUMB_INTENT_ID}`,
 			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: THUMB_PATH }))
-		vi.mocked(storage.getObjectMetadata)
+		vi.mocked(storage.headR2Object)
 			.mockResolvedValueOnce(storageMeta({ path: FULL_PATH,  intentId: FULL_INTENT_ID,  kind: 'full',  token: 'tk-f' }))
 			.mockResolvedValueOnce(storageMeta({ path: THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb', token: 'tk-t' }))
 
@@ -330,7 +335,7 @@ describe('wishFileCreate: happy paths', () => {
 		seedAuth('viewer')
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 
@@ -415,7 +420,7 @@ describe('wishFileCreate: authorization', () => {
 		txGetResponses.set(`trips/${TRIP_ID}`, trip)
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 		const result = await wishFileCreate(
@@ -458,7 +463,7 @@ describe('wishFileCreate: state checks', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/wishes/${WISH_ID}`,     existingWishReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 		await expect(wishFileCreate(
@@ -476,7 +481,7 @@ describe('wishFileCreate: body validation', () => {
 		seedAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValue(
+		vi.mocked(storage.headR2Object).mockResolvedValue(
 			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 		await expect(wishFileCreate(
@@ -495,7 +500,7 @@ describe('wishFileCreate: body validation', () => {
 		seedAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValue(
+		vi.mocked(storage.headR2Object).mockResolvedValue(
 			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 		await expect(wishFileCreate(
@@ -535,7 +540,7 @@ describe('wishFileCreate: body validation', () => {
 		seedAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${THUMB_INTENT_ID}`,
 			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: THUMB_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValue(
+		vi.mocked(storage.headR2Object).mockResolvedValue(
 			storageMeta({ path: THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb', token: 'tk' }),
 		)
 		await expect(wishFileCreate(
@@ -635,7 +640,7 @@ describe('wishFileUpdate: happy paths', () => {
 			intentDoc({ intentId: FULL_INTENT_ID,  kind: 'full',  path: NEW_FULL_PATH }))
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${THUMB_INTENT_ID}`,
 			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: NEW_THUMB_PATH }))
-		vi.mocked(storage.getObjectMetadata)
+		vi.mocked(storage.headR2Object)
 			.mockResolvedValueOnce(storageMeta({ path: NEW_FULL_PATH,  intentId: FULL_INTENT_ID,  kind: 'full',  token: 'tk-f' }))
 			.mockResolvedValueOnce(storageMeta({ path: NEW_THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb', token: 'tk-t' }))
 
@@ -703,7 +708,7 @@ describe('wishFileUpdate: happy paths', () => {
 		seedUpdateAuth({ role: 'editor' })
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 
@@ -732,7 +737,7 @@ describe('wishFileUpdate: happy paths', () => {
 		seedUpdateAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 
@@ -912,7 +917,7 @@ describe('wishFileUpdate: intent scope binding', () => {
 		seedUpdateAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${THUMB_INTENT_ID}`,
 			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: NEW_THUMB_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValue(
+		vi.mocked(storage.headR2Object).mockResolvedValue(
 			storageMeta({ path: NEW_THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb', token: 'tk' }),
 		)
 		await expect(wishFileUpdate(
@@ -992,7 +997,7 @@ describe('wishFileUpdate: stale-replace guard', () => {
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
 		// storage mock not strictly needed (auth throws before intent
 		// consumption) but seed it for symmetry with happy-path tests.
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 
@@ -1020,7 +1025,7 @@ describe('wishFileUpdate: stale-replace guard', () => {
 		seedUpdateAuth()  // ownedWishReadDoc HAS image.path = FULL_PATH
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 
@@ -1050,7 +1055,7 @@ describe('wishFileUpdate: stale-replace guard', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/wishes/${WISH_ID}`,     imagelessWishReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 
@@ -1078,7 +1083,7 @@ describe('wishFileUpdate: stale-replace guard', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/wishes/${WISH_ID}`,     imagelessWishReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 

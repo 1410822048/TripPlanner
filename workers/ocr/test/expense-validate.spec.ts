@@ -623,7 +623,7 @@ describe('makeReceiptSchema (Worker-built receipt validation)', () => {
 
 	it('accepts a path-only receipt (path + thumbPath, no bearer URL)', () => {
 		// path-only: the Worker writes path + thumbPath only; reads go
-		// through getBlob(path) gated by Storage Rules. No bearer URL is
+		// through the authenticated Worker proxy. No bearer URL is
 		// ever persisted.
 		const res = schema.safeParse({
 			path:      okPath,

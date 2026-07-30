@@ -110,7 +110,7 @@ function encodeAdjustments(
 }
 
 /** receipt → Firestore REST mapValue (path-only). url/thumbUrl are no
- *  longer written (download token stripped at consume; reads via getBlob).
+ *  longer written; reads use the authenticated Worker/R2 proxy.
  *  thumbPath omitted when absent. Exported so the foreign-mode update path
  *  (expense-foreign-write.ts) reuses this single encoder instead of an
  *  inline duplicate. */

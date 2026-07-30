@@ -20,8 +20,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // in the helper itself (e.g. someone "simplifies" the mapValue.fields
 // walk) immediately breaks these tests. vi.importActual pulls the
 // actual implementation and we cherry-pick it back into the mock.
-vi.mock('../src/storage', () => ({
-	deleteObject: vi.fn(async (..._args: unknown[]) => true),
+vi.mock('../src/r2-storage', () => ({
+	deleteR2Object: vi.fn(async () => undefined),
 }))
 vi.mock('../src/firestore', async () => {
 	const actual = await vi.importActual<typeof import('../src/firestore')>('../src/firestore')
@@ -43,11 +43,12 @@ vi.mock('../src/admin', () => ({
 }))
 
 import { purgeExpiredReceipts } from '../src/receipt-purge'
-import * as storage             from '../src/storage'
+import * as storage             from '../src/r2-storage'
 import * as firestore           from '../src/firestore'
 
 beforeEach(() => {
 	vi.clearAllMocks()
+	vi.mocked(storage.deleteR2Object).mockResolvedValue()
 	// Default: empty page → loop exits immediately. Individual tests
 	// override before invoking purgeExpiredReceipts.
 	vi.mocked(firestore.queryReceiptPurgeCandidates).mockResolvedValue({ docs: [] })
@@ -90,8 +91,8 @@ describe('purgeExpiredReceipts - reads nested receipt fields', () => {
 		expect(report.scanned).toBe(1)
 		expect(report.receiptsDeleted).toBe(2)
 		expect(report.docsPatched).toBe(1)
-		const calls = vi.mocked(storage.deleteObject).mock.calls
-		expect(calls.map(c => c[2])).toEqual([
+		const calls = vi.mocked(storage.deleteR2Object).mock.calls
+		expect(calls.map(c => c[1])).toEqual([
 			'trips/t1/expenses/e1/receipt.webp',
 			'trips/t1/expenses/e1/thumb.webp',
 		])
@@ -108,7 +109,7 @@ describe('purgeExpiredReceipts - reads nested receipt fields', () => {
 		})
 		const report = await purgeExpiredReceipts('sa-json', 'demo-bucket')
 		expect(report.receiptsDeleted).toBe(1)
-		expect(vi.mocked(storage.deleteObject).mock.calls.map(c => c[2])).toEqual([
+		expect(vi.mocked(storage.deleteR2Object).mock.calls.map(c => c[1])).toEqual([
 			'trips/t1/expenses/e2/receipt.pdf',
 		])
 	})
@@ -131,7 +132,7 @@ describe('purgeExpiredReceipts - reads nested receipt fields', () => {
 		expect(report.scanned).toBe(1)
 		expect(report.receiptsDeleted).toBe(0)
 		expect(report.docsPatched).toBe(1)
-		expect(storage.deleteObject).not.toHaveBeenCalled()
+		expect(storage.deleteR2Object).not.toHaveBeenCalled()
 		// deleteDocFields(['receipt']) NOT called when there was no
 		// receipt -- pure no-op write would be wasteful.
 		expect(firestore.deleteDocFields).not.toHaveBeenCalled()

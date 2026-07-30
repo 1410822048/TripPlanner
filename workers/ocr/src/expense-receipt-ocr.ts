@@ -5,7 +5,7 @@
 // bytes and re-POSTing to /ocr:
 //   - The client never names the object. The Worker reads receipt.path from
 //     the Firestore expense doc, so a caller can't path-inject / read an
-//     arbitrary Storage object (BOLA defence).
+//     arbitrary R2 object (BOLA defence).
 //   - Permission mirrors /expense-update (owner/editor; settlement-locked ⇒
 //     owner-only), because the OCR result overwrites the items / amount /
 //     splits edit draft — it is "preparing an update", not a plain read.
@@ -19,14 +19,14 @@ import { z }                                  from 'zod'
 import { getAdminToken, getProjectId }        from './admin'
 import { getDocFields, readString }           from './firestore'
 import type { FsValue }                       from './firestore'
-import { getObjectMetadata, downloadObject }  from './storage'
+import { getR2Object }                        from './r2-storage'
 import { expenseIsSettlementLocked }          from './expense-write'
 import { CascadeError }                       from './cascade'
 import { OCR_SUPPORTED_IMAGE_MIME_TYPES, type OcrResponse, type OcrSupportedImageMimeType } from './schema'
 import { TripIdRe }                           from './field-validation'
 
 /** Hard ceiling on the receipt object we'll pull into memory + hand to
- *  the OCR model. Mirrors storage.rules' 5MB expense-receipt cap. */
+ *  the OCR model. Mirrors the attachment upload boundary. */
 const MAX_RECEIPT_BYTES = 5 * 1024 * 1024
 const SUPPORTED_OCR_IMAGE_TYPES = new Set<string>(OCR_SUPPORTED_IMAGE_MIME_TYPES)
 
@@ -174,7 +174,7 @@ export async function expenseReceiptOcr(
   callerUid:          string,
   req:                ExpenseReceiptOcrRequest,
   serviceAccountJson: string,
-  bucket:             string,
+  bucket:             R2Bucket,
   extract:            ReceiptOcrExtractor,
 ): Promise<ExpenseReceiptOcrResult> {
   const accessToken = await getAdminToken(serviceAccountJson)
@@ -184,38 +184,34 @@ export async function expenseReceiptOcr(
   const before = await authorizeAndLocateReceipt(accessToken, projectId, req.tripId, req.expenseId, callerUid)
   const receiptPath = before.receiptPath
 
-  // ── Storage: metadata first (size + GCS contentType), then bytes ──
-  let meta
+  // ── R2: one bounded get (metadata + body) ────────────────────────
+  let object
   try {
-    meta = await getObjectMetadata(accessToken, bucket, receiptPath)
+    object = await getR2Object(bucket, receiptPath)
   } catch {
-    throw new CascadeError(502, 'failed to read receipt metadata from storage')
+    throw new CascadeError(502, 'failed to read receipt from storage')
   }
-  if (!meta) throw new CascadeError(404, 'receipt object not found in storage')
-  if (meta.size > MAX_RECEIPT_BYTES) {
+  if (!object) throw new CascadeError(404, 'receipt object not found in storage')
+  if (object.size > MAX_RECEIPT_BYTES) {
     throw new CascadeError(413, 'receipt exceeds the 5MB OCR limit')
   }
-  if (!supportedOcrMimeType(meta.contentType)) {
+  const storedContentType = object.httpMetadata?.contentType
+  const downloadedMimeType = supportedOcrMimeType(storedContentType)
+  if (!downloadedMimeType) {
     throw new CascadeError(415, 'stored receipt image type is not supported for OCR')
   }
 
-  let downloaded
+  let bytes: ArrayBuffer
   try {
-    downloaded = await downloadObject(accessToken, bucket, receiptPath)
+    bytes = await object.arrayBuffer()
   } catch {
     throw new CascadeError(502, 'failed to download receipt from storage')
   }
-  if (!downloaded) throw new CascadeError(404, 'receipt object not found in storage')
-  if (downloaded.bytes.byteLength > MAX_RECEIPT_BYTES) {
+  if (bytes.byteLength !== object.size || bytes.byteLength > MAX_RECEIPT_BYTES) {
     throw new CascadeError(413, 'receipt exceeds the 5MB OCR limit')
   }
-  const downloadedMimeType = supportedOcrMimeType(downloaded.contentType)
-  if (!downloadedMimeType) {
-    throw new CascadeError(415, 'downloaded receipt image type is not supported for OCR')
-  }
-
-  // ── OCR (shared core; GCS contentType is the authoritative MIME) ─
-  const imageBase64 = arrayBufferToBase64(downloaded.bytes)
+  // ── OCR (shared core; R2 contentType is the authoritative MIME) ──
+  const imageBase64 = arrayBufferToBase64(bytes)
   const result = await extract(imageBase64, downloadedMimeType, req.currencyHint)
 
   // ── Post-OCR revalidation ────────────────────────────────────────

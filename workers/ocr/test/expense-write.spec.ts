@@ -27,15 +27,11 @@ vi.mock('../src/admin', () => ({
 	invalidateAdminToken: vi.fn(),
 }))
 
-// Phase 3.5: storage mocked so the intent-consumption path (which
-// calls getObjectMetadata to verify the Storage upload landed) is
-// programmable per-test. path-only: consume strips the download token
-// fail-closed via updateObjectMetadata; both resolve truthy by default.
-vi.mock('../src/storage', () => ({
-	getObjectMetadata:    vi.fn(),
-	downloadObject:       vi.fn(),
-	updateObjectMetadata: vi.fn(() => Promise.resolve(true)),
-	deleteObject:         vi.fn(() => Promise.resolve(true)),
+// R2 metadata/body helpers are programmable per test.
+vi.mock('../src/r2-storage', () => ({
+	headR2Object:   vi.fn(),
+	getR2Object:    vi.fn(),
+	deleteR2Object: vi.fn(() => Promise.resolve()),
 }))
 
 const assertPdfPageLimitBytesMock = vi.fn()
@@ -146,7 +142,7 @@ vi.mock('../src/fx-rate', async () => {
 })
 
 import { expenseCreate, expenseUpdate } from '../src/expense-write'
-import * as storage from '../src/storage'
+import * as storage from '../src/r2-storage'
 import * as fxRate from '../src/fx-rate'
 import { PdfPageLimitError } from '@tripmate/pdf-page-limit'
 import { ExpenseValidationError } from '../src/expense-validate'
@@ -155,7 +151,7 @@ import { CascadeError } from '../src/cascade'
 const TRIP_ID    = 'trip-1'
 const EXPENSE_ID = 'exp-1'
 const CALLER_UID = 'editor-uid'
-const BUCKET     = 'tripplanner-80a4f.firebasestorage.app'
+const BUCKET     = 'tripmate-attachments-test'
 const MEMBERS    = ['owner-uid', 'editor-uid', 'viewer-uid']
 
 /** Standard trip doc TxReadDoc -- caller is an editor, no deletingAt.
@@ -242,19 +238,22 @@ function validExpensePayload(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+	vi.clearAllMocks()
 	txGetResponses.clear()
 	txQueryResponses.clear()
 	txQueryCalls.length = 0
 	capturedTxResult = null
 	assertPdfPageLimitBytesMock.mockReset()
 	assertPdfPageLimitBytesMock.mockResolvedValue(1)
-	vi.mocked(storage.downloadObject).mockReset()
-	vi.mocked(storage.downloadObject).mockResolvedValue({
-		bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer,
-		contentType: 'application/pdf',
-	})
-	vi.mocked(storage.updateObjectMetadata).mockResolvedValue(true)
-	vi.mocked(storage.deleteObject).mockResolvedValue(true)
+	vi.mocked(storage.headR2Object).mockReset()
+	vi.mocked(storage.getR2Object).mockReset()
+	vi.mocked(storage.deleteR2Object).mockReset()
+	vi.mocked(storage.getR2Object).mockResolvedValue({
+		size: 4,
+		httpMetadata: { contentType: 'application/pdf' },
+		arrayBuffer: async () => new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer,
+	} as R2ObjectBody)
+	vi.mocked(storage.deleteR2Object).mockResolvedValue()
 })
 
 // ─── expenseCreate ─────────────────────────────────────────────────
@@ -644,18 +643,19 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 		path:        string
 		entityType?: 'expense' | 'booking' | 'wish'
 		entityId?:   string
-		status?:     'pending' | 'used'
+		status?:     'pending' | 'uploaded' | 'used'
 		expiresAtMs?: number
 		contentType?: string
 		maxBytes?:   number
 	}) {
 		const uid         = opts.uid         ?? CALLER_UID
-		const status      = opts.status      ?? 'pending'
+		const status      = opts.status      ?? 'uploaded'
 		const entityId    = opts.entityId    ?? EXPENSE_ID
 		const entityType  = opts.entityType  ?? 'expense'
 		const expiresAt   = new Date(opts.expiresAtMs ?? Date.now() + 30 * 60_000).toISOString()
 		const contentType = opts.contentType ?? 'image/webp'
 		const maxBytes    = opts.maxBytes    ?? 5 * 1024 * 1024
+		const uploadedBytes = contentType === 'application/pdf' ? 4 : 50_000
 		return {
 			exists: true,
 			// Phase-3.5-bis: intents live under trips/{tripId}/uploadIntents/{id}.
@@ -674,6 +674,9 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 					arrayValue: { values: [{ stringValue: contentType }] },
 				},
 				maxBytes:   { integerValue: String(maxBytes) },
+				uploadedBytes:       { integerValue: String(uploadedBytes) },
+				uploadedContentType: { stringValue: contentType },
+				sha256:              { stringValue: 'a'.repeat(64) },
 				customMetadata: {
 					mapValue: {
 						fields: {
@@ -719,13 +722,15 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 				else                 baseCustomMetadata[k] = v
 			}
 		}
-		if (opts.token) baseCustomMetadata.firebaseStorageDownloadTokens = opts.token
+		baseCustomMetadata.sha256 = 'a'.repeat(64)
+		const contentType = opts.contentType ?? (opts.kind === 'pdf' ? 'application/pdf' : 'image/webp')
 		return {
-			name:        opts.path,
-			size:        opts.size ?? 50_000,
-			contentType: opts.contentType ?? 'image/webp',
-			timeCreated: '2026-05-23T00:00:00Z',
-			customMetadata: opts.omitCustomMetadata ? undefined : baseCustomMetadata,
+			key:         opts.path,
+			size:        opts.size ?? (opts.kind === 'pdf' ? 4 : 50_000),
+			version:     'v1',
+			uploaded:    new Date('2026-05-23T00:00:00Z'),
+			contentType,
+			customMetadata: opts.omitCustomMetadata ? {} : baseCustomMetadata,
 		}
 	}
 
@@ -739,7 +744,7 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 		seedAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 
@@ -776,7 +781,7 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full',  path: FULL_PATH }))
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${THUMB_INTENT_ID}`,
 			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: THUMB_PATH }))
-		vi.mocked(storage.getObjectMetadata)
+		vi.mocked(storage.headR2Object)
 			.mockResolvedValueOnce(storageMeta({ path: FULL_PATH,  intentId: FULL_INTENT_ID,  kind: 'full',  token: 'tk-f' }))
 			.mockResolvedValueOnce(storageMeta({ path: THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb', token: 'tk-t' }))
 
@@ -804,7 +809,7 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 		seedAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${PDF_INTENT_ID}`,
 			intentDoc({ intentId: PDF_INTENT_ID, kind: 'pdf', path: PDF_PATH, contentType: 'application/pdf' }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: PDF_PATH, intentId: PDF_INTENT_ID, kind: 'pdf', token: 'tk', contentType: 'application/pdf' }),
 		)
 		assertPdfPageLimitBytesMock.mockRejectedValueOnce(new PdfPageLimitError('PDF_PAGE_LIMIT_EXCEEDED'))
@@ -820,8 +825,8 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ code: 'PDF_PAGE_LIMIT_EXCEEDED' })
 
-		expect(storage.downloadObject).toHaveBeenCalledWith(expect.any(String), BUCKET, PDF_PATH)
-		expect(storage.deleteObject).toHaveBeenCalledWith(expect.any(String), BUCKET, PDF_PATH)
+		expect(storage.getR2Object).toHaveBeenCalledWith(BUCKET, PDF_PATH)
+		expect(storage.deleteR2Object).toHaveBeenCalledWith(BUCKET, PDF_PATH)
 		expect(capturedTxResult).toBeNull()
 	})
 
@@ -933,7 +938,7 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 		seedAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(null)
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(null)
 		await expect(expenseCreate(
 			CALLER_UID,
 			{
@@ -949,7 +954,7 @@ describe('expenseCreate with intentIds (Phase 3.5)', () => {
 		seedAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${THUMB_INTENT_ID}`,
 			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: THUMB_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb', token: 'tk' }),
 		)
 		await expect(expenseCreate(
@@ -981,12 +986,15 @@ describe('expenseUpdate with intentIds (Phase 3.5)', () => {
 				entityId:   { stringValue: EXPENSE_ID },
 				kind:       { stringValue: kind },
 				path:       { stringValue: path },
-				status:     { stringValue: 'pending' },
+				status:     { stringValue: 'uploaded' },
 				expiresAt:  { timestampValue: new Date(Date.now() + 30 * 60_000).toISOString() },
 				allowedContentTypes: {
 					arrayValue: { values: [{ stringValue: 'image/webp' }] },
 				},
 				maxBytes:   { integerValue: String(5 * 1024 * 1024) },
+				uploadedBytes:       { integerValue: '50000' },
+				uploadedContentType: { stringValue: 'image/webp' },
+				sha256:              { stringValue: 'a'.repeat(64) },
 				customMetadata: {
 					mapValue: {
 						fields: {
@@ -1006,10 +1014,11 @@ describe('expenseUpdate with intentIds (Phase 3.5)', () => {
 
 	function storageMeta(opts: { path: string; intentId: string; kind: 'full' | 'thumb' | 'pdf' }) {
 		return {
-			name:        opts.path,
+			key:         opts.path,
 			size:        50_000,
+			version:     'v1',
+			uploaded:    new Date('2026-05-23T00:00:00Z'),
 			contentType: 'image/webp',
-			timeCreated: '2026-05-23T00:00:00Z',
 			customMetadata: {
 				uploadIntentId:                opts.intentId,
 				uploaderUid:                   CALLER_UID,
@@ -1018,7 +1027,7 @@ describe('expenseUpdate with intentIds (Phase 3.5)', () => {
 				entityId:                      EXPENSE_ID,
 				kind:                          opts.kind,
 				schemaVersion:                 'v1',
-				firebaseStorageDownloadTokens: 'tk',
+				sha256:                        'a'.repeat(64),
 			},
 		}
 	}
@@ -1033,7 +1042,7 @@ describe('expenseUpdate with intentIds (Phase 3.5)', () => {
 		seedAuthAlive()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${NEW_FULL_INTENT_ID}`,
 			intentDoc(NEW_FULL_INTENT_ID, 'full', NEW_FULL_PATH))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: NEW_FULL_PATH, intentId: NEW_FULL_INTENT_ID, kind: 'full' }),
 		)
 

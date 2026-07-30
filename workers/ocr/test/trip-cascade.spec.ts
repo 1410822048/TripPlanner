@@ -1,10 +1,10 @@
 // Tests for the trip cascade flow. The main thing we want to lock
-// down at the unit level is the Storage prefix boundary: GCS list
+// down at the unit level is the R2 prefix boundary: bucket list
 // with `prefix=trips/abc` matches BOTH `trips/abc/*` AND
 // `trips/abc2/*` because `prefix` is a literal string starts-with.
 // Forgetting the trailing slash on cascade would cause cross-trip
 // data loss; this regression is annoying to catch in integration
-// (you'd need two real trips with adjacent IDs in GCS) so we pin it
+// (you'd need two real trips with adjacent IDs in R2) so we pin it
 // at the unit boundary instead.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -13,8 +13,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // trip-cascade.ts directly captures stable refs to ./storage and
 // ./firestore at module evaluation, so we have to install mocks
 // first.
-vi.mock('../src/storage', () => ({
-	purgeObjectsByPrefix: vi.fn(async (..._args: unknown[]) => 0),
+vi.mock('../src/r2-storage', () => ({
+	purgeR2Prefix: vi.fn(async (..._args: unknown[]) => 0),
 }))
 vi.mock('../src/firestore', () => ({
 	getDocFields:    vi.fn(),
@@ -47,7 +47,7 @@ vi.mock('../src/admin', () => ({
 }))
 
 import { cascadeTripDelete, TripDeleteRequestSchema } from '../src/trip-cascade'
-import * as storage          from '../src/storage'
+import * as storage          from '../src/r2-storage'
 import * as firestore        from '../src/firestore'
 
 beforeEach(() => {
@@ -64,7 +64,7 @@ beforeEach(() => {
 })
 
 describe('cascadeTripDelete - Storage prefix boundary', () => {
-	it('passes trips/<tripId>/ (trailing slash) to purgeObjectsByPrefix', async () => {
+	it('passes trips/<tripId>/ (trailing slash) to purgeR2Prefix', async () => {
 		await cascadeTripDelete(
 			'owner-uid',
 			{ tripId: 'abc' },
@@ -75,27 +75,27 @@ describe('cascadeTripDelete - Storage prefix boundary', () => {
 		// sweep (step 3.5) that catches uploads slipping past the
 		// cross-service rules-eval timing. Both must use the
 		// trailing-slash prefix.
-		expect(storage.purgeObjectsByPrefix).toHaveBeenCalledTimes(2)
-		const calls = vi.mocked(storage.purgeObjectsByPrefix).mock.calls
+		expect(storage.purgeR2Prefix).toHaveBeenCalledTimes(2)
+		const calls = vi.mocked(storage.purgeR2Prefix).mock.calls
 		for (const call of calls) {
-			expect(call[2]).toBe('trips/abc/')
+			expect(call[1]).toBe('trips/abc/')
 			// Defensive: explicitly assert the slash. A naive
 			// `trips/${tripId}` (without slash) would still pass the
 			// equality check above if anyone introduced a default-suffix
 			// helper later, so the slash assertion is the load-bearing
 			// one for the abc / abc2 cross-prefix regression.
-			expect(call[2].endsWith('/')).toBe(true)
+			expect(call[1].endsWith('/')).toBe(true)
 		}
 	})
 
 	it('different tripIds get independent prefixes (no shared boundary)', async () => {
 		await cascadeTripDelete('owner-uid', { tripId: 'abc' },  'sa', 'bucket')
 		await cascadeTripDelete('owner-uid', { tripId: 'abc2' }, 'sa', 'bucket')
-		const calls = vi.mocked(storage.purgeObjectsByPrefix).mock.calls
+		const calls = vi.mocked(storage.purgeR2Prefix).mock.calls
 		// Two sweeps per cascade × two cascades = 4 calls.
 		expect(calls).toHaveLength(4)
-		const abcPrefixes  = calls.slice(0, 2).map(c => c[2])
-		const abc2Prefixes = calls.slice(2, 4).map(c => c[2])
+		const abcPrefixes  = calls.slice(0, 2).map(c => c[1])
+		const abc2Prefixes = calls.slice(2, 4).map(c => c[1])
 		expect(abcPrefixes).toEqual(['trips/abc/',  'trips/abc/'])
 		expect(abc2Prefixes).toEqual(['trips/abc2/', 'trips/abc2/'])
 		// Critical invariant: the abc prefix does NOT match the abc2
@@ -125,7 +125,7 @@ describe('cascadeTripDelete - Storage prefix boundary', () => {
 			cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', 'bucket'),
 		).rejects.toThrow(/not the trip owner/)
 		// Storage MUST NOT be touched when ownership check fails.
-		expect(storage.purgeObjectsByPrefix).not.toHaveBeenCalled()
+		expect(storage.purgeR2Prefix).not.toHaveBeenCalled()
 	})
 
 	it('treats missing trip doc as idempotent success (no-op cascade)', async () => {
@@ -133,7 +133,7 @@ describe('cascadeTripDelete - Storage prefix boundary', () => {
 		const result = await cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', 'bucket')
 		expect(result).toEqual({ deletedDocs: 0, deletedObjects: 0 })
 		// Already gone → nothing to delete in Storage either.
-		expect(storage.purgeObjectsByPrefix).not.toHaveBeenCalled()
+		expect(storage.purgeR2Prefix).not.toHaveBeenCalled()
 		// And the quiesce stamp wasn't written either -- no trip to write to.
 		expect(firestore.updateDocFields).not.toHaveBeenCalled()
 	})
@@ -147,12 +147,12 @@ describe('cascadeTripDelete - Storage prefix boundary', () => {
 		vi.mocked(firestore.updateDocFields).mockImplementationOnce(async (..._args) => {
 			callOrder.push('updateDocFields')
 		})
-		vi.mocked(storage.purgeObjectsByPrefix).mockImplementationOnce(async (..._args) => {
-			callOrder.push('purgeObjectsByPrefix')
+		vi.mocked(storage.purgeR2Prefix).mockImplementationOnce(async (..._args) => {
+			callOrder.push('purgeR2Prefix')
 			return 0
 		})
 		await cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', 'bucket')
-		expect(callOrder).toEqual(['updateDocFields', 'purgeObjectsByPrefix'])
+		expect(callOrder).toEqual(['updateDocFields', 'purgeR2Prefix'])
 		// Verify the patch shape: targets the trip doc, sets
 		// deletingAt to a Timestamp (NOT null -- the field's
 		// existence is what tripNotDeleting checks for).

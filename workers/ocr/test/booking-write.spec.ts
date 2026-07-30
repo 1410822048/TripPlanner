@@ -3,8 +3,7 @@
 // Same mocking strategy as wish-write.spec / expense-write.spec: mock
 // at the `runFirestoreTransaction` boundary so the test seeds tx.get
 // responses per-test, capture the TxResult to assert on writes +
-// result shape. Storage object metadata is mocked at the
-// getObjectMetadata boundary for intent consumption.
+// result shape. R2 metadata/body helpers are mocked at the storage boundary.
 //
 // What this file pins down (Phase 3.7):
 //   - Worker-authoritative booking create with role-specific attachment ids:
@@ -32,13 +31,10 @@ vi.mock('../src/admin', () => ({
 	invalidateAdminToken: vi.fn(),
 }))
 
-vi.mock('../src/storage', () => ({
-	getObjectMetadata:    vi.fn(),
-	downloadObject:       vi.fn(),
-	// path-only: consume strips the download token fail-closed; both resolve
-	// truthy by default so the happy path proceeds. Specific tests override.
-	updateObjectMetadata: vi.fn(() => Promise.resolve(true)),
-	deleteObject:         vi.fn(() => Promise.resolve(true)),
+vi.mock('../src/r2-storage', () => ({
+	headR2Object:   vi.fn(),
+	getR2Object:    vi.fn(),
+	deleteR2Object: vi.fn(() => Promise.resolve()),
 }))
 
 const assertPdfPageLimitBytesMock = vi.fn()
@@ -70,14 +66,14 @@ vi.mock('../src/cascade', async () => {
 })
 
 import { bookingFileCreate, bookingFileUpdate, BookingValidationError } from '../src/booking-write'
-import * as storage from '../src/storage'
+import * as storage from '../src/r2-storage'
 import * as firestoreTx from '../src/firestore-tx'
 import { PdfPageLimitError } from '@tripmate/pdf-page-limit'
 
 const TRIP_ID    = 'trip-1'
 const BOOKING_ID = 'booking-1'
 const CALLER_UID = 'editor-uid'
-const BUCKET     = 'tripplanner-80a4f.firebasestorage.app'
+const BUCKET     = 'tripmate-attachments-test'
 const MEMBERS    = ['owner-uid', 'editor-uid', 'viewer-uid']
 
 const FULL_INTENT_ID  = 'i-full'
@@ -136,16 +132,17 @@ function intentDoc(opts: {
 	path:        string
 	entityType?: 'expense' | 'booking' | 'wish'
 	entityId?:   string
-	status?:     'pending' | 'used'
+	status?:     'pending' | 'uploaded' | 'used'
 	expiresAtMs?: number
 	contentType?: string
 }) {
 	const uid         = opts.uid         ?? CALLER_UID
-	const status      = opts.status      ?? 'pending'
+	const status      = opts.status      ?? 'uploaded'
 	const entityId    = opts.entityId    ?? BOOKING_ID
 	const entityType  = opts.entityType  ?? 'booking'
 	const expiresAt   = new Date(opts.expiresAtMs ?? Date.now() + 30 * 60_000).toISOString()
 	const contentType = opts.contentType ?? (opts.kind === 'pdf' ? 'application/pdf' : 'image/webp')
+	const uploadedBytes = contentType === 'application/pdf' ? 4 : 50_000
 	return {
 		exists: true,
 		name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/uploadIntents/${opts.intentId}`,
@@ -163,6 +160,9 @@ function intentDoc(opts: {
 				arrayValue: { values: [{ stringValue: contentType }] },
 			},
 			maxBytes: { integerValue: String(5 * 1024 * 1024) },
+			uploadedBytes:       { integerValue: String(uploadedBytes) },
+			uploadedContentType: { stringValue: contentType },
+			sha256:              { stringValue: 'a'.repeat(64) },
 			customMetadata: {
 				mapValue: {
 					fields: {
@@ -184,7 +184,6 @@ function storageMeta(opts: {
 	path:        string
 	intentId:    string
 	kind:        'full' | 'thumb' | 'pdf'
-	token?:      string
 	size?:       number
 	generation?: string
 	contentType?: string
@@ -198,13 +197,13 @@ function storageMeta(opts: {
 		kind:           opts.kind,
 		schemaVersion:  'v1',
 	}
-	if (opts.token) customMetadata.firebaseStorageDownloadTokens = opts.token
+	customMetadata.sha256 = 'a'.repeat(64)
 	return {
-		name:        opts.path,
-		size:        opts.size ?? 50_000,
-		generation:  opts.generation,
+		key:         opts.path,
+		size:        opts.size ?? (opts.kind === 'pdf' ? 4 : 50_000),
+		version:     opts.generation ?? 'v1',
+		uploaded:    new Date('2026-05-26T00:00:00Z'),
 		contentType: opts.contentType ?? (opts.kind === 'pdf' ? 'application/pdf' : 'image/webp'),
-		timeCreated: '2026-05-26T00:00:00Z',
 		customMetadata,
 	}
 }
@@ -258,14 +257,15 @@ beforeEach(() => {
 	vi.clearAllMocks()
 	assertPdfPageLimitBytesMock.mockReset()
 	assertPdfPageLimitBytesMock.mockResolvedValue(1)
-	// clearAllMocks resets call history but NOT implementations, so restore
-	// the strip default (the fail-closed test sets mockRejectedValue).
-	vi.mocked(storage.downloadObject).mockResolvedValue({
-		bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer,
-		contentType: 'application/pdf',
-	})
-	vi.mocked(storage.updateObjectMetadata).mockResolvedValue(true)
-	vi.mocked(storage.deleteObject).mockResolvedValue(true)
+	vi.mocked(storage.headR2Object).mockReset()
+	vi.mocked(storage.getR2Object).mockReset()
+	vi.mocked(storage.deleteR2Object).mockReset()
+	vi.mocked(storage.getR2Object).mockResolvedValue({
+		size: 4,
+		httpMetadata: { contentType: 'application/pdf' },
+		arrayBuffer: async () => new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer,
+	} as R2ObjectBody)
+	vi.mocked(storage.deleteR2Object).mockResolvedValue()
 })
 
 // ─── Happy paths ───────────────────────────────────────────────────
@@ -277,7 +277,7 @@ describe('bookingFileCreate: happy paths', () => {
 			intentDoc({ intentId: FULL_INTENT_ID,  kind: 'full',  path: FULL_PATH }))
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${THUMB_INTENT_ID}`,
 			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: THUMB_PATH }))
-		vi.mocked(storage.getObjectMetadata)
+		vi.mocked(storage.headR2Object)
 			.mockResolvedValueOnce(storageMeta({ path: FULL_PATH,  intentId: FULL_INTENT_ID,  kind: 'full',  token: 'tk-f' }))
 			.mockResolvedValueOnce(storageMeta({ path: THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb', token: 'tk-t' }))
 
@@ -327,20 +327,12 @@ describe('bookingFileCreate: happy paths', () => {
 		expect(memberIdValues).toEqual(MEMBERS)
 
 		// Document field built server-side (path-only BookingAttachment:
-		// filePath/fileType + thumbPath; reads via getBlob + Storage
-		// Rules, no bearer download URL is persisted).
+		// filePath/fileType + thumbPath; reads use the authenticated Worker
+		// proxy, and no bearer download URL is persisted.
 		const att = bookingWrite.fields.document?.mapValue?.fields
 		expect(att?.filePath?.stringValue).toBe(FULL_PATH)
 		expect(att?.fileType?.stringValue).toBe('image/webp')
 		expect(att?.thumbPath?.stringValue).toBe(THUMB_PATH)
-		// token strip happened for both blobs at consume time.
-		expect(vi.mocked(storage.updateObjectMetadata)).toHaveBeenCalledWith(
-			expect.anything(), expect.anything(), FULL_PATH, { firebaseStorageDownloadTokens: null },
-		)
-		expect(vi.mocked(storage.updateObjectMetadata)).toHaveBeenCalledWith(
-			expect.anything(), expect.anything(), THUMB_PATH, { firebaseStorageDownloadTokens: null },
-		)
-
 		// sortDate: parseable checkIn → Timestamp value present in fields,
 		// NOT a transform.
 		expect(bookingWrite.fields.sortDate?.timestampValue).toBeDefined()
@@ -359,7 +351,7 @@ describe('bookingFileCreate: happy paths', () => {
 		seedAuth('owner')
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 
@@ -398,7 +390,7 @@ describe('bookingFileCreate: happy paths', () => {
 		seedAuth('editor')
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${PDF_INTENT_ID}`,
 			intentDoc({ intentId: PDF_INTENT_ID, kind: 'pdf', path: PDF_PATH, contentType: 'application/pdf' }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: PDF_PATH, intentId: PDF_INTENT_ID, kind: 'pdf', token: 'tk', contentType: 'application/pdf' }),
 		)
 
@@ -423,16 +415,16 @@ describe('bookingFileCreate: happy paths', () => {
 		// No thumb fields for PDF attachment.
 		expect(att?.thumbPath).toBeUndefined()
 		expect(writes[1].fields.confirmationCode?.stringValue).toBe('ABC123')
-		expect(storage.downloadObject).toHaveBeenCalledWith(expect.any(String), BUCKET, PDF_PATH)
+		expect(storage.getR2Object).toHaveBeenCalledWith(BUCKET, PDF_PATH)
 		expect(assertPdfPageLimitBytesMock).toHaveBeenCalledTimes(1)
 	})
 
-	it('PDF page validation is reused across tx body retries for the same GCS generation', async () => {
+	it('PDF page validation is reused across tx body retries for the same R2 version', async () => {
 		runTxBodyTwice()
 		seedAuth('editor')
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${PDF_INTENT_ID}`,
 			intentDoc({ intentId: PDF_INTENT_ID, kind: 'pdf', path: PDF_PATH, contentType: 'application/pdf' }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValue(pdfMeta('1700000000000000'))
+		vi.mocked(storage.headR2Object).mockResolvedValue(pdfMeta('1700000000000000'))
 
 		await bookingFileCreate(
 			CALLER_UID,
@@ -445,18 +437,17 @@ describe('bookingFileCreate: happy paths', () => {
 			'{}', BUCKET,
 		)
 
-		expect(storage.getObjectMetadata).toHaveBeenCalledTimes(2)
-		expect(storage.downloadObject).toHaveBeenCalledTimes(1)
+		expect(storage.headR2Object).toHaveBeenCalledTimes(2)
+		expect(storage.getR2Object).toHaveBeenCalledTimes(1)
 		expect(assertPdfPageLimitBytesMock).toHaveBeenCalledTimes(1)
-		expect(storage.updateObjectMetadata).toHaveBeenCalledTimes(2)
 	})
 
-	it('PDF page validation re-runs when the GCS generation changes across tx retries', async () => {
+	it('PDF page validation re-runs when the R2 version changes across tx retries', async () => {
 		runTxBodyTwice()
 		seedAuth('editor')
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${PDF_INTENT_ID}`,
 			intentDoc({ intentId: PDF_INTENT_ID, kind: 'pdf', path: PDF_PATH, contentType: 'application/pdf' }))
-		vi.mocked(storage.getObjectMetadata)
+		vi.mocked(storage.headR2Object)
 			.mockResolvedValueOnce(pdfMeta('1700000000000000'))
 			.mockResolvedValueOnce(pdfMeta('1700000000000001'))
 
@@ -471,17 +462,16 @@ describe('bookingFileCreate: happy paths', () => {
 			'{}', BUCKET,
 		)
 
-		expect(storage.getObjectMetadata).toHaveBeenCalledTimes(2)
-		expect(storage.downloadObject).toHaveBeenCalledTimes(2)
+		expect(storage.headR2Object).toHaveBeenCalledTimes(2)
+		expect(storage.getR2Object).toHaveBeenCalledTimes(2)
 		expect(assertPdfPageLimitBytesMock).toHaveBeenCalledTimes(2)
-		expect(storage.updateObjectMetadata).toHaveBeenCalledTimes(2)
 	})
 
 	it('PDF over page limit -> deletes uploaded blob and rejects before booking doc write', async () => {
 		seedAuth('editor')
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${PDF_INTENT_ID}`,
 			intentDoc({ intentId: PDF_INTENT_ID, kind: 'pdf', path: PDF_PATH, contentType: 'application/pdf' }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: PDF_PATH, intentId: PDF_INTENT_ID, kind: 'pdf', token: 'tk', contentType: 'application/pdf' }),
 		)
 		assertPdfPageLimitBytesMock.mockRejectedValueOnce(new PdfPageLimitError('PDF_PAGE_LIMIT_EXCEEDED'))
@@ -498,50 +488,7 @@ describe('bookingFileCreate: happy paths', () => {
 			'{}', BUCKET,
 		)).rejects.toMatchObject({ code: 'PDF_PAGE_LIMIT_EXCEEDED' })
 
-		expect(storage.deleteObject).toHaveBeenCalledWith(expect.any(String), BUCKET, PDF_PATH)
-		expect(capturedTxResult).toBeNull()
-	})
-
-	it('fail-closed: token strip fails after retry → blob deleted, ATTACHMENT_HARDENING_FAILED, no doc write', async () => {
-		seedAuth('editor')
-		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
-			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata)
-			.mockResolvedValueOnce(storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk-f' }))
-		// Strip never sticks (transient GCS failure on every bounded retry).
-		vi.mocked(storage.updateObjectMetadata).mockRejectedValue(new Error('GCS 503'))
-		capturedTxResult = null
-
-		await expect(bookingFileCreate(
-			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), attachments: { document: [FULL_INTENT_ID] } },
-			'{}', BUCKET,
-		)).rejects.toMatchObject({ code: 'ATTACHMENT_HARDENING_FAILED' })
-
-		// Token-bearing blob deleted (no orphan with a live bearer URL) and
-		// NO Firestore doc write captured (fail-closed: nothing committed).
-		expect(storage.deleteObject).toHaveBeenCalledWith(expect.anything(), BUCKET, FULL_PATH)
-		expect(capturedTxResult).toBeNull()
-	})
-
-	it('fail-closed: strip returns false (object 404 mid-write) → terminal, no doc write', async () => {
-		seedAuth('editor')
-		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
-			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata)
-			.mockResolvedValueOnce(storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk-f' }))
-		// updateObjectMetadata resolves FALSE = object 404'd between the
-		// existence check and the strip PATCH. Must be treated as terminal,
-		// not silently committed pointing at a missing blob.
-		vi.mocked(storage.updateObjectMetadata).mockResolvedValue(false)
-		capturedTxResult = null
-
-		await expect(bookingFileCreate(
-			CALLER_UID,
-			{ tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(), attachments: { document: [FULL_INTENT_ID] } },
-			'{}', BUCKET,
-		)).rejects.toMatchObject({ code: 'ATTACHMENT_HARDENING_FAILED' })
-
+		expect(storage.deleteR2Object).toHaveBeenCalledWith(BUCKET, PDF_PATH)
 		expect(capturedTxResult).toBeNull()
 	})
 })
@@ -604,7 +551,7 @@ describe('bookingFileCreate: state checks', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/bookings/${BOOKING_ID}`, existingBookingReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 		await expect(bookingFileCreate(
@@ -622,7 +569,7 @@ describe('bookingFileCreate: body validation', () => {
 		seedAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValue(
+		vi.mocked(storage.headR2Object).mockResolvedValue(
 			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 		await expect(bookingFileCreate(
@@ -641,7 +588,7 @@ describe('bookingFileCreate: body validation', () => {
 		seedAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValue(
+		vi.mocked(storage.headR2Object).mockResolvedValue(
 			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 		await expect(bookingFileCreate(
@@ -680,7 +627,7 @@ describe('bookingFileCreate: body validation', () => {
 		seedAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${THUMB_INTENT_ID}`,
 			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: THUMB_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValue(
+		vi.mocked(storage.headR2Object).mockResolvedValue(
 			storageMeta({ path: THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb', token: 'tk' }),
 		)
 		await expect(bookingFileCreate(
@@ -792,7 +739,7 @@ describe('bookingFileUpdate: happy paths', () => {
 			intentDoc({ intentId: FULL_INTENT_ID,  kind: 'full',  path: NEW_FULL_PATH }))
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${THUMB_INTENT_ID}`,
 			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: NEW_THUMB_PATH }))
-		vi.mocked(storage.getObjectMetadata)
+		vi.mocked(storage.headR2Object)
 			.mockResolvedValueOnce(storageMeta({ path: NEW_FULL_PATH,  intentId: FULL_INTENT_ID,  kind: 'full',  token: 'tk-f' }))
 			.mockResolvedValueOnce(storageMeta({ path: NEW_THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb', token: 'tk-t' }))
 
@@ -860,7 +807,7 @@ describe('bookingFileUpdate: happy paths', () => {
 		seedUpdateAuth({ role: 'owner' })
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 
@@ -889,7 +836,7 @@ describe('bookingFileUpdate: happy paths', () => {
 		seedUpdateAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${PDF_INTENT_ID}`,
 			intentDoc({ intentId: PDF_INTENT_ID, kind: 'pdf', path: NEW_PDF_PATH, contentType: 'application/pdf' }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: NEW_PDF_PATH, intentId: PDF_INTENT_ID, kind: 'pdf', token: 'tk', contentType: 'application/pdf' }),
 		)
 
@@ -911,7 +858,7 @@ describe('bookingFileUpdate: happy paths', () => {
 		expect(att?.filePath?.stringValue).toBe(NEW_PDF_PATH)
 		expect(att?.fileType?.stringValue).toBe('application/pdf')
 		expect(att?.thumbPath).toBeUndefined()
-		expect(storage.downloadObject).toHaveBeenCalledWith(expect.any(String), BUCKET, NEW_PDF_PATH)
+		expect(storage.getR2Object).toHaveBeenCalledWith(BUCKET, NEW_PDF_PATH)
 		expect(assertPdfPageLimitBytesMock).toHaveBeenCalledTimes(1)
 	})
 
@@ -919,7 +866,7 @@ describe('bookingFileUpdate: happy paths', () => {
 		seedUpdateAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 
@@ -951,7 +898,7 @@ describe('bookingFileUpdate: happy paths', () => {
 		seedUpdateAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 
@@ -985,7 +932,7 @@ describe('bookingFileUpdate: happy paths', () => {
 		seedUpdateAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 
@@ -1018,7 +965,7 @@ describe('bookingFileUpdate: happy paths', () => {
 		seedUpdateAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 
@@ -1365,7 +1312,7 @@ describe('bookingFileUpdate: intent scope binding', () => {
 		seedUpdateAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${THUMB_INTENT_ID}`,
 			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: NEW_THUMB_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValue(
+		vi.mocked(storage.headR2Object).mockResolvedValue(
 			storageMeta({ path: NEW_THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb', token: 'tk' }),
 		)
 		await expect(bookingFileUpdate(
@@ -1423,7 +1370,7 @@ describe('bookingFileUpdate: stale-replace guard', () => {
 		seedUpdateAuth()  // ownedBookingReadDoc sets document.filePath = FULL_PATH
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 
@@ -1451,7 +1398,7 @@ describe('bookingFileUpdate: stale-replace guard', () => {
 		seedUpdateAuth()  // ownedBookingReadDoc HAS document.filePath = FULL_PATH
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 
@@ -1478,7 +1425,7 @@ describe('bookingFileUpdate: stale-replace guard', () => {
 		seedUpdateAuth({ documentFilePath: null })  // doc has no document
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 
@@ -1504,7 +1451,7 @@ describe('bookingFileUpdate: stale-replace guard', () => {
 		seedUpdateAuth({ documentFilePath: null })
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
-		vi.mocked(storage.getObjectMetadata).mockResolvedValueOnce(
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
 			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
 		)
 

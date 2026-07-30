@@ -4,7 +4,7 @@
 //
 // Pinning these invariants because they're easy to regress on a
 // future cron tweak:
-//   - GRACE_MS gate (pending intent within grace NOT deleted)
+//   - GRACE_MS expiry gate (pending/uploaded intent within grace NOT deleted)
 //   - retention gate (used intent within retention NOT deleted)
 //   - cursor advance correctness (last (timestamp, name) → next call)
 //   - mid-scan query failure re-throws WITH partial counts in message
@@ -64,13 +64,14 @@ beforeEach(() => {
 })
 
 describe('purgeExpiredUploadIntents', () => {
-	it('empty collection → no deletes, both passes 0', async () => {
+	it('empty collection → no deletes, all three passes 0', async () => {
 		const report = await purgeExpiredUploadIntents('{}')
 		expect(report.scanned).toBe(0)
 		expect(report.deletedPending).toBe(0)
+		expect(report.deletedUploaded).toBe(0)
 		expect(report.deletedUsed).toBe(0)
-		// Both passes still made 1 query each (the empty result).
-		expect(firestore.queryUploadIntents).toHaveBeenCalledTimes(2)
+		// All three passes still make one query each for observability.
+		expect(firestore.queryUploadIntents).toHaveBeenCalledTimes(3)
 		expect(firestore.deleteDoc).not.toHaveBeenCalled()
 	})
 
@@ -89,12 +90,34 @@ describe('purgeExpiredUploadIntents', () => {
 		)
 	})
 
-	it('used intent past USED_RETENTION_DAYS → deleted in pass 2', async () => {
+	it('uploaded intent past expiresAt + GRACE_MS → deleted', async () => {
+		const uploadedDoc = intentDoc({ id: 'up-old', expiresAtMs: Date.now() - 10 * 60_000 })
+		vi.mocked(firestore.queryUploadIntents).mockImplementation(
+			async (_token, _projectId, status) => ({
+				docs: status === 'uploaded' ? [uploadedDoc] : [],
+			}),
+		)
+
+		const report = await purgeExpiredUploadIntents('{}')
+
+		expect(report.deletedUploaded).toBe(1)
+		expect(firestore.queryUploadIntents).toHaveBeenNthCalledWith(
+			2,
+			'fake-admin-token', PROJECT_ID, 'uploaded', 'expiresAt',
+			expect.any(Number), expect.any(Number), undefined, undefined,
+		)
+		expect(firestore.deleteDoc).toHaveBeenCalledWith(
+			'fake-admin-token', PROJECT_ID, `trips/${TRIP_ID}/uploadIntents/up-old`,
+		)
+	})
+
+	it('used intent past USED_RETENTION_DAYS → deleted in pass 3', async () => {
 		// usedAt 8 days ago, past the 7-day retention.
 		const usedDoc = intentDoc({ id: 'u-old', usedAtMs: Date.now() - 8 * 24 * 60 * 60_000 })
 		vi.mocked(firestore.queryUploadIntents)
-			.mockResolvedValueOnce({ docs: [] })          // pass 1 empty
-			.mockResolvedValueOnce({ docs: [usedDoc] })   // pass 2 yields it
+			.mockResolvedValueOnce({ docs: [] })          // pending pass empty
+			.mockResolvedValueOnce({ docs: [] })          // uploaded pass empty
+			.mockResolvedValueOnce({ docs: [usedDoc] })   // used pass yields it
 
 		const report = await purgeExpiredUploadIntents('{}')
 		expect(report.deletedPending).toBe(0)
@@ -125,7 +148,7 @@ describe('purgeExpiredUploadIntents', () => {
 	it('within-retention used intent is NOT returned by query (server-side filter)', async () => {
 		await purgeExpiredUploadIntents('{}')
 
-		const call = vi.mocked(firestore.queryUploadIntents).mock.calls[1]!
+		const call = vi.mocked(firestore.queryUploadIntents).mock.calls[2]!
 		expect(call[2]).toBe('used')
 		expect(call[3]).toBe('usedAt')
 		const beforeMs = call[4] as number
