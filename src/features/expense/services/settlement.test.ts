@@ -122,7 +122,7 @@ describe('computeBalances + settlements', () => {
 
   it('paid / owed are derived from expenses only — settlements never inflate them', () => {
     // Old algorithm bug: settlement amount got added to paid (for sender)
-    // and owed (for receiver), making "立替 / 分担" display read 2x of
+    // and owed (for receiver), making "代墊 / 分擔" display read 2x of
     // reality for any pair that had settled. Debt-edge model fixes this.
     const expenses = [mkExpense('m1', 100, [['m1', 50], ['m2', 50]])]
     const settlements = [mkSettlement('m2', 'm1', 50)]

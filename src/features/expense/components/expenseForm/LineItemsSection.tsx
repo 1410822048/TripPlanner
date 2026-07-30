@@ -1,6 +1,6 @@
 // src/features/expense/components/expenseForm/LineItemsSection.tsx
 // Pure presentational section for the by-item「明細」 domain — receipt item
-// rows, adjustment rows (割引/税/調整), the add-row/add-adjustment buttons,
+// rows, adjustment rows (折扣/稅金/調整), the add-row/add-adjustment buttons,
 // and the sum-check banner. Rendered instead of SplitsSection when
 // items.length > 0.
 //
@@ -103,7 +103,7 @@ export default function LineItemsSection({
         {adjustments.length > 0 && (
           <div className="rounded-input border border-border bg-surface overflow-hidden divide-y divide-border">
             <div className="px-2.5 py-2 text-[11px] font-semibold text-muted">
-              割引・税・調整
+              折扣、稅金與調整
             </div>
             {adjustments.map((adj, i) => (
               <ExpenseAdjustmentRow
@@ -151,7 +151,7 @@ export default function LineItemsSection({
         </div>
 
         {/* Sum check — compares the post-adjustment effective total
-            to the bill total. Same green/red pattern as カスタム split.
+            to the bill total. Same green/red pattern as custom split.
             Small + reads better in place, so it stays inline (not a
             separate row component). */}
         {amountMinor > 0 && (

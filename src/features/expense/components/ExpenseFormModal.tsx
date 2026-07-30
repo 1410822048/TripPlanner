@@ -5,7 +5,7 @@
 // sync-in-effect step, no cascade renders after mount.
 //
 // Two split modes:
-//   - "traditional" (items.length === 0): 均等 / カスタム tabs, manual entry
+//   - "traditional" (items.length === 0): 平均分攤 / 自訂 tabs, manual entry
 //   - "by-item"     (items.length  > 0): chip-per-row member assignment,
 //                                        splits computed from items at save
 // The mode is implicit in `items.length` rather than a separate flag —
@@ -14,7 +14,7 @@
 //
 // Heavy state is delegated to feature-scoped hooks:
 //   - useFormReducer   — title/amount/date/category/paidBy/note
-//   - useSplitsState   — 均等/カスタム split mode
+//   - useSplitsState   — 平均分攤/自訂 split mode
 //   - useAttachment    — receipt file lifecycle (existing/new/cleared)
 //   - useExpenseItems  — by-item state + mutators
 //   - useReceiptOcr    — OCR orchestration (source + worker flow +
@@ -499,7 +499,7 @@ export default function ExpenseFormModal({
                 key={m.id}
                 type="button"
                 onClick={() => setField('paidBy', m.id)}
-                aria-label={`立替: ${m.label}`}
+                aria-label={`代墊者：${m.label}`}
                 aria-pressed={active}
                 className={[
                   'p-0 bg-transparent border-none cursor-pointer rounded-full transition-all',
@@ -515,7 +515,7 @@ export default function ExpenseFormModal({
         </div>
       </FormField>
 
-      {/* By-item mode replaces the 均等/カスタム block entirely. The
+      {/* By-item mode replaces the 平均分攤/自訂 block entirely. The
           two modes share `splits` semantics downstream — only the input
           UX differs. */}
       {items.hasItems ? (

@@ -105,7 +105,7 @@ function SwipeableExpenseItem({
                     {payer && (
                       <>
                         <MemberAvatar member={payer} size={14} />
-                        <span>立替</span>
+                        <span>代墊</span>
                         <span className="text-border">·</span>
                       </>
                     )}

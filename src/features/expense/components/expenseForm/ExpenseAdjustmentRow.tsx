@@ -1,7 +1,7 @@
 // src/features/expense/components/expenseForm/ExpenseAdjustmentRow.tsx
-// One adjustment row (割引/税/調整) inside LineItemsSection: label + signed
+// One adjustment row (折扣/稅金/調整) inside LineItemsSection: label + signed
 // amount (+ ≈ preview), kind/scope/delete controls, optional ITEM-scope
-// target select, and the 「誰に効くか」 summary. Pure presentational — split
+// target select, and the 適用範圍 summary. Pure presentational — split
 // out of LineItemsSection to shorten the .map() body; no behavior change.
 import { Trash2 } from 'lucide-react'
 import {
@@ -19,17 +19,17 @@ import type { TripMember } from '@/features/trips/types'
 import type { FormItem } from '../../hooks/useExpenseItems'
 
 const ADJUSTMENT_KIND_LABEL: Record<ExpenseAdjustmentKind, string> = {
-  DISCOUNT:   '割引',
+  DISCOUNT:   '折扣',
   COUPON:     '優惠券',
-  TAX_EXEMPT: '免税',
-  SURCHARGE:  '追加料金',
-  TAX:        '税',
+  TAX_EXEMPT: '免稅',
+  SURCHARGE:  '附加費',
+  TAX:        '稅金',
   TIP:        '小費',
   OTHER:      '其他',
 }
 
 const ADJUSTMENT_SCOPE_OPTIONS: { value: ExpenseAdjustmentScope; label: string }[] = [
-  { value: 'EXPENSE', label: '全体' },
+  { value: 'EXPENSE', label: '整筆費用' },
   { value: 'ITEM',    label: '項目' },
 ]
 
@@ -37,7 +37,7 @@ interface ExpenseAdjustmentRowProps {
   index:        number
   adjustment:   ExpenseAdjustment
   /** Sibling item list — feeds the ITEM-scope target select + the
-   *  「誰に効くか」 summary lookup. */
+   *  適用範圍 summary lookup. */
   items:        FormItem[]
   members:      TripMember[]
   symbol:       string
@@ -61,8 +61,8 @@ export default function ExpenseAdjustmentRow({
   onSetLabel, onSetAmount, onSetKind, onSetScope, onSetTarget, onRemove,
 }: ExpenseAdjustmentRowProps) {
   const sign = adjustmentSign(adj.kind)
-  // UX B — who this adjustment hits: 全体 for EXPENSE scope, the target
-  // item + its allocated members for ITEM scope. Makes 「クーポン −¥30」legible
+  // UX B — who this adjustment hits: the entire expense or the target
+  // item + its allocated members. Makes a coupon adjustment legible
   // (扣哪個項目 / 影響誰).
   const targetItem = adj.scope === 'ITEM'
     ? items.find(it => it.id === adj.targetItemId)
@@ -114,7 +114,7 @@ export default function ExpenseAdjustmentRow({
         <select
           value={adj.scope}
           onChange={e => onSetScope(adj.id, e.target.value as ExpenseAdjustmentScope, items.map(it => it.id))}
-          aria-label={`調整 ${index + 1} 対象範囲`}
+          aria-label={`調整 ${index + 1} 適用範圍`}
           className={compactInputClass(false)}
         >
           {ADJUSTMENT_SCOPE_OPTIONS.map(scope => (
@@ -136,7 +136,7 @@ export default function ExpenseAdjustmentRow({
         <select
           value={adj.targetItemId ?? ''}
           onChange={e => onSetTarget(adj.id, e.target.value)}
-          aria-label={`調整 ${index + 1} 対象項目`}
+          aria-label={`調整 ${index + 1} 適用項目`}
           className={compactInputClass(false)}
         >
           <option value="" disabled>選擇目標項目</option>
@@ -148,13 +148,13 @@ export default function ExpenseAdjustmentRow({
         </select>
       )}
 
-      {/* UX B — 「誰に効くか」 summary. EXPENSE = 全体; ITEM = target item
+      {/* UX B — 適用範圍摘要。EXPENSE = 整筆費用; ITEM = target item
           name + its allocation member avatars. */}
       {adj.scope === 'EXPENSE' ? (
-        <div className="text-[10.5px] text-muted">対象: 全体</div>
+        <div className="text-[10.5px] text-muted">適用範圍：整筆費用</div>
       ) : targetItem ? (
         <div className="flex items-center gap-1.5 text-[10.5px] text-muted min-w-0">
-          <span className="shrink-0">対象:</span>
+          <span className="shrink-0">適用範圍：</span>
           <span className="truncate font-medium text-ink">
             {targetItem.name.trim() || '項目'}
           </span>

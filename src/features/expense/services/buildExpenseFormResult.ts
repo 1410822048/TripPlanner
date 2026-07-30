@@ -73,7 +73,7 @@ export interface BuildExpenseFormInput {
   items:       ExpenseFormDraftItem[]
   adjustments: ExpenseAdjustment[]
   splitMode:   SplitMode
-  /** 均等模式被勾選納入分攤的 member id(原始集合內容;builder 會與
+  /** 平均分攤模式被勾選納入分攤的 member id(原始集合內容;builder 會與
    *  `memberIds` 取交集以保留成員順序)。 */
   includedIds:   string[]
   /** 自訂模式每位成員的輸入文字,key 為 memberId。 */

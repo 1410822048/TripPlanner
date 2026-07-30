@@ -92,6 +92,6 @@ describe('ExpenseReadonlyModal', () => {
       />,
     )
     expect(screen.getByText('クーポン値引')).toBeTruthy()
-    expect(screen.getByText('対象: サンドイッチ')).toBeTruthy()
+    expect(screen.getByText('適用範圍：サンドイッチ')).toBeTruthy()
   })
 })

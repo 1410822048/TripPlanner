@@ -6,15 +6,15 @@ import { QueryClient, MutationCache } from '@tanstack/react-query'
 import { toast } from '@/shared/toast'
 import { captureError } from '@/services/sentry'
 
-/** Centralised Japanese verb phrases used as `MutationMeta.action`.
+/** Centralised Traditional Chinese verb phrases used as `MutationMeta.action`.
  *  Surfaces in the failure toast prefix and the Sentry tag, so a typo
  *  silently breaks Sentry aggregation while still looking fine in the
  *  toast. Keeping them in one constant map prevents drift and lets the
  *  IDE autocomplete the right phrase at the call site.
  *
  *  Add new entries when a new mutation hook needs a phrase that isn't
- *  one of the shared verbs. Keep entity-specific creates (`予約の追加`)
- *  separate from generic verbs (`追加`, `更新`, `削除`) — share within
+ *  one of the shared verbs. Keep entity-specific creates (`新增訂單`)
+ *  separate from generic verbs (`新增`, `更新`, `刪除`) — share within
  *  an entity family, not across. */
 export const MUTATION_ACTION = {
   // ── Generic verbs (update / delete reused across all entities) ─
@@ -36,9 +36,9 @@ export const MUTATION_ACTION = {
   TOGGLE_VOTE:       '投票',
   CHANGE_ROLE:       '變更權限',
   TRANSFER_OWNER:    '轉讓擁有者',
-  RECORD_SETTLEMENT: '清算記録',
+  RECORD_SETTLEMENT: '清算紀錄',
   CANCEL_SETTLEMENT: '取消清算',
-  CREATE_INVITE:     '邀請連結作成',
+  CREATE_INVITE:     '建立邀請連結',
   REVOKE_INVITE:     '撤銷邀請',
 } as const
 

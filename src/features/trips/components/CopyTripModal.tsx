@@ -136,7 +136,7 @@ export default function CopyTripModal({ isOpen, source, isSaving, onClose, onCon
               onChange={e => setField('copySchedules', e.target.checked)}
               className="w-4 h-4 accent-accent cursor-pointer"
             />
-            <span>📅 行程内容（日期會依新開始日自動偏移）</span>
+            <span>📅 行程內容（日期會依新開始日自動偏移）</span>
           </label>
           <label className="flex items-center gap-2.5 cursor-pointer text-[13px]">
             <input

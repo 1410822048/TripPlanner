@@ -100,7 +100,7 @@ export function normalizeMoneyTextForCurrency(text: string, currency: string): s
 }
 
 /**
- * 均等分攤 — 餘數逐一分給前面的成員,保證 sum === totalMinor。
+ * 平均分攤 — 餘數逐一分給前面的成員,保證 sum === totalMinor。
  * 回傳符合 Firestore schema 的 ExpenseSplit[]。
  *
  * 支援正、負、零 totalMinor:
@@ -137,7 +137,7 @@ export function splitSummary(e: Expense, totalMembers: number): string {
   const allEqual = nonZero.every(s => Math.abs(s.amountMinor - first.amountMinor) <= 1)
   if (allEqual) {
     return nonZero.length === totalMembers
-      ? `${nonZero.length}人均等`
+      ? `${nonZero.length} 人平均分攤`
       : `${nonZero.length} 人均分`
   }
   return '自訂分攤'

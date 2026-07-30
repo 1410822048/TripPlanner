@@ -76,14 +76,14 @@ describe('splitEqually', () => {
 })
 
 describe('splitSummary', () => {
-  it('reports N人均等 when all N members share equally', () => {
+  it('reports N 人平均分攤 when all N members share equally', () => {
     const e = mkExpense([
       { memberId: 'm1', amountMinor: 1000 },
       { memberId: 'm2', amountMinor: 1000 },
       { memberId: 'm3', amountMinor: 1000 },
       { memberId: 'm4', amountMinor: 1000 },
     ])
-    expect(splitSummary(e, 4)).toBe('4人均等')
+    expect(splitSummary(e, 4)).toBe('4 人平均分攤')
   })
 
   it('tolerates ±1 rounding residual as equal split', () => {
@@ -93,10 +93,10 @@ describe('splitSummary', () => {
       { memberId: 'm2', amountMinor: 334 },
       { memberId: 'm3', amountMinor: 333 },
     ])
-    expect(splitSummary(e, 3)).toBe('3人均等')
+    expect(splitSummary(e, 3)).toBe('3 人平均分攤')
   })
 
-  it('reports 人で均等 when subset of members split equally', () => {
+  it('reports 人均分 when a subset of members split equally', () => {
     const e = mkExpense([
       { memberId: 'm1', amountMinor: 500 },
       { memberId: 'm2', amountMinor: 500 },
@@ -104,7 +104,7 @@ describe('splitSummary', () => {
     expect(splitSummary(e, 4)).toBe('2 人均分')
   })
 
-  it('reports カスタム分担 when amounts diverge beyond ±1', () => {
+  it('reports 自訂分攤 when amounts diverge beyond ±1', () => {
     const e = mkExpense([
       { memberId: 'm1', amountMinor: 700 },
       { memberId: 'm2', amountMinor: 300 },

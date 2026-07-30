@@ -306,7 +306,7 @@ export default function SettlementRecordSheet({
           </div>
         </FormField>
 
-        <FormField label="受取通貨">
+        <FormField label="收款幣別">
           {/* Picking the trip currency keeps the sheet in TRIP_CURRENCY
               mode (degenerate path, no FX). Picking a different code
               flips to FOREIGN_CURRENCY. */}
@@ -314,7 +314,7 @@ export default function SettlementRecordSheet({
         </FormField>
 
         {isForeignMode && (
-          <FormField label="受取日" error={errors.settledOn} required>
+          <FormField label="收款日期" error={errors.settledOn} required>
             {/* Settled-on bounds the FX rate lookup. maxDate caps the
                 picker at today so the user can't pick a future date
                 (Worker would reject with FX_FUTURE_DATE_UNSUPPORTED).

@@ -33,8 +33,8 @@ const MENU_ACTIONS: {
   danger:    boolean
   ownerOnly: boolean
 }[] = [
-  { key:'edit',     icon:PencilLine, label:'編輯行程資訊', sub:'名稱・日期・目的地・幣別', danger:false, ownerOnly:true  },
-  { key:'members',  icon:UsersRound, label:'管理成員',     sub:'邀請・移除旅伴',           danger:false, ownerOnly:false },
+  { key:'edit',     icon:PencilLine, label:'編輯行程資訊', sub:'名稱、日期、目的地與幣別', danger:false, ownerOnly:true  },
+  { key:'members',  icon:UsersRound, label:'管理成員',     sub:'邀請或移除旅伴',           danger:false, ownerOnly:false },
   { key:'copy',     icon:Copy,       label:'複製行程',     sub:'建立此行程的副本',          danger:false, ownerOnly:false },
   { key:'share',    icon:Link,       label:'分享行程',     sub:'產生邀請連結',              danger:false, ownerOnly:true  },
 ]

@@ -82,7 +82,7 @@ export default function ExpenseReadonlyModal({
         </div>
       </div>
 
-      <FormField label="支払者">
+      <FormField label="付款人">
         <div className="flex items-center gap-2 rounded-input border border-border bg-app px-3 py-2">
           {payer && <MemberAvatar member={payer} size={28} />}
           <span className="text-[13px] font-semibold text-ink">{payer?.label ?? expense.paidBy}</span>
@@ -147,7 +147,7 @@ export default function ExpenseReadonlyModal({
               const sign = adjustmentSign(adjustment.kind)
               const targetItemName =
                 adjustment.scope === 'ITEM' && adjustment.targetItemId
-                  ? itemNameById.get(adjustment.targetItemId) ?? '品目不明'
+                  ? itemNameById.get(adjustment.targetItemId) ?? '未知項目'
                   : null
               return (
                 <div key={adjustment.id} className="flex items-start gap-2 px-3 py-2">
@@ -157,7 +157,7 @@ export default function ExpenseReadonlyModal({
                     </div>
                     {targetItemName && (
                       <div className="mt-0.5 text-[10.5px] font-semibold text-muted truncate">
-                        対象: {targetItemName}
+                        適用範圍：{targetItemName}
                       </div>
                     )}
                   </div>

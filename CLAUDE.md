@@ -89,7 +89,7 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 ### `/expense` — ExpensePage
 - **CRUD**: `useCreateExpense` / `useUpdateExpense` / `useDeleteExpense`(`features/expense/hooks/useExpenses.ts`)
 - **特色 1 — OCR**: 拍照 → 自動觸發 `useOcrFlow` → Cloudflare Worker → OCR provider 解析收據 → 填入 items[] + 標題 + 金額
-- **特色 2 — Items 模式**: items.length > 0 時,均等 / カスタム split 收起,改用 chip-per-row 多選分擔者,splits 反算
+- **特色 2 — Items 模式**: items.length > 0 時,平均分攤 / 自訂 split 收起,改用 chip-per-row 多選分擔者,splits 反算
 - **特色 3 — Settlement (debt-edge model)**: 演算法在 `services/settlement.ts`,**pairwise gross → applied(cap)→ remaining → normalize → net** 五步純函式。核心不變式: **settlement 只能 reduce 既存 debt,不能 create 反向 debt** — 刪 expense 後不會冒出反方向應付款,超出天然債務的部分變 `orphan` 顯式 surface。`paid` / `owed` 顯示**只看 expenses**(不被 settlement 污染);`net` 來自 normalize 後的剩餘 debt。**受取人(toUid)唯一可按「済み」**(firestore.rules 鎖死;付款人視覺上不是按鈕,是 Clock + 「受取待ち」status pill)。Settlement 歷史:預設展開最近 2 筆,行內兩段刪除(`settledBy` 才能刪)。詳見「複雜流程詳解 / Settlement debt-edge model」
 - **特色 4 — 列表日期 fold**: `ExpenseDateGroups` 預設展開最近 2 天(`DEFAULT_EXPANDED_DAYS`);user override 用 `useState<Map<date,bool>>` 記,加新費用造成日期 reorder 時 toggle 選擇不被覆蓋
 - **Optimistic close**: 按存 → modal 立刻收 → list 顯示半透明 row + 旋轉「保存中…」(tempId 偵測)→ 完成後 realtime 替換
@@ -239,7 +239,7 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 
 **Pending row 視覺 / 互動規範**(`SwipeableExpenseItem.tsx`):
 - 偵測: `const isPending = expense.id.startsWith('temp-')`
-- 視覺: `opacity-55` 半透明,meta 行用 `<Loader2 className="animate-spin" />` + 「**保存中…**」取代原本的 `[A] 立替 · 4人均等`
+- 視覺: `opacity-55` 半透明,meta 行用 `<Loader2 className="animate-spin" />` + 「**儲存中…**」取代原本的 `[A] 代墊 · 4 人平均分攤`
 - 互動: `onClick = undefined`(完全不接 tap)+ `swipeable = false`(`useSwipeRow` 整個禁用)
 - 解除: realtime listener 把 cache 內 tempId row 換成 server-issued ID 的 row,**單一 boolean 由資料推導**,不需手動 cleanup
 

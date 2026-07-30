@@ -1,6 +1,6 @@
 // src/features/expense/components/expenseForm/SplitsSection.tsx
-// Pure presentational section for the 「割り勘」 manual-split UI — the
-// 均等 / カスタム tabs + per-member rows + custom-sum check. Rendered when
+// Pure presentational section for the manual-split UI — the
+// 平均分攤 / 自訂 tabs + per-member rows + custom-sum check. Rendered when
 // there are no receipt items. Split out of ExpenseFormModal (item 3);
 // useSplitsState + the derived split math stay in the modal.
 import FormField from '@/components/ui/FormField'
@@ -40,10 +40,10 @@ export default function SplitsSection({
   return (
     <FormField label="分攤" error={error}>
       <div className="flex flex-col gap-2">
-        {/* 割勘方式切換 */}
+        {/* 分攤方式切換 */}
         <div className="flex gap-1 p-1 rounded-full bg-app border border-border">
           {([
-            { value: 'equal',  label: '均等' },
+            { value: 'equal',  label: '平均分攤' },
             { value: 'custom', label: '自訂' },
           ] as const).map(m => {
             const active = mode === m.value

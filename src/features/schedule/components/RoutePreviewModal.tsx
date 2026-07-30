@@ -115,7 +115,7 @@ function StopTimeline({ preview, scheduleById, timeConflicts }: PreviewSectionPr
                       )}
                       <span className="truncate">
                         {leg.kind === 'walking'
-                          ? `步行約 ${Math.round(leg.walkingMinutes)} 分鐘${leg.geometryAvailable ? '' : '・路線未顯示'}`
+                          ? `步行約 ${Math.round(leg.walkingMinutes)} 分鐘${leg.geometryAvailable ? '' : '（未顯示路線）'}`
                           : `大眾運輸估計約 ${leg.transitEstimate.minMinutes}–${leg.transitEstimate.maxMinutes} 分鐘`}
                       </span>
                     </span>

@@ -133,7 +133,7 @@ export default function InviteModal({ isOpen, onClose, trip }: Props) {
         >
           <LinkIcon size={14} strokeWidth={2.5} />
           {createMut.isPending
-            ? '作成中…'
+            ? '建立中…'
             : currentInvite ? '重新建立邀請連結' : '建立邀請連結'}
         </button>
 

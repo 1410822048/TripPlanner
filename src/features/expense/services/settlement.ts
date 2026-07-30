@@ -285,8 +285,8 @@ export function computeBalancesFull(
     ghosts.push(ghostMember(id))
   }
 
-  // 立替 = 你代墊給整組的金額;分擔 = 你的那份。Settlement 是 payment
-  // layer,不該污染這兩個語義(否則「立替」會把還的錢也算進去)。
+  // 代墊 = 你代墊給整組的金額;分擔 = 你的那份。Settlement 是 payment
+  // layer,不該污染這兩個語義(否則「代墊」會把還的錢也算進去)。
   const paid: Record<string, number> = {}
   const owed: Record<string, number> = {}
 
