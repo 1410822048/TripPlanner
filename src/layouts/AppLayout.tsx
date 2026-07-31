@@ -76,10 +76,10 @@ export default function AppLayout() {
   // them through /schedule first. The hook is a no-op in demo mode.
   useCurrentTripSync()
 
-  // Cache-warming: kicks off the bookings query as soon as a currentTrip is
-  // known, in parallel with whatever page the user is on. When they
-  // navigate to /bookings, the list resolves from cache — closes the
-  // visible "header showing but list still loading" gap on cold load.
+  // Cache-warming: after a grace period + browser idle, prefetch Bookings only
+  // when the membership-derived trip cache confirms the persisted trip id.
+  // This keeps /schedule's auth + trip work ahead of a non-visible tab while
+  // preserving a warm Booking list on normal connections.
   usePrefetchBookings()
 
   const { state: pushOwnerAuthState } = useAuth()
