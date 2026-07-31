@@ -5,10 +5,9 @@ import { getDocFields, readString } from './firestore'
 import { TxRetryExhausted } from './firestore-tx'
 import { TripIdRe } from './field-validation'
 import { deleteR2Object, getR2Object } from './r2-storage'
-import { uploadAttachmentToIntent } from './upload-intent'
+import { MAX_ATTACHMENT_BYTES, uploadAttachmentToIntent } from './upload-intent'
 import { json, TX_RETRY_EXHAUSTED_MESSAGE, uidTag } from './route-dispatch'
 
-const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 const IntentIdRe = /^[a-f0-9]{32}$/
 export const ATTACHMENT_TRIP_HEADER = 'X-Attachment-Trip-Id'
 export const ATTACHMENT_PATH_HEADER = 'X-Attachment-Path'

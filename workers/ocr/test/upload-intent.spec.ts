@@ -149,7 +149,7 @@ describe('static validation (rejects before Firestore tx)', () => {
 		expect(txGetSpy).toBeNull()  // proves we never entered tx
 	})
 
-	it('rejects size > MAX_BYTES (5 MB)', async () => {
+	it('rejects size > MAX_ATTACHMENT_BYTES (5 MB)', async () => {
 		await expect(
 			createUploadIntents(CALLER_UID, imageFullReq({
 				uploads: [{ kind: 'full', contentType: 'image/webp', size: 6 * 1024 * 1024 }],

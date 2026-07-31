@@ -26,7 +26,10 @@ vi.mock('../src/cascade', async () => {
   return { ...actual, withTokenRetry: <T>(run: () => Promise<T>) => run() }
 })
 
-vi.mock('../src/upload-intent', () => ({ uploadAttachmentToIntent: uploadMock }))
+vi.mock('../src/upload-intent', async () => {
+  const actual = await vi.importActual<typeof import('../src/upload-intent')>('../src/upload-intent')
+  return { ...actual, uploadAttachmentToIntent: uploadMock }
+})
 vi.mock('../src/r2-storage', () => ({
   getR2Object:    getObjectMock,
   deleteR2Object: deleteObjectMock,

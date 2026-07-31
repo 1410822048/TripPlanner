@@ -50,7 +50,7 @@ import { TripIdRe }                                                  from './fie
 const EXPIRE_MS = 30 * 60 * 1000
 
 /** Hard cap on object size, mirrored by the raw upload endpoint and client. */
-const MAX_BYTES = 5 * 1024 * 1024
+export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 
 /** Worker-owned metadata schema version. The client passes it through
  *  opaquely; upload and consume both compare the exact intent-bound shape. */
@@ -229,8 +229,8 @@ function validateUploadRequests(req: UploadIntentsRequest): void {
     if (!allowed.includes(u.contentType)) {
       throw new CascadeError(400, `contentType '${u.contentType}' not allowed for ${req.entityType}`)
     }
-    if (u.size > MAX_BYTES) {
-      throw new CascadeError(413, `upload size ${u.size} exceeds maxBytes ${MAX_BYTES}`)
+    if (u.size > MAX_ATTACHMENT_BYTES) {
+      throw new CascadeError(413, `upload size ${u.size} exceeds maxBytes ${MAX_ATTACHMENT_BYTES}`)
     }
     // kind ↔ contentType pairing
     if (u.kind === 'pdf' && u.contentType !== 'application/pdf') {
@@ -326,7 +326,7 @@ async function doCreate(
         allowedContentTypes: {
           arrayValue: { values: [{ stringValue: upload.contentType }] },
         },
-        maxBytes:   { integerValue: String(MAX_BYTES) },
+        maxBytes:   { integerValue: String(MAX_ATTACHMENT_BYTES) },
         expectedBytes: { integerValue: String(upload.size) },
         customMetadata: {
           mapValue: {
@@ -467,8 +467,8 @@ function readUploadContract(
   if (expectedBytes === undefined || expectedBytes !== input.bytes.byteLength) {
     throw new CascadeError(400, `upload size ${input.bytes.byteLength} does not match intent size ${expectedBytes ?? 'missing'}`)
   }
-  if (input.bytes.byteLength > MAX_BYTES) {
-    throw new CascadeError(413, `upload size ${input.bytes.byteLength} exceeds maxBytes ${MAX_BYTES}`)
+  if (input.bytes.byteLength > MAX_ATTACHMENT_BYTES) {
+    throw new CascadeError(413, `upload size ${input.bytes.byteLength} exceeds maxBytes ${MAX_ATTACHMENT_BYTES}`)
   }
 
   const metadataFields = (fields.customMetadata as { mapValue?: { fields?: Record<string, FsValue> } } | undefined)?.mapValue?.fields
@@ -892,12 +892,12 @@ async function validatePdfPageLimitOrDelete(
     await deleteRejectedObject(bucket, path)
     throw new CascadeError(400, `downloaded PDF contentType mismatch: ${contentType}`)
   }
-  if (object.size > MAX_BYTES) {
+  if (object.size > MAX_ATTACHMENT_BYTES) {
     await deleteRejectedObject(bucket, path)
-    throw new CascadeError(413, `downloaded PDF size ${object.size} exceeds limit ${MAX_BYTES}`)
+    throw new CascadeError(413, `downloaded PDF size ${object.size} exceeds limit ${MAX_ATTACHMENT_BYTES}`)
   }
   const bytes = await object.arrayBuffer()
-  if (bytes.byteLength !== storage.size || bytes.byteLength > MAX_BYTES) {
+  if (bytes.byteLength !== storage.size || bytes.byteLength > MAX_ATTACHMENT_BYTES) {
     await deleteRejectedObject(bucket, path)
     throw new CascadeError(413, `downloaded PDF size ${bytes.byteLength} differs from validated metadata size ${storage.size}`)
   }
