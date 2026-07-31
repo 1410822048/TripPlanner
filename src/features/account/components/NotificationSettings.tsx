@@ -103,7 +103,7 @@ export default function NotificationSettings({ uid }: { uid: string }) {
               可從主畫面使用
             </div>
             <div className="mt-2 text-[12px] leading-[1.7] text-accent/85">
-              請從 Safari 的分享選單加入主畫面，再由加入後的 TripMate 開啟。
+              請從瀏覽器的分享選單將 TripMate 加入主畫面，再由主畫面開啟。
             </div>
           </div>
         ) : null}
