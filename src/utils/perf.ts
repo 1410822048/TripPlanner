@@ -10,7 +10,14 @@
 //   getPerfMarks() → [{ label, t }] sorted by t
 
 const marks: Array<{ label: string; t: number }> = []
+const metrics = new Map<'LCP' | 'CLS', PerfMetric>()
 const subscribers = new Set<() => void>()
+
+export interface PerfMetric {
+  name: 'LCP' | 'CLS'
+  value: number
+  detail?: string
+}
 
 /** Page load epoch — performance.now() returns time since this anchor. */
 const epoch = typeof performance !== 'undefined' ? performance.timeOrigin : Date.now()
@@ -23,6 +30,23 @@ export function markPerf(label: string): void {
 
 export function getPerfMarks(): ReadonlyArray<{ label: string; t: number }> {
   return marks
+}
+
+export function setPerfMetric(metric: PerfMetric): void {
+  metrics.set(metric.name, metric)
+  for (const fn of subscribers) fn()
+}
+
+export function getPerfMetrics(): ReadonlyArray<PerfMetric> {
+  return Array.from(metrics.values())
+}
+
+export function isPerfDebugEnabled(): boolean {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem('tripmate.perf') === '1'
+  } catch {
+    return false
+  }
 }
 
 export function subscribePerf(fn: () => void): () => void {

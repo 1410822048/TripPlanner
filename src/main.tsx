@@ -5,7 +5,7 @@ import './utils/perf'   // FIRST — captures the app-start mark on module load
 import { initSentry } from './services/sentry'
 import { getFirebase } from './services/firebase'
 import { readAuthHint } from './hooks/useAuth'
-import { markPerf } from './utils/perf'
+import { isPerfDebugEnabled, markPerf } from './utils/perf'
 import './index.css'
 import App from './App.tsx'
 
@@ -56,3 +56,19 @@ createRoot(document.getElementById('root')!).render(
     <App />
   </StrictMode>,
 )
+
+// Attribution is opt-in so normal users pay zero bundle/network cost. The
+// observers use buffered entries, therefore idle loading still captures the
+// document's earlier LCP and layout shifts without perturbing the critical
+// rendering path being measured.
+if (isPerfDebugEnabled()) {
+  const start = () => {
+    void import('./utils/webVitalsDebug').then(({ startWebVitalsDebug }) => {
+      startWebVitalsDebug()
+    }).catch(error => {
+      console.warn('[perf] failed to load Web Vitals diagnostics', error)
+    })
+  }
+  if ('requestIdleCallback' in window) window.requestIdleCallback(start, { timeout: 3000 })
+  else setTimeout(start, 1500)
+}
