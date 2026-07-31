@@ -62,13 +62,32 @@ export const FIREBASE_EMULATOR_MODE = import.meta.env.DEV && import.meta.env.VIT
 const EMULATOR_HOST = import.meta.env.VITE_FIREBASE_EMULATOR_HOST ?? '127.0.0.1'
 const EMULATOR_PORTS = { auth: 9099, firestore: 8080 } as const
 
+// Production defaults to bounded long-polling because some Chromium/HTTP3
+// paths repeatedly terminate Firestore's idle WebChannel with
+// QUIC_NETWORK_IDLE_TIMEOUT. A 25-second server timeout closes each hanging
+// GET before the affected network path does. Set the local/CI build-time flag
+// to `false` through `.env.production` or the CI environment to return to the
+// SDK's default auto-detection after the upstream issue is resolved. This
+// direct-upload deploy does not read Pages dashboard variables at runtime.
+// Dev/emulator traffic always keeps auto mode.
+const FORCE_FIRESTORE_LONG_POLLING = import.meta.env.PROD
+  && import.meta.env.VITE_FIRESTORE_FORCE_LONG_POLLING !== 'false'
+const FIRESTORE_LONG_POLLING_TIMEOUT_SECONDS = 25
+
 let appPromise: Promise<FirebaseApp> | null = null
 function getApp(): Promise<FirebaseApp> {
   if (appPromise) return appPromise
   appPromise = (async () => {
     const m = await import('firebase/app')
     return m.getApps().length === 0 ? m.initializeApp(firebaseConfig) : m.getApp()
-  })()
+  })().catch(err => {
+    // Transient failures (chunk load after a fresh deploy, init throw) must
+    // not cache the rejected promise forever — every later Firestore/Auth
+    // call in the session would fail with it. Reset so the next call
+    // retries. Same pattern as getFirebaseMessaging below.
+    appPromise = null
+    throw err
+  })
   return appPromise
 }
 
@@ -86,8 +105,10 @@ let firestoreEmulatorConnected = false
  * often on spotty connections abroad). Multi-tab manager allows two
  * browser tabs to share the same cache without one locking the other out.
  * Writes made offline are queued in IndexedDB and flushed when connectivity
- * returns. Failure to init persistence is non-fatal — we fall back to the
- * default in-memory cache.
+ * returns. Init failure is fatal in production (fail-closed — a bad
+ * transport setting must not be silently replaced by defaults), but the
+ * rejection is never cached: the next call retries. Only dev falls back
+ * to getFirestore() defaults (HMR double-init).
  */
 export function getFirebase(): Promise<FirebaseBundle> {
   if (bundlePromise) return bundlePromise
@@ -95,23 +116,38 @@ export function getFirebase(): Promise<FirebaseBundle> {
     const [app, fs] = await Promise.all([getApp(), import('firebase/firestore')])
     // `ignoreUndefinedProperties` lets optional form fields pass through as
     // `undefined` without triggering "Unsupported field value: undefined".
-    // Second call on HMR throws; swallow and fall through to the existing instance.
+    // A second call on HMR throws; development may reuse the existing instance.
+    // Production initialization errors must remain fatal so a bad transport
+    // setting cannot be silently replaced by getFirestore() defaults.
     // Targets the auto-created `(default)` database (no third arg).
+    let db: Firestore
     try {
-      fs.initializeFirestore(app, {
+      db = fs.initializeFirestore(app, {
         ignoreUndefinedProperties: true,
+        ...(FORCE_FIRESTORE_LONG_POLLING && {
+          experimentalForceLongPolling: true,
+          experimentalLongPollingOptions: {
+            timeoutSeconds: FIRESTORE_LONG_POLLING_TIMEOUT_SECONDS,
+          },
+        }),
         localCache: FIREBASE_EMULATOR_MODE
           ? fs.memoryLocalCache()
           : fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }),
       })
-    } catch { /* already initialized (HMR or second call) */ }
-    const db = fs.getFirestore(app)
+    } catch (error) {
+      if (!import.meta.env.DEV) throw error
+      db = fs.getFirestore(app)
+    }
     if (FIREBASE_EMULATOR_MODE && !firestoreEmulatorConnected) {
       fs.connectFirestoreEmulator(db, EMULATOR_HOST, EMULATOR_PORTS.firestore)
       firestoreEmulatorConnected = true
     }
     return { db, ...fs }
-  })()
+  })().catch(err => {
+    // See getApp: never cache a rejected bundle — retry on the next call.
+    bundlePromise = null
+    throw err
+  })
   return bundlePromise
 }
 
@@ -133,7 +169,11 @@ export function getFirebaseAuth(): Promise<AuthBundle> {
       authEmulatorConnected = true
     }
     return { auth, ...authMod }
-  })()
+  })().catch(err => {
+    // See getApp: never cache a rejected bundle — retry on the next call.
+    authBundlePromise = null
+    throw err
+  })
   return authBundlePromise
 }
 
