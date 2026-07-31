@@ -114,6 +114,16 @@ export async function getTripsByIds(
 }
 
 /**
+ * Server-authorised fast path for the persisted current trip. Deliberately
+ * bypasses IndexedDB: a cached document from another account must never be
+ * rendered before the current user's membership query has reconciled.
+ */
+export async function getTripByIdFromServer(tripId: string): Promise<Trip | null> {
+  const trips = await getTripsByIds([tripId], 'server')
+  return trips[0] ?? null
+}
+
+/**
  * Parse a single trip DocumentSnapshot into a Trip, returning [] on
  * schema failure (so flatMap drops the bad doc) and [trip] on success.
  *

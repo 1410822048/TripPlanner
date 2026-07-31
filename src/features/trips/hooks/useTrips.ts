@@ -20,21 +20,20 @@ import type { User } from 'firebase/auth'
 import {
   createTrip,
   getMyTripIds, getTripsByIds,
-  subscribeToMyTripIds, subscribeToTrip,
+  subscribeToMyTripIds,
   updateTrip, setWishVotingDeadline,
 } from '../services/tripService'
 import { deleteTrip } from '../services/tripCascade'
 import { leaveMember } from '@/features/members/services/memberService'
 import { copyTrip, type CopyTripInput, type CopyTripResult } from '../services/tripCopy'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
-import { captureError } from '@/services/sentry'
 import { getFirebase } from '@/services/firebase'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
 import { toLocalMidnightTimestamp } from '@/utils/dates'
 import { MUTATION_ACTION, type MutationMeta } from '@/services/queryClient'
-import { markPerf } from '@/utils/perf'
 import { useLastViewedStore } from '@/store/lastViewedStore'
 import { tripKeys } from '../queryKeys'
+import { acquireSharedTripSubscription, syncSharedTripIds } from './sharedTripSubscriptions'
 import type { CreateTripInput, Trip } from '@/types'
 
 /**
@@ -55,13 +54,13 @@ export const useMyTripIds = createRealtimeListHook<string>({
  * Realtime trip list. Internally:
  *   1. subscribes to the user's member-collection-group (via
  *      useMyTripIds) to keep the id list fresh,
- *   2. opens one trip-doc listener per id and aggregates pushes into
- *      tripKeys.mine(uid)'s array cache.
+ *   2. retains a module-level controller that opens one trip-doc listener
+ *      per id and aggregates pushes into tripKeys.mine(uid)'s array cache.
  *
- * The split lets membership changes (join / leave) and metadata edits
- * (title / dates / icon) propagate independently without re-querying
- * the unchanged half. Listeners are disposed when ids change so we
- * don't leak subscriptions to trips the user no longer belongs to.
+ * The controller is ref-counted per QueryClient + uid, so AppLayout and page
+ * hooks share parsing/cache publication instead of duplicating it. Membership
+ * changes (join / leave) still update the id set independently, and the final
+ * consumer release disposes every underlying listener.
  */
 export function useMyTrips(uid: string | undefined): UseQueryResult<Trip[]> {
   const qc = useQueryClient()
@@ -79,79 +78,17 @@ export function useMyTrips(uid: string | undefined): UseQueryResult<Trip[]> {
     staleTime: Infinity,
   })
 
+  useEffect(() => {
+    if (!uid) return
+    return acquireSharedTripSubscription(qc, uid)
+  }, [uid, qc])
+
   const idsResultIsSuccess = idsResult.isSuccess
   useEffect(() => {
-    // Derive `ids` from `idsKey` inside the effect so the dep array is
-    // honest (idsKey is the content-stable joined string; the outer
-    // `ids` array reference changes every render). This keeps React
-    // Compiler + exhaustive-deps happy with no eslint-disable.
+    if (!uid || !idsResultIsSuccess) return
     const idList = idsKey ? idsKey.split(',') : []
-    if (!uid || idList.length === 0) {
-      // No trips → ensure cache reflects empty rather than a stale list.
-      if (uid && idsResultIsSuccess) qc.setQueryData<Trip[]>(tripKeys.mine(uid), [])
-      return
-    }
-
-    let mounted = true
-    const unsubs: Array<() => void> = []
-    // Per-id Trip object accumulator. Listener pushes update individual
-    // entries; we recompute the array on each change so React-Query
-    // reference equality fires component updates.
-    const tripMap = new Map<string, Trip>()
-    let firstPublishMarked = false
-    const publish = () => {
-      if (!mounted) return
-      const arr = idList
-        .flatMap(id => {
-          const t = tripMap.get(id)
-          return t ? [t] : []
-        })
-        .sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis())
-      qc.setQueryData<Trip[]>(tripKeys.mine(uid), arr)
-      if (!firstPublishMarked && arr.length > 0) {
-        firstPublishMarked = true
-        markPerf('mytrips-first-publish')
-      }
-    }
-
-    idList.forEach(id => {
-      // No retry: trip docs use the same same-doc memberIds read rule
-      // as entity subcollections, so permission-denied here is a real
-      // revoke (trip deleted / left), not a propagation lag.
-      void subscribeToTrip(
-        id,
-        trip => {
-          if (trip) tripMap.set(id, trip)
-          else      tripMap.delete(id)
-          publish()
-        },
-        err => {
-          const code = (err as { code?: string }).code
-          if (code === 'permission-denied') {
-            if (import.meta.env.DEV) {
-              console.warn(`[useMyTrips/tripDoc:${id}] listener permission revoked`, err)
-            }
-            return
-          }
-          const e = err instanceof Error ? err : new Error(String(err))
-          const tagged = new Error(`[useMyTrips/tripDoc:${id}] ${e.message}`)
-          tagged.name  = e.name
-          tagged.stack = e.stack
-          captureError(tagged, { source: 'useMyTrips/tripDoc', tripId: id })
-        },
-      ).then(unsub => {
-        if (mounted) unsubs.push(unsub)
-        else unsub()
-      }).catch(e => {
-        captureError(e, { source: 'useMyTrips/subscribe-init', tripId: id })
-      })
-    })
-
-    return () => {
-      mounted = false
-      unsubs.forEach(u => u())
-    }
-  }, [uid, idsKey, qc, idsResultIsSuccess])
+    syncSharedTripIds(qc, uid, idList)
+  }, [uid, idsKey, idsResultIsSuccess, qc])
 
   return result
 }

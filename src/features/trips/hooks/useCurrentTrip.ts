@@ -9,24 +9,43 @@
 // render cycle stays coherent and no flushSync escape hatches are
 // needed at the call sites.
 //
+// Cold-boot fast path: while the membership-derived list is unresolved,
+// the persisted selection is read with getDocFromServer. This is deliberately
+// server-only — IndexedDB may contain a previous account's cached document.
+// Once myTrips resolves it immediately becomes authoritative again.
+//
 // Returns `null` in these cases:
 //   - Demo mode (uid undefined → useMyTrips disabled)
-//   - No persisted selection yet (cold boot before useCurrentTripSync)
-//   - selectedTripId points at a trip the user no longer belongs to
-//     (deleted / left / cache stale during sign-in)
+//   - No persisted selection yet
+//   - The server rejects the fast path, or myTrips proves the id inaccessible
 //
 // `useCurrentTripSync` (AppLayout) is responsible for keeping
 // selectedTripId aligned with the current list — falling back to
 // recents / myTrips[0] when the persisted id leaves the list.
+import { useQuery } from '@tanstack/react-query'
 import { useUid } from '@/hooks/useAuth'
 import { useTripStore } from '@/store/tripStore'
 import { useMyTrips } from './useTrips'
+import { getTripByIdFromServer } from '../services/tripService'
+import { tripKeys } from '../queryKeys'
 import type { Trip } from '@/types'
 
 export function useCurrentTrip(): Trip | null {
   const id  = useTripStore(s => s.selectedTripId)
   const uid = useUid()
   const { data: myTrips } = useMyTrips(uid)
-  if (!id || !myTrips) return null
-  return myTrips.find(t => t.id === id) ?? null
+  const fastTrip = useQuery({
+    queryKey: tripKeys.detail(uid ?? '', id ?? ''),
+    queryFn: () => getTripByIdFromServer(id!),
+    // Once the authoritative membership-derived list exists, it remains the
+    // sole source of truth. The direct server read only removes the cold-boot
+    // waterfall while that list is unresolved.
+    enabled: !!uid && !!id && myTrips === undefined,
+    staleTime: Infinity,
+    retry: false,
+  })
+
+  if (!id) return null
+  if (myTrips !== undefined) return myTrips.find(trip => trip.id === id) ?? null
+  return fastTrip.data ?? null
 }
