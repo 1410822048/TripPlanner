@@ -37,8 +37,7 @@ vi.mock('./workerBase', () => ({
 // src/utils/retry tests; here we want to assert the primitive's
 // orchestration contract, not its retry plumbing.
 vi.mock('@/utils/retry', () => ({
-	retry:                   <T,>(fn: () => Promise<T>) => fn(),
-	isTransientStorageError: () => false,
+	retry: <T,>(fn: () => Promise<T>) => fn(),
 }))
 
 import {

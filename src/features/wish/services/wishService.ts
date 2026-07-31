@@ -27,7 +27,7 @@
 // non-proposer path.
 import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
-import { deleteStorageObject } from '@/services/storageDelete'
+import { deleteAttachmentObject } from '@/services/attachmentStorage'
 import { P } from '@/services/paths'
 import { compressImage, type CompressedImage } from '@/utils/image'
 import { stripEmpty } from '@/utils/stripEmpty'
@@ -86,7 +86,7 @@ function wishImagePaths(image: WishImage): string[] {
 }
 
 async function deleteWishImage(image: WishImage): Promise<void> {
-  await Promise.all(wishImagePaths(image).map(deleteStorageObject))
+  await Promise.all(wishImagePaths(image).map(deleteAttachmentObject))
 }
 
 // ─── Write ────────────────────────────────────────────────────────

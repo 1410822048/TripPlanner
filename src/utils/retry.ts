@@ -1,13 +1,6 @@
 // src/utils/retry.ts
-// Exponential-backoff retry for transient network failures. Used to wrap
-// Storage uploads which routinely fail on flaky travel-Wi-Fi connections
-// — the user typically just clicks save once, and we'd rather absorb a
-// 1-2 second retry window than surface a "try again" toast for what's
-// almost always a transient blip.
-//
-// Failures that retry CAN'T fix (4xx errors, validation rejection, file
-// too large) propagate out unchanged because Storage SDK throws those
-// with stable error codes the caller can detect.
+// Exponential-backoff retry for transient Worker/R2 network failures.
+// Callers provide a predicate so terminal validation and authorization errors fail fast.
 
 interface RetryOptions {
   /** Total attempts including the first. Default 3 (initial + 2 retries). */
@@ -43,26 +36,4 @@ export async function retry<T>(
     }
   }
   throw lastErr  // unreachable; the loop's last iteration always throws
-}
-
-/**
- * Predicate: retry only on transient failures. Storage SDK uses error
- * codes prefixed with `storage/`. Permanent errors (unauthorized, quota
- * exceeded, invalid argument) shouldn't be retried — they'll fail the
- * same way regardless of how many times we try.
- */
-export function isTransientStorageError(err: unknown): boolean {
-  const code = (err as { code?: string })?.code
-  if (!code) return true  // unknown error shape → retry once just in case
-  // Permanent / user-error codes — bail out fast.
-  const permanent = [
-    'storage/unauthorized',
-    'storage/canceled',
-    'storage/invalid-argument',
-    'storage/invalid-checksum',
-    'storage/quota-exceeded',
-    'storage/object-not-found',
-    'storage/unauthenticated',
-  ]
-  return !permanent.includes(code)
 }

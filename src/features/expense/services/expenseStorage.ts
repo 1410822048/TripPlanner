@@ -22,7 +22,7 @@
 import { compressReceiptImage } from '@/utils/image'
 import { mintAndUploadEntityIntents } from '@/services/uploadIntentEntity'
 import { type UploadIntent } from '@/services/uploadIntent'
-import { deleteStorageObject } from '@/services/storageDelete'
+import { deleteAttachmentObject } from '@/services/attachmentStorage'
 
 /** Returned by `uploadReceipt` -- the service caller passes `intentIds`
  *  to the Worker (`/expense-create` or `/expense-update`) and keeps
@@ -58,7 +58,7 @@ export async function uploadReceipt(
 
 /**
  * Delete the receipt's full + thumb storage objects. Tolerates
- * already-deleted paths; the underlying `deleteStorageObject` retries
+ * already-deleted paths; the underlying `deleteAttachmentObject` retries
  * transient failures internally and the calling site (service-layer
  * `safePurgeWithEnqueueFallback`) handles unrecoverable failures
  * via the `_purges` queue.
@@ -75,11 +75,11 @@ export async function purgeReceipt(existing: {
   const tasks: Promise<void>[] = []
   if ('paths' in existing) {
     for (const p of existing.paths) {
-      if (p) tasks.push(deleteStorageObject(p))
+      if (p) tasks.push(deleteAttachmentObject(p))
     }
   } else {
-    if (existing.path)      tasks.push(deleteStorageObject(existing.path))
-    if (existing.thumbPath) tasks.push(deleteStorageObject(existing.thumbPath))
+    if (existing.path)      tasks.push(deleteAttachmentObject(existing.path))
+    if (existing.thumbPath) tasks.push(deleteAttachmentObject(existing.thumbPath))
   }
   await Promise.all(tasks)
 }

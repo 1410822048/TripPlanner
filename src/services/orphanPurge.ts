@@ -1,6 +1,6 @@
 // src/services/orphanPurge.ts
 // Level 3 orphan-blob durability: when an in-process purge.catch finally
-// gives up (after `deleteStorageObject`'s internal retry budget), we
+// gives up (after `deleteAttachmentObject`'s internal retry budget), we
 // enqueue a record in `trips/{tripId}/_purges/{auto}` for the daily
 // Worker cron to retry later. This closes the residual PII window where
 // a permanent purge failure used to mean "blob lives until trip delete".
@@ -149,7 +149,7 @@ export type SafePurgeResult = 'purged' | 'queued' | 'unrecoverable'
  * ladder:
  *
  *   1. `purge()` runs (already retries transient failures internally
- *      via deleteStorageObject's `retry()` wrapper).
+ *      via deleteAttachmentObject's `retry()` wrapper).
  *   2. On permanent purge failure, enqueue a `_purges` entry so the
  *      Worker cron retries asynchronously. Successful enqueue = the
  *      caller's blob has a durable cleanup path; no Sentry noise.

@@ -455,7 +455,7 @@ export async function updateExpense(
   // Success path -- now safe to drop the old blob (if any).
   if (existingPaths && (attachment === null || attachment instanceof File)) {
     // Best-effort old-blob purge with the full durability ladder:
-    // 1) deleteStorageObject retries transient failures inline.
+    // 1) deleteAttachmentObject retries transient failures inline.
     // 2) safePurgeWithEnqueueFallback enqueues to _purges for the
     //    Worker orphan-purge cron if step 1 gave up.
     // 3) Sentry captures only if BOTH steps failed -- a genuine

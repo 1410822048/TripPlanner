@@ -5,20 +5,20 @@
 // bookingService because deleteBooking + updateBooking's safePurge
 // ladder + trip cascade all reach for `purgeAttachments` independently.
 
-import { deleteStorageObject } from '@/services/storageDelete'
+import { deleteAttachmentObject } from '@/services/attachmentStorage'
 import type { BookingAttachment } from '@/types'
 
 /**
  * Delete the full + thumb storage objects for an existing attachment.
- * Thumb path may be missing on PDFs -- deleteStorageObject tolerates
+ * Thumb path may be missing on PDFs -- deleteAttachmentObject tolerates
  * that along with already-deleted objects.
  */
 export async function purgeAttachments(
   existing: BookingAttachment | undefined,
 ): Promise<void> {
   if (!existing) return
-  const tasks: Promise<void>[] = [deleteStorageObject(existing.filePath)]
-  if (existing.thumbPath) tasks.push(deleteStorageObject(existing.thumbPath))
+  const tasks: Promise<void>[] = [deleteAttachmentObject(existing.filePath)]
+  if (existing.thumbPath) tasks.push(deleteAttachmentObject(existing.thumbPath))
   await Promise.all(tasks)
 }
 
@@ -34,5 +34,5 @@ export function bookingAttachmentPaths(
 export async function purgeBookingAttachments(
   ...attachments: Array<BookingAttachment | undefined>
 ): Promise<void> {
-  await Promise.all(bookingAttachmentPaths(...attachments).map(path => deleteStorageObject(path)))
+  await Promise.all(bookingAttachmentPaths(...attachments).map(path => deleteAttachmentObject(path)))
 }

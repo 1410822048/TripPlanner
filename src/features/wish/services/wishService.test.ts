@@ -56,7 +56,7 @@ const mocks = vi.hoisted(() => {
     // Service-layer collaborators
     bumpTripActivityMock:      vi.fn(),
     safePurgeMock:             vi.fn(),
-    deleteStorageObjectMock:   vi.fn(),
+    deleteAttachmentObjectMock: vi.fn(),
     compressImageMock:         vi.fn(),
     requestUploadIntentsMock:  vi.fn(),
     uploadToIntentMock:        vi.fn(),
@@ -95,8 +95,8 @@ vi.mock('@/services/tripScopedList', () => ({
   createTripScopedListServices: () => ({ fetch: vi.fn(), subscribe: vi.fn() }),
 }))
 
-vi.mock('@/services/storageDelete', () => ({
-  deleteStorageObject: mocks.deleteStorageObjectMock,
+vi.mock('@/services/attachmentStorage', () => ({
+  deleteAttachmentObject: mocks.deleteAttachmentObjectMock,
 }))
 
 vi.mock('@/services/uploadIntent', () => ({
@@ -166,7 +166,7 @@ beforeEach(() => {
   mocks.compressImageMock.mockReset()
   mocks.requestUploadIntentsMock.mockReset()
   mocks.uploadToIntentMock.mockReset()
-  mocks.deleteStorageObjectMock.mockReset()
+  mocks.deleteAttachmentObjectMock.mockReset()
   mocks.workerFetchMock.mockReset()
 
   // Shape-stable mocks — clear calls but keep impl.

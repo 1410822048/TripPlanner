@@ -1,5 +1,5 @@
 // Tests for the orphan-blob purge cron. This is the durable next
-// layer below `deleteStorageObject`'s in-process retry -- when a
+// layer below `deleteAttachmentObject`'s in-process retry -- when a
 // client-side purge.catch finally gives up, the service enqueues a
 // `_purges` doc; this cron drains them daily.
 //
