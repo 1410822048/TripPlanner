@@ -100,7 +100,7 @@ export default defineConfig({
           const targets: string[] = []
           for (const [fileName, chunk] of Object.entries(ctx.bundle)) {
             if (chunk.type !== 'chunk') continue
-            if (/vendor-firebase-firestore/.test(fileName)) targets.push(fileName)
+            if (/vendor-firebase-(?:core|firestore)/.test(fileName)) targets.push(fileName)
           }
           if (targets.length === 0) return html
           // JSON.stringify each path so the inline JS sees properly
@@ -187,7 +187,7 @@ export default defineConfig({
         // - vendor-sentry-*: dynamically imported via
         //   requestIdleCallback in services/sentry.ts. Precaching would
         //   defeat the idle deferral.
-        // - vendor-firebase-firestore-* / vendor-firebase-auth-*:
+        // - vendor-firebase-*:
         //   loaded on demand by getFirebase() / getFirebaseAuth(),
         //   gated in main.tsx by readAuthHint() (firestore) and by
         //   useAuth's lazy init (auth). Without exclusion the SW
@@ -205,10 +205,23 @@ export default defineConfig({
         //   Android/Chromium installs pay for fallback code they never run.
         globIgnores: [
           '**/vendor-sentry-*.js',
-          '**/vendor-firebase-firestore-*.js',
-          '**/vendor-firebase-auth-*.js',
-          '**/vendor-firebase-messaging-*.js',
+          '**/vendor-firebase-*.js',
           '**/jsQR-*.js',
+          // pdf.js is only needed for PDF upload validation / preview. Its
+          // ~124 KB gz runtime must not compete with the app shell during a
+          // fresh PWA install; src/sw.ts caches it after first use instead.
+          '**/vendor-pdfjs-*.js',
+          '**/vendor-react-pdf-*.js',
+          '**/PdfPreview-*.js',
+          // Standalone online-first routes stay runtime-cached. The five core
+          // tabs and their static dependencies remain in precache so every
+          // installed PWA tab opens offline even before its first visit.
+          '**/InvitePage-*.js',
+          '**/PastLodgingPage-*.js',
+          '**/SocialCirclePage-*.js',
+          // Debug-only; precaching would defeat the runtime gate even though
+          // the entry bundle stays split.
+          '**/webVitalsDebug-*.js',
           // Mapbox is only needed after opening a route preview. Keeping its
           // ~500 KB gzipped engine out of precache preserves the lazy-load
           // boundary; src/sw.ts caches these hashed assets after first use.
@@ -259,16 +272,42 @@ export default defineConfig({
         // the resolveDependencies hook below explicitly filters it out
         // so the dynamic import in services/sentry.ts is the only
         // trigger.
-        manualChunks: id => {
-          if (id.includes('@firebase/firestore') || id.includes('firebase/firestore'))
-            return 'vendor-firebase-firestore'
-          if (id.includes('@firebase/auth') || id.includes('firebase/auth'))
-            return 'vendor-firebase-auth'
-          if (id.includes('@firebase/messaging') || id.includes('firebase/messaging'))
-            return 'vendor-firebase-messaging'
-          if (id.includes('@sentry'))
-            return 'vendor-sentry'
-          return undefined
+        // Rolldown's legacy `manualChunks` compatibility layer recursively
+        // captures dependencies. For a lazy pdf.js import that pulled Vite's
+        // shared preload helper into vendor-pdfjs, making /schedule preload the
+        // entire PDF runtime. Native code-splitting groups let us keep stable
+        // vendor names while capturing only the explicitly matched packages.
+        codeSplitting: {
+          includeDependenciesRecursively: false,
+          groups: [{
+            name: id => {
+              if (id.includes('@firebase/firestore') || id.includes('firebase/firestore'))
+                return 'vendor-firebase-firestore'
+              if (id.includes('@firebase/auth') || id.includes('firebase/auth'))
+                return 'vendor-firebase-auth'
+              if (id.includes('@firebase/messaging') || id.includes('firebase/messaging'))
+                return 'vendor-firebase-messaging'
+              if (/node_modules[\\/]@firebase[\\/](?:app|component|logger|util)[\\/]/.test(id)
+                || /node_modules[\\/]firebase[\\/]app(?:[\\/]|$)/.test(id))
+                return 'vendor-firebase-core'
+              if (/node_modules[\\/]@firebase[\\/]webchannel-wrapper[\\/]/.test(id))
+                return 'vendor-firebase-firestore'
+              if (/node_modules[\\/]@firebase[\\/]installations[\\/]/.test(id))
+                return 'vendor-firebase-messaging'
+              // `pdf.worker.min.mjs?url` only exports the worker asset URL.
+              // Grouping that tiny virtual module with pdf.js makes every
+              // importer of the URL statically pull in the full PDF runtime.
+              if (id.includes('pdfjs-dist') && !id.includes('?'))
+                return 'vendor-pdfjs'
+              if (id.includes('react-pdf')
+                || /node_modules[\\/](?:clsx|dequal|make-cancellable-promise|make-event-props|merge-refs|tiny-invariant|warning)(?:[\\/]|$)/.test(id))
+                return 'vendor-react-pdf'
+              if (id.includes('@sentry'))
+                return 'vendor-sentry'
+              return null
+            },
+            priority: 10,
+          }],
         },
       },
     },

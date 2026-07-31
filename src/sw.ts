@@ -9,7 +9,7 @@ import {
 import { ExpirationPlugin } from 'workbox-expiration'
 import { cleanupOutdatedCaches, createHandlerBoundToURL, precacheAndRoute } from 'workbox-precaching'
 import { NavigationRoute, registerRoute } from 'workbox-routing'
-import { CacheFirst, StaleWhileRevalidate } from 'workbox-strategies'
+import { CacheFirst } from 'workbox-strategies'
 import { readPushOwnerUid } from './features/account/services/pushOwnerStore'
 
 const sw = self as unknown as ServiceWorkerGlobalScope
@@ -26,6 +26,13 @@ const firebaseConfig = {
 precacheAndRoute((self as unknown as { __WB_MANIFEST: PrecacheManifest }).__WB_MANIFEST)
 cleanupOutdatedCaches()
 
+// LINE Seed JP was removed from the app shell. Its named runtime cache is not
+// managed by cleanupOutdatedCaches(), so remove the legacy payload once when
+// the new worker activates instead of leaving the old CJK subsets on device.
+sw.addEventListener('activate', event => {
+  event.waitUntil(caches.delete('google-fonts-cache'))
+})
+
 sw.addEventListener('message', event => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     void sw.skipWaiting()
@@ -37,19 +44,6 @@ sw.addEventListener('message', event => {
 registerRoute(
   new NavigationRoute(createHandlerBoundToURL('/index.html'), {
     denylist: [/^\/__\/auth\//],
-  }),
-)
-
-registerRoute(
-  ({ url }) => url.origin === 'https://fonts.googleapis.com',
-  new StaleWhileRevalidate({
-    cacheName: 'google-fonts-cache',
-    plugins: [
-      new ExpirationPlugin({
-        maxEntries:    6,
-        maxAgeSeconds: 365 * 24 * 60 * 60,
-      }),
-    ],
   }),
 )
 
@@ -68,12 +62,12 @@ registerRoute(
 
 registerRoute(
   ({ url }) => url.origin === sw.location.origin
-    && /\/assets\/vendor-firebase-(firestore|auth|messaging)-.*\.js$/.test(url.pathname),
+    && /\/assets\/vendor-firebase-.*\.js$/.test(url.pathname),
   new CacheFirst({
     cacheName: 'vendor-firebase-cache',
     plugins: [
       new ExpirationPlugin({
-        maxEntries:    6,
+        maxEntries:    10,
         maxAgeSeconds: 90 * 24 * 60 * 60,
       }),
     ],
@@ -95,6 +89,20 @@ registerRoute(
 
 registerRoute(
   ({ url }) => url.origin === sw.location.origin
+    && /\/assets\/(?:vendor-(?:pdfjs|react-pdf)-.*\.js|PdfPreview-.*\.js|pdf\.worker\.min-.*\.mjs)$/.test(url.pathname),
+  new CacheFirst({
+    cacheName: 'pdf-runtime-cache',
+    plugins: [
+      new ExpirationPlugin({
+        maxEntries: 4,
+        maxAgeSeconds: 90 * 24 * 60 * 60,
+      }),
+    ],
+  }),
+)
+
+registerRoute(
+  ({ url }) => url.origin === sw.location.origin
     && /\/assets\/(?:mapbox-gl|RoutePreviewMap)-.*\.(?:js|css)$/.test(url.pathname),
   new CacheFirst({
     cacheName: 'route-map-assets-cache',
@@ -102,6 +110,23 @@ registerRoute(
       new ExpirationPlugin({
         maxEntries:    6,
         maxAgeSeconds: 10 * 24 * 60 * 60,
+      }),
+    ],
+  }),
+)
+
+// Lazy route/debug chunks excluded from install-time precache are immutable
+// hashed assets. Cache after first use so revisits and offline sessions remain
+// fast without making every fresh install download every tab up front.
+registerRoute(
+  ({ url }) => url.origin === sw.location.origin
+    && /\/assets\/[^/]+-[A-Za-z0-9_-]+\.(?:js|css)$/.test(url.pathname),
+  new CacheFirst({
+    cacheName: 'lazy-static-assets-cache',
+    plugins: [
+      new ExpirationPlugin({
+        maxEntries: 80,
+        maxAgeSeconds: 90 * 24 * 60 * 60,
       }),
     ],
   }),

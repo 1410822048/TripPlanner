@@ -3,8 +3,8 @@
 // font-size 固定 16px：iOS Safari 在 focus 時若 font-size < 16px 會自動放大
 // 頁面。16px 是 Apple 原生表單輸入的標準尺寸，desktop 下也不會過大。
 // min-height 48px + explicit line-height/padding：不要只靠固定 height。
-// 單行 native input 的 baseline 由瀏覽器與字體 metrics 共同決定；LINE Seed JP /
-// fallback CJK fonts 在 Windows/Chrome 下容易把 q/g/p/y 等 descender 壓到
+// 單行 native input 的 baseline 由瀏覽器與字體 metrics 共同決定；各平台的
+// CJK system fonts 在 Windows/Chrome 下可能把 q/g/p/y 等 descender 壓到
 // control box 邊界。用 min-height 讓縮放時可長高，py + leading-6 則提供穩定
 // content box，避免再用 46/48/50px 這類 magic number 追瀏覽器差異。
 export function inputClass(hasError?: boolean): string {
