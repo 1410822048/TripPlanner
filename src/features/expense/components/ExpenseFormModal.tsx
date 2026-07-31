@@ -448,6 +448,7 @@ export default function ExpenseFormModal({
 
       <ReceiptSection
         error={receiptErrText}
+        sourceKey={receiptOcr.sourceKey}
         reconcileWarning={receiptReconcileWarning}
         hasAttachment={att.hasAttachment}
         attachmentName={att.attachmentName}

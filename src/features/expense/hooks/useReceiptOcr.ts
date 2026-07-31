@@ -62,6 +62,9 @@ export interface UseReceiptOcrInput {
 
 export interface UseReceiptOcrResult {
   source: ReceiptOcrSource
+  /** Identity of the current source — consumers bind per-receipt UI state
+   *  (e.g. the retry-model picker) to this key. */
+  sourceKey: ReceiptOcrSourceKey | null
   status: { loading: boolean; error: string | null; elapsedMs: number }
   caps: ReceiptOcrCapabilities
   handlers: {
@@ -212,6 +215,7 @@ export function useReceiptOcr(input: UseReceiptOcrInput): UseReceiptOcrResult {
 
   return {
     source: receiptSource.source,
+    sourceKey: receiptSource.sourceKey,
     status: { loading: ocr.loading, error: ocr.error, elapsedMs: ocr.elapsedMs },
     caps,
     handlers: {

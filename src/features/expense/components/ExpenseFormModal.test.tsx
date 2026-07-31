@@ -22,9 +22,34 @@ vi.mock('@/components/ui/FormModalShell', () => ({
 }))
 vi.mock('@/components/ui/CurrencyInput', () => ({ default: () => null }))
 vi.mock('@/components/ui/CurrencyPicker', () => ({ default: () => null }))
+vi.mock('@/components/ui/SingleSelectPicker', () => ({
+  // Accessible name mirrors the real component's precedence (ariaLabel over
+  // the visible text) — a callsite that forgets ariaLabel fails the
+  // name-based queries below instead of green-lighting a hardcoded label.
+  default: ({
+    value,
+    options,
+    onChange,
+    ariaLabel,
+    title,
+  }: {
+    value: string
+    options: readonly { value: string; prefix: string; label: string }[]
+    onChange: (value: string) => void
+    ariaLabel?: string
+    title: string
+  }) => (
+    <select aria-label={ariaLabel ?? title} value={value} onChange={event => onChange(event.target.value)}>
+      {options.map(option => (
+        <option key={option.value} value={option.value}>
+          {option.prefix} {option.label}
+        </option>
+      ))}
+    </select>
+  ),
+}))
 vi.mock('@/components/ui/pickers', () => ({ DatePicker: () => null }))
 vi.mock('@/components/ui/MemberAvatar', () => ({ default: () => null }))
-vi.mock('@/components/ui/AttachmentRow', () => ({ default: () => null }))
 vi.mock('@/features/attachments/components/AttachmentPreviewModal', () => ({ default: () => null }))
 
 // ── Context / network hooks ──────────────────────────────────────────
@@ -204,6 +229,57 @@ describe('ExpenseFormModal — re-OCR dispatch', () => {
 
     expect(screen.getByRole('button', { name: /讀取明細/ })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /^再次讀取$/ })).toBeNull()
+  })
+
+  it('defaults re-OCR to Qwen and dispatches Claude only after model selection', () => {
+    renderModal(foreignExpenseWithItems())
+
+    const modelPicker = screen.getByRole('combobox', { name: '辨識模型' }) as HTMLSelectElement
+    expect(modelPicker.value).toBe('qwen')
+    fireEvent.click(screen.getByRole('button', { name: /^再次讀取$/ }))
+    expect(ocrApi.runExisting).toHaveBeenLastCalledWith(expect.objectContaining({ useFallback: false }))
+
+    fireEvent.change(modelPicker, { target: { value: 'claude' } })
+    fireEvent.click(screen.getByRole('button', { name: /^再次讀取$/ }))
+    expect(ocrApi.runExisting).toHaveBeenLastCalledWith(expect.objectContaining({ useFallback: true }))
+  })
+
+  it('resets the retry model to Qwen after the receipt is replaced', async () => {
+    const { container } = renderModal(foreignExpenseWithItems())
+    const modelPicker = screen.getByRole('combobox', { name: '辨識模型' }) as HTMLSelectElement
+    fireEvent.change(modelPicker, { target: { value: 'claude' } })
+    expect(modelPicker.value).toBe('claude')
+
+    // 換收據(相機重拍 → 自動用 primary OCR)。onSuccess 後 picker 重新
+    // 出現時必須回到 qwen — Claude 的選擇屬於「舊收據」,不得殘留。
+    const cameraInput = container.querySelector('input[capture="environment"]') as HTMLInputElement
+    const file = new File(['x'], 'new.jpg', { type: 'image/jpeg' })
+    const receipt = new File(['prepared'], 'new.receipt.webp', { type: 'image/webp' })
+    imageApi.compressReceiptImage.mockResolvedValueOnce({ full: receipt })
+    fireEvent.change(cameraInput, { target: { files: [file] } })
+    await waitFor(() => expect(ocrApi.run).toHaveBeenCalledWith(receipt))
+
+    act(() => {
+      ocrApi.onSuccess!({
+        items:        [{ name: 'Lunch', amountText: '3000' }],
+        adjustments:  [],
+        ignoredLines: [],
+        totalText:    '3000',
+      })
+    })
+
+    const pickerAfter = screen.getByRole('combobox', { name: '辨識模型' }) as HTMLSelectElement
+    expect(pickerAfter.value).toBe('qwen')
+  })
+
+  it('uses the receipt summary row as the replacement trigger', () => {
+    const inputClick = vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(() => {})
+    renderModal(foreignExpenseWithItems())
+
+    expect(screen.queryByRole('button', { name: '重選' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '更換收據' }))
+    expect(inputClick).toHaveBeenCalledTimes(1)
+    inputClick.mockRestore()
   })
 
   it('drops a stale camera prepare result when a newer file finishes first', async () => {
