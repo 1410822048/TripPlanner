@@ -14,22 +14,26 @@ interface Props {
   title: string
   placeholder: string
   onChange: (value: string) => void
+  ariaLabel?: string
   error?: boolean
   required?: boolean
 }
 
-/** 幣別與國家共用的單選控制；所有視覺與互動只維護一份。 */
+/** 共用單選控制；所有視覺與互動只維護一份。 */
 export default function SingleSelectPicker({
   value,
   options,
   title,
   placeholder,
   onChange,
+  ariaLabel,
   error = false,
   required = false,
 }: Props) {
   const [open, setOpen] = useState(false)
   const selected = options.find(option => option.value === value)
+  const selectedText = selected ? `${selected.prefix} ${selected.label}` : placeholder
+  const accessibleLabel = ariaLabel ? `${ariaLabel}：${selectedText}` : selectedText
 
   function pick(nextValue: string) {
     onChange(nextValue)
@@ -40,7 +44,7 @@ export default function SingleSelectPicker({
     <>
       <button
         type="button"
-        aria-label={selected ? `${selected.prefix} ${selected.label}` : placeholder}
+        aria-label={accessibleLabel}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-invalid={error || undefined}

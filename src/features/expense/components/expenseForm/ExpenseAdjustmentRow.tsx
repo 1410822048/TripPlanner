@@ -13,6 +13,7 @@ import {
 import { adjustmentSign } from '@tripmate/expense-materialize'
 import CurrencyInput from '@/components/ui/CurrencyInput'
 import MemberAvatar from '@/components/ui/MemberAvatar'
+import SingleSelectPicker, { type SingleSelectOption } from '@/components/ui/SingleSelectPicker'
 import { compactInputClass } from '@/components/ui/inputStyle'
 import { formatMinorAmount } from '@/utils/money'
 import type { TripMember } from '@/features/trips/types'
@@ -28,9 +29,25 @@ const ADJUSTMENT_KIND_LABEL: Record<ExpenseAdjustmentKind, string> = {
   OTHER:      '其他',
 }
 
-const ADJUSTMENT_SCOPE_OPTIONS: { value: ExpenseAdjustmentScope; label: string }[] = [
-  { value: 'EXPENSE', label: '整筆費用' },
-  { value: 'ITEM',    label: '項目' },
+const ADJUSTMENT_KIND_PREFIX: Record<ExpenseAdjustmentKind, string> = {
+  DISCOUNT:   '折',
+  COUPON:     '券',
+  TAX_EXEMPT: '免',
+  SURCHARGE:  '加',
+  TAX:        '稅',
+  TIP:        '費',
+  OTHER:      '其',
+}
+
+const ADJUSTMENT_KIND_OPTIONS: readonly SingleSelectOption[] = EXPENSE_ADJUSTMENT_KINDS.map(kind => ({
+  value:  kind,
+  prefix: ADJUSTMENT_KIND_PREFIX[kind],
+  label:  ADJUSTMENT_KIND_LABEL[kind],
+}))
+
+const ADJUSTMENT_SCOPE_OPTIONS: readonly SingleSelectOption[] = [
+  { value: 'EXPENSE', prefix: '全', label: '整筆費用' },
+  { value: 'ITEM',    prefix: '項', label: '指定項目' },
 ]
 
 interface ExpenseAdjustmentRowProps {
@@ -70,6 +87,11 @@ export default function ExpenseAdjustmentRow({
   const targetAllocationMembers = targetItem
     ? members.filter(m => targetItem.allocations.some(a => a.memberId === m.id))
     : []
+  const targetItemOptions: readonly SingleSelectOption[] = items.map((item, itemIndex) => ({
+    value:  item.id,
+    prefix: String(itemIndex + 1),
+    label:  item.name.trim() || `行 ${itemIndex + 1}`,
+  }))
   return (
     <div className="flex flex-col gap-2 px-2.5 py-2.5">
       <div className="grid grid-cols-[minmax(0,1fr)_minmax(112px,38%)] items-start gap-2">
@@ -100,27 +122,27 @@ export default function ExpenseAdjustmentRow({
       </div>
 
       <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2 items-center">
-        <select
+        <SingleSelectPicker
           value={adj.kind}
-          onChange={e => onSetKind(adj.id, e.target.value as ExpenseAdjustmentKind)}
-          aria-label={`調整 ${index + 1} 種類`}
-          className={compactInputClass(false)}
-        >
-          {EXPENSE_ADJUSTMENT_KINDS.map(kind => (
-            <option key={kind} value={kind}>{ADJUSTMENT_KIND_LABEL[kind]}</option>
-          ))}
-        </select>
+          options={ADJUSTMENT_KIND_OPTIONS}
+          title="選擇調整類型"
+          placeholder="選擇類型"
+          ariaLabel={`調整 ${index + 1} 種類`}
+          onChange={kind => onSetKind(adj.id, kind as ExpenseAdjustmentKind)}
+        />
 
-        <select
+        <SingleSelectPicker
           value={adj.scope}
-          onChange={e => onSetScope(adj.id, e.target.value as ExpenseAdjustmentScope, items.map(it => it.id))}
-          aria-label={`調整 ${index + 1} 適用範圍`}
-          className={compactInputClass(false)}
-        >
-          {ADJUSTMENT_SCOPE_OPTIONS.map(scope => (
-            <option key={scope.value} value={scope.value}>{scope.label}</option>
-          ))}
-        </select>
+          options={ADJUSTMENT_SCOPE_OPTIONS}
+          title="選擇適用範圍"
+          placeholder="選擇範圍"
+          ariaLabel={`調整 ${index + 1} 適用範圍`}
+          onChange={scope => onSetScope(
+            adj.id,
+            scope as ExpenseAdjustmentScope,
+            items.map(item => item.id),
+          )}
+        />
 
         <button
           type="button"
@@ -133,19 +155,15 @@ export default function ExpenseAdjustmentRow({
       </div>
 
       {adj.scope === 'ITEM' && (
-        <select
+        <SingleSelectPicker
           value={adj.targetItemId ?? ''}
-          onChange={e => onSetTarget(adj.id, e.target.value)}
-          aria-label={`調整 ${index + 1} 適用項目`}
-          className={compactInputClass(false)}
-        >
-          <option value="" disabled>選擇目標項目</option>
-          {items.map((item, itemIndex) => (
-            <option key={item.id} value={item.id}>
-              {item.name.trim() || `行 ${itemIndex + 1}`}
-            </option>
-          ))}
-        </select>
+          options={targetItemOptions}
+          title="選擇目標項目"
+          placeholder="選擇目標項目"
+          ariaLabel={`調整 ${index + 1} 適用項目`}
+          onChange={targetItemId => onSetTarget(adj.id, targetItemId)}
+          required
+        />
       )}
 
       {/* UX B — 適用範圍摘要。EXPENSE = 整筆費用; ITEM = target item
