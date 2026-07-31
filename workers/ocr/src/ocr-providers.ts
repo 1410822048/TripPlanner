@@ -1,6 +1,5 @@
 import {
   extractReceiptItems,
-  OcrError,
   type ClaudeConfig,
 } from './claude'
 import {
@@ -10,33 +9,21 @@ import {
 import type { OcrResponse } from './schema'
 
 export type OcrProvider = 'claude' | 'qwen'
-export type OptionalOcrProvider = OcrProvider | 'none'
+
+/**
+ * Product contract shared by all receipt OCR routes. The client presents
+ * Qwen as the default model and Claude as the explicit high-accuracy retry;
+ * keeping the roles fixed here prevents a Worker env override from silently
+ * reversing those labels.
+ */
+export const RECEIPT_OCR_PROVIDERS = {
+  primary:  'qwen',
+  fallback: 'claude',
+} as const satisfies Record<'primary' | 'fallback', OcrProvider>
 
 export interface OcrProviderConfig {
   claude: ClaudeConfig
   qwen:   QwenConfig
-}
-
-export function parseOcrProvider(
-  value: string | undefined,
-  envName: string,
-  fallback: OcrProvider,
-): OcrProvider {
-  if (value === undefined || value.trim() === '') return fallback
-  const normalized = value.trim().toLowerCase()
-  if (normalized === 'claude' || normalized === 'qwen') return normalized
-  throw new OcrError(`${envName} must be "qwen" or "claude"`, 502)
-}
-
-export function parseOptionalOcrProvider(
-  value: string | undefined,
-  envName: string,
-  fallback: OptionalOcrProvider,
-): OptionalOcrProvider {
-  if (value === undefined || value.trim() === '') return fallback
-  const normalized = value.trim().toLowerCase()
-  if (normalized === 'none' || normalized === 'claude' || normalized === 'qwen') return normalized
-  throw new OcrError(`${envName} must be "qwen", "claude", or "none"`, 502)
 }
 
 export function runOcrProvider(

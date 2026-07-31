@@ -1,7 +1,7 @@
 // TripMate OCR Worker — entry point.
 //
 // Endpoints:
-//   POST /ocr                  — primary configured receipt OCR provider
+//   POST /ocr                  — Qwen receipt OCR (default product path)
 //   POST /booking-pdf-extract  — Claude-only structured extraction from
 //                                client-side PDF text/layout digest.
 //   POST /invite-create        — owner mints a reusable invite link.
@@ -71,8 +71,7 @@ import { verifyFirebaseToken, extractBearerToken } from './auth'
 import { OcrError }                               from './claude'
 import { OcrRequestSchema, type OcrRequest, type OcrResponse } from './schema'
 import {
-  parseOcrProvider,
-  parseOptionalOcrProvider,
+  RECEIPT_OCR_PROVIDERS,
   runOcrProvider,
   type OcrProvider,
   type OcrProviderConfig,
@@ -367,21 +366,12 @@ function bookingPdfClaudeConfig(env: WorkerEnv): OcrProviderConfig['claude'] {
   }
 }
 
-function primaryOcrProvider(env: WorkerEnv): OcrProvider {
-  return parseOcrProvider(env.OCR_PRIMARY_PROVIDER, 'OCR_PRIMARY_PROVIDER', 'qwen')
-}
-
-function fallbackOcrProvider(env: WorkerEnv): OcrProvider | 'none' {
-  return parseOptionalOcrProvider(env.OCR_FALLBACK_PROVIDER, 'OCR_FALLBACK_PROVIDER', 'claude')
-}
-
 function runConfiguredOcrProvider(env: WorkerEnv, provider: OcrProvider, data: OcrRequest): Promise<OcrResponse> {
   return runOcrProvider(provider, data.image, data.mimeType, data.currency, ocrProviderConfig(env))
 }
 
 function clientSafeOcrError(status: number): string {
   if (status === 400) return 'OCR request was rejected'
-  if (status === 404) return 'OCR route is disabled'
   if (status === 429) return 'OCR provider is rate limited'
   if (status === 422) return 'OCR provider could not parse this receipt'
   if (status === 503 || status === 504) return 'OCR provider is temporarily unavailable'
@@ -679,7 +669,7 @@ export const ROUTES: RouteDescriptor[] = [
       // (owner/editor; settlement-locked ⇒ owner), reads the image from
       // Storage, and runs the SAME extractReceiptItems core as /ocr.
       handle:    data => {
-        const provider = primaryOcrProvider(c.env)
+        const provider = RECEIPT_OCR_PROVIDERS.primary
         return expenseReceiptOcr(
           c.uid,
           data,
@@ -699,8 +689,7 @@ export const ROUTES: RouteDescriptor[] = [
       endpoint:  'expense-receipt-ocr-fallback', body: c.body, cors: c.cors, uid: c.uid,
       schema:    ExpenseReceiptOcrRequestSchema,
       handle:    data => {
-        const provider = fallbackOcrProvider(c.env)
-        if (provider === 'none') throw new OcrError('OCR fallback is disabled', 404)
+        const provider = RECEIPT_OCR_PROVIDERS.fallback
         return expenseReceiptOcr(
           c.uid,
           data,
@@ -720,7 +709,7 @@ export const ROUTES: RouteDescriptor[] = [
       endpoint:  'booking-pdf-extract', body: c.body, cors: c.cors, uid: c.uid,
       schema:    BookingPdfExtractRequestSchema,
       // Booking confirmation import is intentionally Claude-only. Receipt OCR
-      // can swap primary/fallback providers, but booking PDFs need stricter
+      // uses fixed Qwen/Claude routes, while booking PDFs need stricter
       // document-level reasoning over labels, addresses, and evidence.
       handle:    data => extractBookingPdfFields(data, bookingPdfClaudeConfig(c.env)),
       formatLog: (_data, result) =>
@@ -733,7 +722,7 @@ export const ROUTES: RouteDescriptor[] = [
     dispatch: c => handleJsonRoute({
       endpoint:  'ocr', body: c.body, cors: c.cors, uid: c.uid,
       schema:    OcrRequestSchema,
-      handle:    data => runConfiguredOcrProvider(c.env, primaryOcrProvider(c.env), data),
+      handle:    data => runConfiguredOcrProvider(c.env, RECEIPT_OCR_PROVIDERS.primary, data),
       formatLog: (_data, result) => `items=${result.items.length}`,
       catchDomain: ocrErrorCatcher,
     }),
@@ -743,11 +732,7 @@ export const ROUTES: RouteDescriptor[] = [
     dispatch: c => handleJsonRoute({
       endpoint:  'ocr-fallback', body: c.body, cors: c.cors, uid: c.uid,
       schema:    OcrRequestSchema,
-      handle:    data => {
-        const provider = fallbackOcrProvider(c.env)
-        if (provider === 'none') throw new OcrError('OCR fallback is disabled', 404)
-        return runConfiguredOcrProvider(c.env, provider, data)
-      },
+      handle:    data => runConfiguredOcrProvider(c.env, RECEIPT_OCR_PROVIDERS.fallback, data),
       formatLog: (_data, result) => `items=${result.items.length}`,
       catchDomain: ocrErrorCatcher,
     }),

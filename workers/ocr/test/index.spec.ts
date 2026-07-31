@@ -8,6 +8,14 @@ import {
 	waitOnExecutionContext,
 } from 'cloudflare:test'
 import { afterEach, describe, it, expect, vi } from 'vitest'
+import { OcrError } from '../src/claude'
+
+const runOcrProviderMock = vi.hoisted(() => vi.fn())
+vi.mock('../src/ocr-providers', async () => {
+	const actual = await vi.importActual<typeof import('../src/ocr-providers')>('../src/ocr-providers')
+	return { ...actual, runOcrProvider: runOcrProviderMock }
+})
+
 import worker, { ROUTES, RATE_CLASSES } from '../src/index'
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>
@@ -15,6 +23,7 @@ const realFetch = globalThis.fetch
 
 afterEach(() => {
 	globalThis.fetch = realFetch
+	runOcrProviderMock.mockReset()
 })
 
 async function call(method: string, path: string, init: RequestInit = {}): Promise<Response> {
@@ -106,18 +115,49 @@ describe('OCR worker routing', () => {
 	it('normal OCR domain errors are masked in client responses', async () => {
 		const route = ROUTES.find(r => r.path === '/ocr')
 		expect(route).toBeDefined()
+		runOcrProviderMock.mockRejectedValueOnce(new OcrError('provider credential detail', 502))
 
 		const res = await route!.dispatch({
 			body: { image: 'a'.repeat(128), mimeType: 'image/webp' },
 			cors: {},
 			uid:  'user-1',
-			env:  { OCR_PRIMARY_PROVIDER: 'gemini' },
+			env:  {},
 		} as never)
 		const body = await res.json() as { error: string }
 
 		expect(res.status).toBe(502)
 		expect(body.error).toBe('OCR provider failed')
-		expect(body.error).not.toContain('OCR_PRIMARY_PROVIDER')
+		expect(body.error).not.toContain('provider credential detail')
+	})
+
+	it.each([
+		['/ocr', 'qwen'],
+		['/ocr-fallback', 'claude'],
+	] as const)('%s is permanently routed through %s', async (path, expectedProvider) => {
+		const route = ROUTES.find(r => r.path === path)
+		expect(route).toBeDefined()
+		runOcrProviderMock.mockResolvedValueOnce({
+			items:        [{ name: '咖啡', amountText: '100' }],
+			adjustments:  [],
+			ignoredLines: [],
+			totalText:    '100',
+		})
+
+		const res = await route!.dispatch({
+			body: { image: 'a'.repeat(128), mimeType: 'image/webp' },
+			cors: {},
+			uid:  'user-1',
+			// Deliberately include the removed legacy vars with reversed values:
+			// stale dashboard state must not be able to change route semantics.
+			env: {
+				OCR_PRIMARY_PROVIDER:  'claude',
+				OCR_FALLBACK_PROVIDER: 'qwen',
+			},
+		} as never)
+
+		expect(res.status).toBe(200)
+		expect(runOcrProviderMock).toHaveBeenCalledTimes(1)
+		expect(runOcrProviderMock.mock.calls[0]![0]).toBe(expectedProvider)
 	})
 
 	it('booking PDF extraction uses the booking-specific Claude deployment when set', async () => {

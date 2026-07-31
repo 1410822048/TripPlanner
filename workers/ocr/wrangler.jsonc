@@ -41,20 +41,12 @@
 		// receipt fallback path keeps its higher-accuracy model.
 		"BOOKING_CLAUDE_DEPLOYMENT": "claude-haiku-4-5-2",
 		// Qwen OCR provider. API key is a SECRET (QWEN_API_KEY via
-		// `wrangler secret put`). Required whenever OCR_PRIMARY_PROVIDER or
-		// OCR_FALLBACK_PROVIDER is qwen.
+		// `wrangler secret put`) and is always required by the primary route.
 		// This uses Alibaba Cloud Model Studio Singapore's workspace-scoped
 		// OpenAI-compatible endpoint; the older dashscope-intl.aliyuncs.com
 		// domain is legacy.
 		"QWEN_BASE_URL": "https://ws-g7wwlr6k1kgzbizw.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
-		"QWEN_MODEL": "qwen3.6-flash",
-		// Clean OCR routing:
-		//   /ocr                     -> OCR_PRIMARY_PROVIDER
-		//   /ocr-fallback            -> OCR_FALLBACK_PROVIDER
-		// Default product path is Qwen because receipt preprocessing made it
-		// faster with acceptable quality; Claude remains an explicit backup.
-		"OCR_PRIMARY_PROVIDER": "qwen",
-		"OCR_FALLBACK_PROVIDER": "claude"
+		"QWEN_MODEL": "qwen3.6-flash"
 	},
 	// Private attachment storage. The bucket has no public/custom domain;
 	// every byte is authorized and proxied by this Worker.
