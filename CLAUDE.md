@@ -368,7 +368,7 @@ Demo / not-signed-in 使用者點任何「寫入」action 都會跳 SignInModal�
 - **端點**: `POST /ocr`；附件走 `POST /attachment-upload`、`GET /attachment-content`、`POST /attachment-delete`
 - **驗證**: `jose` + `createRemoteJWKSet` 驗 Firebase JWT
 - **附件**: private R2 `ATTACHMENTS` binding；production=`tripmate-attachments-production`；無 public domain / S3 credentials。Pages preview 直接共用 production Worker / R2
-- **AI**: `/ocr` 走 `OCR_PRIMARY_PROVIDER`(預設 `qwen`),`/ocr-fallback` 走 `OCR_FALLBACK_PROVIDER`(預設 `claude`)。Qwen 用 OpenAI-compatible Chat Completions(`QWEN_BASE_URL` / `QWEN_MODEL`);Claude 用 Microsoft Foundry 原生 Anthropic Messages API(`ANTHROPIC_FOUNDRY_RESOURCE` / `CLAUDE_DEPLOYMENT`)。兩者共用 OCR JSON schema + prompt。
+- **AI**: 收據 `/ocr` 與 Booking PDF extraction 使用 Alibaba Model Studio 的 Qwen3.7-Flash(`QWEN_BASE_URL` / `QWEN_MODEL`);收據 `/ocr-fallback` 使用 Microsoft Foundry Claude 原生 Anthropic Messages API(`ANTHROPIC_FOUNDRY_RESOURCE` / `CLAUDE_DEPLOYMENT`)。兩者皆以嚴格 JSON schema 驗證輸出。
 - **Wrangler**: `npx wrangler tail` 看即時 log(找 `[qwen]` / `[claude]` 前綴);`npx wrangler deploy` 部署
 - **secrets**: `QWEN_API_KEY`(primary 為 qwen 時必填)、`ANTHROPIC_FOUNDRY_API_KEY`(fallback 用 Claude 時必填)
 
@@ -421,7 +421,7 @@ cd workers/ocr && npx wrangler tail        # Worker 即時 log
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **TripPlanner** (5465 symbols, 13468 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **TripPlanner** (5465 symbols, 13465 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

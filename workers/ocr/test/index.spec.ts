@@ -160,7 +160,7 @@ describe('OCR worker routing', () => {
 		expect(runOcrProviderMock.mock.calls[0]![0]).toBe(expectedProvider)
 	})
 
-	it('booking PDF extraction uses the booking-specific Claude deployment when set', async () => {
+	it('booking PDF extraction uses the configured Qwen deployment', async () => {
 		const route = ROUTES.find(r => r.path === '/booking-pdf-extract')
 		expect(route).toBeDefined()
 
@@ -168,13 +168,9 @@ describe('OCR worker routing', () => {
 		globalThis.fetch = vi.fn(async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
 			rawBody = String(init?.body ?? '')
 			return new Response(JSON.stringify({
-				type:        'message',
-				role:        'assistant',
-				content:     [{
-					type:  'tool_use',
-					id:    'toolu_test',
-					name:  'extract_booking_pdf',
-					input: {
+				choices: [{
+					finish_reason: 'stop',
+					message: { content: JSON.stringify({
 						bookings: [{
 							bookingType:      'hotel',
 							segmentRole:      'single',
@@ -191,9 +187,8 @@ describe('OCR worker routing', () => {
 							link:             { value: '', confidence: 0, evidence: '' },
 						}],
 						warnings: [],
-					},
+					}) },
 				}],
-				stop_reason: 'tool_use',
 			}), { status: 200, headers: { 'Content-Type': 'application/json' } })
 		}) as typeof fetch
 
@@ -210,17 +205,53 @@ describe('OCR worker routing', () => {
 			cors: {},
 			uid:  'user-1',
 			env:  {
-				ANTHROPIC_FOUNDRY_API_KEY:  'key',
-				ANTHROPIC_FOUNDRY_RESOURCE: 'aic-claude-eus2',
-				CLAUDE_DEPLOYMENT:          'claude-sonnet-4-6',
-				BOOKING_CLAUDE_DEPLOYMENT:  'claude-haiku-4-5-2',
+				QWEN_API_KEY:  'key',
+				QWEN_BASE_URL: 'https://ws-test.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1',
+				QWEN_MODEL:    'qwen3.7-flash',
 			},
 		} as never)
 
 		expect(res.status).toBe(200)
-		const body = JSON.parse(rawBody) as { model?: string; tool_choice?: { name?: string } }
-		expect(body.model).toBe('claude-haiku-4-5-2')
-		expect(body.tool_choice?.name).toBe('extract_booking_pdf')
+		const body = JSON.parse(rawBody) as {
+			model?: string
+			max_tokens?: number
+			response_format?: { type?: string }
+		}
+		expect(body.model).toBe('qwen3.7-flash')
+		expect(body.response_format?.type).toBe('json_object')
+		expect(body.max_tokens).toBeUndefined()
+	})
+
+	it('booking PDF schema failures return 422', async () => {
+		const route = ROUTES.find(r => r.path === '/booking-pdf-extract')
+		expect(route).toBeDefined()
+		globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
+			choices: [{
+				finish_reason: 'stop',
+				message: { content: JSON.stringify({
+					bookings: [{ bookingType: 'hotel', segmentRole: 'single', title: 'Hotel Sakura' }],
+					warnings: [],
+				}) },
+			}],
+		}), { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof fetch
+
+		const res = await route!.dispatch({
+			body: {
+				pageCount: 1,
+				text:      'Hotel Sakura\nAirbnb\n2026-07-01',
+				lines: [{ page: 1, text: 'Hotel Sakura', x: 10, y: 100 }],
+			},
+			cors: {},
+			uid:  'user-1',
+			env: {
+				QWEN_API_KEY:  'key',
+				QWEN_BASE_URL: 'https://ws-test.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1',
+				QWEN_MODEL:    'qwen3.7-flash',
+			},
+		} as never)
+
+		expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+		expect(res.status).toBe(422)
 	})
 })
 

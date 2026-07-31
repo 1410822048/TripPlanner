@@ -2,7 +2,7 @@
 //
 // Endpoints:
 //   POST /ocr                  — Qwen receipt OCR (default product path)
-//   POST /booking-pdf-extract  — Claude-only structured extraction from
+//   POST /booking-pdf-extract  — Qwen structured extraction from
 //                                client-side PDF text/layout digest.
 //   POST /invite-create        — owner mints a reusable invite link.
 //                                Worker mints the 256-bit token, caps the
@@ -358,14 +358,6 @@ function ocrProviderConfig(env: WorkerEnv): OcrProviderConfig {
   }
 }
 
-function bookingPdfClaudeConfig(env: WorkerEnv): OcrProviderConfig['claude'] {
-  return {
-    apiKey:   env.ANTHROPIC_FOUNDRY_API_KEY,
-    resource: env.ANTHROPIC_FOUNDRY_RESOURCE,
-    model:    env.BOOKING_CLAUDE_DEPLOYMENT?.trim() || env.CLAUDE_DEPLOYMENT,
-  }
-}
-
 function runConfiguredOcrProvider(env: WorkerEnv, provider: OcrProvider, data: OcrRequest): Promise<OcrResponse> {
   return runOcrProvider(provider, data.image, data.mimeType, data.currency, ocrProviderConfig(env))
 }
@@ -373,7 +365,7 @@ function runConfiguredOcrProvider(env: WorkerEnv, provider: OcrProvider, data: O
 function clientSafeOcrError(status: number): string {
   if (status === 400) return 'OCR request was rejected'
   if (status === 429) return 'OCR provider is rate limited'
-  if (status === 422) return 'OCR provider could not parse this receipt'
+  if (status === 422) return 'OCR provider could not parse the input'
   if (status === 503 || status === 504) return 'OCR provider is temporarily unavailable'
   return 'OCR provider failed'
 }
@@ -708,10 +700,9 @@ export const ROUTES: RouteDescriptor[] = [
     dispatch: c => handleJsonRoute({
       endpoint:  'booking-pdf-extract', body: c.body, cors: c.cors, uid: c.uid,
       schema:    BookingPdfExtractRequestSchema,
-      // Booking confirmation import is intentionally Claude-only. Receipt OCR
-      // uses fixed Qwen/Claude routes, while booking PDFs need stricter
-      // document-level reasoning over labels, addresses, and evidence.
-      handle:    data => extractBookingPdfFields(data, bookingPdfClaudeConfig(c.env)),
+      // Booking confirmation import shares the primary Qwen deployment while
+      // keeping its own strict schema, evidence checks, and normalization.
+      handle:    data => extractBookingPdfFields(data, ocrProviderConfig(c.env).qwen),
       formatLog: (_data, result) =>
         `candidates=${result.bookings.length} types=${result.bookings.map(b => b.bookingType).join(',')} fields=${bookingPdfFieldCount(result)} warnings=${result.warnings.length}`,
       catchDomain: ocrErrorCatcher,

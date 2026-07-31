@@ -36,17 +36,13 @@
 		//               tier = change this one var to that deployment's name.
 		"ANTHROPIC_FOUNDRY_RESOURCE": "aic-claude-eus2",
 		"CLAUDE_DEPLOYMENT": "claude-sonnet-5",
-		// Booking PDF import is text/layout extraction, not receipt OCR; Haiku
-		// is the faster default here. Leave CLAUDE_DEPLOYMENT on Sonnet so the
-		// receipt fallback path keeps its higher-accuracy model.
-		"BOOKING_CLAUDE_DEPLOYMENT": "claude-haiku-4-5-2",
 		// Qwen OCR provider. API key is a SECRET (QWEN_API_KEY via
 		// `wrangler secret put`) and is always required by the primary route.
 		// This uses Alibaba Cloud Model Studio Singapore's workspace-scoped
 		// OpenAI-compatible endpoint; the older dashscope-intl.aliyuncs.com
 		// domain is legacy.
 		"QWEN_BASE_URL": "https://ws-g7wwlr6k1kgzbizw.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
-		"QWEN_MODEL": "qwen3.6-flash"
+		"QWEN_MODEL": "qwen3.7-flash"
 	},
 	// Private attachment storage. The bucket has no public/custom domain;
 	// every byte is authorized and proxied by this Worker.

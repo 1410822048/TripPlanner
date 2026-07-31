@@ -2,13 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BOOKING_PDF_LINE_MAX_CHARS } from '@tripmate/pdf-page-limit'
 import {
 	BOOKING_PDF_EXTRACT_JSON_SCHEMA,
-	BOOKING_PDF_MAX_TOKENS,
 	BookingPdfExtractRequestSchema,
 	BookingPdfExtractResponseSchema,
 	extractBookingPdfFields,
 	type BookingPdfExtractRequest,
 } from '../src/booking-pdf-extract'
-import type { ClaudeConfig } from '../src/claude'
+import type { QwenConfig } from '../src/qwen'
 
 const realFetch = globalThis.fetch
 
@@ -16,10 +15,10 @@ afterEach(() => {
 	globalThis.fetch = realFetch
 })
 
-const CFG: ClaudeConfig = {
-	apiKey:   'test-key',
-	resource: 'aic-claude-eus2',
-	model:    'claude-sonnet-4-6',
+const CFG: QwenConfig = {
+	apiKey:  'test-key',
+	baseUrl: 'https://ws-test.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1',
+	model:   'qwen3.7-flash',
 }
 
 const VALID_RESULT = {
@@ -56,33 +55,39 @@ function request(over: Partial<BookingPdfExtractRequest> = {}): BookingPdfExtrac
 	}
 }
 
-type CapturedClaudeRequest = {
-	system?: string
+type CapturedQwenRequest = {
+	model?: string
 	max_tokens?: number
-	output_config?: { format?: { type?: string; schema?: unknown } }
-	tools?: Array<{
-		name?: string
-		description?: string
-		input_schema?: unknown
-		strict?: boolean
-		cache_control?: { type?: string }
-	}>
-	tool_choice?: { type?: string; name?: string }
-	messages: Array<{ content: Array<{ type: string; text?: string }> }>
+	enable_thinking?: boolean
+	response_format?: {
+		type?: string
+		json_schema?: { name?: string; strict?: boolean; schema?: unknown }
+	}
+	messages: Array<{ role: string; content: string }>
 }
 
-function stubToolUseAndCaptureRequest(input: unknown) {
+function stubQwenAndCaptureRequest(input: unknown) {
 	let rawBody = ''
 	globalThis.fetch = vi.fn(async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
 		rawBody = String(init?.body ?? '')
 		return new Response(JSON.stringify({
-			type:        'message',
-			role:        'assistant',
-			content:     [{ type: 'tool_use', id: 'toolu_test', name: 'extract_booking_pdf', input }],
-			stop_reason: 'tool_use',
+			choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(input) } }],
 		}), { status: 200, headers: { 'Content-Type': 'application/json' } })
 	}) as typeof fetch
-	return () => JSON.parse(rawBody) as CapturedClaudeRequest
+	return () => JSON.parse(rawBody) as CapturedQwenRequest
+}
+
+function stubQwenSequence(inputs: unknown[]) {
+	const rawBodies: string[] = []
+	let call = 0
+	globalThis.fetch = vi.fn(async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+		rawBodies.push(String(init?.body ?? ''))
+		const content = inputs[call++]
+		return new Response(JSON.stringify({
+			choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(content) } }],
+		}), { status: 200, headers: { 'Content-Type': 'application/json' } })
+	}) as typeof fetch
+	return () => rawBodies.map(body => JSON.parse(body) as CapturedQwenRequest)
 }
 
 function collectSchemaKeys(value: unknown, keys = new Set<string>()): Set<string> {
@@ -114,7 +119,7 @@ function collectSchemaKeywordKeys(value: unknown, keys = new Set<string>()): Set
 }
 
 describe('BookingPdfExtractRequestSchema', () => {
-	it('caps forged page counts and payload size before Claude is called', () => {
+	it('caps forged page counts and payload size before Qwen is called', () => {
 		expect(BookingPdfExtractRequestSchema.safeParse(request({ pageCount: 11 })).success).toBe(false)
 		expect(BookingPdfExtractRequestSchema.safeParse(request({ text: 'x'.repeat(24_001) })).success).toBe(false)
 		expect(BookingPdfExtractRequestSchema.safeParse(request({
@@ -134,21 +139,20 @@ describe('extractBookingPdfFields', () => {
 		expect([...BOOKING_PDF_EXTRACT_JSON_SCHEMA.required].sort()).toEqual(zodKeys)
 	})
 
-	it('sends a strict tool-use request with the conservative Zod-generated schema', async () => {
-		const readBody = stubToolUseAndCaptureRequest(VALID_RESULT)
+	it('uses Model Studio JSON mode with the conservative schema in the prompt', async () => {
+		const readBody = stubQwenAndCaptureRequest(VALID_RESULT)
 
 		await extractBookingPdfFields(request(), CFG)
 
 		const body = readBody()
-		const tool = body.tools?.[0]
-		expect(body.output_config).toBeUndefined()
-		expect(body.tool_choice).toEqual({ type: 'tool', name: 'extract_booking_pdf' })
-		expect(tool?.name).toBe('extract_booking_pdf')
-		expect(tool?.strict).toBe(true)
-		expect(tool?.cache_control).toEqual({ type: 'ephemeral' })
-		expect(tool?.input_schema).toEqual(BOOKING_PDF_EXTRACT_JSON_SCHEMA)
-		expect(body.max_tokens).toBe(BOOKING_PDF_MAX_TOKENS)
-		expect(body.system).toContain('Call the extract_booking_pdf tool')
+		expect(body.model).toBe('qwen3.7-flash')
+		expect(body.enable_thinking).toBe(false)
+		expect(body.response_format).toEqual({ type: 'json_object' })
+		expect(body.max_tokens).toBeUndefined()
+		expect(body.messages[0]?.content).toContain('Return exactly one JSON object')
+		expect(body.messages[0]?.content).toContain('Required JSON Schema')
+		expect(body.messages[0]?.content).toContain('"title"')
+		expect(body.messages[1]?.content).toContain('Never return any of these fields as a bare string')
 		expect(BOOKING_PDF_EXTRACT_JSON_SCHEMA).toMatchObject({
 			additionalProperties: false,
 			properties: {
@@ -190,8 +194,36 @@ describe('extractBookingPdfFields', () => {
 		])
 	})
 
-	it('parses a valid Claude response into booking fields', async () => {
-		stubToolUseAndCaptureRequest(VALID_RESULT)
+	it('retries one schema mismatch with an explicit field-shape correction', async () => {
+		const readBodies = stubQwenSequence([
+			{
+				...VALID_RESULT,
+				bookings: [{ ...VALID_RESULT.bookings[0], title: 'Airbnb Sakura House' }],
+			},
+			VALID_RESULT,
+		])
+
+		await expect(extractBookingPdfFields(request(), CFG)).resolves.toMatchObject({
+			bookings: [{ title: { value: 'Airbnb Sakura House' } }],
+		})
+
+		const bodies = readBodies()
+		expect(bodies).toHaveLength(2)
+		expect(bodies[1]?.messages[1]?.content).toContain('Correction after validation failure')
+		expect(bodies[1]?.messages[1]?.content).toContain('bare strings are invalid')
+	})
+
+	it('fails fast on truncated output instead of repeating the same request', async () => {
+		globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
+			choices: [{ finish_reason: 'length', message: { content: '{"bookings":' } }],
+		}), { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof fetch
+
+		await expect(extractBookingPdfFields(request(), CFG)).rejects.toMatchObject({ status: 422 })
+		expect(globalThis.fetch).toHaveBeenCalledTimes(1)
+	})
+
+	it('parses a valid Qwen response into booking fields', async () => {
+		stubQwenAndCaptureRequest(VALID_RESULT)
 
 		await expect(extractBookingPdfFields(request(), CFG)).resolves.toMatchObject({
 			bookings: [{
@@ -206,7 +238,7 @@ describe('extractBookingPdfFields', () => {
 	it('truncates oversized model strings instead of rejecting useful candidates', async () => {
 		const longWarning = 'w'.repeat(260)
 		const longEvidence = 'e'.repeat(360)
-		stubToolUseAndCaptureRequest({
+		stubQwenAndCaptureRequest({
 			...VALID_RESULT,
 			bookings: [{
 				...VALID_RESULT.bookings[0]!,
@@ -224,14 +256,15 @@ describe('extractBookingPdfFields', () => {
 		expect(result.bookings[0]!.title.evidence).toHaveLength(300)
 	})
 
-	it('prompts Claude to prefer property address over directions text', async () => {
-		const readBody = stubToolUseAndCaptureRequest(VALID_RESULT)
+	it('prompts Qwen to prefer property address over directions text', async () => {
+		const readBody = stubQwenAndCaptureRequest(VALID_RESULT)
 
 		await extractBookingPdfFields(request(), CFG)
 
 		const body = readBody()
-		const prompt = body.messages[0]?.content.find(part => part.type === 'text')?.text ?? ''
-		expect(body.system).toContain('strict travel booking PDF extraction engine')
+		const system = body.messages[0]?.content ?? ''
+		const prompt = body.messages[1]?.content ?? ''
+		expect(system).toContain('strict travel booking PDF extraction engine')
 		expect(prompt).toContain('Return a bookings array')
 		expect(prompt).toContain('deduplicate')
 		expect(prompt).toContain('originIataCode and destinationIataCode')
@@ -245,7 +278,7 @@ describe('extractBookingPdfFields', () => {
 	it('accepts multiple transport candidates for round-trip PDFs', async () => {
 		const flightField = (value: string) => ({ value, confidence: value ? 0.9 : 0, evidence: value })
 		const empty = flightField('')
-		stubToolUseAndCaptureRequest({
+		stubQwenAndCaptureRequest({
 			bookings: [
 				{
 					bookingType:      'flight',
@@ -308,7 +341,7 @@ describe('extractBookingPdfFields', () => {
 	it('normalizes concrete flight IATA code fields', async () => {
 		const flightField = (value: string, evidence = value) => ({ value, confidence: value ? 0.9 : 0, evidence })
 		const empty = flightField('')
-		stubToolUseAndCaptureRequest({
+		stubQwenAndCaptureRequest({
 			bookings: [{
 				bookingType:      'flight',
 				segmentRole:      'outbound',
@@ -340,7 +373,7 @@ describe('extractBookingPdfFields', () => {
 	it('does not infer a specific flight airport from city-only evidence', async () => {
 		const flightField = (value: string, evidence = value) => ({ value, confidence: value ? 0.9 : 0, evidence })
 		const empty = flightField('')
-		stubToolUseAndCaptureRequest({
+		stubQwenAndCaptureRequest({
 			bookings: [{
 				bookingType:      'flight',
 				segmentRole:      'outbound',
@@ -370,7 +403,7 @@ describe('extractBookingPdfFields', () => {
 	})
 
 	it('maps all-empty useful fields to a parse error', async () => {
-		stubToolUseAndCaptureRequest({
+		stubQwenAndCaptureRequest({
 			...VALID_RESULT,
 			bookings: [{
 				...VALID_RESULT.bookings[0],

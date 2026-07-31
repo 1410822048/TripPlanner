@@ -1,11 +1,9 @@
-// Claude structured-extraction client. Receipt OCR is the main caller; booking
-// PDF import reuses the same low-level Anthropic Messages JSON helper with a
-// different prompt/schema.
+// Claude structured-extraction client for the explicit receipt OCR fallback.
 //
 // Provider: Anthropic Claude via MICROSOFT FOUNDRY (Azure AI Foundry). The
 // Foundry endpoint speaks the NATIVE Anthropic Messages API
 // (`/anthropic/v1/messages`), so this is normal messages[].content[]
-// (image/text) plus Anthropic-native structured output / tool use — no
+// (image/text) plus Anthropic-native structured output — no
 // OpenAI-compat shim.
 //
 // Why raw fetch (not @anthropic-ai/foundry-sdk):
@@ -28,10 +26,9 @@
 //     while Sonnet / Opus accept it but we don't need it. Don't add `effort` /
 //     `thinking` unless a future task actually benefits.
 //
-// Structured output: receipt OCR uses `output_config.format` json_schema with
-// the shared OCR_RESPONSE_JSON_SCHEMA (additionalProperties:false on every
-// object). Booking PDF import uses strict tool input. Both still re-parse with
-// Zod on our side for runtime type safety + coercion.
+// Structured output uses `output_config.format` json_schema with the shared
+// OCR_RESPONSE_JSON_SCHEMA (additionalProperties:false on every object), then
+// re-parses with Zod on our side for runtime type safety + coercion.
 //
 // Auth: Foundry API key in the `x-api-key` header + `anthropic-version`. The
 // Foundry resource name (URL host is derived from it) and the deployment name
@@ -150,8 +147,6 @@ export function buildPrompt(currencyHint?: string): string {
 interface AnthropicContentBlock {
   type:  string
   text?: string
-  name?: string
-  input?: unknown
 }
 interface AnthropicMessage {
   content?:     AnthropicContentBlock[]
@@ -312,49 +307,6 @@ export async function requestClaudeJson(args: {
   } catch {
     throw new OcrError('Claude returned non-JSON content', 422)
   }
-}
-
-export async function requestClaudeToolJson(args: {
-  cfg:             ClaudeConfig
-  logPrefix:       string
-  maxTokens:       number
-  system:          string
-  content:         AnthropicUserContent[]
-  toolName:        string
-  toolDescription: string
-  inputSchema:     unknown
-  requestLog:      string
-}): Promise<unknown> {
-  const envelope = await requestClaudeMessage({
-    cfg:        args.cfg,
-    logPrefix:  args.logPrefix,
-    maxTokens:  args.maxTokens,
-    system:     args.system,
-    content:    args.content,
-    requestLog: args.requestLog,
-    bodyExtras: {
-      tools: [{
-        name:         args.toolName,
-        description:  args.toolDescription,
-        input_schema: args.inputSchema,
-        strict:       true,
-        cache_control: { type: 'ephemeral' },
-      }],
-      tool_choice: { type: 'tool', name: args.toolName },
-    },
-  })
-
-  const stop = envelope.stop_reason
-  const toolBlock = envelope.content?.find(b => b.type === 'tool_use' && b.name === args.toolName)
-  console.log(`[${args.logPrefix}] stop_reason=${stop ?? '?'} tool=${toolBlock ? args.toolName : 'missing'}`)
-  throwIfTerminalStop(args.logPrefix, stop)
-
-  if (!toolBlock) {
-    console.error(`[${args.logPrefix}] no tool_use content in response`, JSON.stringify(envelope).slice(0, 500))
-    throw new OcrError('Claude returned no tool_use content', 422)
-  }
-
-  return toolBlock.input
 }
 
 /**

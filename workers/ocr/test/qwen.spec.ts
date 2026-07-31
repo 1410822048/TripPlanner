@@ -20,6 +20,10 @@ const VALID_RESPONSE = {
 	totalText:    '380',
 }
 
+type CapturedQwenRequest = {
+	messages: Array<{ role: string; content: unknown }>
+}
+
 function stubStatus(status: number, body: unknown = { error: { message: 'bad' } }) {
 	globalThis.fetch = vi.fn(async () => new Response(JSON.stringify(body), {
 		status,
@@ -43,10 +47,27 @@ function stubChatAndCaptureRequest(content: string) {
 	}) as typeof fetch
 	return () => JSON.parse(rawBody) as {
 		model?: string
+		max_tokens?: number
 		enable_thinking?: boolean
 		response_format?: { type?: string; json_schema?: { name?: string; strict?: boolean } }
 		messages: Array<{ role: string; content: unknown }>
 	}
+}
+
+function stubChatSequence(responses: Array<{ content: string; finishReason?: string }>) {
+	const rawBodies: string[] = []
+	let call = 0
+	globalThis.fetch = vi.fn(async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+		rawBodies.push(String(init?.body ?? ''))
+		const response = responses[call++]!
+		return new Response(JSON.stringify({
+			choices: [{
+				finish_reason: response.finishReason ?? 'stop',
+				message: { content: response.content },
+			}],
+		}), { status: 200, headers: { 'Content-Type': 'application/json' } })
+	}) as typeof fetch
+	return () => rawBodies.map(body => JSON.parse(body) as CapturedQwenRequest)
 }
 
 function run() {
@@ -54,19 +75,19 @@ function run() {
 }
 
 describe('extractReceiptItemsQwen', () => {
-	it('sends an OpenAI-compatible vision request with JSON schema response_format', async () => {
+	it('uses Model Studio JSON mode and puts the schema in the prompt', async () => {
 		const readBody = stubChatAndCaptureRequest(JSON.stringify(VALID_RESPONSE))
 
 		await run()
 
 		const body = readBody()
 		expect(body.model).toBe('qwen3-vl-flash')
-		// Thinking mode MUST be disabled — see qwen.ts enable_thinking comment.
 		expect(body.enable_thinking).toBe(false)
-		expect(body.response_format?.type).toBe('json_schema')
-		expect(body.response_format?.json_schema?.name).toBe('receipt_ocr')
-		expect(body.response_format?.json_schema?.strict).toBe(true)
+		expect(body.response_format).toEqual({ type: 'json_object' })
+		expect(body.max_tokens).toBeUndefined()
 		expect(body.messages[0]).toMatchObject({ role: 'system' })
+		expect(JSON.stringify(body.messages[0])).toContain('Required JSON Schema')
+		expect(JSON.stringify(body.messages[0])).toContain('totalText')
 		expect(JSON.stringify(body.messages[1])).toContain('data:image/webp;base64,abcd')
 	})
 
@@ -83,6 +104,9 @@ describe('extractReceiptItemsQwen', () => {
 		// receive it (would 400 on the unknown field).
 		expect(body.enable_thinking).toBeUndefined()
 		expect(body.response_format?.type).toBe('json_schema')
+		expect(body.response_format?.json_schema?.name).toBe('receipt_ocr')
+		expect(body.response_format?.json_schema?.strict).toBe(true)
+		expect(body.max_tokens).toBe(4096)
 	})
 
 	it('parses a valid response into OcrResponse', async () => {
@@ -91,6 +115,19 @@ describe('extractReceiptItemsQwen', () => {
 			items:     [{ name: 'coffee', amountText: '380' }],
 			totalText: '380',
 		})
+	})
+
+	it('retries exactly one Zod schema mismatch with a correction prompt', async () => {
+		const readBodies = stubChatSequence([
+			{ content: JSON.stringify({ ...VALID_RESPONSE, items: 'invalid' }) },
+			{ content: JSON.stringify(VALID_RESPONSE) },
+		])
+
+		await expect(run()).resolves.toMatchObject({ totalText: '380' })
+
+		const bodies = readBodies()
+		expect(bodies).toHaveLength(2)
+		expect(JSON.stringify(bodies[1]?.messages[1]?.content)).toContain('Correction after validation failure')
 	})
 
 	it('accepts fenced JSON when a compatible gateway ignores response_format', async () => {
@@ -109,9 +146,11 @@ describe('extractReceiptItemsQwen', () => {
 	it('maps non-JSON and truncated output to 422', async () => {
 		stubChat('not json')
 		await expect(run()).rejects.toMatchObject({ status: 422 })
+		expect(globalThis.fetch).toHaveBeenCalledTimes(1)
 
 		stubChat(JSON.stringify(VALID_RESPONSE).slice(0, 12), 'length')
 		await expect(run()).rejects.toMatchObject({ status: 422 })
+		expect(globalThis.fetch).toHaveBeenCalledTimes(1)
 	})
 
 	it('fails fast when Qwen config is missing', async () => {

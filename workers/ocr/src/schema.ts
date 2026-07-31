@@ -179,12 +179,11 @@ export const OcrResponseSchema = z.object({
 })
 export type OcrResponse = z.infer<typeof OcrResponseSchema>
 
-// JSON Schema we hand to Claude's structured-output mode
-// (`output_config.format.json_schema.schema`). Kept separate from the Zod
-// schema because the model wants plain JSON Schema, not Zod. The shape mirrors
-// OcrResponseSchema — if you add a field here, add it there too.
+// JSON Schema used by Claude and Qwen structured-output modes. Kept separate
+// from the Zod schema because provider APIs require plain JSON Schema. The
+// shape mirrors OcrResponseSchema — if you add a field here, add it there too.
 //
-// Claude structured-output rules (load-bearing):
+// Cross-provider structured-output rules (load-bearing):
 //   - EVERY object must carry `additionalProperties: false` (required).
 //   - Optional fields are simply omitted from `required` — NOT made nullable,
 //     and the model may omit them from the response (matches the Zod
