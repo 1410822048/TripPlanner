@@ -923,20 +923,20 @@ export default function BookingFormModal({
               </button>
               <div className="flex items-center justify-between gap-2 border-t border-border px-3 py-2">
                 <span className="min-w-0 truncate text-[12px] font-bold text-ink">
-                  {coverAtt.attachmentName}
+                  {coverAtt.hasNewFile ? coverAtt.attachmentName : '封面圖片'}
                 </span>
                 <div className="flex shrink-0 items-center gap-1.5">
                   <button
                     type="button"
                     onClick={pickCoverImage}
-                    className="h-8 rounded-chip border border-border bg-surface px-3 text-[11.5px] font-bold text-muted"
+                    className="h-11 min-w-14 rounded-chip border border-border bg-surface px-3 text-[11.5px] font-bold text-muted"
                   >
                     更換
                   </button>
                   <button
                     type="button"
                     onClick={coverAtt.clear}
-                    className="h-8 rounded-chip border border-danger-soft bg-danger-pale px-3 text-[11.5px] font-bold text-danger"
+                    className="h-11 min-w-14 rounded-chip border border-danger-soft bg-danger-pale px-3 text-[11.5px] font-bold text-danger"
                   >
                     刪除
                   </button>
