@@ -74,24 +74,26 @@ const FORCE_FIRESTORE_LONG_POLLING = import.meta.env.PROD
   && import.meta.env.VITE_FIRESTORE_FORCE_LONG_POLLING !== 'false'
 const FIRESTORE_LONG_POLLING_TIMEOUT_SECONDS = 25
 
-let appPromise: Promise<FirebaseApp> | null = null
-function getApp(): Promise<FirebaseApp> {
-  if (appPromise) return appPromise
-  appPromise = (async () => {
-    const m = await import('firebase/app')
-    return m.getApps().length === 0 ? m.initializeApp(firebaseConfig) : m.getApp()
-  })().catch(err => {
-    // Transient failures (chunk load after a fresh deploy, init throw) must
-    // not cache the rejected promise forever — every later Firestore/Auth
-    // call in the session would fail with it. Reset so the next call
-    // retries. Same pattern as getFirebaseMessaging below.
-    appPromise = null
-    throw err
-  })
-  return appPromise
+/** Share one in-flight/resolved load, but release a rejected Promise so a
+ * transient chunk or initialization failure can be retried explicitly. */
+function retryableLazy<T>(load: () => Promise<T>): () => Promise<T> {
+  let promise: Promise<T> | null = null
+  return () => {
+    if (!promise) {
+      promise = load().catch(error => {
+        promise = null
+        throw error
+      })
+    }
+    return promise
+  }
 }
 
-let bundlePromise: Promise<FirebaseBundle> | null = null
+const getApp = retryableLazy(async (): Promise<FirebaseApp> => {
+  const m = await import('firebase/app')
+  return m.getApps().length === 0 ? m.initializeApp(firebaseConfig) : m.getApp()
+})
+
 let firestoreEmulatorConnected = false
 
 /**
@@ -110,48 +112,39 @@ let firestoreEmulatorConnected = false
  * rejection is never cached: the next call retries. Only dev falls back
  * to getFirestore() defaults (HMR double-init).
  */
-export function getFirebase(): Promise<FirebaseBundle> {
-  if (bundlePromise) return bundlePromise
-  bundlePromise = (async () => {
-    const [app, fs] = await Promise.all([getApp(), import('firebase/firestore')])
-    // `ignoreUndefinedProperties` lets optional form fields pass through as
-    // `undefined` without triggering "Unsupported field value: undefined".
-    // A second call on HMR throws; development may reuse the existing instance.
-    // Production initialization errors must remain fatal so a bad transport
-    // setting cannot be silently replaced by getFirestore() defaults.
-    // Targets the auto-created `(default)` database (no third arg).
-    let db: Firestore
-    try {
-      db = fs.initializeFirestore(app, {
-        ignoreUndefinedProperties: true,
-        ...(FORCE_FIRESTORE_LONG_POLLING && {
-          experimentalForceLongPolling: true,
-          experimentalLongPollingOptions: {
-            timeoutSeconds: FIRESTORE_LONG_POLLING_TIMEOUT_SECONDS,
-          },
-        }),
-        localCache: FIREBASE_EMULATOR_MODE
-          ? fs.memoryLocalCache()
-          : fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }),
-      })
-    } catch (error) {
-      if (!import.meta.env.DEV) throw error
-      db = fs.getFirestore(app)
-    }
-    if (FIREBASE_EMULATOR_MODE && !firestoreEmulatorConnected) {
-      fs.connectFirestoreEmulator(db, EMULATOR_HOST, EMULATOR_PORTS.firestore)
-      firestoreEmulatorConnected = true
-    }
-    return { db, ...fs }
-  })().catch(err => {
-    // See getApp: never cache a rejected bundle — retry on the next call.
-    bundlePromise = null
-    throw err
-  })
-  return bundlePromise
-}
+export const getFirebase = retryableLazy(async (): Promise<FirebaseBundle> => {
+  const [app, fs] = await Promise.all([getApp(), import('firebase/firestore')])
+  // `ignoreUndefinedProperties` lets optional form fields pass through as
+  // `undefined` without triggering "Unsupported field value: undefined".
+  // A second call on HMR throws; development may reuse the existing instance.
+  // Production initialization errors must remain fatal so a bad transport
+  // setting cannot be silently replaced by getFirestore() defaults.
+  // Targets the auto-created `(default)` database (no third arg).
+  let db: Firestore
+  try {
+    db = fs.initializeFirestore(app, {
+      ignoreUndefinedProperties: true,
+      ...(FORCE_FIRESTORE_LONG_POLLING && {
+        experimentalForceLongPolling: true,
+        experimentalLongPollingOptions: {
+          timeoutSeconds: FIRESTORE_LONG_POLLING_TIMEOUT_SECONDS,
+        },
+      }),
+      localCache: FIREBASE_EMULATOR_MODE
+        ? fs.memoryLocalCache()
+        : fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }),
+    })
+  } catch (error) {
+    if (!import.meta.env.DEV) throw error
+    db = fs.getFirestore(app)
+  }
+  if (FIREBASE_EMULATOR_MODE && !firestoreEmulatorConnected) {
+    fs.connectFirestoreEmulator(db, EMULATOR_HOST, EMULATOR_PORTS.firestore)
+    firestoreEmulatorConnected = true
+  }
+  return { db, ...fs }
+})
 
-let authBundlePromise: Promise<AuthBundle> | null = null
 let authEmulatorConnected = false
 
 /**
@@ -159,25 +152,15 @@ let authEmulatorConnected = false
  * bundle so demo-mode pages that only read mocks don't pull ~40KB gz of
  * auth code. Callers should gate subscription on `!isDemo`.
  */
-export function getFirebaseAuth(): Promise<AuthBundle> {
-  if (authBundlePromise) return authBundlePromise
-  authBundlePromise = (async () => {
-    const [app, authMod] = await Promise.all([getApp(), import('firebase/auth')])
-    const auth = authMod.getAuth(app)
-    if (FIREBASE_EMULATOR_MODE && !authEmulatorConnected) {
-      authMod.connectAuthEmulator(auth, `http://${EMULATOR_HOST}:${EMULATOR_PORTS.auth}`, { disableWarnings: true })
-      authEmulatorConnected = true
-    }
-    return { auth, ...authMod }
-  })().catch(err => {
-    // See getApp: never cache a rejected bundle — retry on the next call.
-    authBundlePromise = null
-    throw err
-  })
-  return authBundlePromise
-}
-
-let messagingBundlePromise: Promise<MessagingBundle | null> | null = null
+export const getFirebaseAuth = retryableLazy(async (): Promise<AuthBundle> => {
+  const [app, authMod] = await Promise.all([getApp(), import('firebase/auth')])
+  const auth = authMod.getAuth(app)
+  if (FIREBASE_EMULATOR_MODE && !authEmulatorConnected) {
+    authMod.connectAuthEmulator(auth, `http://${EMULATOR_HOST}:${EMULATOR_PORTS.auth}`, { disableWarnings: true })
+    authEmulatorConnected = true
+  }
+  return { auth, ...authMod }
+})
 
 /**
  * Lazy-load + initialize the Messaging bundle for FCM Web Push. Resolves
@@ -188,19 +171,9 @@ let messagingBundlePromise: Promise<MessagingBundle | null> | null = null
  * foreground listener (both gate on signed-in + permission granted), so
  * demo / signed-out / never-opted-in sessions ship zero messaging code.
  */
-export function getFirebaseMessaging(): Promise<MessagingBundle | null> {
-  if (messagingBundlePromise) return messagingBundlePromise
-  messagingBundlePromise = (async () => {
-    const [app, msg] = await Promise.all([getApp(), import('firebase/messaging')])
-    const supported = await msg.isSupported().catch(() => false)
-    if (!supported) return null
-    return { messaging: msg.getMessaging(app), ...msg }
-  })().catch(err => {
-    // Chunk loads can fail transiently after a fresh Pages deploy while an
-    // older tab/SW is still active. Do not cache the rejected promise forever;
-    // the next explicit opt-in attempt should get a fresh import.
-    messagingBundlePromise = null
-    throw err
-  })
-  return messagingBundlePromise
-}
+export const getFirebaseMessaging = retryableLazy(async (): Promise<MessagingBundle | null> => {
+  const [app, msg] = await Promise.all([getApp(), import('firebase/messaging')])
+  const supported = await msg.isSupported().catch(() => false)
+  if (!supported) return null
+  return { messaging: msg.getMessaging(app), ...msg }
+})

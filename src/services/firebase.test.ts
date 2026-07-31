@@ -120,4 +120,16 @@ describe('getFirebase transport initialization', () => {
     expect(bundle.db).toBe(firebaseMocks.db)
     expect(firebaseMocks.initializeFirestore).toHaveBeenCalledTimes(2)
   })
+
+  it('deduplicates concurrent initialization with the same in-flight Promise', async () => {
+    stubProductionEnv()
+
+    const { getFirebase } = await import('./firebase')
+    const first = getFirebase()
+    const second = getFirebase()
+
+    expect(second).toBe(first)
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2)
+    expect(firebaseMocks.initializeFirestore).toHaveBeenCalledTimes(1)
+  })
 })
