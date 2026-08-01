@@ -153,6 +153,7 @@ describe('extractBookingPdfFields', () => {
 		expect(body.messages[0]?.content).toContain('Required JSON Schema')
 		expect(body.messages[0]?.content).toContain('"title"')
 		expect(body.messages[1]?.content).toContain('Never return any of these fields as a bare string')
+		expect(body.messages[1]?.content).toContain('A " | " inside a line marks a column boundary')
 		expect(BOOKING_PDF_EXTRACT_JSON_SCHEMA).toMatchObject({
 			additionalProperties: false,
 			properties: {

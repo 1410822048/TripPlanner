@@ -13,6 +13,13 @@ import { getPdfJs } from '@/utils/pdfJs'
 const PDF_MIME = 'application/pdf'
 const PDF_TEXT_PARSE_TIMEOUT_MS = 15_000
 const LINE_Y_TOLERANCE = 3
+// 疊印偏移會隨字級縮放，因此以單字寬比例判斷；1pt 只替極窄字元或缺漏 width 保底。
+const OVERPRINT_X_TOLERANCE = 1
+const OVERPRINT_Y_TOLERANCE = 2
+const OVERPRINT_GLYPH_FACTOR = 0.5
+// 欄界與貼合距離同樣依列內中位字寬縮放，避免固定 pt 在不同字級間漂移。
+const COLUMN_GAP_GLYPH_FACTOR = 3
+const GLYPH_TOUCH_FACTOR = 0.1
 
 interface PdfTextItemLike {
   str:       string
@@ -21,9 +28,14 @@ interface PdfTextItemLike {
 }
 
 interface PositionedText {
-  text: string
-  x:    number
-  y:    number
+  text:  string
+  x:     number
+  y:     number
+  width: number
+}
+
+function glyphWidth(item: PositionedText): number {
+  return item.width / Math.max(1, [...item.text].length)
 }
 
 export interface BookingPdfTextLine {
@@ -98,15 +110,40 @@ function groupItemsIntoLines(pageNumber: number, items: PositionedText[]): Booki
   return rows
     .map(row => {
       const ordered = [...row.items].sort((a, b) => a.x - b.x)
-      const text = ordered
-        .map(item => item.text)
-        .join(' ')
+      const deduped = ordered.filter((item, index) => {
+        const previous = ordered[index - 1]
+        const dxLimit = previous
+          ? Math.max(OVERPRINT_X_TOLERANCE, glyphWidth(previous) * OVERPRINT_GLYPH_FACTOR)
+          : 0
+        return !previous
+          || previous.text !== item.text
+          || Math.abs(previous.x - item.x) > dxLimit
+          || Math.abs(previous.y - item.y) > OVERPRINT_Y_TOLERANCE
+      })
+      const glyphWidths = deduped
+        .map(glyphWidth)
+        .filter(width => Number.isFinite(width) && width > 0)
+        .sort((a, b) => a - b)
+      const medianGlyphWidth = glyphWidths[Math.floor(glyphWidths.length / 2)] ?? 0
+      const text = deduped
+        .map((item, index) => {
+          const previous = deduped[index - 1]
+          if (!previous) return item.text
+          const gap = item.x - (previous.x + previous.width)
+          const separator = medianGlyphWidth <= 0
+            ? ' '
+            : gap > medianGlyphWidth * COLUMN_GAP_GLYPH_FACTOR
+              ? ' | '
+              : gap < medianGlyphWidth * GLYPH_TOUCH_FACTOR ? '' : ' '
+          return `${separator}${item.text}`
+        })
+        .join('')
         .replace(/\s+/g, ' ')
         .trim()
       return {
         page: pageNumber,
         text,
-        x: Math.min(...ordered.map(item => item.x)),
+        x: Math.min(...deduped.map(item => item.x)),
         y: row.y,
       }
     })
@@ -174,12 +211,13 @@ export async function extractBookingPdfText(file: File, signal?: AbortSignal): P
           parseSignal.throwIfAborted()
           if (!isPdfTextItem(item)) continue
           const [, , , , xRaw, yRaw] = item.transform
-          const text = item.str.trim()
-          if (!text) continue
+          const text = item.str.normalize('NFKC')
+          if (!text.trim()) continue
           positioned.push({
             text,
-            x: Number.isFinite(xRaw) ? xRaw : 0,
-            y: Number.isFinite(yRaw) ? yRaw : 0,
+            x:     Number.isFinite(xRaw) ? xRaw : 0,
+            y:     Number.isFinite(yRaw) ? yRaw : 0,
+            width: typeof item.width === 'number' && Number.isFinite(item.width) ? item.width : 0,
           })
         }
         lines.push(...groupItemsIntoLines(pageNumber, positioned))

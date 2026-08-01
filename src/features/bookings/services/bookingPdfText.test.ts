@@ -101,4 +101,63 @@ describe('extractBookingPdfText', () => {
     expect(digest.text).toHaveLength(BOOKING_PDF_LINE_MAX_CHARS)
     expect(pdfDestroy).toHaveBeenCalledTimes(1)
   })
+
+  it('normalizes compatibility glyphs, removes overprint copies, and preserves column boundaries', async () => {
+    const pdfDestroy = vi.fn()
+    const overprint = (str: string, x: number, y: number, width: number) => [
+      { str, width, transform: [1, 0, 0, 1, x, y] },
+      { str, width, transform: [1, 0, 0, 1, x, y + 1.5] },
+      { str, width, transform: [1, 0, 0, 1, x + 0.75, y + 0.75] },
+      { str, width, transform: [1, 0, 0, 1, x + 1.5, y] },
+      { str, width, transform: [1, 0, 0, 1, x + 1.5, y + 1.5] },
+    ]
+    const getPage = vi.fn(async () => ({
+      getTextContent: vi.fn(async () => ({
+        items: [
+          ...overprint('⼊', 64, 700, 12),
+          { str: '住', width: 12, transform: [1, 0, 0, 1, 76, 700] },
+          { str: '退', width: 12, transform: [1, 0, 0, 1, 508, 700] },
+          { str: '房', width: 12, transform: [1, 0, 0, 1, 520, 700] },
+          ...overprint('2026', 64, 680, 24),
+          { str: '年', width: 12, transform: [1, 0, 0, 1, 88, 680] },
+          { str: '9', width: 7, transform: [1, 0, 0, 1, 100, 680] },
+          { str: '⽉', width: 12, transform: [1, 0, 0, 1, 107, 680] },
+          { str: '18', width: 12, transform: [1, 0, 0, 1, 119, 680] },
+          { str: '⽇', width: 12, transform: [1, 0, 0, 1, 131, 680] },
+          { str: '⾄', width: 12, transform: [1, 0, 0, 1, 143, 680] },
+          { str: '26', width: 12, transform: [1, 0, 0, 1, 155, 680] },
+          { str: '⽇', width: 12, transform: [1, 0, 0, 1, 167, 680] },
+          { str: 'A', width: 6, transform: [1, 0, 0, 1, 64, 660] },
+          { str: 'A', width: 6, transform: [1, 0, 0, 1, 65.5, 661.5] },
+          { str: '1', width: 6, transform: [1, 0, 0, 1, 64, 640] },
+          { str: '1', width: 6, transform: [1, 0, 0, 1, 70, 640] },
+          { str: 'New ', width: 24, transform: [1, 0, 0, 1, 64, 620] },
+          { str: 'York', width: 24, transform: [1, 0, 0, 1, 88, 620] },
+        ],
+      })),
+    }))
+    mocks.getPdfJs.mockResolvedValue({
+      VerbosityLevel: { ERRORS: 0 },
+      getDocument: vi.fn(() => ({
+        promise: Promise.resolve({
+          numPages: 1,
+          getPage,
+          destroy: pdfDestroy,
+        }),
+        destroy: vi.fn(),
+      })),
+    })
+
+    const digest = await extractBookingPdfText(pdfFile())
+
+    expect(digest.lines.map(line => line.text)).toEqual([
+      '入住 | 退房',
+      '2026年9月18日至26日',
+      'A',
+      '11',
+      'New York',
+    ])
+    expect(digest.lines).toHaveLength(5)
+    expect(pdfDestroy).toHaveBeenCalledTimes(1)
+  })
 })

@@ -265,6 +265,7 @@ function buildPrompt(data: BookingPdfExtractRequest, retry: boolean): string {
     '',
     'Output rules:',
     '- title, provider, confirmationCode, origin, destination, originIataCode, destinationIataCode, checkIn, checkOut, address, and link MUST each be a JSON object with exactly value (string), confidence (number 0..1), and evidence (string). Never return any of these fields as a bare string.',
+    '- A " | " inside a line marks a column boundary on the same visual row, not literal text. Never copy it into any value or evidence.',
     '- The following JSON is a structure example only. Never copy its values unless they are visible in the PDF:',
     BOOKING_OUTPUT_SHAPE_EXAMPLE,
     '- Return a bookings array. Each entry is one independent booking, stay, or transport segment that a user would save as one booking card.',
