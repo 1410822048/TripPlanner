@@ -121,8 +121,8 @@ describe('bookingPdfExtractToDraftPatch', () => {
     expect(out.patch).toMatchObject({
       title:       'MM626',
       provider:    'Peach Aviation',
-      origin:      'Taipei (TPE)',
-      destination: 'Tokyo (NRT)',
+      origin:      'TPE',
+      destination: 'NRT',
       checkIn:     '2026-09-18',
     })
     expect(out.patch.type).toBeUndefined()
@@ -147,8 +147,8 @@ describe('bookingPdfExtractToDraftPatch', () => {
       type:        'flight',
       title:       'MM626',
       provider:    'Peach Aviation',
-      origin:      'Taipei (TPE)',
-      destination: 'Tokyo (NRT)',
+      origin:      'TPE',
+      destination: 'NRT',
       checkIn:     '2026-09-18',
     })
   })
@@ -166,8 +166,41 @@ describe('bookingPdfExtractToDraftPatch', () => {
       checkIn: field('2026-10-01'),
     }))).toMatchObject({
       type:        'flight',
-      origin:      'Singapore (SIN)',
-      destination: 'Los Angeles (LAX)',
+      origin:      'SIN',
+      destination: 'LAX',
+    })
+  })
+
+  it('never falls back to airport names when a flight IATA code is missing or uncertain', () => {
+    expect(bookingPdfCandidateToCreateInput(result({
+      bookingType: 'flight',
+      origin: field('Taiwan Taoyuan International Airport'),
+      destination: field('Narita International Airport'),
+      originIataCode: field('', 0, ''),
+      destinationIataCode: field('NRT', 0.69),
+    }))).toBeNull()
+
+    const out = bookingPdfExtractToDraftPatch(state(), result({
+      bookingType: 'flight',
+      origin: field('Taiwan Taoyuan International Airport'),
+      destination: field('Narita International Airport'),
+      originIataCode: field('', 0, ''),
+      destinationIataCode: field('NRT', 0.69),
+    }), { isEdit: false })
+    expect(out.patch.origin).toBeUndefined()
+    expect(out.patch.destination).toBeUndefined()
+  })
+
+  it('keeps full station names for non-flight transport', () => {
+    expect(bookingPdfCandidateToCreateInput(result({
+      bookingType: 'train',
+      title: field('Nozomi 21'),
+      origin: field('Tokyo Station'),
+      destination: field('Kyoto Station'),
+    }))).toMatchObject({
+      type: 'train',
+      origin: 'Tokyo Station',
+      destination: 'Kyoto Station',
     })
   })
 

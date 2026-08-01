@@ -380,8 +380,8 @@ describe('BookingFormModal PDF autofill intent', () => {
         type:        'flight',
         title:       'MM626',
         provider:    'Peach Aviation',
-        origin:      'Taipei (TPE)',
-        destination: 'Tokyo (NRT)',
+        origin:      'TPE',
+        destination: 'NRT',
         checkIn:     '2026-09-18',
       })],
     })
@@ -484,8 +484,8 @@ describe('BookingFormModal PDF autofill intent', () => {
         type:        'flight',
         title:       'JX803',
         provider:    'STARLUX Airlines',
-        origin:      'Tokyo (NRT)',
-        destination: 'Taipei (TPE)',
+        origin:      'NRT',
+        destination: 'TPE',
         checkIn:     '2026-09-26',
       })],
     })

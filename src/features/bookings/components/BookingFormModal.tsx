@@ -745,7 +745,7 @@ export default function BookingFormModal({
                 <input
                   value={state.origin}
                   onChange={e => setField('origin', e.target.value)}
-                  placeholder={state.type === 'flight' ? '桃園 / TPE' : '東京駅'}
+                  placeholder={state.type === 'flight' ? 'TPE' : '東京駅'}
                   aria-label="出発地"
                   className={bookingRouteInputClass(!!errors.origin)}
                 />
@@ -759,7 +759,7 @@ export default function BookingFormModal({
                 <input
                   value={state.destination}
                   onChange={e => setField('destination', e.target.value)}
-                  placeholder={state.type === 'flight' ? '成田 / NRT' : '京都駅'}
+                  placeholder={state.type === 'flight' ? 'NRT' : '京都駅'}
                   aria-label="到着地"
                   className={`${bookingRouteInputClass(!!errors.destination)} text-right`}
                 />
@@ -768,7 +768,7 @@ export default function BookingFormModal({
           </div>
           {state.type === 'flight' && (
             <p className="mt-1.5 text-[11px] font-semibold leading-[1.45] text-pick">
-              有機場代碼時，可輸入「Tokyo / NRT」
+              航班起訖一律使用三碼機場代號，例如「TPE → NRT」
             </p>
           )}
         </FormField>

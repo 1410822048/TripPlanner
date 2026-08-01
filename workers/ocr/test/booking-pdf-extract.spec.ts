@@ -268,6 +268,8 @@ describe('extractBookingPdfFields', () => {
 		expect(prompt).toContain('Return a bookings array')
 		expect(prompt).toContain('deduplicate')
 		expect(prompt).toContain('originIataCode and destinationIataCode')
+		expect(prompt).toContain('origin and destination MUST be the three-letter IATA airport codes')
+		expect(prompt).toContain('full airport names or terminal details only in evidence')
 		expect(prompt).toContain('Narita International Airport T1')
 		expect(prompt).toContain('Do not infer a specific airport code from a city name alone')
 		expect(prompt).toContain('Do NOT use generic directions')

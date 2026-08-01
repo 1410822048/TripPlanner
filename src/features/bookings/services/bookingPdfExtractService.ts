@@ -89,13 +89,15 @@ function iataCodeValue(field: BookingPdfExtractedField): string {
 }
 
 function transportLocationValue(
+  type:     BookingPdfExtractBookingType,
   location: BookingPdfExtractedField,
   iataCode: BookingPdfExtractedField,
+  threshold: number,
 ): string {
-  const value = location.value.trim()
-  const code = iataCodeValue(iataCode)
-  if (!value || !code || value === code || value.endsWith(`(${code})`)) return value
-  return `${value.replace(/\s*\([A-Z]{3}\)\s*$/, '')} (${code})`
+  // 航班航線只儲存 IATA 三碼。機場全名保留在 OCR evidence，避免窄版卡片
+  // 截斷後只看到冗長名稱、反而看不到真正可辨識的代號。
+  if (type === 'flight') return iataCodeValue(iataCode)
+  return shouldApply(location, threshold) ? location.value.trim() : ''
 }
 
 export function bookingPdfExtractToDraftPatch(
@@ -115,11 +117,23 @@ export function bookingPdfExtractToDraftPatch(
   if (!state.title.trim() && shouldApply(result.title, FIELD_THRESHOLDS.title)) {
     patch.title = result.title.value.trim()
   }
-  if (targetIsTransport && !state.origin.trim() && shouldApply(result.origin, FIELD_THRESHOLDS.origin)) {
-    patch.origin = transportLocationValue(result.origin, result.originIataCode)
+  if (targetIsTransport && !state.origin.trim()) {
+    const origin = transportLocationValue(
+      targetType,
+      result.origin,
+      result.originIataCode,
+      FIELD_THRESHOLDS.origin,
+    )
+    if (origin) patch.origin = origin
   }
-  if (targetIsTransport && !state.destination.trim() && shouldApply(result.destination, FIELD_THRESHOLDS.destination)) {
-    patch.destination = transportLocationValue(result.destination, result.destinationIataCode)
+  if (targetIsTransport && !state.destination.trim()) {
+    const destination = transportLocationValue(
+      targetType,
+      result.destination,
+      result.destinationIataCode,
+      FIELD_THRESHOLDS.destination,
+    )
+    if (destination) patch.destination = destination
   }
   if (!state.provider.trim() && shouldApply(result.provider, FIELD_THRESHOLDS.provider)) {
     patch.provider = result.provider.value.trim()
