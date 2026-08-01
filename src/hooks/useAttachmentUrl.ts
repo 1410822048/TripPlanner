@@ -28,15 +28,34 @@
 
 import { useEffect, useLayoutEffect, useState } from 'react'
 import { fetchAttachmentBlob } from '@/services/attachmentStorage'
+import { captureError } from '@/services/sentry'
 
 // ─── Shared blob-bytes fetch (in-flight dedup) ─────────────────────
 // Keyed by path; the bytes are identical regardless of kind, so a thumb
 // hook and a full hook for the same path share one Worker round-trip.
 const blobInFlight = new Map<string, Promise<Blob | null>>()
 
-// Dev-only: warn once so an auth, Worker, or R2 failure is visible instead
-// of looking like a silent "no thumbnail" fallback. Tree-shaken in prod.
-let warnedAttachmentFailure = false
+// A missing object is not an error: fetchAttachmentBlob returns null on 404
+// and only throws for auth / Worker / R2 failures. Those degrade to a
+// placeholder in the UI, so without this report a broken Worker or a revoked
+// permission would be invisible outside of user complaints.
+//
+// Deduped per failure mode because one outage fails every visible thumbnail
+// at once — the useful signal is "expense thumbs are 403-ing", not 200 copies
+// of it.
+const reportedFailures = new Set<string>()
+
+function reportAttachmentFailure(path: string, e: unknown): void {
+  const err = e instanceof Error ? e : new Error(String(e))
+  const status = (e as { status?: number } | null)?.status ?? null
+  // Object paths are `trips/<id>/<entity>/<id>/<file>`; the ids identify a
+  // trip and its members, so only the de-identified shape goes to Sentry.
+  const [, , entity = 'unknown', , file = 'unknown'] = path.split('/')
+  const signature = `${err.name}:${status}:${entity}`
+  if (reportedFailures.has(signature)) return
+  reportedFailures.add(signature)
+  captureError(err, { source: 'useAttachmentUrl/fetch', status, entity, file })
+}
 
 async function fetchBlob(path: string): Promise<Blob | null> {
   const existing = blobInFlight.get(path)
@@ -45,13 +64,7 @@ async function fetchBlob(path: string): Promise<Blob | null> {
     try {
       return await fetchAttachmentBlob(path)
     } catch (e) {
-      if (import.meta.env.DEV && !warnedAttachmentFailure) {
-        warnedAttachmentFailure = true
-        console.warn(
-          '[useAttachmentUrl] attachment fetch failed — Worker unavailable, ' +
-          'not signed in, or missing read permission. First failure only:', path, e,
-        )
-      }
+      reportAttachmentFailure(path, e)
       return null
     } finally {
       blobInFlight.delete(path)
