@@ -75,7 +75,7 @@ function acquireListener<T>(
   const existing = listeners.get(id)
   if (existing) {
     existing.refCount += 1
-    return () => releaseListener(id)
+    return () => releaseListener(id, existing)
   }
 
   const entry: SharedListener = { refCount: 1 }
@@ -106,16 +106,21 @@ function acquireListener<T>(
     }
     entry.unsub = u
   }).catch(e => {
-    listeners.delete(id)
+    // Drop the failed entry so a later acquire can retry, but only while
+    // it is still the registered one — a newer generation must survive.
+    if (listeners.get(id) === entry) listeners.delete(id)
     captureError(e, { source: `${source}/subscribe-init`, key: scope })
   })
 
-  return () => releaseListener(id)
+  return () => releaseListener(id, entry)
 }
 
-function releaseListener(id: string): void {
+/** `expected` pins the generation this release belongs to. A consumer that
+ *  outlived its own entry (subscribe failed, or it was already released)
+ *  must not decrement whatever entry now holds the same key. */
+function releaseListener(id: string, expected: SharedListener): void {
   const entry = listeners.get(id)
-  if (!entry) return
+  if (entry !== expected) return
   entry.refCount -= 1
   if (entry.refCount > 0) return
   listeners.delete(id)
