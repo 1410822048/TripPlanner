@@ -298,10 +298,11 @@ export default function BookingFormModal({
     e.target.value = ''  // allow re-picking the same file
     if (!f) return
     abortPdfAutofill()
-    if (docAtt.pickFile(f)) {
-      if (isPdfFile(f)) commitPdfAutofillSource()
-      else setPdfAutofillSourceKey(null)
-    }
+    // A rejected pick (over the size cap) leaves the previous file in place,
+    // so the analysis of that file has to stay too.
+    if (!docAtt.pickFile(f)) return
+    if (isPdfFile(f)) commitPdfAutofillSource()
+    else setPdfAutofillSourceKey(null)
     clearPdfAutofillCandidates()
     setPdfAutofill({ status: 'idle' })
   }
@@ -419,15 +420,25 @@ export default function BookingFormModal({
         const createableIndexes = createableCandidates.map(({ index }) => index)
         setPdfAutofillCreateableCandidates(createableCandidates)
         setSelectedPdfCandidateIndexes(createableIndexes)
+        // Candidates missing a required field are dropped silently otherwise,
+        // so a flight whose IATA code fell below the confidence gate would
+        // just never appear and the count would look wrong.
+        const dropped = result.bookings.length - createableCandidates.length
+        const droppedNote = dropped > 0 ? `，另有 ${dropped} 筆資料不完整需手動輸入` : ''
         setPdfAutofill({
           status:  createableIndexes.length > 0 ? 'applied' : 'empty',
           message: createableIndexes.length > 0
-            ? `找到 ${createableIndexes.length} 筆訂單候選資料`
-            : '找不到可新增的候選資料',
+            ? `找到 ${createableIndexes.length} 筆訂單候選資料${droppedNote}`
+            : `找不到可新增的候選資料${droppedNote}`,
         })
         return
       }
-      applySelectedPdfCandidate(result.bookings[0]!)
+      const [only] = result.bookings
+      if (!only) {
+        setPdfAutofill({ status: 'empty', message: '找不到可填入的項目' })
+        return
+      }
+      applySelectedPdfCandidate(only)
     } catch (e) {
       if (controller.signal.aborted || pdfAutofillSeqRef.current !== seq) return
       setPdfAutofill({ status: 'error', message: pdfAutofillErrorMessage(e) })
@@ -746,7 +757,7 @@ export default function BookingFormModal({
                   value={state.origin}
                   onChange={e => setField('origin', e.target.value)}
                   placeholder={state.type === 'flight' ? 'TPE' : '東京駅'}
-                  aria-label="出発地"
+                  aria-label="出發地"
                   className={bookingRouteInputClass(!!errors.origin)}
                 />
               </label>
@@ -760,7 +771,7 @@ export default function BookingFormModal({
                   value={state.destination}
                   onChange={e => setField('destination', e.target.value)}
                   placeholder={state.type === 'flight' ? 'NRT' : '京都駅'}
-                  aria-label="到着地"
+                  aria-label="目的地"
                   className={`${bookingRouteInputClass(!!errors.destination)} text-right`}
                 />
               </label>

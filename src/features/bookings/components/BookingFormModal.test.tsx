@@ -439,6 +439,38 @@ describe('BookingFormModal PDF autofill intent', () => {
     expect(screen.queryByRole('button', { name: '新增選取的訂單' })).toBeNull()
   })
 
+  test('keeps batch candidates when an oversize file is rejected on the document row', async () => {
+    bookingPdfExtractMocks.extractBookingPdfAutofill.mockResolvedValueOnce({
+      bookings: [flightCandidate(), flightCandidate({ segmentRole: 'return' })],
+      warnings: [],
+    })
+
+    const { container } = render(
+      <BookingFormModal
+        editTarget={null}
+        isOpen
+        isSaving={false}
+        onClose={() => {}}
+        onSave={() => {}}
+        onCreateMany={vi.fn()}
+      />,
+    )
+
+    fireEvent.change(fileInput(container, 'application/pdf,.pdf'), {
+      target: { files: [new File(['%PDF-1.7'], 'roundtrip.pdf', { type: 'application/pdf' })] },
+    })
+    await waitFor(() => expect(screen.getAllByRole('checkbox')).toHaveLength(2))
+
+    // The document row is a separate input from the autofill one. A pick it
+    // refuses leaves the previous attachment in place, so the analysis of
+    // that attachment has to survive too.
+    fireEvent.change(fileInput(container, 'image/*,application/pdf'), {
+      target: { files: [new File([new Uint8Array(5 * 1024 * 1024 + 1)], 'huge.pdf', { type: 'application/pdf' })] },
+    })
+
+    expect(screen.getAllByRole('checkbox')).toHaveLength(2)
+  })
+
   test('keeps the candidate picker usable when only one batch candidate is createable', async () => {
     const onCreateMany = vi.fn()
     bookingPdfExtractMocks.extractBookingPdfAutofill.mockResolvedValueOnce({
