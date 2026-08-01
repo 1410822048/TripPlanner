@@ -1,7 +1,7 @@
 // src/features/bookings/components/cards/dateFormat.ts
 // Booking-card-specific date formatters. Kept here (not in utils/dates.ts)
-// because the format is opinionated — it includes a Japanese weekday in
-// parentheses (e.g. `05/15 (土)`) which only makes sense for booking
+// because the format is opinionated — it includes a weekday in
+// parentheses (e.g. `05/15 (五)`) which only makes sense for booking
 // cards' compact date strip. Schedule / expense pages use different
 // formats and shouldn't be tempted by these.
 //
@@ -19,7 +19,7 @@ export function fmtTime(s: string | undefined): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-/** Compact MM/DD with Japanese weekday — `05/15 (土)`. */
+/** Compact MM/DD with weekday — `05/15 (五)`. */
 export function fmtDate(s: string | undefined): string {
   if (!s) return ''
   const d = parseStoredDate(s)

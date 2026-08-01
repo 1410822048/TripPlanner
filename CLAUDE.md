@@ -142,7 +142,7 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 | `useReceiptOcr` | ExpenseFormModal 的 OCR 編排層:組合 `useOcrFlow` + receipt source machine(`sourceKey`/`analyzedSourceKey` 驅動 OCR CTA)+ camera/upload pick handlers + `pendingSourceKey` 記帳。回傳分層 `{ status, caps, handlers }`。form-apply(`applyOcrResultToForm`)與 sibling clear(att/items/adjustments)留在 component |
 | `useExpenseItems` | items state machine + chip 分擔者 |
 | `useSettlements` / `useCreateSettlement` / `useDeleteSettlement` | Settlement 記錄 CRUD + realtime listener。**受取人(toUid)唯一可建立**(rule + UI 雙層 gate);delete 由 `settledBy` 或 trip owner 觸發。算法層在 `services/settlement.ts` 的 `computeBalancesFull` 回 `{ balances, orphans }` |
-| `useFeatureBadges` | **AppLayout 內 5 個 always-on Firestore listener**,對比 `lastViewedStore` 算 unread,驅動 BottomNav 紅點 |
+| `useFeatureBadges` | 讀 trip doc 的 `lastActivityByFeature`(**0 個額外 listener**,搭現有 trip-doc listener 便車),對比 `lastViewedStore` 算 unread,驅動 BottomNav 紅點 |
 | `useOnlineStatus` | 訂閱 `online`/`offline` event,搭配 `OfflineBanner` 顯示離線提示 |
 | `createRealtimeListHook` | Generic factory:onSnapshot → TanStack Query cache 同步;**module-level refcount listener dedup**(AppLayout + page 共用 1 個 onSnapshot,降 50% reads) |
 | `subscribeToCollection` | 統一 Firestore listener 工廠(throws → captureError) |
@@ -191,8 +191,8 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 - `prefers-reduced-motion` 全域支援(`index.css` 縮 animation duration 到 1ms)
 
 ### Tab unread badge
-- **`AppLayout` 內 `useFeatureBadges()`** 開 5 個 always-on Firestore listener(schedules/expenses/bookings/wishes/planning)
-- 對比 `lastViewedStore`(Zustand + persist localStorage)算 max(item.updatedAt ?? createdAt) > lastViewed
+- **`AppLayout` 內 `useFeatureBadges()`** 讀 trip doc 的 `lastActivityByFeature` map,**不開任何額外 listener**(早期版本開 5 個 always-on collection listener,已改成由各 service mutation 呼叫 `bumpTripActivity` 反正規化進 trip doc)
+- 對比 `lastViewedStore`(Zustand + persist localStorage)算 lastActivity > lastViewed
 - BottomNav 對應 tab 渲染紅色圓點(`active` tab 不顯示)
 - 切到該 tab → `useEffect` 觸發 `markViewed(currentTripId, feature)`,圓點清除
 - `useDeleteTrip onSuccess` 呼叫 `clearTrip(tripId)`,避免 localStorage 累積
