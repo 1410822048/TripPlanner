@@ -3,7 +3,7 @@ import {
   MAX_PDF_PAGES,
   PDF_UNREADABLE,
   PdfPageLimitError,
-  pdfPageLimitMessageJa,
+  pdfPageLimitMessage,
 } from '@tripmate/pdf-page-limit'
 import { getPdfJs } from '@/utils/pdfJs'
 
@@ -22,7 +22,7 @@ export async function validatePdfPageLimit(
   } catch (e) {
     const code = e instanceof PdfPageLimitError ? e.code : PDF_UNREADABLE
     throw new PdfPageLimitError(code, {
-      message: pdfPageLimitMessageJa(code, maxPages),
+      message: pdfPageLimitMessage(code, maxPages),
       pageCount: e instanceof PdfPageLimitError ? e.pageCount : undefined,
       cause: e,
     })

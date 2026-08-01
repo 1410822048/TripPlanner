@@ -51,13 +51,15 @@ export function pdfPageLimitStatus(code: PdfPageLimitCode): 400 | 413 {
   return code === PDF_PAGE_LIMIT_EXCEEDED ? 413 : 400
 }
 
-export function pdfPageLimitMessageJa(
+/** User-facing copy. Surfaces directly in the app's error banners and
+ *  toasts, and as the Worker's error-response body. */
+export function pdfPageLimitMessage(
   code: PdfPageLimitCode,
   maxPages: number = MAX_PDF_PAGES,
 ): string {
   return code === PDF_PAGE_LIMIT_EXCEEDED
-    ? `PDFは${maxPages}ページ以下のファイルを選択してください。`
-    : 'PDFを検証できませんでした。別のPDFを選択してください。'
+    ? `請選擇 ${maxPages} 頁以內的 PDF 檔案。`
+    : '無法讀取這個 PDF，請改選其他檔案。'
 }
 
 interface PdfDocument {

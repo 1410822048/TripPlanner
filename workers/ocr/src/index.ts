@@ -138,7 +138,7 @@ import {
 import {
   MAX_PDF_PAGES,
   PdfPageLimitError,
-  pdfPageLimitMessageJa,
+  pdfPageLimitMessage,
   pdfPageLimitStatus,
 }                                                 from '@tripmate/pdf-page-limit'
 import {
@@ -385,7 +385,7 @@ function pdfPageLimitErrorCatcher() {
     ? {
         log: `pdf-page-limit: ${e.code} ${e.message}`,
         body: {
-          error: pdfPageLimitMessageJa(e.code, MAX_PDF_PAGES),
+          error: pdfPageLimitMessage(e.code, MAX_PDF_PAGES),
           code: e.code,
           maxPages: MAX_PDF_PAGES,
           ...(e.pageCount !== undefined ? { pageCount: e.pageCount } : {}),

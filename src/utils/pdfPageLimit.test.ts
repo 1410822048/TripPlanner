@@ -3,7 +3,7 @@ import {
   PDF_UNREADABLE,
   MAX_PDF_PAGES,
   PdfPageLimitError,
-  pdfPageLimitMessageJa,
+  pdfPageLimitMessage,
 } from '@tripmate/pdf-page-limit'
 import { validatePdfPageLimit } from './pdfPageLimit'
 
@@ -44,7 +44,7 @@ describe('validatePdfPageLimit', () => {
     ).rejects.toMatchObject({
       name:    'PdfPageLimitError',
       code:    PDF_UNREADABLE,
-      message: pdfPageLimitMessageJa(PDF_UNREADABLE),
+      message: pdfPageLimitMessage(PDF_UNREADABLE),
     } satisfies Partial<PdfPageLimitError>)
 
     expect(mocks.getPdfJs).toHaveBeenCalledTimes(1)

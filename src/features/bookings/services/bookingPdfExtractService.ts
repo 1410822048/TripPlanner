@@ -2,7 +2,7 @@ import { initBookingFormState, type BookingFormDraft, type BookingFormState } fr
 import type { CreateBookingInput } from '@/types/booking'
 import {
   PdfPageLimitError,
-  pdfPageLimitMessageJa,
+  pdfPageLimitMessage,
 } from '@tripmate/pdf-page-limit'
 import { isHttpUrl } from '@/types/booking'
 import { getFirebaseAuth } from '@/services/firebase'
@@ -205,7 +205,7 @@ export async function extractBookingPdfAutofill(
     digest = await extractBookingPdfText(file, signal)
   } catch (e) {
     if (e instanceof PdfPageLimitError) {
-      throw new BookingPdfExtractError(pdfPageLimitMessageJa(e.code), 'parse')
+      throw new BookingPdfExtractError(pdfPageLimitMessage(e.code), 'parse')
     }
     throw e
   }

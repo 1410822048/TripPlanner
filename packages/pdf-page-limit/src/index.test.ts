@@ -4,7 +4,7 @@ import {
   PDF_UNREADABLE,
   PdfPageLimitError,
   assertPdfPageLimitWithPdfJs,
-  pdfPageLimitMessageJa,
+  pdfPageLimitMessage,
   type PdfJsLike,
 } from './index'
 
@@ -61,11 +61,11 @@ describe('assertPdfPageLimitWithPdfJs', () => {
   })
 })
 
-describe('pdfPageLimitMessageJa', () => {
+describe('pdfPageLimitMessage', () => {
   it('keeps client and Worker PDF upload copy in one shared formatter', () => {
-    expect(pdfPageLimitMessageJa(PDF_PAGE_LIMIT_EXCEEDED, 10))
-      .toBe('PDFは10ページ以下のファイルを選択してください。')
-    expect(pdfPageLimitMessageJa(PDF_UNREADABLE, 10))
-      .toBe('PDFを検証できませんでした。別のPDFを選択してください。')
+    expect(pdfPageLimitMessage(PDF_PAGE_LIMIT_EXCEEDED, 10))
+      .toBe('請選擇 10 頁以內的 PDF 檔案。')
+    expect(pdfPageLimitMessage(PDF_UNREADABLE, 10))
+      .toBe('無法讀取這個 PDF，請改選其他檔案。')
   })
 })

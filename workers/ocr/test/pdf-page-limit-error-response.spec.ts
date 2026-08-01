@@ -4,7 +4,7 @@ import {
 	PDF_PAGE_LIMIT_EXCEEDED,
 	PDF_UNREADABLE,
 	PdfPageLimitError,
-	pdfPageLimitMessageJa,
+	pdfPageLimitMessage,
 } from '@tripmate/pdf-page-limit'
 
 const bookingFileCreateMock = vi.hoisted(() => vi.fn())
@@ -63,7 +63,7 @@ describe('pdfPageLimitErrorCatcher response body', () => {
 
 		expect(res.status).toBe(413)
 		expect(body).toEqual({
-			error:     pdfPageLimitMessageJa(PDF_PAGE_LIMIT_EXCEEDED, MAX_PDF_PAGES),
+			error:     pdfPageLimitMessage(PDF_PAGE_LIMIT_EXCEEDED, MAX_PDF_PAGES),
 			code:      PDF_PAGE_LIMIT_EXCEEDED,
 			maxPages:  MAX_PDF_PAGES,
 			pageCount: 11,
@@ -81,7 +81,7 @@ describe('pdfPageLimitErrorCatcher response body', () => {
 
 		expect(res.status).toBe(400)
 		expect(body).toEqual({
-			error:     pdfPageLimitMessageJa(PDF_UNREADABLE, MAX_PDF_PAGES),
+			error:     pdfPageLimitMessage(PDF_UNREADABLE, MAX_PDF_PAGES),
 			code:      PDF_UNREADABLE,
 			maxPages:  MAX_PDF_PAGES,
 			retryable: false,

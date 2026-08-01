@@ -12,7 +12,7 @@
 // Module re-import per case because the URL resolution runs at module
 // load, and `vi.stubEnv` only takes effect on subsequent loads.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { pdfPageLimitMessageJa } from '@tripmate/pdf-page-limit'
+import { pdfPageLimitMessage } from '@tripmate/pdf-page-limit'
 
 beforeEach(() => {
   vi.resetModules()
@@ -125,7 +125,7 @@ describe('workerFetch — HTTP error classification', () => {
   })
 
   it('4xx JSON error body uses the Worker error message instead of raw JSON', async () => {
-    const error = pdfPageLimitMessageJa('PDF_PAGE_LIMIT_EXCEEDED')
+    const error = pdfPageLimitMessage('PDF_PAGE_LIMIT_EXCEEDED')
     stubFetchStatus(413, JSON.stringify({
       error,
       code: 'PDF_PAGE_LIMIT_EXCEEDED',
