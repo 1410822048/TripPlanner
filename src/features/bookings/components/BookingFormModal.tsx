@@ -365,9 +365,9 @@ export default function BookingFormModal({
   }
 
   function candidateRoleLabel(candidate: BookingPdfExtractCandidate, index: number): string {
-    return candidate.segmentRole === 'outbound' ? '往路'
-      : candidate.segmentRole === 'return' ? '復路'
-      : candidate.segmentRole === 'connection' ? '乗継'
+    return candidate.segmentRole === 'outbound' ? '去程'
+      : candidate.segmentRole === 'return' ? '回程'
+      : candidate.segmentRole === 'connection' ? '轉乘'
       : `候選 ${index + 1}`
   }
 

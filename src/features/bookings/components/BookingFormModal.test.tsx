@@ -364,6 +364,10 @@ describe('BookingFormModal PDF autofill intent', () => {
       expect(screen.getByRole('status').textContent).toContain('找到 2 筆訂單候選資料')
     })
 
+    expect(screen.getByText('去程')).toBeTruthy()
+    expect(screen.getByText('回程')).toBeTruthy()
+    expect(screen.queryByText('往路')).toBeNull()
+    expect(screen.queryByText('復路')).toBeNull()
     expect(screen.queryByDisplayValue('MM626')).toBeNull()
 
     const checkboxes = screen.getAllByRole('checkbox')
