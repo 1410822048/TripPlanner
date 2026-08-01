@@ -181,19 +181,22 @@ export default function BookingsPage() {
     if (!uid) { toast.error('正在準備登入，請稍候'); return }
     modal.close()
 
-    void (async () => {
-      for (const input of inputs) {
-        try {
-          await createMut.mutateAsync({
-            input,
-            files:     { coverImage: undefined, document },
-            createdBy: uid,
-          })
-        } catch {
-          // useTripListMutation + global MutationCache already rollback/toast.
-        }
-      }
-    })()
+    // Concurrent, not sequential: a round trip resolves in the time the
+    // slowest segment takes rather than the sum. Safe only because rollback
+    // is operation-scoped — a whole-snapshot restore would have let one
+    // failed segment wipe the siblings that had already landed.
+    //
+    // Each segment still uploads its own copy of the same PDF. Sharing one
+    // object would need refcounting: upload intents and the delete cascade
+    // are both keyed by bookingId, so deleting any one segment would take
+    // the shared file away from the others.
+    void Promise.allSettled(inputs.map(input => createMut.mutateAsync({
+      input,
+      files:     { coverImage: undefined, document },
+      createdBy: uid,
+    })))
+    // Rejections are already handled by useTripListMutation's rollback and
+    // the global MutationCache toast.
   }
 
   function handleOpenAdd() {
