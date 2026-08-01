@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import BookingFormModal from './BookingFormModal'
 import { ATTACHMENT_SIZE_ERROR } from '@/hooks/useAttachment'
@@ -437,6 +437,41 @@ describe('BookingFormModal PDF autofill intent', () => {
     expect(screen.getByRole('status').textContent).toBe(ATTACHMENT_SIZE_ERROR)
     expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
     expect(screen.queryByRole('button', { name: '新增選取的訂單' })).toBeNull()
+  })
+
+  test('leaves a running extraction alone when an oversize file is rejected on the document row', async () => {
+    let resolveExtract!: (value: unknown) => void
+    bookingPdfExtractMocks.extractBookingPdfAutofill.mockReturnValueOnce(
+      new Promise(resolve => { resolveExtract = resolve }),
+    )
+
+    const { container } = render(
+      <BookingFormModal
+        editTarget={null}
+        isOpen
+        isSaving={false}
+        onClose={() => {}}
+        onSave={() => {}}
+        onCreateMany={vi.fn()}
+      />,
+    )
+
+    fireEvent.change(fileInput(container, 'application/pdf,.pdf'), {
+      target: { files: [new File(['%PDF-1.7'], 'roundtrip.pdf', { type: 'application/pdf' })] },
+    })
+    await waitFor(() => expect(screen.getByText('正在讀取 PDF…')).toBeTruthy())
+
+    // Aborting here would strand the card at 'loading' forever: the abort
+    // path in runPdfAutofill returns without touching the status.
+    fireEvent.change(fileInput(container, 'image/*,application/pdf'), {
+      target: { files: [new File([new Uint8Array(5 * 1024 * 1024 + 1)], 'huge.pdf', { type: 'application/pdf' })] },
+    })
+
+    await act(async () => {
+      resolveExtract({ bookings: [flightCandidate(), flightCandidate({ segmentRole: 'return' })], warnings: [] })
+    })
+
+    expect(screen.getAllByRole('checkbox')).toHaveLength(2)
   })
 
   test('keeps batch candidates when an oversize file is rejected on the document row', async () => {

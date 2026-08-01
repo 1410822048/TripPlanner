@@ -297,10 +297,13 @@ export default function BookingFormModal({
     const f = e.target.files?.[0]
     e.target.value = ''  // allow re-picking the same file
     if (!f) return
-    abortPdfAutofill()
-    // A rejected pick (over the size cap) leaves the previous file in place,
-    // so the analysis of that file has to stay too.
+    // Pick first: a rejected file (over the size cap) leaves the previous
+    // attachment in place, so its analysis — finished or still running —
+    // has to stay too. Aborting before the pick would strand an in-flight
+    // run at 'loading', since runPdfAutofill's abort path deliberately
+    // leaves the status alone.
     if (!docAtt.pickFile(f)) return
+    abortPdfAutofill()
     if (isPdfFile(f)) commitPdfAutofillSource()
     else setPdfAutofillSourceKey(null)
     clearPdfAutofillCandidates()
