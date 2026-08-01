@@ -18,10 +18,11 @@ import { attachmentThumbPath } from '../utils'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import LoadingText from '@/components/ui/LoadingText'
 import type { Booking } from '@/types'
+import { parseStoredDate } from '@/utils/dates'
 
 function bookingYear(b: Booking): number {
   if (b.checkIn) {
-    const d = new Date(b.checkIn)
+    const d = parseStoredDate(b.checkIn)
     if (!Number.isNaN(d.getTime())) return d.getFullYear()
   }
   return b.createdAt.toDate().getFullYear()
@@ -30,11 +31,11 @@ function bookingYear(b: Booking): number {
 /** Japanese-style date range label — collapses same-month / same-year spans. */
 function formatRange(checkIn?: string, checkOut?: string): string {
   if (!checkIn) return ''
-  const start = new Date(checkIn)
+  const start = parseStoredDate(checkIn)
   if (Number.isNaN(start.getTime())) return ''
   const y1 = start.getFullYear(), m1 = start.getMonth() + 1, d1 = start.getDate()
   if (!checkOut) return `${y1}年${m1}月${d1}日`
-  const end = new Date(checkOut)
+  const end = parseStoredDate(checkOut)
   if (Number.isNaN(end.getTime())) return `${y1}年${m1}月${d1}日`
   const y2 = end.getFullYear(), m2 = end.getMonth() + 1, d2 = end.getDate()
   if (y1 === y2 && m1 === m2) return `${y1}年${m1}月${d1}日 至 ${d2}日`

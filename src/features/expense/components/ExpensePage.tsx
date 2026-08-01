@@ -13,6 +13,7 @@ import { useIsTripOwner } from '@/features/trips/hooks/useTripRole'
 import { useSwipeOpen } from '@/hooks/useSwipeOpen'
 import { MOCK_EXPENSES } from '../mocks'
 import { toast } from '@/shared/toast'
+import { toLocalDateString } from '@/utils/dates'
 import type { Expense, ExpenseCategory } from '@/types'
 import ExpenseFormModal, { type ExpenseFormResult } from './ExpenseFormModal'
 import ExpenseReadonlyModal from './ExpenseReadonlyModal'
@@ -401,7 +402,7 @@ export default function ExpensePage() {
           key={modal.key}
           isOpen
           editTarget={modal.editTarget}
-          defaultDate={new Date().toISOString().slice(0, 10)}
+          defaultDate={toLocalDateString(new Date())}
           members={members}
           isSaving={false}
           onClose={modal.close}

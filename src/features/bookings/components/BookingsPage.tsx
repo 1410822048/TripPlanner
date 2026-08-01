@@ -26,7 +26,7 @@ import BookingReadonlyModal from './BookingReadonlyModal'
 import BookingsListSkeleton from './BookingsListSkeleton'
 import { bookingDisplayName, BOOKING_TYPE_META, BOOKING_TYPE_ORDER } from '../utils'
 import { hasShareParams, sharedBookingDraftFromSearch, type SharedBookingDraft } from '../linkDraft'
-import { toLocalDateString } from '@/utils/dates'
+import { parseStoredDate, toLocalDateString } from '@/utils/dates'
 
 type BookingOverlay =
   | { kind: 'detail'; bookingId: string }
@@ -40,7 +40,7 @@ type BookingOverlay =
  */
 function formatWhen(b: Booking): string {
   const fmtDate = (s: string) => {
-    const d = new Date(s)
+    const d = parseStoredDate(s)
     if (Number.isNaN(d.getTime())) return ''
     return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
   }
@@ -53,9 +53,9 @@ function formatWhen(b: Booking): string {
   const inDate = fmtDate(b.checkIn)
   const inTime = fmtTime(b.checkIn)
   if (!b.checkOut) return inTime ? `${inDate} ${inTime}` : inDate
-  const out = new Date(b.checkOut)
+  const out = parseStoredDate(b.checkOut)
   if (Number.isNaN(out.getTime())) return inDate
-  const inObj = new Date(b.checkIn)
+  const inObj = parseStoredDate(b.checkIn)
   if (inObj.getFullYear() === out.getFullYear() && inObj.getMonth() === out.getMonth()) {
     return `${inDate} 至 ${out.getDate()}日`
   }

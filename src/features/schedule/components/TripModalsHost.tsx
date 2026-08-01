@@ -17,6 +17,7 @@ import CreateTripModal from '@/features/trips/components/CreateTripModal'
 import MembersModal from '@/features/members/components/MembersModal'
 import SignInPromptModal from '@/features/auth/components/SignInPromptModal'
 import type { SchedulePageState } from '../hooks/useSchedulePageState'
+import { toLocalDateString } from '@/utils/dates'
 
 // Lazy-loaded: InviteModal pulls in qrcode.react (~30 KB raw / ~10 KB
 // gzip) for the share-link QR code, which has no business being on the
@@ -55,7 +56,7 @@ export default function TripModalsHost({ state }: Props) {
           isOpen
           tripId={selectedTrip.id}
           editTarget={scheduleModal.editTarget}
-          defaultDate={display ?? new Date().toISOString().slice(0, 10)}
+          defaultDate={display ?? toLocalDateString(new Date())}
           // Trip date range — the picker disables days outside this
           // window and the form blocks save with an inline message if
           // an edit somehow lands a stored value out of range (e.g.

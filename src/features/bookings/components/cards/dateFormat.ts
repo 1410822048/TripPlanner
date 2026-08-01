@@ -7,7 +7,7 @@
 //
 // Both fns return '' on missing / unparseable input so the caller can
 // branch with `if (date)` instead of guarding with try/catch.
-import { diffDays } from '@/utils/dates'
+import { diffDays, parseStoredDate } from '@/utils/dates'
 
 const WEEKDAYS_ZH = ['日', '一', '二', '三', '四', '五', '六'] as const
 
@@ -22,7 +22,7 @@ export function fmtTime(s: string | undefined): string {
 /** Compact MM/DD with Japanese weekday — `05/15 (土)`. */
 export function fmtDate(s: string | undefined): string {
   if (!s) return ''
-  const d = new Date(s)
+  const d = parseStoredDate(s)
   if (Number.isNaN(d.getTime())) return ''
   const wd = WEEKDAYS_ZH[d.getDay()]
   return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} (${wd})`

@@ -22,6 +22,18 @@ export function fromLocalDateString(s: string): Date {
   return new Date(s + 'T00:00:00')
 }
 
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * Parse a stored date that may be either a calendar date ('YYYY-MM-DD') or
+ * a full ISO datetime. Bare `new Date(s)` reads the date-only form as UTC
+ * per ECMA-262, so west-of-UTC locales render the previous day; anything
+ * with a time part is a real instant and keeps the native parse.
+ */
+export function parseStoredDate(s: string): Date {
+  return DATE_ONLY_RE.test(s) ? fromLocalDateString(s) : new Date(s)
+}
+
 /**
  * Build a Firestore Timestamp at local midnight for a 'YYYY-MM-DD' string.
  * The Timestamp factory is injected so this helper stays bundle-neutral —

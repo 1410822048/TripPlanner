@@ -2,10 +2,18 @@
 // and have several silent-regression failure modes:
 //   - fmtTime: regex must reject date-only input so date-only bookings
 //     do NOT render '00:00' (would look like a midnight booking).
-//   - fmtDate: WEEKDAYS_JA index must stay aligned with Date.getDay()
+//   - fmtDate: WEEKDAYS_ZH index must stay aligned with Date.getDay()
 //     so weekday rendering doesn't shift by one.
+//   - fmtDate: date-only input must be read as a calendar date, not a
+//     UTC instant -- see the fixed-timezone block below.
 //   - nightsBetween: raw-ms math used to floor "15:00 -> 11:00 next day"
 //     to 0 nights -- the diffDays-based version returns 1.
+//
+// Pinned west of UTC on purpose: a UTC test box cannot tell a calendar
+// date from a UTC instant, so the date-only assertions would pass even
+// with the bug they exist to catch.
+process.env.TZ = 'America/New_York'
+
 import { describe, expect, test } from 'vitest'
 import { fmtDate, fmtTime, nightsBetween } from './dateFormat'
 
@@ -17,9 +25,8 @@ describe('fmtTime', () => {
 
   test('date-only input returns empty string (no fake 00:00)', () => {
     // Critical: the regex test must reject date-only strings. If it
-    // accidentally passes them, `new Date('2026-05-15')` produces a
-    // local-midnight Date and fmtTime would return '00:00' -- making
-    // every date-only booking falsely show as a midnight booking.
+    // accidentally passes them, fmtTime would render the projection of a
+    // parsed date -- making every date-only booking falsely show a time.
     expect(fmtTime('2026-05-15')).toBe('')
   })
 
@@ -31,27 +38,27 @@ describe('fmtTime', () => {
 })
 
 describe('fmtDate', () => {
-  // Production callers always pass `booking.checkIn` / `checkOut`, which
-  // are full ISO datetime strings per the Booking type comment. We test
-  // that exact shape -- noon local time -- because:
-  //   - Date-only strings like '2026-05-15' would parse as UTC midnight
-  //     per the ECMA-262 spec, then getDay() / getDate() projects back
-  //     to local time -- giving the wrong day in UTC- timezones. CI
-  //     boxes running in UTC would shift the assertion.
-  //   - Datetime strings WITHOUT a Z suffix parse as local time, so
-  //     getDay() / getDate() return stable values regardless of CI TZ.
-  // Noon (12:00) is also far enough from midnight to be safe even with
-  // extreme TZ offsets, which only matters if a future change adds
-  // explicit hour math.
-  test('formats MM/DD with Japanese weekday', () => {
-    // 2026-05-15 is a Friday. WEEKDAYS_JA[5] === '金'.
+  // Both shapes reach production: the form's DatePicker and the PDF
+  // import path emit date-only 'YYYY-MM-DD', while manually entered
+  // times give a full ISO datetime. Datetime strings without a Z suffix
+  // parse as local time; date-only strings must go through
+  // parseStoredDate or ECMA-262 reads them as UTC instants.
+  test('formats MM/DD with Chinese weekday', () => {
+    // 2026-05-15 is a Friday. WEEKDAYS_ZH[5] === '五'.
     expect(fmtDate('2026-05-15T12:00')).toBe('05/15 (五)')
-    // 2026-05-17 is a Sunday. WEEKDAYS_JA[0] === '日'.
+    // 2026-05-17 is a Sunday. WEEKDAYS_ZH[0] === '日'.
     expect(fmtDate('2026-05-17T12:00')).toBe('05/17 (日)')
   })
 
   test('accepts the production check-in datetime shape', () => {
     expect(fmtDate('2026-05-15T15:00')).toBe('05/15 (五)')
+  })
+
+  test('date-only input keeps its calendar day west of UTC', () => {
+    // Bare `new Date('2026-05-15')` is 2026-05-14T20:00 in New York, so
+    // both the day and the weekday would slip by one.
+    expect(fmtDate('2026-05-15')).toBe('05/15 (五)')
+    expect(fmtDate('2026-01-01')).toBe('01/01 (四)')
   })
 
   test('missing or invalid input returns empty string', () => {
