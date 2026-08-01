@@ -154,6 +154,7 @@ describe('extractBookingPdfFields', () => {
 		expect(body.messages[0]?.content).toContain('"title"')
 		expect(body.messages[1]?.content).toContain('Never return any of these fields as a bare string')
 		expect(body.messages[1]?.content).toContain('A " | " inside a line marks a column boundary')
+		expect(body.messages[1]?.content).toContain('2026年9月18日至26日')
 		expect(BOOKING_PDF_EXTRACT_JSON_SCHEMA).toMatchObject({
 			additionalProperties: false,
 			properties: {
@@ -233,6 +234,56 @@ describe('extractBookingPdfFields', () => {
 				confirmationCode: { value: 'HM12345' },
 				address:          { value: '東京都台東区浅草1-1-1' },
 			}],
+		})
+	})
+
+	it('fills empty hotel dates from one explicit visible date range', async () => {
+		stubQwenAndCaptureRequest({
+			...VALID_RESULT,
+			bookings: [{
+				...VALID_RESULT.bookings[0],
+				checkIn:  { value: '', confidence: 0, evidence: '' },
+				checkOut: { value: '', confidence: 0, evidence: '' },
+			}],
+			warnings: ['Dates were left empty because the year was considered ambiguous.'],
+		})
+
+		const result = await extractBookingPdfFields(request({
+			text: '入住 | 退房\n9月18日 週五 | 9月26日 週六\n2026年9月18日至26日',
+			lines: [
+				{ page: 1, text: '入住 | 退房', x: 100, y: 285 },
+				{ page: 1, text: '9月18日 週五 | 9月26日 週六', x: 100, y: 264 },
+				{ page: 2, text: '2026年9月18日至26日', x: 252, y: 393 },
+			],
+		}), CFG)
+
+		expect(result.bookings[0]).toMatchObject({
+			checkIn:  { value: '2026-09-18', confidence: 1, evidence: '2026年9月18日至26日' },
+			checkOut: { value: '2026-09-26', confidence: 1, evidence: '2026年9月18日至26日' },
+		})
+	})
+
+	it('does not guess hotel dates when multiple explicit ranges conflict', async () => {
+		stubQwenAndCaptureRequest({
+			...VALID_RESULT,
+			bookings: [{
+				...VALID_RESULT.bookings[0],
+				checkIn:  { value: '', confidence: 0, evidence: '' },
+				checkOut: { value: '', confidence: 0, evidence: '' },
+			}],
+		})
+
+		const result = await extractBookingPdfFields(request({
+			text: '2026年9月18日至26日\n2026年10月1日至3日',
+			lines: [
+				{ page: 1, text: '2026年9月18日至26日', x: 100, y: 300 },
+				{ page: 2, text: '2026年10月1日至3日', x: 100, y: 300 },
+			],
+		}), CFG)
+
+		expect(result.bookings[0]).toMatchObject({
+			checkIn:  { value: '' },
+			checkOut: { value: '' },
 		})
 	})
 

@@ -215,6 +215,80 @@ function normalizeExtractedResponse(value: unknown): unknown {
   }
 }
 
+interface VisibleDateRange {
+  checkIn:  string
+  checkOut: string
+  evidence: string
+}
+
+const VISIBLE_DATE_RANGE_PATTERN = /(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*(?:至|到|–|—|~|～|-)\s*(?:(\d{4})\s*年\s*)?(?:(\d{1,2})\s*月\s*)?(\d{1,2})\s*日/
+
+function isoCalendarDate(year: number, month: number, day: number): string | undefined {
+  const date = new Date(Date.UTC(year, month - 1, day))
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+    return undefined
+  }
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
+function parseVisibleDateRange(text: string): VisibleDateRange | undefined {
+  const match = VISIBLE_DATE_RANGE_PATTERN.exec(text)
+  if (!match) return undefined
+
+  const startYear = Number(match[1])
+  const startMonth = Number(match[2])
+  const startDay = Number(match[3])
+  const explicitEndYear = match[4] ? Number(match[4]) : undefined
+  const explicitEndMonth = match[5] ? Number(match[5]) : undefined
+  const endMonth = explicitEndMonth ?? startMonth
+  const endYear = explicitEndYear ?? (
+    explicitEndMonth !== undefined && endMonth < startMonth ? startYear + 1 : startYear
+  )
+  const endDay = Number(match[6])
+  const checkIn = isoCalendarDate(startYear, startMonth, startDay)
+  const checkOut = isoCalendarDate(endYear, endMonth, endDay)
+  if (!checkIn || !checkOut || checkOut < checkIn) return undefined
+
+  return { checkIn, checkOut, evidence: match[0] }
+}
+
+function uniqueVisibleDateRange(data: BookingPdfExtractRequest): VisibleDateRange | undefined {
+  const ranges = new Map<string, VisibleDateRange>()
+  for (const line of data.lines) {
+    const range = parseVisibleDateRange(line.text)
+    if (range) ranges.set(`${range.checkIn}|${range.checkOut}`, range)
+  }
+  return ranges.size === 1 ? ranges.values().next().value : undefined
+}
+
+function applyVisibleHotelDateRange(
+  result: BookingPdfExtractResponse,
+  data:   BookingPdfExtractRequest,
+): BookingPdfExtractResponse {
+  const range = uniqueVisibleDateRange(data)
+  const booking = result.bookings.length === 1 ? result.bookings[0] : undefined
+  if (!range || !booking || booking.bookingType !== 'hotel') return result
+  if (
+    (booking.checkIn.value && booking.checkIn.value !== range.checkIn)
+    || (booking.checkOut.value && booking.checkOut.value !== range.checkOut)
+  ) return result
+  if (booking.checkIn.value && booking.checkOut.value) return result
+
+  const evidence = range.evidence.slice(0, BOOKING_FIELD_EVIDENCE_MAX_CHARS)
+  return {
+    ...result,
+    bookings: [{
+      ...booking,
+      checkIn: booking.checkIn.value
+        ? booking.checkIn
+        : { value: range.checkIn, confidence: 1, evidence },
+      checkOut: booking.checkOut.value
+        ? booking.checkOut
+        : { value: range.checkOut, confidence: 1, evidence },
+    }],
+  }
+}
+
 export const BOOKING_PDF_EXTRACT_JSON_SCHEMA = stripUnsupportedToolSchemaKeywords(
   z.toJSONSchema(BookingPdfExtractResponseSchema) as JsonObject,
 ) as JsonObject
@@ -279,6 +353,7 @@ function buildPrompt(data: BookingPdfExtractRequest, retry: boolean): string {
     '- Empty string means "not found". Use confidence 0 and evidence "" for empty values.',
     '- confidence is 0..1. Use high confidence only when the evidence directly labels the field.',
     '- Dates must be YYYY-MM-DD. If the year is not visible, leave the date empty instead of guessing.',
+    '- For a hotel, a visible range such as "2026年9月18日至26日" directly means checkIn 2026-09-18 and checkOut 2026-09-26. Inherit an omitted end year/month only from the start of that same range, never from a document print date.',
     '- For flight/train/bus: title is the flight number, train name, bus name, or route/service name; provider is the airline, railway, bus operator, or booking source.',
     '- For flight/train/bus: origin and destination are required when directly visible; checkIn is the departure date; checkOut is the arrival/end date only when directly visible.',
     '- For flights: origin and destination MUST be the three-letter IATA airport codes and MUST equal originIataCode and destinationIataCode respectively. Put full airport names or terminal details only in evidence, never in value.',
@@ -327,7 +402,8 @@ export async function extractBookingPdfFields(
       `attempt=${attempt} pages=${data.pageCount} lines=${data.lines.length} chars=${data.text.length}`,
   })
 
-  const hasUsefulField = result.bookings
+  const completedResult = applyVisibleHotelDateRange(result, data)
+  const hasUsefulField = completedResult.bookings
     .flatMap(booking => [
       booking.title,
       booking.confirmationCode,
@@ -344,5 +420,5 @@ export async function extractBookingPdfFields(
     throw new OcrError('Booking PDF unreadable (model returned no useful fields)', 422)
   }
 
-  return result
+  return completedResult
 }
