@@ -1,8 +1,20 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { initBookingFormState, type BookingFormState } from '../bookingFormState'
+
+const captureError = vi.fn()
+
+vi.mock('@/services/firebase', () => ({
+  getFirebaseAuth: async () => ({ auth: { currentUser: { getIdToken: async () => 'token' } } }),
+}))
+vi.mock('@/services/workerBase', () => ({ WORKER_BASE_URL: 'https://worker.test' }))
+vi.mock('./bookingPdfText', () => ({ extractBookingPdfText: async () => ({ lines: [] }) }))
+vi.mock('@/services/sentry', () => ({ captureError: (...args: unknown[]) => captureError(...args) }))
+
 import {
+  BookingPdfExtractError,
   bookingPdfCandidateToCreateInput,
   bookingPdfExtractToDraftPatch,
+  extractBookingPdfAutofill,
   type BookingPdfExtractCandidate,
 } from './bookingPdfExtractService'
 
@@ -214,5 +226,64 @@ describe('bookingPdfExtractToDraftPatch', () => {
       bookingType: 'hotel',
       title: field('', 0, ''),
     }))).toBeNull()
+  })
+})
+
+// The Worker owns the authoritative schema; these pin the client's half of
+// the wire contract, which mocked component tests can't see.
+describe('extractBookingPdfAutofill response contract', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    captureError.mockClear()
+  })
+
+  function respondWith(body: unknown) {
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify(body), {
+      status:  200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+  }
+
+  const pdf = () => new File(['%PDF-1.7'], 'booking.pdf', { type: 'application/pdf' })
+
+  it('accepts a full Worker-shaped payload', async () => {
+    respondWith({ bookings: [result()], warnings: ['ambiguous check-out'] })
+
+    const parsed = await extractBookingPdfAutofill(pdf())
+
+    expect(parsed.bookings).toHaveLength(1)
+    expect(parsed.bookings[0]?.title.value).toBe('Hotel Sakura')
+    expect(parsed.warnings).toEqual(['ambiguous check-out'])
+  })
+
+  it('tolerates fields a newer Worker adds', async () => {
+    respondWith({
+      bookings:   [{ ...result(), seatNumber: field('12A') }],
+      warnings:   [],
+      extraTopLevel: 'ignored',
+    })
+
+    const parsed = await extractBookingPdfAutofill(pdf())
+
+    expect(parsed.bookings[0]).not.toHaveProperty('seatNumber')
+    expect(parsed.bookings[0]?.confirmationCode.value).toBe('ABC123')
+  })
+
+  it('rejects a payload missing a field instead of crashing downstream', async () => {
+    const { checkIn: _dropped, ...incomplete } = result()
+    respondWith({ bookings: [incomplete], warnings: [] })
+
+    await expect(extractBookingPdfAutofill(pdf())).rejects.toMatchObject({
+      name: 'BookingPdfExtractError',
+      kind: 'parse',
+    } satisfies Partial<BookingPdfExtractError>)
+    expect(captureError).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a candidate-less response', async () => {
+    respondWith({ bookings: [], warnings: [] })
+
+    await expect(extractBookingPdfAutofill(pdf())).rejects.toMatchObject({ kind: 'parse' })
+    expect(captureError).toHaveBeenCalledTimes(1)
   })
 })

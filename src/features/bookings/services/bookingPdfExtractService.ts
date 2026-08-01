@@ -1,4 +1,6 @@
+import { z } from 'zod'
 import { initBookingFormState, type BookingFormDraft, type BookingFormState } from '../bookingFormState'
+import { captureError } from '@/services/sentry'
 import type { CreateBookingInput } from '@/types/booking'
 import {
   PdfPageLimitError,
@@ -26,35 +28,51 @@ export class BookingPdfExtractError extends Error {
   }
 }
 
-export interface BookingPdfExtractedField {
-  value:      string
-  confidence: number
-  evidence:   string
-}
+// The Worker owns the authoritative schema, including prompt descriptions
+// and per-field length caps. This is the narrower structural contract the
+// client needs to consume a response safely, and the types below are
+// derived from it so the two can't drift.
+//
+// Deliberately NOT `.strict()`, unlike routeOptimizationService: unknown
+// keys are stripped rather than rejected, so adding a field on the Worker
+// stays a non-breaking change for clients already in the field.
+const BookingTypeSchema = z.enum(['flight', 'hotel', 'train', 'bus', 'other'])
+const SegmentRoleSchema = z.enum(['single', 'outbound', 'return', 'connection', 'unknown'])
 
-export type BookingPdfExtractBookingType = 'flight' | 'hotel' | 'train' | 'bus' | 'other'
-export type BookingPdfExtractSegmentRole = 'single' | 'outbound' | 'return' | 'connection' | 'unknown'
+const ExtractedFieldSchema = z.object({
+  value:      z.string(),
+  confidence: z.number(),
+  evidence:   z.string(),
+})
 
-export interface BookingPdfExtractCandidate {
-  bookingType:      BookingPdfExtractBookingType
-  segmentRole:      BookingPdfExtractSegmentRole
-  title:            BookingPdfExtractedField
-  provider:         BookingPdfExtractedField
-  confirmationCode: BookingPdfExtractedField
-  origin:           BookingPdfExtractedField
-  destination:      BookingPdfExtractedField
-  originIataCode:   BookingPdfExtractedField
-  destinationIataCode: BookingPdfExtractedField
-  checkIn:          BookingPdfExtractedField
-  checkOut:         BookingPdfExtractedField
-  address:          BookingPdfExtractedField
-  link:             BookingPdfExtractedField
-}
+const BookingPdfExtractCandidateSchema = z.object({
+  bookingType:         BookingTypeSchema,
+  segmentRole:         SegmentRoleSchema,
+  title:               ExtractedFieldSchema,
+  provider:            ExtractedFieldSchema,
+  confirmationCode:    ExtractedFieldSchema,
+  origin:              ExtractedFieldSchema,
+  destination:         ExtractedFieldSchema,
+  originIataCode:      ExtractedFieldSchema,
+  destinationIataCode: ExtractedFieldSchema,
+  checkIn:             ExtractedFieldSchema,
+  checkOut:            ExtractedFieldSchema,
+  address:             ExtractedFieldSchema,
+  link:                ExtractedFieldSchema,
+})
 
-export interface BookingPdfExtractResult {
-  bookings: BookingPdfExtractCandidate[]
-  warnings:         string[]
-}
+const BookingPdfExtractResultSchema = z.object({
+  // Mirrors the Worker's `.min(1)`: a candidate-less response is a broken
+  // contract, not an empty result for the UI to render.
+  bookings: z.array(BookingPdfExtractCandidateSchema).min(1),
+  warnings: z.array(z.string()),
+})
+
+export type BookingPdfExtractedField = z.infer<typeof ExtractedFieldSchema>
+export type BookingPdfExtractBookingType = z.infer<typeof BookingTypeSchema>
+export type BookingPdfExtractSegmentRole = z.infer<typeof SegmentRoleSchema>
+export type BookingPdfExtractCandidate = z.infer<typeof BookingPdfExtractCandidateSchema>
+export type BookingPdfExtractResult = z.infer<typeof BookingPdfExtractResultSchema>
 
 const FIELD_THRESHOLDS = {
   title:            0.6,
@@ -88,15 +106,27 @@ function iataCodeValue(field: BookingPdfExtractedField): string {
   return IATA_CODE_RE.test(code) && field.confidence >= FIELD_THRESHOLDS.iataCode ? code : ''
 }
 
+/**
+ * Route endpoint for a transport candidate. Split by type on purpose: a
+ * flight is gated by FIELD_THRESHOLDS.iataCode via iataCodeValue and never
+ * consults the location threshold, so passing one here would read as if it
+ * applied.
+ *
+ * 航班航線只儲存 IATA 三碼。機場全名保留在 OCR evidence，避免窄版卡片
+ * 截斷後只看到冗長名稱、反而看不到真正可辨識的代號。
+ */
 function transportLocationValue(
-  type:     BookingPdfExtractBookingType,
-  location: BookingPdfExtractedField,
-  iataCode: BookingPdfExtractedField,
+  type:      BookingPdfExtractBookingType,
+  location:  BookingPdfExtractedField,
+  iataCode:  BookingPdfExtractedField,
   threshold: number,
 ): string {
-  // 航班航線只儲存 IATA 三碼。機場全名保留在 OCR evidence，避免窄版卡片
-  // 截斷後只看到冗長名稱、反而看不到真正可辨識的代號。
-  if (type === 'flight') return iataCodeValue(iataCode)
+  return type === 'flight'
+    ? iataCodeValue(iataCode)
+    : stationNameValue(location, threshold)
+}
+
+function stationNameValue(location: BookingPdfExtractedField, threshold: number): string {
   return shouldApply(location, threshold) ? location.value.trim() : ''
 }
 
@@ -243,5 +273,19 @@ export async function extractBookingPdfAutofill(
     throw new BookingPdfExtractError(pdfExtractErrorMessage(res.status, detail), 'unknown')
   }
 
-  return await res.json() as BookingPdfExtractResult
+  let payload: unknown
+  try {
+    payload = await res.json()
+  } catch {
+    throw new BookingPdfExtractError('無法讀取 PDF，請手動輸入', 'parse')
+  }
+
+  const parsed = BookingPdfExtractResultSchema.safeParse(payload)
+  if (!parsed.success) {
+    // A 200 with the wrong shape means Pages and the Worker have drifted.
+    // Nothing the user can do, but we need to hear about it.
+    captureError(parsed.error, { source: 'bookingPdfExtract/response' })
+    throw new BookingPdfExtractError('讀取服務回傳的資料格式不相容，請手動輸入', 'parse')
+  }
+  return parsed.data
 }
