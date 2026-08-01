@@ -221,7 +221,13 @@ interface VisibleDateRange {
   evidence: string
 }
 
-const VISIBLE_DATE_RANGE_PATTERN = /(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*(?:至|到|–|—|~|～|-)\s*(?:(\d{4})\s*年\s*)?(?:(\d{1,2})\s*月\s*)?(\d{1,2})\s*日/
+// 只約束這條 deterministic fallback 的可信範圍,不是產品層的住宿天數上限。
+// 超過此長度的區間多半是有効期限 / 訂位政策,不是住宿期間;真正的長住由模型正常填入。
+const MAX_STAY_NIGHTS = 90
+
+// 客戶端已做 NFKC,U+FF5E「～」必定被正規化成「~」,故字元集只需納入無分解映射的 U+301C「〜」。
+// matchAll 依規範會複製 regex,不會污染 module-level lastIndex — 不要改用 exec / test。
+const VISIBLE_DATE_RANGE_PATTERN = /(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*(?:至|到|–|—|~|〜|-)\s*(?:(\d{4})\s*年\s*)?(?:(\d{1,2})\s*月\s*)?(\d{1,2})\s*日/g
 
 function isoCalendarDate(year: number, month: number, day: number): string | undefined {
   const date = new Date(Date.UTC(year, month - 1, day))
@@ -231,10 +237,7 @@ function isoCalendarDate(year: number, month: number, day: number): string | und
   return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
-function parseVisibleDateRange(text: string): VisibleDateRange | undefined {
-  const match = VISIBLE_DATE_RANGE_PATTERN.exec(text)
-  if (!match) return undefined
-
+function parseVisibleDateRangeMatch(match: RegExpMatchArray): VisibleDateRange | undefined {
   const startYear = Number(match[1])
   const startMonth = Number(match[2])
   const startDay = Number(match[3])
@@ -247,16 +250,26 @@ function parseVisibleDateRange(text: string): VisibleDateRange | undefined {
   const endDay = Number(match[6])
   const checkIn = isoCalendarDate(startYear, startMonth, startDay)
   const checkOut = isoCalendarDate(endYear, endMonth, endDay)
-  if (!checkIn || !checkOut || checkOut < checkIn) return undefined
+  if (!checkIn || !checkOut) return undefined
+
+  const nights = (Date.parse(checkOut) - Date.parse(checkIn)) / 86_400_000
+  if (nights < 1 || nights > MAX_STAY_NIGHTS) return undefined
 
   return { checkIn, checkOut, evidence: match[0] }
+}
+
+export function parseVisibleDateRanges(text: string): VisibleDateRange[] {
+  return [...text.matchAll(VISIBLE_DATE_RANGE_PATTERN)]
+    .map(parseVisibleDateRangeMatch)
+    .filter((range): range is VisibleDateRange => !!range)
 }
 
 function uniqueVisibleDateRange(data: BookingPdfExtractRequest): VisibleDateRange | undefined {
   const ranges = new Map<string, VisibleDateRange>()
   for (const line of data.lines) {
-    const range = parseVisibleDateRange(line.text)
-    if (range) ranges.set(`${range.checkIn}|${range.checkOut}`, range)
+    for (const range of parseVisibleDateRanges(line.text)) {
+      ranges.set(`${range.checkIn}|${range.checkOut}`, range)
+    }
   }
   return ranges.size === 1 ? ranges.values().next().value : undefined
 }

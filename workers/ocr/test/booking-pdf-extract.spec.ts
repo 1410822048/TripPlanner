@@ -5,6 +5,7 @@ import {
 	BookingPdfExtractRequestSchema,
 	BookingPdfExtractResponseSchema,
 	extractBookingPdfFields,
+	parseVisibleDateRanges,
 	type BookingPdfExtractRequest,
 } from '../src/booking-pdf-extract'
 import type { QwenConfig } from '../src/qwen'
@@ -287,6 +288,29 @@ describe('extractBookingPdfFields', () => {
 		})
 	})
 
+	it('does not guess hotel dates when one line carries two column-merged ranges', async () => {
+		stubQwenAndCaptureRequest({
+			...VALID_RESULT,
+			bookings: [{
+				...VALID_RESULT.bookings[0],
+				checkIn:  { value: '', confidence: 0, evidence: '' },
+				checkOut: { value: '', confidence: 0, evidence: '' },
+			}],
+		})
+
+		const result = await extractBookingPdfFields(request({
+			text: '2026年9月18日至26日 | 2026年10月1日至3日',
+			lines: [
+				{ page: 1, text: '2026年9月18日至26日 | 2026年10月1日至3日', x: 100, y: 300 },
+			],
+		}), CFG)
+
+		expect(result.bookings[0]).toMatchObject({
+			checkIn:  { value: '' },
+			checkOut: { value: '' },
+		})
+	})
+
 	it('truncates oversized model strings instead of rejecting useful candidates', async () => {
 		const longWarning = 'w'.repeat(260)
 		const longEvidence = 'e'.repeat(360)
@@ -472,5 +496,28 @@ describe('extractBookingPdfFields', () => {
 		})
 
 		await expect(extractBookingPdfFields(request(), CFG)).rejects.toMatchObject({ status: 422 })
+	})
+})
+
+describe('parseVisibleDateRanges', () => {
+	const CASES: Array<[string, string, Array<[string, string]>]> = [
+		['U+301C wave dash',                 '2026年9月18日〜26日',                     [['2026-09-18', '2026-09-26']]],
+		['NFKC-normalized tilde',            '2026年9月18日~26日',                      [['2026-09-18', '2026-09-26']]],
+		['year rollover',                    '2026年12月28日至1月3日',                  [['2026-12-28', '2027-01-03']]],
+		['two column-merged ranges',         '2026年9月18日至26日 | 2026年10月1日至3日', [['2026-09-18', '2026-09-26'], ['2026-10-01', '2026-10-03']]],
+		['90 nights accepted',               '2026年1月1日至4月1日',                    [['2026-01-01', '2026-04-01']]],
+		['91 nights rejected',               '2026年1月1日至4月2日',                    []],
+		['zero nights rejected',             '2026年9月18日至18日',                     []],
+		['impossible calendar date rejected', '2026年2月28日至30日',                     []],
+		['validity period rejected',         '2026年1月1日至12月31日',                  []],
+	]
+
+	it.each(CASES)('%s', (_name, text, expected) => {
+		expect(parseVisibleDateRanges(text).map(range => [range.checkIn, range.checkOut])).toEqual(expected)
+	})
+
+	it('does not leak lastIndex across calls on the shared pattern', () => {
+		expect(parseVisibleDateRanges('2026年9月18日〜26日')).toHaveLength(1)
+		expect(parseVisibleDateRanges('2026年9月18日〜26日')).toHaveLength(1)
 	})
 })
