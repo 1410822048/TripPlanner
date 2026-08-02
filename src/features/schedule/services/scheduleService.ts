@@ -62,6 +62,26 @@ export function buildScheduleUpdate(current: Schedule, next: CreateScheduleInput
   return patch
 }
 
+/**
+ * Does `stored` already reflect this update? The optimistic overlay drops
+ * an op once server truth agrees, so this has to mirror `updateSchedule`
+ * exactly: cleared optional fields land as absent rather than empty,
+ * `location` compares by value, and a route-invalidating edit also nulls
+ * the optimization columns. Keeping it beside the write is the point —
+ * split them and the overlay silently waits for a value that never comes.
+ */
+export function scheduleUpdateApplied(stored: Schedule, updates: UpdateScheduleInput): boolean {
+  for (const [field, value] of Object.entries(updates)) {
+    if (field === 'location') {
+      if (!sameLocation(stored.location, value as CreateScheduleInput['location'])) return false
+      continue
+    }
+    const current = stored[field as keyof Schedule]
+    if (value === undefined ? current !== undefined : current !== value) return false
+  }
+  return !invalidatesRouteOptimization(updates) || stored.routeRevision === null
+}
+
 // ─── Read ─────────────────────────────────────────────────────────
 // uid is required: list queries must `where('memberIds', 'array-contains',
 // uid)` to align with the same-doc list rule. The factory enforces this.
@@ -74,20 +94,25 @@ const listServices = createTripScopedListServices<Schedule>({
 })
 
 export const getSchedulesByTrip = listServices.fetch
+export const getSchedulesByTripFromServer = listServices.fetchFromServer
 export const subscribeToSchedules = listServices.subscribe
 
 // ─── Write ────────────────────────────────────────────────────────
+/** `scheduleId` is minted by the caller so the optimistic row and the
+ *  stored doc share one id from the start. */
 export async function createSchedule(
   tripId: string,
   input: CreateScheduleInput,
   createdBy: string,
   order: number,
+  scheduleId: string,
 ): Promise<string> {
-  const [{ db, collection, addDoc, serverTimestamp }, memberIds] = await Promise.all([
+  const [{ db, doc, setDoc, serverTimestamp }, memberIds] = await Promise.all([
     getFirebase(),
     getTripMemberIds(tripId),
   ])
-  const ref = await addDoc(collection(db, ...P.schedules(tripId)), {
+  const ref = doc(db, ...P.schedule(tripId, scheduleId))
+  await setDoc(ref, {
     ...input,
     routeRevision: null,
     travelToNext: null,

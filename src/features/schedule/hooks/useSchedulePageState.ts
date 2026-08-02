@@ -6,7 +6,9 @@
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useFormModal, type UseFormModalResult } from '@/hooks/useFormModal'
-import { useSchedules, useCreateSchedule, useUpdateSchedule, useDeleteSchedule } from './useSchedules'
+import {
+  useSchedules, useCreateSchedule, useUpdateSchedule, useDeleteSchedule, nextScheduleOrder,
+} from './useSchedules'
 import { useCopyTrip, useDeleteTrip, useLeaveTrip, useMyTrips, useUpdateTrip } from '@/features/trips/hooks/useTrips'
 import { useCurrentTrip } from '@/features/trips/hooks/useCurrentTrip'
 import type { CopyTripInput } from '@/features/trips/services/tripCopy'
@@ -451,7 +453,15 @@ export function useSchedulePageState(): SchedulePageState {
         await updateMut.mutateAsync({ scheduleId: scheduleModal.editTarget.id, updates, uid })
       } else {
         await simulateFailureMaybe()
-        await createMut.mutateAsync({ input: data, createdBy: uid })
+        // Both minted here: the id so the optimistic row and the stored doc
+        // match, and the order so it is computed once from the list the
+        // user is looking at (pending rows included) instead of twice.
+        await createMut.mutateAsync({
+          scheduleId: crypto.randomUUID(),
+          input:      data,
+          createdBy:  uid,
+          order:      nextScheduleOrder(schedules, data.date),
+        })
       }
       scheduleModal.close()
     } catch (err) {

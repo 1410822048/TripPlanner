@@ -29,13 +29,10 @@ export function scheduleAmbiguousQueryReconcile(
   nodeTimer.unref?.()
 }
 
-export interface TripListMutateContext<T> {
+export interface TripListMutateContext {
   /** Guaranteed non-null: the factory throws before invoking `mutate` when
    *  uid is missing. */
-  uid:      string
-  /** Current list cache for this key, empty array on cold cache. Used when a
-   *  mutation needs sibling rows at mutate time. */
-  snapshot: T[]
+  uid: string
 }
 
 export interface OverlayMutationConfig<T extends { id: string }, Vars> {
@@ -46,10 +43,10 @@ export interface OverlayMutationConfig<T extends { id: string }, Vars> {
   op:         (vars: Vars, ctx: { uid: string | undefined }) => OverlayOpInput<T>
 }
 
-interface UseTripListMutationOptsBase<T, Vars> {
+interface UseTripListMutationOptsBase<Vars> {
   tripId:     string
   keyFactory: (tripId: string, uid?: string) => readonly unknown[]
-  mutate:     (vars: Vars, ctx: TripListMutateContext<T>) => Promise<unknown>
+  mutate:     (vars: Vars, ctx: TripListMutateContext) => Promise<unknown>
   /** Sentry tag + global-toast prefix when the mutation fails. */
   action:     MutationActionLabel
   /** When true, the global MutationCache.onError skips its toast. */
@@ -65,7 +62,7 @@ interface UseTripListMutationOptsBase<T, Vars> {
  *  state for the same query key, so allowing both would double-apply it
  *  during the migration off cache-patching. */
 export type UseTripListMutationOpts<T extends { id: string }, Vars> =
-  UseTripListMutationOptsBase<T, Vars> & (
+  UseTripListMutationOptsBase<Vars> & (
     | { patch: (prev: T[], vars: Vars) => T[]; overlay?: never }
     | { overlay: OverlayMutationConfig<T, Vars>; patch?: never }
     | { patch?: never; overlay?: never }
@@ -92,10 +89,7 @@ export function useTripListMutation<T extends { id: string }, Vars>(
       if (!uid) {
         throw new Error(`useTripListMutation[${opts.action}]: uid is undefined`)
       }
-      return opts.mutate(vars, {
-        uid,
-        snapshot: qc.getQueryData<T[]>(key) ?? [],
-      })
+      return opts.mutate(vars, { uid })
     },
     meta: { action: opts.action, silent: opts.silent } satisfies MutationMeta,
     onMutate: overlay
