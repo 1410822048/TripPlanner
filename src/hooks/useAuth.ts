@@ -3,6 +3,7 @@ import { useSyncExternalStore } from 'react'
 import type { User } from 'firebase/auth'
 import { getFirebaseAuth } from '@/services/firebase'
 import { clearAttachmentUrlCache } from './useAttachmentUrl'
+import { clearAllListOverlays } from './listOverlay'
 import { markPerf } from '@/utils/perf'
 
 export type AuthState =
@@ -144,6 +145,7 @@ function initAuth(): Promise<void> {
         if (nextUid !== lastObservedUid) {
           if (lastObservedUid !== null) {
             clearAttachmentUrlCache()
+            clearAllListOverlays()
             void import('@/features/schedule/services/routeOptimizationService')
               .then(({ clearRoutePlaceSearchCache }) => clearRoutePlaceSearchCache())
           }

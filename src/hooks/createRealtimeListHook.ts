@@ -12,10 +12,13 @@
 // Listener dedup:
 // Multiple callsites for the same scope share one onSnapshot. TanStack Query
 // dedupes cache entries, but not the underlying Firestore subscription.
-import { useEffect } from 'react'
-import { useQuery, useQueryClient, type QueryClient, type QueryKey, type UseQueryResult } from '@tanstack/react-query'
+import { useEffect, useSyncExternalStore } from 'react'
+import { hashKey, useQuery, useQueryClient, type QueryClient, type QueryKey, type UseQueryResult } from '@tanstack/react-query'
 import { captureError } from '@/services/sentry'
 import { useUid } from '@/hooks/useAuth'
+import type { ListOverlayController, OverlayOp } from '@/hooks/listOverlay'
+
+const NO_OPS: readonly OverlayOp<never>[] = Object.freeze([])
 
 interface RealtimeListConfigBase {
   /** Build the query key from the scope key. Receives uid so per-user cache
@@ -27,8 +30,16 @@ interface RealtimeListConfigBase {
   isEnabled?: (key: string) => boolean
 }
 
+interface RealtimeListOverlayConfig<T> {
+  /** Optimistic ops replayed over server truth at read time. Applying it
+   *  here means every consumer of the list gets the merge — there is no
+   *  unmerged read path to forget about. Conditional on T so lists that
+   *  aren't row-shaped (useMyTripIds is a string[]) can't opt in. */
+  overlay?: T extends { id: string } ? ListOverlayController<T> : never
+}
+
 /** Variant for hooks that need a signed-in uid. */
-export interface RealtimeListConfigUidRequired<T> extends RealtimeListConfigBase {
+export interface RealtimeListConfigUidRequired<T> extends RealtimeListConfigBase, RealtimeListOverlayConfig<T> {
   requiresUid: true
   initialFetch: (key: string, uid: string) => Promise<T[]>
   subscribe: (
@@ -40,7 +51,7 @@ export interface RealtimeListConfigUidRequired<T> extends RealtimeListConfigBase
 }
 
 /** Variant for hooks that don't require uid. */
-export interface RealtimeListConfigUidOptional<T> extends RealtimeListConfigBase {
+export interface RealtimeListConfigUidOptional<T> extends RealtimeListConfigBase, RealtimeListOverlayConfig<T> {
   requiresUid?: false
   initialFetch: (key: string, uid: string | undefined) => Promise<T[]>
   subscribe: (
@@ -136,6 +147,7 @@ export function createRealtimeListHook<T>(
   config: RealtimeListConfig<T>,
 ): (key: string | undefined) => UseQueryResult<T[]> {
   const { queryKeyFactory, source, isEnabled } = config
+  const overlay = config.overlay as ListOverlayController<T & { id: string }> | undefined
 
   function runInitialFetch(key: string, uid: string | undefined): Promise<T[]> {
     if (config.requiresUid) return config.initialFetch(key, uid as string)
@@ -159,8 +171,9 @@ export function createRealtimeListHook<T>(
       && (isEnabled ? isEnabled(key) : true)
       && (config.requiresUid ? !!uid : true)
 
+    const queryKey = queryKeyFactory(key ?? '', uid)
     const result = useQuery<T[]>({
-      queryKey:  queryKeyFactory(key ?? '', uid),
+      queryKey,
       queryFn:   () => runInitialFetch(key!, uid),
       enabled:   callerEnabled,
       staleTime: Infinity,
@@ -178,6 +191,30 @@ export function createRealtimeListHook<T>(
       return release
     }, [key, uid, callerEnabled, qc])
 
-    return result
+    const queryKeyHash = hashKey(queryKey)
+    const ops = useSyncExternalStore(
+      cb    => overlay?.subscribe(queryKeyHash, cb) ?? (() => {}),
+      ()    => overlay?.getSnapshot(queryKeyHash) ?? NO_OPS,
+      ()    => NO_OPS,
+    ) as readonly OverlayOp<T & { id: string }>[]
+
+    // Depends on `ops` as well as the data: a local Firestore echo often
+    // makes server truth agree BEFORE the mutation resolves, so the
+    // pending → succeeded flip is the only thing that changes. Without it
+    // that op would wait for its grace timer.
+    useEffect(() => {
+      if (!overlay || !result.data) return
+      overlay.reconcile(queryKeyHash, result.data as (T & { id: string })[])
+    }, [queryKeyHash, result.data, ops])
+
+    // Remount is one of the three retry triggers: the browser can stay
+    // online throughout while the backend is the thing that was failing.
+    useEffect(() => {
+      overlay?.retryUnconfirmed(queryKeyHash)
+    }, [queryKeyHash])
+
+    if (!overlay || !result.data || ops.length === 0) return result
+    const merged = overlay.merge(result.data as (T & { id: string })[], ops)
+    return (merged === result.data ? result : { ...result, data: merged }) as UseQueryResult<T[]>
   }
 }

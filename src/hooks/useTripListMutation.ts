@@ -4,6 +4,7 @@
 import { useMutation, useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
 import { useUid } from '@/hooks/useAuth'
 import { patchListCache, rollbackListCache, type PatchCacheContext } from '@/utils/queryCache'
+import type { ListOverlayController, OverlayHandle, OverlayOpInput } from '@/hooks/listOverlay'
 import type { MutationActionLabel, MutationMeta } from '@/services/queryClient'
 
 export const AMBIGUOUS_RECONCILE_DELAY_MS = 3_000
@@ -37,12 +38,16 @@ export interface TripListMutateContext<T> {
   snapshot: T[]
 }
 
-export interface UseTripListMutationOpts<T, Vars> {
+export interface OverlayMutationConfig<T extends { id: string }, Vars> {
+  controller: ListOverlayController<T>
+  /** Build the optimistic operation for these variables. */
+  op:         (vars: Vars) => OverlayOpInput<T>
+}
+
+interface UseTripListMutationOptsBase<T, Vars> {
   tripId:     string
   keyFactory: (tripId: string, uid?: string) => readonly unknown[]
   mutate:     (vars: Vars, ctx: TripListMutateContext<T>) => Promise<unknown>
-  /** Optimistic patch. Omit when no optimistic UI is desired. */
-  patch?:     (prev: T[], vars: Vars) => T[]
   /** Sentry tag + global-toast prefix when the mutation fails. */
   action:     MutationActionLabel
   /** When true, the global MutationCache.onError skips its toast. */
@@ -54,12 +59,30 @@ export interface UseTripListMutationOpts<T, Vars> {
   onError?:   (err: unknown) => void
 }
 
+/** `patch` and `overlay` are mutually exclusive: both write optimistic
+ *  state for the same query key, so allowing both would double-apply it
+ *  during the migration off cache-patching. */
+export type UseTripListMutationOpts<T extends { id: string }, Vars> =
+  UseTripListMutationOptsBase<T, Vars> & (
+    | { patch: (prev: T[], vars: Vars) => T[]; overlay?: never }
+    | { overlay: OverlayMutationConfig<T, Vars>; patch?: never }
+    | { patch?: never; overlay?: never }
+  )
+
+/** One shape for both optimism strategies so the mutation's context type
+ *  doesn't depend on which one the caller configured. */
+interface MutateContext<T> {
+  handle?: OverlayHandle
+  patch?:  PatchCacheContext<T>
+}
+
 export function useTripListMutation<T extends { id: string }, Vars>(
   opts: UseTripListMutationOpts<T, Vars>,
 ) {
-  const qc  = useQueryClient()
-  const uid = useUid()
-  const key = opts.keyFactory(opts.tripId, uid)
+  const qc      = useQueryClient()
+  const uid     = useUid()
+  const key     = opts.keyFactory(opts.tripId, uid)
+  const overlay = opts.overlay
 
   return useMutation({
     mutationKey: opts.mutationKey,
@@ -73,14 +96,32 @@ export function useTripListMutation<T extends { id: string }, Vars>(
       })
     },
     meta: { action: opts.action, silent: opts.silent } satisfies MutationMeta,
-    onMutate: opts.patch
-      ? vars => patchListCache<T>(qc, key, prev => opts.patch!(prev, vars))
+    onMutate: overlay
+      ? (vars): MutateContext<T> => ({ handle: overlay.controller.add(key, overlay.op(vars)) })
+      : opts.patch
+        ? (vars): MutateContext<T> => ({
+            patch: patchListCache<T>(qc, key, prev => opts.patch!(prev, vars)),
+          })
+        : undefined,
+    onSuccess: overlay
+      ? (_data, _vars, ctx) => {
+          // Not dropped here: server truth may not have arrived yet. The
+          // reconcile pass clears it once the list actually agrees.
+          if (ctx?.handle) overlay.controller.markSucceeded(ctx.handle)
+        }
       : undefined,
     onError: (err, _vars, ctx) => {
-      if (isWorkerAmbiguousError(err)) {
+      if (overlay) {
+        // A definitive failure removes only this operation, which is why a
+        // sibling edit to the same row can't be stranded by it.
+        if (ctx?.handle) {
+          if (isWorkerAmbiguousError(err)) overlay.controller.markAmbiguous(ctx.handle)
+          else overlay.controller.drop(ctx.handle)
+        }
+      } else if (isWorkerAmbiguousError(err)) {
         scheduleAmbiguousQueryReconcile(qc, key)
       } else {
-        rollbackListCache<T>(qc, key, ctx as PatchCacheContext<T> | undefined)
+        rollbackListCache<T>(qc, key, ctx?.patch)
       }
       opts.onError?.(err)
     },

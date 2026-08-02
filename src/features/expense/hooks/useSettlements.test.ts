@@ -1,64 +1,59 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, hashKey } from '@tanstack/react-query'
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import type { SettlementRecord } from '@/types/settlement'
-import { AMBIGUOUS_RECONCILE_DELAY_MS } from '@/hooks/useTripListMutation'
-import {
-  SETTLEMENT_DELETE_RETRY_DELAY_MS,
-  __resetSettlementTombstonesForTest,
-  filterSettlementTombstones,
-} from './settlementTombstones'
 
 vi.mock('@/hooks/useAuth', () => ({ useUid: () => 'uid-1' }))
 
 const serviceMocks = vi.hoisted(() => ({
-  getSettlementsByTrip:   vi.fn(),
-  subscribeToSettlements: vi.fn(),
-  createSettlement:       vi.fn(),
-  deleteSettlement:       vi.fn(),
+  getSettlementsByTrip:           vi.fn(),
+  getSettlementsByTripFromServer: vi.fn(),
+  subscribeToSettlements:         vi.fn(),
+  createSettlement:               vi.fn(),
+  deleteSettlement:               vi.fn(),
 }))
 
 vi.mock('../services/settlementService', () => ({
-  getSettlementsByTrip:   serviceMocks.getSettlementsByTrip,
-  subscribeToSettlements: serviceMocks.subscribeToSettlements,
-  createSettlement:       serviceMocks.createSettlement,
-  deleteSettlement:       serviceMocks.deleteSettlement,
-  settlementKeys:         {
-    all: (tripId: string) => ['settlements', tripId] as const,
+  ...serviceMocks,
+  settlementKeys: {
+    all: (tripId: string, uid?: string) => ['settlements', tripId, uid ?? ''] as const,
   },
 }))
 
-import { useDeleteSettlement, useSettlements } from './useSettlements'
+import {
+  SETTLEMENT_DELETE_RETRY_DELAY_MS,
+  settlementOverlay,
+  useDeleteSettlement,
+  useSettlements,
+} from './useSettlements'
 
 const TRIP = 'trip-1'
-const KEY = ['settlements', TRIP] as const
+const KEY_HASH = hashKey(['settlements', TRIP, 'uid-1'])
 
 const row = (id: string): SettlementRecord => ({ id }) as SettlementRecord
-const visibleIds = (ids: string[]) => filterSettlementTombstones(TRIP, ids.map(row)).map(s => s.id)
 const ambiguousErr = () => Object.assign(new Error('lost'), { name: 'WorkerAmbiguous' })
-const rejectedErr = () => Object.assign(new Error('403'), { name: 'WorkerRejected' })
+const rejectedErr  = () => Object.assign(new Error('403'), { name: 'WorkerRejected' })
+
+/** What the list would render for this server truth, overlay applied. */
+const visibleIds = (ids: string[]) =>
+  settlementOverlay.merge(ids.map(row), settlementOverlay.getSnapshot(KEY_HASH)).map(s => s.id)
 
 function makeQueryClient(): QueryClient {
   return new QueryClient({
-    defaultOptions: {
-      queries:   { retry: false },
-      mutations: { retry: false },
-    },
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
 }
 
 function renderDeleteMutation(qc = makeQueryClient()) {
   const wrapper = ({ children }: { children: ReactNode }) =>
     createElement(QueryClientProvider, { client: qc }, children)
-
   return renderHook(() => useDeleteSettlement(TRIP), { wrapper })
 }
 
 function renderSettlementHooks(qc = makeQueryClient()) {
   const wrapper = ({ children }: { children: ReactNode }) =>
     createElement(QueryClientProvider, { client: qc }, children)
-
   return renderHook(() => ({
     list:   useSettlements(TRIP),
     delete: useDeleteSettlement(TRIP),
@@ -66,8 +61,9 @@ function renderSettlementHooks(qc = makeQueryClient()) {
 }
 
 beforeEach(() => {
-  __resetSettlementTombstonesForTest()
+  settlementOverlay.__resetForTest()
   vi.clearAllMocks()
+  serviceMocks.getSettlementsByTripFromServer.mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -75,8 +71,8 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('useDeleteSettlement tombstone flow', () => {
-  it('useSettlements hides the row immediately after delete mutate even while raw cache still has it', async () => {
+describe('useDeleteSettlement overlay flow', () => {
+  it('hides the row as soon as the delete starts, while the raw cache still has it', async () => {
     serviceMocks.getSettlementsByTrip.mockResolvedValueOnce([row('x')])
     serviceMocks.subscribeToSettlements.mockResolvedValueOnce(() => {})
     serviceMocks.deleteSettlement.mockReturnValueOnce(new Promise(() => {}))
@@ -107,12 +103,10 @@ describe('useDeleteSettlement tombstone flow', () => {
 
   it('keeps the row hidden when the ambiguous retry succeeds', async () => {
     vi.useFakeTimers()
-    const qc = makeQueryClient()
-    const invalidate = vi.spyOn(qc, 'invalidateQueries').mockResolvedValue()
     serviceMocks.deleteSettlement
       .mockRejectedValueOnce(ambiguousErr())
       .mockResolvedValueOnce(undefined)
-    const hook = renderDeleteMutation(qc)
+    const hook = renderDeleteMutation()
 
     await act(async () => {
       await hook.result.current.mutateAsync({ settlementId: 'x' }).catch(() => {})
@@ -127,23 +121,17 @@ describe('useDeleteSettlement tombstone flow', () => {
 
     expect(serviceMocks.deleteSettlement).toHaveBeenCalledTimes(2)
     expect(visibleIds(['x'])).toEqual([])
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(AMBIGUOUS_RECONCILE_DELAY_MS)
-    })
-
-    expect(invalidate).not.toHaveBeenCalled()
+    // Success alone must not settle it — server truth still says otherwise.
+    expect(serviceMocks.getSettlementsByTripFromServer).not.toHaveBeenCalled()
   })
 
-  it('retry failure defers to server truth and restores when the doc is still present', async () => {
+  it('restores the row when a failed retry defers to server truth that still has the doc', async () => {
     vi.useFakeTimers()
-    const qc = makeQueryClient()
-    qc.setQueryData(KEY, [row('x')])
-    vi.spyOn(qc, 'invalidateQueries').mockResolvedValue()
+    serviceMocks.getSettlementsByTripFromServer.mockResolvedValue([row('x')])
     serviceMocks.deleteSettlement
       .mockRejectedValueOnce(ambiguousErr())
       .mockRejectedValueOnce(rejectedErr())
-    const hook = renderDeleteMutation(qc)
+    const hook = renderDeleteMutation()
 
     await act(async () => {
       await hook.result.current.mutateAsync({ settlementId: 'x' }).catch(() => {})
@@ -152,59 +140,49 @@ describe('useDeleteSettlement tombstone flow', () => {
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(SETTLEMENT_DELETE_RETRY_DELAY_MS)
-    })
-    expect(visibleIds(['x'])).toEqual([])
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(AMBIGUOUS_RECONCILE_DELAY_MS)
     })
 
     expect(visibleIds(['x'])).toEqual(['x'])
   })
 
-  it('retry failure stays hidden when the original commit converges before reconcile', async () => {
+  it('stays hidden when the original commit converged despite the failed retry', async () => {
     vi.useFakeTimers()
-    const qc = makeQueryClient()
-    qc.setQueryData(KEY, [row('x')])
-    vi.spyOn(qc, 'invalidateQueries').mockResolvedValue()
+    serviceMocks.getSettlementsByTripFromServer.mockResolvedValue([row('other')])
     serviceMocks.deleteSettlement
       .mockRejectedValueOnce(ambiguousErr())
       .mockRejectedValueOnce(rejectedErr())
-    const hook = renderDeleteMutation(qc)
+    const hook = renderDeleteMutation()
 
     await act(async () => {
       await hook.result.current.mutateAsync({ settlementId: 'x' }).catch(() => {})
     })
-
     await act(async () => {
       await vi.advanceTimersByTimeAsync(SETTLEMENT_DELETE_RETRY_DELAY_MS)
     })
-    qc.setQueryData(KEY, [row('other')])
 
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(AMBIGUOUS_RECONCILE_DELAY_MS)
-    })
-
-    expect(visibleIds(['x'])).toEqual([])
+    // Server truth no longer carries the row, so there is nothing left to
+    // hide: the op retires instead of lingering, and `x` never reappears.
+    expect(visibleIds(['other'])).toEqual(['other'])
+    expect(settlementOverlay.getSnapshot(KEY_HASH)).toHaveLength(0)
   })
 
   it('safe-degrades to visible when server truth cannot be established', async () => {
     vi.useFakeTimers()
-    const qc = makeQueryClient()
-    vi.spyOn(qc, 'invalidateQueries').mockRejectedValue(new Error('offline'))
+    serviceMocks.getSettlementsByTripFromServer.mockRejectedValue(new Error('offline'))
     serviceMocks.deleteSettlement
       .mockRejectedValueOnce(ambiguousErr())
       .mockRejectedValueOnce(rejectedErr())
-    const hook = renderDeleteMutation(qc)
+    const hook = renderDeleteMutation()
 
     await act(async () => {
       await hook.result.current.mutateAsync({ settlementId: 'x' }).catch(() => {})
     })
-
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(SETTLEMENT_DELETE_RETRY_DELAY_MS + AMBIGUOUS_RECONCILE_DELAY_MS)
+      await vi.advanceTimersByTimeAsync(SETTLEMENT_DELETE_RETRY_DELAY_MS)
     })
 
+    // Hiding a settlement that may still exist would invite recording the
+    // payment twice, so an unreachable server reveals rather than hides.
     expect(visibleIds(['x'])).toEqual(['x'])
   })
 })

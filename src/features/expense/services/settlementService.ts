@@ -142,19 +142,30 @@ function settlementFromDoc(d: QueryDocumentSnapshot): SettlementRecord {
   return firestoreDocFromSchema(SettlementDocSchema, d, 'settlementFromDoc')
 }
 
-export async function getSettlementsByTrip(tripId: string): Promise<SettlementRecord[]> {
-  const { db, collection, query, where, orderBy, limit, getDocs } = await getFirebase()
+async function readSettlements(tripId: string, fromServer: boolean): Promise<SettlementRecord[]> {
+  const { db, collection, query, where, orderBy, limit, getDocs, getDocsFromServer } = await getFirebase()
   const q = query(
     collection(db, ...P.settlements(tripId)),
     where('deletedAt', '==', null),
     orderBy('createdAt', 'desc'),
     limit(LIST_LIMIT),
   )
-  const snap = await getDocs(q)
+  const snap = await (fromServer ? getDocsFromServer(q) : getDocs(q))
   if (snap.size >= LIST_LIMIT) {
     captureError(new Error(`getSettlementsByTrip truncated at ${LIST_LIMIT}`), { tripId })
   }
   return parseListSnapshot(snap, settlementFromDoc)
+}
+
+export function getSettlementsByTrip(tripId: string): Promise<SettlementRecord[]> {
+  return readSettlements(tripId, false)
+}
+
+/** Server-only read, used to settle an ambiguous write. `getDocs` can be
+ *  answered from Firestore's local cache, which is exactly the state we
+ *  are trying to check against. */
+export function getSettlementsByTripFromServer(tripId: string): Promise<SettlementRecord[]> {
+  return readSettlements(tripId, true)
 }
 
 export const subscribeToSettlements = (
@@ -258,5 +269,7 @@ export async function deleteSettlement(tripId: string, id: string): Promise<void
 }
 
 export const settlementKeys = {
-  all: (tripId: string, _uid?: string) => ['settlements', tripId] as const,
+  // uid is part of the key so a signed-out / switched account cannot inherit
+  // the previous user's in-flight optimistic state on a shared device.
+  all: (tripId: string, uid?: string) => ['settlements', tripId, uid ?? ''] as const,
 }

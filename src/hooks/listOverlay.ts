@@ -34,6 +34,12 @@ interface OverlayOpBase<T> {
    *  trip and uid the entity has ops for, and because an op must be able
    *  to confirm itself after its component unmounted. */
   authoritativeFetch: () => Promise<T[]>
+  /** What to do once the authoritative read has failed too many times.
+   *  `keep` (default) holds the optimistic view. `drop` reverts to server
+   *  truth — the right choice when showing a stale row is safer than
+   *  hiding a real one, as with a settlement the user might otherwise
+   *  re-record. */
+  whenUnconfirmable?: 'keep' | 'drop'
 }
 
 export type OverlayOp<T> =
@@ -288,10 +294,16 @@ export function createListOverlay<T extends { id: string }>(
       // Identity gate: a clear or eviction while the read was in flight
       // must not let this resolution touch whatever now holds the key.
       if (entries.get(hash) !== entry || !entry.ops.some(o => o.opId === opId)) return
+      const err = e instanceof Error ? e : new Error(String(e))
+      // `drop` degrades on the first failure: its fallback is server truth,
+      // so retrying only prolongs the unsafe state it exists to escape.
+      if (op.whenUnconfirmable === 'drop') {
+        captureError(err, { source: `${config.source}/overlay-unconfirmable`, opId })
+        drop(handle)
+        return
+      }
       if (attempts >= MAX_CONFIRM_ATTEMPTS) {
-        captureError(e instanceof Error ? e : new Error(String(e)), {
-          source: `${config.source}/overlay-confirm`, opId, attempts,
-        })
+        captureError(err, { source: `${config.source}/overlay-confirm`, opId, attempts })
       }
       // Keep the op. `online` / `visibilitychange` / remount retry it.
       bindGlobalListeners()
