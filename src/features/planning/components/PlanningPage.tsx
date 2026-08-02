@@ -109,7 +109,9 @@ export default function PlanningPage() {
       if (modal.editTarget) {
         await updateMut.mutateAsync({ itemId: modal.editTarget.id, updates: input, uid })
       } else {
-        await createMut.mutateAsync({ input, createdBy: uid })
+        // Minted here so the optimistic row and the stored doc share one
+        // id, the same hoist the settlement flow relies on.
+        await createMut.mutateAsync({ itemId: crypto.randomUUID(), input, createdBy: uid })
       }
       modal.close()
     } catch (err) {

@@ -36,20 +36,26 @@ const listServices = createTripScopedListServices<PlanItem>({
 })
 
 export const getPlanItemsByTrip = listServices.fetch
+export const getPlanItemsByTripFromServer = listServices.fetchFromServer
 export const subscribeToPlanItems = listServices.subscribe
 
 // ─── Write ────────────────────────────────────────────────────────
 
+/** `itemId` is minted by the caller so the optimistic row and the stored
+ *  doc share one id from the start — the overlay can then recognise its
+ *  own row arriving in server truth. */
 export async function createPlanItem(
   tripId: string,
   input: CreatePlanItemInput,
   createdBy: string,
+  itemId: string,
 ): Promise<string> {
-  const [{ db, collection, addDoc, serverTimestamp }, memberIds] = await Promise.all([
+  const [{ db, doc, setDoc, serverTimestamp }, memberIds] = await Promise.all([
     getFirebase(),
     getTripMemberIds(tripId),
   ])
-  const ref = await addDoc(collection(db, ...P.planning(tripId)), {
+  const ref = doc(db, ...P.planItem(tripId, itemId))
+  await setDoc(ref, {
     ...stripEmpty(input),
     tripId,
     completedBy: {},

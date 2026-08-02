@@ -40,8 +40,10 @@ export interface TripListMutateContext<T> {
 
 export interface OverlayMutationConfig<T extends { id: string }, Vars> {
   controller: ListOverlayController<T>
-  /** Build the optimistic operation for these variables. */
-  op:         (vars: Vars) => OverlayOpInput<T>
+  /** Build the optimistic operation for these variables. `uid` is handed
+   *  over because an op's authoritative read is scoped to the same
+   *  (tripId, uid) query key the op belongs to. */
+  op:         (vars: Vars, ctx: { uid: string | undefined }) => OverlayOpInput<T>
 }
 
 interface UseTripListMutationOptsBase<T, Vars> {
@@ -97,7 +99,7 @@ export function useTripListMutation<T extends { id: string }, Vars>(
     },
     meta: { action: opts.action, silent: opts.silent } satisfies MutationMeta,
     onMutate: overlay
-      ? (vars): MutateContext<T> => ({ handle: overlay.controller.add(key, overlay.op(vars)) })
+      ? (vars): MutateContext<T> => ({ handle: overlay.controller.add(key, overlay.op(vars, { uid })) })
       : opts.patch
         ? (vars): MutateContext<T> => ({
             patch: patchListCache<T>(qc, key, prev => opts.patch!(prev, vars)),

@@ -22,6 +22,10 @@ export interface TripScopedListServices<T> {
    *  cache prefill (eg. usePrefetchBookings) and the live listener
    *  agree on row order. */
   fetch:     (tripId: string, uid: string) => Promise<T[]>
+  /** Same query, but never answered from Firestore's local cache. Used to
+   *  settle an ambiguous write, where the local cache is precisely the
+   *  state under question. */
+  fetchFromServer: (tripId: string, uid: string) => Promise<T[]>
   /** Realtime listener. Returns an unsubscribe fn promised lazily
    *  alongside the Firebase SDK. */
   subscribe: (
@@ -58,22 +62,26 @@ export function createTripScopedListServices<T>(
 ): TripScopedListServices<T> {
   const { path, fromDoc, orderBy, limit: LIM, source, postProcess } = opts
 
+  async function read(tripId: string, uid: string, fromServer: boolean): Promise<T[]> {
+    const fb = await getFirebase()
+    const orderClauses = orderBy.map(([f, d]) => fb.orderBy(f, d ?? 'asc'))
+    const q = fb.query(
+      fb.collection(fb.db, ...path(tripId)),
+      fb.where('memberIds', 'array-contains', uid),
+      ...orderClauses,
+      fb.limit(LIM),
+    )
+    const snap = await (fromServer ? fb.getDocsFromServer(q) : fb.getDocs(q))
+    if (snap.size >= LIM) {
+      captureError(new Error(`${source} truncated at ${LIM}`), { tripId, source })
+    }
+    const items = parseListSnapshot(snap, fromDoc)
+    return postProcess ? postProcess(items) : items
+  }
+
   return {
-    async fetch(tripId, uid) {
-      const fb = await getFirebase()
-      const orderClauses = orderBy.map(([f, d]) => fb.orderBy(f, d ?? 'asc'))
-      const snap = await fb.getDocs(fb.query(
-        fb.collection(fb.db, ...path(tripId)),
-        fb.where('memberIds', 'array-contains', uid),
-        ...orderClauses,
-        fb.limit(LIM),
-      ))
-      if (snap.size >= LIM) {
-        captureError(new Error(`${source} truncated at ${LIM}`), { tripId, source })
-      }
-      const items = parseListSnapshot(snap, fromDoc)
-      return postProcess ? postProcess(items) : items
-    },
+    fetch:           (tripId, uid) => read(tripId, uid, false),
+    fetchFromServer: (tripId, uid) => read(tripId, uid, true),
 
     subscribe(tripId, uid, onData, onError) {
       return subscribeToCollection<T>({
