@@ -21,12 +21,16 @@ vi.mock('../services/settlementService', () => ({
   },
 }))
 
+import { OVERLAY_AMBIGUOUS_SETTLE_MS } from '@/hooks/listOverlay'
 import {
   SETTLEMENT_DELETE_RETRY_DELAY_MS,
   settlementOverlay,
   useDeleteSettlement,
   useSettlements,
 } from './useSettlements'
+
+/** Retry first, then wait out the settle window before reading truth. */
+const RETRY_THEN_SETTLE_MS = SETTLEMENT_DELETE_RETRY_DELAY_MS + OVERLAY_AMBIGUOUS_SETTLE_MS
 
 const TRIP = 'trip-1'
 const KEY_HASH = hashKey(['settlements', TRIP, 'uid-1'])
@@ -139,7 +143,7 @@ describe('useDeleteSettlement overlay flow', () => {
     expect(visibleIds(['x'])).toEqual([])
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(SETTLEMENT_DELETE_RETRY_DELAY_MS)
+      await vi.advanceTimersByTimeAsync(RETRY_THEN_SETTLE_MS)
     })
 
     expect(visibleIds(['x'])).toEqual(['x'])
@@ -157,7 +161,7 @@ describe('useDeleteSettlement overlay flow', () => {
       await hook.result.current.mutateAsync({ settlementId: 'x' }).catch(() => {})
     })
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(SETTLEMENT_DELETE_RETRY_DELAY_MS)
+      await vi.advanceTimersByTimeAsync(RETRY_THEN_SETTLE_MS)
     })
 
     // Server truth no longer carries the row, so there is nothing left to
@@ -178,7 +182,7 @@ describe('useDeleteSettlement overlay flow', () => {
       await hook.result.current.mutateAsync({ settlementId: 'x' }).catch(() => {})
     })
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(SETTLEMENT_DELETE_RETRY_DELAY_MS)
+      await vi.advanceTimersByTimeAsync(RETRY_THEN_SETTLE_MS)
     })
 
     // Hiding a settlement that may still exist would invite recording the

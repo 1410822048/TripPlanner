@@ -61,6 +61,13 @@ export interface OverlayHandle {
 }
 
 export const OVERLAY_GRACE_MS = 8_000
+
+/** An ambiguous write may still be committing, so server truth is read
+ *  only after this settle window. Judging immediately would drop the row
+ *  and let the realtime push bring it straight back — visible as a row
+ *  that vanishes and returns. Matches AMBIGUOUS_RECONCILE_DELAY_MS. */
+export const OVERLAY_AMBIGUOUS_SETTLE_MS = 3_000
+
 const MAX_CONFIRM_ATTEMPTS = 3
 
 let seqCounter = 0
@@ -278,7 +285,7 @@ export function createListOverlay<T extends { id: string }>(
     const op = findOp(handle.queryKeyHash, handle.opId)
     if (!op || op.status === 'succeeded') return
     replaceOp(handle.queryKeyHash, handle.opId, { ...op, status: 'succeeded' })
-    armGrace(handle)
+    armConfirmTimer(handle, OVERLAY_GRACE_MS)
   }
 
   function markAmbiguous(handle: OverlayHandle): void {
@@ -286,21 +293,28 @@ export function createListOverlay<T extends { id: string }>(
     if (!op) return
     replaceOp(handle.queryKeyHash, handle.opId, { ...op, status: 'ambiguous' })
     bindGlobalListeners()
-    void confirm(handle)
+    // Deliberately not read now — see OVERLAY_AMBIGUOUS_SETTLE_MS.
+    armConfirmTimer(handle, OVERLAY_AMBIGUOUS_SETTLE_MS)
   }
 
-  /** A `succeeded` op normally clears on the next snapshot that agrees with
-   *  it. The timer only covers the case where that snapshot never comes —
-   *  a write the server silently no-opped. It reads server truth rather
-   *  than dropping on a guess. */
-  function armGrace(handle: OverlayHandle): void {
+  /** Schedules the server-truth read that retires an op.
+   *
+   *  A `succeeded` op normally clears on the next snapshot that agrees
+   *  with it; this only covers the case where that snapshot never comes —
+   *  a write the server silently no-opped. An `ambiguous` op uses it to
+   *  wait out the settle window before judging.
+   *
+   *  Re-armed when the read itself fails, so a quiet tab with a flaky
+   *  backend still converges instead of showing the optimistic value
+   *  until something external happens to fire a retry. */
+  function armConfirmTimer(handle: OverlayHandle, delayMs: number): void {
     const entry = entries.get(handle.queryKeyHash)
     if (!entry || entry.timers.has(handle.opId)) return
     bindGlobalListeners()
     const timer = setTimeout(() => {
       entry.timers.delete(handle.opId)
       void confirm(handle, { final: true })
-    }, OVERLAY_GRACE_MS)
+    }, delayMs)
     ;(timer as unknown as { unref?: () => void }).unref?.()
     entry.timers.set(handle.opId, timer)
   }
@@ -335,8 +349,12 @@ export function createListOverlay<T extends { id: string }>(
       }
       if (attempts >= MAX_CONFIRM_ATTEMPTS) {
         captureError(err, { source: `${config.source}/overlay-confirm`, opId, attempts })
+      } else {
+        // Keep trying on our own clock. Without this the op would sit on
+        // the optimistic value until the user happened to reconnect,
+        // background the tab, or remount the list.
+        armConfirmTimer(handle, OVERLAY_GRACE_MS)
       }
-      // Keep the op. `online` / `visibilitychange` / remount retry it.
       bindGlobalListeners()
       return
     }

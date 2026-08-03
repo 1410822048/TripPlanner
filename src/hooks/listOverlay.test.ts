@@ -6,6 +6,7 @@ vi.mock('@/services/sentry', () => ({ captureError: (...a: unknown[]) => capture
 import {
   applyOverlays,
   createListOverlay,
+  OVERLAY_AMBIGUOUS_SETTLE_MS,
   OVERLAY_GRACE_MS,
   type OverlayOp,
 } from './listOverlay'
@@ -186,13 +187,55 @@ describe('ListOverlayController', () => {
   })
 
   it('resolves an ambiguous op against server truth, either way', async () => {
+    vi.useFakeTimers()
     const landed = addRemove(KEY_A, 'a', async () => [row('b')])          // row gone → write landed
     controller.markAmbiguous(landed)
-    await vi.waitFor(() => expect(controller.getSnapshot(landed.queryKeyHash)).toHaveLength(0))
+    await vi.advanceTimersByTimeAsync(OVERLAY_AMBIGUOUS_SETTLE_MS)
+    expect(controller.getSnapshot(landed.queryKeyHash)).toHaveLength(0)
 
     const phantom = addRemove(KEY_B, 'b', async () => [row('b')])         // row still there → never landed
     controller.markAmbiguous(phantom)
-    await vi.waitFor(() => expect(controller.getSnapshot(phantom.queryKeyHash)).toHaveLength(0))
+    await vi.advanceTimersByTimeAsync(OVERLAY_AMBIGUOUS_SETTLE_MS)
+    expect(controller.getSnapshot(phantom.queryKeyHash)).toHaveLength(0)
+  })
+
+  it('waits out the settle window before judging an ambiguous write', async () => {
+    vi.useFakeTimers()
+    const fetchSpy = vi.fn(async () => [] as Row[])
+    const handle = addRemove(KEY_A, 'a', fetchSpy)
+
+    controller.markAmbiguous(handle)
+    // Reading now would drop the op while the write may still be
+    // committing, so the row would vanish and the later snapshot would
+    // bring it back.
+    await vi.advanceTimersByTimeAsync(OVERLAY_AMBIGUOUS_SETTLE_MS - 1)
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(controller.getSnapshot(handle.queryKeyHash)).toHaveLength(1)
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps retrying on its own clock after a failed confirmation', async () => {
+    vi.useFakeTimers()
+    let fail = true
+    const fetchSpy = vi.fn(async () => {
+      if (fail) throw new Error('backend flaky')
+      return [] as Row[]
+    })
+    const handle = addRemove(KEY_A, 'a', fetchSpy)
+    controller.markSucceeded(handle)
+
+    await vi.advanceTimersByTimeAsync(OVERLAY_GRACE_MS)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(controller.getSnapshot(handle.queryKeyHash)).toHaveLength(1)
+
+    // No reconnect, no tab switch, no remount — the op has to converge by
+    // itself rather than sit on the optimistic value indefinitely.
+    fail = false
+    await vi.advanceTimersByTimeAsync(OVERLAY_GRACE_MS)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    expect(controller.getSnapshot(handle.queryKeyHash)).toHaveLength(0)
   })
 
   it('keeps an op whose authoritative read fails, and confirms it once the read recovers', async () => {
@@ -212,24 +255,36 @@ describe('ListOverlayController', () => {
   })
 
   it('coalesces concurrent confirmations on one key into a single read', async () => {
-    const fetchSpy = vi.fn(async () => [] as Row[])
+    vi.useFakeTimers()
+    let release!: (rows: Row[]) => void
+    const pending = new Promise<Row[]>(res => { release = res })
+    const fetchSpy = vi.fn(() => pending)
     const a = addRemove(KEY_A, 'a', fetchSpy)
     const b = addRemove(KEY_A, 'b', fetchSpy)
 
     controller.markAmbiguous(a)
     controller.markAmbiguous(b)
-    await vi.waitFor(() => expect(controller.getSnapshot(a.queryKeyHash)).toHaveLength(0))
+    // Both settle timers fire in the same window, so the second op finds
+    // the first read still in flight and rides along.
+    await vi.advanceTimersByTimeAsync(OVERLAY_AMBIGUOUS_SETTLE_MS)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
 
+    release([])
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(controller.getSnapshot(a.queryKeyHash)).toHaveLength(0)
     expect(fetchSpy).toHaveBeenCalledTimes(1)
   })
 
   it('ignores a read that resolves after everything was cleared', async () => {
+    vi.useFakeTimers()
     let release!: (rows: Row[]) => void
     const handle = addRemove(KEY_A, 'a', () => new Promise<Row[]>(res => { release = res }))
     const cb = vi.fn()
     controller.subscribe(handle.queryKeyHash, cb)
 
     controller.markAmbiguous(handle)
+    await vi.advanceTimersByTimeAsync(OVERLAY_AMBIGUOUS_SETTLE_MS)
     controller.clearAll()
     cb.mockClear()
 
