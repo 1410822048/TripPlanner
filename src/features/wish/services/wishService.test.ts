@@ -233,7 +233,7 @@ describe('createWish', () => {
   it('no file: client setDoc only, no compress, no Worker call, returns wishId', async () => {
     mocks.setDocMock.mockResolvedValueOnce(undefined)
 
-    const id = await createWish('t1', { title: 'Place' } as unknown as Parameters<typeof createWish>[1], null, 'u1')
+    const id = await createWish('t1', { title: 'Place' } as unknown as Parameters<typeof createWish>[1], null, 'u1', 'w-new')
 
     expect(id).toBe('w-new')
     expect(mocks.setDocMock).toHaveBeenCalledTimes(1)
@@ -254,6 +254,7 @@ describe('createWish', () => {
       { title: 'Place' } as unknown as Parameters<typeof createWish>[1],
       new File([], 'r.jpg', { type: 'image/jpeg' }),
       'u1',
+      'w-new',
     )
 
     expect(id).toBe('w-new')
@@ -333,6 +334,7 @@ describe('createWish', () => {
       { title: 'X' } as unknown as Parameters<typeof createWish>[1],
       new File([], 'doc.pdf', { type: 'application/pdf' }),
       'u1',
+      'w-new',
     )
 
     expect(id).toBe('w-new')
@@ -353,6 +355,7 @@ describe('createWish', () => {
       { title: 'X' } as unknown as Parameters<typeof createWish>[1],
       new File([], 'r.jpg'),
       'u1',
+      'w-new',
     )).rejects.toThrow(/canvas-bust/)
 
     expect(mocks.setDocMock).not.toHaveBeenCalled()
@@ -373,6 +376,7 @@ describe('createWish', () => {
       { title: 'X' } as unknown as Parameters<typeof createWish>[1],
       new File([], 'r.jpg'),
       'u1',
+      'w-new',
     )).rejects.toThrow(/boom/)
 
     // No-thumb path: uploads body must be SINGLE-ENTRY [full] only —
@@ -405,6 +409,7 @@ describe('createWish', () => {
       { title: 'X' } as unknown as Parameters<typeof createWish>[1],
       new File([], 'r.jpg'),
       'u1',
+      'w-new',
     )).rejects.toThrow(/worker-rejected/)
 
     // Upload pipeline ran fully before Worker rejected.
@@ -450,6 +455,7 @@ describe('createWish', () => {
       { title: 'Trace' } as unknown as Parameters<typeof createWish>[1],
       new File([], 'r.jpg', { type: 'image/jpeg' }),
       'u1',
+      'w-new',
     )
 
     const mintOpts  = mocks.requestUploadIntentsMock.mock.calls[0]![1] as { traceId: string }

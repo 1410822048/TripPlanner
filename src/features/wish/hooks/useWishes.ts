@@ -7,24 +7,32 @@
 // tight (no full doc patch / no Zod validation).
 import {
   getWishesByTrip,
+  getWishesByTripFromServer,
   subscribeToWishes,
   createWish,
   updateWish,
   deleteWish,
   toggleWishVote,
+  wishUpdateApplied,
 } from '../services/wishService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
+import { createListOverlay } from '@/hooks/listOverlay'
 import { useTripListMutation } from '@/hooks/useTripListMutation'
-import { rankWishes } from '../utils'
-import { tempId } from '@/utils/tempId'
 import { auditUpdateMock } from '@/utils/audit'
 import type { CreateWishInput, Wish, WishImage } from '@/types'
 import { mockTimestampNow } from '@/mocks/utils'
 import { MUTATION_ACTION } from '@/services/queryClient'
 
-const wishKeys = {
+export const wishKeys = {
   all: (tripId: string, uid?: string) => ['wishes', tripId, uid ?? ''] as const,
 }
+
+export const wishOverlay = createListOverlay<Wish>({
+  // WishPage runs rankWishes over the merged list, so placement here only
+  // has to be stable, not sorted.
+  insert: 'head',
+  source: 'wishes',
+})
 
 export const useWishes = createRealtimeListHook<Wish>({
   queryKeyFactory: wishKeys.all,
@@ -32,33 +40,38 @@ export const useWishes = createRealtimeListHook<Wish>({
   subscribe:       (tripId, uid, onData, onError) => subscribeToWishes(tripId, uid, onData, onError),
   source:          'useWishes',
   requiresUid:     true,
+  overlay:         wishOverlay,
 })
+
+const serverRead = (tripId: string, uid: string | undefined) =>
+  () => getWishesByTripFromServer(tripId, uid ?? '')
 
 export function useCreateWish(tripId: string) {
   return useTripListMutation<Wish, {
+    wishId:     string
     input:      CreateWishInput
     file:       File | null
     proposedBy: string
   }>({
     tripId,
     keyFactory: wishKeys.all,
-    mutate:     ({ input, file, proposedBy }) => createWish(tripId, input, file, proposedBy),
-    // rankWishes で温存:temp row も votes/createdAt で正しい順位に挿入される。
-    // createdAt は mockTimestampNow()(epoch ではなく Date.now())なので自分の
-    // 票数グループの先頭(= server snapshot と同じ最新位置)に並び、保存完了で跳ねない。
-    patch:      (prev, { input, proposedBy }) => rankWishes([
-      {
-        id:        tempId(),
-        tripId,
-        memberIds: [proposedBy],
-        ...input,
-        proposedBy,
-        votes:     [proposedBy],
-        createdAt: mockTimestampNow(),
-        ...auditUpdateMock(proposedBy),
-      },
-      ...prev,
-    ]),
+    mutate:     ({ wishId, input, file, proposedBy }) => createWish(tripId, input, file, proposedBy, wishId),
+    overlay: {
+      controller: wishOverlay,
+      op: ({ wishId, input, proposedBy }, { uid }) => ({
+        kind: 'create',
+        // createdAt is mockTimestampNow(), not the epoch, so rankWishes
+        // puts the row at the head of its vote group — the same place the
+        // server row will land, so it doesn't jump on confirmation.
+        row: {
+          id: wishId, tripId, memberIds: [proposedBy], ...input,
+          proposedBy, votes: [proposedBy], createdAt: mockTimestampNow(),
+          ...auditUpdateMock(proposedBy),
+        } as Wish,
+        confirms: base => base.some(w => w.id === wishId),
+        authoritativeFetch: serverRead(tripId, uid),
+      }),
+    },
     action:     MUTATION_ACTION.CREATE_WISH,
     // Phase 3.7: no partial-create recovery needed. Worker-authoritative
     // /wish-file-create is atomic — either the wish doc lands (with
@@ -68,11 +81,6 @@ export function useCreateWish(tripId: string) {
     // atomic Firestore write, same guarantee.
   })
 }
-
-/** Stable mutationKey for `useMutationState`-driven 「保存中」 pill on
- *  the wish card being updated. Pages call `usePendingMutationIds` with
- *  this key + `'wishId'` to derive the set of in-flight update ids. */
-export const wishUpdateMutationKey = ['wishes', 'update'] as const
 
 export function useUpdateWish(tripId: string) {
   return useTripListMutation<Wish, {
@@ -84,11 +92,21 @@ export function useUpdateWish(tripId: string) {
   }>({
     tripId,
     keyFactory:  wishKeys.all,
-    mutationKey: wishUpdateMutationKey,
     mutate:      ({ wishId, updates, uid, attachment, existingImage }) =>
       updateWish(tripId, wishId, updates, { uid, attachment, existingImage }),
-    patch:       (prev, { wishId, updates, uid }) =>
-      prev.map(w => w.id === wishId ? { ...w, ...updates, ...auditUpdateMock(uid) } : w),
+    overlay: {
+      controller: wishOverlay,
+      op: ({ wishId, updates }, { uid }) => ({
+        kind: 'patch',
+        id:   wishId,
+        apply: row => ({ ...row, ...updates }),
+        confirms: base => {
+          const stored = base.find(w => w.id === wishId)
+          return !!stored && wishUpdateApplied(stored, updates)
+        },
+        authoritativeFetch: serverRead(tripId, uid),
+      }),
+    },
     action:      MUTATION_ACTION.UPDATE,
   })
 }
@@ -98,7 +116,15 @@ export function useDeleteWish(tripId: string) {
     tripId,
     keyFactory: wishKeys.all,
     mutate:     ({ wishId, image }, { uid }) => deleteWish(tripId, wishId, uid, image),
-    patch:      (prev, { wishId }) => prev.filter(w => w.id !== wishId),
+    overlay: {
+      controller: wishOverlay,
+      op: ({ wishId }, { uid }) => ({
+        kind: 'remove',
+        id:   wishId,
+        confirms: base => !base.some(w => w.id === wishId),
+        authoritativeFetch: serverRead(tripId, uid),
+      }),
+    },
     action:     MUTATION_ACTION.DELETE,
   })
 }
@@ -110,16 +136,28 @@ export function useToggleWishVote(tripId: string) {
     tripId,
     keyFactory: wishKeys.all,
     mutate:     ({ wishId, uid, isVoting }) => toggleWishVote(tripId, wishId, uid, isVoting),
-    // votes を書き換えたら同じ rankWishes で並べ直す → 投票直後に rank/hero が
-    // 即座に正しくなり、listener snapshot 到着時も同じ並びなので跳ねない。
-    patch:      (prev, { wishId, uid, isVoting }) =>
-      rankWishes(prev.map(w => {
-        if (w.id !== wishId) return w
-        const next = isVoting
-          ? w.votes.includes(uid) ? w.votes : [...w.votes, uid]
-          : w.votes.filter(u => u !== uid)
-        return { ...w, votes: next, ...auditUpdateMock(uid) }
-      })),
+    overlay: {
+      controller: wishOverlay,
+      op: ({ wishId, uid, isVoting }) => ({
+        kind: 'patch',
+        id:   wishId,
+        // A reducer over the arriving base, not a snapshot of `votes`:
+        // the service uses arrayUnion/arrayRemove for exactly this reason,
+        // so a co-member's vote landing mid-flight must survive here too.
+        // WishPage re-ranks the merged list, so no sorting is needed.
+        apply: row => ({
+          ...row,
+          votes: isVoting
+            ? row.votes.includes(uid) ? row.votes : [...row.votes, uid]
+            : row.votes.filter(u => u !== uid),
+        }),
+        confirms: base => {
+          const stored = base.find(w => w.id === wishId)
+          return !!stored && stored.votes.includes(uid) === isVoting
+        },
+        authoritativeFetch: serverRead(tripId, uid),
+      }),
+    },
     action:     MUTATION_ACTION.TOGGLE_VOTE,
   })
 }

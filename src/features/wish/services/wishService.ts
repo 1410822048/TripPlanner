@@ -74,7 +74,21 @@ const listServices = createTripScopedListServices<Wish>({
 })
 
 export const getWishesByTrip = listServices.fetch
+export const getWishesByTripFromServer = listServices.fetchFromServer
 export const subscribeToWishes = listServices.subscribe
+
+/**
+ * Does `stored` already reflect this update? Mirrors the write above: the
+ * optional text fields are cleared with `deleteField()` when they arrive
+ * as `undefined` or `''`, so both land as absent.
+ */
+export function wishUpdateApplied(stored: Wish, updates: Partial<CreateWishInput>): boolean {
+  const cleared = (value: unknown) => value === undefined || value === ''
+  return Object.entries(updates).every(([field, value]) => {
+    const current = stored[field as keyof Wish]
+    return cleared(value) ? cleared(current) : current === value
+  })
+}
 
 // ─── Storage helpers ──────────────────────────────────────────────
 
@@ -118,12 +132,13 @@ export async function createWish(
   input:      CreateWishInput,
   file:       File | null,
   proposedBy: string,
+  wishId:     string,
 ): Promise<string> {
-  const { db, collection, doc } = await getFirebase()
-  // Mint the wishId client-side so the Worker can consume intents
-  // bound to a known entityId AND the optimistic-cache temp-row
-  // replacement has a stable target.
-  const ref = doc(collection(db, ...P.wishes(tripId)))
+  const { db, doc } = await getFirebase()
+  // The id is minted by the caller so the Worker can consume intents bound
+  // to a known entityId AND the optimistic row carries the same id the
+  // stored doc will have.
+  const ref = doc(db, ...P.wish(tripId, wishId))
 
   // Decide path BEFORE touching Firestore. Compress is the gate: image
   // input → Worker; non-image fallback → client setDoc (image-only is a

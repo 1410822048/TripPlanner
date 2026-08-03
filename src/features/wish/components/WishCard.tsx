@@ -84,7 +84,7 @@ interface Props {
   onToggleVote:  () => void
   /** LCP hint for the lead card's thumbnail (rank 1, above the fold). */
   eager?:        boolean
-  /** This wish's UPDATE is in-flight (page derives via usePendingMutationIds). */
+  /** This wish's write is in flight (page derives it from the overlay). */
   isUpdating?:   boolean
   /** 1-based 順位(投票数の降順)。1 = 本命 lead(強調)、2 以上 = 通常行。 */
   rank:          number
@@ -97,7 +97,7 @@ function WishCard({
   onEdit, onDelete, onOpenDetails, onToggleVote, eager, isUpdating, rank, consensus,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false)
-  const isPending = wish.id.startsWith('temp-') || !!isUpdating
+  const isPending = !!isUpdating
   const hasMenu = !isPending && (canEdit || canDelete)
   const tap = !isPending ? onOpenDetails : undefined
   const isLead = rank === 1

@@ -21,9 +21,9 @@ import ListEmptyCard from '@/components/ui/ListEmptyCard'
 import SignInPromptModal from '@/features/auth/components/SignInPromptModal'
 import {
   useWishes, useCreateWish, useUpdateWish, useDeleteWish, useToggleWishVote,
-  wishUpdateMutationKey,
+  wishKeys, wishOverlay,
 } from '../hooks/useWishes'
-import { usePendingMutationIds } from '@/hooks/usePendingMutationIds'
+import { useOverlayPendingRowIds } from '@/hooks/listOverlay'
 import { MOCK_WISHES } from '../mocks'
 import { useMembers } from '@/features/members/hooks/useMembers'
 import { membersToTripMembers } from '@/features/members/utils'
@@ -124,13 +124,10 @@ export default function WishPage() {
   const updateMut = useUpdateWish(mutationTripId)
   const deleteMut = useDeleteWish(mutationTripId)
   const voteMut   = useToggleWishVote(mutationTripId)
-  // Set of wish ids whose UPDATE is in-flight — drives the 保存中… pill
-  // on edited cards. CREATE pending is handled inside WishCard via the
-  // temp- id prefix; UPDATE preserves the real id so we need this signal.
-  const pendingUpdateIds = usePendingMutationIds<{ wishId: string }>(
-    wishUpdateMutationKey,
-    'wishId',
-  )
+  // Ids whose write is still in flight — drives the 保存中… pill and locks
+  // the card. Covers create and update alike now that both are overlay ops
+  // carrying the real id, so there is no id-shape check left to do.
+  const pendingUpdateIds = useOverlayPendingRowIds(wishOverlay, wishKeys.all(mutationTripId, uid))
 
   if (ctx.status === 'loading') return <WishPageSkeleton />
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Heart} reason="為心願投票" />
@@ -158,7 +155,7 @@ export default function WishPage() {
         existingImage: editing.image,
       })
     } else {
-      createMut.mutate({ input, file, proposedBy: uid })
+      createMut.mutate({ wishId: crypto.randomUUID(), input, file, proposedBy: uid })
     }
   }
 

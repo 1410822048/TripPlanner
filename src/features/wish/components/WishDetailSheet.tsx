@@ -41,7 +41,7 @@ export default function WishDetailSheet({
   const linkIsMaps = !!wish.link && isGoogleMapsUrl(wish.link)
   const mapHref = addressMapHref(wish.address) ?? (linkIsMaps ? wish.link : null)
   const siteHref = wish.link && !linkIsMaps ? wish.link : null
-  const isPending = wish.id.startsWith('temp-') || !!isUpdating
+  const isPending = !!isUpdating
 
   const heroUrl = fullUrl ?? thumbUrl
 
