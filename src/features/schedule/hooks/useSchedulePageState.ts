@@ -1,15 +1,17 @@
 // src/features/schedule/hooks/useSchedulePageState.ts
-// All non-rendering state + derived values + action callbacks for
-// SchedulePage. Extracting this lets the page component itself read as
-// pure layout orchestration: pick a few values from the returned bag,
-// hand modals off to TripModalsHost, render.
-import { useEffect, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
-import { useFormModal, type UseFormModalResult } from '@/hooks/useFormModal'
-import {
-  useSchedules, useCreateSchedule, useUpdateSchedule, useDeleteSchedule, nextScheduleOrder,
-} from './useSchedules'
-import { useCopyTrip, useDeleteTrip, useLeaveTrip, useMyTrips, useUpdateTrip } from '@/features/trips/hooks/useTrips'
+// Composition layer for SchedulePage: resolves demo-vs-cloud, derives the
+// display data, and stitches together the three concern-scoped hooks
+// (modals / trip actions / schedule actions) into the single bag the page
+// and TripModalsHost read from.
+//
+// The bag stays a single entry point on purpose — splitting the state out
+// to the components would scatter it back across the tree.
+import { useState } from 'react'
+import { useSchedules } from './useSchedules'
+import { useScheduleActions } from './useScheduleActions'
+import { useScheduleModals } from './useScheduleModals'
+import { useTripActions } from './useTripActions'
+import { useMyTrips } from '@/features/trips/hooks/useTrips'
 import { useCurrentTrip } from '@/features/trips/hooks/useCurrentTrip'
 import type { CopyTripInput } from '@/features/trips/services/tripCopy'
 import { useTripSelection } from '@/features/trips/hooks/useTripSelection'
@@ -18,14 +20,12 @@ import { useMembers } from '@/features/members/hooks/useMembers'
 import { membersToTripMembers } from '@/features/members/utils'
 import { useTripStore } from '@/store/tripStore'
 import { useAuth } from '@/hooks/useAuth'
-import type { CreateScheduleInput, CreateTripInput, Schedule, Trip } from '@/types'
+import type { UseFormModalResult } from '@/hooks/useFormModal'
+import type { CreateScheduleInput, Schedule, Trip } from '@/types'
 import type { MenuActionKey, TripItem } from '@/features/trips/types'
 import { MOCK_SCHEDULES } from '../mocks'
 import { buildDateRange, groupByDate } from '../utils'
-import { buildScheduleUpdate } from '../services/scheduleService'
 import { toLocalDateString } from '@/utils/dates'
-import { toast } from '@/shared/toast'
-import { simulateFailureMaybe } from '@/utils/devFailures'
 
 // Adapter: Firestore Trip → presentation TripItem. `icon` is persisted on
 // the Trip doc (default ✈️ for trips created before the field existed).
@@ -126,8 +126,7 @@ export interface SchedulePageState {
 
   /** True when any TripModalsHost-owned modal is open. SchedulePage gates
    *  the lazy TripModalsHost mount on this, so the modal chunk stays out
-   *  of the initial bundle until the first open. Keep in sync with the
-   *  modals TripModalsHost renders. */
+   *  of the initial bundle until the first open. */
   hasOpenModal: boolean
 
   // ─── Pass-through references ──────────────────────────────────
@@ -148,10 +147,6 @@ export function useSchedulePageState(): SchedulePageState {
   // demo. The `wasSignedIn` flag on `authState.status === 'loading'`
   // is a synchronous localStorage hint set by useAuth's observer;
   // it tells us which sub-case we're in.
-  // Hint-gated by default — see useAuth's docstring. Never-signed-in
-  // visitors never trigger the Auth SDK fetch here; the `wasSignedIn`
-  // hint on the loading state gives SchedulePage the synchronous
-  // demo/cloud signal it needs without loading the observer.
   const { state: authState } = useAuth()
   const uid           = authState.status === 'signed-in' ? authState.user.uid : undefined
   const authResolving = authState.status === 'loading'
@@ -161,52 +156,18 @@ export function useSchedulePageState(): SchedulePageState {
   const currentTrip       = useCurrentTrip()
   const setSelectedTripId = useTripStore(s => s.setSelectedTripId)
   const tripOrder         = useTripStore(s => s.tripOrder)
-  const setTripOrder   = useTripStore(s => s.setTripOrder)
+  const setTripOrder      = useTripStore(s => s.setTripOrder)
 
   const { data: myTrips, error: tripsError, refetch: refetchTrips } = useMyTrips(uid)
 
-  const [activeDate,     setActiveDate]     = useState<string | null>(null)
-  // Shared modal-state primitive — matches the 4 other feature pages
-  // (Booking/Expense/Planning/Wish). Exposes editTarget + saveError +
-  // openAdd/openEdit/close, so the page-level fields below are thin
-  // adapters preserving SchedulePageState's existing public shape.
-  const scheduleModal = useFormModal<Schedule>()
-  const [scheduleDetailId, setScheduleDetailId] = useState<string | null>(null)
-  const [editTripOpen,   setEditTripOpen]   = useState(false)
-  const [createTripOpen, setCreateTripOpen] = useState(false)
-  const [copyTripOpen,   setCopyTripOpen]   = useState(false)
-  // Snapshot of `currentTrip` taken when the copy modal opens. Decouples
-  // the modal's identity (key + source) from currentTrip so the post-
-  // mutation `setSelectedTripId(newTrip.id)` doesn't re-key the modal
-  // mid-close — that re-key was causing a 3-frame flash
-  // (close→open→close) because the modal's key changed from sourceId
-  // to newTripId in the same render where copyTripOpen was still true.
-  // The snapshot stays put until the next open.
-  const [copyTripSource, setCopyTripSource] = useState<Trip | null>(null)
-  const [signInOpen,     setSignInOpen]     = useState(false)
-  const [inviteOpen,     setInviteOpen]     = useState(false)
-  const [inviteScannerOpen, setInviteScannerOpen] = useState(false)
-  const [membersOpen,    setMembersOpen]    = useState(false)
-
-  // AccountPage's "Planner" card navigates here with state.openCreateTrip
-  // = true to deep-link straight into the create-trip flow. Consume the
-  // flag once, open the modal, and clear via replace so refresh /
-  // back-button doesn't re-trigger.
-  const location = useLocation()
-  const navigate = useNavigate()
-  useEffect(() => {
-    const s = location.state as { openCreateTrip?: boolean } | null
-    if (!s?.openCreateTrip) return
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setCreateTripOpen(true)
-    navigate(location.pathname, { replace: true, state: null })
-  }, [location.state, location.pathname, navigate])
+  const [activeDate, setActiveDate] = useState<string | null>(null)
+  const modals = useScheduleModals({ isDemo, currentTrip })
 
   const demoSelection = useTripSelection(() => setActiveDate(null))
 
   // Compiler memoises both `cloudTripItem` and `cloudTripsList` based
-  // on inferred deps. Apply user's saved order from drag-to-reorder.
-  // Trips not in the saved list (newly joined / created since last
+  // on inferred deps. Apply the user's saved order from drag-to-reorder.
+  // Trips not in the saved list (newly joined / created since the last
   // reorder) bubble to the top so they remain discoverable.
   const cloudTripItem: TripItem | null =
     !isDemo && currentTrip ? cloudTripToItem(currentTrip, uid) : null
@@ -247,8 +208,8 @@ export function useSchedulePageState(): SchedulePageState {
 
   const grouped   = groupByDate(schedules)
   const tripTotal = schedules.reduce((s, i) => s + (i.estimatedCostMinor ?? 0), 0)
-  const scheduleDetailTarget = scheduleDetailId
-    ? schedules.find(schedule => schedule.id === scheduleDetailId) ?? null
+  const scheduleDetailTarget = modals.scheduleDetailId
+    ? schedules.find(schedule => schedule.id === modals.scheduleDetailId) ?? null
     : null
 
   const trips = isDemo ? demoSelection.trips : cloudTripsList
@@ -258,16 +219,21 @@ export function useSchedulePageState(): SchedulePageState {
     ? demoSelection.selectedTrip
     : cloudTripItem ? { ...cloudTripItem, members: memberChips } : null
 
-  // silent — modal surfaces errors via inline banner(scheduleSaveError),
-  // global toast would double-notify.
-  const createMut     = useCreateSchedule(tripId ?? '', { silent: true })
-  const updateMut     = useUpdateSchedule(tripId ?? '', { silent: true })
-  const deleteMut     = useDeleteSchedule(tripId ?? '')
-  const updateTripMut = useUpdateTrip(uid)
-  const deleteTripMut = useDeleteTrip(uid)
-  const leaveTripMut  = useLeaveTrip(uid)
-  const copyTripMut   = useCopyTrip()
-  const isSaving      = createMut.isPending || updateMut.isPending
+  const tripActions = useTripActions({
+    isDemo, demoSelection, uid, authState, myTrips, currentTrip, cloudTripsList,
+    setSelectedTripId, setTripOrder,
+    resetActiveDate:     () => setActiveDate(null),
+    clearScheduleDetail: modals.closeScheduleDetail,
+    closeMembers:        () => modals.setMembersOpen(false),
+    copyTripSource:      modals.copyTripSource,
+    closeCopyTrip:       () => modals.setCopyTripOpen(false),
+  })
+
+  const scheduleActions = useScheduleActions({
+    isDemo, uid, tripId, schedules,
+    scheduleModal: modals.scheduleModal,
+    openSignIn:    () => modals.setSignInOpen(true),
+  })
 
   // ─── Derived display state ────────────────────────────────────
   const dateRange = selectedTrip
@@ -279,229 +245,11 @@ export function useSchedulePageState(): SchedulePageState {
   // hoisting it costs more than it saves.
   const dayTotal = items.reduce((s, i) => s + (i.estimatedCostMinor ?? 0), 0)
 
-  // ─── Action callbacks ─────────────────────────────────────────
-  const selectTrip = (item: TripItem) => {
-    setScheduleDetailId(null)
-    if (isDemo) {
-      demoSelection.selectTrip(item)
-      return
-    }
-    // myTrips lookup retained as a "trip exists" gate — picking
-    // an id the user no longer has access to would just produce
-    // a null useCurrentTrip downstream and a confused UI.
-    if (myTrips?.some(t => t.id === item.id)) {
-      setSelectedTripId(item.id)
-      setActiveDate(null)
-    }
-  }
-
-  // Cloud edit: diff against the current trip and only send changed
-  // fields — a save with no changes (or only one field changed) should
-  // not re-write every column. If nothing changed, skip entirely.
-  const saveTrip = isDemo ? demoSelection.saveTrip : (data: TripItem) => {
-    if (!currentTrip || data.id !== currentTrip.id) return
-    const updates: Partial<CreateTripInput> = {}
-    if (data.title !== currentTrip.title)       updates.title       = data.title
-    if (data.dest  !== currentTrip.destination) updates.destination = data.dest
-    if (data.emoji !== (currentTrip.icon ?? '✈️')) updates.icon     = data.emoji
-    if (data.startDate !== toLocalDateString(currentTrip.startDate.toDate()))
-      updates.startDate = data.startDate
-    if (data.endDate !== toLocalDateString(currentTrip.endDate.toDate()))
-      updates.endDate = data.endDate
-    if (data.currency !== currentTrip.currency) updates.currency = data.currency
-    if (data.defaultCountryCode !== currentTrip.defaultCountryCode)
-      updates.defaultCountryCode = data.defaultCountryCode
-    setActiveDate(null)
-    if (Object.keys(updates).length === 0) return
-    updateTripMut.mutate({ tripId: data.id, updates })
-  }
-
-  // Cloud delete: if removing the active trip, swap to the next surviving
-  // one (or null) BEFORE firing the mutation — that way the UI never
-  // renders against a trip whose schedules/members are vanishing under
-  // it. On mutation failure we restore the previous selection so the
-  // user isn't left on a different trip than the cache shows.
-  const deleteTrip = isDemo ? demoSelection.deleteTrip : (deletedId: string) => {
-    const wasCurrent = currentTrip?.id === deletedId
-    const restoreId  = currentTrip?.id
-    if (wasCurrent) {
-      const remaining = (myTrips ?? []).filter(t => t.id !== deletedId)
-      setSelectedTripId(remaining[0]?.id ?? null)
-      setActiveDate(null)
-    }
-    deleteTripMut.mutate(deletedId, {
-      onSuccess: () => toast.success('已刪除旅程'),
-      onError:   () => { if (wasCurrent && restoreId) setSelectedTripId(restoreId) },
-    })
-  }
-
-  // Cloud-only: a non-owner leaves the current trip (MembersModal footer).
-  // Mirrors deleteTrip's "switch to the next surviving trip BEFORE the
-  // mutation" so the UI never renders against a trip vanishing under it.
-  // The modal is closed first — after the switch, currentTrip becomes a
-  // different trip (or null), and leaving the modal open would show the
-  // wrong trip's members. On failure we restore the selection (the user
-  // is still a member); the optimistic cache rollback + onSettled
-  // invalidate in useLeaveTrip re-sync the trip list.
-  function onLeaveTrip() {
-    const tripId = currentTrip?.id
-    if (!tripId) return
-    setMembersOpen(false)
-    const remaining = (myTrips ?? []).filter(t => t.id !== tripId)
-    setSelectedTripId(remaining[0]?.id ?? null)
-    setActiveDate(null)
-    leaveTripMut.mutate(tripId, {
-      onSuccess: () => toast.success('已退出旅程'),
-      onError:   () => setSelectedTripId(tripId),
-    })
-  }
-
-  // Cloud reorder: persist a per-user trip-id order in the zustand
-  // store (localStorage-backed). The `cloudTripsList` memo above
-  // applies this order on render, so the splice + setTripOrder is
-  // sufficient — no Firestore write involved (ordering is a personal
-  // view preference, not shared trip metadata).
-  const reorderTrips = isDemo ? demoSelection.reorderTrips : (fromIdx: number, toIdx: number) => {
-    if (fromIdx === toIdx) return
-    const ids = cloudTripsList.map(t => t.id)
-    const [moved] = ids.splice(fromIdx, 1)
-    if (!moved) return
-    ids.splice(toIdx, 0, moved)
-    setTripOrder(ids)
-  }
-
-  // Demo mode lacks a real tripId, so every cloud-only action funnels
-  // through the sign-in prompt before mutating state.
-  function handleMenuAction(key: MenuActionKey) {
-    switch (key) {
-      case 'edit':
-        setEditTripOpen(true)
-        return
-      case 'members':
-        if (isDemo) setSignInOpen(true)
-        else        setMembersOpen(true)
-        return
-      case 'share':
-        if (isDemo) setSignInOpen(true)
-        else        setInviteOpen(true)
-        return
-      case 'copy':
-        if (isDemo) {
-          setSignInOpen(true)
-        } else if (currentTrip) {
-          // Snapshot the source NOW — modal's key + source props read
-          // from this snapshot so the post-mutation trip switch doesn't
-          // re-key the modal mid-close.
-          setCopyTripSource(currentTrip)
-          setCopyTripOpen(true)
-        }
-        return
-      default: {
-        // Exhaustiveness check: if MenuActionKey gains a member, TS will
-        // flag this assignment until the new case is handled.
-        const _exhaustive: never = key
-        toast.info(`${_exhaustive} 尚在開發中`)
-      }
-    }
-  }
-
-  // Cloud-only — gate is in handleMenuAction. uid is guaranteed at this
-  // point (signed-in branch) but we read auth state defensively for the
-  // createTrip payload (ownerId, displayName).
-  async function onCopyTrip(input: CopyTripInput) {
-    // Read from the snapshot, not currentTrip — by the time this fires
-    // the user is mid-confirm and currentTrip could theoretically
-    // change under us (rare but possible). The snapshot is what the
-    // modal is showing, so use the same value for the mutation.
-    if (!copyTripSource || !uid || authState.status !== 'signed-in') return
-    try {
-      const { trip, copiedSchedules, copiedPlanItems, orphanedSchedules } =
-        await copyTripMut.mutateAsync({ source: copyTripSource, input, user: authState.user })
-      // Modal close commits cleanly because its render gate
-      // (copyTripSource + copyTripOpen) doesn't depend on currentTrip.
-      // setSelectedTripId can flip currentTrip = newTrip in the same
-      // commit; modal doesn't see it.
-      setSelectedTripId(trip.id)
-      setActiveDate(null)
-      setCopyTripOpen(false)
-      const parts = [`已建立「${trip.title}」`]
-      if (input.copySchedules) parts.push(`行程 ${copiedSchedules} 件`)
-      if (input.copyPlanning)  parts.push(`計畫 ${copiedPlanItems} 件`)
-      toast.success(parts.join(' · '))
-      if (orphanedSchedules > 0) {
-        toast.info(`${orphanedSchedules} 個行程位於新的日期範圍之外`)
-      }
-    } catch (e) {
-      toast.error(e instanceof Error ? `複製失敗：${e.message}` : '複製失敗')
-    }
-  }
-
-  // Demo save → close form, pop sign-in prompt. Cloud save → Firestore
-  // write with optimistic updates (hook surfaces toast on failure).
-  async function onScheduleSave(data: CreateScheduleInput) {
-    if (isDemo) { scheduleModal.close(); setSignInOpen(true); return }
-    if (!uid) { toast.error('正在準備登入，請稍候'); return }
-    scheduleModal.clearError()
-    try {
-      if (scheduleModal.editTarget) {
-        const updates = buildScheduleUpdate(scheduleModal.editTarget, data)
-        if (Object.keys(updates).length === 0) {
-          scheduleModal.close()
-          return
-        }
-        await simulateFailureMaybe()
-        await updateMut.mutateAsync({ scheduleId: scheduleModal.editTarget.id, updates, uid })
-      } else {
-        await simulateFailureMaybe()
-        // Both minted here: the id so the optimistic row and the stored doc
-        // match, and the order so it is computed once from the list the
-        // user is looking at (pending rows included) instead of twice.
-        await createMut.mutateAsync({
-          scheduleId: crypto.randomUUID(),
-          input:      data,
-          createdBy:  uid,
-          order:      nextScheduleOrder(schedules, data.date),
-        })
-      }
-      scheduleModal.close()
-    } catch (err) {
-      scheduleModal.setError(err instanceof Error ? err.message : '儲存失敗')
-    }
-  }
-  async function onScheduleDelete() {
-    if (!scheduleModal.editTarget) { scheduleModal.close(); return }
-    if (isDemo) { scheduleModal.close(); setSignInOpen(true); return }
-    try {
-      await deleteMut.mutateAsync(scheduleModal.editTarget.id)
-      scheduleModal.close()
-    } catch { /* hook onError already surfaced the toast */ }
-  }
-
-  function openScheduleDetail(schedule: Schedule) {
-    setScheduleDetailId(schedule.id)
-  }
-
-  function closeScheduleDetail() {
-    setScheduleDetailId(null)
-  }
-
   function editScheduleFromDetail() {
     if (!scheduleDetailTarget) return
-    scheduleModal.openEdit(scheduleDetailTarget)
-    setScheduleDetailId(null)
+    modals.scheduleModal.openEdit(scheduleDetailTarget)
+    modals.closeScheduleDetail()
   }
-
-  // Any modal open → SchedulePage mounts the lazy TripModalsHost.
-  const hasOpenModal =
-    scheduleModal.isOpen ||
-    !!scheduleDetailTarget ||
-    editTripOpen ||
-    createTripOpen ||
-    copyTripOpen ||
-    inviteOpen ||
-    inviteScannerOpen ||
-    membersOpen ||
-    signInOpen
 
   return {
     isDemo, canWrite, isOwner,
@@ -523,29 +271,41 @@ export function useSchedulePageState(): SchedulePageState {
     trips, selectedTrip, dateRange, display, items, dayTotal,
     schedules, tripTotal, grouped, isLoading,
 
-    selectTrip, saveTrip, deleteTrip, onLeaveTrip, reorderTrips, handleMenuAction,
+    selectTrip:   tripActions.selectTrip,
+    saveTrip:     tripActions.saveTrip,
+    deleteTrip:   tripActions.deleteTrip,
+    onLeaveTrip:  tripActions.onLeaveTrip,
+    reorderTrips: tripActions.reorderTrips,
+    handleMenuAction: modals.handleMenuAction,
     setActiveDate,
 
-    scheduleModal,
+    scheduleModal: modals.scheduleModal,
     scheduleDetailTarget,
-    openScheduleDetail,
-    closeScheduleDetail,
+    openScheduleDetail:  modals.openScheduleDetail,
+    closeScheduleDetail: modals.closeScheduleDetail,
     editScheduleFromDetail,
-    scheduleIsSaving: isSaving,
-    onScheduleSave,
-    onScheduleDelete,
+    scheduleIsSaving: scheduleActions.isSaving,
+    onScheduleSave:   scheduleActions.onScheduleSave,
+    onScheduleDelete: scheduleActions.onScheduleDelete,
 
-    editTripOpen, setEditTripOpen,
-    createTripOpen, setCreateTripOpen,
-    copyTripOpen, setCopyTripOpen,
-    copyTripSource,
-    copyTripPending: copyTripMut.isPending,
-    onCopyTrip,
-    inviteOpen, setInviteOpen,
-    inviteScannerOpen, setInviteScannerOpen,
-    membersOpen, setMembersOpen,
-    signInOpen, setSignInOpen,
-    hasOpenModal,
+    editTripOpen:      modals.editTripOpen,
+    setEditTripOpen:   modals.setEditTripOpen,
+    createTripOpen:    modals.createTripOpen,
+    setCreateTripOpen: modals.setCreateTripOpen,
+    copyTripOpen:      modals.copyTripOpen,
+    setCopyTripOpen:   modals.setCopyTripOpen,
+    copyTripSource:    modals.copyTripSource,
+    copyTripPending:   tripActions.copyTripPending,
+    onCopyTrip:        tripActions.onCopyTrip,
+    inviteOpen:        modals.inviteOpen,
+    setInviteOpen:     modals.setInviteOpen,
+    inviteScannerOpen: modals.inviteScannerOpen,
+    setInviteScannerOpen: modals.setInviteScannerOpen,
+    membersOpen:       modals.membersOpen,
+    setMembersOpen:    modals.setMembersOpen,
+    signInOpen:        modals.signInOpen,
+    setSignInOpen:     modals.setSignInOpen,
+    hasOpenModal:      modals.anyOpen || !!scheduleDetailTarget,
 
     currentTrip,
   }
