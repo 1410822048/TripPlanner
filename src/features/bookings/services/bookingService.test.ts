@@ -257,6 +257,7 @@ describe('createBooking', () => {
       { type: 'flight', title: 'Flight' } as unknown as Parameters<typeof createBooking>[1],
       EMPTY_FILES,
       'u1',
+      'b-new',
     )
 
     expect(id).toBe('b-new')
@@ -281,6 +282,7 @@ describe('createBooking', () => {
       { type: 'flight', title: 'Flight' } as unknown as Parameters<typeof createBooking>[1],
       { coverImage: undefined, document: new File([], 'r.jpg', { type: 'image/jpeg' }) },
       'u1',
+      'b-new',
     )
 
     expect(id).toBe('b-new')
@@ -356,6 +358,7 @@ describe('createBooking', () => {
       { type: 'hotel', title: 'Voucher' } as unknown as Parameters<typeof createBooking>[1],
       { coverImage: undefined, document: new File([], 'doc.pdf', { type: 'application/pdf' }) },
       'u1',
+      'b-new',
     )
 
     expect(mocks.requestUploadIntentsMock).toHaveBeenCalledWith({
@@ -393,6 +396,7 @@ describe('createBooking', () => {
       { type: 'flight' } as unknown as Parameters<typeof createBooking>[1],
       { coverImage: undefined, document: new File([], 'r.jpg') },
       'u1',
+      'b-new',
     )).rejects.toThrow(/canvas-bust/)
 
     expect(mocks.setDocMock).not.toHaveBeenCalled()
@@ -412,6 +416,7 @@ describe('createBooking', () => {
       { type: 'flight' } as unknown as Parameters<typeof createBooking>[1],
       { coverImage: undefined, document: new File([], 'r.jpg') },
       'u1',
+      'b-new',
     )).rejects.toThrow(/boom/)
 
     expect(mocks.workerFetchMock).not.toHaveBeenCalled()
@@ -434,6 +439,7 @@ describe('createBooking', () => {
       { type: 'flight', title: 'X' } as unknown as Parameters<typeof createBooking>[1],
       { coverImage: undefined, document: new File([], 'r.jpg') },
       'u1',
+      'b-new',
     )).rejects.toThrow(/worker-rejected/)
 
     expect(mocks.uploadToIntentMock).toHaveBeenCalledTimes(2)
@@ -468,6 +474,7 @@ describe('createBooking', () => {
       { type: 'flight', title: 'Trace' } as unknown as Parameters<typeof createBooking>[1],
       { coverImage: undefined, document: new File([], 'r.jpg', { type: 'image/jpeg' }) },
       'u1',
+      'b-new',
     )
 
     const mintOpts  = mocks.requestUploadIntentsMock.mock.calls[0]![1] as { traceId: string }

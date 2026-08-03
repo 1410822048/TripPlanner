@@ -14,9 +14,9 @@ import ListEmptyCard from '@/components/ui/ListEmptyCard'
 import GhostAddButton from '@/components/ui/GhostAddButton'
 import {
   useBookings, useCreateBooking, useUpdateBooking, useDeleteBooking,
-  bookingUpdateMutationKey,
+  bookingKeys, bookingOverlay as bookingListOverlay,
 } from '../hooks/useBookings'
-import { usePendingMutationIds } from '@/hooks/usePendingMutationIds'
+import { useOverlayPendingRowIds } from '@/hooks/listOverlay'
 import { MOCK_BOOKINGS } from '../mocks'
 import type { Booking } from '@/types'
 import BookingFormModal, { type BookingFormBatchResult, type BookingFormResult } from './BookingFormModal'
@@ -93,13 +93,10 @@ export default function BookingsPage() {
   const createMut = useCreateBooking(mutationTripId)
   const updateMut = useUpdateBooking(mutationTripId)
   const deleteMut = useDeleteBooking(mutationTripId)
-  // Set of booking ids whose UPDATE is in-flight — drives the 保存中… pill
-  // on edited cards. CREATE pending is handled inside SwipeableBookingItem
-  // via the temp- id prefix; UPDATE preserves the real id so we need this.
-  const pendingUpdateIds = usePendingMutationIds<{ bookingId: string }>(
-    bookingUpdateMutationKey,
-    'bookingId',
-  )
+  // Ids whose write is still in flight — drives the 保存中… pill and locks
+  // the row. Covers create and update alike now that both are overlay ops
+  // carrying the real id, so there is no id-shape check left to do.
+  const pendingRowIds = useOverlayPendingRowIds(bookingListOverlay, bookingKeys.all(mutationTripId, uid))
 
   useEffect(() => {
     const search = window.location.search
@@ -168,6 +165,7 @@ export default function BookingsPage() {
       })
     } else {
       createMut.mutate({
+        bookingId: crypto.randomUUID(),
         input,
         files:     { coverImage, document },
         createdBy: uid,
@@ -191,6 +189,7 @@ export default function BookingsPage() {
     // are both keyed by bookingId, so deleting any one segment would take
     // the shared file away from the others.
     void Promise.allSettled(inputs.map(input => createMut.mutateAsync({
+      bookingId: crypto.randomUUID(),
       input,
       files:     { coverImage: undefined, document },
       createdBy: uid,
@@ -333,7 +332,7 @@ export default function BookingsPage() {
                           key={b.id}
                           booking={b}
                           whenLabel={formatWhen(b)}
-                          isUpdating={pendingUpdateIds.has(b.id)}
+                          isUpdating={pendingRowIds.has(b.id)}
                           {...swipeProps}
                           onSelect={() => handleOpenBookingDetail(b)}
                           onDelete={canWrite ? () => handleSwipeDelete(b) : undefined}

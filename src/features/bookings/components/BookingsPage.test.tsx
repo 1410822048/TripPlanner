@@ -108,17 +108,21 @@ vi.mock('@/hooks/useFeatureListPage', () => ({
   }),
 }))
 
-vi.mock('../hooks/useBookings', () => ({
-  bookingUpdateMutationKey: ['bookings', 'update'],
-  useBookings: () => ({ data: harness.bookings, isLoading: false }),
-  useCreateBooking: () => ({ mutate: harness.createBooking, mutateAsync: harness.createBooking }),
-  useUpdateBooking: () => ({ mutate: harness.updateBooking }),
-  useDeleteBooking: () => ({ mutate: harness.deleteBooking }),
-}))
-
-vi.mock('@/hooks/usePendingMutationIds', () => ({
-  usePendingMutationIds: () => new Set<string>(),
-}))
+vi.mock('../hooks/useBookings', async () => {
+  // A real controller, so the page's pending-row subscription behaves as
+  // it does in production instead of being stubbed out.
+  const { createListOverlay } = await vi.importActual<typeof import('@/hooks/listOverlay')>(
+    '@/hooks/listOverlay',
+  )
+  return {
+    bookingKeys:      { all: (tripId: string, uid?: string) => ['bookings', tripId, uid ?? ''] },
+    bookingOverlay:   createListOverlay({ insert: 'head', source: 'bookings-test' }),
+    useBookings:      () => ({ data: harness.bookings, isLoading: false }),
+    useCreateBooking: () => ({ mutate: harness.createBooking, mutateAsync: harness.createBooking }),
+    useUpdateBooking: () => ({ mutate: harness.updateBooking }),
+    useDeleteBooking: () => ({ mutate: harness.deleteBooking }),
+  }
+})
 
 vi.mock('@/hooks/useAttachmentUrl', () => ({
   useAttachmentUrl: (path: string | null | undefined, opts: { kind: 'thumb' | 'full' }) =>

@@ -155,7 +155,23 @@ const listServices = createTripScopedListServices<Booking>({
 })
 
 export const getBookingsByTrip = listServices.fetch
+export const getBookingsByTripFromServer = listServices.fetchFromServer
 export const subscribeToBookings = listServices.subscribe
+
+/**
+ * Does `stored` already reflect this update? Mirrors both write paths:
+ * a cleared field arrives as `undefined` (SDK deleteField) or as the `''`
+ * sentinel (Worker), and both land as absent. The optimistic overlay drops
+ * an op once this holds, so it has to describe the same end state the
+ * writes above produce.
+ */
+export function bookingUpdateApplied(stored: Booking, updates: Partial<CreateBookingInput>): boolean {
+  const cleared = (value: unknown) => value === undefined || value === ''
+  return Object.entries(updates).every(([field, value]) => {
+    const current = stored[field as keyof Booking]
+    return cleared(value) ? cleared(current) : current === value
+  })
+}
 
 // ─── Read (cross-trip hotel scope) ────────────────────────────────
 // PastLodgingPage's cross-trip lodging history. Single collection-group
@@ -246,12 +262,13 @@ export async function createBooking(
   input: CreateBookingInput,
   files: BookingAttachmentChanges,
   createdBy: string,
+  bookingId: string,
 ): Promise<string> {
-  const { db, collection, doc } = await getFirebase()
-  // Mint the bookingId client-side so the Worker can consume intents
-  // bound to a known entityId AND the optimistic-cache temp-row
-  // replacement has a stable target.
-  const ref = doc(collection(db, ...P.bookings(tripId)))
+  const { db, doc } = await getFirebase()
+  // The id is minted by the caller so the Worker can consume intents bound
+  // to a known entityId AND the optimistic row carries the same id the
+  // stored doc will have.
+  const ref = doc(db, ...P.booking(tripId, bookingId))
 
   if (hasNewBookingFile(files)) {
     // ── Upload-first + Worker-authoritative create ───────────────

@@ -4,17 +4,19 @@
 // live (someone else adding a hotel booking shows up immediately, no
 // manual refresh).
 //
-// Mutations stay optimistic for instant local feedback; the listener
-// reconciles temp-id rows once the server-confirmed write lands.
+// Optimistic state is a read-time overlay (see hooks/listOverlay.ts), so
+// the cache stays server-shaped.
 //
 // Attachment uploads are awaited inside the mutationFn — the optimistic
-// patch can't render the URL anyway (file is local), so we keep the
-// optimistic row attachment-less and let the snapshot listener surface
-// the final URL once the server-side write resolves.
+// row can't render the URL anyway (the file is local), so it stays
+// attachment-less and the snapshot listener surfaces the final URL once
+// the server-side write resolves.
 import {
   type BookingAttachmentChanges,
   type BookingExistingAttachments,
+  bookingUpdateApplied,
   getBookingsByTrip,
+  getBookingsByTripFromServer,
   getMyHotelBookings,
   subscribeToBookings,
   subscribeToMyHotelBookings,
@@ -23,9 +25,9 @@ import {
   deleteBooking,
 } from '../services/bookingService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
+import { createListOverlay } from '@/hooks/listOverlay'
 import { useTripListMutation } from '@/hooks/useTripListMutation'
-import { tempId } from '@/utils/tempId'
-import { auditCreateMock, auditUpdateMock } from '@/utils/audit'
+import { auditCreateMock } from '@/utils/audit'
 import type { Booking, CreateBookingInput } from '@/types'
 import { MUTATION_ACTION } from '@/services/queryClient'
 
@@ -46,34 +48,51 @@ export const useMyHotelBookings = createRealtimeListHook<Booking>({
   source:          'useMyHotelBookings',
 })
 
+export const bookingOverlay = createListOverlay<Booking>({
+  insert: 'head',
+  source: 'bookings',
+})
+
 export const useBookings = createRealtimeListHook<Booking>({
   queryKeyFactory: bookingKeys.all,
   initialFetch:    (tripId, uid) => getBookingsByTrip(tripId, uid),
   subscribe:       (tripId, uid, onData, onError) => subscribeToBookings(tripId, uid, onData, onError),
   source:          'useBookings',
   requiresUid:     true,
+  overlay:         bookingOverlay,
 })
+
+const serverRead = (tripId: string, uid: string | undefined) =>
+  () => getBookingsByTripFromServer(tripId, uid ?? '')
 
 export function useCreateBooking(tripId: string) {
   // Phase 3.7: the Worker writes doc + attachment atomically (or not at
-  // all on rejection), so there is no partial-failure state to reconcile
-  // — the factory's optimistic rollback alone is sufficient.
-  return useTripListMutation<Booking, { input: CreateBookingInput; files: BookingAttachmentChanges; createdBy: string }>({
+  // all on rejection), so there is no partial-failure state to reconcile.
+  return useTripListMutation<Booking, {
+    bookingId: string
+    input:     CreateBookingInput
+    files:     BookingAttachmentChanges
+    createdBy: string
+  }>({
     tripId,
     keyFactory: bookingKeys.all,
-    mutate:     ({ input, files, createdBy }) => createBooking(tripId, input, files, createdBy),
-    patch:      (prev, { input, createdBy }) => [
-      { id: tempId(), tripId, memberIds: [createdBy], ...auditCreateMock(createdBy), ...input },
-      ...prev,
-    ],
+    mutate:     ({ bookingId, input, files, createdBy }) =>
+      createBooking(tripId, input, files, createdBy, bookingId),
+    overlay: {
+      controller: bookingOverlay,
+      op: ({ bookingId, input, createdBy }, { uid }) => ({
+        kind: 'create',
+        row: {
+          id: bookingId, tripId, memberIds: [createdBy],
+          ...auditCreateMock(createdBy), ...input,
+        } as Booking,
+        confirms: base => base.some(b => b.id === bookingId),
+        authoritativeFetch: serverRead(tripId, uid),
+      }),
+    },
     action:     MUTATION_ACTION.CREATE_BOOKING,
   })
 }
-
-/** Stable mutationKey for `useMutationState`-driven 「保存中」 pill on
- *  the booking row being updated. Pages call `usePendingMutationIds`
- *  with this key + `'bookingId'` to derive the set of in-flight ids. */
-export const bookingUpdateMutationKey = ['bookings', 'update'] as const
 
 export function useUpdateBooking(tripId: string) {
   return useTripListMutation<Booking, {
@@ -85,11 +104,23 @@ export function useUpdateBooking(tripId: string) {
   }>({
     tripId,
     keyFactory:  bookingKeys.all,
-    mutationKey: bookingUpdateMutationKey,
     mutate:      ({ bookingId, updates, uid, files, existing }) =>
       updateBooking(tripId, bookingId, updates, { uid, files, existing }),
-    patch:       (prev, { bookingId, updates, uid }) =>
-      prev.map(b => b.id === bookingId ? { ...b, ...updates, ...auditUpdateMock(uid) } : b),
+    overlay: {
+      controller: bookingOverlay,
+      op: ({ bookingId, updates }, { uid }) => ({
+        kind: 'patch',
+        id:   bookingId,
+        // No audit fields: unknowable client-side, so applying them would
+        // leave the op permanently unconfirmable.
+        apply: row => ({ ...row, ...updates }),
+        confirms: base => {
+          const stored = base.find(b => b.id === bookingId)
+          return !!stored && bookingUpdateApplied(stored, updates)
+        },
+        authoritativeFetch: serverRead(tripId, uid),
+      }),
+    },
     action:      MUTATION_ACTION.UPDATE,
   })
 }
@@ -102,7 +133,15 @@ export function useDeleteBooking(tripId: string) {
     tripId,
     keyFactory: bookingKeys.all,
     mutate:     ({ bookingId, attachments }, { uid }) => deleteBooking(tripId, bookingId, uid, attachments),
-    patch:      (prev, { bookingId }) => prev.filter(b => b.id !== bookingId),
+    overlay: {
+      controller: bookingOverlay,
+      op: ({ bookingId }, { uid }) => ({
+        kind: 'remove',
+        id:   bookingId,
+        confirms: base => !base.some(b => b.id === bookingId),
+        authoritativeFetch: serverRead(tripId, uid),
+      }),
+    },
     action:     MUTATION_ACTION.DELETE,
   })
 }

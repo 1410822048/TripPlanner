@@ -21,10 +21,9 @@ interface SwipeableBookingItemProps {
   whenLabel:  string
   /** Tap on the card body — opens the read-only detail surface. */
   onSelect?:  () => void
-  /** True when this row's UPDATE mutation is in-flight. Pages derive
-   *  the set via `usePendingMutationIds`. CREATE pending is detected
-   *  via the `temp-` id prefix; UPDATE preserves the real id and needs
-   *  this signal to surface the same 保存中… visual. */
+  /** True while this row's write is still in flight. The page derives the
+   *  set from the overlay, which covers create and update alike since both
+   *  carry the real id. */
   isUpdating?: boolean
   /** Swipe-state controlled by parent (useSwipeOpen). Optional — when
    *  any of these are absent the row renders without swipe affordance
@@ -39,11 +38,8 @@ function SwipeableBookingItem({
   booking, whenLabel, onSelect,
   isOpen, isUpdating, onOpen, onClose, onDelete,
 }: SwipeableBookingItemProps) {
-  // CREATE pending → `temp-` id prefix. UPDATE preserves the real id,
-  // so the page also passes `isUpdating` (derived from `useMutationState`).
-  // Either signal disables tap/swipe + dims the body + shows the
-  // 保存中… pill. Mirrors SwipeableExpenseItem.
-  const isPending = booking.id.startsWith('temp-') || !!isUpdating
+  // Disables tap/swipe + dims the body + shows the 保存中… pill.
+  const isPending = !!isUpdating
 
   function renderBody() {
     return <BookingPassCard booking={booking} whenLabel={whenLabel} />
