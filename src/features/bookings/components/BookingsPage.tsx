@@ -88,8 +88,8 @@ export default function BookingsPage() {
   const attachmentPreview = attachmentBooking?.document
   const previewUrl = useAttachmentUrl(attachmentPreview?.filePath, { kind: 'full' })
 
-  // Optimistic close — modal closes immediately on save; failures route
-  // to the global toast via MutationCache.onError + the hook rollback.
+  // Optimistic close — modal closes immediately on save; a failure drops
+  // the overlay operation and MutationCache.onError raises the toast.
   const createMut = useCreateBooking(mutationTripId)
   const updateMut = useUpdateBooking(mutationTripId)
   const deleteMut = useDeleteBooking(mutationTripId)
@@ -147,9 +147,9 @@ export default function BookingsPage() {
     if (!uid) { toast.error('正在準備登入，請稍候'); return }
 
     // Optimistic close (mirrors ExpensePage). Modal closes immediately;
-    // the hook's onMutate inserts a temp row into the list cache, the
-    // real write runs in the background, and onError rolls back + the
-    // global MutationCache.onError toasts on failure.
+    // the hook's onMutate adds an overlay operation so the row shows at
+    // once, the real write runs in the background, and a failure drops
+    // that operation while MutationCache.onError raises the toast.
     const editing = modal.editTarget
     modal.close()
     if (editing) {
@@ -180,9 +180,10 @@ export default function BookingsPage() {
     modal.close()
 
     // Concurrent, not sequential: a round trip resolves in the time the
-    // slowest segment takes rather than the sum. Safe only because rollback
-    // is operation-scoped — a whole-snapshot restore would have let one
-    // failed segment wipe the siblings that had already landed.
+    // slowest segment takes rather than the sum. Safe because each segment
+    // is its own overlay operation — a failure removes only that one,
+    // where a whole-snapshot restore would have wiped the siblings that
+    // had already landed.
     //
     // Each segment still uploads its own copy of the same PDF. Sharing one
     // object would need refcounting: upload intents and the delete cascade

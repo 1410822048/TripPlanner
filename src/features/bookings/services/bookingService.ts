@@ -253,8 +253,8 @@ function checkInToTimestamp(
  *
  * No partial-state recovery needed: the Worker tx is atomic. If it
  * rejects or times out, no doc was written, so the realtime listener
- * never fires and the optimistic-rollback in the mutation hook cleans
- * the temp row with no orphan to reconcile. Uploaded blobs (if any)
+ * never fires and the mutation hook drops its overlay operation with no
+ * orphan to reconcile. Uploaded blobs (if any)
  * get reaped by the Worker's intent-expiry + storage-scan cron.
  */
 export async function createBooking(

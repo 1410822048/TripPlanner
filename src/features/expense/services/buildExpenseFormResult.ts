@@ -181,7 +181,7 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
   if (!date)   e.date   = '請選擇日期'
   if (!paidBy) e.paidBy = '請選擇付款人'
 
-  // 外幣模式必須有 rate:optimistic cache patch 必須已是 trip-currency,
+  // 外幣模式必須有 rate:optimistic overlay 的列必須已是 trip-currency,
   // 否則總額 / Settlement summary 會在 optimistic 視窗讀到 source-unit 垃圾。
   // 各種「無 rate」狀態給可行動的精準理由(日期 / 幣別 / 網路)。
   if (isForeignOpen && !e.amount && !fx.rateDecimal) {
@@ -283,7 +283,7 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
   if (Object.keys(e).length > 0) return { ok: false, errors: e }
 
   // ── 外幣分支:把 source-domain payload 轉成 trip-currency canonical,並
-  // 同時送出兩側。client 端轉換只餵 optimistic cache;Worker 為 authoritative,
+  // 同時送出兩側。client 端轉換只餵 optimistic overlay;Worker 為 authoritative,
   // 會用自己的權威 rate 重算覆蓋。上方 FX gate 已保證 fx.rateDecimal 非 null,
   // 故此處 `!` 為真;刻意沒有 source-unit fallback(避免把 source-unit 數字
   // patch 進 trip-currency cache 欄位污染 optimistic 視窗)。 ──

@@ -46,7 +46,7 @@ import {
  *     ledger input; Worker uses it only to reject stale confirmations
  *     when the pair balance changed after the sheet opened.
  *   - `settlementId` — minted at the call site (see ExpensePage.tsx) so
- *     the optimistic cache row, the Worker request, and the resulting
+ *     the optimistic overlay row, the Worker request, and the resulting
  *     Firestore doc all share one id. Memory:
  *     [[settlement-id-hoist-load-bearing]] — moving id-minting back
  *     into the service breaks the realtime listener's atomic row swap.

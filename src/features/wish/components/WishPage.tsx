@@ -118,8 +118,8 @@ export default function WishPage() {
   // ラベルは WISH_CATEGORIES を single source に(分類追加/改名時の二重管理を避ける)。
   const activeTabLabel = WISH_CATEGORIES.find(t => t.value === activeTab)?.label ?? ''
 
-  // Optimistic close — modal closes immediately on save; failures route
-  // to the global toast via MutationCache.onError + the hook rollback.
+  // Optimistic close — modal closes immediately on save; a failure drops
+  // the overlay operation and MutationCache.onError raises the toast.
   const createMut = useCreateWish(mutationTripId)
   const updateMut = useUpdateWish(mutationTripId)
   const deleteMut = useDeleteWish(mutationTripId)
@@ -140,9 +140,9 @@ export default function WishPage() {
     if (!uid) { toast.error('正在準備登入，請稍候'); return }
 
     // Optimistic close (mirrors ExpensePage). Modal closes immediately;
-    // the hook's onMutate inserts a temp row into the list cache, the
-    // real write runs in the background, and onError rolls back + the
-    // global MutationCache.onError toasts on failure.
+    // the hook's onMutate adds an overlay operation so the card shows at
+    // once, the real write runs in the background, and a failure drops
+    // that operation while MutationCache.onError raises the toast.
     const editing = modal.editTarget
     const file = attachment instanceof File ? attachment : null
     modal.close()

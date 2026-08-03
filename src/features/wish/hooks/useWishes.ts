@@ -75,10 +75,10 @@ export function useCreateWish(tripId: string) {
     action:     MUTATION_ACTION.CREATE_WISH,
     // Phase 3.7: no partial-create recovery needed. Worker-authoritative
     // /wish-file-create is atomic — either the wish doc lands (with
-    // image) or nothing lands, so the realtime listener never observes
-    // a half-state row and the factory's optimistic rollback fully
-    // reconciles the cache. The text-only setDoc path is a single
-    // atomic Firestore write, same guarantee.
+    // image) or nothing lands, so the realtime listener never observes a
+    // half-state row and dropping the overlay operation is the whole
+    // cleanup. The text-only setDoc path is a single atomic Firestore
+    // write, same guarantee.
   })
 }
 

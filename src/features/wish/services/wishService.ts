@@ -120,8 +120,8 @@ async function deleteWishImage(image: WishImage): Promise<void> {
  *
  *  No partial-state recovery needed: the Worker tx is atomic. If the
  *  Worker rejects or times out, no doc was written, so the realtime
- *  listener never fires and the optimistic-rollback in the mutation hook
- *  cleans the temp row with no orphan to reconcile. Uploaded blobs (if
+ *  listener never fires and the mutation hook drops its overlay
+ *  operation with no orphan to reconcile. Uploaded blobs (if
  *  any) get reaped by the Worker's intent-expiry + storage-scan cron.
  *
  *  Initial votes = [proposedBy] because their proposal counts as their
