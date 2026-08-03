@@ -8,7 +8,7 @@
 //   - null      → user removed the existing file (clear on save)
 //   - File      → user picked a new file (replace on save)
 import { useEffect, useId, useRef, useState } from 'react'
-import { Paperclip, CalendarDays, ChevronRight, FileText, Image as ImageIcon, KeyRound, Loader2, PencilLine, RefreshCw } from 'lucide-react'
+import { Paperclip, Image as ImageIcon, KeyRound, PencilLine } from 'lucide-react'
 import { isHttpUrl, type Booking, type CreateBookingInput } from '@/types/booking'
 import FormModalShell from '@/components/ui/FormModalShell'
 import DeleteConfirm from '@/components/ui/DeleteConfirm'
@@ -18,17 +18,12 @@ import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
 import AttachmentPreviewModal from '@/features/attachments/components/AttachmentPreviewModal'
 import { useBookingFormState, type BookingFormDraft } from '../hooks/useBookingFormState'
-import { ATTACHMENT_SIZE_ERROR, useAttachment, type AttachmentChange } from '@/hooks/useAttachment'
+import { useAttachment, type AttachmentChange } from '@/hooks/useAttachment'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { BOOKING_TYPE_META, BOOKING_TYPE_ORDER } from '../utils'
 import { deriveBookingLinkDraft } from '../linkDraft'
-import {
-  BookingPdfExtractError,
-  bookingPdfCandidateToCreateInput,
-  bookingPdfExtractToDraftPatch,
-  extractBookingPdfAutofill,
-  type BookingPdfExtractCandidate,
-} from '../services/bookingPdfExtractService'
+import { useBookingPdfAutofill } from '../hooks/useBookingPdfAutofill'
+import BookingPdfAutofillCard from './BookingPdfAutofillCard'
 import { isPdfFile } from '../services/bookingPdfText'
 
 /** Transport types use origin → destination as the primary identifier;
@@ -136,16 +131,6 @@ function HotelTitleTicketEditor({
   )
 }
 
-type PdfAutofillState = {
-  status: 'idle' | 'loading' | 'applied' | 'empty' | 'error'
-  message?: string
-}
-type PdfAutofillSourceKey = number
-type CreateablePdfCandidate = {
-  candidate: BookingPdfExtractCandidate
-  index:     number
-  input:     CreateBookingInput
-}
 
 export interface BookingFormResult {
   input:      CreateBookingInput
@@ -203,11 +188,6 @@ export default function BookingFormModal({
   })
   const [errors,      setErrors]      = useState<Record<string, string>>({})
   const [previewTarget, setPreviewTarget] = useState<'cover' | 'document' | null>(null)
-  const [pdfAutofill, setPdfAutofill] = useState<PdfAutofillState>({ status: 'idle' })
-  const [pdfAutofillCreateableCandidates, setPdfAutofillCreateableCandidates] = useState<CreateablePdfCandidate[]>([])
-  const [selectedPdfCandidateIndexes, setSelectedPdfCandidateIndexes] = useState<number[]>([])
-  const [pdfAutofillSourceKey, setPdfAutofillSourceKey] = useState<PdfAutofillSourceKey | null>(null)
-  const [analyzedPdfSourceKey, setAnalyzedPdfSourceKey] = useState<PdfAutofillSourceKey | null>(null)
   // Full-size preview URL: a newly-picked file uses its local blob (already
   // full-res); an existing attachment resolves its fullPath through the Worker only
   // while the modal is open (path-driven). null → modal shows a spinner.
@@ -222,143 +202,21 @@ export default function BookingFormModal({
 
   const coverFileRef = useRef<HTMLInputElement>(null)
   const docFileRef   = useRef<HTMLInputElement>(null)
-  const pdfAutofillFileRef = useRef<HTMLInputElement>(null)
-  const checkOutRef = useRef<DatePickerHandle>(null)
-  const stateRef = useRef(state)
-  const pdfAutofillSeqRef = useRef(0)
-  const pdfAutofillSourceSeqRef = useRef(0)
-  const pdfAutofillControllerRef = useRef<AbortController | null>(null)
+  const pdfFileRef   = useRef<HTMLInputElement>(null)
+  const checkOutRef  = useRef<DatePickerHandle>(null)
+  // Read at apply time, not render time: the user can keep typing while a
+  // PDF extraction is in flight.
+  const stateRef     = useRef(state)
   const isTransport = TRANSPORT_TYPES.has(state.type)
   // Hotel is the only type that conventionally has both check-in and check-out.
   const showRange = state.type === 'hotel'
-  const pdfAutofillSourceFile = docAtt.newFile && isPdfFile(docAtt.newFile) ? docAtt.newFile : null
-  const hasAnalyzedCurrentPdf =
-    pdfAutofillSourceFile !== null
-    && pdfAutofillSourceKey !== null
-    && analyzedPdfSourceKey === pdfAutofillSourceKey
+  const CurrentTypeIcon = BOOKING_TYPE_META[state.type].icon
 
   useEffect(() => {
     stateRef.current = state
   }, [state])
 
-  useEffect(() => () => {
-    pdfAutofillControllerRef.current?.abort()
-  }, [])
-
-  function pickCoverImage() {
-    coverFileRef.current?.click()
-  }
-
-  function pickDocument() {
-    docFileRef.current?.click()
-  }
-
-  function pickPdfForAutofill() {
-    pdfAutofillFileRef.current?.click()
-  }
-
-  function handlePdfAutofillCardClick() {
-    if (!pdfAutofillSourceFile || pdfAutofillSourceKey === null || hasAnalyzedCurrentPdf) {
-      pickPdfForAutofill()
-      return
-    }
-    void runPdfAutofill(pdfAutofillSourceFile, pdfAutofillSourceKey)
-  }
-
-  function handlePdfAutofillRerunClick() {
-    if (!pdfAutofillSourceFile || pdfAutofillSourceKey === null) return
-    void runPdfAutofill(pdfAutofillSourceFile, pdfAutofillSourceKey)
-  }
-
-  function commitPdfAutofillSource(): PdfAutofillSourceKey {
-    const nextKey = pdfAutofillSourceSeqRef.current + 1
-    pdfAutofillSourceSeqRef.current = nextKey
-    setPdfAutofillSourceKey(nextKey)
-    return nextKey
-  }
-
-  function clearPdfAutofillCandidates() {
-    setPdfAutofillCreateableCandidates([])
-    setSelectedPdfCandidateIndexes([])
-  }
-
-  function rejectPdfAutofillPick(message: string) {
-    resetPdfAutofill()
-    setPdfAutofill({ status: 'error', message })
-  }
-
-  function onCoverImagePicked(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0]
-    e.target.value = ''  // allow re-picking the same file
-    if (f) coverAtt.pickFile(f)
-  }
-
-  function onDocumentPicked(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0]
-    e.target.value = ''  // allow re-picking the same file
-    if (!f) return
-    // Pick first: a rejected file (over the size cap) leaves the previous
-    // attachment in place, so its analysis — finished or still running —
-    // has to stay too. Aborting before the pick would strand an in-flight
-    // run at 'loading', since runPdfAutofill's abort path deliberately
-    // leaves the status alone.
-    if (!docAtt.pickFile(f)) return
-    abortPdfAutofill()
-    if (isPdfFile(f)) commitPdfAutofillSource()
-    else setPdfAutofillSourceKey(null)
-    clearPdfAutofillCandidates()
-    setPdfAutofill({ status: 'idle' })
-  }
-
-  function onPdfAutofillPicked(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0]
-    e.target.value = ''  // allow re-picking the same file
-    if (!f) return
-    if (!isPdfFile(f)) {
-      rejectPdfAutofillPick('請選擇 PDF 檔案')
-      return
-    }
-    if (!docAtt.pickFile(f)) {
-      rejectPdfAutofillPick(ATTACHMENT_SIZE_ERROR)
-      return
-    }
-    void runPdfAutofill(f, commitPdfAutofillSource())
-  }
-
-  function abortPdfAutofill() {
-    pdfAutofillSeqRef.current += 1
-    pdfAutofillControllerRef.current?.abort()
-    pdfAutofillControllerRef.current = null
-  }
-
-  function resetPdfAutofill() {
-    abortPdfAutofill()
-    setPdfAutofillSourceKey(null)
-    setAnalyzedPdfSourceKey(null)
-    clearPdfAutofillCandidates()
-    setPdfAutofill({ status: 'idle' })
-  }
-
-  function pdfAutofillErrorMessage(e: unknown): string {
-    if (e instanceof BookingPdfExtractError) {
-      switch (e.kind) {
-        case 'auth':
-          return '請登入後再試一次'
-        case 'rate-limit':
-          return '請稍後再試一次'
-        case 'network':
-        case 'unavailable':
-          return '無法連線至讀取服務'
-        case 'parse':
-          return e.message || '無法讀取 PDF，請手動輸入'
-        case 'unknown':
-          return '讀取 PDF 失敗'
-      }
-    }
-    return '讀取 PDF 失敗'
-  }
-
-  function applyPdfAutofillPatch(patch: BookingFormDraft) {
+  function applyDraftPatch(patch: BookingFormDraft) {
     type DraftEntry = {
       [K in keyof BookingFormDraft]-?: [K, BookingFormDraft[K]]
     }[keyof BookingFormDraft]
@@ -368,88 +226,30 @@ export default function BookingFormModal({
     }
   }
 
-  function candidateRoleLabel(candidate: BookingPdfExtractCandidate, index: number): string {
-    return candidate.segmentRole === 'outbound' ? '去程'
-      : candidate.segmentRole === 'return' ? '回程'
-      : candidate.segmentRole === 'connection' ? '轉乘'
-      : `候選 ${index + 1}`
+  // The document attachment doubles as the autofill source, so the hook
+  // owns both file-input handlers.
+  const pdf = useBookingPdfAutofill({
+    isEdit:     !!editTarget,
+    sourceFile: docAtt.newFile && isPdfFile(docAtt.newFile) ? docAtt.newFile : null,
+    pickFile:   docAtt.pickFile,
+    getState:   () => stateRef.current,
+    applyPatch: applyDraftPatch,
+    openFilePicker: () => pdfFileRef.current?.click(),
+    onCreateMany,
+  })
+
+  function pickCoverImage() {
+    coverFileRef.current?.click()
   }
 
-  function applySelectedPdfCandidate(candidate: BookingPdfExtractCandidate) {
-    const { patch, appliedCount } = bookingPdfExtractToDraftPatch(stateRef.current, candidate, {
-      isEdit: !!editTarget,
-    })
-    applyPdfAutofillPatch(patch)
-    setPdfAutofill(appliedCount > 0
-      ? { status: 'applied', message: '已套用 PDF 的候選資料' }
-      : { status: 'empty', message: '找不到可填入的項目' })
+  function pickDocument() {
+    docFileRef.current?.click()
   }
 
-  function togglePdfCandidate(index: number) {
-    setSelectedPdfCandidateIndexes(prev =>
-      prev.includes(index) ? prev.filter(i => i !== index) : [...prev, index])
-  }
-
-  function createSelectedPdfCandidates() {
-    if (!pdfAutofillSourceFile || !onCreateMany) return
-    const selected = pdfAutofillCreateableCandidates
-      .filter(({ index }) => selectedPdfCandidateIndexes.includes(index))
-      .map(({ input }) => input)
-    if (selected.length === 0) {
-      setPdfAutofill({ status: 'empty', message: '請選擇要新增的候選資料' })
-      return
-    }
-    onCreateMany({ inputs: selected, document: pdfAutofillSourceFile })
-  }
-
-  async function runPdfAutofill(file: File, sourceKey: PdfAutofillSourceKey) {
-    const seq = pdfAutofillSeqRef.current + 1
-    pdfAutofillSeqRef.current = seq
-    pdfAutofillControllerRef.current?.abort()
-    const controller = new AbortController()
-    pdfAutofillControllerRef.current = controller
-    setPdfAutofill({ status: 'loading', message: '正在從 PDF 讀取訂單資料…' })
-    clearPdfAutofillCandidates()
-
-    try {
-      const result = await extractBookingPdfAutofill(file, controller.signal)
-      if (controller.signal.aborted || pdfAutofillSeqRef.current !== seq) return
-      setAnalyzedPdfSourceKey(sourceKey)
-      if (result.bookings.length > 1) {
-        const createableCandidates = result.bookings.flatMap((candidate, index) => {
-          const input = bookingPdfCandidateToCreateInput(candidate)
-          return input ? [{ candidate, index, input }] : []
-        })
-        const createableIndexes = createableCandidates.map(({ index }) => index)
-        setPdfAutofillCreateableCandidates(createableCandidates)
-        setSelectedPdfCandidateIndexes(createableIndexes)
-        // Candidates missing a required field are dropped silently otherwise,
-        // so a flight whose IATA code fell below the confidence gate would
-        // just never appear and the count would look wrong.
-        const dropped = result.bookings.length - createableCandidates.length
-        const droppedNote = dropped > 0 ? `，另有 ${dropped} 筆資料不完整需手動輸入` : ''
-        setPdfAutofill({
-          status:  createableIndexes.length > 0 ? 'applied' : 'empty',
-          message: createableIndexes.length > 0
-            ? `找到 ${createableIndexes.length} 筆訂單候選資料${droppedNote}`
-            : `找不到可新增的候選資料${droppedNote}`,
-        })
-        return
-      }
-      const [only] = result.bookings
-      if (!only) {
-        setPdfAutofill({ status: 'empty', message: '找不到可填入的項目' })
-        return
-      }
-      applySelectedPdfCandidate(only)
-    } catch (e) {
-      if (controller.signal.aborted || pdfAutofillSeqRef.current !== seq) return
-      setPdfAutofill({ status: 'error', message: pdfAutofillErrorMessage(e) })
-    } finally {
-      if (pdfAutofillSeqRef.current === seq) {
-        pdfAutofillControllerRef.current = null
-      }
-    }
+  function onCoverImagePicked(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0]
+    e.target.value = ''  // allow re-picking the same file
+    if (f) coverAtt.pickFile(f)
   }
 
   function applyLinkDefaults(linkValue = state.link) {
@@ -522,15 +322,6 @@ export default function BookingFormModal({
     if (result) onSave(result)
   }
 
-  const showPdfAutofillStatus = !editTarget && pdfAutofill.status !== 'idle' && pdfAutofill.status !== 'loading'
-  const pdfAutofillButtonLabel = pdfAutofill.status === 'loading'
-    ? '正在讀取 PDF…'
-    : pdfAutofillSourceFile
-      ? hasAnalyzedCurrentPdf ? '從 PDF 自動填入' : '讀取 PDF'
-      : '從 PDF 自動填入'
-  const hasSelectedPdfCandidate = pdfAutofillCreateableCandidates
-    .some(({ index }) => selectedPdfCandidateIndexes.includes(index))
-  const CurrentTypeIcon = BOOKING_TYPE_META[state.type].icon
 
   return (
     <FormModalShell
@@ -542,173 +333,16 @@ export default function BookingFormModal({
       onClose={onClose}
       onSave={handleSave}
     >
-      {!editTarget && (
-        <div className="space-y-3">
-          <input
-            ref={pdfAutofillFileRef}
-            type="file"
-            accept={PDF_ACCEPT_TYPES}
-            onChange={onPdfAutofillPicked}
-            className="hidden"
-          />
-          <div className="overflow-hidden rounded-card border border-accent/20 bg-surface shadow-[0_8px_22px_rgba(32,42,45,0.07)]">
-            <div className="flex items-center gap-2 bg-accent-pale/70 px-3 py-3">
-              <button
-                type="button"
-                onClick={handlePdfAutofillCardClick}
-                disabled={pdfAutofill.status === 'loading'}
-                className="group flex min-w-0 flex-1 items-center gap-3 text-left text-accent transition-colors hover:text-accent-pressed disabled:cursor-wait disabled:opacity-70"
-              >
-                <span className="relative grid h-9 w-9 shrink-0 place-items-center rounded-input bg-accent text-white shadow-[0_4px_10px_rgba(74,102,112,0.22)]">
-                  {pdfAutofill.status === 'loading' ? (
-                    <Loader2 size={18} strokeWidth={2} className="animate-spin" />
-                  ) : (
-                    <>
-                      <FileText size={18} strokeWidth={2} />
-                      <span aria-hidden="true" className="absolute -bottom-1 rounded-[5px] bg-surface px-1 py-px text-[7px] font-black leading-none text-accent shadow-[0_1px_4px_rgba(0,0,0,0.12)]">
-                        PDF
-                      </span>
-                    </>
-                  )}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-[10px] font-black uppercase leading-[1.15] tracking-[0.14em] text-pick">
-                    Automatic import
-                  </span>
-                  <span className="mt-0.5 block text-[15px] font-black leading-[1.25] text-accent">
-                    {pdfAutofillButtonLabel}
-                  </span>
-                </span>
-                <ChevronRight size={18} strokeWidth={2.2} className="shrink-0 opacity-80 transition-transform group-hover:translate-x-0.5" />
-              </button>
-              {pdfAutofillSourceFile && hasAnalyzedCurrentPdf && (
-                <button
-                  type="button"
-                  onClick={handlePdfAutofillRerunClick}
-                  disabled={pdfAutofill.status === 'loading'}
-                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-chip px-2.5 text-[12px] font-bold text-pick transition-colors hover:bg-surface/80 hover:text-accent disabled:cursor-wait disabled:opacity-60"
-                >
-                  <RefreshCw size={13} strokeWidth={2.3} />
-                  <span>重新讀取</span>
-                </button>
-              )}
-            </div>
-            {(showPdfAutofillStatus || pdfAutofillSourceFile) && (
-              <div className="border-t border-accent/10 px-3.5 py-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  {showPdfAutofillStatus ? (
-                    <div
-                      role="status"
-                      aria-live="polite"
-                      className={[
-                        'flex min-w-0 flex-1 items-center gap-2 text-[12px] font-bold leading-[1.35]',
-                        pdfAutofill.status === 'error'
-                          ? 'text-danger'
-                          : pdfAutofill.status === 'applied'
-                            ? 'text-teal'
-                        : 'text-muted',
-                      ].join(' ')}
-                    >
-                      <span aria-hidden="true" className="relative flex h-2.5 w-2.5 shrink-0 items-center justify-center">
-                        {pdfAutofill.status === 'applied' ? (
-                          <>
-                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-teal opacity-35" />
-                            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-teal" />
-                          </>
-                        ) : (
-                          <span className={[
-                            'inline-flex h-2.5 w-2.5 rounded-full',
-                            pdfAutofill.status === 'error' ? 'bg-danger' : 'bg-dot',
-                          ].join(' ')}
-                          />
-                        )}
-                      </span>
-                      <span className="min-w-0 flex-1">{pdfAutofill.message}</span>
-                    </div>
-                  ) : (
-                    <span className="min-w-0 truncate text-[12px] font-medium text-muted">
-                      {pdfAutofillSourceFile?.name}
-                    </span>
-                  )}
-                  {pdfAutofillSourceFile && !hasAnalyzedCurrentPdf && (
-                    <button
-                      type="button"
-                      onClick={pickPdfForAutofill}
-                      className="shrink-0 text-[12px] font-bold text-accent"
-                    >
-                      選擇其他 PDF
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-          {pdfAutofillCreateableCandidates.length > 0 && (
-            <div className="space-y-2">
-              <div className="space-y-2.5">
-                {pdfAutofillCreateableCandidates.map(({ candidate, index, input }) => {
-                  const typeMeta = BOOKING_TYPE_META[input.type]
-                  const TypeIcon = typeMeta.icon
-                  const roleLabel = candidateRoleLabel(candidate, index)
-                  const originText = input.origin?.trim() || input.title?.trim() || typeMeta.label
-                  const destinationText = input.destination?.trim() || input.address?.trim() || input.provider?.trim() || typeMeta.label
-                  const detailText = [input.provider?.trim(), input.title?.trim()].filter(Boolean).join(' ')
-                  const dateText = input.checkIn?.trim()
-
-                  return (
-                    <label
-                      key={`${candidate.segmentRole}-${index}`}
-                      className="grid w-full grid-cols-[auto_1fr] items-center gap-3 rounded-card border border-border bg-surface px-3 py-3 text-left shadow-[0_2px_10px_rgba(0,0,0,0.05)] transition-colors hover:border-accent/45 hover:bg-accent-pale/35"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedPdfCandidateIndexes.includes(index)}
-                        onChange={() => togglePdfCandidate(index)}
-                        className="h-4 w-4 shrink-0 accent-accent"
-                      />
-                      <span className="min-w-0 space-y-2">
-                        <span className="flex min-w-0 items-start justify-between gap-2">
-                          <span className="rounded-full bg-pick-pale px-2 py-0.5 text-[10px] font-black leading-none text-pick">
-                            {roleLabel}
-                          </span>
-                          {detailText && (
-                            <span className="min-w-0 truncate text-right text-[10px] font-bold leading-[1.2] text-pick">
-                              {detailText}
-                            </span>
-                          )}
-                        </span>
-                        <span className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
-                          <span className="truncate text-[13px] font-black leading-[1.25] text-ink">
-                            {originText}
-                          </span>
-                          <TypeIcon size={14} strokeWidth={2.2} className="text-dot" />
-                          <span className="truncate text-right text-[13px] font-black leading-[1.25] text-ink">
-                            {destinationText}
-                          </span>
-                        </span>
-                        {dateText && (
-                          <span className="flex items-center gap-1 text-[11px] font-semibold leading-none text-muted">
-                            <CalendarDays size={12} strokeWidth={2} />
-                            {dateText}
-                          </span>
-                        )}
-                      </span>
-                    </label>
-                  )
-                })}
-              </div>
-              <button
-                type="button"
-                onClick={createSelectedPdfCandidates}
-                disabled={!hasSelectedPdfCandidate || pdfAutofill.status === 'loading'}
-                className="inline-flex h-10 w-full items-center justify-center rounded-chip bg-accent px-3 text-[13px] font-black text-white transition-colors hover:bg-accent-pressed disabled:cursor-not-allowed disabled:opacity-55"
-              >
-                新增選取的訂單
-              </button>
-            </div>
-          )}
-        </div>
-      )}
+      {/* Hidden pickers live together here, so no ref crosses a component
+          boundary and the card stays purely presentational. */}
+      <input
+        ref={pdfFileRef}
+        type="file"
+        accept={PDF_ACCEPT_TYPES}
+        onChange={pdf.onPdfPicked}
+        className="hidden"
+      />
+      {!editTarget && <BookingPdfAutofillCard pdf={pdf} />}
 
       {!editTarget && (
         <div className="flex items-center gap-3 text-[11px] font-bold leading-none text-muted">
@@ -975,7 +609,7 @@ export default function BookingFormModal({
           ref={docFileRef}
           type="file"
           accept={DOCUMENT_ACCEPT_TYPES}
-          onChange={onDocumentPicked}
+          onChange={pdf.onDocumentPicked}
           className="hidden"
         />
         {docAtt.hasAttachment ? (
@@ -985,7 +619,7 @@ export default function BookingFormModal({
             isImage={docAtt.previewIsImage}
             onReplace={pickDocument}
             onClear={() => {
-              resetPdfAutofill()
+              pdf.reset()
               docAtt.clear()
             }}
             onPreview={() => (docAtt.hasNewFile || docAtt.fullPath) && setPreviewTarget('document')}
