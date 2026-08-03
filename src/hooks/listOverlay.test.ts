@@ -216,6 +216,48 @@ describe('ListOverlayController', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1)
   })
 
+  it('does not let an external retry cut the settle window short', async () => {
+    vi.useFakeTimers()
+    const fetchSpy = vi.fn(async () => [] as Row[])
+    const handle = addRemove(KEY_A, 'a', fetchSpy)
+    controller.markAmbiguous(handle)
+
+    // Reconnecting or foregrounding the tab must not bring the judgement
+    // forward — the write may still be committing.
+    await vi.advanceTimersByTimeAsync(OVERLAY_AMBIGUOUS_SETTLE_MS - 1)
+    controller.retryUnconfirmed()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchSpy).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('expires a succeeded op on the external retry that follows an exhausted budget', async () => {
+    vi.useFakeTimers()
+    let fail = true
+    const fetchSpy = vi.fn(async () => {
+      if (fail) throw new Error('backend flaky')
+      return [row('a')]            // the row never left: truth disagrees
+    })
+    const handle = addRemove(KEY_A, 'a', fetchSpy)
+    controller.markSucceeded(handle)
+
+    // Three self-scheduled attempts, all failing, exhaust the budget.
+    for (let i = 0; i < 3; i++) await vi.advanceTimersByTimeAsync(OVERLAY_GRACE_MS)
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
+    expect(controller.getSnapshot(handle.queryKeyHash)).toHaveLength(1)
+
+    fail = false
+    controller.retryUnconfirmed()
+    await vi.advanceTimersByTimeAsync(0)
+
+    // No timer left to expire it later, so this read has to be the last
+    // word rather than leaving the optimistic value on screen.
+    expect(controller.getSnapshot(handle.queryKeyHash)).toHaveLength(0)
+    expect(captureError).toHaveBeenCalled()
+  })
+
   it('keeps retrying on its own clock after a failed confirmation', async () => {
     vi.useFakeTimers()
     let fail = true
@@ -239,6 +281,7 @@ describe('ListOverlayController', () => {
   })
 
   it('keeps an op whose authoritative read fails, and confirms it once the read recovers', async () => {
+    vi.useFakeTimers()
     let fail = true
     const handle = addRemove(KEY_A, 'a', async () => {
       if (fail) throw new Error('offline')
@@ -246,12 +289,13 @@ describe('ListOverlayController', () => {
     })
 
     controller.markAmbiguous(handle)
-    await vi.waitFor(() => expect(captureError).not.toHaveBeenCalled())
+    await vi.advanceTimersByTimeAsync(OVERLAY_AMBIGUOUS_SETTLE_MS)
+    expect(captureError).not.toHaveBeenCalled()
     expect(controller.getSnapshot(handle.queryKeyHash)).toHaveLength(1)
 
     fail = false
-    controller.retryUnconfirmed()
-    await vi.waitFor(() => expect(controller.getSnapshot(handle.queryKeyHash)).toHaveLength(0))
+    await vi.advanceTimersByTimeAsync(OVERLAY_GRACE_MS)
+    expect(controller.getSnapshot(handle.queryKeyHash)).toHaveLength(0)
   })
 
   it('coalesces concurrent confirmations on one key into a single read', async () => {

@@ -397,7 +397,17 @@ export function createListOverlay<T extends { id: string }>(
     for (const [key, entry] of entries) {
       if (hash && key !== hash) continue
       for (const op of entry.ops) {
-        if (op.status !== 'pending') void confirm({ opId: op.opId, queryKeyHash: key })
+        if (op.status === 'pending') continue
+        // A live timer means this op is still inside its settle or grace
+        // window. Reading now would judge a write that may still be
+        // committing — the flicker those windows exist to prevent.
+        if (entry.timers.has(op.opId)) continue
+        // Reaching here means the timers are spent, so this read is the
+        // last word for a succeeded op: expire it if truth disagrees.
+        void confirm(
+          { opId: op.opId, queryKeyHash: key },
+          { final: op.status === 'succeeded' },
+        )
       }
     }
   }
