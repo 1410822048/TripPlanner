@@ -15,6 +15,7 @@
 //
 // This module must stay Firebase-free: each op carries its own
 // `authoritativeFetch`, captured with the tripId/uid it belongs to.
+import { useSyncExternalStore } from 'react'
 import { hashKey, type QueryKey } from '@tanstack/react-query'
 import { captureError } from '@/services/sentry'
 
@@ -135,6 +136,36 @@ export interface ListOverlayController<T extends { id: string }> {
   __resetForTest: () => void
 }
 
+/** Shared so every controller — and `useSyncExternalStore`'s server
+ *  snapshot — hands back the same reference for "no ops". */
+const EMPTY_OPS: readonly never[] = Object.freeze([])
+const EMPTY_IDS: ReadonlySet<string> = new Set()
+
+/** Ids whose write is still in flight, for rows that must not be tapped,
+ *  swiped or edited yet.
+ *
+ *  `succeeded` is deliberately excluded: that write is done and only its
+ *  confirmation is outstanding, so keeping the row locked would be a
+ *  needless freeze. `ambiguous` stays locked — we genuinely don't know. */
+export function useOverlayPendingRowIds<T extends { id: string }>(
+  controller: ListOverlayController<T>,
+  queryKey:   QueryKey,
+): ReadonlySet<string> {
+  const hash = hashKey(queryKey)
+  const ops  = useSyncExternalStore(
+    cb => controller.subscribe(hash, cb),
+    () => controller.getSnapshot(hash),
+    () => EMPTY_OPS,
+  )
+  if (ops.length === 0) return EMPTY_IDS
+  const ids = new Set<string>()
+  for (const op of ops) {
+    if (op.status === 'succeeded') continue
+    ids.add(op.kind === 'create' ? op.row.id : op.id)
+  }
+  return ids
+}
+
 const controllers: { clearAll: () => void }[] = []
 
 /** Clear every overlay. Called from the sign-out / account-switch path so
@@ -148,7 +179,7 @@ export function createListOverlay<T extends { id: string }>(
 ): ListOverlayController<T> {
   const entries   = new Map<string, Entry<T>>()
   const listeners = new Map<string, Set<() => void>>()
-  const EMPTY     = Object.freeze([]) as readonly OverlayOp<T>[]
+  const EMPTY: readonly OverlayOp<T>[] = EMPTY_OPS
 
   let onlineBound     = false
   let visibilityBound = false
