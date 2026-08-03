@@ -92,7 +92,7 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 - **特色 2 — Items 模式**: items.length > 0 時,平均分攤 / 自訂 split 收起,改用 chip-per-row 多選分擔者,splits 反算
 - **特色 3 — Settlement (debt-edge model)**: 演算法在 `services/settlement.ts`,**pairwise gross → applied(cap)→ remaining → normalize → net** 五步純函式。核心不變式: **settlement 只能 reduce 既存 debt,不能 create 反向 debt** — 刪 expense 後不會冒出反方向應付款,超出天然債務的部分變 `orphan` 顯式 surface。`paid` / `owed` 顯示**只看 expenses**(不被 settlement 污染);`net` 來自 normalize 後的剩餘 debt。**受取人(toUid)唯一可按「済み」**(firestore.rules 鎖死;付款人視覺上不是按鈕,是 Clock + 「受取待ち」status pill)。Settlement 歷史:預設展開最近 2 筆,行內兩段刪除(`settledBy` 才能刪)。詳見「複雜流程詳解 / Settlement debt-edge model」
 - **特色 4 — 列表日期 fold**: `ExpenseDateGroups` 預設展開最近 2 天(`DEFAULT_EXPANDED_DAYS`);user override 用 `useState<Map<date,bool>>` 記,加新費用造成日期 reorder 時 toggle 選擇不被覆蓋
-- **Optimistic close**: 按存 → modal 立刻收 → list 顯示半透明 row + 旋轉「保存中…」(tempId 偵測)→ 完成後 realtime 替換
+- **Optimistic close**: 按存 → modal 立刻收 → list 顯示半透明 row + 旋轉「保存中…」(overlay pending 偵測)→ server truth 一致時撤下 overlay
 - **觸發**:
   - 點 `+` → ExpenseFormModal
   - 拍照按鈕 → capture=environment + auto-OCR
@@ -147,8 +147,8 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 | `createRealtimeListHook` | Generic factory:onSnapshot → TanStack Query cache 同步;**module-level refcount listener dedup**(AppLayout + page 共用 1 個 onSnapshot,降 50% reads) |
 | `subscribeToCollection` | 統一 Firestore listener 工廠(throws → captureError) |
 | `firestoreDocFromSchema` | doc snapshot → Zod parse(失敗送 Sentry) |
-| `tempId()` | 樂觀更新的 client ID,prefix `temp-`,UI 端用來偵測 pending row |
-| `patchListCache` / `rollbackListCache` | TanStack Query cache 樂觀 patch / 回滾 |
+| `createListOverlay` / `applyOverlays` | **樂觀狀態的唯一機制**:query cache 只放 server truth,op(create/patch/remove)在讀取時重播。`confirms` 決定何時撤下,`authoritativeFetch` 走 `getDocsFromServer` 定奪 ambiguous 寫入 |
+| `useOverlayPendingRowIds` | 從 overlay 推導「寫入仍在飛行中」的 row id,驅動 pending 視覺與 tap/swipe 鎖定 |
 | `haptic('light'/'medium'/'success')` | `navigator.vibrate` 包裝,iOS Safari noop 降級 |
 | `MutationCache.onError`(`src/services/queryClient.ts`)| **全 mutation 失敗的 single source**,讀 `meta: { action, silent }` 自動 Sentry capture + toast。Hook 不再各自 toast |
 
@@ -226,24 +226,23 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 - 其他流程都是純 Firestore write,< 500ms,await 體感 OK
 - 未來若 Booking 也加 attachment 上傳常態,可考慮一併改
 
-## Pending state 規範(目前只 Expense 用)
+## Pending state 規範
 
 ```
-按存 → validate() pass → modal.close() 立刻收
+按存 → validate() pass → modal.close()(Expense 才立刻收)
                        → createMut.mutate(...) 背景跑
-                       → onMutate: patchListCache 插 temp row(id = tempId() = "temp-...")
-                       → mutationFn: addDoc → uploadReceipt → updateDoc
-                       → 失敗 onError: rollbackListCache + toast.mutationError
-                       → 成功 + realtime listener fire: temp row 被 real row 替換
+                       → onMutate: overlay.add(op)(id 由呼叫端 crypto.randomUUID() 鑄造)
+                       → mutationFn: setDoc / Worker 寫入
+                       → 明確失敗 onError: drop(該 opId) + toast.mutationError
+                       → ambiguous:  markAmbiguous → 等 settle window → 讀 server truth 定奪
+                       → 成功:      markSucceeded → reconcile 在 server truth 一致時撤下
 ```
 
-**Pending row 視覺 / 互動規範**(`SwipeableExpenseItem.tsx`):
-- 偵測: `const isPending = expense.id.startsWith('temp-')`
-- 視覺: `opacity-55` 半透明,meta 行用 `<Loader2 className="animate-spin" />` + 「**儲存中…**」取代原本的 `[A] 代墊 · 4 人平均分攤`
+**Pending row 視覺 / 互動規範**(`SwipeableExpenseItem` / `SwipeableBookingItem` / `WishCard`):
+- 偵測: `useOverlayPendingRowIds(controller, queryKey).has(row.id)` — **不再用 id 形狀判斷**;id 從一開始就是最終 id
+- 視覺: `opacity-55` 半透明,meta 行用 `<Loader2 className="animate-spin" />` + 「**儲存中…**」
 - 互動: `onClick = undefined`(完全不接 tap)+ `swipeable = false`(`useSwipeRow` 整個禁用)
-- 解除: realtime listener 把 cache 內 tempId row 換成 server-issued ID 的 row,**單一 boolean 由資料推導**,不需手動 cleanup
-
-**邊角狀況**: 若使用者在 1 秒內點剛新增的 temp row 想編輯,因為 tap 被 block,modal 不會開 → 沒 race condition。realtime 同步後變正常 row,點擊即進 edit。
+- 解除: op 被 drop 時自動解除;已 `succeeded` 但還在等 snapshot 的 op **不鎖 UI**(寫入已完成,只差確認)
 
 ## 複雜流程詳解
 

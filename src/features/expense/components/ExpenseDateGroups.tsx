@@ -36,10 +36,9 @@ interface Props {
   currency:      string
   canWrite:      boolean
   swipe:         ReturnType<typeof useSwipeOpen>
-  /** Set of expense ids whose UPDATE mutation is in-flight. Forwarded
-   *  to each row so it can show the 保存中… pill. Page derives this
-   *  via `usePendingMutationIds(expenseUpdateMutationKey, 'expenseId')`. */
-  pendingUpdateIds: Set<string>
+  /** Ids whose write is still in flight, derived from the overlay and
+   *  forwarded to each row for the 保存中… pill. */
+  pendingUpdateIds: ReadonlySet<string>
   /** Settled-source expenses are view-only for non-owner editors. */
   readonlyExpenseIds?: Set<string>
   /** Tap on an expense row. Usually opens the read-first detail sheet. */

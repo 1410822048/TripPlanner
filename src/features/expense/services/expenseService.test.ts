@@ -152,7 +152,7 @@ describe('workerFetch error discrimination', () => {
     uploadReceiptMock.mockResolvedValueOnce(mockReceipt())
 
     const { createExpense, WorkerRejected } = await import('./expenseService')
-    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg')))
+    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg'), 'e-new'))
       .rejects.toBeInstanceOf(WorkerRejected)
 
     // Definite reject → rollback fired (safePurge invoked once with the new blob)
@@ -164,7 +164,7 @@ describe('workerFetch error discrimination', () => {
     uploadReceiptMock.mockResolvedValueOnce(mockReceipt())
 
     const { createExpense, WorkerRejected } = await import('./expenseService')
-    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg')))
+    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg'), 'e-new'))
       .rejects.toBeInstanceOf(WorkerRejected)
     expect(safePurgeMock).toHaveBeenCalledTimes(1)
   })
@@ -174,7 +174,7 @@ describe('workerFetch error discrimination', () => {
     uploadReceiptMock.mockResolvedValueOnce(mockReceipt())
 
     const { createExpense, WorkerAmbiguous } = await import('./expenseService')
-    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg')))
+    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg'), 'e-new'))
       .rejects.toBeInstanceOf(WorkerAmbiguous)
     // Ambiguous → NOT inline purge (would break doc link if Worker
     // committed). Enqueue for the cron's verify-before-delete instead.
@@ -191,7 +191,7 @@ describe('workerFetch error discrimination', () => {
     uploadReceiptMock.mockResolvedValueOnce(mockReceipt())
 
     const { createExpense, WorkerAmbiguous } = await import('./expenseService')
-    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg')))
+    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg'), 'e-new'))
       .rejects.toBeInstanceOf(WorkerAmbiguous)
     expect(safePurgeMock).not.toHaveBeenCalled()
     expect(enqueueOrphanPurgesMock).toHaveBeenCalledTimes(1)
@@ -210,7 +210,7 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
     uploadReceiptMock.mockResolvedValueOnce(mockReceipt())
 
     const { createExpense } = await import('./expenseService')
-    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg')))
+    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg'), 'e-new'))
       .rejects.toThrow()
 
     expect(getDocMock).not.toHaveBeenCalled()  // no client-side read-back
@@ -229,7 +229,7 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
     captureErrorMock.mockClear()
 
     const { createExpense, WorkerAmbiguous } = await import('./expenseService')
-    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg')))
+    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg'), 'e-new'))
       .rejects.toBeInstanceOf(WorkerAmbiguous)
 
     expect(captureErrorMock).toHaveBeenCalledTimes(1)
@@ -284,7 +284,7 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
     } as Awaited<ReturnType<typeof firebaseMod.getFirebaseAuth>>)
 
     const { createExpense } = await import('./expenseService')
-    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg')))
+    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg'), 'e-new'))
       .rejects.toThrow(/not signed in/i)
 
     expect(uploadReceiptMock).not.toHaveBeenCalled()
@@ -324,7 +324,7 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
     fetchMock.mockResolvedValueOnce(new Response('{"ok":true,"expenseId":"e1"}', { status: 200 }))
 
     const { createExpense } = await import('./expenseService')
-    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg')))
+    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg'), 'e-new'))
       .resolves.toBeDefined()
 
     expect(uploadReceiptMock).toHaveBeenCalledTimes(1)
@@ -429,7 +429,7 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
     fetchMock.mockResolvedValueOnce(new Response('rejected', { status: 400 }))
 
     const { createExpense } = await import('./expenseService')
-    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg')))
+    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg'), 'e-new'))
       .rejects.toThrow()
 
     expect(safePurgeMock).toHaveBeenCalledTimes(1)
@@ -446,7 +446,7 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
     fetchMock.mockRejectedValueOnce(new DOMException('timeout', 'AbortError'))
 
     const { createExpense } = await import('./expenseService')
-    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg')))
+    await expect(createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg'), 'e-new'))
       .rejects.toThrow()
 
     expect(safePurgeMock).not.toHaveBeenCalled()
@@ -469,7 +469,7 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
     fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }))
 
     const { createExpense } = await import('./expenseService')
-    await createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg'))
+    await createExpense('t1', mockExpenseInput(), 'editor-uid', new File([], 'r.jpg'), 'e-new')
 
     const init = fetchMock.mock.calls[0]![1] as RequestInit
     const body = JSON.parse(init.body as string) as {
@@ -498,7 +498,7 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
     } satisfies CreateExpenseInput
 
     const { createExpense } = await import('./expenseService')
-    await createExpense('t1', foreignInput, 'editor-uid')
+    await createExpense('t1', foreignInput, 'editor-uid', null, 'e-new')
 
     const init = fetchMock.mock.calls[0]![1] as RequestInit
     const body = JSON.parse(init.body as string) as {
@@ -532,7 +532,7 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
     } satisfies CreateExpenseInput
 
     const { createExpense } = await import('./expenseService')
-    await createExpense('t1', foreignInput, 'editor-uid')
+    await createExpense('t1', foreignInput, 'editor-uid', null, 'e-new')
 
     const init = fetchMock.mock.calls[0]![1] as RequestInit
     const body = JSON.parse(init.body as string) as {
@@ -556,7 +556,7 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
     } as unknown as CreateExpenseInput
 
     const { createExpense } = await import('./expenseService')
-    await expect(createExpense('t1', partialForeignInput, 'editor-uid', new File([], 'r.jpg')))
+    await expect(createExpense('t1', partialForeignInput, 'editor-uid', new File([], 'r.jpg'), 'e-new'))
       .rejects.toThrow(/foreign expense payload requires sourceCurrency/)
 
     expect(uploadReceiptMock).not.toHaveBeenCalled()
@@ -592,7 +592,7 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
     } satisfies CreateExpenseInput
 
     const { createExpense } = await import('./expenseService')
-    await expect(createExpense('t1', strayTrip, 'editor-uid', new File([], 'r.jpg')))
+    await expect(createExpense('t1', strayTrip, 'editor-uid', new File([], 'r.jpg'), 'e-new'))
       .rejects.toThrow(/mode=TRIP_CURRENCY must not carry source-domain field/)
 
     expect(uploadReceiptMock).not.toHaveBeenCalled()
@@ -606,7 +606,7 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
     } satisfies CreateExpenseInput
 
     const { createExpense } = await import('./expenseService')
-    await expect(createExpense('t1', foreignNoSource, 'editor-uid', new File([], 'r.jpg')))
+    await expect(createExpense('t1', foreignNoSource, 'editor-uid', new File([], 'r.jpg'), 'e-new'))
       .rejects.toThrow(/mode=FOREIGN_CURRENCY requires a sourceCurrency/)
 
     expect(uploadReceiptMock).not.toHaveBeenCalled()
@@ -624,7 +624,7 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
     } as unknown as CreateExpenseInput
 
     const { createExpense } = await import('./expenseService')
-    await expect(createExpense('t1', badMode, 'editor-uid', new File([], 'r.jpg')))
+    await expect(createExpense('t1', badMode, 'editor-uid', new File([], 'r.jpg'), 'e-new'))
       .rejects.toThrow(/mode must be TRIP_CURRENCY or FOREIGN_CURRENCY/)
 
     expect(uploadReceiptMock).not.toHaveBeenCalled()

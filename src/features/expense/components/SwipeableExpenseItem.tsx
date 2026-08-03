@@ -29,10 +29,9 @@ interface SwipeableExpenseItemProps {
   /** Tap on the receipt thumbnail; separate from row select so the
    *  image opens a receipt preview instead of the detail/edit flow. */
   onPreviewReceipt?: () => void
-  /** True when this row's UPDATE mutation is in-flight. Pages derive the
-   *  set via `usePendingMutationIds`. CREATE pending is detected here
-   *  via the `temp-` id prefix; UPDATE preserves the real server id and
-   *  needs this signal to surface the same 保存中… visual. */
+  /** True while this row's write is still in flight. The page derives the
+   *  set from the overlay, which covers create and update alike since both
+   *  carry the real id. */
   isUpdating?:  boolean
   /** Settled-source row locked for non-owner editors. */
   isLocked?:    boolean
@@ -49,12 +48,8 @@ function SwipeableExpenseItem({
   expense, payer, summary, categoryIcon: CategoryIcon, currency,
   isOpen, isUpdating, isLocked, onSelect, onPreviewReceipt, onOpen, onClose, onDelete,
 }: SwipeableExpenseItemProps) {
-  // Rows added via optimistic update carry a `temp-` prefixed id until
-  // the Firestore + Storage round-trip lands. UPDATE mutations preserve
-  // the real id, so the page also passes `isUpdating` (derived from
-  // `useMutationState`). Either signal disables tap-to-edit + swipe-to-
-  // delete and dims the row + shows a spinner.
-  const isPending = expense.id.startsWith('temp-') || !!isUpdating
+  // Disables tap-to-edit + swipe-to-delete, dims the row, shows a spinner.
+  const isPending = !!isUpdating
 
   // Receipt thumbnail (if image + thumb exists) replaces the category
   // icon tile. PDFs without thumbnails keep the icon — the file-type

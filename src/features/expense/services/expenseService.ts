@@ -181,7 +181,48 @@ const listServices = createTripScopedListServices<Expense>({
 })
 
 export const getExpensesByTrip = listServices.fetch
+export const getExpensesByTripFromServer = listServices.fetchFromServer
 export const subscribeToExpenses = listServices.subscribe
+
+/** Order-insensitive structural equality, enough for the JSON-shaped
+ *  values an expense update carries (splits / items / adjustments). */
+function sameValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true
+  if (typeof left !== 'object' || typeof right !== 'object' || !left || !right) return false
+  if (Array.isArray(left) !== Array.isArray(right)) return false
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((item, i) => sameValue(item, right[i]))
+  }
+  const a = left as Record<string, unknown>
+  const b = right as Record<string, unknown>
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)])
+  return [...keys].every(key => sameValue(a[key], b[key]))
+}
+
+/**
+ * Does `stored` already reflect this update?
+ *
+ * Compares against the payload the Worker actually receives, not the raw
+ * form input. On a foreign-currency edit the trip-currency projection
+ * (amountMinor / splits / items / …) is stripped from the wire and
+ * re-derived server-side from the FX snapshot, so those fields are the
+ * server's to own — asking the stored row to match our preview of them
+ * would never succeed. The optimistic row still shows that preview; it is
+ * simply replaced by the authoritative numbers once the source fields
+ * land, which is the intended outcome rather than a revert.
+ */
+export function expenseUpdateApplied(stored: Expense, updates: UpdateExpenseInput): boolean {
+  let wire: Record<string, unknown>
+  try {
+    wire = workerExpensePayload(updates, 'updateExpense')
+  } catch {
+    return false   // the mutation itself would have thrown too
+  }
+  return Object.entries(wire).every(([field, value]) => {
+    if (field === 'mode') return true   // wire-only discriminator
+    return sameValue(stored[field as keyof Expense], value)
+  })
+}
 
 // ─── Write ────────────────────────────────────────────────────────
 /**
@@ -204,7 +245,8 @@ export async function createExpense(
   tripId: string,
   input: CreateExpenseInput,
   _createdBy: string,
-  attachment?: File | null,
+  attachment: File | null | undefined,
+  expenseId: string,
 ): Promise<string> {
   // Two preflight gates BEFORE any Storage side effect:
   //   1. workerBase: env config check (sync requireWorkerWriteBase)
@@ -218,13 +260,14 @@ export async function createExpense(
   const workerBase = requireWorkerWriteBase()
   const idToken    = await preflightIdToken()
 
-  const { db, collection, doc } = await getFirebase()
-  // Mint the expenseId client-side so the Storage path can be
-  // constructed against it (Worker `makeReceiptSchema` path regex
-  // re-enforces the same path/expenseId binding on the server side).
-  // The Worker's `currentDocument.exists = false` on the create
-  // PATCH ensures we don't accidentally overwrite an existing doc.
-  const ref = doc(collection(db, ...P.expenses(tripId)))
+  const { db, doc } = await getFirebase()
+  // The id is minted by the caller so the Storage path can be constructed
+  // against it (Worker `makeReceiptSchema` path regex re-enforces the same
+  // path/expenseId binding server-side) AND the optimistic row carries the
+  // same id the stored doc will have. The Worker's
+  // `currentDocument.exists = false` on the create PATCH still ensures we
+  // don't overwrite an existing doc.
+  const ref = doc(db, ...P.expense(tripId, expenseId))
   const expensePayload = workerExpensePayload(input, 'createExpense')
   // Phase 3.5: upload via intent flow, hand off intentIds + paths.
   // Worker /expense-create consumes the intentIds inline with the

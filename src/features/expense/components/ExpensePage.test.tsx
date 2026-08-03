@@ -82,13 +82,21 @@ vi.mock('@/hooks/useFeatureListPage', () => ({
   }),
 }))
 
-vi.mock('../hooks/useExpenses', () => ({
-  expenseUpdateMutationKey: ['expenses', 'update'],
-  useExpenses: () => ({ data: harness.expenses, isLoading: false }),
-  useCreateExpense: () => ({ mutate: harness.createExpense }),
-  useUpdateExpense: () => ({ mutate: harness.updateExpense }),
-  useDeleteExpense: () => ({ mutateAsync: harness.deleteExpense }),
-}))
+vi.mock('../hooks/useExpenses', async () => {
+  // A real controller, so the page's pending-row subscription behaves as
+  // it does in production instead of being stubbed out.
+  const { createListOverlay } = await vi.importActual<typeof import('@/hooks/listOverlay')>(
+    '@/hooks/listOverlay',
+  )
+  return {
+    expenseKeys:      { all: (tripId: string, uid?: string) => ['expenses', tripId, uid ?? ''] },
+    expenseOverlay:   createListOverlay({ insert: 'head', source: 'expenses-test' }),
+    useExpenses:      () => ({ data: harness.expenses, isLoading: false }),
+    useCreateExpense: () => ({ mutate: harness.createExpense }),
+    useUpdateExpense: () => ({ mutate: harness.updateExpense }),
+    useDeleteExpense: () => ({ mutateAsync: harness.deleteExpense }),
+  }
+})
 
 vi.mock('../hooks/useSettlements', () => ({
   useSettlements: () => ({ data: harness.settlements }),
@@ -106,10 +114,6 @@ vi.mock('@/features/members/utils', () => ({
 
 vi.mock('@/features/trips/hooks/useTripRole', () => ({
   useIsTripOwner: () => harness.isOwner,
-}))
-
-vi.mock('@/hooks/usePendingMutationIds', () => ({
-  usePendingMutationIds: () => new Set<string>(),
 }))
 
 vi.mock('@/hooks/useTripCurrency', () => ({

@@ -2,9 +2,9 @@
 import { Plus, Receipt } from 'lucide-react'
 import {
   useExpenses, useCreateExpense, useUpdateExpense, useDeleteExpense,
-  expenseUpdateMutationKey,
+  expenseKeys, expenseOverlay as expenseListOverlay,
 } from '../hooks/useExpenses'
-import { usePendingMutationIds } from '@/hooks/usePendingMutationIds'
+import { useOverlayPendingRowIds } from '@/hooks/listOverlay'
 import { useSettlements, useCreateSettlement, useDeleteSettlement } from '../hooks/useSettlements'
 import { useMembers } from '@/features/members/hooks/useMembers'
 import { membersToTripMembers } from '@/features/members/utils'
@@ -85,13 +85,10 @@ export default function ExpensePage() {
   const createMut = useCreateExpense(mutationTripId)
   const updateMut = useUpdateExpense(mutationTripId)
   const deleteMut = useDeleteExpense(mutationTripId)
-  // Set of expense ids whose UPDATE is in-flight — drives the 保存中… pill
-  // on edited rows. CREATE pending is handled inside SwipeableExpenseItem
-  // via the temp- id prefix; UPDATE preserves the real id so we need this.
-  const pendingUpdateIds = usePendingMutationIds<{ expenseId: string }>(
-    expenseUpdateMutationKey,
-    'expenseId',
-  )
+  // Ids whose write is still in flight — drives the 保存中… pill and blocks
+  // tap/swipe. Covers create and update alike now that both are overlay ops
+  // carrying the real id, so there is no id-shape check left to do.
+  const pendingUpdateIds = useOverlayPendingRowIds(expenseListOverlay, expenseKeys.all(mutationTripId, uid))
   // isSaving stays `false` for the modal — handleSave closes the modal
   // synchronously before the mutation fires (optimistic close), so the
   // save button never enters a busy state. Without forcing this to false
@@ -188,12 +185,11 @@ export default function ExpensePage() {
     if (isDemo) { modal.close(); signIn.open(); return }
     if (!uid) { toast.error('正在準備登入，請稍候'); return }
 
-    // Optimistic close: the modal goes away IMMEDIATELY, the optimistic
-    // patchListCache in onMutate makes the new row appear in the list
-    // before Firestore + Storage have done anything. The real writes
-    // happen in the background — if they fail, the hook's onError fires
-    // rollbackListCache + a toast, restoring the list to its pre-save
-    // state. This is the same pattern Splitwise uses for "instant" saves.
+    // Optimistic close: the modal goes away IMMEDIATELY and the overlay
+    // shows the new row before Firestore + Storage have done anything.
+    // The real writes happen in the background — if they fail, the
+    // operation is dropped and a toast explains why. This is the same
+    // pattern Splitwise uses for "instant" saves.
     //
     // Snapshot editTarget before modal.close() in case the close handler
     // clears it synchronously (closures can stale if we read after close).
@@ -216,6 +212,7 @@ export default function ExpensePage() {
       })
     } else {
       createMut.mutate({
+        expenseId:  crypto.randomUUID(),
         input,
         createdBy:  uid,
         attachment: attachment instanceof File ? attachment : null,
