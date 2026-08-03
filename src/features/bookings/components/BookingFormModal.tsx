@@ -8,11 +8,10 @@
 //   - null      → user removed the existing file (clear on save)
 //   - File      → user picked a new file (replace on save)
 import { useEffect, useId, useRef, useState } from 'react'
-import { Paperclip, Image as ImageIcon, KeyRound, PencilLine } from 'lucide-react'
+import { KeyRound, PencilLine } from 'lucide-react'
 import { isHttpUrl, type Booking, type CreateBookingInput } from '@/types/booking'
 import FormModalShell from '@/components/ui/FormModalShell'
 import DeleteConfirm from '@/components/ui/DeleteConfirm'
-import AttachmentRow from '@/components/ui/AttachmentRow'
 import { DatePicker, type DatePickerHandle } from '@/components/ui/pickers'
 import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
@@ -24,6 +23,7 @@ import { BOOKING_TYPE_META, BOOKING_TYPE_ORDER } from '../utils'
 import { deriveBookingLinkDraft } from '../linkDraft'
 import { useBookingPdfAutofill } from '../hooks/useBookingPdfAutofill'
 import BookingPdfAutofillCard from './BookingPdfAutofillCard'
+import BookingAttachmentFields from './BookingAttachmentFields'
 import { isPdfFile } from '../services/bookingPdfText'
 
 /** Transport types use origin → destination as the primary identifier;
@@ -342,6 +342,20 @@ export default function BookingFormModal({
         onChange={pdf.onPdfPicked}
         className="hidden"
       />
+      <input
+        ref={coverFileRef}
+        type="file"
+        accept={IMAGE_ACCEPT_TYPES}
+        onChange={onCoverImagePicked}
+        className="hidden"
+      />
+      <input
+        ref={docFileRef}
+        type="file"
+        accept={DOCUMENT_ACCEPT_TYPES}
+        onChange={pdf.onDocumentPicked}
+        className="hidden"
+      />
       {!editTarget && <BookingPdfAutofillCard pdf={pdf} />}
 
       {!editTarget && (
@@ -537,108 +551,15 @@ export default function BookingFormModal({
         />
       </FormField>
 
-      {showRange && (
-        <FormField label="封面圖片" error={coverAtt.error ?? undefined}>
-          <input
-            ref={coverFileRef}
-            type="file"
-            accept={IMAGE_ACCEPT_TYPES}
-            onChange={onCoverImagePicked}
-            className="hidden"
-          />
-          {coverAtt.hasAttachment ? (
-            <div className="overflow-hidden rounded-card border border-border bg-surface">
-              <button
-                type="button"
-                onClick={() => (coverAtt.hasNewFile || coverAtt.fullPath) && setPreviewTarget('cover')}
-                disabled={!coverAtt.hasNewFile && !coverAtt.fullPath}
-                className="relative block h-[154px] w-full overflow-hidden border-0 bg-tile p-0 text-left cursor-pointer disabled:cursor-default"
-                aria-label="顯示封面圖片"
-              >
-                {coverAtt.previewUrl ? (
-                  <img
-                    src={coverAtt.previewUrl}
-                    alt=""
-                    className="absolute inset-0 h-full w-full object-cover"
-                    draggable={false}
-                  />
-                ) : (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted">
-                    <ImageIcon size={28} strokeWidth={1.7} />
-                    <span className="text-[12px] font-bold">封面圖片</span>
-                  </div>
-                )}
-              </button>
-              <div className="flex items-center justify-between gap-2 border-t border-border px-3 py-2">
-                <span className="min-w-0 truncate text-[12px] font-bold text-ink">
-                  {coverAtt.hasNewFile ? coverAtt.attachmentName : '封面圖片'}
-                </span>
-                <div className="flex shrink-0 items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={pickCoverImage}
-                    className="h-11 min-w-14 rounded-chip border border-border bg-surface px-3 text-[11.5px] font-bold text-muted"
-                  >
-                    更換
-                  </button>
-                  <button
-                    type="button"
-                    onClick={coverAtt.clear}
-                    className="h-11 min-w-14 rounded-chip border border-danger-soft bg-danger-pale px-3 text-[11.5px] font-bold text-danger"
-                  >
-                    刪除
-                  </button>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={pickCoverImage}
-              className="w-full h-[132px] rounded-card border-[1.5px] border-dashed border-border bg-app text-muted text-[12px] font-medium flex flex-col items-center justify-center gap-2 cursor-pointer hover:border-accent hover:text-accent transition-colors"
-            >
-              <ImageIcon size={22} strokeWidth={1.7} />
-              <span>新增飯店卡片圖片</span>
-            </button>
-          )}
-        </FormField>
-      )}
-
-      <FormField label="訂單確認文件（PDF / 圖片）" error={docAtt.error ?? undefined}>
-        <input
-          ref={docFileRef}
-          type="file"
-          accept={DOCUMENT_ACCEPT_TYPES}
-          onChange={pdf.onDocumentPicked}
-          className="hidden"
-        />
-        {docAtt.hasAttachment ? (
-          <AttachmentRow
-            fileName={docAtt.attachmentName}
-            previewUrl={docAtt.previewUrl}
-            isImage={docAtt.previewIsImage}
-            onReplace={pickDocument}
-            onClear={() => {
-              pdf.reset()
-              docAtt.clear()
-            }}
-            onPreview={() => (docAtt.hasNewFile || docAtt.fullPath) && setPreviewTarget('document')}
-            canPreview={docAtt.hasNewFile || !!docAtt.fullPath}
-            replaceAriaLabel="更換檔案"
-            previewAriaLabel="顯示附件"
-            clearAriaLabel="刪除附件"
-          />
-        ) : (
-          <button
-            type="button"
-            onClick={pickDocument}
-            className="w-full h-[58px] rounded-input border-[1.5px] border-dashed border-border bg-app text-muted text-[12px] font-medium flex flex-col items-center justify-center gap-1 cursor-pointer hover:border-accent hover:text-accent transition-colors"
-          >
-            <Paperclip size={16} strokeWidth={1.8} />
-            <span>上傳確認文件</span>
-          </button>
-        )}
-      </FormField>
+      <BookingAttachmentFields
+        coverAtt={coverAtt}
+        docAtt={docAtt}
+        showCover={showRange}
+        onPickCover={pickCoverImage}
+        onPickDocument={pickDocument}
+        onPreview={setPreviewTarget}
+        onClearDocument={() => { pdf.reset(); docAtt.clear() }}
+      />
 
       <FormField label="備註">
         <textarea
