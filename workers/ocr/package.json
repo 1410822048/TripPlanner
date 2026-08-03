@@ -17,7 +17,7 @@
     "@tripmate/pdf-page-limit": "file:../../packages/pdf-page-limit",
     "@tripmate/route-estimate-core": "file:../../packages/route-estimate-core",
     "@tripmate/settlement-core": "file:../../packages/settlement-core",
-    "jose": "^6.2.3",
+    "jose": "^6.2.7",
     "pdfjs-dist": "5.4.296",
     "zod": "^4.4.3"
   },
