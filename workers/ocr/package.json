@@ -22,7 +22,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.16.14",
+    "@cloudflare/vitest-pool-workers": "^0.20.1",
     "@types/node": "^25.9.2",
     "typescript": "~6.0.2",
     "vitest": "^4.1.8",
