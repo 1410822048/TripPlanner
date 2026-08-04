@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { hashKey } from '@tanstack/react-query'
 
 const captureError = vi.fn()
 vi.mock('@/services/sentry', () => ({ captureError: (...a: unknown[]) => captureError(...a) }))
@@ -11,10 +12,14 @@ import {
   type OverlayOp,
 } from './listOverlay'
 
-interface Row { id: string; title: string; done?: boolean }
+interface Row { id: string; title: string; done?: boolean; note?: string }
 
 const KEY_A = ['planning', 'trip-a', 'uid-1'] as const
 const KEY_B = ['planning', 'trip-b', 'uid-1'] as const
+
+/** What the list would render for this server truth. */
+const view = (c: ReturnType<typeof createListOverlay<Row>>, base: Row[]) =>
+  c.merge(base, c.getSnapshot(hashKey(KEY_A)))
 
 const row = (id: string, title = id): Row => ({ id, title })
 
@@ -76,7 +81,7 @@ describe('applyOverlays', () => {
 
   // P1: the defect the cache-patch design could not express.
   it('leaves only the surviving edit when one of two edits to a row is dropped', () => {
-    const base = [{ id: 'a', title: 'server', done: false }]
+    const base: Row[] = [{ id: 'a', title: 'server', done: false }]
     const first  = op({ kind: 'patch', id: 'a', seq: 1, apply: r => ({ ...r, title: 'from A' }) })
     const second = op({ kind: 'patch', id: 'a', seq: 2, apply: r => ({ ...r, done: true }) })
 
@@ -106,6 +111,141 @@ describe('ListOverlayController', () => {
       confirms: base => !base.some(r => r.id === id),
       authoritativeFetch: fetchImpl ?? (async () => []),
     })
+
+  // An op may only retire once every earlier op on the same row has.
+  // Retiring a later one while an earlier survives replays a state the user
+  // already moved past — the cancelled row comes back.
+  describe('stacked operations on one row', () => {
+    const addCreate = (id: string, fetchImpl?: () => Promise<Row[]>) =>
+      controller.add(KEY_A, {
+        kind: 'create', row: row(id),
+        confirms: base => base.some(r => r.id === id),
+        authoritativeFetch: fetchImpl ?? (async () => []),
+      })
+    const addPatch = (id: string, field: 'title' | 'note', value: string) =>
+      controller.add(KEY_A, {
+        kind: 'patch', id,
+        apply: r => ({ ...r, [field]: value }),
+        confirms: base => base.find(r => r.id === id)?.[field] === value,
+        authoritativeFetch: async () => [],
+      })
+
+    it('create then remove: the cancelled row does not come back', () => {
+      const create = addCreate('a')
+      const remove = addRemove(KEY_A, 'a')
+      controller.markSucceeded(create)
+      controller.markSucceeded(remove)
+
+      controller.reconcile(create.queryKeyHash, [])
+
+      expect(controller.getSnapshot(create.queryKeyHash)).toHaveLength(0)
+      expect(view(controller, [])).toEqual([])
+    })
+
+    it('remove then create: the re-added row survives', () => {
+      const remove = addRemove(KEY_A, 'a')
+      const create = addCreate('a')
+      controller.markSucceeded(remove)
+      controller.markSucceeded(create)
+
+      const base = [row('a')]
+      controller.reconcile(create.queryKeyHash, base)
+
+      expect(view(controller, base).map(r => r.id)).toEqual(['a'])
+    })
+
+    it('create then patch then remove retires as one group', () => {
+      const create = addCreate('a')
+      const patch  = addPatch('a', 'title', 'edited')
+      const remove = addRemove(KEY_A, 'a')
+      for (const h of [create, patch, remove]) controller.markSucceeded(h)
+
+      controller.reconcile(create.queryKeyHash, [])
+
+      expect(controller.getSnapshot(create.queryKeyHash)).toHaveLength(0)
+    })
+
+    it('retires only the confirmed prefix when two patches touch different fields', () => {
+      const first  = addPatch('a', 'title', 'new title')
+      const second = addPatch('a', 'note', 'new note')
+      controller.markSucceeded(first)
+      controller.markSucceeded(second)
+
+      // Only the first edit has landed.
+      const base = [{ id: 'a', title: 'new title' }]
+      controller.reconcile(first.queryKeyHash, base)
+
+      const left = controller.getSnapshot(first.queryKeyHash)
+      expect(left).toHaveLength(1)
+      expect(view(controller, base)[0]).toMatchObject({ title: 'new title', note: 'new note' })
+    })
+
+    it('never retires a later op while an earlier one is unconfirmed', () => {
+      const first  = addPatch('a', 'title', 'first')
+      const second = addPatch('a', 'title', 'second')
+      controller.markSucceeded(first)
+      controller.markSucceeded(second)
+
+      // Truth reflects the LAST write only — the classic inversion setup.
+      const base = [{ id: 'a', title: 'second' }]
+      controller.reconcile(first.queryKeyHash, base)
+
+      // Retiring `second` alone would replay `first` and show 'first'.
+      expect(view(controller, base)[0]?.title).toBe('second')
+    })
+
+    it('survives a triple toggle settling out of order', () => {
+      const a = addPatch('a', 'title', 'on')
+      const b = addPatch('a', 'title', 'off')
+      const c = addPatch('a', 'title', 'on')
+      controller.markSucceeded(c)
+      controller.markSucceeded(a)
+      controller.markSucceeded(b)
+
+      const base = [{ id: 'a', title: 'on' }]
+      controller.reconcile(a.queryKeyHash, base)
+
+      expect(view(controller, base)[0]?.title).toBe('on')
+    })
+
+    it('holds a confirmed remove back while an earlier write is still in flight', () => {
+      addCreate('a')                       // left pending
+      const remove = addRemove(KEY_A, 'a')
+      controller.markSucceeded(remove)
+
+      controller.reconcile(remove.queryKeyHash, [])
+
+      // Dropping the remove would resurrect the pending create's row.
+      expect(controller.getSnapshot(remove.queryKeyHash)).toHaveLength(2)
+      expect(view(controller, [])).toEqual([])
+    })
+
+    it('resolves an ambiguous op through the same rule as reconcile', async () => {
+      vi.useFakeTimers()
+      const create = addCreate('a')
+      const remove = addRemove(KEY_A, 'a', async () => [])
+      controller.markSucceeded(create)
+      controller.markAmbiguous(remove)
+
+      await vi.advanceTimersByTimeAsync(OVERLAY_AMBIGUOUS_SETTLE_MS)
+
+      // The ambiguous remove settles, and takes the create with it rather
+      // than leaving it to replay alone.
+      expect(controller.getSnapshot(create.queryKeyHash)).toHaveLength(0)
+    })
+
+    it('expires a stuck op without inverting the row', async () => {
+      vi.useFakeTimers()
+      const create = addCreate('a', async () => [])
+      const remove = addRemove(KEY_A, 'a', async () => [])
+      controller.markSucceeded(create)
+      controller.markSucceeded(remove)
+
+      await vi.advanceTimersByTimeAsync(OVERLAY_GRACE_MS)
+
+      expect(view(controller, [])).toEqual([])
+    })
+  })
 
   it('hands out one stable empty snapshot, and a new identity only on real change', () => {
     // useSyncExternalStore loops if getSnapshot allocates per call.

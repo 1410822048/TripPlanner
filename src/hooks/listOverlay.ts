@@ -121,6 +121,59 @@ export function applyOverlays<T extends { id: string }>(
   return acc
 }
 
+/** The row an operation targets. Ops are retired per row, never globally. */
+function rowIdOf<T extends { id: string }>(op: OverlayOp<T>): string {
+  return op.kind === 'create' ? op.row.id : op.id
+}
+
+/**
+ * Which operations may retire right now, given `isSettled` for each.
+ *
+ * The whole rule is one invariant: **an operation may only retire once
+ * every earlier operation on the same row has.** Retiring a later op while
+ * an earlier one survives replays a state the user already moved past —
+ * cancel a settlement and the create replays, putting the cancelled row
+ * back on screen.
+ *
+ * So per row, in `seq` order, we take the settled prefix and stop at the
+ * first op that isn't. The one extension: a settled `remove` absorbs the
+ * succeeded prefix behind it, because a row that is gone makes every
+ * earlier intent on it moot. It still may not cross an op that is
+ * `pending` — that write is in flight and its row has to keep showing.
+ */
+function retirableOpIds<T extends { id: string }>(
+  ops:        readonly OverlayOp<T>[],
+  isSettled:  (op: OverlayOp<T>) => boolean,
+): Set<string> {
+  const byRow = new Map<string, OverlayOp<T>[]>()
+  for (const op of ops) {
+    const row = rowIdOf(op)
+    const list = byRow.get(row)
+    if (list) list.push(op)
+    else byRow.set(row, [op])
+  }
+
+  const retirable = new Set<string>()
+  for (const group of byRow.values()) {
+    const ordered = [...group].sort((a, b) => a.seq - b.seq)
+
+    let prefix = 0
+    while (prefix < ordered.length && isSettled(ordered[prefix]!)) prefix += 1
+    for (let i = 0; i < prefix; i++) retirable.add(ordered[i]!.opId)
+
+    // A settled remove clears everything behind it, as long as nothing in
+    // between is still in flight.
+    for (let i = ordered.length - 1; i >= prefix; i--) {
+      const op = ordered[i]!
+      if (op.kind !== 'remove' || !isSettled(op)) continue
+      if (ordered.slice(prefix, i).some(earlier => earlier.status === 'pending')) break
+      for (let j = prefix; j <= i; j++) retirable.add(ordered[j]!.opId)
+      break
+    }
+  }
+  return retirable
+}
+
 interface Entry<T> {
   ops:      readonly OverlayOp<T>[]
   /** Coalesces concurrent confirmations so N ops on a key cost one read. */
@@ -344,7 +397,7 @@ export function createListOverlay<T extends { id: string }>(
       // so retrying only prolongs the unsafe state it exists to escape.
       if (op.whenUnconfirmable === 'drop') {
         captureError(err, { source: `${config.source}/overlay-unconfirmable`, opId })
-        drop(handle)
+        if (!forceRetire(hash, entry, opId)) armConfirmTimer(handle, OVERLAY_GRACE_MS)
         return
       }
       if (attempts >= MAX_CONFIRM_ATTEMPTS) {
@@ -365,32 +418,60 @@ export function createListOverlay<T extends { id: string }>(
     if (current.status === 'ambiguous') {
       // Server truth settles it either way: confirmed means the write
       // landed, unconfirmed means it never did and the row must go.
-      drop(handle)
+      if (!forceRetire(hash, entry, opId)) armConfirmTimer(handle, OVERLAY_GRACE_MS)
       return
     }
-    if (current.confirms(base) || opts.final) {
-      if (opts.final && !current.confirms(base)) {
-        captureError(new Error('overlay op expired unconfirmed'), {
-          source: `${config.source}/overlay-grace`, opId,
-        })
-      }
-      drop(handle)
+    if (current.confirms(base)) {
+      // Agreement is the normal path, so let the row rule decide the whole
+      // group rather than pulling this one op out of the middle.
+      reconcile(hash, base)
+      return
     }
+    if (opts.final) {
+      captureError(new Error('overlay op expired unconfirmed'), {
+        source: `${config.source}/overlay-grace`, opId,
+      })
+      if (!forceRetire(hash, entry, opId)) armConfirmTimer(handle, OVERLAY_GRACE_MS)
+    }
+  }
+
+  /** Drop a set of ops in one pass, clearing their timers. */
+  function retire(hash: string, entry: Entry<T>, opIds: ReadonlySet<string>): void {
+    if (opIds.size === 0) return
+    for (const opId of opIds) {
+      const timer = entry.timers.get(opId)
+      if (timer) clearTimeout(timer)
+      entry.timers.delete(opId)
+      entry.attempts.delete(opId)
+    }
+    setOps(hash, entry, entry.ops.filter(op => !opIds.has(op.opId)))
   }
 
   function reconcile(hash: string, base: T[]): void {
     const entry = entries.get(hash)
     if (!entry) return
-    const survivors = entry.ops.filter(op => !(op.status === 'succeeded' && op.confirms(base)))
-    if (survivors.length === entry.ops.length) return
-    for (const op of entry.ops) {
-      if (survivors.includes(op)) continue
-      const timer = entry.timers.get(op.opId)
-      if (timer) clearTimeout(timer)
-      entry.timers.delete(op.opId)
-      entry.attempts.delete(op.opId)
-    }
-    setOps(hash, entry, survivors)
+    retire(hash, entry, retirableOpIds(
+      entry.ops,
+      op => op.status === 'succeeded' && op.confirms(base),
+    ))
+  }
+
+  /**
+   * Retire `opId` and whatever the row rule says goes with it. Used by the
+   * paths that decide an op's fate WITHOUT server truth agreeing — an
+   * ambiguous write settled by a read, an unconfirmable one degrading, a
+   * grace timer expiring. Returns false when an earlier op on the same row
+   * is still in flight, in which case the caller re-arms instead: dropping
+   * now would leave that pending row rendering over a decision it predates.
+   */
+  function forceRetire(hash: string, entry: Entry<T>, opId: string): boolean {
+    const target = entry.ops.find(op => op.opId === opId)
+    if (!target) return true
+    const row = rowIdOf(target)
+    const earlier = entry.ops.filter(op => rowIdOf(op) === row && op.seq < target.seq)
+    if (earlier.some(op => op.status === 'pending')) return false
+    retire(hash, entry, new Set([opId, ...earlier.map(op => op.opId)]))
+    return true
   }
 
   function retryUnconfirmed(hash?: string): void {
