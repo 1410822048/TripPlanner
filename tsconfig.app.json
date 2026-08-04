@@ -25,11 +25,10 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true,
 
-    /* Path alias */
-    "ignoreDeprecations": "6.0",
-    "baseUrl": ".",
+    /* Path alias — relative because TS 7 removed `baseUrl`; without it
+       `paths` resolve against this file's directory. */
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["src"]
