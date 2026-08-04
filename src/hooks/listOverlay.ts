@@ -161,12 +161,14 @@ function retirableOpIds<T extends { id: string }>(
     while (prefix < ordered.length && isSettled(ordered[prefix]!)) prefix += 1
     for (let i = 0; i < prefix; i++) retirable.add(ordered[i]!.opId)
 
-    // A settled remove clears everything behind it, as long as nothing in
-    // between is still in flight.
+    // A settled remove clears everything behind it, as long as every op in
+    // between has actually landed. `succeeded` is the only status that
+    // says so — `ambiguous` means the write may still be committing, and
+    // retiring across it would leave nothing to hide the row when it does.
     for (let i = ordered.length - 1; i >= prefix; i--) {
       const op = ordered[i]!
       if (op.kind !== 'remove' || !isSettled(op)) continue
-      if (ordered.slice(prefix, i).some(earlier => earlier.status === 'pending')) break
+      if (ordered.slice(prefix, i).some(earlier => earlier.status !== 'succeeded')) break
       for (let j = prefix; j <= i; j++) retirable.add(ordered[j]!.opId)
       break
     }
@@ -461,15 +463,17 @@ export function createListOverlay<T extends { id: string }>(
    * paths that decide an op's fate WITHOUT server truth agreeing — an
    * ambiguous write settled by a read, an unconfirmable one degrading, a
    * grace timer expiring. Returns false when an earlier op on the same row
-   * is still in flight, in which case the caller re-arms instead: dropping
-   * now would leave that pending row rendering over a decision it predates.
+   * has not landed, in which case the caller re-arms instead: dropping now
+   * would leave nothing to hide that row once its write does land. Only
+   * `succeeded` counts as landed — `ambiguous` is precisely the state where
+   * we don't know.
    */
   function forceRetire(hash: string, entry: Entry<T>, opId: string): boolean {
     const target = entry.ops.find(op => op.opId === opId)
     if (!target) return true
     const row = rowIdOf(target)
     const earlier = entry.ops.filter(op => rowIdOf(op) === row && op.seq < target.seq)
-    if (earlier.some(op => op.status === 'pending')) return false
+    if (earlier.some(op => op.status !== 'succeeded')) return false
     retire(hash, entry, new Set([opId, ...earlier.map(op => op.opId)]))
     return true
   }

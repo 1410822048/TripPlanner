@@ -220,6 +220,39 @@ describe('ListOverlayController', () => {
       expect(view(controller, [])).toEqual([])
     })
 
+    it('holds a confirmed remove back while an earlier write is ambiguous', () => {
+      const create = addCreate('a')
+      const remove = addRemove(KEY_A, 'a')
+      controller.markAmbiguous(create)   // may or may not have committed
+      controller.markSucceeded(remove)
+
+      controller.reconcile(remove.queryKeyHash, [])
+
+      // Retiring both would leave nothing to hide the row if the create
+      // lands after all.
+      expect(controller.getSnapshot(remove.queryKeyHash)).toHaveLength(2)
+      expect(view(controller, [])).toEqual([])
+    })
+
+    it('will not force-retire across an earlier ambiguous write', async () => {
+      vi.useFakeTimers()
+      // The create's own read FAILS, so it stays ambiguous and re-arms.
+      // (A hung read would be worse than useless here: the per-key
+      // in-flight coalescing would stall the remove's confirmation too,
+      // and the test would pass without exercising anything.)
+      const create = addCreate('a', async () => { throw new Error('unreachable') })
+      const remove = addRemove(KEY_A, 'a', async () => [])
+      controller.markAmbiguous(create)
+      controller.markSucceeded(remove)
+
+      // The remove's grace expiry must defer rather than take the
+      // still-unresolved create with it.
+      await vi.advanceTimersByTimeAsync(OVERLAY_GRACE_MS)
+
+      expect(controller.getSnapshot(remove.queryKeyHash).some(o => o.kind === 'create')).toBe(true)
+      expect(view(controller, [])).toEqual([])
+    })
+
     it('resolves an ambiguous op through the same rule as reconcile', async () => {
       vi.useFakeTimers()
       const create = addCreate('a')
