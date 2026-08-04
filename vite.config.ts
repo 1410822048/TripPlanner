@@ -234,7 +234,7 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src'),
+      '@': path.resolve(import.meta.dirname, './src'),
     },
   },
   // Force-pre-bundle lucide-react: it ships as a barrel re-exporting ~1900
