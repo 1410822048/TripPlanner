@@ -242,4 +242,100 @@ describe('attachment delete proxy', () => {
     expect(response.status).toBe(410)
     expect(deleteObjectMock).not.toHaveBeenCalled()
   })
+
+  // Deleting an attachment mutates its entity, so it has to clear the same
+  // gates the entity's write path does — otherwise this endpoint is simply
+  // the way around them, and irreversibly so.
+  describe('mirrors the entity write gates', () => {
+    const lockedExpense = {
+      settlementLockIds: { arrayValue: { values: [{ stringValue: 'settlement-1' }] } },
+    }
+
+    it('refuses an editor deleting the receipt of a settled expense', async () => {
+      seedMembership('editor')
+      docFields.set(`trips/${TRIP_ID}/expenses/expense-1`, lockedExpense)
+
+      const response = await handleAttachmentDelete({
+        body: { tripId: TRIP_ID, path: EXPENSE_PATH }, uid: UID, cors: CORS, env: ENV,
+      })
+
+      // /expense-update already refuses this editor; without the mirror the
+      // receipt dies while Firestore keeps pointing at it, and repairing
+      // the doc is exactly what the lock forbids them.
+      expect(response.status).toBe(403)
+      expect(deleteObjectMock).not.toHaveBeenCalled()
+    })
+
+    it('still lets the trip owner delete it', async () => {
+      docFields.set(`trips/${TRIP_ID}`, { ownerId: { stringValue: UID } })
+      docFields.set(`trips/${TRIP_ID}/members/${UID}`, { role: { stringValue: 'owner' } })
+      docFields.set(`trips/${TRIP_ID}/expenses/expense-1`, lockedExpense)
+
+      const response = await handleAttachmentDelete({
+        body: { tripId: TRIP_ID, path: EXPENSE_PATH }, uid: UID, cors: CORS, env: ENV,
+      })
+
+      expect(response.status).toBe(200)
+      expect(deleteObjectMock).toHaveBeenCalledWith(ENV.ATTACHMENTS, EXPENSE_PATH)
+    })
+
+    it('leaves an unsettled expense alone', async () => {
+      seedMembership('editor')
+      docFields.set(`trips/${TRIP_ID}/expenses/expense-1`, {})
+
+      const response = await handleAttachmentDelete({
+        body: { tripId: TRIP_ID, path: EXPENSE_PATH }, uid: UID, cors: CORS, env: ENV,
+      })
+
+      expect(response.status).toBe(200)
+    })
+
+    it('refuses the proposer once the wish voting deadline has passed', async () => {
+      seedMembership('viewer')
+      docFields.set(`trips/${TRIP_ID}`, {
+        ownerId: { stringValue: 'owner-uid' },
+        wishVotingDeadlineAt: { timestampValue: '2020-01-01T00:00:00Z' },
+      })
+      docFields.set(`trips/${TRIP_ID}/wishes/wish-1`, { proposedBy: { stringValue: UID } })
+
+      const response = await handleAttachmentDelete({
+        body: { tripId: TRIP_ID, path: WISH_PATH }, uid: UID, cors: CORS, env: ENV,
+      })
+
+      expect(response.status).toBe(403)
+      expect(deleteObjectMock).not.toHaveBeenCalled()
+    })
+
+    it('refuses the trip OWNER too once the deadline has passed', async () => {
+      docFields.set(`trips/${TRIP_ID}`, {
+        ownerId: { stringValue: UID },
+        wishVotingDeadlineAt: { timestampValue: '2020-01-01T00:00:00Z' },
+      })
+      docFields.set(`trips/${TRIP_ID}/members/${UID}`, { role: { stringValue: 'owner' } })
+
+      const response = await handleAttachmentDelete({
+        body: { tripId: TRIP_ID, path: WISH_PATH }, uid: UID, cors: CORS, env: ENV,
+      })
+
+      // firestore.rules gates wish delete on wishVotingOpen with no owner
+      // exemption, so the owner short-circuit must sit behind the deadline.
+      expect(response.status).toBe(403)
+      expect(deleteObjectMock).not.toHaveBeenCalled()
+    })
+
+    it('allows the proposer while voting is still open', async () => {
+      seedMembership('viewer')
+      docFields.set(`trips/${TRIP_ID}`, {
+        ownerId: { stringValue: 'owner-uid' },
+        wishVotingDeadlineAt: { timestampValue: '2099-01-01T00:00:00Z' },
+      })
+      docFields.set(`trips/${TRIP_ID}/wishes/wish-1`, { proposedBy: { stringValue: UID } })
+
+      const response = await handleAttachmentDelete({
+        body: { tripId: TRIP_ID, path: WISH_PATH }, uid: UID, cors: CORS, env: ENV,
+      })
+
+      expect(response.status).toBe(200)
+    })
+  })
 })

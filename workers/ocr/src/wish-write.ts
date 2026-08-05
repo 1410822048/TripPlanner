@@ -127,7 +127,10 @@ interface TripContext {
 /** Mirrors firestore.rules' wishVotingOpen(tripId). Admin SDK bypasses
  *  rules entirely, so these Worker endpoints need their own deadline gate
  *  or a closed-vote trip could still accept image uploads through them. */
-function assertWishVotingOpen(trip: { fields: Record<string, FsValue> }): void {
+/** Exported so every path that mutates a wish — including attachment
+ *  deletion — enforces the same deadline. firestore.rules gates wish
+ *  update AND delete on `wishVotingOpen`, with no owner exemption. */
+export function assertWishVotingOpen(trip: { fields: Record<string, FsValue> }): void {
   const deadlineMs = readTimestampMs(trip.fields, 'wishVotingDeadlineAt')
   if (deadlineMs != null && deadlineMs <= Date.now()) {
     throw new CascadeError(403, 'wish voting deadline has passed')
