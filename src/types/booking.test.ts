@@ -5,7 +5,8 @@
 // <a href>, so the only thing that matters here is "http(s) in, every
 // other scheme out".
 import { describe, it, expect } from 'vitest'
-import { isHttpUrl, CreateBookingSchema } from './booking'
+import { isHttpUrl, CreateBookingSchema, BookingDocSchema } from './booking'
+import { MOCK_TIMESTAMP as TS } from '@/mocks/utils'
 
 describe('isHttpUrl', () => {
   it('accepts http and https', () => {
@@ -65,5 +66,32 @@ describe('CreateBookingSchema.link', () => {
 
   it('rejects a link over 500 chars', () => {
     expect(CreateBookingSchema.safeParse({ ...base, link: 'https://e.com/' + 'x'.repeat(500) }).success).toBe(false)
+  })
+})
+
+// Every booking query is orderBy('sortDate', 'desc') and Firestore drops
+// docs missing the ordered field, so a doc without it is invisible in the
+// UI. firestore.rules refuses to write one; this pins the read side to
+// fail loudly (Sentry via firestoreDocFromSchema) instead of quietly
+// rendering a row that no list can reach.
+describe('BookingDocSchema.sortDate', () => {
+  const doc = {
+    tripId: 't1', type: 'hotel' as const, title: 'X',
+    memberIds: ['u1'],
+    createdBy: 'u1', updatedBy: 'u1',
+    createdAt: TS, updatedAt: TS, sortDate: TS,
+  }
+
+  it('accepts a doc carrying sortDate', () => {
+    expect(BookingDocSchema.safeParse(doc).success).toBe(true)
+  })
+
+  it('rejects a doc missing sortDate', () => {
+    const { sortDate: _omitted, ...withoutSortDate } = doc
+    expect(BookingDocSchema.safeParse(withoutSortDate).success).toBe(false)
+  })
+
+  it('rejects a sortDate that is not a Timestamp', () => {
+    expect(BookingDocSchema.safeParse({ ...doc, sortDate: '2026-06-01' }).success).toBe(false)
   })
 })

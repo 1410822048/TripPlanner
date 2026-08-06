@@ -377,6 +377,67 @@ describe('/trips/{tripId}/bookings', () => {
     )
   })
 
+  // sortDate backs every orderBy on this collection, and Firestore drops
+  // docs missing the ordered field — a booking without it would exist but
+  // be invisible in /bookings, /past-lodging and the account thumbnails.
+  test('editor cannot create a booking without sortDate', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-nosort'), {
+        tripId: TRIP_ID, type: 'hotel', title: 'X',
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('editor cannot create a booking whose sortDate is not a timestamp', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', 'b-badsort'), {
+        tripId: TRIP_ID, type: 'hotel', title: 'X',
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+        createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        sortDate:  '2026-06-01',
+      }),
+    )
+  })
+
+  // deleteField, not a whole-doc setDoc: a full overwrite would also
+  // rewrite createdAt and get denied by immutableEntityFieldsUnchanged(),
+  // passing this test for the wrong reason.
+  test('editor cannot strip sortDate off an existing booking', async () => {
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_ID), {
+        sortDate:  deleteField(),
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('editor cannot retype an existing sortDate to a string', async () => {
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_ID), {
+        sortDate:  '2026-06-01',
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('editor can update a booking that keeps sortDate', async () => {
+    await assertSucceeds(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_ID), {
+        title:     'Renamed',
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
   test('viewer cannot delete a booking', async () => {
     await assertFails(
       deleteDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'bookings', BOOKING_ID)),

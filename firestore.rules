@@ -132,9 +132,9 @@ service cloud.firestore {
     // (target). Schema invariant: every expense doc has a `deletedAt`
     // field, either explicitly null (alive) or a Timestamp
     // (tombstoned). The Worker `encodeExpense` seeds null on create
-    // and the update rule below requires presence on both sides --
-    // so a doc missing the field is data-at-rest from before the
-    // soft-delete migration, which the DB no longer contains.
+    // and the update rule below requires presence on both sides, so
+    // these helpers deny a doc that lacks the field rather than
+    // guessing at its state.
     // "Alive" = field present and explicitly null; "tombstoned" =
     // field present and a real Timestamp.
     function expenseAlive(d) {
@@ -824,6 +824,12 @@ service cloud.firestore {
                       && request.resource.data.updatedBy == uid()
                       && memberIdsMatchTrip(tripId)
                       && request.resource.data.type in ['flight','hotel','train','bus','other']
+                      // Every list query is orderBy('sortDate', 'desc'), and
+                      // Firestore silently EXCLUDES docs missing the ordered
+                      // field -- so a booking written without it exists but is
+                      // invisible everywhere. Required, not optional.
+                      && 'sortDate' in request.resource.data
+                      && request.resource.data.sortDate is timestamp
                       // `is string` precedes `.size()` because size() also
                       // works on lists/maps -- without it a raw-SDK writer
                       // could pass an array (e.g. `note: [...]`) that
@@ -894,6 +900,10 @@ service cloud.firestore {
           && immutableEntityFieldsUnchanged()
           && request.resource.data.updatedBy == uid()
           && request.resource.data.type in ['flight','hotel','train','bus','other']
+          // Same orderBy-invisibility gate as create: an update must not be
+          // able to strip sortDate off a doc that already has it.
+          && 'sortDate' in request.resource.data
+          && request.resource.data.sortDate is timestamp
           && (!('title' in request.resource.data)
                 || (request.resource.data.title is string
                     && request.resource.data.title.size() <= 100))

@@ -76,9 +76,11 @@ export interface Booking {
    * side bookingSortKey() logic: prefer `checkIn` Timestamp; fall back to
    * `createdAt`.
    *
-   * Optional in the type for backward-compat with bookings created before
-   * the field was introduced; those rows will be excluded from the
-   * orderBy query until backfilled.
+   * Required on every stored doc — firestore.rules rejects a create or
+   * update without it, because Firestore drops docs missing the ordered
+   * field and the booking would silently vanish from every list. Optional
+   * in the interface only for the demo fixtures, which never round-trip
+   * through Firestore.
    */
   sortDate?: Timestamp
   /**
@@ -167,7 +169,7 @@ export const BookingDocSchema = z.object({
   updatedBy:        z.string(),
   createdAt:        TimestampSchema,
   updatedAt:        TimestampSchema,
-  sortDate:         TimestampSchema.optional(),
+  sortDate:         TimestampSchema,
   memberIds:        z.array(z.string().min(1)).min(1),
 })
 
