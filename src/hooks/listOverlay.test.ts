@@ -241,7 +241,10 @@ describe('ListOverlayController', () => {
       // in-flight coalescing would stall the remove's confirmation too,
       // and the test would pass without exercising anything.)
       const create = addCreate('a', async () => { throw new Error('unreachable') })
-      const remove = addRemove(KEY_A, 'a', async () => [])
+      // The remove's read DISAGREES (row still there), so its grace expiry
+      // reaches forceRetire rather than settling through reconcile — that
+      // is the branch under test.
+      const remove = addRemove(KEY_A, 'a', async () => [row('a')])
       controller.markAmbiguous(create)
       controller.markSucceeded(remove)
 
@@ -249,6 +252,7 @@ describe('ListOverlayController', () => {
       // still-unresolved create with it.
       await vi.advanceTimersByTimeAsync(OVERLAY_GRACE_MS)
 
+      expect(controller.getSnapshot(remove.queryKeyHash)).toHaveLength(2)
       expect(controller.getSnapshot(remove.queryKeyHash).some(o => o.kind === 'create')).toBe(true)
       expect(view(controller, [])).toEqual([])
     })
