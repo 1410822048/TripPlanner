@@ -18,8 +18,10 @@ import {
 import {
   makeExpenseCreateSchema,
   makeExpenseUpdateSchema,
+  validateExpenseCrossField,
   type ExpenseReceiptOut,
 } from '../src/expense-validate'
+import { rosterForUpdate } from '../src/expense-write-shared'
 import { CascadeError } from '../src/cascade'
 import type { ForeignArtifacts } from '../src/expense-foreign-write'
 import type { FxSnapshot } from '../src/fx-rate'
@@ -256,5 +258,51 @@ describe('mergeExpense', () => {
       { memberId: 'u1', amountMinor: 600 },
       { memberId: 'u2', amountMinor: 600 },
     ])
+  })
+})
+
+// ─── rosterForUpdate ──────────────────────────────────────────────
+//
+// Removing a member must not freeze the expenses they already touched.
+// The update paths validate against this widened roster; create still
+// uses the live roster, so a departed member can never be introduced.
+
+describe('rosterForUpdate', () => {
+  it('grandfathers a departed paidBy / split member the doc already references', () => {
+    const current = encodeExpense(createPayload(), TRIP, MEMBERS, 'u1')
+    // u1 left the trip: live roster is u2 only.
+    const allowed = rosterForUpdate(['u2'], current)
+    expect(allowed).toEqual(expect.arrayContaining(['u1', 'u2']))
+
+    // A title-only edit still validates -- this is the freeze that
+    // used to 400 forever.
+    expect(() => validateExpenseCrossField(
+      mergeExpense(current, makeExpenseUpdateSchema().parse({ title: 'Lunch v2' })),
+      allowed,
+    )).not.toThrow()
+  })
+
+  it('grandfathers item allocation members', () => {
+    const current = encodeExpense(createPayload({
+      amountMinor: 1000,
+      splits: [{ memberId: 'u1', amountMinor: 400 }, { memberId: 'u2', amountMinor: 600 }],
+      items: [
+        { id: 'i1', name: 'A', amountMinor: 400, allocations: [{ memberId: 'u1', shares: 1 }] },
+        { id: 'i2', name: 'B', amountMinor: 600, allocations: [{ memberId: 'u2', shares: 1 }] },
+      ],
+    }), TRIP, MEMBERS, 'u1')
+    expect(rosterForUpdate([], current)).toEqual(expect.arrayContaining(['u1', 'u2']))
+  })
+
+  it('does not admit a member the doc never referenced', () => {
+    const current = encodeExpense(createPayload(), TRIP, MEMBERS, 'u1')
+    const allowed = rosterForUpdate(['u2'], current)
+    expect(allowed).not.toContain('stranger')
+
+    expect(() => validateExpenseCrossField({
+      amountMinor: 1200, currency: 'JPY',
+      paidBy: 'stranger',
+      splits: [{ memberId: 'u2', amountMinor: 1200 }],
+    }, allowed)).toThrow()
   })
 })

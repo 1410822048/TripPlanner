@@ -128,8 +128,12 @@ vi.mock('@/hooks/useAttachmentUrl', () => ({
 vi.mock('./SettlementSummary', () => ({ default: () => null }))
 vi.mock('./SettlementRecordSheet', () => ({ default: () => null }))
 vi.mock('./ExpenseFormModal', () => ({
-  default: ({ editTarget }: { editTarget: Expense | null }) => (
-    <div role="dialog" aria-label={editTarget ? 'expense-edit' : 'expense-create'} />
+  default: ({ editTarget, members }: { editTarget: Expense | null; members: TripMember[] }) => (
+    <div
+      role="dialog"
+      aria-label={editTarget ? 'expense-edit' : 'expense-create'}
+      data-members={members.map(m => m.id).join(',')}
+    />
   ),
 }))
 vi.mock('@/features/auth/components/SignInPromptModal', () => ({ default: () => null }))
@@ -275,6 +279,31 @@ describe('ExpensePage read-first expense flow', () => {
     expect(within(detail).getByText('已清算')).toBeTruthy()
     expect(screen.queryByRole('button', { name: '編輯' })).toBeNull()
     expect(harness.closeModal).not.toHaveBeenCalled()
+  })
+
+  it('lists a departed split member in the edit form so the save cannot silently drop their share', () => {
+    const target = receiptExpense()          // splits u1 + u2
+    harness.expenses = [target]
+    harness.members = [MEMBERS[0]!]          // u2 left the trip
+    harness.modalIsOpen = true
+    harness.modalEditTarget = target
+
+    render(<ExpensePage />)
+
+    const form = screen.getByRole('dialog', { name: 'expense-edit' })
+    expect(form.getAttribute('data-members')).toBe('u1,u2')
+  })
+
+  it('keeps the create form roster-pure (the Worker rejects a departed member on create)', () => {
+    harness.expenses = [receiptExpense()]
+    harness.members = [MEMBERS[0]!]
+    harness.modalIsOpen = true
+    harness.modalEditTarget = null
+
+    render(<ExpensePage />)
+
+    const form = screen.getByRole('dialog', { name: 'expense-create' })
+    expect(form.getAttribute('data-members')).toBe('u1')
   })
 
   it('does not strand the modal when a settlement-locked edit target has been soft-deleted', async () => {

@@ -75,3 +75,31 @@ export function decodeExpense(fields: Record<string, FsValue>): {
   }) : undefined
   return { amountMinor, currency, paidBy, splits, items, adjustments }
 }
+
+/** The live roster widened with the departed members an existing expense
+ *  ALREADY references. Update paths only -- create must stay roster-pure.
+ *
+ *  Without this, removing a member freezes every expense they ever paid
+ *  for or shared: `validateExpenseCrossField` rejects the out-of-roster
+ *  `paidBy` / `splits[].memberId` that the stored doc still carries, so
+ *  even a title edit 400s forever. Stripping those refs instead is not an
+ *  option -- that rewrites settled history.
+ *
+ *  Granularity is set membership, not per-field equality: a ghost already
+ *  on the doc may have their split amount change (otherwise any total edit
+ *  would be blocked again), but a ghost the doc never referenced is still
+ *  rejected. */
+export function rosterForUpdate(
+  memberIds:     string[],
+  currentFields: Record<string, FsValue>,
+): string[] {
+  const current = decodeExpense(currentFields)
+  const allowed = new Set(memberIds)
+  allowed.add(current.paidBy)
+  for (const split of current.splits) allowed.add(split.memberId)
+  for (const item of current.items ?? []) {
+    for (const allocation of item.allocations) allowed.add(allocation.memberId)
+  }
+  allowed.delete('')
+  return [...allowed]
+}

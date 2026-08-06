@@ -26,7 +26,7 @@ import {
 }                                          from './firestore-tx'
 import { getFxSnapshot, type FxSnapshot }  from './fx-rate'
 import { currencyFractionDigits }          from '@tripmate/fx-core'
-import { pushUnique, decodeExpense, type TripContext } from './expense-write-shared'
+import { pushUnique, decodeExpense, rosterForUpdate, type TripContext } from './expense-write-shared'
 import {
   encodeSourceItems,
   encodeSourceAdjustments,
@@ -237,6 +237,7 @@ export async function buildForeignUpdateWrite(args: {
     throw new ExpenseValidationError(issue.path.join('.'), issue.message)
   }
   const fp = fParseResult.data
+  const allowedMemberIds = rosterForUpdate(args.ctx.memberIds, args.currentFields)
 
   // The foreign-update schema's superRefine guarantees source-money
   // fields are present all-or-none and exactly one source domain is
@@ -349,7 +350,7 @@ export async function buildForeignUpdateWrite(args: {
           items:       [],
           adjustments: [],
         },
-        args.ctx.memberIds,
+        allowedMemberIds,
       )
 
       patchFields.amountMinor = { integerValue: String(converted.amountMinor) }
@@ -398,7 +399,7 @@ export async function buildForeignUpdateWrite(args: {
         rateDecimal:          snapshot.rateDecimal,
         sourceFractionDigits,
         targetFractionDigits,
-        members:              args.ctx.memberIds,
+        members:              allowedMemberIds,
       })
 
       validateExpenseCrossField(
@@ -410,7 +411,7 @@ export async function buildForeignUpdateWrite(args: {
           items:       materialized.tripItems,
           adjustments: materialized.tripAdjustments,
         },
-        args.ctx.memberIds,
+        allowedMemberIds,
       )
 
       patchFields.amountMinor = { integerValue: String(materialized.amountMinor) }
@@ -517,7 +518,7 @@ export async function buildForeignUpdateWrite(args: {
           items:        decoded.items,
           adjustments:  decoded.adjustments,
         },
-        args.ctx.memberIds,
+        allowedMemberIds,
       )
     }
   }

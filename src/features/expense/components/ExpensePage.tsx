@@ -6,6 +6,7 @@ import {
 } from '../hooks/useExpenses'
 import { useOverlayPendingRowIds } from '@/hooks/listOverlay'
 import { useSettlements, useCreateSettlement, useDeleteSettlement } from '../hooks/useSettlements'
+import { expandWithGhosts } from '../services/settlement'
 import { useMembers } from '@/features/members/hooks/useMembers'
 import { membersToTripMembers } from '@/features/members/utils'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
@@ -400,7 +401,12 @@ export default function ExpensePage() {
           isOpen
           editTarget={modal.editTarget}
           defaultDate={toLocalDateString(new Date())}
-          members={members}
+          // Edit mode also lists the departed members THIS expense already
+          // references, so a save doesn't silently drop their split and
+          // redistribute it. Scoped to the edited doc on purpose: it mirrors
+          // the Worker's grandfather rule, which only tolerates refs the doc
+          // already carries. Create mode stays roster-pure.
+          members={modal.editTarget ? expandWithGhosts(members, [modal.editTarget]) : members}
           isSaving={false}
           onClose={modal.close}
           onSave={handleSave}

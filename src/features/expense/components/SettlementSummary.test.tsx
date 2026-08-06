@@ -61,6 +61,14 @@ describe('SettlementSummary — receiver-only record gate', () => {
     expect(screen.getByText('等待收款')).toBeTruthy()
     expect(screen.queryByRole('button', RECORD_BTN)).toBeNull()
   })
+
+  it('withholds the button from the payee when the payer has left the trip', () => {
+    // u2 removed from the roster → ghost debtor. The Worker rejects a
+    // fromUid with no member doc, so the button would always 400.
+    render(<SettlementSummary {...base({ members: [A], uid: 'u1' })} />)
+    expect(screen.queryByRole('button', RECORD_BTN)).toBeNull()
+    expect(screen.getByText('已退出')).toBeTruthy()
+  })
 })
 
 describe('SettlementSummary — balances + all-settled', () => {

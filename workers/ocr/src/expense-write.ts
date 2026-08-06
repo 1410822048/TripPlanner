@@ -33,7 +33,7 @@ import {
   type ExpenseReceiptOut,
 }                                                                   from './expense-validate'
 import { buildReceiptFromIntents, validateBuiltReceipt }         from './expense-receipt-write'
-import { pushUnique, type TripContext }                             from './expense-write-shared'
+import { pushUnique, rosterForUpdate, type TripContext }            from './expense-write-shared'
 import {
   prepareForeignCreate, buildForeignUpdateWrite,
   type ForeignArtifacts,
@@ -599,16 +599,15 @@ function buildTripUpdateWrite(args: {
   const merged = mergeExpense(args.currentFields, patchParsed.data)
   // Same trip-currency bind as doCreate. Checking the merged value
   // (not patchParsed.data.currency directly) catches BOTH a raw
-  // patch.currency divergence AND a pre-existing doc whose currency
-  // somehow drifted from the trip (data-integrity guard for older
-  // writes that pre-date this gate).
+  // patch.currency divergence AND a stored doc whose currency somehow
+  // drifted from the trip (e.g. a manual Console write).
   if (merged.currency !== args.ctx.currency) {
     throw new ExpenseValidationError(
       'currency',
       `expense currency ${merged.currency} does not match trip currency ${args.ctx.currency}`,
     )
   }
-  validateExpenseCrossField(merged, args.ctx.memberIds)
+  validateExpenseCrossField(merged, rosterForUpdate(args.ctx.memberIds, args.currentFields))
 
   // Build the update mask + field map. Receipt write happens via
   // the separate `receipt` arg (intent-built) or via deletion
