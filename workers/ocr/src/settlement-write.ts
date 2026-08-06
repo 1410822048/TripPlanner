@@ -508,16 +508,13 @@ async function doCreate(
     //     Pair-scoping shrinks the conflict set to docs that genuinely
     //     affect this settlement.
     //   - Settlements are read by (fromUid,toUid) EQUALITY, NOT a
-    //     denormalized pairKey field. This is deliberately migration-safe:
-    //     fromUid/toUid exist on EVERY settlement doc (including any
-    //     recorded before this code shipped), whereas a brand-new
-    //     `pairKey ==` query would silently skip pre-existing docs →
-    //     `applied` undercounted → remaining overstated → permanent
-    //     409-stale on any pair that already had a settlement. Two `==`
-    //     filters need NO composite index (Firestore single-field index
-    //     merging), and each direction's query returns ONLY this exact
-    //     pair, so unrelated A→thirdParty rows never enter the conflict set
-    //     or count toward the read limit.
+    //     denormalized pairKey field. Two `==` filters need NO composite
+    //     index (Firestore single-field index merging), and each
+    //     direction's query returns ONLY this exact pair, so unrelated
+    //     A→thirdParty rows never enter the conflict set or count toward
+    //     the read limit. Adding a pairKey field would also make any doc
+    //     written without it invisible to the query — undercounting
+    //     `applied` and 409-stalling the pair permanently.
     //   - `limit + 1` keeps truncation *detectable* (fail-closed below).
     //   - The pair-lock read serializes same-pair concurrent creates:
     //     two creates with different settlementIds would otherwise each

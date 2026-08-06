@@ -55,8 +55,9 @@ export interface Trip {
    * Per-feature "last activity" stamps. Drives the bottom-nav unread-
    * dot badge — see useFeatureBadges. Each service mutation calls
    * bumpTripActivity() best-effort after the main write to update the
-   * matching feature key. Optional for backward-compat with trip docs
-   * created before this field existed; missing → no badge.
+   * matching feature key. Optional because createTrip never seeds it —
+   * bumpTripActivity creates the map lazily on the first activity, so a
+   * brand-new trip legitimately has no stamps; missing → no badge.
    */
   lastActivityByFeature?: Partial<Record<ActivityFeature, ActivityStamp>>
   /**
@@ -204,11 +205,6 @@ export interface Invite {
   expiresAt: Timestamp
 }
 
-/**
- * Legacy one-shot fields (consumed/consumedBy/consumedAt) may still exist on
- * old docs written before the reusable-link migration; `.passthrough()` keeps
- * the zod parse forgiving so those extras don't reject parsing.
- */
 export const InviteDocSchema = z.object({
   tripId:    z.string(),
   tripTitle: z.string(),
@@ -217,4 +213,4 @@ export const InviteDocSchema = z.object({
   createdBy: z.string(),
   createdAt: TimestampSchema,
   expiresAt: TimestampSchema,
-}).passthrough()
+})

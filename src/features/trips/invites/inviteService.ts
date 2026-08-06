@@ -87,8 +87,8 @@ export function formatInviteExpiry(expiresAt: Timestamp, now: number): string {
 function toInvite(id: string, data: Record<string, unknown>): Invite {
   // Narrow + validate before handing to the rest of the app. Keeps one
   // trust boundary: anything in-memory typed as Invite has been checked.
-  // Schema uses .passthrough() so legacy one-shot fields on older docs
-  // don't reject the parse; we project down to the Invite shape.
+  // Zod strips unknown keys rather than rejecting, so an unexpected field
+  // is dropped, not fatal; we project down to the Invite shape.
   const result = InviteDocSchema.safeParse(data)
   if (!result.success) {
     captureError(result.error, { source: 'inviteService/toInvite', docId: id })

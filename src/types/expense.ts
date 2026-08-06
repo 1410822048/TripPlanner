@@ -483,11 +483,9 @@ export const ExpenseDocSchema = z.object({
   date:        z.string(),
   receipt:     ExpenseReceiptSchema.optional(),
   items:       z.array(ExpenseItemSchema).optional(),
-  // Phase B: required on every doc, default empty array. Legacy docs
-  // written before this contract do NOT have the field — per the
-  // no-backcompat decision, those will fail parse on read. The Sentry
-  // capture in firestoreDocFromSchema surfaces it as a single noisy
-  // signal rather than a silent display regression.
+  // Required on every doc, empty array when unused. A doc without it
+  // fails parse on read; firestoreDocFromSchema's Sentry capture makes
+  // that a loud signal rather than a silent display regression.
   adjustments: z.array(ExpenseAdjustmentSchema),
   note:        z.string().optional(),
   createdBy:   z.string(),

@@ -49,8 +49,8 @@ export const CURRENCY_OPTIONS: CurrencyMeta[] = [
   REGISTRY.VND!, REGISTRY.MYR!, REGISTRY.IDR!,
 ]
 
-/** Default when a trip has no currency set (legacy data, demo fallback,
- *  loading state). Matches the historical hardcoded ¥. */
+/** Default when a trip has no currency set (demo fallback, loading
+ *  state). Matches the historical hardcoded ¥. */
 export const DEFAULT_CURRENCY = 'JPY'
 
 /** Symbol-only lookup — for placeholders / input prefixes where the

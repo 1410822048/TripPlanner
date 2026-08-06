@@ -175,8 +175,7 @@ export function bookingUpdateApplied(stored: Booking, updates: Partial<CreateBoo
 
 // ─── Read (cross-trip hotel scope) ────────────────────────────────
 // PastLodgingPage's cross-trip lodging history. Single collection-group
-// query gated on the denormalised memberIds array; bookings created
-// before the memberIds migration won't appear (backfill task).
+// query gated on the denormalised memberIds array.
 
 export async function getMyHotelBookings(uid: string): Promise<Booking[]> {
   const { db, collectionGroup, query, where, orderBy, limit, getDocs } = await getFirebase()

@@ -93,8 +93,8 @@ export function wishUpdateApplied(stored: Wish, updates: Partial<CreateWishInput
 // ─── Storage helpers ──────────────────────────────────────────────
 
 /** All Storage paths backing a WishImage. thumbPath is optional (thumb-
- *  less uploads omit it); Set() also dedupes legacy collapse shapes where
- *  thumbPath == path. */
+ *  less uploads omit it); Set() guards against a doc where thumbPath ==
+ *  path, which would otherwise issue two deletes for one object. */
 function wishImagePaths(image: WishImage): string[] {
   return [...new Set([image.path, image.thumbPath].filter((p): p is string => !!p))]
 }

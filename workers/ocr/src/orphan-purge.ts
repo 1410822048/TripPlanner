@@ -196,9 +196,8 @@ function parsePurgeEntry(
   // for now" to the caller. Equivalent to: skip silently.
   if (createdAtMs > ageCutoffMs)      return null
 
-  // entityRef must match the strict pattern. This catches legacy
-  // schedule entityRefs (rules block them now but pre-shipped data
-  // could exist), random strings from manual Console writes, etc.
+  // entityRef must match the strict pattern — random strings from a
+  // manual Console write, a corrupted queue entry, etc.
   const m = ENTITY_REF_RE.exec(entityRef)
   if (!m) return null
 

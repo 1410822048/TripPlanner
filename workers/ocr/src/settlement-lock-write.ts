@@ -27,9 +27,9 @@ import { type FsValue }                    from './firestore'
 
 /** Deterministic unordered pair key for the pair-LOCK doc id. Settlement
  *  docs themselves are read by (fromUid,toUid) equality, NOT by a stored
- *  pairKey field — see the read fan-out in doCreate for why that's the
- *  migration-safe choice. The lock serializes same-pair create/delete so
- *  two concurrent creates on the same pair conflict on a shared doc.
+ *  pairKey field — see the read fan-out in doCreate for why. The lock
+ *  serializes same-pair create/delete so two concurrent creates on the
+ *  same pair conflict on a shared doc.
  *
  *  Direction-agnostic via lexicographic min/max ordering (A→B and B→A
  *  share the same key). Storage is bounded (one lock doc per
