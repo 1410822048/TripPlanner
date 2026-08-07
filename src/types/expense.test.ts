@@ -214,6 +214,19 @@ describe('ExpenseDocSchema — FX cross-field equality', () => {
     }
   })
 
+  it('rejects date mismatch with fxSnapshot.requestedDate', () => {
+    // The rate was fetched FOR the expense's date; a doc where they
+    // disagree quotes one day's money at another day's rate. The Worker
+    // binds them on create and recomputes whenever date changes, so a
+    // mismatch can only come from outside those paths.
+    const doc = foreignDoc({ date: '2026-05-31' })  // fxSnapshot.requestedDate stays 2026-05-30
+    const res = ExpenseDocSchema.safeParse(doc)
+    expect(res.success).toBe(false)
+    if (!res.success) {
+      expect(res.error.issues.some(i => /date.*must equal.*requestedDate/i.test(i.message))).toBe(true)
+    }
+  })
+
   it('reports ALL cross-field mismatches in a single parse (no early bail)', () => {
     // Each mismatch is its own ctx.addIssue, so a doc with multiple
     // drifts surfaces every issue at once. Defensive: a future

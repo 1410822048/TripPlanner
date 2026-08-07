@@ -614,6 +614,19 @@ export const ExpenseDocSchema = z.object({
       path: ['fxSnapshot', 'convertedAmountMinor'],
     })
   }
+  // The rate was fetched FOR this expense's date, so a doc where the two
+  // disagree is quoting one day's money at another day's rate. The Worker
+  // binds them on both paths (create passes the payload date, update
+  // recomputes whenever date changes), which is exactly why a mismatch can
+  // only arrive from outside those paths and should not be trusted.
+  // SettlementDocSchema pins the same equality on settledOn.
+  if (data.date !== fx.requestedDate) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `date (${data.date}) must equal fxSnapshot.requestedDate (${fx.requestedDate})`,
+      path: ['fxSnapshot', 'requestedDate'],
+    })
+  }
 
   const hasItems = data.items !== undefined
   const sourceModeCount = [
