@@ -6,6 +6,7 @@
 import { useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
 import type { Wish, WishCategory, WishImage, CreateWishInput } from '@/types'
+import { isHttpUrl } from '@/types/_shared'
 import FormModalShell from '@/components/ui/FormModalShell'
 import FormField from '@/components/ui/FormField'
 import DeleteConfirm from '@/components/ui/DeleteConfirm'
@@ -120,7 +121,11 @@ export default function WishFormModal({
   function validate(): WishFormResult | null {
     const e: Record<string, string> = {}
     if (!state.title.trim()) e.title = '請輸入標題'
-    if (state.link.trim() && !/^https?:\/\//i.test(state.link.trim())) {
+    // isHttpUrl, not a local regex: the old `/^https?:\/\//i` was LOOSER
+    // than the rules gate (case-insensitive, and it let embedded
+    // whitespace through), so a value could clear the form, land via the
+    // Worker's admin SDK, then jam every later client update.
+    if (state.link.trim() && !isHttpUrl(state.link.trim())) {
       e.link = 'URL 必須以 http:// 或 https:// 開頭'
     }
     setErrors(e)

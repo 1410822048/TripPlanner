@@ -9,7 +9,8 @@
 //   - File      → user picked a new file (replace on save)
 import { useEffect, useId, useRef, useState } from 'react'
 import { KeyRound, PencilLine } from 'lucide-react'
-import { isHttpUrl, type Booking, type CreateBookingInput } from '@/types/booking'
+import { type Booking, type CreateBookingInput } from '@/types/booking'
+import { isHttpUrl } from '@/types/_shared'
 import FormModalShell from '@/components/ui/FormModalShell'
 import DeleteConfirm from '@/components/ui/DeleteConfirm'
 import { DatePicker, type DatePickerHandle } from '@/components/ui/pickers'

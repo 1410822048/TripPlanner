@@ -730,9 +730,14 @@ service cloud.firestore {
                       && (!('address' in request.resource.data)
                             || (request.resource.data.address is string
                                 && request.resource.data.address.size() <= 500))
+                      // link renders into an <a href>: restrict to http(s)
+                      // so a raw-SDK writer can't store a javascript:/data:
+                      // URL. Mirrors isHttpUrl in src/types/_shared.ts +
+                      // workers/ocr/src/field-validation.ts.
                       && (!('link' in request.resource.data)
                             || (request.resource.data.link is string
-                                && request.resource.data.link.size() <= 500))
+                                && request.resource.data.link.size() <= 500
+                                && request.resource.data.link.matches('^https?://.+')))
                       // image is Worker-authoritative (Phase 3.7): text-only
                       // wishes go through this client setDoc path; wishes
                       // with an image MUST route through Worker
@@ -771,9 +776,11 @@ service cloud.firestore {
               && (!('address' in request.resource.data)
                     || (request.resource.data.address is string
                         && request.resource.data.address.size() <= 500))
+              // link renders into an <a href>: http(s) only (see create).
               && (!('link' in request.resource.data)
                     || (request.resource.data.link is string
-                        && request.resource.data.link.size() <= 500))
+                        && request.resource.data.link.size() <= 500
+                        && request.resource.data.link.matches('^https?://.+')))
               // image is Worker-authoritative on update too. Client may
               // detach via deleteField() OR leave the field as-is; any
               // image WRITE (replace / first-attach) routes through

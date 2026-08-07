@@ -5,7 +5,8 @@
 // <a href>, so the only thing that matters here is "http(s) in, every
 // other scheme out".
 import { describe, it, expect } from 'vitest'
-import { isHttpUrl, CreateBookingSchema, BookingDocSchema } from './booking'
+import { CreateBookingSchema, BookingDocSchema } from './booking'
+import { isHttpUrl } from './_shared'
 import { MOCK_TIMESTAMP as TS } from '@/mocks/utils'
 
 describe('isHttpUrl', () => {

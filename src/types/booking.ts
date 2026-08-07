@@ -4,29 +4,7 @@
 // PastLodgingPage's collection-group hotel query.
 import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
-import { TimestampSchema } from './_shared'
-
-/** `link` renders into an `<a href>`, so reject anything that isn't an
- *  http(s) URL (blocks `javascript:` / `data:` XSS at the write boundary).
- *  Must accept EXACTLY the set the firestore.rules `^https?://.+` regex
- *  accepts — rules are the canonical gate, and a value that passes here
- *  but NOT rules writes fine via the Worker's admin SDK (rules-bypass)
- *  then jams every later client update (rules re-validate the whole doc).
- *  `new URL()` alone drifts LOOSER than that regex two ways: it lowercases
- *  the scheme (rules are case-sensitive lowercase) and silently strips
- *  embedded tab/newline (rules `.` never matches a newline). So gate on a
- *  lowercase http(s):// prefix + no whitespace, THEN parse for structure.
- *  Mirrored verbatim in workers/ocr/src/booking-write.ts. */
-export function isHttpUrl(v: string): boolean {
-  if (!v.startsWith('http://') && !v.startsWith('https://')) return false
-  if (/\s/.test(v)) return false
-  try {
-    new URL(v)
-    return true
-  } catch {
-    return false
-  }
-}
+import { TimestampSchema, isHttpUrl } from './_shared'
 
 /**
  * Attachment metadata for a booking file with an optional smaller thumbnail

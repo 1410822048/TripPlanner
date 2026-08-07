@@ -772,6 +772,56 @@ describe('/trips/{tripId}/bookings', () => {
 })
 
 // ─── Wishes (the trickiest rule) ───────────────────────────────────
+// wish.link renders into an <a href> (WishDetailSheet), so the rules are
+// the canonical gate against a raw-SDK writer storing a javascript:/data:
+// URL. Mirrors the booking.link regex.
+describe('/trips/{tripId}/wishes link scheme', () => {
+  function wishDoc(link: string) {
+    return {
+      tripId: TRIP_ID, category: 'place', title: 'W', link,
+      proposedBy: VIEWER_UID, updatedBy: VIEWER_UID, votes: [VIEWER_UID],
+      memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID],
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    }
+  }
+
+  test('member can create a wish with an https link', async () => {
+    await assertSucceeds(
+      setDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-link-ok'), wishDoc('https://tabelog.com/x')),
+    )
+  })
+
+  test.each([
+    ['javascript:alert(1)'],
+    ['data:text/html,<script>alert(1)</script>'],
+    ['HTTPS://example.com'],
+  ])('member cannot create a wish with link %s', async link => {
+    await assertFails(
+      setDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-link-bad'), wishDoc(link)),
+    )
+  })
+
+  test('proposer cannot update an existing wish to a javascript: link', async () => {
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
+        link: 'javascript:alert(1)',
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('proposer can update an existing wish to an https link', async () => {
+    await assertSucceeds(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
+        link: 'https://tabelog.com/y',
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+})
+
 describe('/trips/{tripId}/wishes vote toggle', () => {
   test('member can add their own uid to votes', async () => {
     await assertSucceeds(

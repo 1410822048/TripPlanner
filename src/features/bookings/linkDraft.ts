@@ -2,7 +2,8 @@
 // Reservation URL/share-target normalisation. Kept separate from utils.ts so
 // lightweight display helpers (thumbnail paths, labels) do not pull the brand
 // catalog unless a form/import flow actually needs URL -> draft inference.
-import { isHttpUrl, type Booking } from '@/types/booking'
+import { type Booking } from '@/types/booking'
+import { isHttpUrl } from '@/types/_shared'
 import { bookingProviderFromUrl } from './utils'
 import { bookingPlatformBrand } from './components/cards/brandMeta'
 

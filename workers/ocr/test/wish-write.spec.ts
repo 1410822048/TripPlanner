@@ -477,6 +477,27 @@ describe('wishFileCreate: state checks', () => {
 // ─── Body validation ──────────────────────────────────────────────
 
 describe('wishFileCreate: body validation', () => {
+	// Deny-only coverage would pass just as well against a rule that
+	// rejected every link, so pin the accepted shape too.
+	it('accepts a valid https link', async () => {
+		seedAuth()
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
+		vi.mocked(storage.headR2Object).mockResolvedValue(
+			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
+		)
+		await expect(wishFileCreate(
+			CALLER_UID,
+			{
+				tripId:    TRIP_ID,
+				wishId:    WISH_ID,
+				wish:      { category: 'place', title: 'X', link: 'https://tabelog.com/tokyo/A1301/' },
+				intentIds: [FULL_INTENT_ID],
+			},
+			'{}', BUCKET,
+		)).resolves.toBeTruthy()
+	})
+
 	it('rejects when wish body is missing title', async () => {
 		seedAuth()
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
@@ -490,6 +511,33 @@ describe('wishFileCreate: body validation', () => {
 				tripId:    TRIP_ID,
 				wishId:    WISH_ID,
 				wish:      { category: 'place' },  // missing title
+				intentIds: [FULL_INTENT_ID],
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(WishValidationError)
+	})
+
+	// link lands in an <a href>, and the Worker's admin SDK bypasses the
+	// rules regex that would otherwise catch this — so the Zod refine is
+	// the only gate on this path.
+	it.each([
+		['javascript:alert(1)'],
+		['data:text/html,<script>alert(1)</script>'],
+		['HTTPS://example.com'],            // rules regex is lowercase-only
+		['https://ex ample.com'],           // rules `.` never matches whitespace
+	])('rejects a non-http(s) link: %s', async link => {
+		seedAuth()
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
+		vi.mocked(storage.headR2Object).mockResolvedValue(
+			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
+		)
+		await expect(wishFileCreate(
+			CALLER_UID,
+			{
+				tripId:    TRIP_ID,
+				wishId:    WISH_ID,
+				wish:      { category: 'place', title: 'X', link },
 				intentIds: [FULL_INTENT_ID],
 			},
 			'{}', BUCKET,

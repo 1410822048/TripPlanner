@@ -44,7 +44,7 @@ import {
   buildAttachmentMapValue,
   type ConsumedIntent,
 }                                                                   from './upload-intent'
-import { FieldValidationError, TripIdRe }                            from './field-validation'
+import { FieldValidationError, TripIdRe, isHttpUrl }                 from './field-validation'
 
 // ─── Request body schema ──────────────────────────────────────────
 
@@ -90,7 +90,10 @@ const CreateWishBodySchema = z.object({
   category:    z.enum(['place', 'food']),
   title:       z.string().min(1).max(100),
   description: z.string().max(500).optional(),
-  link:        z.string().max(500).optional(),
+  // Renders into an <a href> — http(s) only, matching the rules regex.
+  // No `v === ''` escape hatch here (unlike booking): wishService runs
+  // stripEmpty before calling the Worker, so '' never arrives.
+  link:        z.string().max(500).refine(isHttpUrl, 'link must be an http(s) URL').optional(),
   address:     z.string().max(500).optional(),
 })
 type CreateWishBody = z.infer<typeof CreateWishBodySchema>
@@ -330,7 +333,10 @@ const UpdateWishBodySchema = z.object({
   category:    z.enum(['place', 'food']).optional(),
   title:       z.string().min(1).max(100).optional(),
   description: z.string().max(500).optional(),
-  link:        z.string().max(500).optional(),
+  // Renders into an <a href> — http(s) only, matching the rules regex.
+  // No `v === ''` escape hatch here (unlike booking): wishService runs
+  // stripEmpty before calling the Worker, so '' never arrives.
+  link:        z.string().max(500).refine(isHttpUrl, 'link must be an http(s) URL').optional(),
   address:     z.string().max(500).optional(),
 })
 type UpdateWishBody = z.infer<typeof UpdateWishBodySchema>

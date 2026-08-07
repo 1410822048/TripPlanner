@@ -6,7 +6,7 @@ import {
   PdfPageLimitError,
   pdfPageLimitMessage,
 } from '@tripmate/pdf-page-limit'
-import { isHttpUrl } from '@/types/booking'
+import { isHttpUrl } from '@/types/_shared'
 import { getFirebaseAuth } from '@/services/firebase'
 import { WORKER_BASE_URL } from '@/services/workerBase'
 import { extractBookingPdfText } from './bookingPdfText'

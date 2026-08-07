@@ -6,7 +6,7 @@
 // keep the toggle atomic at the Firestore layer.
 import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
-import { TimestampSchema } from './_shared'
+import { TimestampSchema, isHttpUrl } from './_shared'
 
 // Two-category model: 景點 vs 餐廳. Earlier versions had four
 // (place / food / activity / other); the simpler split matches how
@@ -98,7 +98,10 @@ export const CreateWishSchema = z.object({
   category:    z.enum(['place', 'food']),
   title:       z.string().min(1, '請輸入標題').max(100),
   description: z.string().max(500).optional(),
-  link:        z.string().max(500).optional(),
+  // 提案リンク。href に出すため http(s) のみ。cap 500 は rules / Worker と
+  // lockstep。booking と違い '' の逃げ道は不要 — wishService は Worker へ
+  // 送る前に stripEmpty するので '' はここまで届かない。
+  link:        z.string().max(500).refine(isHttpUrl, 'URL 必須以 http:// 或 https:// 開頭').optional(),
   // 住所テキスト or Google Maps URL を受けるため 500(URL は 200 を超え得る)。
   address:     z.string().max(500).optional(),
 })

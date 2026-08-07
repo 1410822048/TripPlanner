@@ -65,7 +65,7 @@ import {
   type ConsumedIntent,
   type PdfValidationCache,
 }                                                                   from './upload-intent'
-import { FieldValidationError, TripIdRe }                            from './field-validation'
+import { FieldValidationError, TripIdRe, isHttpUrl }                 from './field-validation'
 
 // ─── Request body schema ──────────────────────────────────────────
 
@@ -112,24 +112,6 @@ export type BookingFileCreateRequest = z.infer<typeof BookingFileCreateRequestSc
 export class BookingValidationError extends FieldValidationError {
   constructor(field: string, message: string) {
     super('BookingValidationError', field, message)
-  }
-}
-
-/** Verbatim mirror of `isHttpUrl` in src/types/booking.ts. The Worker
- *  uses the admin SDK and bypasses firestore.rules, so its `link` check
- *  must match the rules' canonical set EXACTLY — anything it accepts but
- *  the rules `^https?://.+` regex rejects (uppercase scheme, embedded
- *  whitespace; both of which `new URL()` would silently accept) gets
- *  written to the doc and then jams every later client update. Lowercase
- *  http(s):// prefix + no whitespace, then parse. */
-function isHttpUrl(v: string): boolean {
-  if (!v.startsWith('http://') && !v.startsWith('https://')) return false
-  if (/\s/.test(v)) return false
-  try {
-    new URL(v)
-    return true
-  } catch {
-    return false
   }
 }
 
