@@ -470,6 +470,31 @@ describe('createWish', () => {
 // ────────────────────────────────────────────────────────────────────
 
 describe('updateWish', () => {
+  // The form emits `field: undefined` for a cleared input and
+  // JSON.stringify drops those keys, so the Worker — which gates every
+  // write on key presence — would leave the stale value in place. The
+  // no-image branch has always turned the same undefined into
+  // deleteField(); this pins the Worker branch to the matching sentinel.
+  it('sends "" for cleared text fields so the Worker can delete them', async () => {
+    primeWishUpload('w1')
+    mocks.workerFetchMock.mockResolvedValueOnce({ ok: true })
+    mocks.safePurgeMock.mockResolvedValueOnce('purged')
+
+    await updateWish(
+      't1', 'w1',
+      { title: 'Edit', link: undefined, description: undefined, address: undefined } as unknown as Parameters<typeof updateWish>[2],
+      { uid: 'u1', attachment: new File([], 'r.jpg', { type: 'image/jpeg' }), existingImage: IMAGE },
+    )
+
+    const [, , , body] = mocks.workerFetchMock.mock.calls[0] as [string, string, string, { patch: Record<string, unknown> }]
+    expect(body.patch).toEqual({
+      title:       'Edit',
+      link:        '',
+      description: '',
+      address:     '',
+    })
+  })
+
   it('image File replace + Worker OK → single /wish-file-update (no client updateDoc), purge OLD', async () => {
     primeWishUpload('w1')
     mocks.workerFetchMock.mockResolvedValueOnce({ ok: true })

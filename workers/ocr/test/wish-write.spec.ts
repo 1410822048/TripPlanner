@@ -811,6 +811,94 @@ describe('wishFileUpdate: happy paths', () => {
 
 // ─── Authorization ───────────────────────────────────────────────
 
+// A save that replaces the image AND empties a text input routes here, so
+// this endpoint is the only thing that can clear those fields. Gating every
+// write on key presence made an absent key a silent no-op, which left the
+// stale value in a doc the user believed they had cleared.
+describe('wishFileUpdate: clearing text fields', () => {
+	it("treats '' as a field deletion: listed in updateMask, absent from fields", async () => {
+		seedUpdateAuth()
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
+			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk-f' }),
+		)
+
+		await wishFileUpdate(
+			CALLER_UID,
+			{
+				tripId:              TRIP_ID,
+				wishId:              WISH_ID,
+				patch:               { link: '', description: '', address: '' },
+				intentIds:           [FULL_INTENT_ID],
+				expectedCurrentPath: FULL_PATH,
+			},
+			'{}', BUCKET,
+		)
+
+		const writes = capturedTxResult!.writes as Array<{
+			updateMask?: string[]
+			fields: Record<string, unknown>
+		}>
+		const patch = writes[writes.length - 1]!
+		const maskSet = new Set(patch.updateMask)
+		for (const field of ['link', 'description', 'address']) {
+			expect(maskSet.has(field)).toBe(true)       // mask entry → delete
+			expect(patch.fields[field]).toBeUndefined() // no value written
+		}
+	})
+
+	it('still writes a non-empty value normally', async () => {
+		seedUpdateAuth()
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
+			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk-f' }),
+		)
+
+		await wishFileUpdate(
+			CALLER_UID,
+			{
+				tripId:              TRIP_ID,
+				wishId:              WISH_ID,
+				patch:               { link: 'https://tabelog.com/z' },
+				intentIds:           [FULL_INTENT_ID],
+				expectedCurrentPath: FULL_PATH,
+			},
+			'{}', BUCKET,
+		)
+
+		const writes = capturedTxResult!.writes as Array<{
+			updateMask?: string[]
+			fields: Record<string, { stringValue?: string }>
+		}>
+		const patch = writes[writes.length - 1]!
+		expect(new Set(patch.updateMask).has('link')).toBe(true)
+		expect(patch.fields.link?.stringValue).toBe('https://tabelog.com/z')
+	})
+
+	it('still rejects a non-http(s) link (the clear sentinel is not a bypass)', async () => {
+		seedUpdateAuth()
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
+		vi.mocked(storage.headR2Object).mockResolvedValue(
+			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk-f' }),
+		)
+
+		await expect(wishFileUpdate(
+			CALLER_UID,
+			{
+				tripId:              TRIP_ID,
+				wishId:              WISH_ID,
+				patch:               { link: 'javascript:alert(1)' },
+				intentIds:           [FULL_INTENT_ID],
+				expectedCurrentPath: FULL_PATH,
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(WishValidationError)
+	})
+})
+
 describe('wishFileUpdate: authorization', () => {
 	it('trip not found → 404', async () => {
 		txGetResponses.set(`trips/${TRIP_ID}`, notFoundReadDoc(`trips/${TRIP_ID}`))

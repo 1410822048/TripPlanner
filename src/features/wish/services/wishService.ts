@@ -55,6 +55,13 @@ import {
 
 const LIST_LIMIT = 100
 
+/** Optional text fields a user can clear by emptying the input. Both write
+ *  paths must agree on what "cleared" means, so the list lives in one
+ *  place: the SDK branch turns them into deleteField(), the Worker branch
+ *  into the `''` sentinel. `title` / `category` are absent on purpose —
+ *  they are required and have no cleared state. */
+const CLEARABLE_WISH_TEXT_FIELDS = ['description', 'link', 'address'] as const
+
 function wishFromDoc(d: QueryDocumentSnapshot): Wish {
   return firestoreDocFromSchema(WishDocSchema, d, 'wishFromDoc')
 }
@@ -247,12 +254,24 @@ export async function updateWish(
       message:  'entity-write',
       data:     { traceId, endpoint: '/wish-file-update', tripId, wishId },
     })
+    // Normalize cleared fields from `undefined` to `''` before
+    // JSON.stringify. The form builds `field: undefined` for a cleared
+    // input, JSON.stringify silently drops undefined keys, and the Worker
+    // gates every write on key PRESENCE — so an absent key is a no-op and
+    // the stale value survives. `''` survives serialization and trips the
+    // Worker's empty-string-as-delete allowlist. Symmetric with the
+    // no-image SDK branch below, which turns the same undefined into a
+    // deleteField() sentinel. Booking carries the identical contract.
+    const patchForWorker: Record<string, unknown> = { ...validated }
+    for (const k of CLEARABLE_WISH_TEXT_FIELDS) {
+      if (k in validated && validated[k] === undefined) patchForWorker[k] = ''
+    }
     await workerFetch(workerBase, idToken, '/wish-file-update', {
       tripId,
       wishId,
       // Worker stamps updatedBy + updatedAt itself; client only sends
       // validated text fields.
-      patch: validated,
+      patch: patchForWorker,
       intentIds,
       // Stale-replace guard: tell Worker what `image.path` the editor
       // loaded with (null = first-attach). If Tab B has already
@@ -281,7 +300,7 @@ export async function updateWish(
     ...stripEmpty(validated),
     ...auditUpdate(uid, serverTimestamp()),
   }
-  for (const k of ['description', 'link', 'address'] as const) {
+  for (const k of CLEARABLE_WISH_TEXT_FIELDS) {
     if (k in validated && (validated[k] === undefined || validated[k] === '')) {
       patch[k] = deleteField()
     }

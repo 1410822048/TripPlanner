@@ -334,12 +334,22 @@ const UpdateWishBodySchema = z.object({
   title:       z.string().min(1).max(100).optional(),
   description: z.string().max(500).optional(),
   // Renders into an <a href> — http(s) only, matching the rules regex.
-  // No `v === ''` escape hatch here (unlike booking): wishService runs
-  // stripEmpty before calling the Worker, so '' never arrives.
-  link:        z.string().max(500).refine(isHttpUrl, 'link must be an http(s) URL').optional(),
+  // `''` IS accepted here, unlike on create: it is the clear sentinel
+  // (see CLEARABLE_WISH_FIELDS), and a cleared link never reaches the
+  // href. Create has nothing to clear, so it stays strict.
+  link:        z.string().max(500).refine(v => v === '' || isHttpUrl(v), 'link must be an http(s) URL').optional(),
   address:     z.string().max(500).optional(),
 })
 type UpdateWishBody = z.infer<typeof UpdateWishBodySchema>
+
+/** Text fields the client may clear by sending `''`. The no-image SDK
+ *  path emits deleteField() for these; this endpoint reproduces the
+ *  contract as REST PATCH's field-deletion convention — omit from
+ *  `fields`, include in `updateMask`. Without it, an image-replacing edit
+ *  that ALSO clears a text field would leave the stale value behind,
+ *  because every write here is gated on key presence and JSON.stringify
+ *  drops the `undefined` the form actually produces. */
+const CLEARABLE_WISH_FIELDS = ['description', 'link', 'address'] as const
 
 const UPDATABLE_WISH_FIELDS = new Set([
   'category', 'title', 'description', 'link', 'address',
@@ -484,16 +494,22 @@ async function doUpdate(
       image:     imageValue,
       updatedBy: { stringValue: callerUid },
     }
-    if (patch.category    !== undefined) patchFields.category    = { stringValue: patch.category }
-    if (patch.title       !== undefined) patchFields.title       = { stringValue: patch.title }
-    if (patch.description !== undefined) patchFields.description = { stringValue: patch.description }
-    if (patch.link        !== undefined) patchFields.link        = { stringValue: patch.link }
-    if (patch.address     !== undefined) patchFields.address     = { stringValue: patch.address }
+    if (patch.category !== undefined) patchFields.category = { stringValue: patch.category }
+    if (patch.title    !== undefined) patchFields.title    = { stringValue: patch.title }
+    // Cleared fields carry no value but must still be listed in the mask,
+    // which is what tells Firestore to remove them.
+    const clearedFields: string[] = []
+    for (const field of CLEARABLE_WISH_FIELDS) {
+      const value = patch[field]
+      if (value === undefined) continue
+      if (value === '') clearedFields.push(field)
+      else patchFields[field] = { stringValue: value }
+    }
 
     const write: TxWrite = {
       document:        docResourceName(projectId, `trips/${req.tripId}/wishes/${req.wishId}`),
       fields:          patchFields,
-      updateMask:      Object.keys(patchFields),
+      updateMask:      [...Object.keys(patchFields), ...clearedFields],
       currentDocument: { exists: true },
       updateTransforms: [
         { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' },
