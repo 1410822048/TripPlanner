@@ -41,6 +41,7 @@ import {
   handleAttachmentUpload,
 } from '../src/attachment-content'
 import { TxCommitAmbiguous, TxRetryExhausted } from '../src/firestore-tx'
+import { CascadeError } from '../src/cascade'
 
 const TRIP_ID = 'trip-1'
 const EXPENSE_PATH = `trips/${TRIP_ID}/expenses/expense-1/receipt.png`
@@ -49,6 +50,7 @@ const UID = 'viewer-uid'
 const INTENT_ID = 'a'.repeat(32)
 const CORS = { 'Access-Control-Allow-Origin': 'https://example.test' }
 const ENV = { FIREBASE_SERVICE_ACCOUNT: '{}', ATTACHMENTS: {} as R2Bucket }
+const REPORT = vi.fn()
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
 
 function seedMembership(
@@ -94,13 +96,14 @@ beforeEach(() => {
   getObjectMock.mockReset()
   deleteObjectMock.mockReset()
   deleteObjectMock.mockResolvedValue(undefined)
+  REPORT.mockReset()
 })
 
 describe('attachment upload proxy', () => {
   it('rejects MIME spoofing before storing bytes', async () => {
     const response = await handleAttachmentUpload({
       request: uploadRequest(new Uint8Array([1, 2, 3]), 'image/png'),
-      uid: UID, cors: CORS, env: ENV,
+      uid: UID, cors: CORS, env: ENV, report: REPORT,
     })
 
     expect(response.status).toBe(415)
@@ -110,7 +113,7 @@ describe('attachment upload proxy', () => {
   it('passes validated bytes and SHA-256 to the intent-bound uploader', async () => {
     uploadMock.mockResolvedValue({ path: EXPENSE_PATH, replayed: false })
     const response = await handleAttachmentUpload({
-      request: uploadRequest(PNG), uid: UID, cors: CORS, env: ENV,
+      request: uploadRequest(PNG), uid: UID, cors: CORS, env: ENV, report: REPORT,
     })
 
     expect(response.status).toBe(200)
@@ -126,7 +129,7 @@ describe('attachment upload proxy', () => {
   it('rejects bodies above 5 MB from Content-Length without reading them', async () => {
     const request = uploadRequest(PNG)
     request.headers.set('Content-Length', String(5 * 1024 * 1024 + 1))
-    const response = await handleAttachmentUpload({ request, uid: UID, cors: CORS, env: ENV })
+    const response = await handleAttachmentUpload({ request, uid: UID, cors: CORS, env: ENV, report: REPORT })
 
     expect(response.status).toBe(413)
     expect(uploadMock).not.toHaveBeenCalled()
@@ -136,7 +139,7 @@ describe('attachment upload proxy', () => {
     uploadMock.mockRejectedValueOnce(new TxRetryExhausted(5, new Error('contention')))
 
     const response = await handleAttachmentUpload({
-      request: uploadRequest(PNG), uid: UID, cors: CORS, env: ENV,
+      request: uploadRequest(PNG), uid: UID, cors: CORS, env: ENV, report: REPORT,
     })
 
     expect(response.status).toBe(409)
@@ -150,10 +153,29 @@ describe('attachment upload proxy', () => {
     uploadMock.mockRejectedValueOnce(new TxCommitAmbiguous(new Error('commit timed out')))
 
     const response = await handleAttachmentUpload({
-      request: uploadRequest(PNG), uid: UID, cors: CORS, env: ENV,
+      request: uploadRequest(PNG), uid: UID, cors: CORS, env: ENV, report: REPORT,
     })
 
     expect(response.status).toBe(500)
+    // The 500 body says only "Internal error", so this branch is the one
+    // that has to leave the Worker or the failure is invisible.
+    expect(REPORT).toHaveBeenCalledTimes(1)
+    const [message, extra] = REPORT.mock.calls[0] as [string, Record<string, unknown>]
+    expect(message).toBe(
+      '[attachment-upload] commit response lost (timeout); the write may or may not have applied',
+    )
+    expect(extra.name).toBe('TxCommitAmbiguous')
+  })
+
+  it('stays silent when the failure is a CascadeError we already map', async () => {
+    uploadMock.mockRejectedValueOnce(new CascadeError(413, 'attachment too large'))
+
+    const response = await handleAttachmentUpload({
+      request: uploadRequest(PNG), uid: UID, cors: CORS, env: ENV, report: REPORT,
+    })
+
+    expect(response.status).toBe(413)
+    expect(REPORT).not.toHaveBeenCalled()
   })
 })
 
@@ -168,7 +190,7 @@ describe('attachment content proxy', () => {
 
     const response = await handleAttachmentContent({
       request: contentRequest(),
-      uid: UID, cors: CORS, env: ENV,
+      uid: UID, cors: CORS, env: ENV, report: REPORT,
     })
 
     expect(response.status).toBe(200)
@@ -181,7 +203,7 @@ describe('attachment content proxy', () => {
     docFields.set(`trips/${TRIP_ID}`, { ownerId: { stringValue: 'owner-uid' } })
     const response = await handleAttachmentContent({
       request: contentRequest(),
-      uid: UID, cors: CORS, env: ENV,
+      uid: UID, cors: CORS, env: ENV, report: REPORT,
     })
 
     expect(response.status).toBe(403)
@@ -194,7 +216,7 @@ describe('attachment content proxy', () => {
       `https://worker.test/attachment-content?tripId=${TRIP_ID}&path=${encodeURIComponent(EXPENSE_PATH)}`,
     )
 
-    const response = await handleAttachmentContent({ request, uid: UID, cors: CORS, env: ENV })
+    const response = await handleAttachmentContent({ request, uid: UID, cors: CORS, env: ENV, report: REPORT })
 
     expect(response.status).toBe(400)
     expect(getObjectMock).not.toHaveBeenCalled()
@@ -205,7 +227,7 @@ describe('attachment delete proxy', () => {
   it('rejects an expense delete from a viewer', async () => {
     seedMembership('viewer')
     const response = await handleAttachmentDelete({
-      body: { tripId: TRIP_ID, path: EXPENSE_PATH }, uid: UID, cors: CORS, env: ENV,
+      body: { tripId: TRIP_ID, path: EXPENSE_PATH }, uid: UID, cors: CORS, env: ENV, report: REPORT,
     })
 
     expect(response.status).toBe(403)
@@ -216,7 +238,7 @@ describe('attachment delete proxy', () => {
     seedMembership('viewer')
     docFields.set(`trips/${TRIP_ID}/wishes/wish-1`, { proposedBy: { stringValue: UID } })
     const response = await handleAttachmentDelete({
-      body: { tripId: TRIP_ID, path: WISH_PATH }, uid: UID, cors: CORS, env: ENV,
+      body: { tripId: TRIP_ID, path: WISH_PATH }, uid: UID, cors: CORS, env: ENV, report: REPORT,
     })
 
     expect(response.status).toBe(200)
@@ -226,7 +248,7 @@ describe('attachment delete proxy', () => {
   it('rejects delete while the member removal workflow is in progress', async () => {
     seedMembership('editor', { removing: true })
     const response = await handleAttachmentDelete({
-      body: { tripId: TRIP_ID, path: EXPENSE_PATH }, uid: UID, cors: CORS, env: ENV,
+      body: { tripId: TRIP_ID, path: EXPENSE_PATH }, uid: UID, cors: CORS, env: ENV, report: REPORT,
     })
 
     expect(response.status).toBe(403)
@@ -236,7 +258,7 @@ describe('attachment delete proxy', () => {
   it('rejects delete after trip cascade deletion starts', async () => {
     seedMembership('editor', { deleting: true })
     const response = await handleAttachmentDelete({
-      body: { tripId: TRIP_ID, path: EXPENSE_PATH }, uid: UID, cors: CORS, env: ENV,
+      body: { tripId: TRIP_ID, path: EXPENSE_PATH }, uid: UID, cors: CORS, env: ENV, report: REPORT,
     })
 
     expect(response.status).toBe(410)
@@ -256,7 +278,7 @@ describe('attachment delete proxy', () => {
       docFields.set(`trips/${TRIP_ID}/expenses/expense-1`, lockedExpense)
 
       const response = await handleAttachmentDelete({
-        body: { tripId: TRIP_ID, path: EXPENSE_PATH }, uid: UID, cors: CORS, env: ENV,
+        body: { tripId: TRIP_ID, path: EXPENSE_PATH }, uid: UID, cors: CORS, env: ENV, report: REPORT,
       })
 
       // /expense-update already refuses this editor; without the mirror the
@@ -272,7 +294,7 @@ describe('attachment delete proxy', () => {
       docFields.set(`trips/${TRIP_ID}/expenses/expense-1`, lockedExpense)
 
       const response = await handleAttachmentDelete({
-        body: { tripId: TRIP_ID, path: EXPENSE_PATH }, uid: UID, cors: CORS, env: ENV,
+        body: { tripId: TRIP_ID, path: EXPENSE_PATH }, uid: UID, cors: CORS, env: ENV, report: REPORT,
       })
 
       expect(response.status).toBe(200)
@@ -284,7 +306,7 @@ describe('attachment delete proxy', () => {
       docFields.set(`trips/${TRIP_ID}/expenses/expense-1`, {})
 
       const response = await handleAttachmentDelete({
-        body: { tripId: TRIP_ID, path: EXPENSE_PATH }, uid: UID, cors: CORS, env: ENV,
+        body: { tripId: TRIP_ID, path: EXPENSE_PATH }, uid: UID, cors: CORS, env: ENV, report: REPORT,
       })
 
       expect(response.status).toBe(200)
@@ -299,7 +321,7 @@ describe('attachment delete proxy', () => {
       docFields.set(`trips/${TRIP_ID}/wishes/wish-1`, { proposedBy: { stringValue: UID } })
 
       const response = await handleAttachmentDelete({
-        body: { tripId: TRIP_ID, path: WISH_PATH }, uid: UID, cors: CORS, env: ENV,
+        body: { tripId: TRIP_ID, path: WISH_PATH }, uid: UID, cors: CORS, env: ENV, report: REPORT,
       })
 
       expect(response.status).toBe(403)
@@ -314,7 +336,7 @@ describe('attachment delete proxy', () => {
       docFields.set(`trips/${TRIP_ID}/members/${UID}`, { role: { stringValue: 'owner' } })
 
       const response = await handleAttachmentDelete({
-        body: { tripId: TRIP_ID, path: WISH_PATH }, uid: UID, cors: CORS, env: ENV,
+        body: { tripId: TRIP_ID, path: WISH_PATH }, uid: UID, cors: CORS, env: ENV, report: REPORT,
       })
 
       // firestore.rules gates wish delete on wishVotingOpen with no owner
@@ -332,7 +354,7 @@ describe('attachment delete proxy', () => {
       docFields.set(`trips/${TRIP_ID}/wishes/wish-1`, { proposedBy: { stringValue: UID } })
 
       const response = await handleAttachmentDelete({
-        body: { tripId: TRIP_ID, path: WISH_PATH }, uid: UID, cors: CORS, env: ENV,
+        body: { tripId: TRIP_ID, path: WISH_PATH }, uid: UID, cors: CORS, env: ENV, report: REPORT,
       })
 
       expect(response.status).toBe(200)

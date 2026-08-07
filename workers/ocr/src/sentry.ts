@@ -23,6 +23,17 @@
 
 export type SentryLevel = 'fatal' | 'error' | 'warning' | 'info' | 'debug'
 
+/**
+ * Report an unexpected failure. Built once per request in the fetch
+ * handler so route code needs neither `env` nor `executionCtx`: the
+ * closure already carries the DSN, the endpoint / uid / trace tags, and
+ * the `waitUntil` that keeps the POST alive past the response.
+ *
+ * Deliberately returns void — reporting must never be something a caller
+ * can await, forget to await, or fail on.
+ */
+export type ReportWorkerError = (message: string, extra?: Record<string, unknown>) => void
+
 interface DsnParts {
   publicKey: string
   host:      string

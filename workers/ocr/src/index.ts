@@ -174,6 +174,7 @@ import {
   json,
   uidTag,
 }                                                 from './route-dispatch'
+import { captureMessage, type ReportWorkerError } from './sentry'
 
 export { GlobalRateLimiter } from './rate-limiter'
 
@@ -329,6 +330,9 @@ interface DispatchCtx {
   env:     WorkerEnv
   executionCtx: ExecutionContext
   requestUrl: string
+  /** Pre-bound to this request's endpoint / uid / trace. Routes call it
+   *  without touching env or executionCtx. */
+  report:  ReportWorkerError
 }
 
 interface RouteDescriptor {
@@ -416,25 +420,25 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/attachment-upload', rate: 'attachment-upload', bodyMode: 'raw',
     dispatch: c => handleAttachmentUpload({
-      request: c.request, uid: c.uid, cors: c.cors, traceId: c.traceId, env: c.env,
+      request: c.request, uid: c.uid, cors: c.cors, traceId: c.traceId, env: c.env, report: c.report,
     }),
   },
   {
     path: '/attachment-content', method: 'GET', bodyMode: 'none', rate: 'attachment-content',
     dispatch: c => handleAttachmentContent({
-      request: c.request, uid: c.uid, cors: c.cors, traceId: c.traceId, env: c.env,
+      request: c.request, uid: c.uid, cors: c.cors, traceId: c.traceId, env: c.env, report: c.report,
     }),
   },
   {
     path: '/attachment-delete', rate: 'attachment-delete',
     dispatch: c => handleAttachmentDelete({
-      body: c.body, uid: c.uid, cors: c.cors, traceId: c.traceId, env: c.env,
+      body: c.body, uid: c.uid, cors: c.cors, traceId: c.traceId, env: c.env, report: c.report,
     }),
   },
   {
     path: '/expense-create', rate: 'expense',
     dispatch: c => handleJsonRoute({
-      endpoint:       'expense-create', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
+      endpoint:       'expense-create', body: c.body, cors: c.cors, uid: c.uid, report: c.report, traceId: c.traceId,
       schema:         ExpenseCreateRequestSchema,
       handle:         data => expenseCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.ATTACHMENTS),
       formatLog:      (data, result) => `trip=${data.tripId} exp=${result.expenseId}`,
@@ -452,7 +456,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/expense-update', rate: 'expense',
     dispatch: c => handleJsonRoute({
-      endpoint:    'expense-update', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
+      endpoint:    'expense-update', body: c.body, cors: c.cors, uid: c.uid, report: c.report, traceId: c.traceId,
       schema:      ExpenseUpdateRequestSchema,
       handle:      data => expenseUpdate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.ATTACHMENTS),
       formatLog:   data => `trip=${data.tripId} exp=${data.expenseId}`,
@@ -467,7 +471,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/wish-file-create', rate: 'wish-write',
     dispatch: c => handleJsonRoute({
-      endpoint:       'wish-file-create', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
+      endpoint:       'wish-file-create', body: c.body, cors: c.cors, uid: c.uid, report: c.report, traceId: c.traceId,
       schema:         WishFileCreateRequestSchema,
       handle:         data => wishFileCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.ATTACHMENTS),
       formatLog:      (data, result) => `trip=${data.tripId} wish=${result.wishId}`,
@@ -478,7 +482,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/wish-file-update', rate: 'wish-write',
     dispatch: c => handleJsonRoute({
-      endpoint:    'wish-file-update', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
+      endpoint:    'wish-file-update', body: c.body, cors: c.cors, uid: c.uid, report: c.report, traceId: c.traceId,
       schema:      WishFileUpdateRequestSchema,
       handle:      data => wishFileUpdate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.ATTACHMENTS),
       formatLog:   data => `trip=${data.tripId} wish=${data.wishId}`,
@@ -488,7 +492,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/booking-file-create', rate: 'booking-write',
     dispatch: c => handleJsonRoute({
-      endpoint:       'booking-file-create', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
+      endpoint:       'booking-file-create', body: c.body, cors: c.cors, uid: c.uid, report: c.report, traceId: c.traceId,
       schema:         BookingFileCreateRequestSchema,
       handle:         data => bookingFileCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.ATTACHMENTS),
       formatLog:      (data, result) => `trip=${data.tripId} booking=${result.bookingId}`,
@@ -502,7 +506,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/booking-file-update', rate: 'booking-write',
     dispatch: c => handleJsonRoute({
-      endpoint:    'booking-file-update', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
+      endpoint:    'booking-file-update', body: c.body, cors: c.cors, uid: c.uid, report: c.report, traceId: c.traceId,
       schema:      BookingFileUpdateRequestSchema,
       handle:      data => bookingFileUpdate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.ATTACHMENTS),
       formatLog:   data => `trip=${data.tripId} booking=${data.bookingId}`,
@@ -515,7 +519,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/settlement-create', rate: 'settlement-write',
     dispatch: c => handleJsonRoute({
-      endpoint:       'settlement-create', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint:       'settlement-create', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema:         SettlementCreateRequestSchema,
       handle:         data => settlementCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
       // Mode-aware log line: no branch carries a user-entered ledger or
@@ -544,7 +548,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/settlement-delete', rate: 'settlement-write',
     dispatch: c => handleJsonRoute({
-      endpoint:    'settlement-delete', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint:    'settlement-delete', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema:      SettlementDeleteRequestSchema,
       handle:      data => settlementDelete(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
       formatLog:   data => `trip=${data.tripId} settlement=${data.settlementId}`,
@@ -555,7 +559,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/upload-intents', rate: 'upload-intent',
     dispatch: c => handleJsonRoute({
-      endpoint:  'upload-intents', body: c.body, cors: c.cors, uid: c.uid, traceId: c.traceId,
+      endpoint:  'upload-intents', body: c.body, cors: c.cors, uid: c.uid, report: c.report, traceId: c.traceId,
       schema:    UploadIntentsRequestSchema,
       handle:    data => createUploadIntents(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
       formatLog: (data, result) =>
@@ -565,7 +569,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/cascade-trip-delete', rate: 'trip-cascade',
     dispatch: c => handleJsonRoute({
-      endpoint:       'trip-cascade', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint:       'trip-cascade', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema:         TripDeleteRequestSchema,
       handle:         data => cascadeTripDelete(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.ATTACHMENTS),
       formatLog:      (data, result) => `trip=${data.tripId} docs=${result.deletedDocs} objects=${result.deletedObjects}`,
@@ -575,7 +579,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/invite-create', rate: 'membership',
     dispatch: c => handleJsonRoute({
-      endpoint:       'invite-create', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint:       'invite-create', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema:         InviteCreateRequestSchema,
       handle:         data => inviteCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
       // Token is a fresh bearer secret -- never log it. Trip + role are
@@ -591,7 +595,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/invite-revoke', rate: 'membership',
     dispatch: c => handleJsonRoute({
-      endpoint:    'invite-revoke', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint:    'invite-revoke', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema:      InviteRevokeRequestSchema,
       handle:      data => inviteRevoke(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
       formatLog:   data => `trip=${data.tripId}`,
@@ -602,7 +606,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/invite-redeem', rate: 'membership',
     dispatch: c => handleJsonRoute({
-      endpoint:       'invite-redeem', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint:       'invite-redeem', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema:         InviteRedeemRequestSchema,
       handle:         data => inviteRedeem(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
       formatLog:      (data, result) => `trip=${data.tripId} outcome=${result.outcome} role=${result.role}`,
@@ -613,7 +617,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/member-remove', rate: 'membership',
     dispatch: c => handleJsonRoute({
-      endpoint:    'member-remove', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint:    'member-remove', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema:      MemberRemoveRequestSchema,
       handle:      data => memberRemove(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
       formatLog:   data => `trip=${data.tripId} member=${uidTag(data.memberUid)}`,
@@ -623,7 +627,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/member-leave', rate: 'membership',
     dispatch: c => handleJsonRoute({
-      endpoint:    'member-leave', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint:    'member-leave', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       // Caller leaves themselves; the verified token's uid is the target.
       handle:      data => memberLeave(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
       schema:      MemberLeaveRequestSchema,
@@ -634,7 +638,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/member-role-update', rate: 'membership',
     dispatch: c => handleJsonRoute({
-      endpoint:    'member-role-update', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint:    'member-role-update', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema:      MemberRoleUpdateRequestSchema,
       handle:      data => memberRoleUpdate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
       formatLog:   data => `trip=${data.tripId} member=${uidTag(data.memberUid)} role=${data.role}`,
@@ -644,7 +648,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/owner-transfer', rate: 'membership',
     dispatch: c => handleJsonRoute({
-      endpoint:    'owner-transfer', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint:    'owner-transfer', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema:      OwnerTransferRequestSchema,
       handle:      data => ownerTransfer(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
       formatLog:   data => `trip=${data.tripId} target=${uidTag(data.targetUid)}`,
@@ -654,7 +658,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/expense-receipt-ocr', rate: 'ocr',
     dispatch: c => handleJsonRoute({
-      endpoint:  'expense-receipt-ocr', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint:  'expense-receipt-ocr', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema:    ExpenseReceiptOcrRequestSchema,
       // Re-OCR an EXISTING expense receipt: Worker reads receipt.path from
       // the doc (client can't name the object), mirrors /expense-update auth
@@ -678,7 +682,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/expense-receipt-ocr-fallback', rate: 'ocr',
     dispatch: c => handleJsonRoute({
-      endpoint:  'expense-receipt-ocr-fallback', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint:  'expense-receipt-ocr-fallback', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema:    ExpenseReceiptOcrRequestSchema,
       handle:    data => {
         const provider = RECEIPT_OCR_PROVIDERS.fallback
@@ -698,7 +702,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/booking-pdf-extract', rate: 'ocr',
     dispatch: c => handleJsonRoute({
-      endpoint:  'booking-pdf-extract', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint:  'booking-pdf-extract', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema:    BookingPdfExtractRequestSchema,
       // Booking confirmation import shares the primary Qwen deployment while
       // keeping its own strict schema, evidence checks, and normalization.
@@ -711,7 +715,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/ocr', rate: 'ocr',
     dispatch: c => handleJsonRoute({
-      endpoint:  'ocr', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint:  'ocr', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema:    OcrRequestSchema,
       handle:    data => runConfiguredOcrProvider(c.env, RECEIPT_OCR_PROVIDERS.primary, data),
       formatLog: (_data, result) => `items=${result.items.length}`,
@@ -721,7 +725,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/ocr-fallback', rate: 'ocr',
     dispatch: c => handleJsonRoute({
-      endpoint:  'ocr-fallback', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint:  'ocr-fallback', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema:    OcrRequestSchema,
       handle:    data => runConfiguredOcrProvider(c.env, RECEIPT_OCR_PROVIDERS.fallback, data),
       formatLog: (_data, result) => `items=${result.items.length}`,
@@ -731,7 +735,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/route-autocomplete', rate: 'route-search',
     dispatch: c => handleJsonRoute({
-      endpoint: 'route-autocomplete', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint: 'route-autocomplete', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema: RouteAutocompleteRequestSchema,
       handle: data => autocompleteRoutePlace(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_PROJECT_ID, c.env),
       formatLog: (_data, result) => `candidates=${result.length}`,
@@ -744,7 +748,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/route-resolve-place', rate: 'route-search',
     dispatch: c => handleJsonRoute({
-      endpoint: 'route-resolve-place', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint: 'route-resolve-place', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema: RouteResolvePlaceRequestSchema,
       handle: data => resolveRoutePlaceForTrip(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_PROJECT_ID, c.env),
       formatLog: (_data, result) => `candidates=${result.candidates.length}`,
@@ -757,7 +761,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/route-preview', rate: 'route-preview',
     dispatch: c => handleJsonRoute({
-      endpoint: 'route-preview', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint: 'route-preview', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema: RoutePreviewRequestSchema,
       handle: data => previewRoute(
         c.uid,
@@ -781,7 +785,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/route-apply', rate: 'route-write',
     dispatch: c => handleJsonRoute({
-      endpoint: 'route-apply', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint: 'route-apply', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema: RouteApplyRequestSchema,
       handle: data => applyRoute(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_PROJECT_ID, c.env.ROUTE_PREVIEW_HMAC_SECRET),
       formatLog: (_data, result) => `revision=${result.revision} status=${result.status}`,
@@ -792,7 +796,7 @@ export const ROUTES: RouteDescriptor[] = [
   {
     path: '/route-apply-status', rate: 'route-write',
     dispatch: c => handleJsonRoute({
-      endpoint: 'route-apply-status', body: c.body, cors: c.cors, uid: c.uid,
+      endpoint: 'route-apply-status', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema: RouteApplyStatusRequestSchema,
       handle: data => routeApplyStatus(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.FIREBASE_PROJECT_ID),
       formatLog: (_data, result) => `revision=${result.revision} status=${result.status}`,
@@ -903,7 +907,20 @@ export default {
     // Per-route variation (schema / handle / formatLog / catchDomain /
     // cascadePrecommit) lives in the descriptor; auth + rate-limit + body
     // size were handled above. See route-dispatch.ts for the wrapper.
-    return route.dispatch({ body, request, cors, uid, traceId, env, executionCtx: ctx, requestUrl: request.url })
+    // Bound once here so every route reports with the same tags and the
+    // POST survives the response via waitUntil. captureMessage no-ops on
+    // an unset DSN, so local dev and preview stay silent without a branch.
+    const report: ReportWorkerError = (message, extra) => {
+      ctx.waitUntil(captureMessage(env, message, 'error', {
+        endpoint: url.pathname,
+        uid:      uidTag(uid),
+        ...(traceId ? { trace: traceId } : {}),
+      }, extra))
+    }
+
+    return route.dispatch({
+      body, request, cors, uid, traceId, env, executionCtx: ctx, requestUrl: request.url, report,
+    })
   },
 
   // ─── Cron dispatch ──────────────────────────────────────────────────
@@ -911,6 +928,20 @@ export default {
   // the 5-min Wish-deadline sweep and the daily maintenance batch below.
   // Branch on event.cron so neither ever runs the other's jobs.
   async scheduled(event, env, ctx): Promise<void> {
+    // Crons stay best-effort — a failure never throws, because tomorrow's
+    // pass re-converges on whatever this one missed. That also means the
+    // console line was the only trace a failing job left, and nobody reads
+    // it unless they are already tailing. Every job funnels its failure
+    // through here so the log line and the Sentry event stay in step.
+    const reportCronFailure = (job: string, err: unknown): void => {
+      const e = err instanceof Error ? err : new Error(String(err))
+      console.error(`[cron] ${job} failed: ${e.message}`)
+      ctx.waitUntil(captureMessage(
+        env, `[cron] ${job} ${e.message}`, 'error',
+        { endpoint: `cron:${job}` }, { stack: e.stack, name: e.name },
+      ))
+    }
+
     if (event.cron === WISH_DEADLINE_SWEEP_CRON) {
       console.log('[cron] wish-deadline-sweep starting')
       ctx.waitUntil(
@@ -921,9 +952,7 @@ export default {
               `notified=${report.notified} deadlineHit=${report.deadlineHit}`,
             )
           })
-          .catch(err => {
-            console.error(`[cron] wish-deadline-sweep failed: ${(err as Error).message}`)
-          }),
+          .catch(err => reportCronFailure('wish-deadline-sweep', err)),
       )
       return
     }
@@ -948,12 +977,7 @@ export default {
             `deadlineHit=${report.deadlineHit}`,
           )
         })
-        .catch(err => {
-          // Don't throw — cron runs are best-effort; tomorrow's pass
-          // re-converges on whatever this run missed. We still log the
-          // error so observability picks up the failure mode.
-          console.error(`[cron] receipt-purge failed: ${(err as Error).message}`)
-        }),
+        .catch(err => reportCronFailure('receipt-purge', err)),
     )
     // Orphan-blob queue drain. Independent from receipt-purge (different
     // invariant): receipt-purge sweeps soft-deleted-expense receipts
@@ -971,9 +995,7 @@ export default {
             `giveUps=${report.giveUps} deadlineHit=${report.deadlineHit}`,
           )
         })
-        .catch(err => {
-          console.error(`[cron] orphan-purge failed: ${(err as Error).message}`)
-        }),
+        .catch(err => reportCronFailure('orphan-purge', err)),
     )
     // Storage-class maintenance: token scrubber + Level 4 orphan-blob
     // reconciliation, run SEQUENTIALLY inside one waitUntil so they share
@@ -1003,9 +1025,7 @@ export default {
           }
           console.log(`[cron] storage-maintenance done ${orphanLine}`)
         })
-        .catch(err => {
-          console.error(`[cron] storage-maintenance failed: ${(err as Error).message}`)
-        }),
+        .catch(err => reportCronFailure('storage-maintenance', err)),
     )
     // Phase 3.5 uploadIntents cleanup. Two-pass purge: expired pending
     // (TTL'd intents that never finalized) + stale used (retention
@@ -1025,9 +1045,7 @@ export default {
             `deadlineHit=${report.deadlineHit} budgetHit=${report.budgetHit}`,
           )
         })
-        .catch(err => {
-          console.error(`[cron] upload-intent-purge failed: ${(err as Error).message}`)
-        }),
+        .catch(err => reportCronFailure('upload-intent-purge', err)),
     )
   },
 } satisfies ExportedHandler<WorkerEnv>

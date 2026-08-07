@@ -14,7 +14,7 @@
 // Why a dedicated file: when the catchers' contract changes (e.g. add
 // a `field` to the FxError body, or change status mapping), this is
 // where the regression should fire -- not deep inside an endpoint spec.
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
 import {
 	fxErrorCatcher, chainCatchers, validationErrorCatcher, handleJsonRoute,
@@ -115,6 +115,7 @@ describe('handleJsonRoute — tx failure → status mapping', () => {
 		body:      { x: 1 },
 		cors:      {} as Record<string, string>,
 		uid:       'uid-123456',
+		report:    vi.fn(),
 		schema:    z.object({ x: z.number() }),
 		formatLog: () => 'ok',
 	}
@@ -147,6 +148,70 @@ describe('handleJsonRoute — tx failure → status mapping', () => {
 	})
 })
 
+// The generic 500 tells the client nothing but "Internal error", so if it
+// doesn't leave the Worker the failure is invisible until someone happens
+// to be tailing. Every anticipated shape above must stay quiet, or the
+// signal drowns in errors we already handle.
+describe('handleJsonRoute — internal-error reporting', () => {
+	function argsWith(report: ReturnType<typeof vi.fn>) {
+		return {
+			endpoint:  'test-endpoint',
+			body:      { x: 1 },
+			cors:      {} as Record<string, string>,
+			uid:       'uid-123456',
+			report,
+			schema:    z.object({ x: z.number() }),
+			formatLog: () => 'ok',
+		}
+	}
+
+	it('reports an unexpected throw with its message and stack', async () => {
+		const report = vi.fn()
+		const boom = new Error('kaboom')
+		await handleJsonRoute({
+			...argsWith(report),
+			handle: async () => { throw boom },
+		})
+		expect(report).toHaveBeenCalledTimes(1)
+		const [message, extra] = report.mock.calls[0] as [string, Record<string, unknown>]
+		expect(message).toBe('[test-endpoint] kaboom')
+		expect(extra.stack).toBe(boom.stack)
+		expect(extra.name).toBe('Error')
+	})
+
+	it('reports a non-Error throw without crashing on .message', async () => {
+		const report = vi.fn()
+		await handleJsonRoute({
+			...argsWith(report),
+			handle: async () => { throw 'a bare string' },
+		})
+		expect(report).toHaveBeenCalledTimes(1)
+		expect((report.mock.calls[0] as [string])[0]).toBe('[test-endpoint] a bare string')
+	})
+
+	it('stays silent on a schema failure, a domain error, TxRetryExhausted and CascadeError', async () => {
+		const report = vi.fn()
+		const base = argsWith(report)
+
+		await handleJsonRoute({ ...base, body: { x: 'nope' }, handle: async () => 'unused' })
+		await handleJsonRoute({
+			...base,
+			catchDomain: fxErrorCatcher(),
+			handle: async () => { throw new FxError('FX_PROVIDER_UNAVAILABLE', 502, 'down') },
+		})
+		await handleJsonRoute({
+			...base,
+			handle: async () => { throw new TxRetryExhausted(5, new Error('contention')) },
+		})
+		await handleJsonRoute({
+			...base,
+			handle: async () => { throw new CascadeError(403, 'not allowed') },
+		})
+
+		expect(report).not.toHaveBeenCalled()
+	})
+})
+
 // A 5xx is ambiguous by default, BUT some 5xx are provably pre-commit (FX
 // provider down, read-cap exceeded in a single-tx endpoint). The dispatcher
 // stamps `precommit: true` so workerBase.ts can roll the optimistic row
@@ -158,6 +223,7 @@ describe('handleJsonRoute — precommit marking', () => {
 		body:      { x: 1 },
 		cors:      {} as Record<string, string>,
 		uid:       'uid-123456',
+		report:    vi.fn(),
 		schema:    z.object({ x: z.number() }),
 		formatLog: () => 'ok',
 	}

@@ -9,6 +9,7 @@ import { TripIdRe } from './field-validation'
 import { deleteR2Object, getR2Object } from './r2-storage'
 import { MAX_ATTACHMENT_BYTES, uploadAttachmentToIntent } from './upload-intent'
 import { json, TX_RETRY_EXHAUSTED_MESSAGE, uidTag } from './route-dispatch'
+import type { ReportWorkerError } from './sentry'
 
 const IntentIdRe = /^[a-f0-9]{32}$/
 export const ATTACHMENT_TRIP_HEADER = 'X-Attachment-Trip-Id'
@@ -38,6 +39,10 @@ interface AttachmentArgs {
   cors: Record<string, string>
   traceId?: string
   env: { FIREBASE_SERVICE_ACCOUNT: string; ATTACHMENTS: R2Bucket }
+  /** Same contract as handleJsonRoute's: the generic-500 branch here is
+   *  the other place an unexpected failure would otherwise stay inside
+   *  the Worker. */
+  report: ReportWorkerError
 }
 
 function parseAttachmentPath(path: string, tripId: string): ParsedAttachmentPath {
@@ -242,6 +247,7 @@ async function dispatchAttachment<T>(args: {
   uid: string
   cors: Record<string, string>
   traceId?: string
+  report: ReportWorkerError
   run: () => Promise<T>
   respond: (result: T) => Response
 }): Promise<Response> {
@@ -273,7 +279,9 @@ async function dispatchAttachment<T>(args: {
       console.warn(`[${args.endpoint}] ${error.status} ${error.message}${trace}`)
       return json({ error: error.message }, error.status, args.cors)
     }
-    console.error(`[${args.endpoint}] internal error: ${(error as Error).message}${trace}`)
+    const err = error instanceof Error ? error : new Error(String(error))
+    console.error(`[${args.endpoint}] internal error: ${err.message}${trace}`)
+    args.report(`[${args.endpoint}] ${err.message}`, { stack: err.stack, name: err.name })
     return json({ error: 'Internal error' }, 500, args.cors)
   }
 }
@@ -282,7 +290,7 @@ export function handleAttachmentUpload(
   args: AttachmentArgs & { request: Request },
 ): Promise<Response> {
   return dispatchAttachment({
-    endpoint: 'attachment-upload', uid: args.uid, cors: args.cors, traceId: args.traceId,
+    endpoint: 'attachment-upload', uid: args.uid, cors: args.cors, traceId: args.traceId, report: args.report,
     run: async () => {
       const locator = AttachmentUploadLocatorSchema.parse(queryObject(new URL(args.request.url)))
       const contentType = args.request.headers.get('content-type')?.split(';', 1)[0]?.trim()
@@ -304,7 +312,7 @@ export function handleAttachmentContent(
   args: AttachmentArgs & { request: Request },
 ): Promise<Response> {
   return dispatchAttachment({
-    endpoint: 'attachment-content', uid: args.uid, cors: args.cors, traceId: args.traceId,
+    endpoint: 'attachment-content', uid: args.uid, cors: args.cors, traceId: args.traceId, report: args.report,
     run: async () => {
       const locator = AttachmentLocatorSchema.parse(attachmentLocator(args.request))
       parseAttachmentPath(locator.path, locator.tripId)
@@ -329,7 +337,7 @@ export function handleAttachmentDelete(
   args: AttachmentArgs & { body: unknown },
 ): Promise<Response> {
   return dispatchAttachment({
-    endpoint: 'attachment-delete', uid: args.uid, cors: args.cors, traceId: args.traceId,
+    endpoint: 'attachment-delete', uid: args.uid, cors: args.cors, traceId: args.traceId, report: args.report,
     run: async () => {
       const locator = AttachmentDeleteRequestSchema.parse(args.body)
       const parsed = parseAttachmentPath(locator.path, locator.tripId)

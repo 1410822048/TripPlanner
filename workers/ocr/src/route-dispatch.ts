@@ -22,6 +22,7 @@ import type { z } from 'zod'
 import { CascadeError } from './cascade'
 import { FxError }          from './fx-rate'
 import { TxRetryExhausted } from './firestore-tx'
+import type { ReportWorkerError } from './sentry'
 
 /** Truncated uid for logs. 6-char prefix + ellipsis is enough to
  *  correlate abuse without retaining a fully-identifying token. */
@@ -156,6 +157,11 @@ export async function handleJsonRoute<TData, TResult>(args: {
    *  + warn + error). Pre-validated by `extractTraceId` in the fetch
    *  handler; the wrapper itself trusts the value. */
   traceId?:        string
+  /** Sends the generic-500 branch to Sentry. Required, not optional: this
+   *  is the only place an unexpected Worker failure is observed, and an
+   *  endpoint that forgets to wire it goes silent — so the compiler asks
+   *  rather than the operator finding out. */
+  report:          ReportWorkerError
   schema:          z.ZodType<TData>
   handle:          (data: TData) => Promise<TResult>
   /** Free-form suffix after `[endpoint] uid=<tag> ` on success log.
@@ -224,7 +230,15 @@ export async function handleJsonRoute<TData, TResult>(args: {
         : { error: e.message }
       return json(body, e.status, args.cors)
     }
-    console.error(`[${args.endpoint}] internal error: ${(e as Error).message}${trace}`)
+    // Everything above is a shape we anticipated. Reaching here means we
+    // did not, and the client is told nothing but "Internal error" — so
+    // this is the one branch that has to leave the Worker.
+    const err = e instanceof Error ? e : new Error(String(e))
+    console.error(`[${args.endpoint}] internal error: ${err.message}${trace}`)
+    args.report(`[${args.endpoint}] ${err.message}`, {
+      stack: err.stack,
+      name:  err.name,
+    })
     return json({ error: 'Internal error' }, 500, args.cors)
   }
 }
