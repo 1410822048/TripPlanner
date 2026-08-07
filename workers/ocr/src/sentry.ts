@@ -99,7 +99,12 @@ export async function captureMessage(
   const itemHeader = JSON.stringify({
     type:           'event',
     content_type:   'application/json',
-    length:         itemBody.length,
+    // BYTES, not `itemBody.length`. A JS string's length counts UTF-16
+    // code units, so one CJK character reads as 1 but serializes to 3 —
+    // Sentry would then take only the declared prefix and reject the
+    // envelope as malformed. Every error message this Worker reports can
+    // carry Traditional Chinese, so this is the common case, not an edge.
+    length:         new TextEncoder().encode(itemBody).byteLength,
   })
   const body = `${envelopeHeader}\n${itemHeader}\n${itemBody}`
 

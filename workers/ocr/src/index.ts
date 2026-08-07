@@ -185,12 +185,13 @@ type WorkerEnv = Env & {
   GEOAPIFY_API_KEY?:        string  // secret
   ORS_API_KEY?:             string  // secret
   ROUTE_PREVIEW_HMAC_SECRET?: string // secret
-  /** Sentry DSN for Worker-side telemetry (abuse alerts, future error
-   *  reporting). Same DSN as the frontend's VITE_SENTRY_DSN -- events
-   *  land in the same project, filterable by `server_name: 'tripmate-ocr'`.
-   *  Empty string disables telemetry cleanly; override via `wrangler
-   *  secret put SENTRY_DSN` for production. */
-  SENTRY_DSN:               string
+  /** Sentry DSN for Worker-side telemetry (abuse alerts + the generic-500
+   *  and cron-failure reporting). Same DSN as the frontend's
+   *  VITE_SENTRY_DSN -- events land in the same project, filterable by
+   *  `server_name: 'tripmate-ocr'`. Optional because it is a SECRET, not a
+   *  var (`wrangler secret put SENTRY_DSN`): absent in local dev and
+   *  preview, where captureMessage no-ops. */
+  SENTRY_DSN?:              string
   /** Per-PoP per-uid rate limiter for the OCR endpoint. Cheap first-line
    *  filter (~0ms). Counters are local to each Cloudflare location. */
   /** Per-PoP per-uid rate limiter for the member-cascade endpoint. */

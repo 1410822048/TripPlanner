@@ -17,14 +17,15 @@
 	"vars": {
 		"FIREBASE_PROJECT_ID": "tripplanner-80a4f",
 		"ALLOWED_ORIGINS": "https://tripmate-2wg.pages.dev,*.tripmate-2wg.pages.dev,http://localhost:5173,http://127.0.0.1:5173",
-		// Sentry DSN — same project as the frontend (VITE_SENTRY_DSN in
-		// the SPA bundle). Public key in a DSN is not a secret (frontend
-		// ships it in plaintext); ingest endpoint accepts events from
-		// any source matching the project. `server_name: 'tripmate-ocr'`
-		// inside the envelope (see sentry.ts) lets us filter Worker
-		// events from frontend events in the Sentry UI. Empty string
-		// disables telemetry cleanly (sentry.ts parseDsn returns null).
-		"SENTRY_DSN": "",
+		// SENTRY_DSN is deliberately NOT a var. It is set with
+		// `wrangler secret put SENTRY_DSN` (same value as the frontend's
+		// VITE_SENTRY_DSN so Worker and SPA events land in one project;
+		// `server_name: 'tripmate-ocr'` in the envelope separates them).
+		// A var of the same name would collide with that secret binding on
+		// every deploy, and an empty one would silently disable telemetry
+		// while looking configured. Unset → sentry.ts parseDsn returns
+		// null → captureMessage is a clean no-op, which is what we want
+		// for local dev and preview.
 		// Claude OCR via Microsoft Foundry (Azure AI Foundry). Non-secret:
 		// the resource name is a URL host component (not a credential) and the
 		// deployment name is a routing label. The API key is a SECRET
