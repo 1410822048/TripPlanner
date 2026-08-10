@@ -9,6 +9,8 @@
     "start": "wrangler dev",
     "test": "vitest",
     "typecheck": "tsc --noEmit",
+    "//typecheck:test": "NOT wired into `typecheck` yet: test/tsconfig.json currently reports ~192 errors, accumulated because nothing ever ran it. Turning it on now would fail every pre-commit. See test/tsconfig.json.",
+    "typecheck:test": "tsc -p test/tsconfig.json --noEmit",
     "cf-typegen": "wrangler types"
   },
   "dependencies": {

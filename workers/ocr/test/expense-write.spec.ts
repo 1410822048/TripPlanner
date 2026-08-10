@@ -151,7 +151,7 @@ import { CascadeError } from '../src/cascade'
 const TRIP_ID    = 'trip-1'
 const EXPENSE_ID = 'exp-1'
 const CALLER_UID = 'editor-uid'
-const BUCKET     = 'tripmate-attachments-test'
+const BUCKET     = {} as R2Bucket
 const MEMBERS    = ['owner-uid', 'editor-uid', 'viewer-uid']
 
 /** Standard trip doc TxReadDoc -- caller is an editor, no deletingAt.

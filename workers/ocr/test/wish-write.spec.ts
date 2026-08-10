@@ -66,7 +66,7 @@ import { CascadeError } from '../src/cascade'
 const TRIP_ID    = 'trip-1'
 const WISH_ID    = 'wish-1'
 const CALLER_UID = 'viewer-uid'
-const BUCKET     = 'tripmate-attachments-test'
+const BUCKET     = {} as R2Bucket
 const MEMBERS    = ['owner-uid', 'editor-uid', 'viewer-uid']
 
 const FULL_INTENT_ID  = 'i-full'

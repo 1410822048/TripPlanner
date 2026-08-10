@@ -94,7 +94,10 @@ function TitleBlock({
   canEdit:      boolean
   onEditTrip:   () => void
 }) {
-  const year       = new Date(selectedTrip.startDate).getFullYear()
+  // `startDate` is a date-only string, and `new Date('YYYY-MM-DD')` parses
+  // it as UTC midnight — so west of Greenwich a 1 January trip rendered as
+  // the previous year. The year is already the first four characters.
+  const year       = selectedTrip.startDate.slice(0, 4)
   const innerClass = 'flex-1 min-w-0 block text-left px-2 py-1.5 -mx-2 -my-1.5 rounded-xl'
 
   const body = (

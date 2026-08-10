@@ -7,6 +7,10 @@ import TimelineSkeleton from './TimelineSkeleton'
 import TimelineCard from './TimelineCard'
 import TravelSegmentRow from './TravelSegmentRow'
 import type { Schedule } from '@/types'
+// `new Date('YYYY-MM-DD')` is UTC midnight, so west of Greenwich both the
+// date and the weekday rendered a day early. fromLocalDateString anchors
+// the same string at LOCAL midnight, which is what a day header means.
+import { fromLocalDateString } from '@/utils/dates'
 import { formatMinorAmount } from '@/utils/money'
 import type { TravelSegmentEstimate } from '../routePlanner'
 import ListEmptyCard from '@/components/ui/ListEmptyCard'
@@ -46,10 +50,10 @@ function DayTimeline({
             <div className="min-w-0">
               <div>
                 <span className="text-[15px] font-bold text-ink">
-                  {new Date(display).toLocaleDateString('zh-TW', { month:'long', day:'numeric' })}
+                  {fromLocalDateString(display).toLocaleDateString('zh-TW', { month:'long', day:'numeric' })}
                 </span>
                 <span className="text-[12px] text-muted ml-1.5">
-                  {new Date(display).toLocaleDateString('zh-TW', { weekday:'long' })}
+                  {fromLocalDateString(display).toLocaleDateString('zh-TW', { weekday:'long' })}
                 </span>
               </div>
               {!isLoading && items.length > 0 && (

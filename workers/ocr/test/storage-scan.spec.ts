@@ -84,7 +84,7 @@ import * as storage          from '../src/r2-storage'
 import * as firestore        from '../src/firestore'
 import * as sentry           from '../src/sentry'
 
-const BUCKET   = 'tripmate-attachments-test'
+const BUCKET   = {} as R2Bucket
 const TRIP_ID  = 'trip-1'
 
 // Two hours ago in ISO → comfortably outside the 24h grace window when

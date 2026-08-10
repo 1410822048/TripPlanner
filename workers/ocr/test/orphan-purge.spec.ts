@@ -45,7 +45,7 @@ import * as storage from '../src/r2-storage'
 import * as firestore from '../src/firestore'
 
 const PROJECT_ID = 'demo-project'
-const BUCKET = 'tripmate-attachments-test'
+const BUCKET = {} as R2Bucket
 const TRIP_ID = 'trip-1'
 
 /** Hour-old purge entry — passes the 1h age gate. */

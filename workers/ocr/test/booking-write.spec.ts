@@ -73,7 +73,7 @@ import { PdfPageLimitError } from '@tripmate/pdf-page-limit'
 const TRIP_ID    = 'trip-1'
 const BOOKING_ID = 'booking-1'
 const CALLER_UID = 'editor-uid'
-const BUCKET     = 'tripmate-attachments-test'
+const BUCKET     = {} as R2Bucket
 const MEMBERS    = ['owner-uid', 'editor-uid', 'viewer-uid']
 
 const FULL_INTENT_ID  = 'i-full'
