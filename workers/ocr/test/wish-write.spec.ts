@@ -1373,6 +1373,36 @@ describe('wishDelete: happy paths', () => {
 		expect(vi.mocked(storage.deleteR2Object)).not.toHaveBeenCalled()
 	})
 
+	// This code holds admin + R2 credentials, so a stored path that escaped
+	// the entity folder would be deleted as readily as a real one. The cron
+	// already refuses those; the inline route must agree, or a corrupted
+	// doc becomes a cross-entity delete.
+	it('refuses a stored path outside the wish folder, and still deletes the wish', async () => {
+		seedDelete()
+		txGetResponses.set(`trips/${TRIP_ID}/wishes/${WISH_ID}`, {
+			exists: true,
+			name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/wishes/${WISH_ID}`,
+			updateTime: '2026-05-26T00:00:00Z',
+			fields: {
+				proposedBy: { stringValue: CALLER_UID },
+				image: { mapValue: { fields: {
+					path:      { stringValue: FULL_PATH },
+					// Someone else's blob, reachable only via a corrupted doc.
+					thumbPath: { stringValue: `trips/${TRIP_ID}/expenses/e-other/receipt.webp` },
+				} } },
+			},
+		})
+
+		await expect(wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET)).resolves.toEqual({ ok: true })
+
+		const purges = deleteWrites().filter(w => w.document.includes('/_purges/'))
+		expect(purges).toHaveLength(1)
+		expect(purges[0]!.fields?.path?.stringValue).toBe(FULL_PATH)
+		expect(vi.mocked(storage.deleteR2Object).mock.calls.map(c => c[1])).toEqual([FULL_PATH])
+		// The wish itself must still go — a bad path cannot make it undeletable.
+		expect(deleteWrites().filter(w => w.op === 'delete')).toHaveLength(1)
+	})
+
 	it('succeeds and writes nothing when the wish is already gone (ambiguous retry)', async () => {
 		seedDelete({ wishMissing: true })
 

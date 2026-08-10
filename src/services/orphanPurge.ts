@@ -195,7 +195,8 @@ export type SafePurgeResult = 'purged' | 'queued' | 'unrecoverable'
  * NOT usable where the Worker's delete authorization reads the entity doc
  * (wishes: the proposer check in attachment-content.ts). There the inline
  * purge would 404 once the doc is gone and every delete would fall back to
- * the cron's hourly cycle, holding the bytes far longer than today.
+ * the orphan cron, which runs daily — holding the bytes far longer than
+ * the bug being fixed.
  */
 export async function deleteEntityThenPurgeBlobs(args: {
   enqueue:      EnqueueOrphanPurgeInput

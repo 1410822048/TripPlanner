@@ -558,13 +558,31 @@ export type WishDeleteRequest = z.infer<typeof WishDeleteRequestSchema>
  *  from the request — a client-supplied path would be a BOLA hole (any
  *  member could name someone else's blob). `thumbPath` is absent for
  *  pass-through uploads and is deliberately not collapsed onto `path`,
- *  so filter rather than assume two entries. */
-function storedWishImagePaths(fields: Record<string, FsValue>): string[] {
+ *  so filter rather than assume two entries.
+ *
+ *  Reading from the doc is not on its own enough: this runs with admin
+ *  and R2 credentials, so a path that somehow escaped the entity's folder
+ *  (a Console edit, a corrupted write) would be deleted just as happily
+ *  as a legitimate one. The cron already refuses those; matching it here
+ *  keeps the two cleanup routes from disagreeing about what this wish is
+ *  allowed to touch. A rejected path is skipped rather than fatal — the
+ *  wish must stay deletable — and surfaces as unreferenced bytes for the
+ *  storage scan. */
+function storedWishImagePaths(
+  fields: Record<string, FsValue>,
+  tripId: string,
+  wishId: string,
+): string[] {
+  const prefix = `trips/${tripId}/wishes/${wishId}/`
   const paths = [
     readNestedString(fields, 'image', 'path'),
     readNestedString(fields, 'image', 'thumbPath'),
   ].filter((p): p is string => typeof p === 'string' && p.length > 0)
-  return [...new Set(paths)]
+  const scoped = paths.filter(p => p.startsWith(prefix))
+  for (const rejected of paths.filter(p => !p.startsWith(prefix))) {
+    console.warn(`[wish-delete] refusing out-of-scope image path: ${rejected}`)
+  }
+  return [...new Set(scoped)]
 }
 
 /** One `_purges` entry per blob, matching what the client writes in
@@ -639,7 +657,7 @@ export async function wishDelete(
           throw new CascadeError(403, 'only the wish proposer or trip owner can delete this wish')
         }
 
-        const imagePaths = storedWishImagePaths(wish.fields)
+        const imagePaths = storedWishImagePaths(wish.fields, req.tripId, req.wishId)
         return {
           writes: [
             // Queue first in the array for readability only — they commit
@@ -658,11 +676,17 @@ export async function wishDelete(
       },
     )
 
-    // Post-commit and best-effort: the queue entries committed above are
-    // the durability guarantee, so a failure here costs the cron an hour,
-    // not the blob. Never throw — the wish is already gone, and turning
-    // that into an error would make the client roll back a delete that
-    // actually happened.
+    // Post-commit and best-effort. The queue entries committed above are
+    // the durability guarantee; what a failure here costs is latency, and
+    // more than it looks — the orphan cron runs daily at 03:00 UTC with a
+    // one-hour age gate, so the bytes can linger for the better part of a
+    // day. That is why the inline attempt is worth making at all.
+    //
+    // Never throw. The delete is already committed and the cleanup already
+    // durable, so an error here would be a false failure: the client would
+    // read the 5xx as WorkerAmbiguous and hold its optimistic removal open
+    // until an authoritative read settles it, for a delete that plainly
+    // succeeded.
     for (const path of paths) {
       try {
         await deleteR2Object(bucket, path)
