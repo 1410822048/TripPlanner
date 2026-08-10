@@ -53,7 +53,13 @@ vi.mock('../src/cascade', async () => {
 	}
 })
 
-import { wishFileCreate, wishFileUpdate, wishDelete, WishValidationError } from '../src/wish-write'
+import {
+	wishFileCreate,
+	wishFileUpdate,
+	wishDelete,
+	WishDeleteRequestSchema,
+	WishValidationError,
+} from '../src/wish-write'
 import * as storage from '../src/r2-storage'
 import { CascadeError } from '../src/cascade'
 
@@ -1417,6 +1423,27 @@ describe('wishDelete: happy paths', () => {
 		// The wish is already gone; turning this into an error would make
 		// the client roll back a delete that actually happened.
 		await expect(wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET)).resolves.toEqual({ ok: true })
+	})
+})
+
+describe('wishDelete: request validation', () => {
+	// The id is interpolated into a Firestore resource path, so a slash
+	// buys extra segments. A non-owner would still fail the proposedBy
+	// check on whatever that resolves to, but the trip owner short-circuits
+	// it — the id has to be a single segment before anything reads it.
+	it.each([
+		['w1/sub/doc'],
+		['../wishes/w2'],
+		['w1/'],
+	])('rejects a wishId that is not a single path segment: %s', async wishId => {
+		seedDelete()
+		expect(WishDeleteRequestSchema.safeParse({ tripId: TRIP_ID, wishId }).success).toBe(false)
+	})
+
+	it('accepts an ordinary Firestore auto-id', () => {
+		expect(WishDeleteRequestSchema.safeParse({
+			tripId: TRIP_ID, wishId: 'Ab3-_xYz09',
+		}).success).toBe(true)
 	})
 })
 

@@ -550,7 +550,14 @@ export type { ConsumedIntent }
 
 export const WishDeleteRequestSchema = z.object({
   tripId: z.string().regex(TripIdRe),
-  wishId: z.string().min(1).max(64),
+  // TripIdRe, not a length cap: this id is interpolated straight into a
+  // Firestore resource path, and a `/` in it buys extra path segments —
+  // `w1/sub/doc` resolves to a document one level down. The proposedBy
+  // check would reject that for most callers, but the trip owner
+  // short-circuits it, so the id has to be a single segment before it is
+  // ever read. Every other entity id in this Worker is validated the same
+  // way; this one was the outlier.
+  wishId: z.string().regex(TripIdRe),
 })
 export type WishDeleteRequest = z.infer<typeof WishDeleteRequestSchema>
 
