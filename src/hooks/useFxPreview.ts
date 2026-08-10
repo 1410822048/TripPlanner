@@ -34,6 +34,7 @@
 //   provider call, which is ~300ms anyway.
 import { useQuery } from '@tanstack/react-query'
 import { canonicalizeRate } from '@tripmate/fx-core'
+import { toLocalDateString } from '@/utils/dates'
 
 /** Why the hook isn't running its query. Mutually exclusive with
  *  `isLoading` / `isError` / a resolved rate — when `disabledReason`
@@ -77,10 +78,25 @@ const FRANKFURTER_BASE = 'https://api.frankfurter.dev/v2/rates'
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 const CCY_RE = /^[A-Z]{3}$/
 
-/** Today in UTC, YYYY-MM-DD. Matches Worker fx-rate.ts toUtcDateString
- *  semantics so client + Worker agree on the future-date boundary. */
+/** Today in UTC, YYYY-MM-DD. Only ever compared against the PROVIDER's
+ *  published `rateDate` — a rate dated after the current UTC day would be
+ *  a rate that cannot exist yet. Never compared against what the user
+ *  typed; see the local-today gate below. */
 function todayUtc(): string {
   return new Date().toISOString().slice(0, 10)
+}
+
+/** Today where the USER is. The date they pick is a calendar date in
+ *  their own timezone, so this is what bounds it.
+ *
+ *  These were the same function until it turned out they are not the same
+ *  question. The expense form already defaults its date to local today
+ *  (ExpensePage), while this hook rejected anything past UTC today — so
+ *  everywhere east of UTC, every morning, the form pre-filled a date and
+ *  then refused to convert it as "a future date". In Japan that is
+ *  00:00–09:00 daily, and it blocked saving, not just the preview. */
+function todayLocal(): string {
+  return toLocalDateString(new Date())
 }
 
 interface FrankfurterRow {
@@ -120,6 +136,16 @@ async function fetchFxRate(input: UseFxPreviewInput): Promise<{ rateDecimal: str
   ) {
     throw new Error(`Frankfurter row malformed`)
   }
+  // The requested date may now sit a day ahead of UTC (a user east of
+  // Greenwich asking for their own today), so the response bound is its
+  // own check rather than a consequence of the request bound. A rate
+  // dated after the request is answering a different question; one dated
+  // after the current UTC day cannot have been published yet. Either way
+  // the preview would show a number the Worker then refuses, and the
+  // optimistic amount would jump when the real write lands.
+  if (row.date > input.requestedDate || row.date > todayUtc()) {
+    throw new Error(`Frankfurter rateDate ${row.date} ahead of requested ${input.requestedDate}`)
+  }
   // canonicalizeRate rejects 0 / negative / NaN / Infinity — match the
   // Worker boundary so a malformed preview never lands a "0" in the
   // form's converted-amount display.
@@ -145,7 +171,7 @@ export function useFxPreview(input: UseFxPreviewInput): FxPreviewResult {
     ISO_DATE_RE.test(input.requestedDate) &&
     CCY_RE.test(input.sourceCurrency)     &&
     CCY_RE.test(input.tripCurrency)
-  const isFutureDate = shapeValid && input.requestedDate > todayUtc()
+  const isFutureDate = shapeValid && input.requestedDate > todayLocal()
 
   let disabledReason: FxPreviewDisabledReason | null = null
   if (!isDegenerate) {

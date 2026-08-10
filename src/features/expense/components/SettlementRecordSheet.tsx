@@ -37,6 +37,7 @@ import CurrencyPicker from '@/components/ui/CurrencyPicker'
 import DatePicker from '@/components/ui/pickers/DatePicker'
 import MemberAvatar from '@/components/ui/MemberAvatar'
 import { useFxPreview } from '@/hooks/useFxPreview'
+import { toLocalDateString } from '@/utils/dates'
 import {
   formatMinorAmount,
   currencyFractionDigits,
@@ -87,11 +88,13 @@ interface Props {
   isSaving:     boolean
 }
 
-/** Today in UTC, YYYY-MM-DD. Matches the Worker fx-rate.ts and
- *  useFxPreview's todayUtc semantics so the future-date guard agrees
- *  across surfaces. */
-function todayUtc(): string {
-  return new Date().toISOString().slice(0, 10)
+/** Today where the user is. `settledOn` is the calendar date they
+ *  received the money on, so it is bounded by their day, not UTC's — and
+ *  it has to agree with useFxPreview's gate or the sheet would refuse a
+ *  date the preview happily converted. The provider's `rateDate` is the
+ *  one still bounded by UTC; see useFxPreview. */
+function todayLocal(): string {
+  return toLocalDateString(new Date())
 }
 
 export default function SettlementRecordSheet({
@@ -101,7 +104,7 @@ export default function SettlementRecordSheet({
   // and remounts via key when the suggestion identity changes, so every
   // open initializes from fresh props.
   const [currency,  setCurrency]  = useState<string>(tripCurrency)
-  const [settledOn, setSettledOn] = useState<string>(todayUtc())
+  const [settledOn, setSettledOn] = useState<string>(todayLocal())
   const [note,      setNote]      = useState<string>('')
   const [errors,    setErrors]    = useState<Record<string, string>>({})
 
@@ -174,7 +177,7 @@ export default function SettlementRecordSheet({
     const next: Record<string, string> = {}
 
     if (isForeignMode) {
-      if (settledOn > todayUtc()) {
+      if (settledOn > todayLocal()) {
         next.settledOn = '無法換算未來日期'
       }
       if (fxPreview.disabledReason === 'invalid-input') {
@@ -322,7 +325,7 @@ export default function SettlementRecordSheet({
             <DatePicker
               value={settledOn}
               onChange={handleSettledOnChange}
-              maxDate={todayUtc()}
+              maxDate={todayLocal()}
               error={!!errors.settledOn}
             />
           </FormField>

@@ -81,8 +81,8 @@ export interface SettlementRecord {
   /**
    * Chronological event timestamp — drives orphan reason
    * classification in `computeBalancesFull`. THIS is the ordering key,
-   * NOT `settledOn`. `settledOn` is the FX-rate lookup key (which UTC
-   * day's rate did the Worker pin), `createdAt` is when the
+   * NOT `settledOn`. `settledOn` is the FX-rate lookup key (which of the
+   * user's calendar days the Worker pinned a rate to), `createdAt` is when the
    * settlement was recorded relative to expense_create /
    * expense_delete events. Keeping the two roles distinct is what
    * lets phase-2 chronological replay correctly classify OVERPAYMENT
@@ -118,9 +118,14 @@ export interface SettlementRecord {
   sourceCurrency?:    string
   sourceAmountMinor?: number
   fxSnapshot?:        FxSnapshot
-  /** UTC date (YYYY-MM-DD) the FX rate was pinned to — typically the
-   *  day the payee actually received the money. Same UTC-date policy
-   *  as expense.date / fxSnapshot.requestedDate. */
+  /** Calendar date (YYYY-MM-DD) in the RECORDING USER's timezone — the
+   *  day the payee received the money, as they would say it. Same policy
+   *  as expense.date. Not a UTC date: east of Greenwich the two differ
+   *  for part of every day, and bounding this by UTC made the sheet
+   *  refuse the user's own today.
+   *
+   *  `fxSnapshot.rateDate` is the one that IS a UTC date — it is the
+   *  provider's publication day, and cannot run ahead of it. */
   settledOn?:         string
 }
 

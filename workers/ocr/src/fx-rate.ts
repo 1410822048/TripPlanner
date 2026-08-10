@@ -323,6 +323,12 @@ async function fetchProviderRate(
   base:          string,
   quote:         string,
   fetchImpl:     typeof fetch,
+  /** Current UTC day. Separate bound from `requestedDate`, which may now
+   *  legitimately be one day ahead of it (a user east of Greenwich asking
+   *  for their own today). A published rate cannot be dated after the UTC
+   *  day it was published on, so this stays the ceiling for the RESPONSE
+   *  even as the ceiling for the REQUEST moves. */
+  todayUtc:      string,
 ): Promise<ProviderRate> {
   const url = new URL(FRANKFURTER_BASE)
   url.searchParams.set('date',   requestedDate)
@@ -394,13 +400,15 @@ async function fetchProviderRate(
       `Frankfurter pair mismatch: requested ${base}->${quote} got ${respBase}->${respQuote}`,
     )
   }
-  // Provider should never quote a future date for a past request; if
-  // it ever does (clock skew / publication anomaly), treat as rejected
-  // rather than silently storing future rateDate.
-  if (rateDate > requestedDate) {
+  // Two ceilings, deliberately not one. A rate dated after the request is
+  // answering a different question. A rate dated after the current UTC day
+  // cannot have been published yet, whatever the request said — and since
+  // requestedDate may now be UTC+1, the first check alone would let such a
+  // rate through on exactly the days this widening exists to serve.
+  if (rateDate > requestedDate || rateDate > todayUtc) {
     throw new FxError(
       'FX_PROVIDER_REJECTED', 502,
-      `Frankfurter rateDate ${rateDate} ahead of requested ${requestedDate}`,
+      `Frankfurter rateDate ${rateDate} ahead of requested ${requestedDate} / today UTC ${todayUtc}`,
     )
   }
   let rateDecimal: string
@@ -512,11 +520,24 @@ export async function resolveFxRate(
 
   if (input.sourceCurrency === input.tripCurrency) return null
 
-  const todayUtc = toUtcDateString(now)
-  if (input.requestedDate > todayUtc) {
+  // The requested date is a calendar date in the USER's timezone, and the
+  // client picks it with `toLocalDateString`. East of Greenwich that is
+  // one day ahead of UTC for part of every day — up to UTC+14 — so a
+  // ceiling of UTC today rejected people asking for their own today. It
+  // did so on the app's primary flow: the expense form defaults to local
+  // today, then could neither preview nor save it, from local midnight
+  // until the UTC day caught up (09:00 in Japan).
+  //
+  // One day of slack covers every real offset. It is not slack on the
+  // RATE: `fetchProviderRate` still refuses anything the provider dates
+  // after the current UTC day, so tomorrow's request resolves to today's
+  // published rate rather than inventing one.
+  const todayUtc          = toUtcDateString(now)
+  const maxRequestedDate  = toUtcDateString(new Date(now.getTime() + 86_400_000))
+  if (input.requestedDate > maxRequestedDate) {
     throw new FxError(
       'FX_FUTURE_DATE_UNSUPPORTED', 400,
-      `requestedDate ${input.requestedDate} is in the future (today UTC ${todayUtc})`,
+      `requestedDate ${input.requestedDate} is in the future (max ${maxRequestedDate}, today UTC ${todayUtc})`,
     )
   }
 
@@ -538,6 +559,7 @@ export async function resolveFxRate(
     input.sourceCurrency,
     input.tripCurrency,
     fetchImpl,
+    todayUtc,
   )
   try {
     await writeCache(accessToken, projectId, cacheKey, {

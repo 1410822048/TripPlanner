@@ -133,11 +133,27 @@ describe('getFxSnapshot - degenerate path', () => {
 })
 
 describe('getFxSnapshot - future-date guard', () => {
-	it('rejects requestedDate after today UTC without any fetch', async () => {
+	// The request ceiling is UTC today + 1, not UTC today. The date is a
+	// calendar date in the USER's timezone, and everyone east of Greenwich
+	// is a day ahead for part of every day — up to UTC+14.
+	it('accepts requestedDate == today UTC + 1 (a UTC+9 user asking for their own today)', async () => {
+		const fetchImpl = sequentialFetch(
+			firestoreHit('146.2', '2026-05-30'),   // provider dates it TODAY, not tomorrow
+		)
+		const snap = await getFxSnapshot(
+			input({ requestedDate: '2026-05-31' }),  // NOW is 2026-05-30
+			'svc',
+			{ now: NOW, fetchImpl: fetchImpl as typeof fetch },
+		)
+		expect(snap.requestedDate).toBe('2026-05-31')
+		expect(snap.rateDate).toBe('2026-05-30')
+	})
+
+	it('rejects requestedDate beyond today UTC + 1 without any fetch', async () => {
 		const fetchImpl = vi.fn(async () => new Response('unreachable', { status: 500 }))
 		await expect(
 			getFxSnapshot(
-				input({ requestedDate: '2026-05-31' }),  // NOW is 2026-05-30
+				input({ requestedDate: '2026-06-01' }),  // NOW is 2026-05-30
 				'svc',
 				{ now: NOW, fetchImpl: fetchImpl as typeof fetch },
 			),
@@ -146,6 +162,18 @@ describe('getFxSnapshot - future-date guard', () => {
 			code: 'FX_FUTURE_DATE_UNSUPPORTED',
 			status: 400,
 		})
+		expect(fetchImpl).not.toHaveBeenCalled()
+	})
+
+	it('rolls the ceiling over a year boundary', async () => {
+		const fetchImpl = vi.fn(async () => new Response('unreachable', { status: 500 }))
+		await expect(
+			getFxSnapshot(
+				input({ requestedDate: '2027-01-02' }),
+				'svc',
+				{ now: new Date('2026-12-31T23:00:00Z'), fetchImpl: fetchImpl as typeof fetch },
+			),
+		).rejects.toMatchObject({ code: 'FX_FUTURE_DATE_UNSUPPORTED' })
 		expect(fetchImpl).not.toHaveBeenCalled()
 	})
 
@@ -404,6 +432,24 @@ describe('getFxSnapshot - provider error paths', () => {
 				{ now: NOW, fetchImpl: fetchImpl as typeof fetch },
 			),
 		).rejects.toMatchObject({ code: 'FX_PROVIDER_REJECTED' })
+	})
+
+	// The request ceiling moved to UTC+1; the RESPONSE ceiling did not.
+	// Without its own check, a rate dated tomorrow would sail through on
+	// exactly the requests the widening exists to serve — the one case
+	// where `rateDate <= requestedDate` is no longer sufficient.
+	it('rejects a provider rateDate after today UTC even when the request was UTC+1', async () => {
+		const fetchImpl = sequentialFetch(
+			firestoreMiss(),
+			frankfurterOk('2026-05-31', 'USD', 'JPY', 146.2),  // NOW is 2026-05-30
+		)
+		await expect(
+			getFxSnapshot(
+				input({ requestedDate: '2026-05-31' }),
+				'svc',
+				{ now: NOW, fetchImpl: fetchImpl as typeof fetch },
+			),
+		).rejects.toMatchObject({ code: 'FX_PROVIDER_REJECTED', status: 502 })
 	})
 
 	it('rejects empty-array provider response', async () => {
