@@ -458,6 +458,70 @@ describe('expenseUpdate endpoint', () => {
 		])
 	})
 
+	// End-to-end guards for the field-level paidBy rule. The unit tests
+	// exercise rostersForUpdate + validateExpenseCrossField directly; these
+	// pin that the ENDPOINT actually threads the tighter list, which is the
+	// part a future refactor would quietly drop.
+	describe('departed-member paidBy contract', () => {
+		// 'ghost-uid' shares this expense but never paid for it, and has
+		// since left the trip: absent from the roster, present in splits.
+		function seedSplitOnlyGhost() {
+			const alive = aliveExpenseReadDoc()
+			txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc())
+			txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('editor'))
+			txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, {
+				...alive,
+				fields: {
+					...alive.fields,
+					amountMinor: { integerValue: '1000' },
+					splits: { arrayValue: { values: [
+						{ mapValue: { fields: {
+							memberId:    { stringValue: 'editor-uid' },
+							amountMinor: { integerValue: '600' },
+						} } },
+						{ mapValue: { fields: {
+							memberId:    { stringValue: 'ghost-uid' },
+							amountMinor: { integerValue: '400' },
+						} } },
+					] } },
+				},
+			})
+		}
+
+		it('refuses to promote a split-only departed member to payer', async () => {
+			seedSplitOnlyGhost()
+
+			await expect(expenseUpdate(
+				CALLER_UID,
+				{
+					tripId: TRIP_ID, expenseId: EXPENSE_ID,
+					patch: { mode: 'TRIP_CURRENCY', paidBy: 'ghost-uid' },
+				},
+				'{}', BUCKET,
+			)).rejects.toMatchObject({ field: 'paidBy' })
+		})
+
+		it('still lets the ghost keep their split while the total changes', async () => {
+			seedSplitOnlyGhost()
+
+			await expect(expenseUpdate(
+				CALLER_UID,
+				{
+					tripId: TRIP_ID, expenseId: EXPENSE_ID,
+					patch: {
+						mode: 'TRIP_CURRENCY',
+						amountMinor: 2000,
+						splits: [
+							{ memberId: 'editor-uid', amountMinor: 1200 },
+							{ memberId: 'ghost-uid',  amountMinor: 800 },
+						],
+					},
+				},
+				'{}', BUCKET,
+			)).resolves.toBeDefined()
+		})
+	})
+
 	it('REGRESSION: receipt deletion goes via updateMask-without-fields (folded into tx commit)', async () => {
 		// Headline fold: receipt=null in the patch means "delete the
 		// receipt field". The Worker no longer fires a second PATCH

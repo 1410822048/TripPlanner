@@ -345,7 +345,9 @@ async function doCreate(
     // satisfied -- but we still run it as defense-in-depth so any
     // mistake in the foreign branch surfaces with the standard
     // ExpenseValidationError path instead of a corrupt write.
-    validateExpenseCrossField(parsed, ctx.memberIds)
+    // Live roster for both lists: a create has no stored doc, so there is
+    // nothing to grandfather and a departed member can never be introduced.
+    validateExpenseCrossField(parsed, ctx.memberIds, ctx.memberIds)
 
     // Read the target doc inside the tx -- this lets us enforce
     // create-only semantics (no overwrite) at commit time via

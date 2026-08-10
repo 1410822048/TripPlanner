@@ -300,7 +300,7 @@ describe('validateExpenseCrossField - settlement-engine integrity', () => {
 			amountMinor: 1000, currency: 'JPY',
 			paidBy: 'editor-uid',
 			splits: [{ memberId: 'editor-uid', amountMinor: 1000 }],
-		}, MEMBERS)).not.toThrow()
+		}, MEMBERS, MEMBERS)).not.toThrow()
 	})
 
 	it('passes on equal split across all members', () => {
@@ -312,7 +312,7 @@ describe('validateExpenseCrossField - settlement-engine integrity', () => {
 				{ memberId: 'editor-uid', amountMinor: 300 },
 				{ memberId: 'viewer-uid', amountMinor: 300 },
 			],
-		}, MEMBERS)).not.toThrow()
+		}, MEMBERS, MEMBERS)).not.toThrow()
 	})
 
 	it('rejects paidBy that is not a trip member', () => {
@@ -320,7 +320,7 @@ describe('validateExpenseCrossField - settlement-engine integrity', () => {
 			amountMinor: 100, currency: 'JPY',
 			paidBy: 'stranger-uid',                  // <-- not in MEMBERS
 			splits: [{ memberId: 'editor-uid', amountMinor: 100 }],
-		}, MEMBERS)).toThrow(ExpenseValidationError)
+		}, MEMBERS, MEMBERS)).toThrow(ExpenseValidationError)
 	})
 
 	it('rejects a split whose memberId is not a trip member', () => {
@@ -331,7 +331,7 @@ describe('validateExpenseCrossField - settlement-engine integrity', () => {
 				{ memberId: 'editor-uid',   amountMinor: 50 },
 				{ memberId: 'stranger-uid', amountMinor: 50 },   // <-- not in MEMBERS
 			],
-		}, MEMBERS)).toThrow(/splits\[1\]\.memberId/)
+		}, MEMBERS, MEMBERS)).toThrow(/splits\[1\]\.memberId/)
 	})
 
 	it('rejects when Σ splits != amountMinor', () => {
@@ -342,7 +342,7 @@ describe('validateExpenseCrossField - settlement-engine integrity', () => {
 				{ memberId: 'owner-uid',  amountMinor: 400 },
 				{ memberId: 'editor-uid', amountMinor: 400 },   // sum = 800, not 1000
 			],
-		}, MEMBERS)).toThrow(/sum of splits/)
+		}, MEMBERS, MEMBERS)).toThrow(/sum of splits/)
 	})
 
 	it('accepts properly distributed JPY equal-split (sum exact)', () => {
@@ -355,7 +355,7 @@ describe('validateExpenseCrossField - settlement-engine integrity', () => {
 				{ memberId: 'editor-uid', amountMinor: 333 },
 				{ memberId: 'viewer-uid', amountMinor: 333 },
 			],
-		}, MEMBERS)).not.toThrow()
+		}, MEMBERS, MEMBERS)).not.toThrow()
 	})
 
 	it('rejects USD split off by 1 minor unit (integer equality, no tolerance)', () => {
@@ -367,7 +367,7 @@ describe('validateExpenseCrossField - settlement-engine integrity', () => {
 				{ memberId: 'owner-uid',  amountMinor: 500 },
 				{ memberId: 'editor-uid', amountMinor: 499 },   // sum 999, amount 1000
 			],
-		}, MEMBERS)).toThrow(/sum of splits/)
+		}, MEMBERS, MEMBERS)).toThrow(/sum of splits/)
 	})
 
 	it('error.field carries the dotted path for form-level error UI', () => {
@@ -376,7 +376,7 @@ describe('validateExpenseCrossField - settlement-engine integrity', () => {
 				amountMinor: 100, currency: 'JPY',
 				paidBy: 'stranger-uid',
 				splits: [{ memberId: 'editor-uid', amountMinor: 100 }],
-			}, MEMBERS)
+			}, MEMBERS, MEMBERS)
 		} catch (e) {
 			expect(e).toBeInstanceOf(ExpenseValidationError)
 			expect((e as ExpenseValidationError).field).toBe('paidBy')
@@ -407,7 +407,7 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 				{ id: 'it1', amountMinor: 900, allocations: [{ memberId: 'owner-uid', shares: 1 }, { memberId: 'editor-uid', shares: 1 }, { memberId: 'viewer-uid', shares: 1 }] },
 			],
 			adjustments: [],
-		}, MEMBERS)).not.toThrow()
+		}, MEMBERS, MEMBERS)).not.toThrow()
 	})
 
 	it('rejects attribution-corruption attack (items pin debt on C, splits on B)', () => {
@@ -419,7 +419,7 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 			splits: [{ memberId: 'owner-uid', amountMinor: 1000 }],
 			items:  [{ id: 'it1', amountMinor: 1000, allocations: [{ memberId: 'viewer-uid', shares: 1 }] }],
 			adjustments: [],
-		}, MEMBERS)).toThrow(/SPLIT_PREVIEW_DRIFT/)
+		}, MEMBERS, MEMBERS)).toThrow(/SPLIT_PREVIEW_DRIFT/)
 	})
 
 	it('rejects when splits drops a member that items derive', () => {
@@ -435,7 +435,7 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 				{ id: 'it1', amountMinor: 900, allocations: [{ memberId: 'owner-uid', shares: 1 }, { memberId: 'editor-uid', shares: 1 }, { memberId: 'viewer-uid', shares: 1 }] },
 			],
 			adjustments: [],
-		}, MEMBERS)).toThrow(/SPLIT_PREVIEW_DRIFT/)
+		}, MEMBERS, MEMBERS)).toThrow(/SPLIT_PREVIEW_DRIFT/)
 	})
 
 	it('rejects splits that skew distribution away from the materializer', () => {
@@ -453,7 +453,7 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 				{ id: 'it1', amountMinor: 900, allocations: [{ memberId: 'owner-uid', shares: 1 }, { memberId: 'editor-uid', shares: 1 }, { memberId: 'viewer-uid', shares: 1 }] },
 			],
 			adjustments: [],
-		}, MEMBERS)).toThrow(/SPLIT_PREVIEW_DRIFT/)
+		}, MEMBERS, MEMBERS)).toThrow(/SPLIT_PREVIEW_DRIFT/)
 	})
 
 	it('accepts items remainder distribution (¥1 / 3 → [1, 0, 0]) preserved by materializer', () => {
@@ -470,7 +470,7 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 				{ id: 'it1', amountMinor: 1, allocations: [{ memberId: 'owner-uid', shares: 1 }, { memberId: 'editor-uid', shares: 1 }, { memberId: 'viewer-uid', shares: 1 }] },
 			],
 			adjustments: [],
-		}, MEMBERS)).not.toThrow()
+		}, MEMBERS, MEMBERS)).not.toThrow()
 	})
 
 	it('accepts ITEM-scope discount applied to a single line', () => {
@@ -492,7 +492,7 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 			adjustments: [
 				{ id: 'a1', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: 200, targetItemId: 'it1' },
 			],
-		}, MEMBERS)).not.toThrow()
+		}, MEMBERS, MEMBERS)).not.toThrow()
 	})
 
 	it('accepts EXPENSE-scope tax apportioned proportionally', () => {
@@ -515,7 +515,7 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 			adjustments: [
 				{ id: 'a1', kind: 'TAX', scope: 'EXPENSE', amountMinor: 100 },
 			],
-		}, MEMBERS)).not.toThrow()
+		}, MEMBERS, MEMBERS)).not.toThrow()
 	})
 
 	it('rejects ITEM-scope adjustment whose targetItemId is not in items[]', () => {
@@ -529,7 +529,7 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 			adjustments: [
 				{ id: 'a1', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: 200, targetItemId: 'nonexistent' },
 			],
-		}, MEMBERS)).toThrow(/TARGET_ITEM_NOT_FOUND/)
+		}, MEMBERS, MEMBERS)).toThrow(/TARGET_ITEM_NOT_FOUND/)
 	})
 
 	it('rejects ITEM-scope adjustment that drives an item below zero', () => {
@@ -544,7 +544,7 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 			adjustments: [
 				{ id: 'a1', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: 800, targetItemId: 'it1' },
 			],
-		}, MEMBERS)).toThrow(/OVER_DISCOUNT_ITEM/)
+		}, MEMBERS, MEMBERS)).toThrow(/OVER_DISCOUNT_ITEM/)
 	})
 
 	it('rejects items with non-member allocations (via materializer NON_MEMBER_ALLOCATION)', () => {
@@ -556,7 +556,7 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 				{ id: 'it1', amountMinor: 100, allocations: [{ memberId: 'editor-uid', shares: 1 }, { memberId: 'stranger-uid', shares: 1 }] },
 			],
 			adjustments: [],
-		}, MEMBERS)).toThrow(/NON_MEMBER_ALLOCATION/)
+		}, MEMBERS, MEMBERS)).toThrow(/NON_MEMBER_ALLOCATION/)
 	})
 
 	it('rejects adjustments[] when items[] is empty (manual-entry constraint)', () => {
@@ -568,7 +568,7 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 			adjustments: [
 				{ id: 'a1', kind: 'TAX', scope: 'EXPENSE', amountMinor: 10 },
 			],
-		}, MEMBERS)).toThrow(/adjustments require items/)
+		}, MEMBERS, MEMBERS)).toThrow(/adjustments require items/)
 	})
 
 	it('skips materializer when items[] is empty (manual-entry mode)', () => {
@@ -581,7 +581,7 @@ describe('validateExpenseCrossField - SPLIT_PREVIEW_DRIFT (Phase B materializer 
 			splits: [{ memberId: 'editor-uid', amountMinor: 1000 }],
 			items: [],
 			adjustments: [],
-		}, MEMBERS)).not.toThrow()
+		}, MEMBERS, MEMBERS)).not.toThrow()
 	})
 })
 
