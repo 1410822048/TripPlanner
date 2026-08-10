@@ -1113,9 +1113,8 @@ describe('/trips/{tripId}/wishes voting deadline gate', () => {
         votes: [EDITOR_UID, VIEWER_UID], updatedBy: VIEWER_UID, updatedAt: serverTimestamp(),
       }),
     )
-    await assertSucceeds(
-      deleteDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID)),
-    )
+    // Delete is Worker-authoritative regardless of the deadline — see the
+    // dedicated block below.
   })
 
   describe('once the deadline has passed', () => {
@@ -1154,17 +1153,24 @@ describe('/trips/{tripId}/wishes voting deadline gate', () => {
       )
     })
 
-    test('delete is rejected for the proposer', async () => {
-      await assertFails(
-        deleteDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID)),
-      )
-    })
+  })
+})
 
-    test('delete is rejected even for the trip owner (no override)', async () => {
-      await assertFails(
-        deleteDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID)),
-      )
-    })
+// The proposer and the owner both legitimately delete wishes, but neither
+// can do it from a client: the doc delete and the image-blob cleanup have
+// to commit together, which only the Worker's admin SDK can arrange. So
+// the rule is a flat deny and the authorization lives in /wish-delete.
+describe('/trips/{tripId}/wishes delete is Worker-only', () => {
+  test('proposer cannot delete their own wish', async () => {
+    await assertFails(
+      deleteDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID)),
+    )
+  })
+
+  test('trip owner cannot delete a wish either', async () => {
+    await assertFails(
+      deleteDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID)),
+    )
   })
 })
 

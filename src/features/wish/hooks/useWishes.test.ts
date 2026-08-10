@@ -143,7 +143,7 @@ describe('wish overlay operations', () => {
     const hook = render(() => useDeleteWish(TRIP))
 
     await act(async () => {
-      await hook.result.current.mutateAsync({ wishId: 'w1', image: undefined }).catch(() => {})
+      await hook.result.current.mutateAsync({ wishId: 'w1' }).catch(() => {})
     })
 
     expect(wishOverlay.getSnapshot(KEY_HASH)).toHaveLength(0)

@@ -165,7 +165,7 @@ export default function WishPage() {
     if (isDemo) { modal.close(); signIn.open(); return }
     const target = modal.editTarget
     modal.close()
-    deleteMut.mutate({ wishId: target.id, image: target.image })
+    deleteMut.mutate({ wishId: target.id })
   }
 
   function handleToggleVote(w: Wish) {
@@ -201,7 +201,7 @@ export default function WishPage() {
   function handleDeleteFromMenu(w: Wish) {
     if (votingClosed) { toast.error('投票已截止'); return }
     if (isDemo) { signIn.open(); return }
-    deleteMut.mutate({ wishId: w.id, image: w.image })
+    deleteMut.mutate({ wishId: w.id })
   }
 
   function handleSaveDeadline(deadlineAtInput: Date | null) {

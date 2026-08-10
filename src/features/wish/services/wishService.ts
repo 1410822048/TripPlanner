@@ -334,47 +334,28 @@ export async function updateWish(
 }
 
 /**
- * Delete a wish + its cover image. Strict-cleanup gate: when both purge
- * and `_purges` enqueue fail, abort before deleting the doc so the
- * image.path → blob binding survives for a human-driven retry.
+ * Delete a wish. Worker-authoritative: the endpoint authorizes, queues the
+ * blob cleanup and deletes the doc inside ONE transaction, then purges R2.
  *
- * This purges BEFORE deleting the doc, which leaves a known hole: if the
- * voting deadline passes (or the caller loses membership) between the two
- * awaits, the delete is refused and the wish survives pointing at bytes
- * that are gone, permanently. `deleteBooking` closes the equivalent hole
- * with `deleteEntityThenPurgeBlobs`, and wish cannot copy it: the Worker's
- * attachment-delete authorization loads THIS doc to run the proposer check
- * (attachment-content.ts), so once the doc is gone every non-owner purge
- * 404s and falls back to the cron's hourly cycle — holding the image bytes
- * far longer than the bug being fixed. Closing it properly means moving
- * the delete behind a Worker endpoint that does both writes with the admin
- * SDK; until then this order is the lesser evil.
+ * The previous client-side version purged the image and then deleted the
+ * doc, which left the wish pointing at a 404 image whenever the voting
+ * deadline passed between the two awaits — permanently, because the delete
+ * was refused from then on. Reordering could not fix it here (the Worker's
+ * attachment-delete authorization reads this very doc for the proposer
+ * check), so the whole operation moved server-side.
+ *
+ * `image` is no longer a parameter: the Worker derives the paths from the
+ * stored doc, because trusting a client-supplied path would let any member
+ * name someone else's blob.
  */
 export async function deleteWish(
   tripId: string,
   wishId: string,
   uid: string,
-  image: WishImage | undefined,
 ): Promise<void> {
-  if (image) {
-    const result = await safePurgeWithEnqueueFallback({
-      purge: () => deleteWishImage(image),
-      enqueue: {
-        tripId, collection: 'wishes', entityId: wishId,
-        paths: wishImagePaths(image),
-        source: 'deleteWish/image',
-      },
-      sentry: { source: 'deleteWish/image', tripId, wishId, path: image.path },
-    })
-    if (result === 'unrecoverable') {
-      throw new Error(
-        '無法刪除封面圖片，也無法加入重試佇列。' +
-        '請稍後再試一次。',
-      )
-    }
-  }
-  const { db, doc, deleteDoc } = await getFirebase()
-  await deleteDoc(doc(db, ...P.wish(tripId, wishId)))
+  const workerBase = requireWorkerWriteBase()
+  const idToken    = await preflightIdToken()
+  await workerFetch(workerBase, idToken, '/wish-delete', { tripId, wishId })
   void bumpTripActivity(tripId, 'wish', uid)
 }
 

@@ -186,42 +186,32 @@ beforeEach(() => {
 // deleteWish strict-cleanup gate — mirrors deleteBooking
 // ────────────────────────────────────────────────────────────────────
 
-describe('deleteWish strict-cleanup gate', () => {
-  it('throws + skips deleteDoc when safePurge returns "unrecoverable"', async () => {
-    mocks.safePurgeMock.mockResolvedValueOnce('unrecoverable')
+describe('deleteWish', () => {
+  // Worker-authoritative since the TOCTOU fix: authorization, the purge
+  // queue and the doc delete all land in one transaction there. The client
+  // must therefore do nothing itself — in particular it must NOT touch the
+  // blob or the doc, and must not send an image path (the Worker derives
+  // it from the stored doc so a member cannot name someone else's blob).
+  it('calls /wish-delete and writes nothing locally', async () => {
+    mocks.workerFetchMock.mockResolvedValueOnce({ ok: true })
 
-    await expect(deleteWish('t1', 'w1', 'u1', IMAGE))
-      .rejects.toThrow(/封面圖片|再試一次/)
+    await deleteWish('t1', 'w1', 'u1')
 
+    expect(mocks.workerFetchMock).toHaveBeenCalledWith(
+      'https://worker.test', 'tok-test', '/wish-delete',
+      { tripId: 't1', wishId: 'w1' },
+    )
     expect(mocks.deleteDocMock).not.toHaveBeenCalled()
-    expect(mocks.bumpTripActivityMock).not.toHaveBeenCalled()
-  })
-
-  it('proceeds with deleteDoc when safePurge returns "purged"', async () => {
-    mocks.safePurgeMock.mockResolvedValueOnce('purged')
-    mocks.deleteDocMock.mockResolvedValue(undefined)
-
-    await deleteWish('t1', 'w1', 'u1', IMAGE)
-
-    expect(mocks.deleteDocMock).toHaveBeenCalledTimes(1)
-  })
-
-  it('proceeds with deleteDoc when safePurge returns "queued"', async () => {
-    mocks.safePurgeMock.mockResolvedValueOnce('queued')
-    mocks.deleteDocMock.mockResolvedValue(undefined)
-
-    await deleteWish('t1', 'w1', 'u1', IMAGE)
-
-    expect(mocks.deleteDocMock).toHaveBeenCalledTimes(1)
-  })
-
-  it('skips safePurge entirely when no image, goes straight to deleteDoc', async () => {
-    mocks.deleteDocMock.mockResolvedValue(undefined)
-
-    await deleteWish('t1', 'w1', 'u1', undefined)
-
     expect(mocks.safePurgeMock).not.toHaveBeenCalled()
-    expect(mocks.deleteDocMock).toHaveBeenCalledTimes(1)
+    expect(mocks.bumpTripActivityMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('propagates a Worker rejection without marking the trip active', async () => {
+    mocks.workerFetchMock.mockRejectedValueOnce(new Error('deadline passed'))
+
+    await expect(deleteWish('t1', 'w1', 'u1')).rejects.toThrow(/deadline/)
+
+    expect(mocks.bumpTripActivityMock).not.toHaveBeenCalled()
   })
 })
 

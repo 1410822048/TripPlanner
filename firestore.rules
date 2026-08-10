@@ -805,15 +805,14 @@ service cloud.firestore {
             )
           )
         );
-        // Two deletion paths:
-        //   1. Proposer cleans up their own wish.
-        //   2. Trip owner moderates — can remove any wish (e.g. spam,
-        //      duplicates, wrong-trip mistakes). Owner already has the
-        //      power to delete the entire trip; per-wish moderation is
-        //      a strict subset of that authority.
-        allow delete: if memberOfDoc()
-                      && wishVotingOpen(tripId)
-                      && (resource.data.proposedBy == uid() || isTripOwner(tripId));
+        // Worker-authoritative (/wish-delete). The same two paths still
+        // exist — proposer cleans up their own, owner moderates — but they
+        // are enforced there, inside the transaction that also queues the
+        // blob cleanup. Client-side delete is closed because the two
+        // writes cannot be made atomic from here: purging the image first
+        // strands a 404 on a wish this rule may refuse a moment later, and
+        // deleting first breaks the Worker's own proposer check.
+        allow delete: if false;
       }
 
       match /bookings/{bookingId} {

@@ -96,8 +96,10 @@ import { ExpenseValidationError }                 from './expense-validate'
 import {
   wishFileCreate,
   wishFileUpdate,
+  wishDelete,
   WishFileCreateRequestSchema,
   WishFileUpdateRequestSchema,
+  WishDeleteRequestSchema,
   WishValidationError,
 }                                                 from './wish-write'
 import {
@@ -486,6 +488,20 @@ export const ROUTES: RouteDescriptor[] = [
       endpoint:    'wish-file-update', body: c.body, cors: c.cors, uid: c.uid, report: c.report, traceId: c.traceId,
       schema:      WishFileUpdateRequestSchema,
       handle:      data => wishFileUpdate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.ATTACHMENTS),
+      formatLog:   data => `trip=${data.tripId} wish=${data.wishId}`,
+      catchDomain: validationErrorCatcher(WishValidationError),
+    }),
+  },
+  {
+    // No cascadePrecommit: the R2 purge runs AFTER the transaction commits,
+    // so a failure there is not proof the wish survived. The generic 500
+    // keeps the client's optimistic removal in place for the listener to
+    // confirm, which is the correct reading — the delete did happen.
+    path: '/wish-delete', rate: 'wish-write',
+    dispatch: c => handleJsonRoute({
+      endpoint:    'wish-delete', body: c.body, cors: c.cors, uid: c.uid, report: c.report, traceId: c.traceId,
+      schema:      WishDeleteRequestSchema,
+      handle:      data => wishDelete(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT, c.env.ATTACHMENTS),
       formatLog:   data => `trip=${data.tripId} wish=${data.wishId}`,
       catchDomain: validationErrorCatcher(WishValidationError),
     }),

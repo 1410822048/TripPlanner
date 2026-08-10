@@ -45,6 +45,7 @@ import {
   type ConsumedIntent,
 }                                                                   from './upload-intent'
 import { FieldValidationError, TripIdRe, isHttpUrl }                 from './field-validation'
+import { deleteR2Object }                                           from './r2-storage'
 
 // ─── Request body schema ──────────────────────────────────────────
 
@@ -530,3 +531,145 @@ async function doUpdate(
 // `ConsumedIntent` re-exported for downstream symmetry with expense-write;
 // keeps the surface aligned if future code wants to share helpers.
 export type { ConsumedIntent }
+
+// ─── /wish-delete ─────────────────────────────────────────────────
+//
+// Deleting a wish used to be two client steps: ask the Worker to drop the
+// R2 image, then `deleteDoc` through the SDK. Between them the voting
+// deadline could pass (or the caller could lose membership), and rules
+// would refuse the second half — leaving a wish that renders a 404 image
+// and can never be removed. Booking closes its version of this by
+// reserving the purge queue first, but wish cannot: the attachment-delete
+// authorization reads the wish doc for the proposer check, so a
+// doc-first order makes every non-owner purge 404.
+//
+// Doing both writes here with the admin SDK removes the window entirely.
+// The queue entries and the delete land in ONE transaction, so either the
+// wish is gone and its blobs are guaranteed to be cleaned, or nothing
+// happened.
+
+export const WishDeleteRequestSchema = z.object({
+  tripId: z.string().regex(TripIdRe),
+  wishId: z.string().min(1).max(64),
+})
+export type WishDeleteRequest = z.infer<typeof WishDeleteRequestSchema>
+
+/** Storage paths backing the stored wish. Derived from the doc, never
+ *  from the request — a client-supplied path would be a BOLA hole (any
+ *  member could name someone else's blob). `thumbPath` is absent for
+ *  pass-through uploads and is deliberately not collapsed onto `path`,
+ *  so filter rather than assume two entries. */
+function storedWishImagePaths(fields: Record<string, FsValue>): string[] {
+  const paths = [
+    readNestedString(fields, 'image', 'path'),
+    readNestedString(fields, 'image', 'thumbPath'),
+  ].filter((p): p is string => typeof p === 'string' && p.length > 0)
+  return [...new Set(paths)]
+}
+
+/** One `_purges` entry per blob, matching what the client writes in
+ *  src/services/orphanPurge.ts — the cron's data-at-rest validator
+ *  rejects anything whose `path` doesn't sit under `entityRef`, so both
+ *  strings have to stay exactly in step. */
+function buildPurgeQueueWrites(
+  projectId: string,
+  tripId:    string,
+  wishId:    string,
+  paths:     string[],
+): TxWrite[] {
+  const entityRef = `trips/${tripId}/wishes/${wishId}`
+  return paths.map(path => ({
+    document: docResourceName(projectId, `trips/${tripId}/_purges/${crypto.randomUUID()}`),
+    fields: {
+      tripId:    { stringValue:  tripId },
+      entityRef: { stringValue:  entityRef },
+      path:      { stringValue:  path },
+      source:    { stringValue:  'wishDelete/image' },
+      attempts:  { integerValue: '0' },
+    },
+    updateTransforms: [
+      { fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' as const },
+    ],
+  }))
+}
+
+export async function wishDelete(
+  callerUid:          string,
+  req:                WishDeleteRequest,
+  serviceAccountJson: string,
+  bucket:             R2Bucket,
+): Promise<{ ok: true }> {
+  return withTokenRetry(async () => {
+    const accessToken = await getAdminToken(serviceAccountJson)
+    const projectId   = getProjectId(serviceAccountJson)
+    const wishPath    = `trips/${req.tripId}/wishes/${req.wishId}`
+
+    const paths = await runFirestoreTransaction<string[]>(
+      accessToken,
+      projectId,
+      async tx => {
+        const [trip, member, wish] = await Promise.all([
+          tx.get(`trips/${req.tripId}`),
+          tx.get(`trips/${req.tripId}/members/${callerUid}`),
+          tx.get(wishPath),
+        ])
+        if (!trip.exists)                throw new CascadeError(404, 'trip not found')
+        if ('deletingAt' in trip.fields) throw new CascadeError(410, 'trip is being deleted')
+        // Membership before the deadline gate, same as the update path: a
+        // non-member probing a tripId must not be able to tell "deadline
+        // passed" from "not a member".
+        if (!member.exists)              throw new CascadeError(403, 'caller is not a trip member')
+        assertWishVotingOpen(trip)
+
+        // Already gone → succeed. There is no identity check to make here
+        // and none is needed: the caller has already proved active
+        // membership above, and "this wish does not exist" is something
+        // any member can read from the list anyway. This is also the
+        // retry path after an ambiguous commit — the first attempt's
+        // queue entries are already durable, so the blobs stay covered.
+        if (!wish.exists) return { writes: [], result: [] }
+
+        // Owner comes from the trip doc, not member.role: role is the
+        // editing capability, ownership is the trip-level fact. Mirrors
+        // firestore.rules, where wish delete is proposer-or-owner while
+        // wish UPDATE is proposer-only.
+        const isOwner    = readString(trip.fields, 'ownerId')      === callerUid
+        const isProposer = readString(wish.fields, 'proposedBy')   === callerUid
+        if (!isOwner && !isProposer) {
+          throw new CascadeError(403, 'only the wish proposer or trip owner can delete this wish')
+        }
+
+        const imagePaths = storedWishImagePaths(wish.fields)
+        return {
+          writes: [
+            // Queue first in the array for readability only — they commit
+            // atomically with the delete, which is the whole point.
+            ...buildPurgeQueueWrites(projectId, req.tripId, req.wishId, imagePaths),
+            {
+              op:              'delete' as const,
+              document:        docResourceName(projectId, wishPath),
+              // A concurrent delete becomes a 412 the wrapper retries,
+              // rather than a silent double-delete.
+              currentDocument: { exists: true },
+            },
+          ],
+          result: imagePaths,
+        }
+      },
+    )
+
+    // Post-commit and best-effort: the queue entries committed above are
+    // the durability guarantee, so a failure here costs the cron an hour,
+    // not the blob. Never throw — the wish is already gone, and turning
+    // that into an error would make the client roll back a delete that
+    // actually happened.
+    for (const path of paths) {
+      try {
+        await deleteR2Object(bucket, path)
+      } catch (e) {
+        console.warn(`[wish-delete] blob purge deferred to cron: ${path} ${(e as Error).message}`)
+      }
+    }
+    return { ok: true as const }
+  })
+}

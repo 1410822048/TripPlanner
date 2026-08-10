@@ -112,10 +112,10 @@ export function useUpdateWish(tripId: string) {
 }
 
 export function useDeleteWish(tripId: string) {
-  return useTripListMutation<Wish, { wishId: string; image: WishImage | undefined }>({
+  return useTripListMutation<Wish, { wishId: string }>({
     tripId,
     keyFactory: wishKeys.all,
-    mutate:     ({ wishId, image }, { uid }) => deleteWish(tripId, wishId, uid, image),
+    mutate:     ({ wishId }, { uid }) => deleteWish(tripId, wishId, uid),
     overlay: {
       controller: wishOverlay,
       op: ({ wishId }, { uid }) => ({

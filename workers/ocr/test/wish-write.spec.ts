@@ -53,7 +53,7 @@ vi.mock('../src/cascade', async () => {
 	}
 })
 
-import { wishFileCreate, wishFileUpdate, WishValidationError } from '../src/wish-write'
+import { wishFileCreate, wishFileUpdate, wishDelete, WishValidationError } from '../src/wish-write'
 import * as storage from '../src/r2-storage'
 import { CascadeError } from '../src/cascade'
 
@@ -1240,5 +1240,202 @@ describe('wishFileUpdate: stale-replace guard', () => {
 		// path, just with image landing for the first time.
 		const writes = capturedTxResult!.writes as Array<{ fields: Record<string, unknown> }>
 		expect(writes).toHaveLength(2)
+	})
+})
+
+// ─── /wish-delete ─────────────────────────────────────────────────
+//
+// The endpoint exists because the doc delete and the blob cleanup have to
+// be atomic. These tests pin that: the purge queue entries and the delete
+// come out of ONE transaction, the paths come from the stored doc rather
+// than the request, and every gate the old client path relied on rules
+// for is reproduced here.
+
+function deleteWishDoc(proposedBy: string, image: 'pair' | 'single' | 'none' = 'pair') {
+	const imageField =
+		image === 'none' ? {} :
+		image === 'single'
+			? { image: { mapValue: { fields: { path: { stringValue: FULL_PATH } } } } }
+			: { image: { mapValue: { fields: {
+					path:      { stringValue: FULL_PATH },
+					thumbPath: { stringValue: THUMB_PATH },
+				} } } }
+	return {
+		exists: true,
+		name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/wishes/${WISH_ID}`,
+		updateTime: '2026-05-26T00:00:00Z',
+		fields: { proposedBy: { stringValue: proposedBy }, ...imageField },
+	}
+}
+
+function tripWithOwner(ownerUid: string, deadlinePassed = false) {
+	const trip = tripReadDoc()
+	return {
+		...trip,
+		fields: {
+			...trip.fields,
+			ownerId: { stringValue: ownerUid },
+			...(deadlinePassed
+				? { wishVotingDeadlineAt: { timestampValue: new Date(Date.now() - 60_000).toISOString() } }
+				: {}),
+		},
+	}
+}
+
+function seedDelete(opts: {
+	owner?:          string
+	proposedBy?:     string
+	deadlinePassed?: boolean
+	wishMissing?:    boolean
+	memberMissing?:  boolean
+	image?:          'pair' | 'single' | 'none'
+} = {}) {
+	txGetResponses.set(`trips/${TRIP_ID}`,
+		tripWithOwner(opts.owner ?? 'owner-uid', opts.deadlinePassed ?? false))
+	txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`,
+		opts.memberMissing
+			? notFoundReadDoc(`trips/${TRIP_ID}/members/${CALLER_UID}`)
+			: memberReadDoc('viewer'))
+	txGetResponses.set(`trips/${TRIP_ID}/wishes/${WISH_ID}`,
+		opts.wishMissing
+			? notFoundReadDoc(`trips/${TRIP_ID}/wishes/${WISH_ID}`)
+			: deleteWishDoc(opts.proposedBy ?? CALLER_UID, opts.image ?? 'pair'))
+}
+
+function deleteWrites() {
+	return capturedTxResult!.writes as Array<{
+		op?: string
+		document: string
+		fields?: Record<string, { stringValue?: string; integerValue?: string }>
+		currentDocument?: { exists?: boolean }
+	}>
+}
+
+const DELETE_REQ = { tripId: TRIP_ID, wishId: WISH_ID }
+
+describe('wishDelete: happy paths', () => {
+	it('queues one purge entry per blob and deletes the wish in the same tx', async () => {
+		seedDelete()
+
+		await expect(wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET)).resolves.toEqual({ ok: true })
+
+		const writes  = deleteWrites()
+		const purges  = writes.filter(w => w.document.includes('/_purges/'))
+		const deletes = writes.filter(w => w.op === 'delete')
+
+		expect(purges).toHaveLength(2)
+		// Paths come from the stored doc. A client-supplied path would let
+		// any member name someone else's blob.
+		expect(purges.map(p => p.fields?.path?.stringValue).sort())
+			.toEqual([FULL_PATH, THUMB_PATH].sort())
+		for (const purge of purges) {
+			expect(purge.fields?.entityRef?.stringValue).toBe(`trips/${TRIP_ID}/wishes/${WISH_ID}`)
+			expect(purge.fields?.attempts?.integerValue).toBe('0')
+		}
+
+		expect(deletes).toHaveLength(1)
+		expect(deletes[0]!.document).toContain(`/wishes/${WISH_ID}`)
+		// A concurrent delete must surface as a 412, not a silent no-op.
+		expect(deletes[0]!.currentDocument).toEqual({ exists: true })
+	})
+
+	it('purges the R2 objects after the transaction commits', async () => {
+		seedDelete()
+
+		await wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET)
+
+		expect(vi.mocked(storage.deleteR2Object).mock.calls.map(c => c[1]).sort())
+			.toEqual([FULL_PATH, THUMB_PATH].sort())
+	})
+
+	it('lets the trip owner delete a wish they did not propose', async () => {
+		seedDelete({ owner: CALLER_UID, proposedBy: 'someone-else' })
+
+		await expect(wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET)).resolves.toEqual({ ok: true })
+	})
+
+	it('does not queue a phantom path for a thumb-less wish', async () => {
+		seedDelete({ image: 'single' })
+
+		await wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET)
+
+		expect(deleteWrites().filter(w => w.document.includes('/_purges/'))).toHaveLength(1)
+	})
+
+	it('deletes an image-less wish with no queue entries at all', async () => {
+		seedDelete({ image: 'none' })
+
+		await wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET)
+
+		const writes = deleteWrites()
+		expect(writes.filter(w => w.document.includes('/_purges/'))).toHaveLength(0)
+		expect(writes.filter(w => w.op === 'delete')).toHaveLength(1)
+		expect(vi.mocked(storage.deleteR2Object)).not.toHaveBeenCalled()
+	})
+
+	it('succeeds and writes nothing when the wish is already gone (ambiguous retry)', async () => {
+		seedDelete({ wishMissing: true })
+
+		await expect(wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET)).resolves.toEqual({ ok: true })
+		expect(capturedTxResult!.writes).toHaveLength(0)
+	})
+
+	it('does not fail the delete when the post-commit R2 purge does', async () => {
+		seedDelete()
+		vi.mocked(storage.deleteR2Object).mockRejectedValue(new Error('R2 down'))
+
+		// The wish is already gone; turning this into an error would make
+		// the client roll back a delete that actually happened.
+		await expect(wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET)).resolves.toEqual({ ok: true })
+	})
+})
+
+describe('wishDelete: authorization', () => {
+	it('rejects a non-member', async () => {
+		seedDelete({ memberMissing: true })
+		await expect(wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET))
+			.rejects.toMatchObject({ status: 403 })
+	})
+
+	it('rejects a member who is neither proposer nor owner', async () => {
+		seedDelete({ proposedBy: 'someone-else' })
+		await expect(wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET))
+			.rejects.toMatchObject({ status: 403 })
+	})
+
+	it('rejects once the voting deadline has passed, even for the proposer', async () => {
+		seedDelete({ deadlinePassed: true })
+		await expect(wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET))
+			.rejects.toMatchObject({ status: 403 })
+	})
+
+	it('rejects once the deadline has passed, even for the trip owner', async () => {
+		seedDelete({ owner: CALLER_UID, proposedBy: 'someone-else', deadlinePassed: true })
+		await expect(wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET))
+			.rejects.toMatchObject({ status: 403 })
+	})
+
+	it('refuses a trip that is being cascaded away', async () => {
+		seedDelete()
+		const trip = tripWithOwner('owner-uid')
+		txGetResponses.set(`trips/${TRIP_ID}`, {
+			...trip,
+			fields: { ...trip.fields, deletingAt: { timestampValue: new Date().toISOString() } },
+		})
+		await expect(wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET))
+			.rejects.toMatchObject({ status: 410 })
+	})
+
+	it('refuses a missing trip', async () => {
+		seedDelete()
+		txGetResponses.set(`trips/${TRIP_ID}`, notFoundReadDoc(`trips/${TRIP_ID}`))
+		await expect(wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET))
+			.rejects.toMatchObject({ status: 404 })
+	})
+
+	it('checks membership before the deadline, so a stranger cannot probe it', async () => {
+		seedDelete({ memberMissing: true, deadlinePassed: true })
+		await expect(wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET))
+			.rejects.toMatchObject({ message: expect.stringContaining('not a trip member') })
 	})
 })
