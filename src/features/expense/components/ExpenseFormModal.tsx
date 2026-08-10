@@ -352,6 +352,14 @@ export default function ExpenseFormModal({
     att.hasAttachment && items.hasItems && amountMinor > 0 && direction !== 'exact'
       ? `明細比帳單金額${direction === 'short' ? '少了' : '多了'} ${formatMinorAmount(Math.abs(itemsDiff), currency)}，合計不一致。請確認讀取結果。`
       : null
+  // Departed members stay selectable as SPLIT participants — their share
+  // is history and editing the total must not be blocked. The payer is
+  // narrower: the Worker accepts the doc's own stored payer or anyone
+  // live, so a ghost who merely shares the bill is not offered here.
+  // Comparing against `editTarget` rather than `state.paidBy` is what
+  // makes switching to a live member and back within one edit work,
+  // because the server is comparing against the stored value too.
+  const payerCandidates = members.filter(m => !m.isGhost || m.id === editTarget?.paidBy)
   const includedArr = members.map(m => m.id).filter(id => splits.state.included.has(id))
   const equalSplits: Record<string, number> = Object.fromEntries(
     splitEqually(amountMinor, includedArr).map(s => [s.memberId, s.amountMinor]),
@@ -493,7 +501,7 @@ export default function ExpenseFormModal({
             accent ring offset, unselected fades to 60% opacity — same
             language as iOS Maps' transport-mode picker. */}
         <div className="flex gap-3 flex-wrap items-center">
-          {members.map(m => {
+          {payerCandidates.map(m => {
             const active = state.paidBy === m.id
             return (
               <button

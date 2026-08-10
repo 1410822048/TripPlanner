@@ -399,3 +399,39 @@ describe('ExpenseFormModal — re-OCR dispatch', () => {
     }))
   })
 })
+
+// The Worker accepts a departed member as payer only if they are ALREADY
+// the stored payer. Offering any other ghost in this picker would present
+// a choice the save then rejects.
+describe('ExpenseFormModal — payer picker excludes split-only ghosts', () => {
+  const ghost = (id: string): TripMember =>
+    ({ id, label: id.toUpperCase(), color: '#000', bg: '#fff', isGhost: true }) as TripMember
+
+  function renderWithGhost(paidBy: string) {
+    // 'b' has left the trip: still in splits, so ExpensePage widens the
+    // member list with them.
+    return render(
+      <ExpenseFormModal
+        editTarget={{ ...foreignExpense(), paidBy } as Expense}
+        defaultDate="2026-06-04"
+        members={[members[0]!, ghost('b')]}
+        isOpen isSaving={false} onClose={() => {}} onSave={vi.fn()}
+      />,
+    )
+  }
+
+  it('hides a departed member who only appears in splits', () => {
+    renderWithGhost('a')   // live payer
+    expect(screen.queryByRole('button', { name: '代墊者：A' })).not.toBeNull()
+    expect(screen.queryByRole('button', { name: '代墊者：B' })).toBeNull()
+  })
+
+  it('keeps the departed member visible when they ARE the stored payer', () => {
+    renderWithGhost('b')
+    // Removing them would make the expense unsavable without silently
+    // reassigning who paid.
+    expect(screen.queryByRole('button', { name: '代墊者：B' })).not.toBeNull()
+    // ...and a live member is still offered, so the payer can be repaired.
+    expect(screen.queryByRole('button', { name: '代墊者：A' })).not.toBeNull()
+  })
+})

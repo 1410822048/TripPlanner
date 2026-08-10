@@ -26,7 +26,7 @@ import {
 }                                          from './firestore-tx'
 import { getFxSnapshot, type FxSnapshot }  from './fx-rate'
 import { currencyFractionDigits }          from '@tripmate/fx-core'
-import { pushUnique, decodeExpense, rosterForUpdate, type TripContext } from './expense-write-shared'
+import { pushUnique, decodeExpense, rostersForUpdate, type TripContext } from './expense-write-shared'
 import {
   encodeSourceItems,
   encodeSourceAdjustments,
@@ -237,7 +237,8 @@ export async function buildForeignUpdateWrite(args: {
     throw new ExpenseValidationError(issue.path.join('.'), issue.message)
   }
   const fp = fParseResult.data
-  const allowedMemberIds = rosterForUpdate(args.ctx.memberIds, args.currentFields)
+  const { splitMembers: allowedMemberIds, paidByMembers } =
+    rostersForUpdate(args.ctx.memberIds, args.currentFields)
 
   // The foreign-update schema's superRefine guarantees source-money
   // fields are present all-or-none and exactly one source domain is
@@ -351,6 +352,7 @@ export async function buildForeignUpdateWrite(args: {
           adjustments: [],
         },
         allowedMemberIds,
+        paidByMembers,
       )
 
       patchFields.amountMinor = { integerValue: String(converted.amountMinor) }
@@ -412,6 +414,7 @@ export async function buildForeignUpdateWrite(args: {
           adjustments: materialized.tripAdjustments,
         },
         allowedMemberIds,
+        paidByMembers,
       )
 
       patchFields.amountMinor = { integerValue: String(materialized.amountMinor) }
@@ -519,6 +522,7 @@ export async function buildForeignUpdateWrite(args: {
           adjustments:  decoded.adjustments,
         },
         allowedMemberIds,
+        paidByMembers,
       )
     }
   }

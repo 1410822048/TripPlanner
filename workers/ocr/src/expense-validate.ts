@@ -442,9 +442,18 @@ export function validateExpenseCrossField(
       targetItemId?: string
     }[]
   },
+  /** Who `splits[]` and item allocations may name. On create this is the
+   *  live roster; on update it is widened with the departed ids the stored
+   *  doc already carries (see `rostersForUpdate`). */
   memberIds: string[],
+  /** Who `paidBy` may name. Defaults to `memberIds`, which is right for
+   *  create and for any caller with a single roster. Update passes a
+   *  TIGHTER list — live roster plus the doc's own current payer — so a
+   *  departed member who only appears in `splits` cannot be promoted to
+   *  payer, which would invent a debt edge nobody incurred. */
+  paidByMemberIds: string[] = memberIds,
 ): void {
-  if (!memberIds.includes(payload.paidBy)) {
+  if (!paidByMemberIds.includes(payload.paidBy)) {
     throw new ExpenseValidationError('paidBy', `${payload.paidBy} is not a trip member`)
   }
 

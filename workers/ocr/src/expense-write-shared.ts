@@ -76,30 +76,52 @@ export function decodeExpense(fields: Record<string, FsValue>): {
   return { amountMinor, currency, paidBy, splits, items, adjustments }
 }
 
-/** The live roster widened with the departed members an existing expense
- *  ALREADY references. Update paths only -- create must stay roster-pure.
+/** Who an UPDATE may reference, per field. Two lists because the two
+ *  fields need different rules -- create needs neither, and must stay
+ *  roster-pure so a departed member can never be introduced.
  *
- *  Without this, removing a member freezes every expense they ever paid
- *  for or shared: `validateExpenseCrossField` rejects the out-of-roster
- *  `paidBy` / `splits[].memberId` that the stored doc still carries, so
- *  even a title edit 400s forever. Stripping those refs instead is not an
- *  option -- that rewrites settled history.
- *
- *  Granularity is set membership, not per-field equality: a ghost already
- *  on the doc may have their split amount change (otherwise any total edit
- *  would be blocked again), but a ghost the doc never referenced is still
- *  rejected. */
-export function rosterForUpdate(
+ *  Both exist because removing a member would otherwise freeze every
+ *  expense they ever paid for or shared: `validateExpenseCrossField`
+ *  rejects the out-of-roster ids the stored doc still carries, so even a
+ *  title edit 400s forever. Stripping those refs instead is not an option
+ *  -- that rewrites settled history. */
+export interface UpdateRosters {
+  /** Live roster + EVERY departed id the doc already references, in any
+   *  position. Set membership rather than per-field equality on purpose: a
+   *  ghost already sharing this expense may have their split amount
+   *  change, or any total edit would be blocked again for the same reason
+   *  the freeze was. */
+  splitMembers:  string[]
+  /** Live roster + THIS doc's current payer only. Tighter than the split
+   *  rule because paidBy is a single field with a single incumbent, and
+   *  the loose version let a departed member who merely appears in
+   *  `splits` be promoted to payer -- inventing a debt edge nobody
+   *  incurred. So: keep the ghost payer you have, or hand the expense to
+   *  someone live; a split-only ghost can never become one, and once the
+   *  payer is live it cannot go back. */
+  paidByMembers: string[]
+}
+
+export function rostersForUpdate(
   memberIds:     string[],
   currentFields: Record<string, FsValue>,
-): string[] {
+): UpdateRosters {
   const current = decodeExpense(currentFields)
-  const allowed = new Set(memberIds)
-  allowed.add(current.paidBy)
-  for (const split of current.splits) allowed.add(split.memberId)
+
+  const splitMembers = new Set(memberIds)
+  splitMembers.add(current.paidBy)
+  for (const split of current.splits) splitMembers.add(split.memberId)
   for (const item of current.items ?? []) {
-    for (const allocation of item.allocations) allowed.add(allocation.memberId)
+    for (const allocation of item.allocations) splitMembers.add(allocation.memberId)
   }
-  allowed.delete('')
-  return [...allowed]
+  splitMembers.delete('')
+
+  const paidByMembers = new Set(memberIds)
+  paidByMembers.add(current.paidBy)
+  paidByMembers.delete('')
+
+  return {
+    splitMembers:  [...splitMembers],
+    paidByMembers: [...paidByMembers],
+  }
 }

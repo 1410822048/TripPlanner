@@ -21,7 +21,8 @@ import {
   validateExpenseCrossField,
   type ExpenseReceiptOut,
 } from '../src/expense-validate'
-import { rosterForUpdate } from '../src/expense-write-shared'
+import { rostersForUpdate } from '../src/expense-write-shared'
+import type { FsValue } from '../src/firestore'
 import { CascadeError } from '../src/cascade'
 import type { ForeignArtifacts } from '../src/expense-foreign-write'
 import type { FxSnapshot } from '../src/fx-rate'
@@ -261,24 +262,31 @@ describe('mergeExpense', () => {
   })
 })
 
-// ─── rosterForUpdate ──────────────────────────────────────────────
+// ─── rostersForUpdate ─────────────────────────────────────────────
 //
-// Removing a member must not freeze the expenses they already touched.
-// The update paths validate against this widened roster; create still
-// uses the live roster, so a departed member can never be introduced.
+// Removing a member must not freeze the expenses they already touched,
+// but the two fields need different rules. `splits` stays entity-level so
+// amounts can still be adjusted; `paidBy` is field-level so a departed
+// member who merely shares the bill cannot be promoted to payer. Create
+// uses the live roster for both, so a departed member can never be
+// introduced.
 
-describe('rosterForUpdate', () => {
+function updateWith(current: Record<string, FsValue>, patch: Record<string, unknown>) {
+  return mergeExpense(current, makeExpenseUpdateSchema().parse(patch))
+}
+
+describe('rostersForUpdate — splits stay entity-level', () => {
   it('grandfathers a departed paidBy / split member the doc already references', () => {
     const current = encodeExpense(createPayload(), TRIP, MEMBERS, 'u1')
     // u1 left the trip: live roster is u2 only.
-    const allowed = rosterForUpdate(['u2'], current)
-    expect(allowed).toEqual(expect.arrayContaining(['u1', 'u2']))
+    const { splitMembers, paidByMembers } = rostersForUpdate(['u2'], current)
+    expect(splitMembers).toEqual(expect.arrayContaining(['u1', 'u2']))
 
     // A title-only edit still validates -- this is the freeze that
     // used to 400 forever.
     expect(() => validateExpenseCrossField(
-      mergeExpense(current, makeExpenseUpdateSchema().parse({ title: 'Lunch v2' })),
-      allowed,
+      updateWith(current, { title: 'Lunch v2' }),
+      splitMembers, paidByMembers,
     )).not.toThrow()
   })
 
@@ -291,18 +299,85 @@ describe('rosterForUpdate', () => {
         { id: 'i2', name: 'B', amountMinor: 600, allocations: [{ memberId: 'u2', shares: 1 }] },
       ],
     }), TRIP, MEMBERS, 'u1')
-    expect(rosterForUpdate([], current)).toEqual(expect.arrayContaining(['u1', 'u2']))
+    expect(rostersForUpdate([], current).splitMembers)
+      .toEqual(expect.arrayContaining(['u1', 'u2']))
+  })
+
+  it('lets a ghost split amount change, so a total edit is not blocked again', () => {
+    const current = encodeExpense(createPayload(), TRIP, MEMBERS, 'u1')  // u1 pays, 600/600
+    const { splitMembers, paidByMembers } = rostersForUpdate(['u2'], current)
+
+    expect(() => validateExpenseCrossField(
+      updateWith(current, {
+        amountMinor: 2000,
+        splits: [{ memberId: 'u1', amountMinor: 800 }, { memberId: 'u2', amountMinor: 1200 }],
+      }),
+      splitMembers, paidByMembers,
+    )).not.toThrow()
   })
 
   it('does not admit a member the doc never referenced', () => {
     const current = encodeExpense(createPayload(), TRIP, MEMBERS, 'u1')
-    const allowed = rosterForUpdate(['u2'], current)
-    expect(allowed).not.toContain('stranger')
+    const { splitMembers, paidByMembers } = rostersForUpdate(['u2'], current)
+    expect(splitMembers).not.toContain('stranger')
 
     expect(() => validateExpenseCrossField({
       amountMinor: 1200, currency: 'JPY',
       paidBy: 'stranger',
       splits: [{ memberId: 'u2', amountMinor: 1200 }],
-    }, allowed)).toThrow()
+    }, splitMembers, paidByMembers)).toThrow()
+  })
+})
+
+describe('rostersForUpdate — paidBy is field-level', () => {
+  // u2 pays, u1 and u2 share. Then u1 leaves: a ghost that appears ONLY
+  // in splits.
+  const splitOnlyGhost = () => encodeExpense(createPayload({ paidBy: 'u2' }), TRIP, MEMBERS, 'u2')
+
+  it('keeps a departed payer where they already are', () => {
+    const current = encodeExpense(createPayload(), TRIP, MEMBERS, 'u1')  // u1 pays
+    const { splitMembers, paidByMembers } = rostersForUpdate(['u2'], current)
+
+    expect(paidByMembers).toEqual(expect.arrayContaining(['u1', 'u2']))
+    expect(() => validateExpenseCrossField(
+      updateWith(current, { title: 'still u1 paying' }),
+      splitMembers, paidByMembers,
+    )).not.toThrow()
+  })
+
+  it('refuses to promote a split-only ghost to payer', () => {
+    // This is the debt edge nobody incurred: u1 never paid for anything,
+    // and the entity-level rule used to allow moving them into paidBy.
+    const current = splitOnlyGhost()
+    const { splitMembers, paidByMembers } = rostersForUpdate(['u2'], current)
+
+    expect(paidByMembers).not.toContain('u1')
+    expect(splitMembers).toContain('u1')   // still fine in splits
+    expect(() => validateExpenseCrossField(
+      updateWith(current, { paidBy: 'u1' }),
+      splitMembers, paidByMembers,
+    )).toThrow(/paidBy/)
+  })
+
+  it('allows handing a ghost-paid expense to a live member', () => {
+    const current = encodeExpense(createPayload(), TRIP, MEMBERS, 'u1')  // u1 pays, then leaves
+    const { splitMembers, paidByMembers } = rostersForUpdate(['u2'], current)
+
+    expect(() => validateExpenseCrossField(
+      updateWith(current, { paidBy: 'u2' }),
+      splitMembers, paidByMembers,
+    )).not.toThrow()
+  })
+
+  it('will not let a live payer be handed back to a ghost', () => {
+    // Once repaired, the incumbent is live, so the ghost is no longer the
+    // doc's current payer and has nothing to grandfather.
+    const repaired = encodeExpense(createPayload({ paidBy: 'u2' }), TRIP, MEMBERS, 'u2')
+    const { splitMembers, paidByMembers } = rostersForUpdate(['u2'], repaired)
+
+    expect(() => validateExpenseCrossField(
+      updateWith(repaired, { paidBy: 'u1' }),
+      splitMembers, paidByMembers,
+    )).toThrow(/paidBy/)
   })
 })

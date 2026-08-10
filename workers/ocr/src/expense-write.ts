@@ -33,7 +33,7 @@ import {
   type ExpenseReceiptOut,
 }                                                                   from './expense-validate'
 import { buildReceiptFromIntents, validateBuiltReceipt }         from './expense-receipt-write'
-import { pushUnique, rosterForUpdate, type TripContext }            from './expense-write-shared'
+import { pushUnique, rostersForUpdate, type TripContext }           from './expense-write-shared'
 import {
   prepareForeignCreate, buildForeignUpdateWrite,
   type ForeignArtifacts,
@@ -607,7 +607,8 @@ function buildTripUpdateWrite(args: {
       `expense currency ${merged.currency} does not match trip currency ${args.ctx.currency}`,
     )
   }
-  validateExpenseCrossField(merged, rosterForUpdate(args.ctx.memberIds, args.currentFields))
+  const rosters = rostersForUpdate(args.ctx.memberIds, args.currentFields)
+  validateExpenseCrossField(merged, rosters.splitMembers, rosters.paidByMembers)
 
   // Build the update mask + field map. Receipt write happens via
   // the separate `receipt` arg (intent-built) or via deletion
