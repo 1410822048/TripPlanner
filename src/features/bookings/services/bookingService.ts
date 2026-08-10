@@ -45,7 +45,7 @@ import {
   requireWorkerWriteBase, preflightIdToken, workerFetch,
 } from '@/services/workerBase'
 import { bookingAttachmentPaths, purgeBookingAttachments } from './bookingStorage'
-import { safePurgeWithEnqueueFallback } from '@/services/orphanPurge'
+import { safePurgeWithEnqueueFallback, deleteEntityThenPurgeBlobs } from '@/services/orphanPurge'
 
 /** 100 is well above the realistic per-trip count (10-30) — truncation
  *  fires Sentry so we know when reality stretches the assumption. */
@@ -465,21 +465,15 @@ export async function updateBooking(
 }
 
 /**
- * Delete a booking + its attachment. The doc deletion is the critical
- * write -- attachment cleanup routes through the same orphan-purge
- * ladder as create/update flows: in-process retry → `_purges` queue
- * → cron verify-before-delete. Matches `wishService.deleteWish` and
- * closes the asymmetry where booking previously called bare
- * `purgeAttachments` and silently dropped any permanent failure.
+ * Delete a booking + its attachments, reserving the blob cleanup before
+ * anything is destroyed. See `deleteEntityThenPurgeBlobs` for why the
+ * queue entry has to come first; the short version is that purging before
+ * the doc delete can leave a booking pointing at bytes that no longer
+ * exist, on a row the user may no longer be allowed to delete.
  *
- * Strict-cleanup gate (destructive-delete only): if BOTH purge AND
- * `_purges` enqueue rejected, abort BEFORE deleting the doc. Without
- * the doc, the attachment.path → blob binding vanishes from every
- * future cleanup attempt (cron has nothing to verify against, trip
- * cascade only sees `trips/{tripId}/...` blobs but won't catch a
- * mid-cleanup orphan whose path was only known to the deleted doc).
- * Throwing here lets the mutation rollback the optimistic patch so
- * the row reappears and a human-driven retry has a chance.
+ * `deleteWish` deliberately does NOT match this any more: the Worker's
+ * attachment-delete authorization reads the wish doc for its proposer
+ * check, so a wish whose doc is already gone fails the inline purge.
  */
 export async function deleteBooking(
   tripId: string,
@@ -491,27 +485,21 @@ export async function deleteBooking(
     attachments.coverImage,
     attachments.document,
   )
-  if (paths.length > 0) {
-    const result = await safePurgeWithEnqueueFallback({
-      purge: () => purgeBookingAttachments(
-        attachments.coverImage,
-        attachments.document,
-      ),
-      enqueue: {
-        tripId, collection: 'bookings', entityId: bookingId,
-        paths,
-        source: 'deleteBooking/attachment',
-      },
-      sentry: { source: 'deleteBooking/attachment', tripId, bookingId },
-    })
-    if (result === 'unrecoverable') {
-      throw new Error(
-        '無法刪除附件，也無法加入重試佇列。' +
-        '請稍後再試一次。',
-      )
-    }
-  }
   const { db, doc, deleteDoc } = await getFirebase()
-  await deleteDoc(doc(db, ...P.booking(tripId, bookingId)))
+  await deleteEntityThenPurgeBlobs({
+    enqueue: {
+      tripId, collection: 'bookings', entityId: bookingId,
+      paths,
+      source: 'deleteBooking/attachment',
+    },
+    deleteEntity: () => deleteDoc(doc(db, ...P.booking(tripId, bookingId))),
+    purge: () => purgeBookingAttachments(
+      attachments.coverImage,
+      attachments.document,
+    ),
+    sentry: { source: 'deleteBooking/attachment', tripId, bookingId },
+    reserveFailureMessage:
+      '無法排入附件清理佇列，因此沒有刪除這筆訂單。請稍後再試一次。',
+  })
   void bumpTripActivity(tripId, 'bookings', uid)
 }

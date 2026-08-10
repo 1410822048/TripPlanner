@@ -334,11 +334,21 @@ export async function updateWish(
 }
 
 /**
- * Delete a wish + its cover image. Strict-cleanup gate mirrors
- * `deleteBooking`: when both purge and `_purges` enqueue fail, abort
- * before deleting the doc so the image.path → blob binding survives
- * for a human-driven retry. See bookingService.deleteBooking comment
- * block for the full reasoning.
+ * Delete a wish + its cover image. Strict-cleanup gate: when both purge
+ * and `_purges` enqueue fail, abort before deleting the doc so the
+ * image.path → blob binding survives for a human-driven retry.
+ *
+ * This purges BEFORE deleting the doc, which leaves a known hole: if the
+ * voting deadline passes (or the caller loses membership) between the two
+ * awaits, the delete is refused and the wish survives pointing at bytes
+ * that are gone, permanently. `deleteBooking` closes the equivalent hole
+ * with `deleteEntityThenPurgeBlobs`, and wish cannot copy it: the Worker's
+ * attachment-delete authorization loads THIS doc to run the proposer check
+ * (attachment-content.ts), so once the doc is gone every non-owner purge
+ * 404s and falls back to the cron's hourly cycle — holding the image bytes
+ * far longer than the bug being fixed. Closing it properly means moving
+ * the delete behind a Worker endpoint that does both writes with the admin
+ * SDK; until then this order is the lesser evil.
  */
 export async function deleteWish(
   tripId: string,

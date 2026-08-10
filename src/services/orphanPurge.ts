@@ -164,6 +164,68 @@ export type SafePurgeResult = 'purged' | 'queued' | 'unrecoverable'
  * operator can see "what tried to delete what" without having to
  * cross-reference the source tag against the service code.
  */
+/**
+ * Destructive delete of an entity that owns Storage blobs, ordered so no
+ * failure can leave an unrepairable state.
+ *
+ * The obvious order — purge the blobs, then delete the doc — has a hole
+ * between the two awaits. The purge is authorized by the Worker against
+ * the state at that instant; by the time `deleteEntity` runs, rules may
+ * refuse it (a member removed, a trip mid-cascade). The doc then survives
+ * pointing at bytes that are already gone, and nothing repairs that: the
+ * user sees a broken attachment on a row they cannot delete.
+ *
+ * Simply swapping the two is worse, not better: a purge that fails after
+ * the doc is gone strands the blob with nothing referencing it, which is
+ * precisely the state `safePurgeWithEnqueueFallback`'s `unrecoverable`
+ * branch exists to prevent.
+ *
+ * So the queue entry goes FIRST. It is a durable record of the
+ * path → entity binding written while both still exist, which means:
+ *   - enqueue fails    → throw, having destroyed nothing;
+ *   - deleteEntity denied → the entity still references the path, so the
+ *     cron reads it as a false orphan and drops the entry. Harmless;
+ *   - purge fails      → the entry drains on the next cron run;
+ *   - everything works → the entry drains into a no-op R2 delete.
+ *
+ * The cost is one queue write per delete on the happy path. That buys the
+ * removal of both unrepairable states, on an operation users perform
+ * rarely.
+ *
+ * NOT usable where the Worker's delete authorization reads the entity doc
+ * (wishes: the proposer check in attachment-content.ts). There the inline
+ * purge would 404 once the doc is gone and every delete would fall back to
+ * the cron's hourly cycle, holding the bytes far longer than today.
+ */
+export async function deleteEntityThenPurgeBlobs(args: {
+  enqueue:      EnqueueOrphanPurgeInput
+  deleteEntity: () => Promise<void>
+  purge:        () => Promise<void>
+  sentry:       Record<string, unknown>
+  /** Surfaced to the user when nothing could be reserved, so they retry
+   *  an operation that has not yet destroyed anything. */
+  reserveFailureMessage: string
+}): Promise<void> {
+  const hasBlobs = args.enqueue.paths.length > 0
+  if (hasBlobs) {
+    try {
+      await enqueueOrphanPurges(args.enqueue)
+    } catch (reserveErr) {
+      captureError(reserveErr, { ...args.sentry, phase: 'reserve' })
+      throw new Error(args.reserveFailureMessage, { cause: reserveErr })
+    }
+  }
+  await args.deleteEntity()
+  if (!hasBlobs) return
+  try {
+    await args.purge()
+  } catch (purgeErr) {
+    // Best-effort by design: the queue entry written above is the
+    // guarantee, so a failure here costs latency, not durability.
+    captureError(purgeErr, { ...args.sentry, phase: 'purge' })
+  }
+}
+
 export async function safePurgeWithEnqueueFallback(args: {
   purge:   () => Promise<void>
   enqueue: EnqueueOrphanPurgeInput

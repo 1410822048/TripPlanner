@@ -62,6 +62,7 @@ const mocks = vi.hoisted(() => {
     requireWorkerWriteBaseMock: vi.fn(() => 'https://worker.test'),
     preflightIdTokenMock:       vi.fn(async () => 'tok-test'),
     workerFetchMock:            vi.fn(),
+    captureErrorMock:           vi.fn(),
   }
 })
 
@@ -83,8 +84,19 @@ vi.mock('@/services/firebase', () => ({
   })),
 }))
 
-vi.mock('@/services/orphanPurge', () => ({
+// `deleteEntityThenPurgeBlobs` is deliberately NOT mocked: its whole value
+// is the ORDER it imposes, so a stub would assert nothing. The real helper
+// runs against the Firestore shims above (enqueueOrphanPurges writes via
+// the mocked setDoc), which makes the delete tests below cover the actual
+// sequence. Only the create/update collaborator stays stubbed.
+vi.mock('@/services/orphanPurge', async importOriginal => ({
+  ...await importOriginal<typeof import('@/services/orphanPurge')>(),
   safePurgeWithEnqueueFallback: mocks.safePurgeMock,
+}))
+
+vi.mock('@/services/sentry', () => ({
+  captureError: mocks.captureErrorMock,
+  breadcrumb:   vi.fn(),
 }))
 
 vi.mock('./bookingStorage', () => ({
@@ -205,41 +217,57 @@ beforeEach(() => {
 // deleteBooking strict-cleanup gate
 // ────────────────────────────────────────────────────────────────────
 
-describe('deleteBooking strict-cleanup gate', () => {
-  it('throws + skips deleteDoc when safePurge returns "unrecoverable"', async () => {
-    mocks.safePurgeMock.mockResolvedValueOnce('unrecoverable')
+describe('deleteBooking cleanup ordering', () => {
+  // Purging before the doc delete leaves a booking pointing at bytes that
+  // are gone whenever rules refuse the delete in between; purging after it
+  // strands the bytes when the purge fails. Reserving the queue entry first
+  // is what removes both, so the order is the contract under test.
+  it('reserves the purge queue BEFORE deleting the doc, and purges last', async () => {
+    const calls: string[] = []
+    mocks.setDocMock.mockImplementation(async () => { calls.push('enqueue') })
+    mocks.deleteDocMock.mockImplementation(async () => { calls.push('deleteDoc') })
+    mocks.purgeAttachmentsMock.mockImplementation(async () => { calls.push('purge') })
+
+    await deleteBooking('t1', 'b1', 'u1', { document: ATTACHMENT })
+
+    // One queue doc per path, so assert the boundaries rather than an
+    // exact sequence: EVERY reservation lands before the doc delete, and
+    // the blob purge is strictly last.
+    expect(calls.filter(c => c === 'enqueue').length).toBeGreaterThan(0)
+    expect(calls.indexOf('deleteDoc')).toBeGreaterThan(calls.lastIndexOf('enqueue'))
+    expect(calls.indexOf('purge')).toBeGreaterThan(calls.indexOf('deleteDoc'))
+    expect(mocks.bumpTripActivityMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('destroys nothing when the queue reservation fails', async () => {
+    mocks.setDocMock.mockRejectedValue(new Error('firestore down'))
 
     await expect(deleteBooking('t1', 'b1', 'u1', { document: ATTACHMENT }))
-      .rejects.toThrow(/附件|再試一次/)
+      .rejects.toThrow(/佇列|再試一次/)
 
     expect(mocks.deleteDocMock).not.toHaveBeenCalled()
+    expect(mocks.purgeAttachmentsMock).not.toHaveBeenCalled()
     expect(mocks.bumpTripActivityMock).not.toHaveBeenCalled()
   })
 
-  it('proceeds with deleteDoc when safePurge returns "purged"', async () => {
-    mocks.safePurgeMock.mockResolvedValueOnce('purged')
+  it('still deletes the booking when the blob purge fails, leaving it to the cron', async () => {
+    mocks.setDocMock.mockResolvedValue(undefined)
     mocks.deleteDocMock.mockResolvedValue(undefined)
+    mocks.purgeAttachmentsMock.mockRejectedValue(new Error('R2 down'))
 
-    await deleteBooking('t1', 'b1', 'u1', { document: ATTACHMENT })
+    await expect(deleteBooking('t1', 'b1', 'u1', { document: ATTACHMENT })).resolves.toBeUndefined()
 
     expect(mocks.deleteDocMock).toHaveBeenCalledTimes(1)
+    expect(mocks.captureErrorMock).toHaveBeenCalled()
   })
 
-  it('proceeds with deleteDoc when safePurge returns "queued" (cron will drain)', async () => {
-    mocks.safePurgeMock.mockResolvedValueOnce('queued')
-    mocks.deleteDocMock.mockResolvedValue(undefined)
-
-    await deleteBooking('t1', 'b1', 'u1', { document: ATTACHMENT })
-
-    expect(mocks.deleteDocMock).toHaveBeenCalledTimes(1)
-  })
-
-  it('skips safePurge entirely when no attachment, goes straight to deleteDoc', async () => {
+  it('skips the queue entirely when there is no attachment', async () => {
     mocks.deleteDocMock.mockResolvedValue(undefined)
 
     await deleteBooking('t1', 'b1', 'u1', {})
 
-    expect(mocks.safePurgeMock).not.toHaveBeenCalled()
+    expect(mocks.setDocMock).not.toHaveBeenCalled()
+    expect(mocks.purgeAttachmentsMock).not.toHaveBeenCalled()
     expect(mocks.deleteDocMock).toHaveBeenCalledTimes(1)
   })
 })
