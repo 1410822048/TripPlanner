@@ -24,7 +24,10 @@ vi.mock('@/components/ui/CurrencyPicker', () => ({
   ),
 }))
 vi.mock('@/components/ui/pickers/DatePicker', () => ({
-  default: ({ value }: { value: string }) => <div>date:{value}</div>,
+  // maxDate is surfaced so the local-vs-UTC bound can be asserted; it is
+  // the thing that used to refuse the user's own today.
+  default: ({ value, maxDate }: { value: string; maxDate?: string }) =>
+    <div>date:{value} max:{maxDate}</div>,
 }))
 
 // useFxPreview is controllable per-test via this hoisted holder.
@@ -41,6 +44,11 @@ vi.mock('@/hooks/useFxPreview', () => ({ useFxPreview: () => fx.value }))
 
 import SettlementRecordSheet, { type SettlementRecordSubmit } from './SettlementRecordSheet'
 import type { TripMember } from '@/features/trips/types'
+// Stubbed to a value that is deliberately NOT the UTC date: the CI box
+// runs in UTC, so asserting against a real toLocalDateString would pass
+// just as happily against `new Date().toISOString()` and prove nothing.
+const LOCAL_TODAY = '2099-12-31'
+vi.mock('@/utils/dates', () => ({ toLocalDateString: () => LOCAL_TODAY }))
 
 const members: TripMember[] = [
   { id: 'a', label: 'A', color: '#000', bg: '#fff' },
@@ -74,6 +82,32 @@ describe('SettlementRecordSheet — double-submit latch', () => {
     expect(payload).toMatchObject({ mode: 'TRIP_CURRENCY', fromUid: 'a', toUid: 'b', expectedRemainingMinor: 5000 })
     // TRIP_CURRENCY optimistic patch MUST NOT carry a source amount.
     expect(payload.optimistic).not.toHaveProperty('sourceAmountMinor')
+  })
+})
+
+// The sheet shares useFxPreview's gate, but it also owns three bounds of
+// its own — the default value, the submit check and the picker ceiling.
+// All three have to be the user's day, or the sheet refuses a date the
+// preview just accepted. Asserting the rendered maxDate is the only one
+// of the three that no other test would notice going wrong.
+describe('SettlementRecordSheet — the date bound is the user\'s day', () => {
+  it('defaults settledOn and caps the picker at LOCAL today, not UTC today', () => {
+    renderSheet()
+    fireEvent.click(screen.getByRole('button', { name: 'pick-foreign' }))  // reveals the date field
+
+    expect(screen.getByText(`date:${LOCAL_TODAY} max:${LOCAL_TODAY}`)).toBeTruthy()
+  })
+
+  it('accepts local today on submit', () => {
+    fx.value = { rateDecimal: '0.218', rateDate: '2026-06-03', isLoading: false, isError: false, disabledReason: undefined }
+    const onSave = renderSheet()
+    fireEvent.click(screen.getByRole('button', { name: 'pick-foreign' }))
+    fireEvent.click(screen.getByRole('button', { name: '儲存紀錄' }))
+
+    // The old UTC bound rejected this with 「無法換算未來日期」 for the
+    // whole local morning east of Greenwich.
+    expect(onSave).toHaveBeenCalledTimes(1)
+    expect(onSave.mock.calls[0]![0]).toMatchObject({ settledOn: LOCAL_TODAY })
   })
 })
 

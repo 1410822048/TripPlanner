@@ -546,6 +546,16 @@ export async function resolveFxRate(
 
   const cacheKey = fxCacheKey(input.requestedDate, input.sourceCurrency, input.tripCurrency)
 
+  // Deliberately NOT re-running the two rateDate ceilings here. Both
+  // survive caching by construction, not by access control:
+  //   - `rateDate <= todayUtc` was true when the entry was written, and
+  //     the UTC day only ever moves forward, so it is still true at every
+  //     later read.
+  //   - `rateDate <= requestedDate` was checked against the same
+  //     requestedDate, because it is part of the cache key.
+  // A re-check would therefore only fire if the clock ran backwards. If
+  // the key ever stops including requestedDate, the second half of that
+  // argument dies with it.
   const cached = await readCache(accessToken, projectId, cacheKey, fetchImpl)
   if (cached) {
     return {
