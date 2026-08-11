@@ -157,9 +157,14 @@ export default function SettlementSummary({
                 // Payer / third-party see a status pill, not a button.
                 // A departed PAYER is recordable: the debt came from real
                 // expenses and the receiver is the one confirming they were
-                // repaid. A departed RECEIVER is not, and needs no check —
-                // `uid === s.toId` can only hold for someone still here.
-                const canRecord = uid != null && uid === s.toId
+                // repaid.
+                //
+                // A departed RECEIVER is not, and `uid === s.toId` does not
+                // rule it out on its own: uid is who you are signed in as,
+                // not proof you are still on the roster. Between being
+                // removed and the listener catching up you are your own
+                // ghost, and the button would show only to be 403'd.
+                const canRecord = uid != null && uid === s.toId && !to.isGhost
                 const isPayer   = uid != null && uid === s.fromId
                 // settledContext (應清算 / 已清算 / 還差) is computed in the
                 // settlement domain — the UI just renders it when present.

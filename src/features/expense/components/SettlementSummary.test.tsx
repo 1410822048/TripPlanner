@@ -71,11 +71,12 @@ describe('SettlementSummary — receiver-only record gate', () => {
     expect(screen.getByRole('button', RECORD_BTN)).toBeTruthy()
   })
 
-  it('offers nobody the button when the PAYEE has left', () => {
-    // Recording that a departed member received money would be someone
-    // else asserting a payment they cannot witness. No explicit check is
-    // needed: uid === toId can only hold for someone still here.
-    render(<SettlementSummary {...base({ members: [B], uid: 'u2' })} />)
+  it('withholds the button from a PAYEE who has been removed', () => {
+    // u1 is the payee AND the signed-in user AND no longer on the roster —
+    // the window between removal and the listener catching up. uid still
+    // equals toId here, so only the ghost check closes it; asserting with
+    // any other uid would pass whether or not that check exists.
+    render(<SettlementSummary {...base({ members: [B], uid: 'u1' })} />)
     expect(screen.queryByRole('button', RECORD_BTN)).toBeNull()
   })
 })

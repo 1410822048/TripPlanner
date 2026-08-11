@@ -125,8 +125,25 @@ vi.mock('@/hooks/useAttachmentUrl', () => ({
     path ? `blob:${opts.kind}:${path}` : null,
 }))
 
-vi.mock('./SettlementSummary', () => ({ default: () => null }))
-vi.mock('./SettlementRecordSheet', () => ({ default: () => null }))
+vi.mock('./SettlementSummary', () => ({
+  // Exposes the suggestion callback so a test can open the record sheet;
+  // the real component's own behaviour is covered in its own spec.
+  default: ({ onRecordSettlement }: {
+    onRecordSettlement: (s: { fromUid: string; toUid: string; amountMinor: number }) => void
+  }) => (
+    <button
+      type="button"
+      onClick={() => onRecordSettlement({ fromUid: 'u2', toUid: 'u1', amountMinor: 600 })}
+    >
+      record-settlement
+    </button>
+  ),
+}))
+vi.mock('./SettlementRecordSheet', () => ({
+  default: ({ members }: { members: TripMember[] }) => (
+    <div role="dialog" aria-label="settle-sheet" data-members={members.map(m => m.id).join(',')} />
+  ),
+}))
 vi.mock('./ExpenseFormModal', () => ({
   default: ({ editTarget, members }: { editTarget: Expense | null; members: TripMember[] }) => (
     <div
@@ -292,6 +309,21 @@ describe('ExpensePage read-first expense flow', () => {
 
     const form = screen.getByRole('dialog', { name: 'expense-edit' })
     expect(form.getAttribute('data-members')).toBe('u1,u2')
+  })
+
+  it('gives the settle sheet the departed payer, not just the live roster', () => {
+    // A departed member's debt outlives their membership, so they can be
+    // the PAYER of a suggestion. The sheet looks both parties up by uid —
+    // with the live roster only, the whole "who paid whom" header would
+    // silently not render on exactly these settlements.
+    harness.expenses = [receiptExpense()]      // splits u1 + u2
+    harness.members = [MEMBERS[0]!]            // u2 left the trip
+
+    render(<ExpensePage />)
+    fireEvent.click(screen.getByRole('button', { name: 'record-settlement' }))
+
+    const sheet = screen.getByRole('dialog', { name: 'settle-sheet' })
+    expect(sheet.getAttribute('data-members')).toBe('u1,u2')
   })
 
   it('keeps the create form roster-pure (the Worker rejects a departed member on create)', () => {

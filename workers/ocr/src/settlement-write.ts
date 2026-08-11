@@ -40,7 +40,8 @@
 // Reads (all in the same tx as the write):
 //   - trips/{tripId}                                  (existence, deletingAt, currency)
 //   - trips/{tripId}/members/{callerUid}              (membership)
-//   - trips/{tripId}/members/{fromUid}                (membership of payer)
+//     (the PAYER's member doc is deliberately not read — their debt
+//      outlives their membership; see the new-write path)
 //   - trips/{tripId}/expenses where paidBy IN [from,to]  (active gross; soft-deleted dropped in-memory)
 //   - trips/{tripId}/settlements where (fromUid,toUid)==(from,to) and the reverse (already-applied, exact pair)
 //   - trips/{tripId}/settlements/{settlementId}       (create-only check)
@@ -421,8 +422,8 @@ async function doCreate(
 
     // ----- Idempotent-retry fast-path (read existing settlement first) -----
     //
-    // Critical ordering decision: the existing-settlement probe (and the
-    // from-member existence check) happens BEFORE the FX network call
+    // Critical ordering decision: the existing-settlement probe happens
+    // BEFORE the FX network call
     // for FOREIGN_CURRENCY and BEFORE the heavy expense + settlement
     // runQuery fan-out for the overpay gate. Why:
     //
