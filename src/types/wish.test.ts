@@ -5,7 +5,8 @@
 // isHttpUrl in field-validation.ts — booking.test.ts pins the same
 // contract for the booking side.
 import { describe, it, expect } from 'vitest'
-import { CreateWishSchema } from './wish'
+import { CreateWishSchema, WishDocSchema } from './wish'
+import { MOCK_TIMESTAMP as TS } from '@/mocks/utils'
 
 describe('CreateWishSchema.link', () => {
   const base = { category: 'place' as const, title: 'X' }
@@ -48,5 +49,40 @@ describe('CreateWishSchema.link', () => {
   // asymmetry deliberate rather than accidental.
   it('rejects the empty string (wish has no clear sentinel; stripEmpty drops it first)', () => {
     expect(CreateWishSchema.safeParse({ ...base, link: '' }).success).toBe(false)
+  })
+})
+
+// The read side is where the value actually becomes an <a href>, so a doc
+// that somehow carries a non-http(s) link should drop out loudly (Sentry,
+// via firestoreDocFromSchema) rather than render a live link.
+describe('WishDocSchema.link', () => {
+  const doc = {
+    tripId: 't1', category: 'place' as const, title: 'X',
+    proposedBy: 'u1', updatedBy: 'u1',
+    memberIds: ['u1'], votes: [],
+    createdAt: TS, updatedAt: TS,
+  }
+
+  it('accepts an absent link and a valid https one', () => {
+    expect(WishDocSchema.safeParse(doc).success).toBe(true)
+    expect(WishDocSchema.safeParse({ ...doc, link: 'https://tabelog.com/x' }).success).toBe(true)
+  })
+
+  it.each([
+    ['javascript:alert(1)'],
+    ['data:text/html,<script>'],
+    ['HTTPS://example.com'],
+    ['https://ex ample.com'],
+    // '' never reaches storage — stripEmpty on create, mask-delete on
+    // update — so the read side has no reason to tolerate it either.
+    [''],
+  ])('rejects a stored link of %s', link => {
+    expect(WishDocSchema.safeParse({ ...doc, link }).success).toBe(false)
+  })
+
+  it('rejects a stored link over 500 chars', () => {
+    expect(WishDocSchema.safeParse({
+      ...doc, link: 'https://e.com/' + 'x'.repeat(500),
+    }).success).toBe(false)
   })
 })

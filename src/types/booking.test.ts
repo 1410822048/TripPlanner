@@ -75,13 +75,44 @@ describe('CreateBookingSchema.link', () => {
 // UI. firestore.rules refuses to write one; this pins the read side to
 // fail loudly (Sentry via firestoreDocFromSchema) instead of quietly
 // rendering a row that no list can reach.
+const DOC_BASE = {
+  tripId: 't1', type: 'hotel' as const, title: 'X',
+  memberIds: ['u1'],
+  createdBy: 'u1', updatedBy: 'u1',
+  createdAt: TS, updatedAt: TS, sortDate: TS,
+}
+
+// The three write gates already refuse a non-http(s) link. This is the
+// read side, which is where the value actually becomes an <a href> — so a
+// doc that somehow carries one should drop out loudly (Sentry, via
+// firestoreDocFromSchema) rather than render a live link.
+describe('BookingDocSchema.link', () => {
+  it('accepts an absent link and a valid https one', () => {
+    expect(BookingDocSchema.safeParse(DOC_BASE).success).toBe(true)
+    expect(BookingDocSchema.safeParse({ ...DOC_BASE, link: 'https://booking.com/x' }).success).toBe(true)
+  })
+
+  it.each([
+    ['javascript:alert(1)'],
+    ['data:text/html,<script>'],
+    ['HTTPS://example.com'],
+    ['https://ex ample.com'],
+    // '' never reaches storage — the sentinel becomes a field delete — so
+    // the read side has no reason to tolerate it either.
+    [''],
+  ])('rejects a stored link of %s', link => {
+    expect(BookingDocSchema.safeParse({ ...DOC_BASE, link }).success).toBe(false)
+  })
+
+  it('rejects a stored link over 500 chars', () => {
+    expect(BookingDocSchema.safeParse({
+      ...DOC_BASE, link: 'https://e.com/' + 'x'.repeat(500),
+    }).success).toBe(false)
+  })
+})
+
 describe('BookingDocSchema.sortDate', () => {
-  const doc = {
-    tripId: 't1', type: 'hotel' as const, title: 'X',
-    memberIds: ['u1'],
-    createdBy: 'u1', updatedBy: 'u1',
-    createdAt: TS, updatedAt: TS, sortDate: TS,
-  }
+  const doc = DOC_BASE
 
   it('accepts a doc carrying sortDate', () => {
     expect(BookingDocSchema.safeParse(doc).success).toBe(true)

@@ -141,7 +141,13 @@ export const BookingDocSchema = z.object({
   coverImage:       BookingAttachmentSchema.optional(),
   document:         BookingAttachmentSchema.optional(),
   address:          z.string().optional(),
-  link:             z.string().optional(),
+  // Same constraint as every write gate. The read side is where the value
+  // becomes an <a href>, so it is the last place worth checking: a doc
+  // that somehow carries a javascript:/data: link fails to parse and the
+  // booking drops out with a Sentry capture, rather than rendering a live
+  // link nobody validated. No `''` allowance — the sentinel is translated
+  // to a field delete before it reaches storage.
+  link:             z.string().max(500).refine(isHttpUrl).optional(),
   note:             z.string().optional(),
   createdBy:        z.string(),
   updatedBy:        z.string(),

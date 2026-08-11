@@ -81,7 +81,13 @@ export const WishDocSchema = z.object({
   category:    z.enum(['place', 'food']),
   title:       z.string(),
   description: z.string().optional(),
-  link:        z.string().optional(),
+  // Same constraint as every write gate. The read side is where the value
+  // becomes an <a href>, so it is the last place worth checking: a doc
+  // that somehow carries a javascript:/data: link fails to parse and the
+  // wish drops out with a Sentry capture, rather than rendering a live
+  // link nobody validated. `''` never reaches storage (stripEmpty on
+  // create, mask-delete on update), so no clear sentinel to allow.
+  link:        z.string().max(500).refine(isHttpUrl).optional(),
   address:     z.string().optional(),
   image:       WishImageSchema.optional(),
   proposedBy:  z.string(),
