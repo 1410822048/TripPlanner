@@ -50,6 +50,11 @@ import { cascadeTripDelete, TripDeleteRequestSchema } from '../src/trip-cascade'
 import * as storage          from '../src/r2-storage'
 import * as firestore        from '../src/firestore'
 
+/** Every consumer of the bucket is mocked, so an empty object typed as the
+ *  binding is honest — the string literals this replaced claimed to be an
+ *  R2Bucket and were never used as one. */
+const BUCKET = {} as R2Bucket
+
 beforeEach(() => {
 	vi.clearAllMocks()
 	// Default: owner check passes for our caller uid.
@@ -60,7 +65,7 @@ beforeEach(() => {
 	vi.mocked(firestore.batchDeleteDocs).mockResolvedValue(undefined)
 	vi.mocked(firestore.deleteDoc).mockResolvedValue(undefined)
 	vi.mocked(firestore.deleteUserTripNotifications).mockResolvedValue(0)
-	vi.mocked(firestore.updateDocFields).mockResolvedValue(undefined)
+	vi.mocked(firestore.updateDocFields).mockResolvedValue(true)
 })
 
 describe('cascadeTripDelete - Storage prefix boundary', () => {
@@ -69,7 +74,7 @@ describe('cascadeTripDelete - Storage prefix boundary', () => {
 			'owner-uid',
 			{ tripId: 'abc' },
 			'{"client_email":"x","private_key":"y","token_uri":"z","project_id":"demo-project"}',
-			'demo-bucket',
+			{} as R2Bucket,
 		)
 		// Two sweeps now: pre-drain (step 2) + final defence-in-depth
 		// sweep (step 3.5) that catches uploads slipping past the
@@ -89,8 +94,8 @@ describe('cascadeTripDelete - Storage prefix boundary', () => {
 	})
 
 	it('different tripIds get independent prefixes (no shared boundary)', async () => {
-		await cascadeTripDelete('owner-uid', { tripId: 'abc' },  'sa', 'bucket')
-		await cascadeTripDelete('owner-uid', { tripId: 'abc2' }, 'sa', 'bucket')
+		await cascadeTripDelete('owner-uid', { tripId: 'abc' },  'sa', BUCKET)
+		await cascadeTripDelete('owner-uid', { tripId: 'abc2' }, 'sa', BUCKET)
 		const calls = vi.mocked(storage.purgeR2Prefix).mock.calls
 		// Two sweeps per cascade × two cascades = 4 calls.
 		expect(calls).toHaveLength(4)
@@ -104,7 +109,7 @@ describe('cascadeTripDelete - Storage prefix boundary', () => {
 	})
 
 	it('drains route receipts before deleting the trip', async () => {
-		await cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', 'bucket')
+		await cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', BUCKET)
 		expect(firestore.listDocNames).toHaveBeenCalledWith(
 			'fake-admin-token',
 			'demo-project',
@@ -122,7 +127,7 @@ describe('cascadeTripDelete - Storage prefix boundary', () => {
 			ownerId: { stringValue: 'someone-else' },
 		})
 		await expect(
-			cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', 'bucket'),
+			cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', BUCKET),
 		).rejects.toThrow(/not the trip owner/)
 		// Storage MUST NOT be touched when ownership check fails.
 		expect(storage.purgeR2Prefix).not.toHaveBeenCalled()
@@ -130,7 +135,7 @@ describe('cascadeTripDelete - Storage prefix boundary', () => {
 
 	it('treats missing trip doc as idempotent success (no-op cascade)', async () => {
 		vi.mocked(firestore.getDocFields).mockResolvedValueOnce(null)
-		const result = await cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', 'bucket')
+		const result = await cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', BUCKET)
 		expect(result).toEqual({ deletedDocs: 0, deletedObjects: 0 })
 		// Already gone → nothing to delete in Storage either.
 		expect(storage.purgeR2Prefix).not.toHaveBeenCalled()
@@ -146,12 +151,13 @@ describe('cascadeTripDelete - Storage prefix boundary', () => {
 		const callOrder: string[] = []
 		vi.mocked(firestore.updateDocFields).mockImplementationOnce(async (..._args) => {
 			callOrder.push('updateDocFields')
+			return true
 		})
 		vi.mocked(storage.purgeR2Prefix).mockImplementationOnce(async (..._args) => {
 			callOrder.push('purgeR2Prefix')
 			return 0
 		})
-		await cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', 'bucket')
+		await cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', BUCKET)
 		expect(callOrder).toEqual(['updateDocFields', 'purgeR2Prefix'])
 		// Verify the patch shape: targets the trip doc, sets
 		// deletingAt to a Timestamp (NOT null -- the field's
@@ -167,7 +173,7 @@ describe('cascadeTripDelete - Storage prefix boundary', () => {
 			ownerId: { stringValue: 'someone-else' },
 		})
 		await expect(
-			cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', 'bucket'),
+			cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', BUCKET),
 		).rejects.toThrow(/not the trip owner/)
 		// Non-owner caller -- the flag MUST NOT land, otherwise a
 		// failed-auth attempt would freeze the trip from legitimate
@@ -207,7 +213,7 @@ describe('cascadeTripDelete - Storage prefix boundary', () => {
 			return 0
 		})
 
-		await cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', 'bucket')
+		await cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', BUCKET)
 
 		const cleanupCalls = vi.mocked(firestore.deleteUserTripNotifications).mock.calls
 		expect(new Set(cleanupCalls.map(call => `${call[2]}:${call[3]}`))).toEqual(new Set([
@@ -244,7 +250,7 @@ describe('cascadeTripDelete - Storage prefix boundary', () => {
 		})
 
 		try {
-			await cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', 'bucket')
+			await cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', BUCKET)
 
 			const cleanedUids = vi.mocked(firestore.deleteUserTripNotifications).mock.calls.map(call => call[2])
 			expect(new Set(cleanedUids)).toEqual(new Set(['owner-uid', 'bad-member', 'ok-member']))

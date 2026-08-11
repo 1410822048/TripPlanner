@@ -74,7 +74,7 @@ const THUMB_INTENT_ID = 'i-thumb'
 const FULL_PATH       = `trips/${TRIP_ID}/wishes/${WISH_ID}/abc123.webp`
 const THUMB_PATH      = `trips/${TRIP_ID}/wishes/${WISH_ID}/abc123.thumb.webp`
 
-function tripReadDoc() {
+function tripReadDoc(): MockReadDoc {
 	return {
 		exists: true,
 		name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}`,
@@ -85,7 +85,7 @@ function tripReadDoc() {
 	}
 }
 
-function memberReadDoc(role: 'owner' | 'editor' | 'viewer') {
+function memberReadDoc(role: 'owner' | 'editor' | 'viewer'): MockReadDoc {
 	return {
 		exists: true,
 		name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/members/${CALLER_UID}`,
@@ -94,7 +94,7 @@ function memberReadDoc(role: 'owner' | 'editor' | 'viewer') {
 	}
 }
 
-function notFoundReadDoc(path: string) {
+function notFoundReadDoc(path: string): MockReadDoc {
 	return {
 		exists: false,
 		name:   `projects/demo/databases/(default)/documents/${path}`,
@@ -654,7 +654,7 @@ const NEW_THUMB_PATH = `trips/${TRIP_ID}/wishes/${WISH_ID}/xyz789.thumb.webp`
  *  CALLER_UID so the happy-path tests don't need to spell it). Has
  *  enough fields to look like a real wish; the Worker only reads
  *  `proposedBy` for the authz check. */
-function ownedWishReadDoc(proposedBy: string = CALLER_UID) {
+function ownedWishReadDoc(proposedBy: string = CALLER_UID): MockReadDoc {
 	return {
 		exists: true,
 		name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/wishes/${WISH_ID}`,
@@ -1257,8 +1257,8 @@ describe('wishFileUpdate: stale-replace guard', () => {
 // than the request, and every gate the old client path relied on rules
 // for is reproduced here.
 
-function deleteWishDoc(proposedBy: string, image: 'pair' | 'single' | 'none' = 'pair') {
-	const imageField =
+function deleteWishDoc(proposedBy: string, image: 'pair' | 'single' | 'none' = 'pair'): MockReadDoc {
+	const imageField: MockReadDoc['fields'] =
 		image === 'none' ? {} :
 		image === 'single'
 			? { image: { mapValue: { fields: { path: { stringValue: FULL_PATH } } } } }
@@ -1274,7 +1274,7 @@ function deleteWishDoc(proposedBy: string, image: 'pair' | 'single' | 'none' = '
 	}
 }
 
-function tripWithOwner(ownerUid: string, deadlinePassed = false) {
+function tripWithOwner(ownerUid: string, deadlinePassed = false): MockReadDoc {
 	const trip = tripReadDoc()
 	return {
 		...trip,
