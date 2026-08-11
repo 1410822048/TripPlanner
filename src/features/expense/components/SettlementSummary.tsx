@@ -161,9 +161,12 @@ export default function SettlementSummary({
                 //
                 // A departed RECEIVER is not, and `uid === s.toId` does not
                 // rule it out on its own: uid is who you are signed in as,
-                // not proof you are still on the roster. Between being
-                // removed and the listener catching up you are your own
-                // ghost, and the button would show only to be 403'd.
+                // not proof you are still on the roster. Once the roster
+                // listener drops you, you are your own ghost — still
+                // looking at the page, still matching toId, and the button
+                // would be offering an action the Worker refuses. (In the
+                // window BEFORE that listener lands you are not a ghost
+                // yet, and the Worker is what turns it down.)
                 const canRecord = uid != null && uid === s.toId && !to.isGhost
                 const isPayer   = uid != null && uid === s.fromId
                 // settledContext (應清算 / 已清算 / 還差) is computed in the

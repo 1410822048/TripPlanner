@@ -458,11 +458,6 @@ export default function ExpensePage() {
           // sheet looks both parties up by uid. With the live roster only,
           // the whole "who paid whom" header would silently not render on
           // exactly the settlements this flow exists to clear.
-          // Ghosts included: a departed member can still be the PAYER of a
-          // suggestion (their debt outlives their membership), and the
-          // sheet looks both parties up by uid. With the live roster only,
-          // the whole "who paid whom" header would silently not render on
-          // exactly the settlements this flow exists to clear.
           members={expandWithGhosts(members, allExpenses, settlements)}
           isSaving={false}
         />
