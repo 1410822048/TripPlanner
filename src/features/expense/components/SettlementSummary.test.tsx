@@ -62,12 +62,21 @@ describe('SettlementSummary — receiver-only record gate', () => {
     expect(screen.queryByRole('button', RECORD_BTN)).toBeNull()
   })
 
-  it('withholds the button from the payee when the payer has left the trip', () => {
-    // u2 removed from the roster → ghost debtor. The Worker rejects a
-    // fromUid with no member doc, so the button would always 400.
+  it('still offers the button when the payer has left the trip', () => {
+    // u2 removed from the roster → ghost debtor. The debt is real (it came
+    // from expenses that are still there) and u1 is the one confirming
+    // they were repaid, so this has to stay recordable — the Worker
+    // dropped its fromUid-membership check for the same reason.
     render(<SettlementSummary {...base({ members: [A], uid: 'u1' })} />)
+    expect(screen.getByRole('button', RECORD_BTN)).toBeTruthy()
+  })
+
+  it('offers nobody the button when the PAYEE has left', () => {
+    // Recording that a departed member received money would be someone
+    // else asserting a payment they cannot witness. No explicit check is
+    // needed: uid === toId can only hold for someone still here.
+    render(<SettlementSummary {...base({ members: [B], uid: 'u2' })} />)
     expect(screen.queryByRole('button', RECORD_BTN)).toBeNull()
-    expect(screen.getByText('已退出')).toBeTruthy()
   })
 })
 

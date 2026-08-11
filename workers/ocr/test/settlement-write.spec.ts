@@ -864,19 +864,51 @@ describe('settlementCreate endpoint', () => {
 			.rejects.toBeInstanceOf(SettlementValidationError)
 	})
 
-	it('rejects when fromUid is not a trip member', async () => {
+	// A payer who leaves the trip takes their debts with them, and the
+	// people they owed could never mark themselves repaid. The debt is
+	// real — it comes from expenses that are still there — so the
+	// settlement is allowed and the membership lookup is gone.
+	it('records a settlement whose payer has left the trip', async () => {
 		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
 		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`,
 			notFoundReadDoc(`trips/${TRIP_ID}/members/${FROM_UID}`))
-		// Existing-settlement probe runs in parallel with the fromMember
-		// read in the idempotent-retry fast-path. notFound → take the
-		// new-write path where the fromUid-membership check rejects.
 		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
 			notFoundReadDoc(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`))
+		seedLock(FROM_UID, TO_UID)
+		seedDebt(FROM_UID, TO_UID, 200)
+
+		const result = await settlementCreate(TO_UID, baseCreatePayload(), '{}')
+
+		expect(result.settlementId).toBe(SETTLEMENT_ID)
+	})
+
+	// What actually stops a fabricated record is the debt itself, not a
+	// membership row: someone who never shared an expense has no pair
+	// edge, so there is nothing to clear.
+	it('still rejects a fromUid with no debt, member or not', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`, memberReadDoc(FROM_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			notFoundReadDoc(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`))
+		seedLock(FROM_UID, TO_UID)
+		seedDebt(FROM_UID, TO_UID, 0)   // no pair edge
 
 		await expect(settlementCreate(TO_UID, baseCreatePayload(), '{}'))
 			.rejects.toBeInstanceOf(SettlementValidationError)
+	})
+
+	// The mirror case needs no code: toUid must equal the caller, and the
+	// caller must be an active member, so nobody can assert that a
+	// DEPARTED member received money.
+	it('cannot record money as received by a departed member', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,
+			notFoundReadDoc(`trips/${TRIP_ID}/members/${TO_UID}`))
+
+		await expect(settlementCreate(TO_UID, baseCreatePayload(), '{}'))
+			.rejects.toBeInstanceOf(CascadeError)
 	})
 
 	it('rejects when trip has deletingAt set (cascade-in-progress)', async () => {

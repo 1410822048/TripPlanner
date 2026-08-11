@@ -445,10 +445,7 @@ async function doCreate(
     //   precondition on the write -- the fast-path is a perf + retry-
     //   robustness optimization, NOT the safety boundary.
     const existingDocPath = `trips/${req.tripId}/settlements/${req.settlementId}`
-    const [existingDoc, fromMember] = await Promise.all([
-      tx.get(existingDocPath),
-      tx.get(`trips/${req.tripId}/members/${req.fromUid}`),
-    ])
+    const existingDoc = await tx.get(existingDocPath)
 
     if (existingDoc.exists) {
       // Stale-confirmed payload comparison. No FX lookup, no pair-remaining
@@ -461,17 +458,27 @@ async function doCreate(
 
     // ----- New-write path -----
 
-    // fromUid must be a real trip member. Same intent as the rule's
-    // `exists(memberPath(fromUid))` — without it the receiver could
-    // fabricate "Charlie 還我 ¥100" records that pollute the audit
-    // log without Charlie's input.
-    if (!fromMember.exists) {
-      throw new SettlementValidationError(
-        'fromUid',
-        `${req.fromUid} is not a trip member`,
-      )
-    }
-
+    // fromUid is deliberately NOT required to still be a trip member.
+    //
+    // The check used to be here to stop a receiver fabricating "Charlie
+    // 還我 ¥100" records, but it was never what prevented that. Nothing
+    // on this path takes an amount from the caller: `amountMinor` IS the
+    // pair-remaining computed from the trip's own expenses, a remaining
+    // of zero is refused outright below, and `expectedRemainingMinor`
+    // has to agree with it. A stranger who never shared an expense has
+    // no remaining edge, so they are rejected by the no-debt guard
+    // without any membership lookup.
+    //
+    // What the check DID do was strand real money: when someone leaves a
+    // trip mid-settlement their debts leave with them, and the people
+    // they owed could never mark themselves repaid. The debt is real —
+    // it came from expenses that are still there.
+    //
+    // The mirror case needs no code. Recording that a DEPARTED member
+    // received money would be someone else asserting a payment they
+    // cannot witness, and it is already impossible: `toUid` must equal
+    // the caller, and the caller must be an active member.
+    //
     // FOREIGN: resolve the FX rate HERE — AFTER the idempotency + auth
     // checks (so a retry of an already-recorded settlement never hits FX,
     // preserving "retry succeeds even when Frankfurter is down") but BEFORE

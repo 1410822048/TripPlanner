@@ -155,10 +155,11 @@ export default function SettlementSummary({
                 const to   = memberById.get(s.toId)!
                 // Receiver-only: only the payee (toId) can mark settled.
                 // Payer / third-party see a status pill, not a button.
-                // A departed payer can no longer be recorded: the Worker
-                // rejects a fromUid without a member doc, so the button
-                // would always 400. Show the reason instead.
-                const canRecord = uid != null && uid === s.toId && !from.isGhost
+                // A departed PAYER is recordable: the debt came from real
+                // expenses and the receiver is the one confirming they were
+                // repaid. A departed RECEIVER is not, and needs no check —
+                // `uid === s.toId` can only hold for someone still here.
+                const canRecord = uid != null && uid === s.toId
                 const isPayer   = uid != null && uid === s.fromId
                 // settledContext (應清算 / 已清算 / 還差) is computed in the
                 // settlement domain — the UI just renders it when present.
@@ -198,18 +199,14 @@ export default function SettlementSummary({
                     ) : (
                       <div
                         role="status"
-                        aria-label={from.isGhost
-                          ? `${from.label} 已退出旅程,無法記錄這筆清算`
-                          : isPayer
-                            ? `等待收款人（${to.label}）確認`
-                            : `尚未確認 ${from.label} 支付給 ${to.label} 的清算`}
-                        title={from.isGhost
-                          ? '付款人已退出旅程,無法記錄清算'
-                          : isPayer ? '由收款人（不是你）確認' : undefined}
+                        aria-label={isPayer
+                          ? `等待收款人（${to.label}）確認`
+                          : `尚未確認 ${from.label} 支付給 ${to.label} 的清算`}
+                        title={isPayer ? '由收款人（不是你）確認' : undefined}
                         className="shrink-0 flex items-center gap-1 px-2.5 h-7 rounded-full bg-app text-muted text-[10.5px] font-medium tracking-[0.04em] opacity-75"
                       >
                         <Clock size={11} strokeWidth={2.4} />
-                        {from.isGhost ? '已退出' : '等待收款'}
+                        等待收款
                       </div>
                     )}
                   </div>
