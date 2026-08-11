@@ -158,8 +158,8 @@ const MEMBERS    = ['owner-uid', 'editor-uid', 'viewer-uid']
  *  `currency` defaults to JPY to match validExpensePayload; tests that
  *  exercise the trip-currency bind pass an override (or `null` to
  *  simulate a malformed trip doc with no currency field). */
-function tripReadDoc(overrides: { currency?: string | null; ownerId?: string } = {}) {
-	const fields: Record<string, unknown> = {
+function tripReadDoc(overrides: { currency?: string | null; ownerId?: string } = {}): MockReadDoc {
+	const fields: MockReadDoc['fields'] = {
 		memberIds: { arrayValue: { values: MEMBERS.map(uid => ({ stringValue: uid })) } },
 		ownerId:   { stringValue: overrides.ownerId ?? 'owner-uid' },
 	}
@@ -174,7 +174,7 @@ function tripReadDoc(overrides: { currency?: string | null; ownerId?: string } =
 	}
 }
 
-function memberReadDoc(role: 'owner' | 'editor' | 'viewer') {
+function memberReadDoc(role: 'owner' | 'editor' | 'viewer'): MockReadDoc {
 	return {
 		exists: true,
 		name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/members/${CALLER_UID}`,
@@ -183,7 +183,7 @@ function memberReadDoc(role: 'owner' | 'editor' | 'viewer') {
 	}
 }
 
-function notFoundReadDoc(path: string) {
+function notFoundReadDoc(path: string): MockReadDoc {
 	return {
 		exists: false,
 		name:   `projects/demo/databases/(default)/documents/${path}`,
@@ -192,7 +192,7 @@ function notFoundReadDoc(path: string) {
 	}
 }
 
-function tombstonedExpenseReadDoc() {
+function tombstonedExpenseReadDoc(): MockReadDoc {
 	return {
 		exists: true,
 		name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/expenses/${EXPENSE_ID}`,
@@ -212,7 +212,7 @@ function tombstonedExpenseReadDoc() {
 	}
 }
 
-function aliveExpenseReadDoc() {
+function aliveExpenseReadDoc(): MockReadDoc {
 	return {
 		...tombstonedExpenseReadDoc(),
 		fields: {
@@ -1233,7 +1233,7 @@ function validForeignExpensePayload(overrides: Record<string, unknown> = {}) {
  *  Worker would have written at create time. Used by foreign-update
  *  tests so the in-tx `tx.get(expenses/...)` returns a foreign doc and
  *  routing goes through buildForeignUpdateWrite. */
-function foreignExpenseReadDoc() {
+function foreignExpenseReadDoc(): MockReadDoc {
 	return {
 		exists: true,
 		name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/expenses/${EXPENSE_ID}`,

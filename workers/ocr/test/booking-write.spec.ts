@@ -83,7 +83,7 @@ const FULL_PATH       = `trips/${TRIP_ID}/bookings/${BOOKING_ID}/abc123.webp`
 const THUMB_PATH      = `trips/${TRIP_ID}/bookings/${BOOKING_ID}/abc123.thumb.webp`
 const PDF_PATH        = `trips/${TRIP_ID}/bookings/${BOOKING_ID}/abc123.pdf`
 
-function tripReadDoc() {
+function tripReadDoc(): MockReadDoc {
 	return {
 		exists: true,
 		name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}`,
@@ -94,7 +94,7 @@ function tripReadDoc() {
 	}
 }
 
-function memberReadDoc(role: 'owner' | 'editor' | 'viewer') {
+function memberReadDoc(role: 'owner' | 'editor' | 'viewer'): MockReadDoc {
 	return {
 		exists: true,
 		name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/members/${CALLER_UID}`,
@@ -103,7 +103,7 @@ function memberReadDoc(role: 'owner' | 'editor' | 'viewer') {
 	}
 }
 
-function notFoundReadDoc(path: string) {
+function notFoundReadDoc(path: string): MockReadDoc {
 	return {
 		exists: false,
 		name:   `projects/demo/databases/(default)/documents/${path}`,
@@ -112,7 +112,7 @@ function notFoundReadDoc(path: string) {
 	}
 }
 
-function existingBookingReadDoc() {
+function existingBookingReadDoc(): MockReadDoc {
 	return {
 		exists: true,
 		name:   `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/bookings/${BOOKING_ID}`,
@@ -213,7 +213,7 @@ function pdfMeta(generation: string) {
 		path: PDF_PATH,
 		intentId: PDF_INTENT_ID,
 		kind: 'pdf',
-		token: 'tk',
+
 		generation,
 	})
 }
@@ -278,8 +278,8 @@ describe('bookingFileCreate: happy paths', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${THUMB_INTENT_ID}`,
 			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: THUMB_PATH }))
 		vi.mocked(storage.headR2Object)
-			.mockResolvedValueOnce(storageMeta({ path: FULL_PATH,  intentId: FULL_INTENT_ID,  kind: 'full',  token: 'tk-f' }))
-			.mockResolvedValueOnce(storageMeta({ path: THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb', token: 'tk-t' }))
+			.mockResolvedValueOnce(storageMeta({ path: FULL_PATH,  intentId: FULL_INTENT_ID,  kind: 'full' }))
+			.mockResolvedValueOnce(storageMeta({ path: THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb' }))
 
 		const result = await bookingFileCreate(
 			CALLER_UID,
@@ -352,7 +352,7 @@ describe('bookingFileCreate: happy paths', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
 		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
-			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
+			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full' }),
 		)
 
 		await bookingFileCreate(
@@ -391,7 +391,7 @@ describe('bookingFileCreate: happy paths', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${PDF_INTENT_ID}`,
 			intentDoc({ intentId: PDF_INTENT_ID, kind: 'pdf', path: PDF_PATH, contentType: 'application/pdf' }))
 		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
-			storageMeta({ path: PDF_PATH, intentId: PDF_INTENT_ID, kind: 'pdf', token: 'tk', contentType: 'application/pdf' }),
+			storageMeta({ path: PDF_PATH, intentId: PDF_INTENT_ID, kind: 'pdf', contentType: 'application/pdf' }),
 		)
 
 		await bookingFileCreate(
@@ -472,7 +472,7 @@ describe('bookingFileCreate: happy paths', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${PDF_INTENT_ID}`,
 			intentDoc({ intentId: PDF_INTENT_ID, kind: 'pdf', path: PDF_PATH, contentType: 'application/pdf' }))
 		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
-			storageMeta({ path: PDF_PATH, intentId: PDF_INTENT_ID, kind: 'pdf', token: 'tk', contentType: 'application/pdf' }),
+			storageMeta({ path: PDF_PATH, intentId: PDF_INTENT_ID, kind: 'pdf', contentType: 'application/pdf' }),
 		)
 		assertPdfPageLimitBytesMock.mockRejectedValueOnce(new PdfPageLimitError('PDF_PAGE_LIMIT_EXCEEDED'))
 		capturedTxResult = null
@@ -552,7 +552,7 @@ describe('bookingFileCreate: state checks', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
 		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
-			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
+			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full' }),
 		)
 		await expect(bookingFileCreate(
 			CALLER_UID,
@@ -570,7 +570,7 @@ describe('bookingFileCreate: body validation', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
 		vi.mocked(storage.headR2Object).mockResolvedValue(
-			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
+			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full' }),
 		)
 		await expect(bookingFileCreate(
 			CALLER_UID,
@@ -589,7 +589,7 @@ describe('bookingFileCreate: body validation', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
 		vi.mocked(storage.headR2Object).mockResolvedValue(
-			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
+			storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full' }),
 		)
 		await expect(bookingFileCreate(
 			CALLER_UID,
@@ -628,7 +628,7 @@ describe('bookingFileCreate: body validation', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${THUMB_INTENT_ID}`,
 			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: THUMB_PATH }))
 		vi.mocked(storage.headR2Object).mockResolvedValue(
-			storageMeta({ path: THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb', token: 'tk' }),
+			storageMeta({ path: THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb' }),
 		)
 		await expect(bookingFileCreate(
 			CALLER_UID,
@@ -690,8 +690,8 @@ const EXISTING_CREATED_AT = '2026-05-20T12:34:56.000Z'
  *  Timestamp (for the cleared-checkIn sortDate fallback). The Worker
  *  reads `document.filePath` for the stale-replace guard and
  *  `createdAt` for the cleared-checkIn fallback. */
-function ownedBookingReadDoc(opts: { documentFilePath?: string | null } = {}) {
-	const fields: Record<string, unknown> = {
+function ownedBookingReadDoc(opts: { documentFilePath?: string | null } = {}): MockReadDoc {
+	const fields: MockReadDoc['fields'] = {
 		tripId:    { stringValue: TRIP_ID },
 		type:      { stringValue: 'hotel' },
 		title:     { stringValue: 'old title' },
@@ -740,8 +740,8 @@ describe('bookingFileUpdate: happy paths', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${THUMB_INTENT_ID}`,
 			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: NEW_THUMB_PATH }))
 		vi.mocked(storage.headR2Object)
-			.mockResolvedValueOnce(storageMeta({ path: NEW_FULL_PATH,  intentId: FULL_INTENT_ID,  kind: 'full',  token: 'tk-f' }))
-			.mockResolvedValueOnce(storageMeta({ path: NEW_THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb', token: 'tk-t' }))
+			.mockResolvedValueOnce(storageMeta({ path: NEW_FULL_PATH,  intentId: FULL_INTENT_ID,  kind: 'full' }))
+			.mockResolvedValueOnce(storageMeta({ path: NEW_THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb' }))
 
 		const result = await bookingFileUpdate(
 			CALLER_UID,
@@ -808,7 +808,7 @@ describe('bookingFileUpdate: happy paths', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
 		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
-			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
+			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full' }),
 		)
 
 		await bookingFileUpdate(
@@ -837,7 +837,7 @@ describe('bookingFileUpdate: happy paths', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${PDF_INTENT_ID}`,
 			intentDoc({ intentId: PDF_INTENT_ID, kind: 'pdf', path: NEW_PDF_PATH, contentType: 'application/pdf' }))
 		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
-			storageMeta({ path: NEW_PDF_PATH, intentId: PDF_INTENT_ID, kind: 'pdf', token: 'tk', contentType: 'application/pdf' }),
+			storageMeta({ path: NEW_PDF_PATH, intentId: PDF_INTENT_ID, kind: 'pdf', contentType: 'application/pdf' }),
 		)
 
 		await bookingFileUpdate(
@@ -867,7 +867,7 @@ describe('bookingFileUpdate: happy paths', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
 		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
-			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
+			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full' }),
 		)
 
 		await bookingFileUpdate(
@@ -899,7 +899,7 @@ describe('bookingFileUpdate: happy paths', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
 		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
-			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
+			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full' }),
 		)
 
 		await bookingFileUpdate(
@@ -933,7 +933,7 @@ describe('bookingFileUpdate: happy paths', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
 		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
-			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
+			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full' }),
 		)
 
 		await bookingFileUpdate(
@@ -966,7 +966,7 @@ describe('bookingFileUpdate: happy paths', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
 		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
-			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
+			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full' }),
 		)
 
 		await bookingFileUpdate(
@@ -1313,7 +1313,7 @@ describe('bookingFileUpdate: intent scope binding', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${THUMB_INTENT_ID}`,
 			intentDoc({ intentId: THUMB_INTENT_ID, kind: 'thumb', path: NEW_THUMB_PATH }))
 		vi.mocked(storage.headR2Object).mockResolvedValue(
-			storageMeta({ path: NEW_THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb', token: 'tk' }),
+			storageMeta({ path: NEW_THUMB_PATH, intentId: THUMB_INTENT_ID, kind: 'thumb' }),
 		)
 		await expect(bookingFileUpdate(
 			CALLER_UID,
@@ -1371,7 +1371,7 @@ describe('bookingFileUpdate: stale-replace guard', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
 		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
-			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
+			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full' }),
 		)
 
 		await expect(bookingFileUpdate(
@@ -1399,7 +1399,7 @@ describe('bookingFileUpdate: stale-replace guard', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
 		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
-			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
+			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full' }),
 		)
 
 		await expect(bookingFileUpdate(
@@ -1426,7 +1426,7 @@ describe('bookingFileUpdate: stale-replace guard', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
 		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
-			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
+			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full' }),
 		)
 
 		await expect(bookingFileUpdate(
@@ -1452,7 +1452,7 @@ describe('bookingFileUpdate: stale-replace guard', () => {
 		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
 			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
 		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
-			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full', token: 'tk' }),
+			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full' }),
 		)
 
 		const result = await bookingFileUpdate(
