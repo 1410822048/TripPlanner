@@ -9,7 +9,7 @@
 //   5. Unparseable path (outside trips/{ALLOWED}/{X}/Y/...) → skipped.
 //   6. Entity Firestore read failure → fail-closed, blob NOT deleted.
 //   7. Pagination: nextPageToken threading through multiple pages.
-//   8. listObjects throws → drainScan re-throws with partial counts in
+//   8. listR2Objects throws → drainScan re-throws with partial counts in
 //      the message (so cron failure log line stays informative).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -20,21 +20,24 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // assertions still worked, but they described an API that no longer
 // exists, and nothing could tell us because the tests were never
 // type-checked against the module they mock.
+type R2Storage = typeof import('../src/r2-storage')
+
+/** Terse page shape the tests seed. `listR2Objects` below adapts it to the
+ *  real R2 contract, so fixtures name only what they care about. */
+interface SeededPage {
+  items: Array<{ name: string; timeCreated?: string; metadata?: Record<string, string> }>
+  nextPageToken?: string
+}
+
 const { listPageMock, headObjectMock, deleteObjectMock } = vi.hoisted(() => ({
-	/** Returns the raw page shape the tests seed; converted to the R2
-	 *  contract below so fixtures stay terse. */
-	listPageMock: vi.fn(),
-	headObjectMock: vi.fn(async (_bucket: R2Bucket, _key: string) =>
-		({ key: 'present' } as R2Object | null)),
-	deleteObjectMock: vi.fn(async (_bucket: R2Bucket, _key: string) => undefined),
+	listPageMock:     vi.fn<(bucket: R2Bucket, prefix: string, cursor?: string, limit?: number) => Promise<SeededPage>>(),
+	headObjectMock:   vi.fn<R2Storage['headR2Object']>(),
+	deleteObjectMock: vi.fn<R2Storage['deleteR2Object']>(),
 }))
 
-vi.mock('../src/r2-storage', () => ({
-	listR2Objects: vi.fn(async (bucket: R2Bucket, prefix: string, cursor?: string, limit?: number) => {
-		const page = await listPageMock(bucket, prefix, cursor, limit) as {
-			items: Array<{ name: string; timeCreated?: string; metadata?: Record<string, string> }>
-			nextPageToken?: string
-		}
+vi.mock('../src/r2-storage', () => {
+	const listR2Objects: R2Storage['listR2Objects'] = async (bucket, prefix, cursor, limit) => {
+		const page = await listPageMock(bucket, prefix, cursor, limit)
 		return {
 			objects: page.items.map(item => ({
 				key: item.name, version: 'v1', size: 1,
@@ -45,10 +48,16 @@ vi.mock('../src/r2-storage', () => ({
 			truncated: Boolean(page.nextPageToken),
 			cursor: page.nextPageToken,
 		}
-	}),
-	deleteR2Object: deleteObjectMock,
-	headR2Object:   headObjectMock,
-}))
+	}
+	// `satisfies` is the point of the exercise: renaming or re-signing any
+	// of these three in src/ now fails to compile here, which is exactly
+	// the drift that let the old GCS-era names survive unnoticed.
+	return {
+		listR2Objects,
+		deleteR2Object: deleteObjectMock,
+		headR2Object:   headObjectMock,
+	} satisfies Pick<R2Storage, 'listR2Objects' | 'deleteR2Object' | 'headR2Object'>
+})
 vi.mock('../src/sentry', () => ({
 	captureMessage: vi.fn(async () => undefined),
 }))
@@ -83,7 +92,6 @@ vi.mock('../src/admin', () => ({
 }))
 
 import { scanOrphanStorage } from '../src/storage-scan'
-import * as storage          from '../src/r2-storage'
 import * as firestore        from '../src/firestore'
 import * as sentry           from '../src/sentry'
 
@@ -96,14 +104,21 @@ const TRIP_ID  = 'trip-1'
 const OLD_ISO   = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString()
 const FRESH_ISO = new Date(Date.now() - 30 * 60 * 1000).toISOString()  // 30 min ago
 
-/** Helper to stage a single listObjects page (no further pages). */
+/** Helper to stage a single listR2Objects page (no further pages). */
 function mockSinglePage(items: { name: string; timeCreated?: string; metadata?: Record<string, string> }[]) {
 	listPageMock.mockResolvedValueOnce({ items })
 }
 
 beforeEach(() => {
 	vi.clearAllMocks()
-	headObjectMock.mockResolvedValue({ key: 'present' } as R2Object)
+	// Full R2StoredObject, not a one-field stand-in: the contract binding
+	// above is what surfaced that headR2Object returns the decoded shape,
+	// not the raw R2Object the old cast claimed.
+	headObjectMock.mockResolvedValue({
+		key: 'present', version: 'v1', size: 1,
+		uploaded: new Date(), contentType: 'application/octet-stream',
+		customMetadata: {},
+	})
 })
 
 describe('scanOrphanStorage', () => {
@@ -251,7 +266,7 @@ describe('scanOrphanStorage', () => {
 		expect(report.scanned).toBe(2)
 	})
 
-	it('listObjects throws mid-scan → re-throw with partial counts encoded in message', async () => {
+	it('listR2Objects throws mid-scan → re-throw with partial counts encoded in message', async () => {
 		// Regression for the observability invariant: a query failure
 		// must NOT degrade into a phantom "scanned=0" cron success.
 		// Re-throw routes through index.ts's `.catch` log line, and the
@@ -310,7 +325,7 @@ describe('scanOrphanStorage', () => {
 		expect(report.referenced).toBe(1)
 	})
 
-	it('listObjects passes PAGE_SIZE=1000 (scan-specific, not the default 500)', async () => {
+	it('listR2Objects passes PAGE_SIZE=1000 (scan-specific, not the default 500)', async () => {
 		// Locks in the design decision: scan opts for 1000 to halve
 		// round-trips vs trip-cascade / receipt-purge's default 500.
 		// If a future change accidentally drops the 5th positional arg,
@@ -430,7 +445,7 @@ describe('scanOrphanStorage', () => {
 		//
 		// Test shape: stateful cursor mock simulates Firestore across two
 		// scanOrphanStorage calls. Run 1 stalls on page 1 (all referenced
-		// → all reads, never deletes). Run 2 must invoke listObjects with
+		// → all reads, never deletes). Run 2 must invoke listR2Objects with
 		// the saved pageToken from run 1.
 		// Holder object, not a `let`: TypeScript narrows a let to its
 		// initializer when the only reassignments it can see are inside
@@ -480,7 +495,7 @@ describe('scanOrphanStorage', () => {
 			'fake-admin-token', 'demo-project', 'storageScanR2', 'cursor-after-page-1',
 		)
 
-		// Run 2: now stage page 2. listObjects must be called with the
+		// Run 2: now stage page 2. listR2Objects must be called with the
 		// saved cursor, NOT undefined (which would mean "restart from
 		// page 1" = the starvation we're testing for).
 		listPageMock.mockReset()
@@ -515,7 +530,7 @@ describe('scanOrphanStorage', () => {
 
 		await scanOrphanStorage('{}', BUCKET)
 
-		// listObjects was called with undefined pageToken (NOT the stale one).
+		// listR2Objects was called with undefined pageToken (NOT the stale one).
 		expect(listPageMock).toHaveBeenCalledWith(
 			BUCKET, 'trips/', undefined, 1000,
 		)
@@ -523,7 +538,7 @@ describe('scanOrphanStorage', () => {
 
 	it('Phase 2: orphansByUid attribution from customMetadata', async () => {
 		// Verifies the abuse-detection input pipeline:
-		// 1. listObjects returns metadata.uploaderUid in the partial response
+		// 1. listR2Objects returns metadata.uploaderUid in the partial response
 		// 2. confirmed orphans get bucketed in report.orphansByUid by that uid
 		// 3. legacy blobs without metadata land in '<unknown>'
 		mockSinglePage([
