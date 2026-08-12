@@ -135,17 +135,23 @@ describe('BookingPdfExtractRequestSchema', () => {
 describe('extractBookingPdfFields', () => {
 	it('keeps the Foundry JSON schema fields aligned with the Zod response schema', () => {
 		const zodKeys = Object.keys(BookingPdfExtractResponseSchema.shape).sort()
-		// The production constant is deliberately a loose JsonObject — it is
-		// handed straight to the provider API. This narrows it to the two
-		// members under test; the assertions immediately below are what
-		// prove the narrowing was right.
-		const jsonSchema = BOOKING_PDF_EXTRACT_JSON_SCHEMA as unknown as {
-			properties: Record<string, unknown>
-			required:   string[]
+
+		// The production constant is deliberately a loose JsonObject — it
+		// goes straight to the provider API. Narrow it by CHECKING, not by
+		// asserting: an `as unknown as` here would let a schema that lost
+		// `properties` or `required` keep compiling, which is the exact
+		// "the test describes a shape that no longer exists" failure this
+		// whole type-gate exercise is about.
+		const { properties, required } = BOOKING_PDF_EXTRACT_JSON_SCHEMA
+		if (
+			!properties || typeof properties !== 'object' || Array.isArray(properties) ||
+			!Array.isArray(required) || !required.every(key => typeof key === 'string')
+		) {
+			throw new TypeError('BOOKING_PDF_EXTRACT_JSON_SCHEMA lost its properties/required shape')
 		}
 
-		expect(Object.keys(jsonSchema.properties).sort()).toEqual(zodKeys)
-		expect([...jsonSchema.required].sort()).toEqual(zodKeys)
+		expect(Object.keys(properties).sort()).toEqual(zodKeys)
+		expect([...required].sort()).toEqual(zodKeys)
 	})
 
 	it('uses Model Studio JSON mode with the conservative schema in the prompt', async () => {
@@ -408,8 +414,13 @@ describe('extractBookingPdfFields', () => {
 					title:       { value: 'MM626' },
 					origin:      { value: 'Taipei' },
 					destination: { value: 'Tokyo' },
-					originIataCode: { value: 'TPE' },
-					destinationIataCode: { value: 'NRT' },
+					// evidence asserted too: these four fields were being fed
+					// an airport name as a second argument that the helper
+					// silently dropped, so the scenario the test names —
+					// IATA code carrying its full airport evidence — was
+					// never actually set up.
+					originIataCode: { value: 'TPE', evidence: 'Taiwan Taoyuan International Airport T1' },
+					destinationIataCode: { value: 'NRT', evidence: 'Narita International Airport T1' },
 				},
 				{
 					bookingType: 'flight',
@@ -417,8 +428,8 @@ describe('extractBookingPdfFields', () => {
 					title:       { value: 'JX803' },
 					origin:      { value: 'Tokyo' },
 					destination: { value: 'Taipei' },
-					originIataCode: { value: 'NRT' },
-					destinationIataCode: { value: 'TPE' },
+					originIataCode: { value: 'NRT', evidence: 'Narita International Airport T2' },
+					destinationIataCode: { value: 'TPE', evidence: 'Taiwan Taoyuan International Airport T1' },
 				},
 			],
 		})

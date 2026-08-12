@@ -162,7 +162,7 @@ const OWNER_UID     = 'owner-uid'   // unrelated to from/to; for owner-delete te
 
 // ─── Fixture builders (REST `fields` shape) ───────────────────────
 
-function tripReadDoc(currency = 'JPY', extra: Record<string, unknown> = {}): MockReadDoc {
+function tripReadDoc(currency = 'JPY', extra: MockReadDoc['fields'] = {}): MockReadDoc {
 	return {
 		exists:     true,
 		name:       `projects/demo/databases/(default)/documents/trips/${TRIP_ID}`,
@@ -227,7 +227,7 @@ function expenseReadDoc(opts: {
 	items?: Array<{ id: string; name: string; amountMinor: number; allocations: Array<{ memberId: string; shares: number }> }>
 	adjustments?: Array<{ id: string; label: string; kind: string; scope: string; amountMinor: number; targetItemId?: string }>
 }): MockReadDoc {
-	const fields: Record<string, unknown> = {
+	const fields: MockReadDoc['fields'] = {
 		title:       { stringValue: opts.title ?? opts.id },
 		paidBy:      { stringValue: opts.paidBy },
 		amountMinor: { integerValue: String(opts.amountMinor) },
@@ -276,7 +276,7 @@ function expenseReadDoc(opts: {
 		fields.adjustments = {
 			arrayValue: {
 				values: opts.adjustments.map(adj => {
-					const aFields: Record<string, unknown> = {
+					const aFields: MockReadDoc['fields'] = {
 						id:          { stringValue: adj.id },
 						label:       { stringValue: adj.label },
 						kind:        { stringValue: adj.kind },
@@ -315,7 +315,7 @@ function settlementReadDoc(opts: {
 }): MockReadDoc {
 	// No pairKey: settlement docs aren't denormalized with one (read is by
 	// (fromUid,toUid) equality). Builder mirrors the real persisted shape.
-	const fields: Record<string, unknown> = {
+	const fields: MockReadDoc['fields'] = {
 		fromUid:     { stringValue: opts.fromUid },
 		toUid:       { stringValue: opts.toUid },
 		amountMinor: { integerValue: String(opts.amountMinor) },
@@ -355,7 +355,7 @@ function foreignSettlementReadDoc(opts: {
 	const sourceAmountMinor = opts.sourceAmountMinor ?? 6500
 	const settledOn         = opts.settledOn         ?? '2026-06-01'
 	const currency          = opts.currency          ?? 'JPY'
-	const fields: Record<string, unknown> = {
+	const fields: MockReadDoc['fields'] = {
 		fromUid:           { stringValue:  opts.fromUid },
 		toUid:             { stringValue:  opts.toUid },
 		amountMinor:       { integerValue: String(opts.amountMinor) },
@@ -1259,7 +1259,7 @@ describe('pair-lock guard (P1 fix)', () => {
 		await settlementCreate(UID_C, {
 			mode: 'TRIP_CURRENCY' as const,
 			tripId: TRIP_ID, settlementId: 's-1',
-			fromUid: UID_AB, toUid: UID_C,
+			fromUid: UID_AB, toUid: UID_C, expectedRemainingMinor: 200,
 		}, '{}')
 
 		const lockPathsHit = txGetCalls.filter(p => p.includes('settlementPairLocks/'))
@@ -1286,7 +1286,7 @@ describe('pair-lock guard (P1 fix)', () => {
 		await settlementCreate(UID_BC, {
 			mode: 'TRIP_CURRENCY' as const,
 			tripId: TRIP_ID, settlementId: 's-2',
-			fromUid: UID_A, toUid: UID_BC,
+			fromUid: UID_A, toUid: UID_BC, expectedRemainingMinor: 200,
 		}, '{}')
 
 		const keyForA_BC = txGetCalls.filter(p => p.includes('settlementPairLocks/'))[0]
