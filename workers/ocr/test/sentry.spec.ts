@@ -4,7 +4,7 @@
 // the event is dropped as malformed, silently, which is the one failure
 // mode error reporting must not have.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { captureMessage } from '../src/sentry'
+import { captureMessage, serializeErrorChain } from '../src/sentry'
 
 const DSN = 'https://pubkey@o123.ingest.sentry.io/456'
 
@@ -62,5 +62,46 @@ describe('captureMessage envelope framing', () => {
   it('is a no-op when the DSN is unset, so an unconfigured Worker sends nothing', async () => {
     await captureMessage({}, 'boom', 'error')
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+// The Worker wraps errors — cron re-throws attach counts, token
+// verification narrows the message — and the wrapper's stack says only
+// where the wrapping happened. Neither half of the original survives a
+// plain JSON.stringify: `cause` is non-enumerable and the outer stack does
+// NOT contain the inner one, so reporting `{ stack, name }` threw away the
+// frames that actually name the failure.
+describe('serializeErrorChain', () => {
+  it('carries the cause chain, which neither stack nor JSON does alone', () => {
+    const inner = new Error('firestore 503')
+    const outer = new Error('cron failed (scanned=4)', { cause: inner })
+
+    // The premise, asserted rather than assumed.
+    expect(outer.stack).not.toContain('firestore 503')
+    expect(JSON.stringify(outer)).not.toContain('firestore 503')
+
+    const serialized = serializeErrorChain(outer)
+    expect(serialized.message).toBe('cron failed (scanned=4)')
+    expect(serialized.cause?.message).toBe('firestore 503')
+    expect(serialized.cause?.stack).toBe(inner.stack)
+    expect(JSON.stringify(serialized)).toContain('firestore 503')
+  })
+
+  it('stops at three levels so a cycle cannot unbound the payload', () => {
+    const a: Error & { cause?: unknown } = new Error('a')
+    const b = new Error('b', { cause: a })
+    a.cause = b   // cycle
+
+    const serialized = serializeErrorChain(b)
+    let depth = 0
+    for (let node = serialized.cause; node; node = node.cause) depth++
+    expect(depth).toBe(3)
+    expect(() => JSON.stringify(serialized)).not.toThrow()
+  })
+
+  it('normalizes a non-Error throw instead of losing it', () => {
+    const serialized = serializeErrorChain('a bare string')
+    expect(serialized.message).toBe('a bare string')
+    expect(serialized.name).toBe('Error')
   })
 })

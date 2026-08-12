@@ -22,7 +22,7 @@ import type { z } from 'zod'
 import { CascadeError } from './cascade'
 import { FxError }          from './fx-rate'
 import { TxRetryExhausted } from './firestore-tx'
-import type { ReportWorkerError } from './sentry'
+import { serializeErrorChain, type ReportWorkerError } from './sentry'
 
 /** Truncated uid for logs. 6-char prefix + ellipsis is enough to
  *  correlate abuse without retaining a fully-identifying token. */
@@ -235,10 +235,7 @@ export async function handleJsonRoute<TData, TResult>(args: {
     // this is the one branch that has to leave the Worker.
     const err = e instanceof Error ? e : new Error(String(e))
     console.error(`[${args.endpoint}] internal error: ${err.message}${trace}`)
-    args.report(`[${args.endpoint}] ${err.message}`, {
-      stack: err.stack,
-      name:  err.name,
-    })
+    args.report(`[${args.endpoint}] ${err.message}`, { error: serializeErrorChain(err) })
     return json({ error: 'Internal error' }, 500, args.cors)
   }
 }

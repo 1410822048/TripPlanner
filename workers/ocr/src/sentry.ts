@@ -34,6 +34,46 @@ export type SentryLevel = 'fatal' | 'error' | 'warning' | 'info' | 'debug'
  */
 export type ReportWorkerError = (message: string, extra?: Record<string, unknown>) => void
 
+/** How far down an `Error.cause` chain to walk. Three covers every
+ *  wrap depth this Worker builds (provider → helper → endpoint) and
+ *  bounds the payload against a cycle or a pathological chain. */
+const MAX_CAUSE_DEPTH = 3
+
+interface SerializedError {
+  name:    string
+  message: string
+  stack?:  string
+  cause?:  SerializedError
+}
+
+/**
+ * Flatten an error and its `cause` chain into something JSON can carry.
+ *
+ * Needed because neither half of an error survives `JSON.stringify` on
+ * its own: `cause` is non-enumerable, and the outer `stack` does NOT
+ * include the inner one. Reporting `{ stack, name }` therefore threw away
+ * exactly the frames that say what actually failed — the cron re-throws
+ * and the token-verification wrappers all attach a `cause` whose stack is
+ * the only record of the underlying provider or Firestore error.
+ *
+ * Messages are copied verbatim; they already pass through
+ * `captureMessage`, which only ever reaches our own Sentry project.
+ * Nothing here widens what a CALLER sees — route-security's narrow
+ * "invalid preview token" is unchanged on the wire.
+ */
+export function serializeErrorChain(error: unknown, depth = 0): SerializedError {
+  const err = error instanceof Error ? error : new Error(String(error))
+  const out: SerializedError = {
+    name:    err.name,
+    message: err.message,
+    ...(err.stack ? { stack: err.stack } : {}),
+  }
+  if (err.cause !== undefined && err.cause !== null && depth < MAX_CAUSE_DEPTH) {
+    out.cause = serializeErrorChain(err.cause, depth + 1)
+  }
+  return out
+}
+
 interface DsnParts {
   publicKey: string
   host:      string

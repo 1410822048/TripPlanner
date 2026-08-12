@@ -166,9 +166,10 @@ describe('handleJsonRoute — internal-error reporting', () => {
 		}
 	}
 
-	it('reports an unexpected throw with its message and stack', async () => {
+	it('reports an unexpected throw with its message, stack and cause chain', async () => {
 		const report = vi.fn<ReportWorkerError>()
-		const boom = new Error('kaboom')
+		const root = new Error('firestore 503')
+		const boom = new Error('kaboom', { cause: root })
 		await handleJsonRoute({
 			...argsWith(report),
 			handle: async () => { throw boom },
@@ -176,8 +177,13 @@ describe('handleJsonRoute — internal-error reporting', () => {
 		expect(report).toHaveBeenCalledTimes(1)
 		const [message, extra] = report.mock.calls[0] as [string, Record<string, unknown>]
 		expect(message).toBe('[test-endpoint] kaboom')
-		expect(extra.stack).toBe(boom.stack)
-		expect(extra.name).toBe('Error')
+		const error = extra.error as { name: string; stack?: string; cause?: { message: string } }
+		expect(error.stack).toBe(boom.stack)
+		expect(error.name).toBe('Error')
+		// The wrapper's stack does not contain the root cause's frames, so the
+		// chain has to be carried explicitly or the report names the re-throw
+		// site instead of the failure.
+		expect(error.cause?.message).toBe('firestore 503')
 	})
 
 	it('reports a non-Error throw without crashing on .message', async () => {

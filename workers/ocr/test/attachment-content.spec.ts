@@ -164,7 +164,12 @@ describe('attachment upload proxy', () => {
     expect(message).toBe(
       '[attachment-upload] commit response lost (timeout); the write may or may not have applied',
     )
-    expect(extra.name).toBe('TxCommitAmbiguous')
+    // TxCommitAmbiguous's own message is the same generic sentence for every
+    // failure; only its `cause` says WHICH RPC died. Reporting the wrapper
+    // alone would make every ambiguous commit look identical in Sentry.
+    const error = extra.error as { name: string; cause?: { message: string } }
+    expect(error.name).toBe('TxCommitAmbiguous')
+    expect(error.cause?.message).toBe('commit timed out')
   })
 
   it('stays silent when the failure is a CascadeError we already map', async () => {

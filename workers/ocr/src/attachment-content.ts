@@ -9,7 +9,7 @@ import { TripIdRe } from './field-validation'
 import { deleteR2Object, getR2Object } from './r2-storage'
 import { MAX_ATTACHMENT_BYTES, uploadAttachmentToIntent } from './upload-intent'
 import { json, TX_RETRY_EXHAUSTED_MESSAGE, uidTag } from './route-dispatch'
-import type { ReportWorkerError } from './sentry'
+import { serializeErrorChain, type ReportWorkerError } from './sentry'
 
 const IntentIdRe = /^[a-f0-9]{32}$/
 export const ATTACHMENT_TRIP_HEADER = 'X-Attachment-Trip-Id'
@@ -281,7 +281,7 @@ async function dispatchAttachment<T>(args: {
     }
     const err = error instanceof Error ? error : new Error(String(error))
     console.error(`[${args.endpoint}] internal error: ${err.message}${trace}`)
-    args.report(`[${args.endpoint}] ${err.message}`, { stack: err.stack, name: err.name })
+    args.report(`[${args.endpoint}] ${err.message}`, { error: serializeErrorChain(err) })
     return json({ error: 'Internal error' }, 500, args.cors)
   }
 }

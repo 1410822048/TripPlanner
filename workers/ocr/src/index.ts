@@ -176,7 +176,7 @@ import {
   json,
   uidTag,
 }                                                 from './route-dispatch'
-import { captureMessage, type ReportWorkerError } from './sentry'
+import { captureMessage, serializeErrorChain, type ReportWorkerError } from './sentry'
 
 export { GlobalRateLimiter } from './rate-limiter'
 
@@ -955,7 +955,7 @@ export default {
       console.error(`[cron] ${job} failed: ${e.message}`)
       ctx.waitUntil(captureMessage(
         env, `[cron] ${job} ${e.message}`, 'error',
-        { endpoint: `cron:${job}` }, { stack: e.stack, name: e.name },
+        { endpoint: `cron:${job}` }, { error: serializeErrorChain(e) },
       ))
     }
 
