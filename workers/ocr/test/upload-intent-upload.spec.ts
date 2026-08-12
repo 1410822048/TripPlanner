@@ -24,7 +24,10 @@ vi.mock('../src/firestore-tx', () => createFirestoreTxMock({
     const write = result.writes[0] as {
       op?: string
       document?: string
-      fields?: Record<string, unknown> & { status?: { stringValue?: string } }
+      // MockReadDoc['fields'], not Record<string, unknown>: this map is
+      // merged straight back into the seeded read doc below, so it has to
+      // be the same shape a transaction would actually return.
+      fields?: MockReadDoc['fields'] & { status?: { stringValue?: string } }
     } | undefined
     const status = write
       ?.fields?.status?.stringValue

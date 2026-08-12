@@ -34,7 +34,16 @@ function minimalPdfBytes(pageCount: number): ArrayBuffer {
 	}
 	body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\n`
 	body += `startxref\n${xrefOffset}\n%%EOF\n`
-	return new TextEncoder().encode(body).buffer
+	return toArrayBuffer(body)
+}
+
+/** TextEncoder yields a Uint8Array whose `.buffer` is ArrayBufferLike —
+ *  it may be a SharedArrayBuffer, which is why the helper's ArrayBuffer
+ *  parameter rejects it. Slicing the encoded byte range copies out a real
+ *  ArrayBuffer of exactly the right length. */
+function toArrayBuffer(text: string): ArrayBuffer {
+	const bytes = new TextEncoder().encode(text)
+	return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 }
 
 describe('assertPdfPageLimitBytes', () => {
@@ -48,7 +57,7 @@ describe('assertPdfPageLimitBytes', () => {
 	})
 
 	it('rejects unreadable PDFs fail-closed', async () => {
-		await expect(assertPdfPageLimitBytes(new TextEncoder().encode('not a pdf').buffer))
+		await expect(assertPdfPageLimitBytes(toArrayBuffer('not a pdf')))
 			.rejects.toBeInstanceOf(PdfPageLimitError)
 	})
 

@@ -100,7 +100,7 @@ function run(reqOverrides: Record<string, unknown> = {}, caller = CALLER) {
   return expenseReceiptOcr(
     caller,
     { tripId: TRIP, expenseId: EXP, ...reqOverrides } as never,
-    '{}', 'demo-bucket',
+    '{}', {} as R2Bucket,
     (image, mimeType, currency) =>
       extractReceiptItems(image, mimeType, currency, { apiKey: 'k', resource: 'aic-claude-eus2', model: 'claude-sonnet-4-6' }),
   )

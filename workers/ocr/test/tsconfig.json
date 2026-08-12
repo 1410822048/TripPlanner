@@ -1,7 +1,14 @@
 {
 	"extends": "../tsconfig.json",
 	"compilerOptions": {
-		"types": ["@cloudflare/vitest-pool-workers"]
+		// `types` REPLACES the parent's array rather than extending it, so
+		// the parent's entries are repeated here. See ./pdfjs-dist.d.ts for
+		// why adding the pool's types needs a shim alongside them.
+		"types": [
+			"../worker-configuration.d.ts",
+			"node",
+			"@cloudflare/vitest-pool-workers"
+		]
 	},
 	"include": ["./**/*.ts", "../worker-configuration.d.ts"],
 	"exclude": []

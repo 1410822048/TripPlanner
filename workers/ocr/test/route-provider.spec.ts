@@ -89,7 +89,7 @@ describe('route provider fixtures', () => {
 
   test('retries the raw query only when the normalized Japanese query is empty', async () => {
     const queries: string[] = []
-    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ features: [{ properties: {
+    const fetchImpl = vi.fn(async (_input?: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ features: [{ properties: {
       place_id: 'original',
       name: '江之島',
       lat: 35.299,

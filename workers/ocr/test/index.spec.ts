@@ -26,10 +26,19 @@ afterEach(() => {
 	runOcrProviderMock.mockReset()
 })
 
-async function call(method: string, path: string, init: RequestInit = {}): Promise<Response> {
+// `RequestInit` here is workerd's, which is generic over the `cf`
+// properties — the global DOM one the specs write is not assignable to it.
+// Taking the pool's own parameter type keeps the helper honest instead of
+// casting at the call.
+type IncomingRequestInit = ConstructorParameters<typeof IncomingRequest>[1]
+
+async function call(method: string, path: string, init: IncomingRequestInit = {}): Promise<Response> {
 	const req = new IncomingRequest(`http://example.com${path}`, { method, ...init })
 	const ctx = createExecutionContext()
-	const res = await worker.fetch(req, env, ctx)
+	// `env` from cloudflare:test is the generated Cloudflare.Env; the
+	// Worker's own type adds the secrets, which the test runtime supplies
+	// from .dev.vars but the generated type cannot know about.
+	const res = await worker.fetch(req, env as Parameters<typeof worker.fetch>[1], ctx)
 	await waitOnExecutionContext(ctx)
 	return res
 }

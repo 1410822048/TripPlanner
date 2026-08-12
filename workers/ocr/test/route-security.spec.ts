@@ -49,7 +49,14 @@ describe('route preview security', () => {
 
   test('rejects preview tokens that are not bound to an apply payload', async () => {
     const secret = 'test-secret-with-at-least-16-bytes'
-    const token = await createPreviewToken({ uid: 'u1', tripId: 't1', revision: 'rev-legacy-1234', inputHash: 'i' }, secret)
+    // Deliberately missing `payloadHash` — that IS the shape under test:
+    // a token minted before payload binding existed must not verify. The
+    // cast is the only way to build input the type system is designed to
+    // make impossible, which is exactly what this asserts is rejected.
+    const unboundClaims = {
+      uid: 'u1', tripId: 't1', revision: 'rev-legacy-1234', inputHash: 'i',
+    } as Parameters<typeof createPreviewToken>[0]
+    const token = await createPreviewToken(unboundClaims, secret)
     await expect(verifyPreviewToken(token, secret)).rejects.toThrow(/invalid preview token/i)
   })
 })

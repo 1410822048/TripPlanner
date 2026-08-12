@@ -34,6 +34,6 @@ describe('R2 create-only condition', () => {
     const stored = await getR2Object(env.ATTACHMENTS, key)
     expect(stored).not.toBeNull()
     expect(new Uint8Array(await stored!.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]))
-    expect(stored!.customMetadata.sha256).toBe('first')
+    expect(stored!.customMetadata?.sha256).toBe('first')
   })
 })

@@ -145,8 +145,11 @@ describe('getFxSnapshot - future-date guard', () => {
 			'svc',
 			{ now: NOW, fetchImpl: fetchImpl as typeof fetch },
 		)
-		expect(snap.requestedDate).toBe('2026-05-31')
-		expect(snap.rateDate).toBe('2026-05-30')
+		// getFxSnapshot returns null for the degenerate same-currency case;
+		// this fixture is USD→JPY, so a null here would be a real failure.
+		expect(snap).not.toBeNull()
+		expect(snap?.requestedDate).toBe('2026-05-31')
+		expect(snap?.rateDate).toBe('2026-05-30')
 	})
 
 	it('rejects requestedDate beyond today UTC + 1 without any fetch', async () => {

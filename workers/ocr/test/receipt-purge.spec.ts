@@ -45,7 +45,11 @@ vi.mock('../src/admin', () => ({
 import { purgeExpiredReceipts } from '../src/receipt-purge'
 import * as storage             from '../src/r2-storage'
 import * as firestore           from '../src/firestore'
-/** Every R2 consumer here is mocked, so an empty object typed as the *  binding is honest — the 'demo-bucket' string it replaces claimed to be *  an R2Bucket and was never used as one. */const BUCKET = {} as R2Bucket
+
+/** Every R2 consumer here is mocked, so an empty object typed as the
+ *  binding is honest — the 'demo-bucket' string it replaces claimed to be
+ *  an R2Bucket and was never used as one. */
+const BUCKET = {} as R2Bucket
 
 beforeEach(() => {
 	vi.clearAllMocks()

@@ -139,7 +139,7 @@ const DISPLAY    = 'Invitee'
 // ─── Fixture builders (REST `fields` shape) ───────────────────────
 
 function tripReadDoc(opts: { ownerId?: string; memberIds?: string[]; deleting?: boolean; title?: string; icon?: string } = {}): MockReadDoc {
-	const fields: Record<string, unknown> = {
+	const fields: MockReadDoc['fields'] = {
 		ownerId: { stringValue: opts.ownerId ?? OWNER_UID },
 	}
 	if (opts.memberIds) {
@@ -167,7 +167,7 @@ function memberReadDoc(
 ): MockReadDoc {
 	// userId mirrors the doc id by default (members/{uid}.userId === uid);
 	// opts.userId overrides to exercise the owner-transfer mismatch guard.
-	const fields: Record<string, unknown> = {
+	const fields: MockReadDoc['fields'] = {
 		role:   { stringValue: role },
 		userId: { stringValue: opts.userId ?? uid },
 	}
