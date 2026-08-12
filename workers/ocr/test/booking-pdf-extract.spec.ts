@@ -135,9 +135,17 @@ describe('BookingPdfExtractRequestSchema', () => {
 describe('extractBookingPdfFields', () => {
 	it('keeps the Foundry JSON schema fields aligned with the Zod response schema', () => {
 		const zodKeys = Object.keys(BookingPdfExtractResponseSchema.shape).sort()
+		// The production constant is deliberately a loose JsonObject — it is
+		// handed straight to the provider API. This narrows it to the two
+		// members under test; the assertions immediately below are what
+		// prove the narrowing was right.
+		const jsonSchema = BOOKING_PDF_EXTRACT_JSON_SCHEMA as unknown as {
+			properties: Record<string, unknown>
+			required:   string[]
+		}
 
-		expect(Object.keys(BOOKING_PDF_EXTRACT_JSON_SCHEMA.properties).sort()).toEqual(zodKeys)
-		expect([...BOOKING_PDF_EXTRACT_JSON_SCHEMA.required].sort()).toEqual(zodKeys)
+		expect(Object.keys(jsonSchema.properties).sort()).toEqual(zodKeys)
+		expect([...jsonSchema.required].sort()).toEqual(zodKeys)
 	})
 
 	it('uses Model Studio JSON mode with the conservative schema in the prompt', async () => {
@@ -354,7 +362,7 @@ describe('extractBookingPdfFields', () => {
 	})
 
 	it('accepts multiple transport candidates for round-trip PDFs', async () => {
-		const flightField = (value: string) => ({ value, confidence: value ? 0.9 : 0, evidence: value })
+		const flightField = (value: string, evidence = value) => ({ value, confidence: value ? 0.9 : 0, evidence })
 		const empty = flightField('')
 		stubQwenAndCaptureRequest({
 			bookings: [

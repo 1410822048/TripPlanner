@@ -74,7 +74,7 @@ describe('cascadeTripDelete - Storage prefix boundary', () => {
 			'owner-uid',
 			{ tripId: 'abc' },
 			'{"client_email":"x","private_key":"y","token_uri":"z","project_id":"demo-project"}',
-			{} as R2Bucket,
+			BUCKET,
 		)
 		// Two sweeps now: pre-drain (step 2) + final defence-in-depth
 		// sweep (step 3.5) that catches uploads slipping past the

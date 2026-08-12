@@ -27,6 +27,7 @@ vi.mock('../src/admin', () => ({
 
 import { purgeExpiredUploadIntents }   from '../src/upload-intent-purge'
 import * as firestore                  from '../src/firestore'
+import type { FsValue, QueryPage }     from '../src/firestore'
 
 const PROJECT_ID = 'demo-project'
 // Phase-3.5-bis: intents live under trips/{tripId}/uploadIntents/{id}.
@@ -43,8 +44,8 @@ function intentDoc(opts: {
 	id:         string
 	expiresAtMs?: number
 	usedAtMs?:    number
-}) {
-	const fields: Record<string, unknown> = {}
+}): QueryPage['docs'][number] {
+	const fields: Record<string, FsValue> = {}
 	if (opts.expiresAtMs !== undefined) {
 		fields.expiresAt = { timestampValue: new Date(opts.expiresAtMs).toISOString() }
 	}
