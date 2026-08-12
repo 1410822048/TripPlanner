@@ -37,13 +37,16 @@ function minimalPdfBytes(pageCount: number): ArrayBuffer {
 	return toArrayBuffer(body)
 }
 
-/** TextEncoder yields a Uint8Array whose `.buffer` is ArrayBufferLike —
- *  it may be a SharedArrayBuffer, which is why the helper's ArrayBuffer
- *  parameter rejects it. Slicing the encoded byte range copies out a real
- *  ArrayBuffer of exactly the right length. */
+/** TextEncoder yields a Uint8Array whose `.buffer` is ArrayBufferLike — it
+ *  may be a SharedArrayBuffer, which is why the helper's ArrayBuffer
+ *  parameter rejects it. `.slice()` does not help: SharedArrayBuffer's
+ *  slice returns another SharedArrayBuffer, so casting the result would
+ *  only hide that. Allocate a real ArrayBuffer and copy into it. */
 function toArrayBuffer(text: string): ArrayBuffer {
-	const bytes = new TextEncoder().encode(text)
-	return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+	const bytes  = new TextEncoder().encode(text)
+	const buffer = new ArrayBuffer(bytes.byteLength)
+	new Uint8Array(buffer).set(bytes)
+	return buffer
 }
 
 describe('assertPdfPageLimitBytes', () => {
