@@ -45,6 +45,7 @@ vi.mock('../src/admin', () => ({
 import { purgeExpiredReceipts } from '../src/receipt-purge'
 import * as storage             from '../src/r2-storage'
 import * as firestore           from '../src/firestore'
+/** Every R2 consumer here is mocked, so an empty object typed as the *  binding is honest — the 'demo-bucket' string it replaces claimed to be *  an R2Bucket and was never used as one. */const BUCKET = {} as R2Bucket
 
 beforeEach(() => {
 	vi.clearAllMocks()
@@ -87,7 +88,7 @@ describe('purgeExpiredReceipts - reads nested receipt fields', () => {
 				}),
 			],
 		})
-		const report = await purgeExpiredReceipts('sa-json', 'demo-bucket')
+		const report = await purgeExpiredReceipts('sa-json', BUCKET)
 		expect(report.scanned).toBe(1)
 		expect(report.receiptsDeleted).toBe(2)
 		expect(report.docsPatched).toBe(1)
@@ -107,7 +108,7 @@ describe('purgeExpiredReceipts - reads nested receipt fields', () => {
 				}),
 			],
 		})
-		const report = await purgeExpiredReceipts('sa-json', 'demo-bucket')
+		const report = await purgeExpiredReceipts('sa-json', BUCKET)
 		expect(report.receiptsDeleted).toBe(1)
 		expect(vi.mocked(storage.deleteR2Object).mock.calls.map(c => c[1])).toEqual([
 			'trips/t1/expenses/e2/receipt.pdf',
@@ -128,7 +129,7 @@ describe('purgeExpiredReceipts - reads nested receipt fields', () => {
 				}),
 			],
 		})
-		const report = await purgeExpiredReceipts('sa-json', 'demo-bucket')
+		const report = await purgeExpiredReceipts('sa-json', BUCKET)
 		expect(report.scanned).toBe(1)
 		expect(report.receiptsDeleted).toBe(0)
 		expect(report.docsPatched).toBe(1)
@@ -159,7 +160,7 @@ describe('purgeExpiredReceipts - clears receipt + stamps marker', () => {
 				}),
 			],
 		})
-		await purgeExpiredReceipts('sa-json', 'demo-bucket')
+		await purgeExpiredReceipts('sa-json', BUCKET)
 		const calls = vi.mocked(firestore.deleteDocFields).mock.calls
 		expect(calls).toHaveLength(1)
 		// Field list MUST be exactly ['receipt'] — not ['receipt.path']
@@ -182,7 +183,7 @@ describe('purgeExpiredReceipts - clears receipt + stamps marker', () => {
 				}),
 			],
 		})
-		await purgeExpiredReceipts('sa-json', 'demo-bucket')
+		await purgeExpiredReceipts('sa-json', BUCKET)
 		const stampCalls = vi.mocked(firestore.updateDocFields).mock.calls
 		expect(stampCalls).toHaveLength(1)
 		expect(stampCalls[0][2]).toBe('trips/t1/expenses/e5')
@@ -214,7 +215,7 @@ describe('purgeExpiredReceipts - clears receipt + stamps marker', () => {
 		// vanished between query and patch).
 		vi.mocked(firestore.deleteDocFields).mockResolvedValueOnce(false)
 
-		const report = await purgeExpiredReceipts('sa-json', 'demo-bucket')
+		const report = await purgeExpiredReceipts('sa-json', BUCKET)
 		// scanned counts; docsPatched stays 0 because we bailed
 		// before the stamp step.
 		expect(report.scanned).toBe(1)

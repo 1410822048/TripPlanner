@@ -22,6 +22,7 @@ import {
 import { FxError } from '../src/fx-rate'
 import { CascadeError } from '../src/cascade'
 import { TxRetryExhausted, TxCommitAmbiguous } from '../src/firestore-tx'
+import type { ReportWorkerError } from '../src/sentry'
 
 describe('fxErrorCatcher', () => {
 	it('maps FxError → { status, body: { error, code } } using the error\'s own status', () => {
@@ -115,7 +116,7 @@ describe('handleJsonRoute — tx failure → status mapping', () => {
 		body:      { x: 1 },
 		cors:      {} as Record<string, string>,
 		uid:       'uid-123456',
-		report:    vi.fn(),
+		report:    vi.fn<ReportWorkerError>(),
 		schema:    z.object({ x: z.number() }),
 		formatLog: () => 'ok',
 	}
@@ -153,7 +154,7 @@ describe('handleJsonRoute — tx failure → status mapping', () => {
 // to be tailing. Every anticipated shape above must stay quiet, or the
 // signal drowns in errors we already handle.
 describe('handleJsonRoute — internal-error reporting', () => {
-	function argsWith(report: ReturnType<typeof vi.fn>) {
+	function argsWith(report: ReturnType<typeof vi.fn<ReportWorkerError>>) {
 		return {
 			endpoint:  'test-endpoint',
 			body:      { x: 1 },
@@ -166,7 +167,7 @@ describe('handleJsonRoute — internal-error reporting', () => {
 	}
 
 	it('reports an unexpected throw with its message and stack', async () => {
-		const report = vi.fn()
+		const report = vi.fn<ReportWorkerError>()
 		const boom = new Error('kaboom')
 		await handleJsonRoute({
 			...argsWith(report),
@@ -180,7 +181,7 @@ describe('handleJsonRoute — internal-error reporting', () => {
 	})
 
 	it('reports a non-Error throw without crashing on .message', async () => {
-		const report = vi.fn()
+		const report = vi.fn<ReportWorkerError>()
 		await handleJsonRoute({
 			...argsWith(report),
 			handle: async () => { throw 'a bare string' },
@@ -190,7 +191,7 @@ describe('handleJsonRoute — internal-error reporting', () => {
 	})
 
 	it('stays silent on a schema failure, a domain error, TxRetryExhausted and CascadeError', async () => {
-		const report = vi.fn()
+		const report = vi.fn<ReportWorkerError>()
 		const base = argsWith(report)
 
 		await handleJsonRoute({ ...base, body: { x: 'nope' }, handle: async () => 'unused' })
@@ -223,7 +224,7 @@ describe('handleJsonRoute — precommit marking', () => {
 		body:      { x: 1 },
 		cors:      {} as Record<string, string>,
 		uid:       'uid-123456',
-		report:    vi.fn(),
+		report:    vi.fn<ReportWorkerError>(),
 		schema:    z.object({ x: z.number() }),
 		formatLog: () => 'ok',
 	}
