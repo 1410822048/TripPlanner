@@ -56,7 +56,6 @@ vi.mock('../src/cascade', async () => {
 })
 
 import { createUploadIntents, type UploadIntentsRequest } from '../src/upload-intent'
-import { CascadeError } from '../src/cascade'
 
 const TRIP_ID    = 'trip-1'
 const ENTITY_ID  = 'ent-1'

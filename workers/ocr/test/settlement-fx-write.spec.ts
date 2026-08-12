@@ -32,7 +32,6 @@ import {
 } from '../src/settlement-fx-write'
 import { SettlementValidationError } from '../src/settlement-write-shared'
 import type { SettlementCreateForeignRequest } from '../src/settlement-write-shared'
-import { CascadeError } from '../src/cascade'
 import * as fxRate from '../src/fx-rate'
 import type { FxSnapshot } from '../src/fx-rate'
 

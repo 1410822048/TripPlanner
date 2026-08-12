@@ -290,6 +290,7 @@ export async function scanOrphanStorage(
         `(scanned=${report.scanned} deleted=${report.deleted} ` +
         `referenced=${report.referenced} freshSkipped=${report.freshSkipped}): ` +
         `${(e as Error).message}`,
+        { cause: e },
       )
     }
 

@@ -23,7 +23,7 @@ import {
   type TxReadDoc,
   type TxWrite,
 }                                                           from './firestore-tx'
-import { FieldValidationError, TripIdRe }                    from './field-validation'
+import { FieldValidationError }                              from './field-validation'
 
 export { TripIdRe } from './field-validation'
 

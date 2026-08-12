@@ -61,7 +61,6 @@ import {
 	WishValidationError,
 } from '../src/wish-write'
 import * as storage from '../src/r2-storage'
-import { CascadeError } from '../src/cascade'
 
 const TRIP_ID    = 'trip-1'
 const WISH_ID    = 'wish-1'

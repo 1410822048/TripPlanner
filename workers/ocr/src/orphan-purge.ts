@@ -291,6 +291,7 @@ export async function drainOrphanPurges(
         `(scanned=${report.scanned} blobsDeleted=${report.blobsDeleted} ` +
         `falseOrphans=${report.falseOrphans} giveUps=${report.giveUps}): ` +
         `${(e as Error).message}`,
+        { cause: e },
       )
     }
 

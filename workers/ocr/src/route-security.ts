@@ -59,7 +59,13 @@ export async function verifyPreviewToken(token: string, secret: string, now = Da
     if (!parsed.success) throw new Error('invalid preview token')
     return parsed.data
   } catch (error) {
-    if (error instanceof errors.JWTExpired) throw new Error('preview token expired')
-    throw new Error('invalid preview token')
+    // `cause` carries the real reason for the operator without widening
+    // the message: what a caller learns stays "expired" or "invalid",
+    // because telling an attacker WHICH check a forged token failed is a
+    // free oracle. The chain still reaches Sentry.
+    if (error instanceof errors.JWTExpired) {
+      throw new Error('preview token expired', { cause: error })
+    }
+    throw new Error('invalid preview token', { cause: error })
   }
 }

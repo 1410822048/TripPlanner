@@ -204,6 +204,7 @@ async function drainPass(
         `deletedUploaded=${report.deletedUploaded} deletedUsed=${report.deletedUsed} ` +
         `deleteErrors=${report.deleteErrors}): ` +
         `${(e as Error).message}`,
+        { cause: e },
       )
     }
 

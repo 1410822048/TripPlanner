@@ -16,7 +16,6 @@ import {
 import { ExpenseValidationError } from '../src/expense-validate'
 import type {
   ForeignSourceItem,
-  ForeignSourceAdjustment,
   ForeignSourceSplit,
 } from '../src/expense-foreign-codec'
 

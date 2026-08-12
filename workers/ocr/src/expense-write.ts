@@ -20,7 +20,7 @@
 // to an expense doc. Client-side soft-delete / restore stay rules-gated
 // (no settlement-engine risk); membership projection writes are Worker-owned.
 import { z }                                                        from 'zod'
-import { getAdminToken, getProjectId, invalidateAdminToken }        from './admin'
+import { getAdminToken, getProjectId }                              from './admin'
 import {
   readString,
   type FsValue,

@@ -125,7 +125,6 @@ import {
 	memberRoleUpdate,
 	ownerTransfer,
 	InviteCreateRequestSchema,
-	InviteRevokeRequestSchema,
 	MembershipValidationError,
 } from '../src/membership-write'
 import { CascadeError } from '../src/cascade'
