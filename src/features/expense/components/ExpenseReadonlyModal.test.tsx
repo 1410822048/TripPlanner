@@ -94,4 +94,116 @@ describe('ExpenseReadonlyModal', () => {
     expect(screen.getByText('クーポン値引')).toBeTruthy()
     expect(screen.getByText('適用範圍：サンドイッチ')).toBeTruthy()
   })
+
+  // The two scopes apply DIFFERENT split rules to an otherwise identical-looking
+  // row, and this modal is the only view the non-author members get — so the
+  // scope has to be legible here or the amounts can't be audited.
+  describe('adjustment scope disclosure', () => {
+    // Alice pays and is on the splits; the adjustment targets an item that is
+    // allocated to Bob ALONE. That separation is what makes "only the target
+    // item's allocations appear" a real assertion rather than a coincidence.
+    function renderWithAdjustment(overrides: {
+      allocations: { memberId: string; shares: number }[]
+    }) {
+      return render(
+        <ExpenseReadonlyModal
+          isOpen currency="JPY" members={members} onClose={() => {}}
+          expense={expense({
+            items: [
+              { id: 'i1', name: '天ぷら', amountMinor: 600, allocations: overrides.allocations },
+            ],
+            adjustments: [{
+              id: 'adj1', label: 'クーポン値引', kind: 'COUPON',
+              scope: 'ITEM', amountMinor: 100, targetItemId: 'i1',
+            }],
+          })}
+        />,
+      )
+    }
+
+    /** The 影響 row only — scoped because Alice legitimately appears elsewhere
+     *  in the modal (payer + split), so a whole-document query would pass on
+     *  the wrong element. */
+    const affectedRow = () => screen.getByText('影響').parentElement!
+
+    it('states the rule for expense-scoped adjustments instead of naming an item', () => {
+      render(
+        <ExpenseReadonlyModal
+          isOpen currency="JPY" members={members} onClose={() => {}}
+          expense={expense({
+            items: [{
+              id: 'i1', name: '天ぷら', amountMinor: 600,
+              allocations: [{ memberId: 'a', shares: 1 }],
+            }],
+            adjustments: [{
+              id: 'adj1', label: '全体割引', kind: 'COUPON',
+              scope: 'EXPENSE', amountMinor: 100,
+            }],
+          })}
+        />,
+      )
+      expect(screen.getByText('適用範圍：整筆費用')).toBeTruthy()
+      // Deliberately NOT "全體": the delta is apportioned across items by their
+      // adjusted amount, so a member allocated to nothing is untouched.
+      expect(screen.getByText('依各項目調整後金額比例分攤')).toBeTruthy()
+      // No per-member list, because expense scope has no single target item.
+      expect(screen.queryByText('影響')).toBeNull()
+    })
+
+    it('lists only the target item’s allocations, not every trip member', () => {
+      renderWithAdjustment({ allocations: [{ memberId: 'b', shares: 1 }] })
+      expect(affectedRow().textContent).toContain('Bob')
+      expect(affectedRow().textContent).not.toContain('Alice')
+    })
+
+    it('keeps a departed member’s allocation visible instead of dropping it', () => {
+      // 'zz' is absent from `members` — ExpensePage hands this modal the LIVE
+      // roster only, so a members.filter() implementation would silently lose
+      // this allocation and under-report who the discount reached.
+      renderWithAdjustment({
+        allocations: [{ memberId: 'b', shares: 1 }, { memberId: 'zz', shares: 1 }],
+      })
+      expect(affectedRow().textContent).toContain('Bob')
+      expect(affectedRow().textContent).toContain('已退出')
+    })
+
+    it('collapses a long allocation list so one row cannot become a roster', () => {
+      renderWithAdjustment({
+        allocations: ['a', 'b', 'c1', 'c2', 'c3'].map(memberId => ({ memberId, shares: 1 })),
+      })
+      // 3 shown + "+2" — and the overflow keeps the hidden names reachable
+      // via title rather than dropping them from the audit trail entirely.
+      const plus = screen.getByText('+2')
+      expect(plus.getAttribute('title')).toContain('c2')
+      expect(plus.getAttribute('title')).toContain('c3')
+    })
+
+    it('truncates visually but keeps the whole name in title for audit', () => {
+      const long = 'ながい'.repeat(20)   // 60 chars, well past the visual cap
+      render(
+        <ExpenseReadonlyModal
+          isOpen currency="JPY" onClose={() => {}}
+          members={[{ id: 'x', displayName: long, avatarLabel: 'な', color: '#000', bg: '#fff' }]}
+          expense={expense({
+            paidBy: 'x',
+            splits: [{ memberId: 'x', amountMinor: 5000 }],
+            items: [{
+              id: 'i1', name: '天ぷら', amountMinor: 600,
+              allocations: [{ memberId: 'x', shares: 1 }],
+            }],
+            adjustments: [{
+              id: 'adj1', label: 'クーポン値引', kind: 'COUPON',
+              scope: 'ITEM', amountMinor: 100, targetItemId: 'i1',
+            }],
+          })}
+        />,
+      )
+      const nameEl = affectedRow().querySelector(`[title="${long}"]`)
+      expect(nameEl).not.toBeNull()
+      // Truncation is presentational; the element must not be allowed to
+      // stretch the flex row instead of clipping.
+      expect(nameEl!.className).toContain('truncate')
+      expect(nameEl!.className).toMatch(/max-w-/)
+    })
+  })
 })
