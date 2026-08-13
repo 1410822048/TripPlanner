@@ -12,8 +12,8 @@ import type { Expense } from '@/types'
 import { MOCK_TIMESTAMP as TS } from '@/mocks/utils'
 import { formatMinorAmount } from '@/utils/money'
 
-const A: TripMember = { id: 'u1', label: 'A', color: '#000', bg: '#fff' }
-const B: TripMember = { id: 'u2', label: 'B', color: '#000', bg: '#fff' }
+const A: TripMember = { id: 'u1', displayName: 'Alice', avatarLabel: 'A', color: '#000', bg: '#fff' }
+const B: TripMember = { id: 'u2', displayName: 'Bob', avatarLabel: 'B', color: '#000', bg: '#fff' }
 const MEMBERS = [A, B]
 
 function mkExpense(over: Partial<Expense> = {}): Expense {

@@ -43,6 +43,7 @@ function trip(id: string, createdAt: number): Trip {
     currency: 'TWD',
     defaultCountryCode: 'TW',
     ownerId: 'owner',
+    formerMemberNames: {},
     memberIds: ['owner'],
     wishVotingDeadlineAt: null,
     wishVotingDeadlineNotifiedAt: null,

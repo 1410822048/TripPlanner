@@ -173,12 +173,36 @@ export function buildMemberStripWrites(
     })
   }
   const currentRoster = readTripRoster(trip)
-  if (currentRoster.includes(targetUid)) {
-    const newRoster = currentRoster.filter(u => u !== targetUid)
+  const stripsRoster  = currentRoster.includes(targetUid)
+  // The member doc is about to be deleted by the cascade and it is the ONLY
+  // place this person's name lives, while their uid survives forever on
+  // settled expenses. Capture it now or the settlement view can never name
+  // them again. No name when the doc is already gone (a retry after a partial
+  // removal) — leave the entry absent rather than inventing one.
+  const departingName = target.exists ? readString(target.fields, 'displayName') : undefined
+
+  if (stripsRoster || departingName !== undefined) {
+    const tripFields:  Record<string, FsValue> = {}
+    const tripMask:    string[] = []
+    if (stripsRoster) {
+      tripFields.memberIds = encodeMemberIds(currentRoster.filter(u => u !== targetUid))
+      tripMask.push('memberIds')
+    }
+    if (departingName !== undefined) {
+      // Whole-map read-modify-write rather than a `formerMemberNames.<uid>`
+      // field path: the map was read inside this transaction, so a racing
+      // removal ABORTs and retries against the committed map instead of
+      // clobbering it — and it sidesteps field-path escaping for the uid.
+      const existing = trip.fields?.formerMemberNames?.mapValue?.fields ?? {}
+      tripFields.formerMemberNames = {
+        mapValue: { fields: { ...existing, [targetUid]: { stringValue: departingName } } },
+      }
+      tripMask.push('formerMemberNames')
+    }
     writes.push({
       document:   docResourceName(projectId, `trips/${tripId}`),
-      fields:     { memberIds: encodeMemberIds(newRoster) },
-      updateMask: ['memberIds'],
+      fields:     tripFields,
+      updateMask: tripMask,
     })
   }
   return writes

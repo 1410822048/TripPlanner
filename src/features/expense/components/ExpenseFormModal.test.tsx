@@ -90,8 +90,8 @@ import type { Expense } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 
 const members: TripMember[] = [
-  { id: 'a', label: 'A', color: '#000', bg: '#fff' },
-  { id: 'b', label: 'B', color: '#000', bg: '#fff' },
+  { id: 'a', displayName: 'Alice', avatarLabel: 'A', color: '#000', bg: '#fff' },
+  { id: 'b', displayName: 'Bob', avatarLabel: 'B', color: '#000', bg: '#fff' },
 ]
 
 const ts = (ms: number) => ({ toMillis: () => ms } as unknown as Timestamp)
@@ -405,7 +405,7 @@ describe('ExpenseFormModal — re-OCR dispatch', () => {
 // a choice the save then rejects.
 describe('ExpenseFormModal — payer picker excludes split-only ghosts', () => {
   const ghost = (id: string): TripMember =>
-    ({ id, label: id.toUpperCase(), color: '#000', bg: '#fff', isGhost: true }) as TripMember
+    ({ id, displayName: `已退出 ${id}`, avatarLabel: id.charAt(0).toUpperCase(), color: '#000', bg: '#fff', isGhost: true }) as TripMember
 
   function renderWithGhost(paidBy: string) {
     // 'b' has left the trip: still in splits, so ExpensePage widens the
@@ -422,16 +422,16 @@ describe('ExpenseFormModal — payer picker excludes split-only ghosts', () => {
 
   it('hides a departed member who only appears in splits', () => {
     renderWithGhost('a')   // live payer
-    expect(screen.queryByRole('button', { name: '代墊者：A' })).not.toBeNull()
-    expect(screen.queryByRole('button', { name: '代墊者：B' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '代墊者：Alice' })).not.toBeNull()
+    expect(screen.queryByRole('button', { name: '代墊者：已退出 b' })).toBeNull()
   })
 
   it('keeps the departed member visible when they ARE the stored payer', () => {
     renderWithGhost('b')
     // Removing them would make the expense unsavable without silently
     // reassigning who paid.
-    expect(screen.queryByRole('button', { name: '代墊者：B' })).not.toBeNull()
+    expect(screen.queryByRole('button', { name: '代墊者：已退出 b' })).not.toBeNull()
     // ...and a live member is still offered, so the payer can be repaired.
-    expect(screen.queryByRole('button', { name: '代墊者：A' })).not.toBeNull()
+    expect(screen.queryByRole('button', { name: '代墊者：Alice' })).not.toBeNull()
   })
 })

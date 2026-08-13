@@ -7,7 +7,7 @@ import type { TripMember } from '@/features/trips/types'
 
 const adjustment: ExpenseAdjustment = {
   id:           'adjustment-1',
-  label:        'GW 附加費',
+  label: 'GW 附加費',
   kind:         'SURCHARGE',
   scope:        'ITEM',
   amountMinor:  197,
@@ -24,7 +24,7 @@ const items: FormItem[] = [{
 
 const members: TripMember[] = [{
   id:    'member-1',
-  label: '我',
+  displayName: '我本人', avatarLabel: '我',
   color: '#000',
   bg:    '#fff',
 }]

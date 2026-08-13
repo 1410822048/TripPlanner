@@ -199,7 +199,7 @@ export default function ExpenseItemAllocationSheet({
                 >
                   <MemberAvatar member={member} size={30} />
                   <div className="min-w-0">
-                    <div className="truncate text-[13px] font-bold text-ink">{member.label}</div>
+                    <div className="truncate text-[13px] font-bold text-ink">{member.displayName}</div>
                     <div className="text-[10.5px] font-semibold text-teal">分攤中</div>
                   </div>
                   <div className="flex items-center gap-1">
@@ -209,7 +209,7 @@ export default function ExpenseItemAllocationSheet({
                         if (shares <= 1) onToggleAllocation(index, member.id)
                         else onSetAllocationShares(index, member.id, shares - 1)
                       }}
-                      aria-label={`減少 ${member.label} 的分攤數`}
+                      aria-label={`減少 ${member.displayName} 的分攤數`}
                       className="grid h-9 w-9 place-items-center rounded-full border border-teal/20 bg-surface text-teal"
                     >
                       <Minus size={15} strokeWidth={2.4} />
@@ -222,7 +222,7 @@ export default function ExpenseItemAllocationSheet({
                       onClick={() => {
                         onSetAllocationShares(index, member.id, shares + 1)
                       }}
-                      aria-label={`增加 ${member.label} 的分攤數`}
+                      aria-label={`增加 ${member.displayName} 的分攤數`}
                       className="grid h-9 w-9 place-items-center rounded-full border border-teal/20 bg-surface text-teal"
                     >
                       <Plus size={15} strokeWidth={2.4} />
@@ -245,7 +245,7 @@ export default function ExpenseItemAllocationSheet({
               >
                 <MemberAvatar member={member} size={30} />
                 <div className="min-w-0">
-                  <div className="truncate text-[13px] font-semibold text-ink">{member.label}</div>
+                  <div className="truncate text-[13px] font-semibold text-ink">{member.displayName}</div>
                   <div className="text-[10.5px] font-medium text-muted">未分攤</div>
                 </div>
                 <button

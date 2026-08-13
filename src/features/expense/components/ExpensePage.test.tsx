@@ -162,8 +162,8 @@ import ExpensePage from './ExpensePage'
 const TS = {} as unknown as Timestamp
 
 const MEMBERS: TripMember[] = [
-  { id: 'u1', label: 'A', color: '#111', bg: '#fff' },
-  { id: 'u2', label: 'B', color: '#111', bg: '#fff' },
+  { id: 'u1', displayName: 'Alice', avatarLabel: 'A', color: '#111', bg: '#fff' },
+  { id: 'u2', displayName: 'Bob', avatarLabel: 'B', color: '#111', bg: '#fff' },
 ]
 
 function expense(overrides: Partial<Expense> = {}): Expense {

@@ -61,7 +61,7 @@ export default function MemberAvatar({ member, size, className, style }: Props) 
           onError={() => setImgFailed(true)}
         />
       ) : (
-        member.label
+        member.avatarLabel
       )}
     </span>
   )

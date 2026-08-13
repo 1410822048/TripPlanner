@@ -51,8 +51,8 @@ const LOCAL_TODAY = '2099-12-31'
 vi.mock('@/utils/dates', () => ({ toLocalDateString: () => LOCAL_TODAY }))
 
 const members: TripMember[] = [
-  { id: 'a', label: 'A', color: '#000', bg: '#fff' },
-  { id: 'b', label: 'B', color: '#000', bg: '#fff' },
+  { id: 'a', displayName: 'Alice', avatarLabel: 'A', color: '#000', bg: '#fff' },
+  { id: 'b', displayName: 'Bob', avatarLabel: 'B', color: '#000', bg: '#fff' },
 ]
 const suggested = { fromUid: 'a', toUid: 'b', amountMinor: 5000 }
 

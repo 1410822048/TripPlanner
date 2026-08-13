@@ -15,8 +15,8 @@ import type { SettlementRecord } from '@/types/settlement'
 import { MOCK_TIMESTAMP as TS } from '@/mocks/utils'
 import { formatMinorAmount } from '@/utils/money'
 
-const FROM: TripMember = { id: 'u1', label: 'A', color: '#000', bg: '#fff' }
-const TO:   TripMember = { id: 'u2', label: 'B', color: '#000', bg: '#fff' }
+const FROM: TripMember = { id: 'u1', displayName: 'Alice', avatarLabel: 'A', color: '#000', bg: '#fff' }
+const TO:   TripMember = { id: 'u2', displayName: 'Bob', avatarLabel: 'B', color: '#000', bg: '#fff' }
 
 function rec(over: Partial<SettlementRecord> = {}): SettlementRecord {
   return {

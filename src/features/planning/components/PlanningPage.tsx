@@ -68,7 +68,7 @@ export default function PlanningPage() {
     ctx.status === 'cloud' ? (cloudItems ?? []) :
     []
   const members: PlanningMember[] =
-    ctx.status === 'demo'  ? ctx.trip.members.map(member => ({ ...member, name: member.label })) :
+    ctx.status === 'demo'  ? ctx.trip.members.map(member => ({ ...member, name: member.displayName })) :
     ctx.status === 'cloud' ? (cloudMembers ?? []).map(member => ({ ...memberToTripMember(member), name: member.displayName })) :
     []
   const currentUid = uid ?? (isDemo ? members[0]?.id : undefined)

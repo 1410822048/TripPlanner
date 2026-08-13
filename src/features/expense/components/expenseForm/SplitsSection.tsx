@@ -81,7 +81,7 @@ export default function SplitsSection({
                 ].join(' ')}
               >
                 <MemberAvatar member={m} size={28} />
-                <span className="flex-1 text-[13px] text-ink font-medium">{m.label}</span>
+                <span className="flex-1 text-[13px] text-ink font-medium">{m.displayName}</span>
 
                 {mode === 'equal' ? (
                   <>

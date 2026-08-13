@@ -179,7 +179,7 @@ export default function WishDetailSheet({
               {voters.map(voter => (
                 <span
                   key={voter.id}
-                  title={voter.label}
+                  title={voter.displayName}
                   className="inline-flex items-center justify-center h-8 w-8 rounded-full bg-app"
                 >
                   <MemberAvatar member={voter} size={24} />

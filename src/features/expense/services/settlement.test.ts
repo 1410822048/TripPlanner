@@ -15,9 +15,9 @@ import type { SettlementRecord } from '@/types/settlement'
 import type { TripMember } from '@/features/trips/types'
 
 const MEMBERS: TripMember[] = [
-  { id: 'm1', label: 'A', color: '#000', bg: '#fff' },
-  { id: 'm2', label: 'B', color: '#000', bg: '#fff' },
-  { id: 'm3', label: 'C', color: '#000', bg: '#fff' },
+  { id: 'm1', displayName: 'Alice', avatarLabel: 'A', color: '#000', bg: '#fff' },
+  { id: 'm2', displayName: 'Bob', avatarLabel: 'B', color: '#000', bg: '#fff' },
+  { id: 'm3', displayName: 'Carol', avatarLabel: 'C', color: '#000', bg: '#fff' },
 ]
 
 // JPY is zero-fraction, so the integer values in these fixtures map
@@ -615,7 +615,7 @@ describe('ghostMember', () => {
     const g = ghostMember('left-the-trip')
     expect(g.id).toBe('left-the-trip')
     expect(g.isGhost).toBe(true)
-    expect(typeof g.label).toBe('string')
+    expect(typeof g.avatarLabel).toBe('string')
     expect(typeof g.color).toBe('string')
     expect(typeof g.bg).toBe('string')
   })

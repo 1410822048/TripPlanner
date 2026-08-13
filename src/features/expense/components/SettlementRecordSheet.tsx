@@ -275,9 +275,9 @@ export default function SettlementRecordSheet({
             <ArrowRight size={14} strokeWidth={2.5} className="text-muted shrink-0" />
             <MemberAvatar member={toMember} size={32} />
             <div className="flex-1 min-w-0 text-[13px] text-muted leading-tight">
-              <span className="font-semibold text-ink">{fromMember.label}</span>
+              <span className="font-semibold text-ink">{fromMember.displayName}</span>
               <span> 支付給 </span>
-              <span className="font-semibold text-ink">{toMember.label}</span>
+              <span className="font-semibold text-ink">{toMember.displayName}</span>
               <span> 的清算</span>
             </div>
           </div>

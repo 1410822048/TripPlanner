@@ -137,9 +137,25 @@ const DISPLAY    = 'Invitee'
 
 // ─── Fixture builders (REST `fields` shape) ───────────────────────
 
-function tripReadDoc(opts: { ownerId?: string; memberIds?: string[]; deleting?: boolean; title?: string; icon?: string } = {}): MockReadDoc {
+function tripReadDoc(opts: {
+	ownerId?: string
+	memberIds?: string[]
+	deleting?: boolean
+	title?: string
+	icon?: string
+	formerMemberNames?: Record<string, string>
+} = {}): MockReadDoc {
 	const fields: MockReadDoc['fields'] = {
 		ownerId: { stringValue: opts.ownerId ?? OWNER_UID },
+	}
+	if (opts.formerMemberNames) {
+		fields.formerMemberNames = {
+			mapValue: {
+				fields: Object.fromEntries(
+					Object.entries(opts.formerMemberNames).map(([k, v]) => [k, { stringValue: v }]),
+				),
+			},
+		}
 	}
 	if (opts.memberIds) {
 		fields.memberIds = {
@@ -162,13 +178,18 @@ function tripReadDoc(opts: { ownerId?: string; memberIds?: string[]; deleting?: 
 function memberReadDoc(
 	uid: string,
 	role: 'owner' | 'editor' | 'viewer' = 'editor',
-	opts: { removingAt?: string; userId?: string } = {},
+	opts: { removingAt?: string; userId?: string; displayName?: string | null } = {},
 ): MockReadDoc {
 	// userId mirrors the doc id by default (members/{uid}.userId === uid);
 	// opts.userId overrides to exercise the owner-transfer mismatch guard.
 	const fields: MockReadDoc['fields'] = {
 		role:   { stringValue: role },
 		userId: { stringValue: opts.userId ?? uid },
+	}
+	// `displayName: null` models a malformed member doc with no name at all —
+	// the strip must then record nothing rather than inventing a placeholder.
+	if (opts.displayName !== null) {
+		fields.displayName = { stringValue: opts.displayName ?? `${uid} の名前` }
 	}
 	if (opts.removingAt) {
 		fields.removingAt = { timestampValue: opts.removingAt }
@@ -801,6 +822,107 @@ describe('memberRemove endpoint', () => {
 		expect(deleteCall).toContain(`/members/${TARGET}`)
 	})
 
+	// The member doc is the ONLY place a person's name lives, and the cascade
+	// deletes it — while their uid survives forever on settled expenses. If the
+	// name isn't captured in this same transaction it is gone for good, and the
+	// settlement view can never tell two departed members apart again.
+	describe('former-member name capture', () => {
+		/** The trip-doc write produced by the strip, or undefined if none. */
+		function tripWrite(): { fields: Record<string, unknown>; updateMask: string[] } | undefined {
+			const writes = capturedTxResult!.writes as Array<{
+				document: string; fields: Record<string, unknown>; updateMask: string[]
+			}>
+			return writes.find(w => /\/documents\/trips\/trip-1$/.test(w.document))
+		}
+		const names = () =>
+			(tripWrite()?.fields.formerMemberNames as
+				{ mapValue: { fields: Record<string, { stringValue: string }> } } | undefined)
+				?.mapValue.fields
+
+		it('records the departing name in the SAME write as the roster strip', async () => {
+			seedAuthorizedRemove()
+			await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
+
+			// One write, both fields: a second write could commit alone and
+			// leave the roster stripped with the name lost.
+			expect(tripWrite()!.updateMask).toEqual(['memberIds', 'formerMemberNames'])
+			expect(names()![TARGET]!.stringValue).toBe(`${TARGET} の名前`)
+		})
+
+		it('records the name on self-leave too, not just an owner kick', async () => {
+			txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({ memberIds: [OWNER_UID, TARGET] }))
+			txGetResponses.set(`trips/${TRIP_ID}/members/${TARGET}`, memberReadDoc(TARGET, 'editor'))
+
+			await memberLeave(TARGET, { tripId: TRIP_ID }, '{}')
+
+			expect(names()![TARGET]!.stringValue).toBe(`${TARGET} の名前`)
+		})
+
+		it('still records the name when the roster no longer carries the uid', async () => {
+			// Partial prior removal: memberIds was already stripped but the
+			// member doc survived. Gating the name write on the roster branch
+			// would lose the name on exactly this retry.
+			seedAuthorizedRemove({ rosterIncludes: false })
+			await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
+
+			expect(tripWrite()!.updateMask).toEqual(['formerMemberNames'])
+			expect(names()![TARGET]!.stringValue).toBe(`${TARGET} の名前`)
+		})
+
+		it('invents nothing when the member doc is already gone', async () => {
+			seedAuthorizedRemove({ targetExists: false })
+			await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
+
+			expect(tripWrite()!.updateMask).toEqual(['memberIds'])
+			expect(names()).toBeUndefined()
+		})
+
+		it('merges into the existing table instead of replacing it', async () => {
+			// Whole-map read-modify-write: the earlier departure must survive.
+			txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({
+				memberIds:         [OWNER_UID, TARGET],
+				formerMemberNames: { 'gone-earlier': '先に抜けた人' },
+			}))
+			txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`, memberReadDoc(OWNER_UID, 'owner'))
+			txGetResponses.set(`trips/${TRIP_ID}/members/${TARGET}`, memberReadDoc(TARGET, 'editor'))
+
+			await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
+
+			expect(names()!['gone-earlier']!.stringValue).toBe('先に抜けた人')
+			expect(names()![TARGET]!.stringValue).toBe(`${TARGET} の名前`)
+		})
+
+		it('overwrites a stale entry when someone rejoins and leaves again', async () => {
+			txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({
+				memberIds:         [OWNER_UID, TARGET],
+				formerMemberNames: { [TARGET]: '旧しい名前' },
+			}))
+			txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`, memberReadDoc(OWNER_UID, 'owner'))
+			txGetResponses.set(
+				`trips/${TRIP_ID}/members/${TARGET}`,
+				memberReadDoc(TARGET, 'editor', { displayName: '新しい名前' }),
+			)
+
+			await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
+
+			expect(names()![TARGET]!.stringValue).toBe('新しい名前')
+		})
+
+		it('records nothing when the member doc carries no name', async () => {
+			txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({ memberIds: [OWNER_UID, TARGET] }))
+			txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`, memberReadDoc(OWNER_UID, 'owner'))
+			txGetResponses.set(
+				`trips/${TRIP_ID}/members/${TARGET}`,
+				memberReadDoc(TARGET, 'editor', { displayName: null }),
+			)
+
+			await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
+
+			expect(tripWrite()!.updateMask).toEqual(['memberIds'])
+			expect(names()).toBeUndefined()
+		})
+	})
+
 	it('cleans kicked member trip notifications after member doc delete', async () => {
 		seedAuthorizedRemove()
 
@@ -892,7 +1014,9 @@ describe('memberRemove endpoint', () => {
 
 		const rosterWrite = writes.find(w => w.document.match(/\/documents\/trips\/trip-1$/))
 		expect(rosterWrite).toBeDefined()
-		expect(rosterWrite!.updateMask).toEqual(['memberIds'])
+		// The departing name rides the SAME trip write (see the former-member
+		// name-capture block) — a separate write could commit alone and lose it.
+		expect(rosterWrite!.updateMask).toEqual(['memberIds', 'formerMemberNames'])
 		expect(rosterWrite!.fields.memberIds).toEqual({
 			arrayValue: { values: [{ stringValue: OWNER_UID }] },  // TARGET stripped
 		})
@@ -924,7 +1048,7 @@ describe('memberRemove endpoint', () => {
 		}
 	})
 
-	it('roster missing target uid (legacy partial kick): only removingAt marker write, no roster strip', async () => {
+	it('roster missing target uid (legacy partial kick): marker + name write, no roster strip', async () => {
 		// Defensive: if a prior failed kick stripped trip.memberIds but
 		// didn't delete the member doc, a retry MUST still establish the
 		// marker and run the cascade -- but it skips the no-op roster
@@ -937,9 +1061,15 @@ describe('memberRemove endpoint', () => {
 		expect(result).toEqual({ ok: true })
 
 		const writes = capturedTxResult!.writes as Array<{ document: string; updateMask: string[] }>
-		expect(writes).toHaveLength(1)
-		expect(writes[0].document).toContain(`/members/${TARGET}`)
-		expect(writes[0].updateMask).toEqual(['removingAt', 'removalKind', 'removedBy'])
+		// Two writes now: the marker, plus a trip write carrying ONLY the
+		// departing name. The roster branch is correctly skipped (nothing left
+		// to strip), but the name still has to be captured before the cascade
+		// deletes the member doc that holds it.
+		expect(writes).toHaveLength(2)
+		const marker = writes.find(w => w.document.includes(`/members/${TARGET}`))!
+		expect(marker.updateMask).toEqual(['removingAt', 'removalKind', 'removedBy'])
+		const nameOnly = writes.find(w => /\/documents\/trips\/trip-1$/.test(w.document))!
+		expect(nameOnly.updateMask).toEqual(['formerMemberNames'])
 	})
 
 	it('target member doc missing: still strips stale ACL projections, no marker write', async () => {
@@ -1084,7 +1214,9 @@ describe('memberLeave endpoint', () => {
 		expect(markerWrite!.fields.removalKind).toEqual({ stringValue: 'left' })
 		expect(markerWrite!.fields.removedBy).toEqual({ stringValue: LEAVER })
 		const rosterWrite = writes.find(w => w.document.match(/\/documents\/trips\/trip-1$/))
-		expect(rosterWrite!.updateMask).toEqual(['memberIds'])
+		// The departing name rides the SAME trip write (see the former-member
+		// name-capture block) — a separate write could commit alone and lose it.
+		expect(rosterWrite!.updateMask).toEqual(['memberIds', 'formerMemberNames'])
 		expect(rosterWrite!.fields.memberIds).toEqual({
 			arrayValue: { values: [{ stringValue: OWNER_UID }] },  // LEAVER stripped
 		})

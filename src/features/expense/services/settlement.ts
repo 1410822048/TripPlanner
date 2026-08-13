@@ -143,15 +143,24 @@ function ensureSlot<T>(
 }
 
 /** Visual style for ghost participants — chip 灰色 + 「退」字。 */
-const GHOST_CHIP = { label: '退', color: '#7a7a7a', bg: '#e5e5e5' } as const
+const GHOST_CHIP = { avatarLabel: '退', color: '#7a7a7a', bg: '#e5e5e5' } as const
 
 /**
  * Build a placeholder TripMember for a uid that appears in expenses but
  * isn't an active member of the trip. UI uses isGhost to render the
  * 退出済み state.
+ *
+ * `displayName` 由呼叫端從 trip doc 的 `formerMemberNames` 帶入。查不到時
+ * 退回帶 uid 前綴的匿名字樣 —— 不是為了好看,而是因為兩個以上的已退出成員
+ * 若都顯示同一句「已退出」,分帳畫面就無法辨識誰是誰。
  */
-export function ghostMember(id: string): TripMember {
-  return { id, ...GHOST_CHIP, isGhost: true }
+export function ghostMember(id: string, displayName?: string): TripMember {
+  return {
+    id,
+    displayName: displayName ?? `已退出成員 · ${id.slice(0, 4)}`,
+    ...GHOST_CHIP,
+    isGhost: true,
+  }
 }
 
 /**
@@ -164,6 +173,8 @@ export function expandWithGhosts(
   members:     TripMember[],
   expenses:    Expense[],
   settlements: SettlementRecord[] = [],
+  /** uid → 離開當下的顯示名稱,來自 trip doc 的 `formerMemberNames`。 */
+  formerNames: Readonly<Record<string, string>> = {},
 ): TripMember[] {
   const known = new Set(members.map(m => m.id))
   const ghosts: TripMember[] = []
@@ -172,7 +183,7 @@ export function expandWithGhosts(
   const ensure = (id: string) => {
     if (known.has(id) || seen.has(id)) return
     seen.add(id)
-    ghosts.push(ghostMember(id))
+    ghosts.push(ghostMember(id, formerNames[id]))
   }
 
   for (const e of expenses) {

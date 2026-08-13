@@ -18,8 +18,8 @@ import type { TripMember } from '@/features/trips/types'
 import { formatMinorAmount } from '@/utils/money'
 
 const members: TripMember[] = [
-  { id: 'a', label: 'Alice', color: '#000', bg: '#fff' },
-  { id: 'b', label: 'Bob',   color: '#000', bg: '#fff' },
+  { id: 'a', displayName: 'Alice', avatarLabel: 'A', color: '#000', bg: '#fff' },
+  { id: 'b', displayName: 'Bob', avatarLabel: 'B',   color: '#000', bg: '#fff' },
 ]
 
 // The modal never calls Timestamp methods, so an empty cast is safe.

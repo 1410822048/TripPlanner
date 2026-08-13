@@ -72,6 +72,10 @@ export default function ExpensePage() {
     ctx.status === 'demo'  ? ctx.trip.members :
     ctx.status === 'cloud' ? membersToTripMembers(fbMembers ?? []) :
     []
+  // Departed members keep their uid on settled expenses forever but their
+  // member doc is gone, so every expandWithGhosts below needs this table to
+  // name them. Demo trips never lose members.
+  const formerMemberNames = ctx.status === 'cloud' ? ctx.trip.formerMemberNames : {}
 
   // `allExpenses` keeps soft-deleted rows (settlement chronological
   // replay needs them). `expenses` below is the active subset used by
@@ -406,7 +410,7 @@ export default function ExpensePage() {
           // redistribute it. Scoped to the edited doc on purpose: it mirrors
           // the Worker's grandfather rule, which only tolerates refs the doc
           // already carries. Create mode stays roster-pure.
-          members={modal.editTarget ? expandWithGhosts(members, [modal.editTarget]) : members}
+          members={modal.editTarget ? expandWithGhosts(members, [modal.editTarget], [], formerMemberNames) : members}
           isSaving={false}
           onClose={modal.close}
           onSave={handleSave}
@@ -418,7 +422,10 @@ export default function ExpensePage() {
           key={`detail-${detailExpense.id}`}
           isOpen
           expense={detailExpense}
-          members={members}
+          // Ghost-expanded like the settlement sheet below: this is the view a
+          // NON-author opens to audit "why do I owe this", and a departed payer
+          // or item assignee would otherwise render as a raw uid.
+          members={expandWithGhosts(members, [detailExpense], [], formerMemberNames)}
           currency={currency}
           isLocked={detailExpenseLocked}
           onClose={() => {
@@ -458,7 +465,7 @@ export default function ExpensePage() {
           // sheet looks both parties up by uid. With the live roster only,
           // the whole "who paid whom" header would silently not render on
           // exactly the settlements this flow exists to clear.
-          members={expandWithGhosts(members, allExpenses, settlements)}
+          members={expandWithGhosts(members, allExpenses, settlements, formerMemberNames)}
           isSaving={false}
         />
       )}

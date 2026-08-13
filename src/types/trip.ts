@@ -52,6 +52,20 @@ export interface Trip {
    */
   memberIds: string[]
   /**
+   * uid → 該成員離開當下的 displayName。由 Worker 的 member-strip cascade
+   * 在把 uid 從 `memberIds` 移除的同一個 transaction 裡寫入。
+   *
+   * 為什麼要留:費用與清算紀錄會永久保留已退出成員的 uid(不能改寫已結算的
+   * 歷史),但 member doc 會被刪掉,名字就跟著消失。少了這張表,兩個以上的
+   * 已退出成員在分帳畫面上完全無法辨識 —— 帳目對不起來時沒人查得出是誰。
+   *
+   * 逐列快照(在每筆 split / allocation 存名字)也能解,但要動三處 schema、
+   * Worker Zod 與 rules cap;trip 層一張表換來同樣的結果。
+   *
+   * Client 唯讀:rules 對 owner 的編輯路徑鎖 `unchanged`,只有 admin SDK 寫得到。
+   */
+  formerMemberNames: Record<string, string>
+  /**
    * Per-feature "last activity" stamps. Drives the bottom-nav unread-
    * dot badge — see useFeatureBadges. Each service mutation calls
    * bumpTripActivity() best-effort after the main write to update the
@@ -128,6 +142,11 @@ export const TripDocSchema = z.object({
   defaultCountryCode: z.string().regex(/^[A-Z]{2}$/),
   ownerId:     z.string().min(1),
   memberIds:   z.array(z.string().min(1)).min(1),
+  // `.default({})` 而非 `.optional()`:讀取端永遠拿到一個 map,不需要
+  // backfill 也不需要在每個消費點寫 `?? {}`。值的長度上限跟 invite-write
+  // 的 `displayName: z.string().min(1).max(100)` 對齊 —— 兩邊都是同一個
+  // 名字的入口,cap 一旦漂移就是 Worker 比 rules 寬的老問題。
+  formerMemberNames: z.record(z.string().min(1), z.string().min(1).max(100)).default({}),
   lastActivityByFeature: z.object({
     schedule: ActivityStampSchema.optional(),
     expense:  ActivityStampSchema.optional(),

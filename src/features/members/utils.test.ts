@@ -12,20 +12,20 @@ function mkMember(id: string, displayName: string): Member {
 
 describe('memberToTripMember', () => {
   it('extracts first grapheme of displayName (ASCII)', () => {
-    expect(memberToTripMember(mkMember('m1', 'Alice')).label).toBe('A')
+    expect(memberToTripMember(mkMember('m1', 'Alice')).avatarLabel).toBe('A')
   })
 
   it('handles CJK / multi-byte displayNames', () => {
-    expect(memberToTripMember(mkMember('m1', '太郎')).label).toBe('太')
-    expect(memberToTripMember(mkMember('m2', 'あやな')).label).toBe('あ')
+    expect(memberToTripMember(mkMember('m1', '太郎')).avatarLabel).toBe('太')
+    expect(memberToTripMember(mkMember('m2', 'あやな')).avatarLabel).toBe('あ')
   })
 
   it('handles emoji (surrogate pairs)', () => {
-    expect(memberToTripMember(mkMember('m1', '🗼さん')).label).toBe('🗼')
+    expect(memberToTripMember(mkMember('m1', '🗼さん')).avatarLabel).toBe('🗼')
   })
 
   it('falls back to ? for whitespace-only names', () => {
-    expect(memberToTripMember(mkMember('m1', '   ')).label).toBe('?')
+    expect(memberToTripMember(mkMember('m1', '   ')).avatarLabel).toBe('?')
   })
 
   it('assigns a stable color/bg pair per id (deterministic)', () => {

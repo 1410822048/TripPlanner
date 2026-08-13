@@ -85,7 +85,7 @@ export default function ExpenseReadonlyModal({
       <FormField label="付款人">
         <div className="flex items-center gap-2 rounded-input border border-border bg-app px-3 py-2">
           {payer && <MemberAvatar member={payer} size={28} />}
-          <span className="text-[13px] font-semibold text-ink">{payer?.label ?? expense.paidBy}</span>
+          <span className="text-[13px] font-semibold text-ink">{payer?.displayName ?? expense.paidBy}</span>
         </div>
       </FormField>
 
@@ -99,7 +99,7 @@ export default function ExpenseReadonlyModal({
                 <div key={split.memberId} className="flex items-center gap-2 px-3 py-2">
                   {member && <MemberAvatar member={member} size={26} />}
                   <span className="flex-1 min-w-0 text-[13px] font-medium text-ink truncate">
-                    {member?.label ?? split.memberId}
+                    {member?.displayName ?? split.memberId}
                   </span>
                   <span className="text-[13px] font-bold text-ink tabular-nums">
                     {formatMinorAmount(split.amountMinor, currency)}
@@ -128,7 +128,7 @@ export default function ExpenseReadonlyModal({
                     const member = memberById.get(allocation.memberId)
                     return (
                       <span key={allocation.memberId} className="text-[10.5px] font-semibold text-muted">
-                        {member?.label ?? allocation.memberId}
+                        {member?.displayName ?? allocation.memberId}
                         {allocation.shares > 1 ? ` x${allocation.shares}` : ''}
                       </span>
                     )

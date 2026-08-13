@@ -42,11 +42,12 @@ export function memberToTripMember(m: Member): TripMember {
   // CHIP_PALETTE is a non-empty constant, so modulo always yields a valid slot.
   const { color, bg } = CHIP_PALETTE[hashId(m.id) % CHIP_PALETTE.length]!
   return {
-    id:        m.id,
-    label:     firstGrapheme(m.displayName),
+    id:          m.id,
+    displayName: m.displayName,
+    avatarLabel: firstGrapheme(m.displayName),
     color,
     bg,
-    avatarUrl: m.avatarUrl,
+    avatarUrl:   m.avatarUrl,
   }
 }
 

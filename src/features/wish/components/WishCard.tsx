@@ -281,8 +281,8 @@ function ProposerAvatar({ proposer }: { proposer?: TripMember }) {
   return (
     <span
       role="img"
-      title={`提案者：${proposer.label}`}
-      aria-label={`提案者：${proposer.label}`}
+      title={`提案者：${proposer.displayName}`}
+      aria-label={`提案者：${proposer.displayName}`}
       className="pointer-events-none absolute -bottom-1 left-1/2 -translate-x-1/2 inline-flex rounded-full shadow-[0_1px_3px_rgba(0,0,0,0.10)]"
       style={{ isolation: 'isolate' }}
     >

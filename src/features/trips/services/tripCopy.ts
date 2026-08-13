@@ -130,6 +130,9 @@ export async function copyTrip(
     defaultCountryCode: source.defaultCountryCode,
     ownerId:     user.uid,
     memberIds,
+    // 建立時就寫成空 map,跟 wishVotingDeadline* 一樣建立「永遠存在」的不變式。
+    // rules 允許 create 時缺席(舊 client 相容),但新 client 一律帶。
+    formerMemberNames: {},
     wishVotingDeadlineAt:         null,
     wishVotingDeadlineNotifiedAt: null,
     createdAt:   serverTimestamp(),
@@ -214,6 +217,7 @@ export async function copyTrip(
     defaultCountryCode: source.defaultCountryCode,
     ownerId:     user.uid,
     memberIds,
+    formerMemberNames: {},
     wishVotingDeadlineAt:         null,
     wishVotingDeadlineNotifiedAt: null,
     createdAt:   nowTs,

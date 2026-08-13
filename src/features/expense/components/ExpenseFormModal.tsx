@@ -508,7 +508,7 @@ export default function ExpenseFormModal({
                 key={m.id}
                 type="button"
                 onClick={() => setField('paidBy', m.id)}
-                aria-label={`代墊者：${m.label}`}
+                aria-label={`代墊者：${m.displayName}`}
                 aria-pressed={active}
                 className={[
                   'p-0 bg-transparent border-none cursor-pointer rounded-full transition-all',

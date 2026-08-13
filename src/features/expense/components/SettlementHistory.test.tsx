@@ -12,8 +12,8 @@ import type { TripMember } from '@/features/trips/types'
 import type { SettlementRecord } from '@/types/settlement'
 import { MOCK_TIMESTAMP as TS } from '@/mocks/utils'
 
-const A: TripMember = { id: 'u1', label: 'A', color: '#000', bg: '#fff' }
-const B: TripMember = { id: 'u2', label: 'B', color: '#000', bg: '#fff' }
+const A: TripMember = { id: 'u1', displayName: 'Alice', avatarLabel: 'A', color: '#000', bg: '#fff' }
+const B: TripMember = { id: 'u2', displayName: 'Bob', avatarLabel: 'B', color: '#000', bg: '#fff' }
 const memberById = new Map([[A.id, A], [B.id, B]])
 
 function rec(id: string, over: Partial<SettlementRecord> = {}): SettlementRecord {

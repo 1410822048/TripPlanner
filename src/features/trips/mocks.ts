@@ -4,10 +4,10 @@
 import type { TripItem, TripMember } from './types'
 
 const DEMO_MEMBERS: TripMember[] = [
-  { id:'m1', label:'我', color:'#3A7858', bg:'#C6DDD6' },
-  { id:'m2', label:'友', color:'#4A6FA0', bg:'#BDC9DC' },
-  { id:'m3', label:'伴', color:'#9A6840', bg:'#DDC9B2' },
-  { id:'m4', label:'隊', color:'#724888', bg:'#CEBEDD' },
+  { id:'m1', displayName:'我',     avatarLabel:'我', color:'#3A7858', bg:'#C6DDD6' },
+  { id:'m2', displayName:'朋友',   avatarLabel:'友', color:'#4A6FA0', bg:'#BDC9DC' },
+  { id:'m3', displayName:'旅伴',   avatarLabel:'伴', color:'#9A6840', bg:'#DDC9B2' },
+  { id:'m4', displayName:'隊友',   avatarLabel:'隊', color:'#724888', bg:'#CEBEDD' },
 ]
 
 export const INITIAL_TRIPS: TripItem[] = [

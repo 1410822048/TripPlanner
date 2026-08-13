@@ -113,7 +113,7 @@ export default function SettlementSummary({
                   <MemberAvatar member={m} size={28} />
                   <div className="flex-1 min-w-0">
                     <div className="text-[12.5px] text-ink font-semibold leading-tight">
-                      {m.label}
+                      {m.displayName}
                     </div>
                     <div className="text-[10px] text-muted tabular-nums mt-px">
                       {m.isGhost && <span className="text-danger font-semibold">已退出 · </span>}
@@ -198,7 +198,7 @@ export default function SettlementSummary({
                           toUid:       s.toId,
                           amountMinor: s.amountMinor,
                         })}
-                        aria-label={`記錄已收到 ${from.label} 支付的 ${formatMinorAmount(s.amountMinor, currency)}`}
+                        aria-label={`記錄已收到 ${from.displayName} 支付的 ${formatMinorAmount(s.amountMinor, currency)}`}
                         className="shrink-0 flex items-center gap-1 px-2.5 h-7 rounded-full border-none bg-teal text-white text-[10.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
                       >
                         <Check size={11} strokeWidth={2.8} />
@@ -208,8 +208,8 @@ export default function SettlementSummary({
                       <div
                         role="status"
                         aria-label={isPayer
-                          ? `等待收款人（${to.label}）確認`
-                          : `尚未確認 ${from.label} 支付給 ${to.label} 的清算`}
+                          ? `等待收款人（${to.displayName}）確認`
+                          : `尚未確認 ${from.displayName} 支付給 ${to.displayName} 的清算`}
                         title={isPayer ? '由收款人（不是你）確認' : undefined}
                         className="shrink-0 flex items-center gap-1 px-2.5 h-7 rounded-full bg-app text-muted text-[10.5px] font-medium tracking-[0.04em] opacity-75"
                       >

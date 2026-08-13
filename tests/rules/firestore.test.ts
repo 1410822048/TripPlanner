@@ -276,6 +276,61 @@ describe('/trips/{tripId} wishVotingDeadline', () => {
     await assertSucceeds(updateDoc(tripDoc, { wishVotingDeadlineAt: null }))
   })
 
+  // formerMemberNames is written ONLY by the Worker's member-strip cascade
+  // (Admin SDK). The client-side contract is "may exist, may never be touched".
+  describe('formerMemberNames', () => {
+    const tripPath = () => doc(asOwner(env).firestore(), 'trips', TRIP_ID)
+
+    async function seedNames(names: Record<string, string>) {
+      await env.withSecurityRulesDisabled(async ctx => {
+        await updateDoc(doc(ctx.firestore(), 'trips', TRIP_ID), { formerMemberNames: names })
+      })
+    }
+
+    test('ordinary owner edits still succeed once the Worker has written the field', async () => {
+      // THE regression this guards: the field must be in the update rule's
+      // hasOnly list. Omit it there and every trip edit 403s the moment any
+      // member has ever left — the field exists on the doc, so the client's
+      // update payload carries it and hasOnly rejects the whole write.
+      await seedNames({ 'gone-uid': '抜けた人' })
+      await assertSucceeds(updateDoc(tripPath(), { title: 'Renamed after a departure' }))
+    })
+
+    test('owner cannot rewrite, add to, or clear the table', async () => {
+      await seedNames({ 'gone-uid': '抜けた人' })
+      await assertFails(updateDoc(tripPath(), { formerMemberNames: { 'gone-uid': '別人' } }))
+      await assertFails(updateDoc(tripPath(), {
+        formerMemberNames: { 'gone-uid': '抜けた人', [STRANGER_UID]: '偽造' },
+      }))
+      await assertFails(updateDoc(tripPath(), { formerMemberNames: {} }))
+    })
+
+    test('editor and viewer cannot write it either', async () => {
+      for (const as of [asEditor, asViewer]) {
+        await assertFails(updateDoc(
+          doc(as(env).firestore(), 'trips', TRIP_ID),
+          { formerMemberNames: { [STRANGER_UID]: '偽造' } },
+        ))
+      }
+    })
+
+    test('create may omit it or send an empty map, but may not seed names', async () => {
+      // Old clients predate the field; new ones write `{}`. Neither may
+      // arrive with entries — that would let a creator fabricate history.
+      await assertSucceeds(setDoc(
+        doc(asOwner(env).firestore(), 'trips', 'fmn-absent'), freshTripPayload(),
+      ))
+      await assertSucceeds(setDoc(
+        doc(asOwner(env).firestore(), 'trips', 'fmn-empty'),
+        freshTripPayload({ formerMemberNames: {} }),
+      ))
+      await assertFails(setDoc(
+        doc(asOwner(env).firestore(), 'trips', 'fmn-seeded'),
+        freshTripPayload({ formerMemberNames: { [STRANGER_UID]: '捏造' } }),
+      ))
+    })
+  })
+
   test('editor/viewer cannot set wishVotingDeadlineAt', async () => {
     const future = Timestamp.fromMillis(Date.now() + 3600_000)
     await assertFails(

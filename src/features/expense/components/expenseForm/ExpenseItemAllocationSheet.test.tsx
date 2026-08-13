@@ -9,9 +9,9 @@ import type { FormItem } from '../../hooks/useExpenseItems'
 import type { TripMember } from '@/features/trips/types'
 
 const members: TripMember[] = [
-  { id: 'a', label: 'Alice', color: '#000', bg: '#fff' },
-  { id: 'b', label: 'Bob',   color: '#000', bg: '#fff' },
-  { id: 'c', label: 'Carol', color: '#000', bg: '#fff' },
+  { id: 'a', displayName: 'Alice', avatarLabel: 'A', color: '#000', bg: '#fff' },
+  { id: 'b', displayName: 'Bob', avatarLabel: 'B',   color: '#000', bg: '#fff' },
+  { id: 'c', displayName: 'Carol', avatarLabel: 'C', color: '#000', bg: '#fff' },
 ]
 
 // Alice=2 shares, Bob=1 share, Carol unselected — exercises every branch.

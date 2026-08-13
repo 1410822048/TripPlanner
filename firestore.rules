@@ -305,9 +305,15 @@ service cloud.firestore {
                     && request.resource.data.keys().hasOnly([
                          'ownerId','title','destination','startDate','endDate',
                          'currency','defaultCountryCode','icon','memberIds','lastActivityByFeature',
+                         'formerMemberNames',
                          'wishVotingDeadlineAt','wishVotingDeadlineNotifiedAt',
                          'createdAt','updatedAt'
                        ])
+                    // Departed-member name table is Worker-only. Allowed at
+                    // create solely so a client that sends it can't be
+                    // rejected — but only ever empty, never seeded.
+                    && (!('formerMemberNames' in request.resource.data)
+                          || request.resource.data.formerMemberNames == {})
                     && request.resource.data.ownerId == uid()
                     && request.resource.data.title is string
                     && request.resource.data.title.size() > 0
@@ -351,12 +357,17 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly([
              'ownerId','title','destination','startDate','endDate',
              'currency','defaultCountryCode','icon','memberIds','lastActivityByFeature',
+             'formerMemberNames',
              'deletingAt','wishVotingDeadlineAt','wishVotingDeadlineNotifiedAt',
              'createdAt','updatedAt'
            ])
         && unchanged('ownerId')
         && unchanged('createdAt')
         && unchanged('memberIds')
+        // Worker-only (member-strip cascade). Listed in hasOnly above because
+        // once the Worker writes it the field EXISTS — omitting it there would
+        // make every ordinary owner edit fail hasOnly and 403 the trip form.
+        && unchanged('formerMemberNames')
         // deletingAt is the cascade write-quiesce marker -- only the
         // Worker (admin SDK) is allowed to set it. The owner-edit and
         // lastActivity paths pin their change sets via changedOnly, but
