@@ -118,6 +118,8 @@ registerRoute(
 // Lazy route/debug chunks excluded from install-time precache are immutable
 // hashed assets. Cache after first use so revisits and offline sessions remain
 // fast without making every fresh install download every tab up front.
+// Keep this restricted to hashed /assets JS/CSS: /compatibility.json is an
+// operational write gate and must never enter a runtime cache.
 registerRoute(
   ({ url }) => url.origin === sw.location.origin
     && /\/assets\/[^/]+-[A-Za-z0-9_-]+\.(?:js|css)$/.test(url.pathname),

@@ -5,6 +5,10 @@
 import { QueryClient, MutationCache } from '@tanstack/react-query'
 import { toast } from '@/shared/toast'
 import { captureError } from '@/services/sentry'
+import {
+  assertClientWriteCompatible,
+  isUpdateRequiredError,
+} from '@/services/clientCompatibility'
 
 /** Centralised Traditional Chinese verb phrases used as `MutationMeta.action`.
  *  Surfaces in the failure toast prefix and the Sentry tag, so a typo
@@ -80,7 +84,19 @@ export const queryClient = new QueryClient({
     },
   },
   mutationCache: new MutationCache({
+    // Keep the mutation path network-free: this synchronous guard reads the
+    // compatibility service's in-memory snapshot. If it throws, TanStack does
+    // not run the mutation's local onMutate or mutationFn, so no optimistic
+    // operation can be added by an obsolete bundle.
+    onMutate: () => {
+      assertClientWriteCompatible()
+    },
     onError: (err, _vars, _ctx, mutation) => {
+      // The mandatory root gate already explains this state and owns the
+      // update CTA. Reporting or toasting it would create Sentry noise and a
+      // duplicate notification for an intentional client-side refusal.
+      if (isUpdateRequiredError(err)) return
+
       const meta = mutation.meta
       // WorkerAmbiguous = the write request reached the network but the
       // response was lost (timeout / network / 5xx); the mutation MAY

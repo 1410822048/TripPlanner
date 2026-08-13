@@ -1,10 +1,8 @@
 // src/App.tsx
-// Note: PwaUpdatePrompt + PwaInstallPrompt are rendered INSIDE AppLayout,
-// not here. Standalone routes (/invite/:tripId, /past-lodging, etc.)
-// don't have a bottom nav, so the banner's bottom-anchored layout has
-// no nav to clear; rendering them at app-root would float them awkwardly
-// in those pages. Scoping them to AppLayout also lets nav height live
-// in one place via a CSS variable, no cross-tree DOM hacks.
+// Service-worker registration + compatibility checks live at app root so
+// standalone routes participate. The optional bottom-nav update/install
+// banners remain inside AppLayout; only the mandatory compatibility prompt
+// renders here because it must cover every route.
 import { useState } from 'react'
 import { RouterProvider } from 'react-router-dom'
 import { QueryClientProvider } from '@tanstack/react-query'
@@ -15,6 +13,8 @@ import Splash from '@/components/Splash'
 import Toaster from '@/shared/Toaster'
 import PerfStrip from '@/components/ui/PerfStrip'
 import { hasShareParams } from '@/features/bookings/linkDraft'
+import { PwaUpdateProvider } from '@/components/PwaUpdateProvider'
+import AppCompatibilityGate from '@/components/AppCompatibilityGate'
 
 /**
  * Force every fresh session to land on /schedule, regardless of which page
@@ -55,12 +55,15 @@ export default function App() {
   const [splashDone, setSplashDone] = useState(false)
   return (
     <ErrorBoundary>
-      <QueryClientProvider client={queryClient}>
-        <RouterProvider router={router} />
-        {!splashDone && <Splash onDone={() => setSplashDone(true)} />}
-        <Toaster />
-        <PerfStrip />
-      </QueryClientProvider>
+      <PwaUpdateProvider>
+        <QueryClientProvider client={queryClient}>
+          <RouterProvider router={router} />
+          <AppCompatibilityGate />
+          {!splashDone && <Splash onDone={() => setSplashDone(true)} />}
+          <Toaster />
+          <PerfStrip />
+        </QueryClientProvider>
+      </PwaUpdateProvider>
     </ErrorBoundary>
   )
 }

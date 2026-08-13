@@ -37,6 +37,7 @@ import WishDeadlineSheet from './WishDeadlineSheet'
 import { rankWishes, toConsensus } from '../utils'
 import { WISH_CATEGORIES } from '../categories'
 import { useSetWishVotingDeadline } from '@/features/trips/hooks/useTrips'
+import { getClientWriteBlockReason } from '@/services/clientCompatibility'
 
 export default function WishPage() {
   const { ctx, uid, cloudTripId, mutationTripId, isDemo, isOwner, modal, signIn } =
@@ -145,6 +146,11 @@ export default function WishPage() {
     // that operation while MutationCache.onError raises the toast.
     const editing = modal.editTarget
     const file = attachment instanceof File ? attachment : null
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) {
+      modal.setError(writeBlockReason)
+      return
+    }
     modal.close()
     if (editing) {
       updateMut.mutate({
@@ -164,6 +170,11 @@ export default function WishPage() {
     if (votingClosed) { modal.close(); toast.error('投票已截止'); return }
     if (isDemo) { modal.close(); signIn.open(); return }
     const target = modal.editTarget
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) {
+      modal.setError(writeBlockReason)
+      return
+    }
     modal.close()
     deleteMut.mutate({ wishId: target.id })
   }
@@ -211,6 +222,8 @@ export default function WishPage() {
       toast.error('投票已截止')
       return
     }
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) { toast.error(writeBlockReason); return }
     setDeadlineMut.mutate({ tripId: cloudTripId, deadlineAt: deadlineAtInput })
     setDeadlineSheetOpen(false)
   }

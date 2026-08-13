@@ -7,6 +7,13 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(import.meta.dirname, './src'),
+      // vite-plugin-pwa is intentionally absent from this lean test config,
+      // so resolve its virtual React module to a typed test double. Individual
+      // suites can vi.mock the same id; production still uses the real plugin.
+      'virtual:pwa-register/react': path.resolve(
+        import.meta.dirname,
+        './src/test/virtualPwaRegister.ts',
+      ),
     },
   },
   test: {

@@ -11,6 +11,7 @@ const harness = vi.hoisted(() => ({
   openAdd: vi.fn(),
   openEdit: vi.fn(),
   closeModal: vi.fn(),
+  setModalError: vi.fn(),
   openSignIn: vi.fn(),
   closeSignIn: vi.fn(),
   createBooking: vi.fn(),
@@ -18,6 +19,7 @@ const harness = vi.hoisted(() => ({
   deleteBooking: vi.fn(),
   modalOpen: false,
   formInitialDraft: null as Record<string, unknown> | null,
+  writeBlockReason: null as string | null,
 }))
 
 vi.mock('@/components/ui/BottomSheet', () => ({
@@ -55,10 +57,11 @@ vi.mock('./BookingFormModal', () => ({
       inputs: Array<Record<string, unknown>>
       document: File
     }) => void
+    saveError?: string | null
   }) => {
     harness.formInitialDraft = props.initialDraft ?? null
     return props.isOpen ? (
-      <div role="dialog" aria-label="booking-form">
+      <div role="dialog" aria-label="booking-form" data-save-error={props.saveError ?? ''}>
         <button
           type="button"
           onClick={() => props.onCreateMany?.({
@@ -99,6 +102,8 @@ vi.mock('@/hooks/useFeatureListPage', () => ({
       openAdd: harness.openAdd,
       openEdit: harness.openEdit,
       close: harness.closeModal,
+      saveError: null,
+      setError: harness.setModalError,
     },
     signIn: {
       isOpen: false,
@@ -127,6 +132,10 @@ vi.mock('../hooks/useBookings', async () => {
 vi.mock('@/hooks/useAttachmentUrl', () => ({
   useAttachmentUrl: (path: string | null | undefined, opts: { kind: 'thumb' | 'full' }) =>
     path ? `blob:${opts.kind}:${path}` : null,
+}))
+
+vi.mock('@/services/clientCompatibility', () => ({
+  getClientWriteBlockReason: () => harness.writeBlockReason,
 }))
 
 vi.mock('@/features/auth/components/SignInPromptModal', () => ({ default: () => null }))
@@ -175,6 +184,7 @@ beforeEach(() => {
   harness.openAdd.mockReset()
   harness.openEdit.mockReset()
   harness.closeModal.mockReset()
+  harness.setModalError.mockReset()
   harness.openSignIn.mockReset()
   harness.closeSignIn.mockReset()
   harness.createBooking.mockReset()
@@ -182,6 +192,7 @@ beforeEach(() => {
   harness.deleteBooking.mockReset()
   harness.modalOpen = false
   harness.formInitialDraft = null
+  harness.writeBlockReason = null
   harness.openAdd.mockImplementation(() => { harness.modalOpen = true })
 })
 
@@ -277,5 +288,18 @@ describe('BookingsPage read-first booking flow', () => {
     })
     expect(harness.createBooking.mock.calls[0]?.[0].files.document)
       .toBe(harness.createBooking.mock.calls[1]?.[0].files.document)
+  })
+
+  it('keeps the PDF form and draft intact when this client is write-incompatible', async () => {
+    harness.modalOpen = true
+    harness.writeBlockReason = '請先更新 App 才能儲存'
+
+    render(<BookingsPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'mock batch create' }))
+
+    expect(harness.setModalError).toHaveBeenCalledWith('請先更新 App 才能儲存')
+    expect(harness.closeModal).not.toHaveBeenCalled()
+    expect(harness.createBooking).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: 'booking-form' })).toBeTruthy()
   })
 })

@@ -35,6 +35,7 @@ import { useTripCurrency } from '@/hooks/useTripCurrency'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { currencySymbol } from '@/utils/currency'
 import { formatMinorAmount, formatMinorNumber } from '@/utils/money'
+import { getClientWriteBlockReason } from '@/services/clientCompatibility'
 
 type ExpenseOverlay =
   | { kind: 'detail'; expenseId: string }
@@ -203,6 +204,11 @@ export default function ExpensePage() {
       toast.error('只有擁有者可以編輯已清算的費用')
       return
     }
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) {
+      modal.setError(writeBlockReason)
+      return
+    }
     modal.close()
     if (editing) {
       updateMut.mutate({
@@ -227,6 +233,8 @@ export default function ExpensePage() {
   function handleRecordSettlement(submit: SettlementRecordSubmit) {
     if (isDemo) { setRecordTarget(null); signIn.open(); return }
     if (!uid) { toast.error('正在準備登入，請稍候'); return }
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) { toast.error(writeBlockReason); return }
     // Mint settlementId here (not inside the service) so the optimistic
     // cache row, the Worker request, and the Firestore doc all share
     // one id. Memory: [[settlement-id-hoist-load-bearing]] — any future
@@ -413,6 +421,7 @@ export default function ExpensePage() {
           // already carries. Create mode stays roster-pure.
           members={modal.editTarget ? expandWithGhosts(members, [modal.editTarget], [], formerMemberNames) : members}
           isSaving={false}
+          saveError={modal.saveError}
           onClose={modal.close}
           onSave={handleSave}
         />

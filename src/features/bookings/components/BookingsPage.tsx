@@ -27,6 +27,7 @@ import BookingsListSkeleton from './BookingsListSkeleton'
 import { bookingDisplayName, BOOKING_TYPE_META, BOOKING_TYPE_ORDER } from '../utils'
 import { hasShareParams, sharedBookingDraftFromSearch, type SharedBookingDraft } from '../linkDraft'
 import { parseStoredDate, toLocalDateString } from '@/utils/dates'
+import { getClientWriteBlockReason } from '@/services/clientCompatibility'
 
 type BookingOverlay =
   | { kind: 'detail'; bookingId: string }
@@ -142,9 +143,14 @@ export default function BookingsPage() {
   const typeOrder = BOOKING_TYPE_ORDER
 
   function handleSave({ input, coverImage, document }: BookingFormResult) {
+    if (isDemo) { setSharedDraft(null); modal.close(); signIn.open(); return }
+    if (!uid) { setSharedDraft(null); toast.error('正在準備登入，請稍候'); return }
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) {
+      modal.setError(writeBlockReason)
+      return
+    }
     setSharedDraft(null)
-    if (isDemo) { modal.close(); signIn.open(); return }
-    if (!uid) { toast.error('正在準備登入，請稍候'); return }
 
     // Optimistic close (mirrors ExpensePage). Modal closes immediately;
     // the hook's onMutate adds an overlay operation so the row shows at
@@ -174,9 +180,14 @@ export default function BookingsPage() {
   }
 
   function handleCreateManyFromPdf({ inputs, document }: BookingFormBatchResult) {
+    if (isDemo) { setSharedDraft(null); modal.close(); signIn.open(); return }
+    if (!uid) { setSharedDraft(null); toast.error('正在準備登入，請稍候'); return }
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) {
+      modal.setError(writeBlockReason)
+      return
+    }
     setSharedDraft(null)
-    if (isDemo) { modal.close(); signIn.open(); return }
-    if (!uid) { toast.error('正在準備登入，請稍候'); return }
     modal.close()
 
     // Concurrent, not sequential: a round trip resolves in the time the
@@ -250,6 +261,11 @@ export default function BookingsPage() {
     const target = modal.editTarget
     if (!target) return
     if (isDemo) { modal.close(); signIn.open(); return }
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) {
+      modal.setError(writeBlockReason)
+      return
+    }
     modal.close()
     deleteMut.mutate({
       bookingId: target.id,

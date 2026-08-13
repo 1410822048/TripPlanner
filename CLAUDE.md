@@ -179,10 +179,8 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 - **bottom sheet**: `BottomSheet` 元件 + `FormModalShell` 包一層 SaveButton,所有 form modal(Schedule/Booking/Expense/Wish/Planning/EditTrip)共用
 
 ### Save error 處理(modal-driven flow)
-- **Modal save 失敗**:Wish / Schedule / Booking / Planning 4 個 modal-driven flow 用 inline banner(`FormModalShell` 內建 + `useFormModal.saveError`)取代 toast,**避免雙通知**
-- Hook 配 `useCreateXxx(tripId, { silent: true })`,跳過全域 toast
-- Page handleSave 內 `try { ... } catch (err) { modal.setError(err.message) }`,modal 不關;banner stay until next 嘗試 / 關 modal
-- **ExpenseFormModal 例外**:optimistic close 流程,modal 在 mutate 之前就關 → 沒 banner,改靠全域 toast + rollback patch
+- **Schedule / Planning**:modal-wait flow。Hook 配 `{ silent: true }`,Page 在 `await mutateAsync` 失敗時用 `modal.setError(err.message)` 顯示 inline banner；modal 不關,避免與全域 toast 雙通知。
+- **Expense / Booking / Wish**:optimistic-close flow。一般情況在 `mutate` 前關閉 modal；明確失敗由 overlay 撤回該 operation,並由全域 `MutationCache.onError` 顯示 toast。Schema Epoch preflight 是例外：不相容時在關閉前同步擋下,保留表單並顯示 inline banner。
 
 ### Hybrid shell loading
 - AppLayout `Suspense fallback` 用 generic `PageLoadingSkeleton`(切 tab 第一次 chunk 下載期)
@@ -210,32 +208,38 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 
 ## CRUD 觸發時序表
 
-| 觸發行為 | 所在 page | 是否 optimistic | Modal 行為 | Pending UI |
+| 觸發行為 | 所在 page | List 是否 optimistic | Modal 行為 | Pending UI |
 |---|---|---|---|---|
-| **新增費用 / 編輯費用** | `/expense` | ✅ **Optimistic close** | 按存 modal 立即關閉 | ✅ 半透明 + 「保存中…」spinner,block tap/swipe |
-| 新增 / 編輯 schedule | `/schedule` | ❌ `await mutateAsync` | 等 mutation 完成才關 modal | 無 |
-| 新增 / 編輯 booking | `/bookings` | ❌ `await mutateAsync` | 等 mutation 完成才關 modal | 無 |
-| 新增 / 編輯 wish | `/wish` | ❌ `await mutateAsync` | 等 mutation 完成才關 modal | 無 |
-| 新增 / 編輯 planning | `/planning` | ❌ `await mutateAsync` | 等 mutation 完成才關 modal | 無 |
+| 新增 / 編輯 expense | `/expense` | ✅ Overlay + **optimistic close** | 按存後立即關閉 | ✅ row 半透明 + 「儲存中…」,block tap/swipe |
+| 新增 / 編輯 schedule | `/schedule` | ✅ Overlay(modal-wait) | `await mutateAsync`;成功才關,失敗留在 modal 顯示 banner | Modal 儲存中狀態 |
+| 新增 / 編輯 booking(含批次 PDF) | `/bookings` | ✅ Overlay + **optimistic close** | 按存後立即關閉 | ✅ row 半透明 + 「儲存中…」,block tap/swipe |
+| 新增 / 編輯 wish | `/wish` | ✅ Overlay + **optimistic close** | 按存後立即關閉 | ✅ card 半透明 + pending pill,block edit/vote |
+| 新增 / 編輯 planning | `/planning` | ✅ Overlay(modal-wait) | `await mutateAsync`;成功才關,失敗留在 modal 顯示 banner | Modal 儲存中狀態 |
 | Toggle planning row done | `/planning` | ✅ Optimistic | 沒 modal | 無(checkbox 立即翻) |
 | Wish vote toggle | `/wish` | ✅ Optimistic | 沒 modal | 無 |
-| Swipe delete(任何 row) | 全部 | ✅ Optimistic | 沒 modal | row 立刻消失 |
+| Swipe delete(支援滑刪的 list row) | 各 list page | ✅ Optimistic | 沒 modal | row 立刻消失 |
 
-**為何只有費用走 optimistic close**:
-- 費用流程含 receipt 上傳(可能 2-4 秒),體感最差 → 收益最高
-- 其他流程都是純 Firestore write,< 500ms,await 體感 OK
-- 未來若 Booking 也加 attachment 上傳常態,可考慮一併改
+**Optimistic-close 的選擇**:
+- Expense receipt、Booking 附件 / 批次 PDF、Wish 圖片都可能包含較慢的 Worker / R2 路徑,因此三者按存後立即收 modal,由 list overlay 顯示進度。
+- Schedule / Planning 同樣使用 operation-scoped overlay 保護並行寫入,但保留 `await mutateAsync` 的 modal-wait UX；失敗時使用者仍在原表單內,可直接修正或重試。
 
 ## Pending state 規範
 
 ```
-按存 → validate() pass → modal.close()(Expense 才立刻收)
-                       → createMut.mutate(...) 背景跑
-                       → onMutate: overlay.add(op)(id 由呼叫端 crypto.randomUUID() 鑄造)
-                       → mutationFn: setDoc / Worker 寫入
-                       → 明確失敗 onError: drop(該 opId) + toast.mutationError
-                       → ambiguous:  markAmbiguous → 等 settle window → 讀 server truth 定奪
-                       → 成功:      markSucceeded → reconcile 在 server truth 一致時撤下
+Expense / Booking / Wish:
+按存 → validate() pass → modal.close() → mutate(...) 背景跑
+
+Schedule / Planning:
+按存 → validate() pass → await mutateAsync(...) → 成功才 modal.close()
+                                           └→ 失敗保留 modal + inline banner
+
+兩條路徑共用 list mutation pipeline:
+global MutationCache.onMutate:同步檢查 Schema Epoch(只讀 memory snapshot,不碰網路)
+→ local onMutate: overlay.add(op)(id 由呼叫端 crypto.randomUUID() 鑄造)
+→ mutationFn: setDoc / Worker 寫入
+→ 明確失敗: drop(該 operation)；optimistic-close flow 另由全域 toast 提示
+→ ambiguous: markAmbiguous → 等 settle window → 讀 server truth 定奪
+→ 成功: markSucceeded → reconcile 在 server truth 一致時撤下
 ```
 
 **Pending row 視覺 / 互動規範**(`SwipeableExpenseItem` / `SwipeableBookingItem` / `WishCard`):
@@ -243,6 +247,16 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 - 視覺: `opacity-55` 半透明,meta 行用 `<Loader2 className="animate-spin" />` + 「**儲存中…**」
 - 互動: `onClick = undefined`(完全不接 tap)+ `swipeable = false`(`useSwipeRow` 整個禁用)
 - 解除: op 被 drop 時自動解除;已 `succeeded` 但還在等 snapshot 的 op **不鎖 UI**(寫入已完成,只差確認)
+
+### PWA Schema Epoch(write compatibility gate)
+
+- `public/compatibility.json` 是同源、`Cache-Control: no-store` 的 operational manifest：`{ revision, minimumWriteEpoch }`；不進 Workbox precache / runtime cache。
+- `CLIENT_SCHEMA_EPOCH` 編進 bundle。`revision` 必須單調增加；較新的 revision 可降低 `minimumWriteEpoch`,供緊急 rollback。
+- boot / visibility / online / bfcache pageshow / 3 分鐘 visible timer 背景 refresh；single-flight,成功結果存 memory + localStorage 並用 storage event 跨 tab 同步。
+- mutation path **只同步讀 memory snapshot**,禁止 fetch。唯一 fail-closed 狀態是「曾確認 client epoch 低於 minimum」；無成功紀錄、fetch/parse 暫時失敗一律 fail-open,由 Rules / Worker 維持最終安全邊界。
+- global `MutationCache.onMutate` 在任何 local optimistic `onMutate` 前擋下舊 bundle；`UpdateRequiredError` 不進 Sentry / toast,由 root `AppCompatibilityGate` 顯示不可 dismiss 的更新 CTA。
+- optimistic-close page 必須在清空 draft / 關 modal 前呼叫同步 preflight；不相容時保留表單。已經開始的 mutation 不會被中途取消,避免切斷 cascade / upload cleanup。
+- 發版採兩段式：先部署新 epoch client（minimum 仍容許舊版）→ 更新窗口後,提高 manifest minimum 再部署 Pages。Firestore 清空不會清掉裝置上的舊 PWA bundle。
 
 ## 複雜流程詳解
 

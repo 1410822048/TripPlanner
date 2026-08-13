@@ -98,6 +98,7 @@ interface Props {
   members:     TripMember[]
   isOpen:      boolean
   isSaving:    boolean
+  saveError?:  string | null
   onClose:     () => void
   onSave:      (result: ExpenseFormResult) => void
 }
@@ -119,7 +120,7 @@ function initFormState(
 }
 
 export default function ExpenseFormModal({
-  editTarget, defaultDate, members, isOpen, isSaving, onClose, onSave,
+  editTarget, defaultDate, members, isOpen, isSaving, saveError, onClose, onSave,
 }: Props) {
   const tripCurrency = useTripCurrency()
   const tripId = useTripId()
@@ -432,6 +433,7 @@ export default function ExpenseFormModal({
       isSaving={isSaving}
       title={editTarget ? '編輯費用' : '新增費用'}
       saveLabel={editTarget ? '儲存變更' : '新增費用'}
+      saveError={saveError}
       onClose={onClose}
       onSave={handleSave}
     >

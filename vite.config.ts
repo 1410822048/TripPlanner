@@ -204,6 +204,10 @@ export default defineConfig({
         //   unsupported browser; precaching would make native-capable
         //   Android/Chromium installs pay for fallback code they never run.
         globIgnores: [
+          // Operational compatibility state must always come from the
+          // network. Keep this explicit even though today's globPatterns do
+          // not include JSON, so a future broadening cannot precache it.
+          '**/compatibility.json',
           '**/vendor-sentry-*.js',
           '**/vendor-firebase-*.js',
           '**/jsQR-*.js',

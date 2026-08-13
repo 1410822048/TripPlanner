@@ -16,6 +16,7 @@ const harness = vi.hoisted(() => ({
   openAdd: vi.fn(),
   openEdit: vi.fn(),
   closeModal: vi.fn(),
+  setModalError: vi.fn(),
   openSignIn: vi.fn(),
   closeSignIn: vi.fn(),
   createExpense: vi.fn(),
@@ -25,6 +26,7 @@ const harness = vi.hoisted(() => ({
   deleteSettlement: vi.fn(),
   modalIsOpen: false,
   modalEditTarget: null as Expense | null,
+  writeBlockReason: null as string | null,
 }))
 
 vi.mock('@/components/ui/BottomSheet', () => ({
@@ -73,6 +75,8 @@ vi.mock('@/hooks/useFeatureListPage', () => ({
       openAdd: harness.openAdd,
       openEdit: harness.openEdit,
       close: harness.closeModal,
+      saveError: null,
+      setError: harness.setModalError,
     },
     signIn: {
       isOpen: false,
@@ -125,6 +129,10 @@ vi.mock('@/hooks/useAttachmentUrl', () => ({
     path ? `blob:${opts.kind}:${path}` : null,
 }))
 
+vi.mock('@/services/clientCompatibility', () => ({
+  getClientWriteBlockReason: () => harness.writeBlockReason,
+}))
+
 vi.mock('./SettlementSummary', () => ({
   // Exposes the suggestion callback so a test can open the record sheet;
   // the real component's own behaviour is covered in its own spec.
@@ -145,12 +153,22 @@ vi.mock('./SettlementRecordSheet', () => ({
   ),
 }))
 vi.mock('./ExpenseFormModal', () => ({
-  default: ({ editTarget, members }: { editTarget: Expense | null; members: TripMember[] }) => (
+  default: ({ editTarget, members, onSave, saveError }: {
+    editTarget: Expense | null
+    members: TripMember[]
+    saveError?: string | null
+    onSave: (result: { input: Record<string, unknown>; attachment: null }) => void
+  }) => (
     <div
       role="dialog"
       aria-label={editTarget ? 'expense-edit' : 'expense-create'}
       data-members={members.map(m => m.id).join(',')}
-    />
+      data-save-error={saveError ?? ''}
+    >
+      <button type="button" onClick={() => onSave({ input: {}, attachment: null })}>
+        mock expense save
+      </button>
+    </div>
   ),
 }))
 vi.mock('@/features/auth/components/SignInPromptModal', () => ({ default: () => null }))
@@ -214,6 +232,7 @@ beforeEach(() => {
   harness.openAdd.mockReset()
   harness.openEdit.mockReset()
   harness.closeModal.mockReset()
+  harness.setModalError.mockReset()
   harness.openSignIn.mockReset()
   harness.closeSignIn.mockReset()
   harness.createExpense.mockReset()
@@ -224,9 +243,24 @@ beforeEach(() => {
   harness.deleteSettlement.mockReset()
   harness.modalIsOpen = false
   harness.modalEditTarget = null
+  harness.writeBlockReason = null
 })
 
 describe('ExpensePage read-first expense flow', () => {
+  it('keeps the optimistic-close form mounted when this client is write-incompatible', () => {
+    harness.modalIsOpen = true
+    harness.modalEditTarget = null
+    harness.writeBlockReason = '請先更新 App 才能儲存'
+
+    render(<ExpensePage />)
+    fireEvent.click(screen.getByRole('button', { name: 'mock expense save' }))
+
+    expect(harness.setModalError).toHaveBeenCalledWith('請先更新 App 才能儲存')
+    expect(harness.closeModal).not.toHaveBeenCalled()
+    expect(harness.createExpense).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: 'expense-create' })).toBeTruthy()
+  })
+
   it('opens the read-only detail sheet before editing an expense', () => {
     render(<ExpensePage />)
 
