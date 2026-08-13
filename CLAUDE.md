@@ -256,6 +256,7 @@ global MutationCache.onMutate:同步檢查 Schema Epoch(只讀 memory snapshot,�
 - mutation path **只同步讀 memory snapshot**,禁止 fetch。唯一 fail-closed 狀態是「曾確認 client epoch 低於 minimum」；無成功紀錄、fetch/parse 暫時失敗一律 fail-open,由 Rules / Worker 維持最終安全邊界。
 - global `MutationCache.onMutate` 在任何 local optimistic `onMutate` 前擋下舊 bundle；`UpdateRequiredError` 不進 Sentry / toast,由 root `AppCompatibilityGate` 顯示不可 dismiss 的更新 CTA。
 - optimistic-close page 必須在清空 draft / 關 modal 前呼叫同步 preflight；不相容時保留表單。已經開始的 mutation 不會被中途取消,避免切斷 cascade / upload cleanup。
+- **不走 TanStack 的直接寫入**(`features/account`)採分類豁免,不要一律擋:只有 `usePushNotifications.enable()`(建立完整 token entity)在 `Notification.requestPermission()` 前 preflight;`disable()` / 登出 `revokeStoredPushToken` / 權限撤銷後的清理屬 cleanup,**永遠放行**,否則舊 client 會被困在無法關閉通知的狀態;通知已讀 / 忽略只寫 timestamp 欄位,一併放行。
 - 發版採兩段式：先部署新 epoch client（minimum 仍容許舊版）→ 更新窗口後,提高 manifest minimum 再部署 Pages。Firestore 清空不會清掉裝置上的舊 PWA bundle。
 
 ## 複雜流程詳解

@@ -1,11 +1,12 @@
-import { act, render, screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
   registerOptions: null as null | {
     onRegistered: (registration: ServiceWorkerRegistration | undefined) => void
     onRegisterError: (error: unknown) => void
   },
+  needRefresh: false,
   refreshCompatibility: vi.fn(async () => ({ manifest: null, updateRequired: false })),
   syncFromStorage: vi.fn(),
   captureError: vi.fn(),
@@ -17,7 +18,7 @@ vi.mock('virtual:pwa-register/react', () => ({
   useRegisterSW: (options: NonNullable<typeof harness.registerOptions>) => {
     harness.registerOptions = options
     return {
-      needRefresh: [false, harness.setNeedRefresh],
+      needRefresh: [harness.needRefresh, harness.setNeedRefresh],
       updateServiceWorker: harness.updateServiceWorker,
     }
   },
@@ -32,9 +33,43 @@ vi.mock('@/services/clientCompatibility', () => ({
 vi.mock('@/services/sentry', () => ({ captureError: harness.captureError }))
 
 import { PwaUpdateProvider } from './PwaUpdateProvider'
+import { usePwaUpdate } from '@/hooks/usePwaUpdate'
+
+/** Drives requestUpdate through the real context and surfaces the busy flag
+ *  so a test can assert the checking latch was released. */
+function UpdateConsumer() {
+  const { requestUpdate, checkingForUpdate } = usePwaUpdate()
+  return (
+    <button type="button" onClick={requestUpdate}>
+      {checkingForUpdate ? 'checking' : 'request update'}
+    </button>
+  )
+}
+
+const renderWithConsumer = () => render(
+  <PwaUpdateProvider><UpdateConsumer /></PwaUpdateProvider>,
+)
+const requestButton = () => screen.getByRole('button')
+
+async function registerWorker(registration: ServiceWorkerRegistration) {
+  await act(async () => {
+    harness.registerOptions?.onRegistered(registration)
+    await Promise.resolve()
+  })
+}
+
+const originalLocation = window.location
+
+afterEach(() => {
+  Object.defineProperty(window, 'location', {
+    configurable: true,
+    value: originalLocation,
+  })
+})
 
 beforeEach(() => {
   harness.registerOptions = null
+  harness.needRefresh = false
   harness.refreshCompatibility.mockClear()
   harness.syncFromStorage.mockClear()
   harness.captureError.mockClear()
@@ -107,5 +142,75 @@ describe('PwaUpdateProvider lifecycle', () => {
 
     expect(harness.captureError)
       .toHaveBeenCalledWith(failure, { source: 'pwa-sw-update-check' })
+  })
+})
+
+describe('requestUpdate recovery path', () => {
+  it('activates immediately when a worker is already waiting', async () => {
+    harness.needRefresh = true
+    renderWithConsumer()
+
+    await act(async () => { fireEvent.click(requestButton()) })
+
+    expect(harness.updateServiceWorker).toHaveBeenCalledWith(true)
+  })
+
+  it('reloads when no registration exists to re-check', async () => {
+    const reload = vi.fn()
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, reload },
+    })
+    renderWithConsumer()
+
+    await act(async () => { fireEvent.click(requestButton()) })
+
+    expect(reload).toHaveBeenCalledOnce()
+    expect(harness.updateServiceWorker).not.toHaveBeenCalled()
+  })
+
+  it('activates the worker a fresh check discovers', async () => {
+    const update = vi.fn(async () => undefined)
+    renderWithConsumer()
+    await registerWorker({ update, waiting: {} } as unknown as ServiceWorkerRegistration)
+    update.mockClear()
+
+    await act(async () => { fireEvent.click(requestButton()) })
+
+    expect(update).toHaveBeenCalledOnce()
+    expect(harness.updateServiceWorker).toHaveBeenCalledWith(true)
+    expect(requestButton().textContent).toBe('request update')
+  })
+
+  it('re-checks without activating when nothing is waiting', async () => {
+    const update = vi.fn(async () => undefined)
+    renderWithConsumer()
+    await registerWorker({ update, waiting: null } as unknown as ServiceWorkerRegistration)
+    update.mockClear()
+
+    await act(async () => { fireEvent.click(requestButton()) })
+
+    expect(update).toHaveBeenCalledOnce()
+    expect(harness.updateServiceWorker).not.toHaveBeenCalled()
+    expect(requestButton().textContent).toBe('request update')
+  })
+
+  it('releases the checking latch after a failed check so the user can retry', async () => {
+    const update = vi.fn(async () => undefined)
+    renderWithConsumer()
+    await registerWorker({ update, waiting: null } as unknown as ServiceWorkerRegistration)
+    const failure = new Error('check failed')
+    update.mockClear()
+    update.mockImplementationOnce(async () => { throw failure })
+
+    await act(async () => { fireEvent.click(requestButton()) })
+
+    expect(harness.captureError)
+      .toHaveBeenCalledWith(failure, { source: 'pwa-sw-update-check' })
+    expect(requestButton().textContent).toBe('request update')
+
+    await act(async () => { fireEvent.click(requestButton()) })
+
+    expect(update).toHaveBeenCalledTimes(2)
   })
 })

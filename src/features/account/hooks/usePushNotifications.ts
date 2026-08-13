@@ -8,6 +8,7 @@
 // "subscribe to an external resource" exception useBlobUrl carves out.
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { getFirebaseMessaging } from '@/services/firebase'
+import { getClientWriteBlockReason } from '@/services/clientCompatibility'
 import {
   disableStoredPushToken,
   isTokenEnabled,
@@ -138,6 +139,17 @@ export function usePushNotifications(uid: string | undefined): UsePushNotificati
 
   async function enable(): Promise<void> {
     if (!uid || support !== 'supported' || !VAPID_KEY) return
+    // Schema Epoch is an app-wide write contract, and enabling creates a full
+    // token entity — so refuse before the permission prompt rather than ask
+    // for a grant this bundle cannot persist. Runs ahead of beginAction so no
+    // in-flight lock is taken. disable() and sign-out revocation stay exempt:
+    // cleanup must never be blocked by an obsolete client.
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) {
+      setError(writeBlockReason)
+      setState('error')
+      return
+    }
     const actionUid = uid
     const canApply = beginAction(actionUid)
     if (!canApply) return

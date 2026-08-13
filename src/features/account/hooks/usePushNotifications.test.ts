@@ -14,13 +14,20 @@ const pushTokenService = vi.hoisted(() => ({
   writeStoredPushTokenHash: vi.fn(),
 }))
 
+const compatibility = vi.hoisted(() => ({ writeBlockReason: null as string | null }))
+
 vi.mock('@/services/firebase', () => ({
   getFirebaseMessaging: vi.fn(async () => messagingBundle),
+}))
+
+vi.mock('@/services/clientCompatibility', () => ({
+  getClientWriteBlockReason: () => compatibility.writeBlockReason,
 }))
 
 vi.mock('../services/pushTokenService', () => pushTokenService)
 
 beforeEach(() => {
+  compatibility.writeBlockReason = null
   vi.resetModules()
   vi.stubEnv('VITE_FIREBASE_VAPID_KEY', 'test-vapid-key')
   vi.stubGlobal('Notification', {
@@ -75,4 +82,31 @@ test('does not save a push token after the signed-in uid is gone', async () => {
 
   expect(pushTokenService.saveToken).not.toHaveBeenCalled()
   expect(pushTokenService.writeStoredPushTokenHash).not.toHaveBeenCalled()
+})
+
+test('refuses to enable and never prompts for permission on a write-incompatible client', async () => {
+  compatibility.writeBlockReason = '請先更新 App 才能儲存'
+  const { usePushNotifications } = await import('./usePushNotifications')
+  const hook = renderHook(() => usePushNotifications('user-1'))
+  await waitFor(() => expect(hook.result.current.support).toBe('supported'))
+
+  await act(async () => { await hook.result.current.enable() })
+
+  expect(Notification.requestPermission).not.toHaveBeenCalled()
+  expect(messagingBundle.getToken).not.toHaveBeenCalled()
+  expect(pushTokenService.saveToken).not.toHaveBeenCalled()
+  expect(hook.result.current.state).toBe('error')
+  expect(hook.result.current.error).toBe('請先更新 App 才能儲存')
+})
+
+test('still lets a blocked client disable notifications so cleanup is never trapped', async () => {
+  compatibility.writeBlockReason = '請先更新 App 才能儲存'
+  const { usePushNotifications } = await import('./usePushNotifications')
+  const hook = renderHook(() => usePushNotifications('user-1'))
+  await waitFor(() => expect(hook.result.current.support).toBe('supported'))
+
+  await act(async () => { await hook.result.current.disable() })
+
+  expect(pushTokenService.disableStoredPushToken).toHaveBeenCalledWith('user-1')
+  expect(hook.result.current.state).toBe('not-enabled')
 })
