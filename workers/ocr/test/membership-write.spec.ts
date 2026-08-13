@@ -908,6 +908,57 @@ describe('memberRemove endpoint', () => {
 			expect(names()![TARGET]!.stringValue).toBe('新しい名前')
 		})
 
+		it('skips an over-long name rather than writing an unreadable trip doc', async () => {
+			// The client parses the WHOLE trip through TripDocSchema, whose
+			// formerMemberNames values cap at 100. One oversized entry makes the
+			// entire doc fail to parse — the trip disappears from the user's
+			// list. The owner self-bootstrap rule had no length limit, so this
+			// was reachable. Losing the name is the acceptable outcome; losing
+			// the trip is not, and neither is failing the removal.
+			txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({ memberIds: [OWNER_UID, TARGET] }))
+			txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`, memberReadDoc(OWNER_UID, 'owner'))
+			txGetResponses.set(
+				`trips/${TRIP_ID}/members/${TARGET}`,
+				memberReadDoc(TARGET, 'editor', { displayName: 'あ'.repeat(101) }),
+			)
+
+			const result = await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
+
+			expect(result).toEqual({ ok: true })   // removal still succeeds
+			expect(tripWrite()!.updateMask).toEqual(['memberIds'])
+			expect(names()).toBeUndefined()
+		})
+
+		it('accepts a name exactly at the cap', async () => {
+			const atCap = 'あ'.repeat(100)
+			txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({ memberIds: [OWNER_UID, TARGET] }))
+			txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`, memberReadDoc(OWNER_UID, 'owner'))
+			txGetResponses.set(
+				`trips/${TRIP_ID}/members/${TARGET}`,
+				memberReadDoc(TARGET, 'editor', { displayName: atCap }),
+			)
+
+			await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
+
+			expect(names()![TARGET]!.stringValue).toBe(atCap)
+		})
+
+		it('treats a whitespace-only name as no name', async () => {
+			// TripDocSchema requires min(1); '   ' would pass a naive length
+			// check and then read as an empty label in the UI.
+			txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({ memberIds: [OWNER_UID, TARGET] }))
+			txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`, memberReadDoc(OWNER_UID, 'owner'))
+			txGetResponses.set(
+				`trips/${TRIP_ID}/members/${TARGET}`,
+				memberReadDoc(TARGET, 'editor', { displayName: '   ' }),
+			)
+
+			await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
+
+			expect(tripWrite()!.updateMask).toEqual(['memberIds'])
+			expect(names()).toBeUndefined()
+		})
+
 		it('records nothing when the member doc carries no name', async () => {
 			txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({ memberIds: [OWNER_UID, TARGET] }))
 			txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`, memberReadDoc(OWNER_UID, 'owner'))

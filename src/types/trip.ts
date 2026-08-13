@@ -193,7 +193,10 @@ export interface Member {
 export const MemberDocSchema = z.object({
   tripId:      z.string(),
   userId:      z.string(),
-  displayName: z.string().min(1),
+  // 100 是這個名字的全域上限:invite-redeem 的 Worker schema、rules 的
+  // owner bootstrap、以及 trip doc 的 formerMemberNames 值都用同一個數字。
+  // 任何一邊放寬,離開時複製過去的名字就會讓整份 trip doc 解析失敗。
+  displayName: z.string().min(1).max(100),
   avatarUrl:   z.string().optional(),
   role:        z.enum(['owner', 'editor', 'viewer']),
   joinedAt:    TimestampSchema,

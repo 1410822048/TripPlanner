@@ -33,7 +33,7 @@ type Props = Parameters<typeof SettlementSummary>[0]
 // Suggestion is B→A 5,000; the receiver (toId) is A (u1).
 function base(over: Partial<Props> = {}): Props {
   return {
-    expenses: [mkExpense()], members: MEMBERS, settlements: [],
+    expenses: [mkExpense()], members: MEMBERS, settlements: [], formerMemberNames: {},
     currency: 'JPY', uid: null, isOwner: false,
     onRecordSettlement: vi.fn(), onDeleteSettlement: vi.fn(),
     ...over,

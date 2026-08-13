@@ -608,6 +608,34 @@ describe('expandWithGhosts', () => {
     expect(r[3]!.isGhost).toBe(true)
     expect(r[4]!.isGhost).toBe(true)
   })
+
+  it('names ghosts from the departed-member table', () => {
+    const expenses = [mkExpense('gone', 500, [['m1', 250], ['gone', 250]])]
+    const r = expandWithGhosts(MEMBERS, expenses, [], { gone: '抜けた人' })
+    expect(r.find(m => m.id === 'gone')!.displayName).toBe('抜けた人')
+  })
+
+  it('covers a member who only appears in item allocations', () => {
+    // A fully-discounted item leaves its assignee with no split at all, so
+    // walking splits alone misses them — yet the item row still lists their
+    // allocation, which would then render as a bare uid.
+    //
+    // Modelled the way it can actually be persisted: ExpenseItemSchema
+    // requires `amountMinor` to be a POSITIVE integer, so the item carries
+    // its real price and an ITEM-scope adjustment cancels it. A zero-amount
+    // item would be a doc shape the write path rejects.
+    const e = mkExpense('m1', 500, [['m1', 500]])
+    e.items = [{
+      id: 'i1', name: 'クーポン対象', amountMinor: 300,
+      allocations: [{ memberId: 'gone', shares: 1 }],
+    }]
+    e.adjustments = [{
+      id: 'adj1', label: '全額割引', kind: 'COUPON',
+      scope: 'ITEM', amountMinor: 300, targetItemId: 'i1',
+    }]
+    const r = expandWithGhosts(MEMBERS, [e], [], { gone: '抜けた人' })
+    expect(r.find(m => m.id === 'gone')?.displayName).toBe('抜けた人')
+  })
 })
 
 describe('ghostMember', () => {
@@ -618,6 +646,30 @@ describe('ghostMember', () => {
     expect(typeof g.avatarLabel).toBe('string')
     expect(typeof g.color).toBe('string')
     expect(typeof g.bg).toBe('string')
+  })
+
+  it('falls back to a uid-tagged label so two departed members stay distinct', () => {
+    const a = ghostMember('aaaa1111')
+    const b = ghostMember('bbbb2222')
+    expect(a.displayName).not.toBe(b.displayName)
+    expect(a.displayName).toContain('aaaa')
+  })
+
+  it('prefers the recorded name when there is one', () => {
+    expect(ghostMember('aaaa1111', '田中').displayName).toBe('田中')
+  })
+})
+
+// The settlement overview is the OTHER place ghosts are minted (inside
+// computeBalancesFull, not expandWithGhosts). It needs the same table or a
+// departed member shows as anonymous there even though the name was saved.
+describe('computeBalancesFull ghost naming', () => {
+  it('names ghost participants from the departed-member table', () => {
+    const expenses = [mkExpense('gone', 600, [['m1', 300], ['gone', 300]])]
+    const { participants } = computeBalancesFull(expenses, MEMBERS, [], { gone: '抜けた人' })
+    const ghost = participants.find(p => p.id === 'gone')!
+    expect(ghost.isGhost).toBe(true)
+    expect(ghost.displayName).toBe('抜けた人')
   })
 })
 

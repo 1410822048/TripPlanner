@@ -189,6 +189,13 @@ export function expandWithGhosts(
   for (const e of expenses) {
     ensure(e.paidBy)
     for (const s of e.splits) ensure(s.memberId)
+    // Allocations too, not just splits: an item discounted to zero produces
+    // no split for its assignees, so a departed member could be visibly
+    // listed on the item yet missing from this roster — and would then
+    // render as a raw uid in the very view that names everyone else.
+    for (const item of e.items ?? []) {
+      for (const a of item.allocations) ensure(a.memberId)
+    }
   }
   for (const s of settlements) {
     ensure(s.fromUid)
@@ -256,6 +263,10 @@ export function computeBalancesFull(
   expensesRaw: Expense[],
   members:     TripMember[],
   settlementsRaw: SettlementRecord[] = [],
+  /** uid → 離開當下的顯示名稱(trip doc 的 `formerMemberNames`)。這裡是
+   *  結算總覽唯一會生出 ghost 的地方,漏傳的話畫面上就會退回匿名字樣 —— 即使
+   *  離開時名字有成功保存下來。 */
+  formerNames: Readonly<Record<string, string>> = {},
 ): BalanceResult {
   // Filter out malformed docs at the trust boundary. Worker write-path
   // validation prevents these in normal flow, but a doc from before
@@ -293,7 +304,7 @@ export function computeBalancesFull(
     if (known.has(id)) return
     known.add(id)
     order.push(id)
-    ghosts.push(ghostMember(id))
+    ghosts.push(ghostMember(id, formerNames[id]))
   }
 
   // 代墊 = 你代墊給整組的金額;分擔 = 你的那份。Settlement 是 payment

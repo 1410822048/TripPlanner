@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { memberToTripMember, membersToTripMembers } from './utils'
+import { memberToTripMember, membersToTripMembers, normalizeMemberDisplayName } from './utils'
 import { MOCK_TIMESTAMP as TS } from '@/mocks/utils'
 import type { Member } from '@/types'
 
@@ -53,5 +53,48 @@ describe('membersToTripMembers', () => {
     expect(r).toHaveLength(2)
     expect(r[0]!.id).toBe('a')
     expect(r[1]!.id).toBe('b')
+  })
+})
+
+// The member-create rule rejects an empty name and anything over 100, and
+// that rejection fails the WHOLE atomic batch (trip + owner member) — the
+// user just sees a 403 on "create trip". This runs before the write on both
+// creation paths, so the rule is never the thing that discovers the problem.
+describe('normalizeMemberDisplayName', () => {
+  it('falls back for null, undefined and whitespace-only', () => {
+    // `??` would let '' and '   ' through; Firebase Auth can return either.
+    expect(normalizeMemberDisplayName(null)).toBe('Me')
+    expect(normalizeMemberDisplayName(undefined)).toBe('Me')
+    expect(normalizeMemberDisplayName('')).toBe('Me')
+    expect(normalizeMemberDisplayName('   ')).toBe('Me')
+  })
+
+  it('trims but otherwise leaves a normal name alone', () => {
+    expect(normalizeMemberDisplayName('  田中太郎  ')).toBe('田中太郎')
+  })
+
+  it('passes a name exactly at the cap through untouched', () => {
+    const atCap = 'あ'.repeat(100)
+    expect(normalizeMemberDisplayName(atCap)).toBe(atCap)
+  })
+
+  it('truncates by code point so an emoji is never split', () => {
+    // 99 BMP chars + one astral emoji = 101 UTF-16 units. slice(0, 100)
+    // would keep the emoji's high surrogate alone, and Firestore persists
+    // that lone half as U+FFFD — silent corruption, not a visible failure.
+    const name = 'あ'.repeat(99) + '👍'
+    expect(name.length).toBe(101)
+    const out = normalizeMemberDisplayName(name)
+    expect(out.length).toBeLessThanOrEqual(100)
+    // Exact equality is the whole assertion: the emoji is dropped as a unit,
+    // so no half of it can have survived. A separate "no unpaired surrogate"
+    // regex would be strictly weaker than this and only add a place to get
+    // the escape sequence wrong.
+    expect(out).toBe('あ'.repeat(99))
+  })
+
+  it('keeps a whole emoji when it fits', () => {
+    const name = '👍'.repeat(50)          // exactly 100 units
+    expect(normalizeMemberDisplayName(name)).toBe(name)
   })
 })

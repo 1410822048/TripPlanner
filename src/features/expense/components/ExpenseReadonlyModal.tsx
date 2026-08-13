@@ -117,7 +117,12 @@ export default function ExpenseReadonlyModal({
       <FormField label="付款人">
         <div className="flex items-center gap-2 rounded-input border border-border bg-app px-3 py-2">
           {payer && <MemberAvatar member={payer} size={28} />}
-          <span className="text-[13px] font-semibold text-ink">{payer?.displayName ?? expense.paidBy}</span>
+          <span
+            title={payer?.displayName ?? expense.paidBy}
+            className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink"
+          >
+            {payer?.displayName ?? expense.paidBy}
+          </span>
         </div>
       </FormField>
 

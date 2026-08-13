@@ -8,6 +8,7 @@ import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { toLocalMidnightTimestamp } from '@/utils/dates'
 import { captureError } from '@/services/sentry'
+import { normalizeMemberDisplayName } from '@/features/members/utils'
 import { subscribeToCollection } from '@/services/realtimeQuery'
 import { CreateTripSchema, UpdateTripSchema, TripDocSchema, type CreateTripInput, type UpdateTripInput, type Trip } from '@/types/trip'
 
@@ -218,7 +219,7 @@ export async function createTrip(input: CreateTripInput, user: User): Promise<Tr
   const memberPayload: Record<string, unknown> = {
     tripId:      tripRef.id,
     userId:      user.uid,
-    displayName: user.displayName ?? 'Me',
+    displayName: normalizeMemberDisplayName(user.displayName),
     role:        'owner',
     joinedAt:    serverTimestamp(),
     memberIds,

@@ -1760,6 +1760,36 @@ describe('fresh trip — immediate listener attach (post-batch-commit)', () => {
     await assertSucceeds(getDocs(filtered('members')))                                           // useMembers
   })
 
+  test('owner bootstrap rejects an over-long or empty displayName', async () => {
+    // This was the one uncapped way a name could enter a member doc — the
+    // Worker's invite-redeem already caps at 100. It matters beyond tidiness:
+    // the member-strip cascade copies displayName onto trip.formerMemberNames,
+    // where TripDocSchema caps the value at 100, so an oversized name would
+    // make the ENTIRE trip doc unparseable for every client.
+    async function bootstrapWith(displayName: string, tripId: string) {
+      const db = asOwner(env).firestore()
+      const batch = writeBatch(db)
+      batch.set(doc(db, 'trips', tripId), {
+        title: 'Fresh', destination: 'Tokyo', ownerId: OWNER_UID, memberIds: [OWNER_UID],
+        currency: 'JPY', defaultCountryCode: 'JP',
+        startDate: serverTimestamp(), endDate: serverTimestamp(),
+        wishVotingDeadlineAt: null, wishVotingDeadlineNotifiedAt: null,
+        createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+      })
+      batch.set(doc(db, 'trips', tripId, 'members', OWNER_UID), {
+        tripId, userId: OWNER_UID, displayName, role: 'owner',
+        memberIds: [OWNER_UID], joinedAt: serverTimestamp(),
+      })
+      return batch.commit()
+    }
+
+    await assertFails(bootstrapWith('あ'.repeat(101), 'name-too-long'))
+    await assertFails(bootstrapWith('', 'name-empty'))
+    // Allow path: exactly at the cap must still work, or the boundary is off
+    // by one in the other direction.
+    await assertSucceeds(bootstrapWith('あ'.repeat(100), 'name-at-cap'))
+  })
+
   test('stranger CANNOT bootstrap an owner-role member doc against an existing trip (BOLA)', async () => {
     // The vulnerability we're guarding: pre-fix, the bootstrap
     // branch only checked the new member doc's shape (memberId ==

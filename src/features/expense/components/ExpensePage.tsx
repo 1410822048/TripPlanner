@@ -348,6 +348,7 @@ export default function ExpensePage() {
         expenses={allExpenses}
         members={members}
         settlements={settlements}
+        formerMemberNames={formerMemberNames}
         currency={currency}
         uid={uid ?? null}
         isOwner={isOwner}

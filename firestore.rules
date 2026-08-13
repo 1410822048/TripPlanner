@@ -436,6 +436,13 @@ service cloud.firestore {
           && request.resource.data.userId == uid()
           && request.resource.data.role == 'owner'
           && request.resource.data.memberIds == [uid()]
+          // Same 100-char cap the Worker's invite-redeem enforces. This was
+          // the one uncapped way a name could enter a member doc, and the
+          // member-strip copies it onto the trip doc, where an oversized
+          // value makes the whole trip unparseable for every client.
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() > 0
+          && request.resource.data.displayName.size() <= 100
           // BOLA fix: bind this owner-bootstrap member doc to the
           // SAME-BATCH trip create. Without these two gates a
           // stranger who knows any existing tripId can `setDoc`

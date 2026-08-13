@@ -24,6 +24,7 @@ import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { addDays, diffDays, toLocalDateString, toLocalMidnightTimestamp } from '@/utils/dates'
 import { auditCreate } from '@/utils/audit'
+import { normalizeMemberDisplayName } from '@/features/members/utils'
 import type { Trip } from '@/types'
 
 export interface CopyTripInput {
@@ -112,7 +113,7 @@ export async function copyTrip(
   const memberPayload: Record<string, unknown> = {
     tripId:      tripRef.id,
     userId:      user.uid,
-    displayName: user.displayName ?? 'Me',
+    displayName: normalizeMemberDisplayName(user.displayName),
     role:        'owner',
     joinedAt:    serverTimestamp(),
     memberIds,

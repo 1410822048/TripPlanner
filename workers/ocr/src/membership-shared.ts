@@ -151,6 +151,33 @@ export function encodeMemberIds(uids: string[]): FsValue {
  *  (otherwise they'd be pushed about their own action — the member doc carries
  *  no updatedBy for admin writes, so the actor is otherwise unknowable). Not
  *  read by rules or any Worker path. */
+/** Max length of a stored former-member name. Must match `TripDocSchema`'s
+ *  `formerMemberNames` value cap in src/types/trip.ts — this Worker uses the
+ *  Admin SDK, so nothing else checks it. */
+const FORMER_NAME_MAX = 100
+
+/**
+ * Gate a member's `displayName` before it is copied into the trip doc.
+ *
+ * The client reads the whole trip through `TripDocSchema`, so ONE oversized
+ * or empty entry here makes the entire trip doc fail to parse — the trip
+ * vanishes from the user's list and the failure surfaces as a Sentry parse
+ * error, far from its cause. Both write paths now cap the name (invite-redeem
+ * here, owner self-bootstrap in firestore.rules), but this Worker uses the
+ * Admin SDK and bypasses rules entirely — so a doc written before those caps
+ * landed, or by any future admin path, still reaches this line unchecked.
+ *
+ * Returns undefined for anything unusable: the departure then proceeds with
+ * no recorded name and the UI falls back to the anonymous ghost label.
+ * Losing a name is a display regression; blocking the removal, or writing a
+ * doc nobody can read, is worse.
+ */
+function sanitizeFormerName(raw: string | undefined): string | undefined {
+  const trimmed = raw?.trim()
+  if (!trimmed) return undefined
+  return trimmed.length <= FORMER_NAME_MAX ? trimmed : undefined
+}
+
 export function buildMemberStripWrites(
   projectId:   string,
   tripId:      string,
@@ -179,7 +206,9 @@ export function buildMemberStripWrites(
   // settled expenses. Capture it now or the settlement view can never name
   // them again. No name when the doc is already gone (a retry after a partial
   // removal) — leave the entry absent rather than inventing one.
-  const departingName = target.exists ? readString(target.fields, 'displayName') : undefined
+  const departingName = target.exists
+    ? sanitizeFormerName(readString(target.fields, 'displayName'))
+    : undefined
 
   if (stripsRoster || departingName !== undefined) {
     const tripFields:  Record<string, FsValue> = {}

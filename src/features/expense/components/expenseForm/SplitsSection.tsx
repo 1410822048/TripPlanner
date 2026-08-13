@@ -81,7 +81,16 @@ export default function SplitsSection({
                 ].join(' ')}
               >
                 <MemberAvatar member={m} size={28} />
-                <span className="flex-1 text-[13px] text-ink font-medium">{m.displayName}</span>
+                {/* min-w-0 is load-bearing: a flex item defaults to
+                    min-width:auto, so a long name grows to its intrinsic
+                    width and pushes the amount input / checkbox out of the
+                    row instead of clipping. */}
+                <span
+                  title={m.displayName}
+                  className="min-w-0 flex-1 truncate text-[13px] text-ink font-medium"
+                >
+                  {m.displayName}
+                </span>
 
                 {mode === 'equal' ? (
                   <>

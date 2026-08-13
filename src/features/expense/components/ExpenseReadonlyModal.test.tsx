@@ -157,9 +157,10 @@ describe('ExpenseReadonlyModal', () => {
     })
 
     it('keeps a departed member’s allocation visible instead of dropping it', () => {
-      // 'zz' is absent from `members` — ExpensePage hands this modal the LIVE
-      // roster only, so a members.filter() implementation would silently lose
-      // this allocation and under-report who the discount reached.
+      // 'zz' is absent from `members`. ExpensePage now ghost-expands the
+      // roster before passing it, but this component must not DEPEND on that:
+      // a members.filter() implementation would silently drop the allocation
+      // for any caller that doesn't, under-reporting who the discount reached.
       renderWithAdjustment({
         allocations: [{ memberId: 'b', shares: 1 }, { memberId: 'zz', shares: 1 }],
       })

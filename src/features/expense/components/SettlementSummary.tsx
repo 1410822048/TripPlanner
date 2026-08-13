@@ -16,6 +16,12 @@ interface Props {
   expenses:    Expense[]
   members:     TripMember[]
   settlements: SettlementRecord[]
+  /** uid → 離開當下的姓名。ghost 是在 computeBalancesFull 裡生出來的,
+   *  所以名稱必須一路傳到那裡,否則這個畫面會顯示匿名字樣。
+   *
+   *  刻意「必填」而非帶預設值:漏傳不會壞畫面、只會靜靜退回匿名字樣,
+   *  那種缺陷沒人會回報。讓編譯器擋住是唯一可靠的保證。 */
+  formerMemberNames: Readonly<Record<string, string>>
   /** ISO currency code of the trip — used to format amounts inline. */
   currency: string
   /** Current user uid — must equal `toUid` for the「済み」button to
@@ -39,7 +45,7 @@ interface Props {
 }
 
 export default function SettlementSummary({
-  expenses, members, settlements, currency, uid, isOwner,
+  expenses, members, settlements, formerMemberNames, currency, uid, isOwner,
   onRecordSettlement, onDeleteSettlement,
 }: Props) {
   // computeBalancesFull also returns `participants` (members + ghosts
@@ -48,7 +54,7 @@ export default function SettlementSummary({
   // `pairwise` is the same normalized debt-edge map the suggestion
   // engine walks — one row per real pair debt, matching what the Worker
   // validation reads to gate `amount <= remaining`.
-  const { balances, orphans, participants, pairwise, gross, applied } = computeBalancesFull(expenses, members, settlements)
+  const { balances, orphans, participants, pairwise, gross, applied } = computeBalancesFull(expenses, members, settlements, formerMemberNames)
   // Domain-enriched suggestions: each carries an optional `settledContext`
   // (應清算 / 已清算 / 還差) for a partially-cleared pair. The "is the
   // breakdown mathematically explicable" decision lives in the service.
@@ -112,7 +118,10 @@ export default function SettlementSummary({
                 ].join(' ')}>
                   <MemberAvatar member={m} size={28} />
                   <div className="flex-1 min-w-0">
-                    <div className="text-[12.5px] text-ink font-semibold leading-tight">
+                    <div
+                      title={m.displayName}
+                      className="truncate text-[12.5px] text-ink font-semibold leading-tight"
+                    >
                       {m.displayName}
                     </div>
                     <div className="text-[10px] text-muted tabular-nums mt-px">

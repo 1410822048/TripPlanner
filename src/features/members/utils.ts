@@ -38,6 +38,38 @@ function firstGrapheme(s: string): string {
   return cp ? String.fromCodePoint(cp) : (trimmed[0] ?? '?')
 }
 
+/** Hard cap on a member's stored displayName. Mirrored in three places that
+ *  must not drift: `MemberDocSchema`, the owner-bootstrap rule in
+ *  firestore.rules, and the Worker's invite-redeem schema. The member-strip
+ *  copies this name onto `trip.formerMemberNames`, whose value cap is the
+ *  same number — a longer name there makes the whole trip doc unparseable. */
+const MEMBER_NAME_MAX = 100
+
+/**
+ * Normalize a Firebase Auth displayName into something the member-create
+ * rule will accept.
+ *
+ * Two failure modes it exists to prevent, both of which reject the ENTIRE
+ * atomic batch (trip + owner member doc) and surface as an opaque 403:
+ *
+ *   - empty / whitespace-only — `??` does not catch `''`, and Auth can hand
+ *     one back.
+ *   - over the cap — truncation is by CODE POINT, not `slice()`. Slicing at
+ *     a UTF-16 boundary splits an emoji's surrogate pair and Firestore
+ *     persists the lone half as U+FFFD, silently corrupting the name.
+ */
+export function normalizeMemberDisplayName(raw: string | null | undefined): string {
+  const source = raw?.trim()
+  if (!source) return 'Me'
+  if (source.length <= MEMBER_NAME_MAX) return source
+  let out = ''
+  for (const ch of source) {
+    if (out.length + ch.length > MEMBER_NAME_MAX) break
+    out += ch
+  }
+  return out || 'Me'
+}
+
 export function memberToTripMember(m: Member): TripMember {
   // CHIP_PALETTE is a non-empty constant, so modulo always yields a valid slot.
   const { color, bg } = CHIP_PALETTE[hashId(m.id) % CHIP_PALETTE.length]!
