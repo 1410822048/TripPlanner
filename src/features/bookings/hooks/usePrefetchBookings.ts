@@ -65,7 +65,9 @@ export function usePrefetchBookings(): void {
     let scheduled = false
     let delayId: number | undefined
     let idleId: number | undefined
-    const earliestStartAt = Date.now() + PREFETCH_DELAY_MS
+    // performance.now()(單調):effect 範圍內的延遲窗,時鐘回撥不該把
+    // prefetch 往後推一整段回撥量
+    const earliestStartAt = performance.now() + PREFETCH_DELAY_MS
 
     const isAuthorized = () => {
       const trips = qc.getQueryData<Trip[]>(tripKeys.mine(uid))
@@ -120,7 +122,7 @@ export function usePrefetchBookings(): void {
         } else {
           runWarm()
         }
-      }, Math.max(0, earliestStartAt - Date.now()))
+      }, Math.max(0, earliestStartAt - performance.now()))
     }
 
     // QueryCache notification is only an in-memory wake-up signal; it does not

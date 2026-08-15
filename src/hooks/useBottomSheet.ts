@@ -99,7 +99,9 @@ export function useBottomSheet({
   function onPointerDown(e: React.PointerEvent) {
     if (!dismissible) return
     drag.current.startY    = e.clientY
-    drag.current.startTime = Date.now()
+    // performance.now():拖曳中若遇時鐘回撥,Date.now() 差值會被 clamp 成
+    // 1ms,算出巨大 velocity 而誤觸 dismiss(sheet 內是表單,草稿會沒了)
+    drag.current.startTime = performance.now()
     setDragActive(true)
     // 拖曳開始時量測 sheet 實際高度（動態依內容變化）
     if (sheetRef.current) {
@@ -133,7 +135,7 @@ export function useBottomSheet({
     // Read live position from ref — React state from the last render may lag
     // by 1 frame, making fast-flick velocity checks unreliable.
     const currentY  = dragYRef.current
-    const elapsed   = Math.max(1, Date.now() - drag.current.startTime)
+    const elapsed   = Math.max(1, performance.now() - drag.current.startTime)
     const velocity  = currentY / elapsed                    // px/ms
     const threshold = sheetHeight * dismissRatio
     const shouldClose = currentY > threshold || velocity > DISMISS_VELOCITY

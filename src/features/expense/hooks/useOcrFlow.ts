@@ -134,7 +134,7 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
   useEffect(() => {
     if (!loading) return
     const id = window.setInterval(() => {
-      setElapsedMs(Date.now() - startedAtRef.current)
+      setElapsedMs(performance.now() - startedAtRef.current)
     }, 100)
     return () => window.clearInterval(id)
   }, [loading])
@@ -158,7 +158,7 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
     const ac = new AbortController()
     abortRef.current = ac
     setLastFile(file)
-    startedAtRef.current = Date.now()
+    startedAtRef.current = performance.now()
     setElapsedMs(0)
     setLoading(true)
     setError(null)
@@ -170,11 +170,11 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
       // Freeze elapsedMs at the actual completion time — the interval
       // tick may have lagged a beat behind, and we want the final
       // duration shown briefly (handy when debugging "why was it slow").
-      setElapsedMs(Date.now() - startedAtRef.current)
+      setElapsedMs(performance.now() - startedAtRef.current)
       onSuccess(result)
     } catch (e) {
       if (seq !== requestSeqRef.current) return
-      setElapsedMs(Date.now() - startedAtRef.current)
+      setElapsedMs(performance.now() - startedAtRef.current)
       setError(e instanceof OcrError ? ocrErrorCopy(e) : (e as Error).message)
     } finally {
       // Only the latest request controls the spinner — a superseded run must
@@ -194,7 +194,7 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
     abortRef.current?.abort()           // cancel any prior in-flight OCR
     const ac = new AbortController()
     abortRef.current = ac
-    startedAtRef.current = Date.now()
+    startedAtRef.current = performance.now()
     setElapsedMs(0)
     setLoading(true)
     setError(null)
@@ -210,7 +210,7 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
       // receipt path may be UNCHANGED, so isStillApplicable below can't catch
       // this; only the seq can.
       if (seq !== requestSeqRef.current) return
-      setElapsedMs(Date.now() - startedAtRef.current)
+      setElapsedMs(performance.now() - startedAtRef.current)
       if (!opts.isStillApplicable(sourceReceiptPath, expenseUpdatedAt)) {
         // The receipt was swapped, or the expense was edited elsewhere,
         // while the request was in flight — applying would write OCR for a
@@ -221,7 +221,7 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
       onSuccess(result)
     } catch (e) {
       if (seq !== requestSeqRef.current) return
-      setElapsedMs(Date.now() - startedAtRef.current)
+      setElapsedMs(performance.now() - startedAtRef.current)
       setError(e instanceof OcrError ? ocrErrorCopy(e) : (e as Error).message)
     } finally {
       if (seq === requestSeqRef.current) setLoading(false)
