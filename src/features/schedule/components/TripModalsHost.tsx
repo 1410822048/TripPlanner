@@ -94,7 +94,7 @@ export default function TripModalsHost({ state }: Props) {
           editTarget={selectedTrip}
           scheduleDates={schedules.map(s => s.date)}
           onClose={() => setEditTripOpen(false)}
-          onSave={data => { saveTrip(data); setEditTripOpen(false) }}
+          onSave={data => { if (saveTrip(data)) setEditTripOpen(false) }}
         />
       )}
 

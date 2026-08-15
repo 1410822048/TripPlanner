@@ -17,6 +17,7 @@ import BottomSheet from '@/components/ui/BottomSheet'
 import LoadingText from '@/components/ui/LoadingText'
 import { useAuth } from '@/hooks/useAuth'
 import { useInvites, useCreateInvite, useRevokeInvite } from './useInvites'
+import { getClientWriteBlockReason } from '@/services/clientCompatibility'
 import { formatInviteExpiry } from './inviteService'
 import { buildInviteUrl } from './inviteUrl'
 import { toast } from '@/shared/toast'
@@ -49,7 +50,18 @@ export default function InviteModal({ isOpen, onClose, trip }: Props) {
   const currentInvite: Invite | undefined = (invitesQ.data ?? [])
     .find(i => i.expiresAt.toMillis() > now)
 
+  // Hiding the invite entry point can't reach a sheet that is already open
+  // when the epoch flips, and the global MutationCache deliberately swallows
+  // UpdateRequiredError — without this preflight the buttons would silently
+  // do nothing.
+  function blockedByStaleBundle(): boolean {
+    const reason = getClientWriteBlockReason()
+    if (reason) toast.error(reason)
+    return reason !== null
+  }
+
   async function handleGenerate() {
+    if (blockedByStaleBundle()) return
     if (state.status !== 'signed-in') {
       toast.error('需要登入')
       return
@@ -77,6 +89,7 @@ export default function InviteModal({ isOpen, onClose, trip }: Props) {
   }
 
   async function handleRevoke(invite: Invite) {
+    if (blockedByStaleBundle()) return
     try {
       await revokeMut.mutateAsync(invite.id)
       toast.success('已撤銷')

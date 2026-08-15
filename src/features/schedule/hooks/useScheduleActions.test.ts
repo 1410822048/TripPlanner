@@ -23,6 +23,11 @@ const toastMocks = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn(), info: v
 vi.mock('@/shared/toast', () => ({ toast: toastMocks }))
 vi.mock('@/utils/devFailures', () => ({ simulateFailureMaybe: async () => {} }))
 
+const compatibility = vi.hoisted(() => ({ writeBlockReason: null as string | null }))
+vi.mock('@/services/clientCompatibility', () => ({
+  getClientWriteBlockReason: () => compatibility.writeBlockReason,
+}))
+
 import { useScheduleActions } from './useScheduleActions'
 
 const input = (over: Partial<CreateScheduleInput> = {}): CreateScheduleInput => ({
@@ -63,6 +68,7 @@ function render(opts: {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  compatibility.writeBlockReason = null
 })
 
 describe('useScheduleActions save', () => {
@@ -157,5 +163,19 @@ describe('useScheduleActions delete', () => {
 
     expect(mutationMocks.remove).not.toHaveBeenCalled()
     expect(modal.close).toHaveBeenCalled()
+  })
+
+  it('surfaces the stale-bundle reason in the modal banner instead of deleting', async () => {
+    // A sheet open when the epoch flips still fires this handler, and the
+    // global toast deliberately skips UpdateRequiredError — the banner is
+    // the only feedback the user gets.
+    compatibility.writeBlockReason = '請先更新 App 才能儲存'
+    const { hook, modal } = render({ modal: makeModal(schedule({ id: 'a' })) })
+
+    await act(async () => { await hook.result.current.onScheduleDelete() })
+
+    expect(mutationMocks.remove).not.toHaveBeenCalled()
+    expect(modal.setError).toHaveBeenCalledWith('請先更新 App 才能儲存')
+    expect(modal.close).not.toHaveBeenCalled()
   })
 })

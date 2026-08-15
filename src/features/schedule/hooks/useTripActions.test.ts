@@ -22,6 +22,11 @@ vi.mock('@/features/trips/hooks/useTrips', () => ({
 const toastMocks = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn(), info: vi.fn() }))
 vi.mock('@/shared/toast', () => ({ toast: toastMocks }))
 
+const compatibility = vi.hoisted(() => ({ writeBlockReason: null as string | null }))
+vi.mock('@/services/clientCompatibility', () => ({
+  getClientWriteBlockReason: () => compatibility.writeBlockReason,
+}))
+
 import { useTripActions } from './useTripActions'
 
 const ts = (iso: string) => ({ toDate: () => new Date(`${iso}T00:00:00`) })
@@ -71,9 +76,21 @@ function render(over: Partial<Parameters<typeof useTripActions>[0]> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  compatibility.writeBlockReason = null
 })
 
 describe('useTripActions delete', () => {
+  it('rejects an obsolete bundle before changing the selected trip', () => {
+    compatibility.writeBlockReason = '請先更新 App 才能儲存'
+    const { hook, setSelectedTripId } = render()
+
+    act(() => hook.result.current.deleteTrip('a'))
+
+    expect(setSelectedTripId).not.toHaveBeenCalled()
+    expect(mutationMocks.remove).not.toHaveBeenCalled()
+    expect(toastMocks.error).toHaveBeenCalledWith('請先更新 App 才能儲存')
+  })
+
   it('switches off the doomed trip before the mutation runs', () => {
     const { hook, setSelectedTripId } = render()
 
@@ -93,6 +110,20 @@ describe('useTripActions delete', () => {
     act(() => mutationMocks.remove.mock.calls[0]![1].onError())
 
     expect(setSelectedTripId).toHaveBeenLastCalledWith('a')
+  })
+
+  it('never discards the chosen day, on any delete outcome', () => {
+    const { hook, resetActiveDate } = render()
+
+    // The day derivation already falls back when activeDate falls outside the
+    // selected trip. Resetting up front dropped the day on every failure, and
+    // resetting in onSuccess let a late callback wipe a day the user picked
+    // after switching trips — so neither path touches it.
+    act(() => hook.result.current.deleteTrip('a'))
+    act(() => mutationMocks.remove.mock.calls[0]![1].onError())
+    act(() => mutationMocks.remove.mock.calls[0]![1].onSuccess())
+
+    expect(resetActiveDate).not.toHaveBeenCalled()
   })
 
   it('leaves the selection alone when deleting some other trip', () => {
@@ -125,14 +156,39 @@ describe('useTripActions leave', () => {
 
     expect(setSelectedTripId).toHaveBeenLastCalledWith('a')
   })
+
+  it('never discards the chosen day, on any leave outcome', () => {
+    const { hook, resetActiveDate } = render()
+
+    act(() => hook.result.current.onLeaveTrip())
+    act(() => mutationMocks.leave.mock.calls[0]![1].onError())
+    act(() => mutationMocks.leave.mock.calls[0]![1].onSuccess())
+
+    expect(resetActiveDate).not.toHaveBeenCalled()
+  })
 })
 
 describe('useTripActions save', () => {
+  it('returns false and preserves the form when the bundle is obsolete', () => {
+    compatibility.writeBlockReason = '請先更新 App 才能儲存'
+    const { hook, resetActiveDate } = render()
+    let accepted = true
+
+    act(() => { accepted = hook.result.current.saveTrip(item('a', { title: 'Draft' })) })
+
+    expect(accepted).toBe(false)
+    expect(resetActiveDate).not.toHaveBeenCalled()
+    expect(mutationMocks.update).not.toHaveBeenCalled()
+    expect(toastMocks.error).toHaveBeenCalledWith('請先更新 App 才能儲存')
+  })
+
   it('sends only the fields that actually changed', () => {
     const { hook } = render()
+    let accepted = false
 
-    act(() => hook.result.current.saveTrip(item('a', { title: 'Renamed' })))
+    act(() => { accepted = hook.result.current.saveTrip(item('a', { title: 'Renamed' })) })
 
+    expect(accepted).toBe(true)
     expect(mutationMocks.update).toHaveBeenCalledWith({
       tripId: 'a', updates: { title: 'Renamed' },
     })
@@ -166,6 +222,19 @@ describe('useTripActions reorder', () => {
 })
 
 describe('useTripActions copy', () => {
+  it('keeps the copy sheet open when the bundle becomes obsolete', async () => {
+    compatibility.writeBlockReason = '請先更新 App 才能儲存'
+    const { hook, closeCopyTrip } = render()
+
+    await act(async () => {
+      await hook.result.current.onCopyTrip({ copySchedules: true } as never)
+    })
+
+    expect(mutationMocks.copy).not.toHaveBeenCalled()
+    expect(closeCopyTrip).not.toHaveBeenCalled()
+    expect(toastMocks.error).toHaveBeenCalledWith('請先更新 App 才能儲存')
+  })
+
   it('copies from the snapshot and closes the modal on success', async () => {
     mutationMocks.copy.mockResolvedValueOnce({
       trip: trip('c'), copiedSchedules: 2, copiedPlanItems: 0, orphanedSchedules: 0,

@@ -10,7 +10,6 @@ import { expandWithGhosts } from '../services/settlement'
 import { useMembers } from '@/features/members/hooks/useMembers'
 import { membersToTripMembers } from '@/features/members/utils'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
-import { useIsTripOwner } from '@/features/trips/hooks/useTripRole'
 import { useSwipeOpen } from '@/hooks/useSwipeOpen'
 import { MOCK_EXPENSES } from '../mocks'
 import { toast } from '@/shared/toast'
@@ -43,9 +42,12 @@ type ExpenseOverlay =
   | null
 
 export default function ExpensePage() {
-  const { ctx, uid, cloudTripId, mutationTripId, isDemo, canWrite, modal, signIn } =
+  // `isOwner` is pure identity here on purpose: it drives the settlement-lock
+  // override and the readonly redirect below, and a mid-edit flip would
+  // unmount the open form. Write affordances use `canOwnerWrite`.
+  const { ctx, uid, cloudTripId, mutationTripId, isDemo, canWrite, roleCanWrite, isOwner, canOwnerWrite, modal, signIn } =
     useFeatureListPage<Expense>()
-  const swipe    = useSwipeOpen()
+  const swipe    = useSwipeOpen(canWrite)
   const currency = useTripCurrency()
   const symbol   = currencySymbol(currency)
 
@@ -53,7 +55,6 @@ export default function ExpensePage() {
   const { data: fbMembers } = useMembers(cloudTripId)
   const { data: fbSettlements } = useSettlements(cloudTripId)
   const settlements = ctx.status === 'cloud' ? (fbSettlements ?? []) : []
-  const isOwner = useIsTripOwner(cloudTripId, isDemo)
   const createSettlementMut = useCreateSettlement(mutationTripId)
   const deleteSettlementMut = useDeleteSettlement(mutationTripId)
   // Settlement record sheet state. Non-null when the receiver tapped
@@ -200,13 +201,16 @@ export default function ExpensePage() {
     // Snapshot editTarget before modal.close() in case the close handler
     // clears it synchronously (closures can stale if we read after close).
     const editing = modal.editTarget
-    if (editing && !isOwner && lockedExpenseIds.has(editing.id)) {
-      toast.error('只有擁有者可以編輯已清算的費用')
-      return
-    }
+    // Epoch first: `canWrite` folds in write compatibility while `isOwner`
+    // deliberately stays pure identity. Check the snapshot before ownership
+    // wording so a blocked owner is told their app is out of date.
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) {
       modal.setError(writeBlockReason)
+      return
+    }
+    if (editing && !isOwner && lockedExpenseIds.has(editing.id)) {
+      toast.error('只有擁有者可以編輯已清算的費用')
       return
     }
     modal.close()
@@ -272,6 +276,10 @@ export default function ExpensePage() {
   async function handleSwipeDelete(e: Expense) {
     swipe.closeAll()
     if (isDemo) { signIn.open(); return }
+    // Epoch first — a dispatched gesture can still land after the flip, and
+    // the global toast deliberately skips UpdateRequiredError.
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) { toast.error(writeBlockReason); return }
     if (!isOwner && lockedExpenseIds.has(e.id)) {
       toast.error('只有擁有者可以編輯已清算的費用')
       return
@@ -359,7 +367,7 @@ export default function ExpensePage() {
         formerMemberNames={formerMemberNames}
         currency={currency}
         uid={uid ?? null}
-        isOwner={isOwner}
+        canDeleteAnySettlement={canOwnerWrite}
         onRecordSettlement={suggestion => {
           if (isDemo) { signIn.open(); return }
           if (!uid) { toast.error('正在準備登入，請稍候'); return }
@@ -376,6 +384,10 @@ export default function ExpensePage() {
         onDeleteSettlement={id => {
           if (isDemo) { signIn.open(); return }
           if (!uid) { toast.error('正在準備登入，請稍候'); return }
+          // Visible to whoever recorded the settlement, so no owner gate hides
+          // it — without this the tap would silently do nothing.
+          const writeBlockReason = getClientWriteBlockReason()
+          if (writeBlockReason) { toast.error(writeBlockReason); return }
           deleteSettlementMut.mutate({ settlementId: id })
         }}
       />
@@ -385,7 +397,7 @@ export default function ExpensePage() {
         {isLoading && !isDemo ? (
           <ExpenseListSkeleton />
         ) : expenses.length === 0 ? (
-          <ExpenseListEmpty canWrite={canWrite} onAdd={modal.openAdd} />
+          <ExpenseListEmpty canWrite={canWrite} roleCanWrite={roleCanWrite} onAdd={modal.openAdd} />
         ) : (
           <ExpenseDateGroups
             expenses={expenses}

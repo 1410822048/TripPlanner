@@ -31,7 +31,7 @@ function renderHistory(over: Partial<HistoryProps> = {}) {
   render(
     <SettlementHistory
       expenses={[]} settlements={[rec('s1')]} memberById={memberById}
-      currency="JPY" uid={null} isOwner={false}
+      currency="JPY" uid={null} canDeleteAnySettlement={false}
       totalOrphanMinor={0} orphanByReason={{}} orphanById={new Map()}
       onDelete={onDelete}
       {...over}
@@ -45,7 +45,7 @@ const DELETE = { name: '刪除清算紀錄' }
 describe('SettlementHistory — fold', () => {
   it('shows only the most recent 3 rows, expanding to all on tap', () => {
     const settlements = [1, 2, 3, 4, 5].map(n => rec(`s${n}`, { amountMinor: n * 1000 }))
-    renderHistory({ settlements, isOwner: true, uid: 'x' })
+    renderHistory({ settlements, canDeleteAnySettlement: true, uid: 'x' })
     expect(screen.getAllByRole('button', DELETE)).toHaveLength(3)
 
     fireEvent.click(screen.getByRole('button', { name: /顯示其他 2 筆/ }))
@@ -54,7 +54,7 @@ describe('SettlementHistory — fold', () => {
   })
 
   it('shows no fold control at or below the visible threshold', () => {
-    renderHistory({ settlements: [rec('s1'), rec('s2'), rec('s3')], isOwner: true, uid: 'x' })
+    renderHistory({ settlements: [rec('s1'), rec('s2'), rec('s3')], canDeleteAnySettlement: true, uid: 'x' })
     expect(screen.queryByRole('button', { name: /件を表示/ })).toBeNull()
   })
 })
@@ -74,22 +74,22 @@ describe('SettlementHistory — orphan banner', () => {
 
 describe('SettlementHistory — delete gate + wiring', () => {
   it('hides delete for a viewer who is neither recorder nor owner', () => {
-    renderHistory({ settlements: [rec('s1', { settledBy: 'u2' })], uid: 'u9', isOwner: false })
+    renderHistory({ settlements: [rec('s1', { settledBy: 'u2' })], uid: 'u9', canDeleteAnySettlement: false })
     expect(screen.queryByRole('button', DELETE)).toBeNull()
   })
 
   it('shows delete for the recorder, and for the owner of any record', () => {
-    renderHistory({ settlements: [rec('s1', { settledBy: 'u2' })], uid: 'u2', isOwner: false })
+    renderHistory({ settlements: [rec('s1', { settledBy: 'u2' })], uid: 'u2', canDeleteAnySettlement: false })
     expect(screen.getByRole('button', DELETE)).toBeTruthy()
 
-    renderHistory({ settlements: [rec('s1', { settledBy: 'u2' })], uid: 'u9', isOwner: true })
+    renderHistory({ settlements: [rec('s1', { settledBy: 'u2' })], uid: 'u9', canDeleteAnySettlement: true })
     expect(screen.getAllByRole('button', DELETE).length).toBeGreaterThan(0)
   })
 
   it('threads the per-row orphan classification and bubbles the record id on delete', () => {
     const onDelete = vi.fn()
     renderHistory({
-      settlements: [rec('s1', { settledBy: 'u2' })], uid: 'u2', isOwner: false, onDelete,
+      settlements: [rec('s1', { settledBy: 'u2' })], uid: 'u2', canDeleteAnySettlement: false, onDelete,
       orphanById: new Map([['s1', { fromUserId: 'u1', toUserId: 'u2', amountMinor: 5000, settlementId: 's1', reason: 'OVERPAYMENT' }]]),
     })
     expect(screen.getByTitle(ORPHAN_REASON_COPY.OVERPAYMENT).getAttribute('aria-label')).toContain('多付')
@@ -100,7 +100,7 @@ describe('SettlementHistory — delete gate + wiring', () => {
   })
 
   it('skips a row whose member is missing from memberById', () => {
-    renderHistory({ settlements: [rec('s1', { fromUid: 'ghost' })], isOwner: true, uid: 'x' })
+    renderHistory({ settlements: [rec('s1', { fromUid: 'ghost' })], canDeleteAnySettlement: true, uid: 'x' })
     expect(screen.queryByRole('button', DELETE)).toBeNull()
   })
 })

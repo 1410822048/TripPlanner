@@ -40,17 +40,28 @@ export interface UseSwipeOpenResult<TId extends string = string> {
   closeAll: () => void
 }
 
-export function useSwipeOpen<TId extends string = string>(): UseSwipeOpenResult<TId> {
+export function useSwipeOpen<TId extends string = string>(enabled = true): UseSwipeOpenResult<TId> {
   const [swipedId, setSwipedId] = useState<TId | null>(null)
+
+  // A capability can disappear while a row is already open (role listener,
+  // Schema Epoch, etc.). Clear the parent-owned latch in the same render so
+  // restoring the capability later cannot resurrect a stale destructive UI.
+  // This is React's compare-previous-prop pattern, not an effect-driven state
+  // sync, so children never commit one frame with an obsolete open row.
+  const [prevEnabled, setPrevEnabled] = useState(enabled)
+  if (enabled !== prevEnabled) {
+    setPrevEnabled(enabled)
+    if (!enabled && swipedId !== null) setSwipedId(null)
+  }
 
   // Compiler memoises these — no manual useCallback needed.
   const closeAll = () => setSwipedId(null)
 
   const bindRow = (id: TId): RowBindings => ({
-    isOpen:  swipedId === id,
-    onOpen:  () => setSwipedId(id),
+    isOpen:  enabled && swipedId === id,
+    onOpen:  () => { if (enabled) setSwipedId(id) },
     onClose: () => setSwipedId(prev => prev === id ? null : prev),
   })
 
-  return { swipedId, bindRow, closeAll }
+  return { swipedId: enabled ? swipedId : null, bindRow, closeAll }
 }

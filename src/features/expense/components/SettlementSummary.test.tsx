@@ -34,7 +34,7 @@ type Props = Parameters<typeof SettlementSummary>[0]
 function base(over: Partial<Props> = {}): Props {
   return {
     expenses: [mkExpense()], members: MEMBERS, settlements: [], formerMemberNames: {},
-    currency: 'JPY', uid: null, isOwner: false,
+    currency: 'JPY', uid: null, canDeleteAnySettlement: false,
     onRecordSettlement: vi.fn(), onDeleteSettlement: vi.fn(),
     ...over,
   }

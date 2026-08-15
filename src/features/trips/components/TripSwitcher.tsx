@@ -61,6 +61,9 @@ interface TripSwitcherProps {
    * for demo mode (no real ownership concept).
    */
   isOwner?:      boolean
+  /** App-wide write capability (Schema Epoch). Role identity remains
+   *  separate so read-only member management stays reachable. */
+  writeEnabled?: boolean
 }
 
 export default function TripSwitcher({
@@ -68,6 +71,7 @@ export default function TripSwitcher({
   onScanInvite,
   canDeleteLast = false,
   isOwner = true,
+  writeEnabled = true,
 }: TripSwitcherProps) {
   const [open, setOpen] = useState(false)
   const [editMode, setEditMode] = useState(false)
@@ -75,7 +79,7 @@ export default function TripSwitcher({
   // hides edit chrome — otherwise lingering trash icons could delete the
   // last trip (canDelete still true under canDeleteLast).
   const editVisible = editMode && trips.length > 1
-  const swipe = useSwipeOpen()
+  const swipe = useSwipeOpen(writeEnabled)
 
   const [draggingId, setDraggingId] = useState<string | null>(null)
   // dragY lives in a ref + CSS variable so the per-pointermove update
@@ -292,7 +296,7 @@ export default function TripSwitcher({
                     // without the red delete background. The
                     // count-based guard still applies on top so the
                     // demo last-trip stays undeletable.
-                    canDelete={trip.ownedByMe && (trips.length > 1 || canDeleteLast)}
+                    canDelete={writeEnabled && trip.ownedByMe && (trips.length > 1 || canDeleteLast)}
                     canReorder={trips.length > 1}
                     isDragging={draggingId === trip.id}
                     shiftY={computeShift(trip.id)}
@@ -306,17 +310,19 @@ export default function TripSwitcher({
                 ))}
               </div>
 
-              <button
-                onClick={() => {
-                  if (onCreateTrip) onCreateTrip()
-                  else toast.info('新增旅程功能尚在開發中')
-                  closeDropdown()
-                }}
-                className="mb-1.5 h-10 w-full rounded-xl border-[1.5px] border-dashed border-border bg-transparent text-muted text-[12.5px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer tracking-[0.04em] transition-all hover:bg-pick-pale hover:border-pick hover:text-pick"
-              >
-                <Plus size={14} strokeWidth={2.5} />
-                新旅程
-              </button>
+              {writeEnabled && (
+                <button
+                  onClick={() => {
+                    if (onCreateTrip) onCreateTrip()
+                    else toast.info('新增旅程功能尚在開發中')
+                    closeDropdown()
+                  }}
+                  className="mb-1.5 h-10 w-full rounded-xl border-[1.5px] border-dashed border-border bg-transparent text-muted text-[12.5px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer tracking-[0.04em] transition-all hover:bg-pick-pale hover:border-pick hover:text-pick"
+                >
+                  <Plus size={14} strokeWidth={2.5} />
+                  新旅程
+                </button>
+              )}
             </div>
 
             <div className="mx-3 my-1 border-t border-dashed border-border" />
@@ -328,7 +334,7 @@ export default function TripSwitcher({
                   管理
                 </span>
               </div>
-              {onScanInvite && (
+              {writeEnabled && onScanInvite && (
                 <button
                   onClick={() => {
                     onScanInvite()
@@ -354,42 +360,44 @@ export default function TripSwitcher({
                   </div>
                 </button>
               )}
-              {MENU_ACTIONS.filter(a => isOwner || !a.ownerOnly).map(({ key, icon: Icon, label, sub, danger }) => (
-                <button
-                  key={key}
-                  onClick={() => { onAction(key); closeDropdown() }}
-                  className={[
-                    'w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl border-none bg-transparent cursor-pointer text-left transition-colors',
-                    danger ? 'hover:bg-danger-pale' : 'hover:bg-app',
-                  ].join(' ')}
-                >
-                  <div className={[
-                    'w-[34px] h-[34px] rounded-input shrink-0 flex items-center justify-center',
-                    danger ? 'bg-danger-pale' : 'bg-tile',
-                  ].join(' ')}>
-                    <Icon
-                      size={17}
-                      strokeWidth={2.2}
-                      className={danger ? 'text-danger' : 'text-pick'}
-                      aria-hidden="true"
-                    />
-                  </div>
-                  <div className="flex-1 min-w-0">
+              {MENU_ACTIONS
+                .filter(a => (isOwner || !a.ownerOnly) && (writeEnabled || a.key === 'members'))
+                .map(({ key, icon: Icon, label, sub, danger }) => (
+                  <button
+                    key={key}
+                    onClick={() => { onAction(key); closeDropdown() }}
+                    className={[
+                      'w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl border-none bg-transparent cursor-pointer text-left transition-colors',
+                      danger ? 'hover:bg-danger-pale' : 'hover:bg-app',
+                    ].join(' ')}
+                  >
                     <div className={[
-                      'text-[13px] font-semibold',
-                      danger ? 'text-[#A04040]' : 'text-ink',
+                      'w-[34px] h-[34px] rounded-input shrink-0 flex items-center justify-center',
+                      danger ? 'bg-danger-pale' : 'bg-tile',
                     ].join(' ')}>
-                      {label}
+                      <Icon
+                        size={17}
+                        strokeWidth={2.2}
+                        className={danger ? 'text-danger' : 'text-pick'}
+                        aria-hidden="true"
+                      />
                     </div>
-                    <div className={[
-                      'text-[10.5px] mt-px',
-                      danger ? 'text-[#C07070]' : 'text-muted',
-                    ].join(' ')}>
-                      {sub}
+                    <div className="flex-1 min-w-0">
+                      <div className={[
+                        'text-[13px] font-semibold',
+                        danger ? 'text-[#A04040]' : 'text-ink',
+                      ].join(' ')}>
+                        {label}
+                      </div>
+                      <div className={[
+                        'text-[10.5px] mt-px',
+                        danger ? 'text-[#C07070]' : 'text-muted',
+                      ].join(' ')}>
+                        {sub}
+                      </div>
                     </div>
-                  </div>
-                </button>
-              ))}
+                  </button>
+                ))}
             </div>
           </div>
         </>

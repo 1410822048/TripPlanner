@@ -38,6 +38,18 @@ vi.mock('@/services/workerBase', () => ({
   WorkerRejected,
 }))
 
+const compatibility = vi.hoisted(() => ({ blocked: false }))
+vi.mock('@/services/clientCompatibility', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/services/clientCompatibility')>()
+  return {
+    ...actual,
+    assertClientWriteCompatible: () => {
+      if (compatibility.blocked) throw new actual.UpdateRequiredError()
+    },
+  }
+})
+
+import { UpdateRequiredError } from '@/services/clientCompatibility'
 import {
   applyRoutePreview,
   clearRoutePlaceSearchCache,
@@ -358,5 +370,35 @@ describe('requestRoutePreview', () => {
       .mockResolvedValueOnce({ status: 'not_found', revision: 'r'.repeat(16) })
 
     await expect(applyRoutePreview('trip-1', previewResponse)).rejects.toBe(ambiguous)
+  })
+})
+
+describe('applyRoutePreview schema-epoch guard', () => {
+  beforeEach(() => {
+    workerFetch.mockReset()
+    preflightIdToken.mockReset()
+  })
+
+  afterEach(() => {
+    compatibility.blocked = false
+  })
+
+  it('refuses a stale-open apply before any network work happens', async () => {
+    // The preview modal can outlive an epoch flip: hidden affordances only
+    // affect renders AFTER the flip, and this write path never passes the
+    // global MutationCache guard. The service is the choke point.
+    compatibility.blocked = true
+
+    await expect(applyRoutePreview('trip-1', previewResponse))
+      .rejects.toMatchObject({ name: 'UpdateRequiredError' })
+    expect(preflightIdToken).not.toHaveBeenCalled()
+    expect(workerFetch).not.toHaveBeenCalled()
+  })
+
+  it('words the refusal as an update requirement, never as a re-preview hint', () => {
+    // The generic apply fallback says 「請重新預覽後再試」 — a lie here, since
+    // no amount of re-previewing unblocks an obsolete bundle.
+    expect(routeErrorMessage(new UpdateRequiredError(), 'apply'))
+      .toBe('請先更新 App 才能儲存')
   })
 })

@@ -18,7 +18,10 @@ interface Props {
   now:            number
   votingClosed:   boolean
   deadlineLocked: boolean
-  isOwner:        boolean
+  /** Capability, not identity: the caller folds trip ownership with Schema
+   *  Epoch compatibility (`canOwnerWrite`), so a blocked owner loses the
+   *  set-deadline affordance. Never hang ownership copy off this. */
+  canSetDeadline: boolean
   /** True while a setWishVotingDeadline mutation is in flight. Blocks
    *  reopening the sheet — WishDeadlineSheet closes synchronously on save
    *  (optimistic-close, mirrors the rest of this page), so without this
@@ -44,7 +47,7 @@ function formatDeadline(deadlineAt: Timestamp): string {
 }
 
 export default function WishVotingDeadlineBar({
-  deadlineAt, now, votingClosed, deadlineLocked, isOwner, isSaving, onOpenSheet,
+  deadlineAt, now, votingClosed, deadlineLocked, canSetDeadline, isSaving, onOpenSheet,
 }: Props) {
   if (votingClosed) {
     return (
@@ -56,7 +59,7 @@ export default function WishVotingDeadlineBar({
   }
 
   if (!deadlineAt) {
-    if (!isOwner) return null
+    if (!canSetDeadline) return null
     return (
       <div className="shrink-0 px-4 pb-2">
         <button
@@ -72,7 +75,7 @@ export default function WishVotingDeadlineBar({
     )
   }
 
-  const clickable = isOwner && !deadlineLocked && !isSaving
+  const clickable = canSetDeadline && !deadlineLocked && !isSaving
 
   return (
     <div className="shrink-0 mx-4 mb-2">

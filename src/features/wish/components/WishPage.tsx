@@ -40,7 +40,7 @@ import { useSetWishVotingDeadline } from '@/features/trips/hooks/useTrips'
 import { getClientWriteBlockReason } from '@/services/clientCompatibility'
 
 export default function WishPage() {
-  const { ctx, uid, cloudTripId, mutationTripId, isDemo, isOwner, modal, signIn } =
+  const { ctx, uid, cloudTripId, mutationTripId, isDemo, isOwner, canOwnerWrite, writeCompatible, modal, signIn } =
     useFeatureListPage<Wish>()
   const [activeTab, setActiveTab] = useState<WishCategory>('place')
   const [detailWishId, setDetailWishId] = useState<string | null>(null)
@@ -183,6 +183,10 @@ export default function WishPage() {
     if (votingClosed) { toast.error('投票已截止'); return }
     if (isDemo) { signIn.open(); return }
     if (!uid)   { toast.error('正在準備登入，請稍候'); return }
+    // Votes are isMember-gated, so no role check hides this button; without a
+    // toast the tap would silently do nothing on a blocked client.
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) { toast.error(writeBlockReason); return }
     voteMut.mutate({
       wishId:   w.id,
       uid,
@@ -196,6 +200,9 @@ export default function WishPage() {
    *  delete. Drives the ⋮ menu's 削除 item visibility. */
   function canDelete(w: Wish): boolean {
     if (votingClosed || isDemo || !uid) return false
+    // Proposers reach this without any owner gate, so compatibility has to be
+    // checked here rather than riding in on `canOwnerWrite`.
+    if (!writeCompatible) return false
     return w.proposedBy === uid || isOwner
   }
 
@@ -212,6 +219,10 @@ export default function WishPage() {
   function handleDeleteFromMenu(w: Wish) {
     if (votingClosed) { toast.error('投票已截止'); return }
     if (isDemo) { signIn.open(); return }
+    // Hiding the menu item only affects renders after the flip; a menu already
+    // on screen can still submit.
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) { toast.error(writeBlockReason); return }
     deleteMut.mutate({ wishId: w.id })
   }
 
@@ -263,7 +274,7 @@ export default function WishPage() {
           now={now}
           votingClosed={votingClosed}
           deadlineLocked={deadlineLocked}
-          isOwner={isOwner}
+          canSetDeadline={canOwnerWrite}
           isSaving={setDeadlineMut.isPending}
           onOpenSheet={() => setDeadlineSheetOpen(true)}
         />

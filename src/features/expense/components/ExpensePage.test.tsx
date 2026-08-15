@@ -12,6 +12,7 @@ const harness = vi.hoisted(() => ({
   uid: 'u1',
   canWrite: true,
   isOwner: false,
+  canOwnerWrite: false,
   currency: 'JPY',
   openAdd: vi.fn(),
   openEdit: vi.fn(),
@@ -68,6 +69,8 @@ vi.mock('@/hooks/useFeatureListPage', () => ({
     isDemo: false,
     canWrite: harness.canWrite,
     isOwner: harness.isOwner,
+    canOwnerWrite: harness.canOwnerWrite,
+    writeCompatible: harness.writeBlockReason === null,
     modal: {
       isOpen: harness.modalIsOpen,
       key: 'closed',
@@ -133,18 +136,29 @@ vi.mock('@/services/clientCompatibility', () => ({
   getClientWriteBlockReason: () => harness.writeBlockReason,
 }))
 
+const toastMocks = vi.hoisted(() => ({
+  error: vi.fn(), success: vi.fn(), info: vi.fn(), mutationError: vi.fn(),
+}))
+vi.mock('@/shared/toast', () => ({ toast: toastMocks }))
+
 vi.mock('./SettlementSummary', () => ({
-  // Exposes the suggestion callback so a test can open the record sheet;
-  // the real component's own behaviour is covered in its own spec.
-  default: ({ onRecordSettlement }: {
+  // Exposes the suggestion + delete callbacks so a test can drive the record
+  // sheet and the delete path; the real component has its own spec.
+  default: ({ onRecordSettlement, onDeleteSettlement }: {
     onRecordSettlement: (s: { fromUid: string; toUid: string; amountMinor: number }) => void
+    onDeleteSettlement: (id: string) => void
   }) => (
-    <button
-      type="button"
-      onClick={() => onRecordSettlement({ fromUid: 'u2', toUid: 'u1', amountMinor: 600 })}
-    >
-      record-settlement
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={() => onRecordSettlement({ fromUid: 'u2', toUid: 'u1', amountMinor: 600 })}
+      >
+        record-settlement
+      </button>
+      <button type="button" onClick={() => onDeleteSettlement('settlement-1')}>
+        delete-settlement
+      </button>
+    </>
   ),
 }))
 vi.mock('./SettlementRecordSheet', () => ({
@@ -228,6 +242,7 @@ beforeEach(() => {
   harness.uid = 'u1'
   harness.canWrite = true
   harness.isOwner = false
+  harness.canOwnerWrite = false
   harness.currency = 'JPY'
   harness.openAdd.mockReset()
   harness.openEdit.mockReset()
@@ -244,6 +259,8 @@ beforeEach(() => {
   harness.modalIsOpen = false
   harness.modalEditTarget = null
   harness.writeBlockReason = null
+  toastMocks.error.mockReset()
+  toastMocks.success.mockReset()
 })
 
 describe('ExpensePage read-first expense flow', () => {
@@ -330,6 +347,35 @@ describe('ExpensePage read-first expense flow', () => {
     expect(within(detail).getByText('已清算')).toBeTruthy()
     expect(screen.queryByRole('button', { name: '編輯' })).toBeNull()
     expect(harness.closeModal).not.toHaveBeenCalled()
+  })
+
+  it('keeps an owner editing a locked expense when the bundle goes out of date', () => {
+    const locked = receiptExpense({ settlementLockIds: ['settlement-1'] })
+    harness.expenses = [locked]
+    harness.modalIsOpen = true
+    harness.modalEditTarget = locked
+    harness.canWrite = false                 // write gates closed by the epoch
+    harness.canOwnerWrite = false
+    harness.isOwner = true                   // ownership identity is untouched
+    harness.writeBlockReason = '請先更新 App 才能儲存'
+
+    render(<ExpensePage />)
+
+    // Folding compatibility into `isOwner` would flip the readonly redirect
+    // above and unmount this form mid-edit, discarding the user's draft.
+    expect(screen.getByRole('dialog', { name: 'expense-edit' })).toBeTruthy()
+    expect(screen.queryByRole('dialog', { name: '費用詳情' })).toBeNull()
+  })
+
+  it('explains the stale bundle instead of silently dropping a settlement delete', () => {
+    harness.writeBlockReason = '請先更新 App 才能儲存'
+
+    render(<ExpensePage />)
+    fireEvent.click(screen.getByRole('button', { name: 'delete-settlement' }))
+
+    // Visible to whoever recorded it, so no owner gate hides the button.
+    expect(harness.deleteSettlement).not.toHaveBeenCalled()
+    expect(toastMocks.error).toHaveBeenCalledWith('請先更新 App 才能儲存')
   })
 
   it('lists a departed split member in the edit form so the save cannot silently drop their share', () => {

@@ -252,10 +252,17 @@ global MutationCache.onMutate:同步檢查 Schema Epoch(只讀 memory snapshot,�
 
 - `public/compatibility.json` 是同源、`Cache-Control: no-store` 的 operational manifest：`{ revision, minimumWriteEpoch }`；不進 Workbox precache / runtime cache。
 - `CLIENT_SCHEMA_EPOCH` 編進 bundle。`revision` 必須單調增加；較新的 revision 可降低 `minimumWriteEpoch`,供緊急 rollback。
-- boot / visibility / online / bfcache pageshow / 3 分鐘 visible timer 背景 refresh；single-flight,成功結果存 memory + localStorage 並用 storage event 跨 tab 同步。
+- boot / visibility / online / bfcache pageshow / 3 分鐘 visible timer 背景 refresh；single-flight,成功結果存 memory + localStorage 並用 storage event 跨 tab 同步。被動 check 的 30s floor 用 `performance.now()`(單調)—— `Date.now()` 遇時鐘回撥會讓 elapsed 持續為負,把所有被動更新凍結到牆上時間追回為止。CTA(force)撞上 in-flight 被動檢查時**先等它 settle 再發全新 fetch** —— 服務層 single-flight 會把「點擊前就發出」的 request 交回來,它失敗或載到 rollback 前的 manifest 都會讓第一次點擊白按。
 - mutation path **只同步讀 memory snapshot**,禁止 fetch。唯一 fail-closed 狀態是「曾確認 client epoch 低於 minimum」；無成功紀錄、fetch/parse 暫時失敗一律 fail-open,由 Rules / Worker 維持最終安全邊界。
 - global `MutationCache.onMutate` 在任何 local optimistic `onMutate` 前擋下舊 bundle；`UpdateRequiredError` 不進 Sentry / toast,由 root `AppCompatibilityGate` 顯示不可 dismiss 的更新 CTA。
 - optimistic-close page 必須在清空 draft / 關 modal 前呼叫同步 preflight；不相容時保留表單。已經開始的 mutation 不會被中途取消,避免切斷 cascade / upload cleanup。
+- **三個值分開,不要互相折疊**:`isOwner`(純身分)/ `writeCompatible`(純 epoch,`isDemo || !updateRequired`)/ `canOwnerWrite = isOwner && writeCompatible`。`isOwner` **絕不可**折進 epoch —— 它同時驅動結算鎖覆寫與 `ExpensePage` 的 readonly redirect,一旦 manifest 在使用者編輯途中更新就會讓 owner「不再是 owner」,把開著的表單連同草稿一起卸載。`canWrite` 可以折(它沒有身分語義)。
+- `MembersModal` 自己從 `uid === trip.ownerId` 推 `isOwner`,同樣**不可**折 —— 會經由 `!isOwner` 反轉,讓被擋的 owner 冒出「退出旅程」。
+- 訊息順序:`canWrite` 已折入 epoch,所以任何會講「你沒有編輯權限」的分支都要**先**檢查 epoch,否則版本過舊會被說成權限不足。
+- **隱藏 affordance 擋不住 stale-open sheet** —— 隱藏只影響 flip 之後的 render。因此 `saveTrip` / `onLeaveTrip` / MembersModal 三個 confirm / wish 選單刪除 / 結算刪除 / InviteModal 產生與撤銷 / schedule modal 刪除 / expense 與 booking 的 swipe 刪除都各自有同步 preflight(swipe 類是已 dispatch 的手勢仍可能在 flip 後落地)。isMember-class(wish 投票、planning 勾選)沒有任何角色 gate,同理。這些一律 `toast.error(reason)`,沿用該處既有 toast 慣例而非新增 disabled 狀態。
+- 空狀態文案用 `roleCanWrite`(未折 epoch 的角色半邊)分因,且**角色優先**:`canWrite=false` 時先看 `roleCanWrite` —— false 講檢視者文案,true 才講「更新後即可繼續新增」。反過來會對 viewer 承諾更新後可寫(更新完仍是 viewer),對過舊的 editor 謊稱是權限問題。`writeCompatible` 留給無角色概念的入口(建立旅程)。
+- **`activeDate` 以 trip 為鍵**(`{ tripId, date }`)。只做 `dateRange.includes()` 不夠 —— 兩個旅程日期重疊(或複製出來的旅程)時,舊日期仍然合法,刪除 / 退出後會被下一個旅程繼承。改成 keyed 後,任何切換都自動失效,刪除 / 退出因此完全不需要碰 `activeDate`(事前 reset 會在失敗時吃掉選日,放 `onSuccess` 則會被晚到的回呼清掉之後才選的日期)。
+- **`/route-apply` 是唯一不經 useMutation 的 Worker 寫入**,epoch preflight 放在 `applyRoutePreview` service choke point(涵蓋所有 stale-open caller);`routeErrorMessage` 對 `UpdateRequiredError` 回原文案,避免 fallback 成「請重新預覽後再試」這種兌現不了的建議。其他 Worker write 端點全部包在 mutation hooks 內,由全域 guard 涵蓋 —— 新增直接 `workerFetch` 寫入時必須比照。
 - **不走 TanStack 的直接寫入**(`features/account`)採分類豁免,不要一律擋:只有 `usePushNotifications.enable()`(建立完整 token entity)在 `Notification.requestPermission()` 前 preflight;`disable()` / 登出 `revokeStoredPushToken` / 權限撤銷後的清理屬 cleanup,**永遠放行**,否則舊 client 會被困在無法關閉通知的狀態;通知已讀 / 忽略只寫 timestamp 欄位,一併放行。
 - 發版採兩段式：先部署新 epoch client（minimum 仍容許舊版）→ 更新窗口後,提高 manifest minimum 再部署 Pages。Firestore 清空不會清掉裝置上的舊 PWA bundle。
 

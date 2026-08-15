@@ -46,6 +46,7 @@ function renderTimeline(
       dayTotal={0}
       isLoading={false}
       canWrite={false}
+      roleCanWrite={false}
       currency="JPY"
       routeAction={undefined}
       onAdd={vi.fn()}
@@ -243,5 +244,29 @@ describe('DayTimeline', () => {
 
     expect(screen.queryByText('步行估計約 1 分鐘')).toBeNull()
     expect(screen.getByText(/大眾運輸估計/)).toBeTruthy()
+  })
+
+  test('blames the role when a viewer is on an up-to-date bundle', () => {
+    renderTimeline([], { canWrite: false, roleCanWrite: false })
+
+    expect(screen.getByText(/以檢視者身分加入/)).toBeTruthy()
+  })
+
+  test('blames the stale bundle, not the role, when the write epoch blocks an editor', () => {
+    renderTimeline([], { canWrite: false, roleCanWrite: true })
+
+    // canWrite folds in compatibility, so without this second signal an
+    // owner/editor on an obsolete build is told they are merely a viewer.
+    expect(screen.getByText(/此版本已停止寫入/)).toBeTruthy()
+    expect(screen.queryByText(/以檢視者身分加入/)).toBeNull()
+  })
+
+  test('never promises a stale-bundle viewer that updating will let them add', () => {
+    // Both blockers at once: the role wins. 「更新後即可繼續新增」would be a
+    // promise the update cannot deliver — they stay a viewer afterwards.
+    renderTimeline([], { canWrite: false, roleCanWrite: false })
+
+    expect(screen.getByText(/以檢視者身分加入/)).toBeTruthy()
+    expect(screen.queryByText(/此版本已停止寫入/)).toBeNull()
   })
 })

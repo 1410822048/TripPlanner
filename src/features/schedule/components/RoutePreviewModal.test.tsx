@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest'
 import type { Schedule } from '@/types'
 import type { RoutePreview } from '../services/routeOptimizationService'
 import { WorkerRejected } from '@/services/workerBase'
+import { UpdateRequiredError } from '@/services/clientCompatibility'
 
 const { applyRoutePreview, requestRoutePreview, routeErrorMessage } = vi.hoisted(() => ({
   applyRoutePreview: vi.fn(),
@@ -274,6 +275,34 @@ describe('RoutePreviewModal', () => {
     fireEvent.click(retry)
     await waitFor(() => expect(requestRoutePreview).toHaveBeenCalledTimes(2))
     expect(screen.queryByText('行程已變更，請重新產生預覽')).toBeNull()
+  })
+
+  test('surfaces the update requirement when a stale-open modal tries to apply', async () => {
+    // The modal can outlive an epoch flip; the service preflight rejects the
+    // apply. Unlike PREVIEW_STALE this must NOT clear the preview or steer the
+    // user into re-previewing — only updating the app unblocks them.
+    requestRoutePreview.mockResolvedValueOnce(preview())
+    applyRoutePreview.mockRejectedValueOnce(new UpdateRequiredError())
+    routeErrorMessage.mockReturnValue('請先更新 App 才能儲存')
+
+    render(
+      <RoutePreviewModal
+        isOpen
+        tripId="trip-1"
+        date="2026-07-21"
+        schedules={[]}
+        onClose={() => undefined}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: '套用此順序' }))
+
+    expect(await screen.findByText('請先更新 App 才能儲存')).toBeTruthy()
+    expect(routeErrorMessage).toHaveBeenCalledWith(expect.objectContaining({ name: 'UpdateRequiredError' }), 'apply')
+    // Preview retained: the apply button stays live for after the update, and
+    // no 重新檢查 recovery is offered because re-previewing cannot help.
+    expect(screen.getByRole('button', { name: '套用此順序' }).hasAttribute('disabled')).toBe(false)
+    expect(screen.queryByRole('button', { name: '重新檢查' })).toBeNull()
   })
 
   test('locks every dismiss path while an apply transaction is unresolved', async () => {

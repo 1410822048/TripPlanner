@@ -6,8 +6,15 @@ const harness = vi.hoisted(() => ({
   closeModal: vi.fn(),
   setModalError: vi.fn(),
   createWish: vi.fn(),
+  deleteWish: vi.fn(),
+  wishes: [] as Wish[],
   writeBlockReason: null as string | null,
 }))
+
+const toastMocks = vi.hoisted(() => ({
+  error: vi.fn(), success: vi.fn(), info: vi.fn(), mutationError: vi.fn(),
+}))
+vi.mock('@/shared/toast', () => ({ toast: toastMocks }))
 
 vi.mock('@/hooks/useFeatureListPage', () => ({
   useFeatureListPage: () => ({
@@ -25,6 +32,8 @@ vi.mock('@/hooks/useFeatureListPage', () => ({
     mutationTripId: 'trip-1',
     isDemo: false,
     isOwner: false,
+    canOwnerWrite: false,
+    writeCompatible: harness.writeBlockReason === null,
     modal: {
       isOpen: true,
       key: 'new',
@@ -46,10 +55,10 @@ vi.mock('../hooks/useWishes', async () => {
   return {
     wishKeys: { all: (tripId: string, uid?: string) => ['wishes', tripId, uid ?? ''] },
     wishOverlay: createListOverlay({ insert: 'head', source: 'wishes-test' }),
-    useWishes: () => ({ data: [], isLoading: false }),
+    useWishes: () => ({ data: harness.wishes, isLoading: false }),
     useCreateWish: () => ({ mutate: harness.createWish }),
     useUpdateWish: () => ({ mutate: vi.fn() }),
-    useDeleteWish: () => ({ mutate: vi.fn() }),
+    useDeleteWish: () => ({ mutate: harness.deleteWish }),
     useToggleWishVote: () => ({ mutate: vi.fn() }),
   }
 })
@@ -80,7 +89,14 @@ vi.mock('./WishFormModal', () => ({
     </div>
   ),
 }))
-vi.mock('./WishCard', () => ({ default: () => null }))
+vi.mock('./WishCard', () => ({
+  // Surfaces the proposer/owner delete path plus the gate that decides whether
+  // the menu item renders at all.
+  default: ({ canDelete, onDelete }: { canDelete: boolean; onDelete: () => void }) =>
+    canDelete
+      ? <button type="button" onClick={onDelete}>mock wish delete</button>
+      : null,
+}))
 vi.mock('./WishDetailSheet', () => ({ default: () => null }))
 vi.mock('./WishVotingDeadlineBar', () => ({ default: () => null }))
 vi.mock('./WishDeadlineSheet', () => ({ default: () => null }))
@@ -94,11 +110,19 @@ vi.mock('@/features/auth/components/SignInPromptModal', () => ({ default: () => 
 
 import WishPage from './WishPage'
 
+const wish = (over: Partial<Wish> = {}): Wish => ({
+  id: 'w-1', tripId: 'trip-1', category: 'place', title: '淺草',
+  proposedBy: 'u1', votes: [], ...over,
+} as Wish)
+
 beforeEach(() => {
   harness.closeModal.mockReset()
   harness.setModalError.mockReset()
   harness.createWish.mockReset()
+  harness.deleteWish.mockReset()
+  harness.wishes = []
   harness.writeBlockReason = null
+  toastMocks.error.mockReset()
 })
 
 describe('WishPage write compatibility preflight', () => {
@@ -112,5 +136,38 @@ describe('WishPage write compatibility preflight', () => {
     expect(harness.closeModal).not.toHaveBeenCalled()
     expect(harness.createWish).not.toHaveBeenCalled()
     expect(screen.getByRole('dialog', { name: 'wish-form' })).toBeTruthy()
+  })
+
+  it('offers the proposer a delete while the bundle is current', () => {
+    harness.wishes = [wish()]        // proposedBy === the signed-in uid
+
+    render(<WishPage />)
+
+    // Positive control: the hidden-when-blocked case below would otherwise
+    // pass simply because nothing rendered.
+    expect(screen.getByRole('button', { name: 'mock wish delete' })).toBeTruthy()
+  })
+
+  it('withdraws the proposer delete once the bundle is out of date', () => {
+    harness.wishes = [wish()]
+    harness.writeBlockReason = '請先更新 App 才能儲存'
+
+    render(<WishPage />)
+
+    // Proposer delete rides on neither canWrite nor canOwnerWrite, so
+    // compatibility has to be checked in canDelete itself.
+    expect(screen.queryByRole('button', { name: 'mock wish delete' })).toBeNull()
+  })
+
+  it('explains the stale bundle if a menu opened before the flip still submits', () => {
+    harness.wishes = [wish()]
+
+    const view = render(<WishPage />)
+    harness.writeBlockReason = '請先更新 App 才能儲存'
+    fireEvent.click(screen.getByRole('button', { name: 'mock wish delete' }))
+    view.unmount()
+
+    expect(harness.deleteWish).not.toHaveBeenCalled()
+    expect(toastMocks.error).toHaveBeenCalledWith('請先更新 App 才能儲存')
   })
 })

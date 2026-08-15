@@ -15,6 +15,7 @@ import { formatMinorAmount } from '@/utils/money'
 import type { TravelSegmentEstimate } from '../routePlanner'
 import ListEmptyCard from '@/components/ui/ListEmptyCard'
 import GhostAddButton from '@/components/ui/GhostAddButton'
+import { UPDATE_REQUIRED_EMPTY_STATE } from '@/services/clientCompatibility'
 
 interface Props {
   display:    string | undefined        // active 'YYYY-MM-DD'
@@ -25,6 +26,10 @@ interface Props {
    *  see the timeline but no add buttons (mirrors firestore.rules
    *  canWrite gating on the schedules subcollection). */
   canWrite:   boolean
+  /** Role-only half of `canWrite`. Checked FIRST when blocked: a viewer
+   *  stays a viewer after updating the app, so promising "update and you
+   *  can add" would be a lie for them. */
+  roleCanWrite: boolean
   /** ISO currency code of the active trip — passed in (rather than
    *  hooked via useTripCurrency) so the memo comparator below includes
    *  it. Without that the daily total + per-card costs would stay in
@@ -40,7 +45,7 @@ interface Props {
 }
 
 function DayTimeline({
-  display, items, dayTotal, isLoading, canWrite, currency, routeAction, onAdd, onOpenDetails,
+  display, items, dayTotal, isLoading, canWrite, roleCanWrite, currency, routeAction, onAdd, onOpenDetails,
 }: Props) {
   return (
     <div className="mx-5 mt-5">
@@ -97,7 +102,9 @@ function DayTimeline({
           title="這天還沒有行程"
           description={canWrite
             ? '先新增第一個行程吧'
-            : '你目前以檢視者身分加入。只有擁有者和編輯者可以新增行程。'}
+            : roleCanWrite
+              ? UPDATE_REQUIRED_EMPTY_STATE
+              : '你目前以檢視者身分加入。只有擁有者和編輯者可以新增行程。'}
           actions={canWrite ? (
             <button
               type="button"

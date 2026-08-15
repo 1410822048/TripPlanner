@@ -27,9 +27,12 @@ interface Props {
   /** Current user uid — must equal `toUid` for the「済み」button to
    *  enable. Receiver-only mirrors the Worker (settlement-create). */
   uid: string | null
-  /** Trip owner — enables deleting ANY settlement (not just one's own
-   *  records), mirroring the Worker's recorder-or-owner delete gate. */
-  isOwner: boolean
+  /** Capability, not identity: whether the current user may delete ANY
+   *  settlement (not just their own records). The caller folds trip
+   *  ownership with Schema Epoch compatibility (`canOwnerWrite`), so a
+   *  blocked owner loses the affordance; the Worker's recorder-or-owner
+   *  gate stays authoritative. */
+  canDeleteAnySettlement: boolean
   /** Opens the settlement record sheet preseeded with the suggestion the
    *  receiver tapped. The sheet (lives at the page level) does the actual
    *  mutate; this component just bubbles the intent up. Settlement FX
@@ -45,7 +48,7 @@ interface Props {
 }
 
 export default function SettlementSummary({
-  expenses, members, settlements, formerMemberNames, currency, uid, isOwner,
+  expenses, members, settlements, formerMemberNames, currency, uid, canDeleteAnySettlement,
   onRecordSettlement, onDeleteSettlement,
 }: Props) {
   // computeBalancesFull also returns `participants` (members + ghosts
@@ -241,7 +244,7 @@ export default function SettlementSummary({
             memberById={memberById}
             currency={currency}
             uid={uid}
-            isOwner={isOwner}
+            canDeleteAnySettlement={canDeleteAnySettlement}
             totalOrphanMinor={totalOrphanMinor}
             orphanByReason={orphanByReason}
             orphanById={orphanById}

@@ -11,10 +11,12 @@ import type { CreateTripInput, Trip } from '@/types'
 import type { TripItem } from '@/features/trips/types'
 import { toLocalDateString } from '@/utils/dates'
 import { toast } from '@/shared/toast'
+import { getClientWriteBlockReason } from '@/services/clientCompatibility'
 
 export interface TripActions {
   selectTrip:   (item: TripItem) => void
-  saveTrip:     (data: TripItem) => void
+  /** True when the submission was accepted and its modal may close. */
+  saveTrip:     (data: TripItem) => boolean
   deleteTrip:   (deletedId: string) => void
   /** Non-owner self-leave of the current trip (MembersModal footer). */
   onLeaveTrip:  () => void
@@ -69,8 +71,16 @@ export function useTripActions(opts: {
   // Cloud edit: diff against the current trip and only send changed
   // fields — a save with no changes (or only one field changed) should
   // not re-write every column. If nothing changed, skip entirely.
-  const saveTrip = isDemo ? demoSelection.saveTrip : (data: TripItem) => {
-    if (!currentTrip || data.id !== currentTrip.id) return
+  const saveTrip = isDemo ? (data: TripItem) => {
+    demoSelection.saveTrip(data)
+    return true
+  } : (data: TripItem) => {
+    if (!currentTrip || data.id !== currentTrip.id) return false
+    // The menu entry is already hidden on an out-of-date bundle, but a sheet
+    // opened before the flip can still submit — and the global toast stays
+    // silent for this rejection, so say it here.
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) { toast.error(writeBlockReason); return false }
     const updates: Partial<CreateTripInput> = {}
     if (data.title !== currentTrip.title)       updates.title       = data.title
     if (data.dest  !== currentTrip.destination) updates.destination = data.dest
@@ -83,8 +93,9 @@ export function useTripActions(opts: {
     if (data.defaultCountryCode !== currentTrip.defaultCountryCode)
       updates.defaultCountryCode = data.defaultCountryCode
     resetActiveDate()
-    if (Object.keys(updates).length === 0) return
+    if (Object.keys(updates).length === 0) return true
     updateTripMut.mutate({ tripId: data.id, updates })
+    return true
   }
 
   // Cloud delete: if removing the active trip, swap to the next surviving
@@ -92,13 +103,23 @@ export function useTripActions(opts: {
   // renders against a trip whose schedules/members are vanishing under
   // it. On mutation failure we restore the previous selection so the
   // user isn't left on a different trip than the cache shows.
+  //
+  // No resetActiveDate at all: the day derivation already falls back to the
+  // first day whenever activeDate sits outside the selected trip's range, so
+  // resetting bought nothing. Doing it up front dropped the user's chosen day
+  // on every failure; doing it in onSuccess instead let a late callback wipe
+  // whatever day they had picked in the meantime.
   const deleteTrip = isDemo ? demoSelection.deleteTrip : (deletedId: string) => {
+    // TripSwitcher hides this affordance on an obsolete bundle, but an
+    // already-dispatched gesture can still arrive. Refuse it before changing
+    // selection so the global mutation guard cannot produce a silent flash.
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) { toast.error(writeBlockReason); return }
     const wasCurrent = currentTrip?.id === deletedId
     const restoreId  = currentTrip?.id
     if (wasCurrent) {
       const remaining = (myTrips ?? []).filter(t => t.id !== deletedId)
       setSelectedTripId(remaining[0]?.id ?? null)
-      resetActiveDate()
     }
     deleteTripMut.mutate(deletedId, {
       onSuccess: () => toast.success('已刪除旅程'),
@@ -117,11 +138,16 @@ export function useTripActions(opts: {
   function onLeaveTrip() {
     const leavingId = currentTrip?.id
     if (!leavingId) return
+    // Guard before the side effects below: a confirm sheet opened before the
+    // epoch flipped can still reach here, and the rejection is toast-free.
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) { toast.error(writeBlockReason); return }
     closeMembers()
     const remaining = (myTrips ?? []).filter(t => t.id !== leavingId)
     setSelectedTripId(remaining[0]?.id ?? null)
-    resetActiveDate()
     leaveTripMut.mutate(leavingId, {
+      // Same as deleteTrip: no activeDate reset, so neither a failure nor a
+      // late callback can discard the day the user is looking at.
       onSuccess: () => toast.success('已退出旅程'),
       onError:   () => setSelectedTripId(leavingId),
     })
@@ -150,6 +176,8 @@ export function useTripActions(opts: {
     // us (rare but possible). The snapshot is what the modal is showing,
     // so use the same value for the mutation.
     if (!copyTripSource || !uid || authState.status !== 'signed-in') return
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) { toast.error(writeBlockReason); return }
     try {
       const { trip, copiedSchedules, copiedPlanItems, orphanedSchedules } =
         await copyTripMut.mutateAsync({ source: copyTripSource, input, user: authState.user })

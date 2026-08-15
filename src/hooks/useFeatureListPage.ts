@@ -19,6 +19,7 @@ import { useUid } from './useAuth'
 import { useTripContext, type TripContext } from './useTripContext'
 import { useFormModal, type UseFormModalResult } from './useFormModal'
 import { useCanWrite, useIsTripOwner } from '@/features/trips/hooks/useTripRole'
+import { useClientCompatibility } from './useClientCompatibility'
 
 interface Identifiable { id: string }
 
@@ -36,12 +37,32 @@ export interface FeatureListPageState<T extends Identifiable> {
   isDemo: boolean
   /** Owner / editor — gates create / update / delete affordances on
    *  schedule / booking / expense pages (mirrors `canWrite` in
-   *  firestore.rules). True in demo (no real ownership concept). */
+   *  firestore.rules). True in demo (no real ownership concept).
+   *  Also folds in `writeCompatible`. */
   canWrite: boolean
-  /** Trip owner — gates owner-only affordances (invite link, trip
-   *  metadata edit). Mirrors `isTripOwner` in firestore.rules. True
-   *  in demo. */
+  /** Role-only half of `canWrite`, with NO epoch folded in. Use it to
+   *  word blocked states: a viewer stays a viewer after updating the
+   *  app, so the role must be blamed before the epoch — otherwise a
+   *  stale-bundle viewer is promised "update and you can add", which
+   *  the update cannot deliver. */
+  roleCanWrite: boolean
+  /** Trip owner — PURE identity, never folded with `writeCompatible`.
+   *  Read it for "is this person the owner" questions: lock overrides,
+   *  readonly-redirect decisions, wording. Folding compatibility in here
+   *  would make an owner stop being an owner mid-edit and tear down the
+   *  form they were typing in. Mirrors `isTripOwner` in firestore.rules.
+   *  True in demo. */
   isOwner: boolean
+  /** `isOwner && writeCompatible` — use for owner-only WRITE affordances
+   *  (invite link, trip metadata edit, settlement delete). */
+  canOwnerWrite: boolean
+  /** False when this bundle's schema epoch is below the deployed
+   *  minimum — every write would be refused by the global mutation
+   *  guard, so write affordances must not be offered. Kept separate
+   *  from the role gates above so a page can still tell "you lack
+   *  permission" apart from "your app is out of date" when wording a
+   *  message. True in demo: demo writes never reach Firestore. */
+  writeCompatible: boolean
   modal: UseFormModalResult<T>
   signIn: {
     isOpen:  boolean
@@ -68,8 +89,15 @@ export function useFeatureListPage<T extends Identifiable>(): FeatureListPageSta
   // each re-derive them (the duplicated `useCanWrite(cloudTripId, isDemo)`
   // / `currentTrip.ownerId === uid` patterns we previously had on every
   // list page).
-  const canWrite = useCanWrite(cloudTripId, isDemo)
-  const isOwner  = useIsTripOwner(cloudTripId, isDemo)
+  const roleCanWrite = useCanWrite(cloudTripId, isDemo)
+  const roleIsOwner  = useIsTripOwner(cloudTripId, isDemo)
+
+  // Schema compatibility is orthogonal to role, so the role hooks stay pure
+  // and the two capabilities are composed here. Demo passes through: those
+  // writes never reach Firestore, and gating them would break the sign-in CTA
+  // that every demo affordance exists to trigger.
+  const { updateRequired } = useClientCompatibility()
+  const writeCompatible = isDemo || !updateRequired
 
   return {
     ctx,
@@ -77,8 +105,11 @@ export function useFeatureListPage<T extends Identifiable>(): FeatureListPageSta
     cloudTripId,
     mutationTripId,
     isDemo,
-    canWrite,
-    isOwner,
+    canWrite: roleCanWrite && writeCompatible,
+    roleCanWrite,
+    isOwner:  roleIsOwner,
+    canOwnerWrite: roleIsOwner && writeCompatible,
+    writeCompatible,
     modal,
     signIn: { isOpen: signInOpen, open: openSignIn, close: closeSignIn },
   }

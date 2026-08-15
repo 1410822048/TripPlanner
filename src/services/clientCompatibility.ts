@@ -11,6 +11,11 @@ const MANIFEST_URL = '/compatibility.json'
 const MAX_MANIFEST_BYTES = 1_024
 const FETCH_TIMEOUT_MS = 5_000
 const UPDATE_REQUIRED_MESSAGE = '請先更新 App 才能儲存'
+/** Empty-state wording for the same condition. Separate from the message
+ *  above because an empty list is explaining why the add button is missing,
+ *  not why a save was refused — and it must not be mistaken for the
+ *  role-based 「你目前以檢視者身分加入」 copy. */
+export const UPDATE_REQUIRED_EMPTY_STATE = '此版本已停止寫入，更新 App 後即可繼續新增。'
 
 export interface CompatibilityManifest {
   revision: number

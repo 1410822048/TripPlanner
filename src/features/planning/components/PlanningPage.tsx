@@ -28,6 +28,7 @@ import type { PlanItem, PlanCategory, CreatePlanItemInput } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import PlanningFormModal from './PlanningFormModal'
 import PlanningRow from './PlanningRow'
+import { getClientWriteBlockReason } from '@/services/clientCompatibility'
 
 type PlanningMember = TripMember & { name: string }
 
@@ -57,7 +58,7 @@ export default function PlanningPage() {
    *  category when modal closes so a global add button still feels
    *  intentional (not "remembered last section"). */
   const [defaultCategory, setDefaultCategory] = useState<PlanCategory>('essentials')
-  const swipe = useSwipeOpen()
+  const swipe = useSwipeOpen(canWrite)
 
   const { data: cloudItems, isLoading } = usePlanning(cloudTripId)
   const { data: cloudMembers } = useMembers(cloudTripId)
@@ -101,6 +102,10 @@ export default function PlanningPage() {
 
   async function handleSave(input: CreatePlanItemInput) {
     if (isDemo) { modal.close(); signIn.open(); return }
+    // Before the role check: canWrite folds in compatibility, so an
+    // out-of-date editor would otherwise be told they lack permission.
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) { modal.setError(writeBlockReason); return }
     if (!canWrite) { toast.error('你沒有編輯權限'); return }
     if (!uid) { toast.error('正在準備登入，請稍候'); return }
     modal.clearError()
@@ -122,6 +127,8 @@ export default function PlanningPage() {
   async function handleDelete() {
     if (!modal.editTarget) return
     if (isDemo) { modal.close(); signIn.open(); return }
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) { modal.setError(writeBlockReason); return }
     if (!canWrite) { toast.error('你沒有刪除權限'); return }
     try {
       await deleteMut.mutateAsync(modal.editTarget.id)
@@ -132,12 +139,20 @@ export default function PlanningPage() {
   function handleToggle(item: PlanItem) {
     if (isDemo) { signIn.open(); return }
     if (!uid)   { toast.error('正在準備登入，請稍候'); return }
+    // The done-checkbox is isMember-gated, so canWrite never hides it; without
+    // a toast the tap would silently do nothing on a blocked client.
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) { toast.error(writeBlockReason); return }
     toggleMut.mutate({ itemId: item.id, uid, done: !isCompletedBy(item, uid) })
   }
 
   async function handleSwipeDelete(item: PlanItem) {
     swipe.closeAll()
     if (isDemo) { signIn.open(); return }
+    // `canWrite` combines role + compatibility. Check the epoch snapshot
+    // first so a stale gesture is not misreported as a permission failure.
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) { toast.error(writeBlockReason); return }
     if (!canWrite) { toast.error('你沒有刪除權限'); return }
     await deleteMut.mutateAsync(item.id).catch(() => {})
   }

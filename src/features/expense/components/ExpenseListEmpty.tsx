@@ -4,13 +4,18 @@
 // "+ button above" hint.
 import { Receipt, Camera } from 'lucide-react'
 import ListEmptyCard from '@/components/ui/ListEmptyCard'
+import { UPDATE_REQUIRED_EMPTY_STATE } from '@/services/clientCompatibility'
 
 interface Props {
   canWrite: boolean
+  /** Role-only half of `canWrite`. Checked FIRST when blocked: a viewer
+   *  stays a viewer after updating the app, so promising "update and you
+   *  can add" would be a lie for them. */
+  roleCanWrite: boolean
   onAdd:    () => void
 }
 
-export default function ExpenseListEmpty({ canWrite, onAdd }: Props) {
+export default function ExpenseListEmpty({ canWrite, roleCanWrite, onAdd }: Props) {
   return (
     <ListEmptyCard
       icon={(
@@ -24,7 +29,9 @@ export default function ExpenseListEmpty({ canWrite, onAdd }: Props) {
           只要拍攝收據，品項、金額與分類都會<br />
           由 AI 自動記錄
         </span>
-      ) : '你目前以檢視者身分加入。只有擁有者和編輯者可以新增費用。'}
+      ) : roleCanWrite
+        ? UPDATE_REQUIRED_EMPTY_STATE
+        : '你目前以檢視者身分加入。只有擁有者和編輯者可以新增費用。'}
       actions={canWrite ? (
         <>
           <button

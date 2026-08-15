@@ -16,6 +16,7 @@ import { useCurrentTrip } from '@/features/trips/hooks/useCurrentTrip'
 import type { CopyTripInput } from '@/features/trips/services/tripCopy'
 import { useTripSelection } from '@/features/trips/hooks/useTripSelection'
 import { useCanWrite, useIsTripOwner } from '@/features/trips/hooks/useTripRole'
+import { useClientCompatibility } from '@/hooks/useClientCompatibility'
 import { useMembers } from '@/features/members/hooks/useMembers'
 import { membersToTripMembers } from '@/features/members/utils'
 import { useTripStore } from '@/store/tripStore'
@@ -51,7 +52,15 @@ export interface SchedulePageState {
   // ─── Mode & guards ────────────────────────────────────────────
   isDemo:   boolean
   canWrite: boolean
+  /** Role-only half of `canWrite` — blame the role before the epoch when
+   *  wording blocked states (a viewer stays a viewer after updating). */
+  roleCanWrite: boolean
+  /** App-wide Schema Epoch capability; true in demo mode. */
+  writeCompatible: boolean
+  /** PURE ownership identity — never folded with schema compatibility. */
   isOwner:  boolean
+  /** `isOwner && writeCompatible` — for owner-only write affordances. */
+  canOwnerWrite: boolean
 
   // ─── Cloud query state for early returns ──────────────────────
   cloudTripsLoading: boolean
@@ -73,7 +82,7 @@ export interface SchedulePageState {
 
   // ─── Trip switcher actions ────────────────────────────────────
   selectTrip:       (item: TripItem) => void
-  saveTrip:         (data: TripItem) => void
+  saveTrip:         (data: TripItem) => boolean
   deleteTrip:       (deletedId: string) => void
   /** Non-owner self-leave of the current trip (MembersModal footer). */
   onLeaveTrip:      () => void
@@ -160,10 +169,11 @@ export function useSchedulePageState(): SchedulePageState {
 
   const { data: myTrips, error: tripsError, refetch: refetchTrips } = useMyTrips(uid)
 
-  const [activeDate, setActiveDate] = useState<string | null>(null)
+  // Stored WITH its trip id, not as a bare date — see the derivation below.
+  const [activeDay, setActiveDay] = useState<{ tripId: string; date: string } | null>(null)
   const modals = useScheduleModals({ isDemo, currentTrip })
 
-  const demoSelection = useTripSelection(() => setActiveDate(null))
+  const demoSelection = useTripSelection(() => setActiveDay(null))
 
   // Compiler memoises both `cloudTripItem` and `cloudTripsList` based
   // on inferred deps. Apply the user's saved order from drag-to-reorder.
@@ -189,13 +199,33 @@ export function useSchedulePageState(): SchedulePageState {
       })()
 
   const tripId = isDemo ? demoSelection.selectedTrip.id : currentTrip?.id
+  // Day selection is trip-scoped, so it is keyed to the trip it was made on.
+  // Range-checking a bare date is not enough: two trips can legitimately share
+  // dates (overlapping travel, or a copied trip), and then deleting or leaving
+  // one would silently carry its day over to the next trip instead of landing
+  // on that trip's first day.
+  const activeDate = activeDay && activeDay.tripId === tripId ? activeDay.date : null
+  const setActiveDate = (date: string | null) => {
+    setActiveDay(date && tripId ? { tripId, date } : null)
+  }
   const { data: fbSchedules, isLoading } = useSchedules(isDemo ? undefined : tripId)
   const { data: fbMembers } = useMembers(isDemo ? undefined : tripId)
   // Viewers can read schedules but not create/edit/delete — mirrors the
   // canWrite gate in firestore.rules. Hide the affordances they can't
   // actually use (add buttons in DayTimeline, delete in the form modal).
-  const canWrite = useCanWrite(isDemo ? undefined : tripId, isDemo)
+  // An out-of-date bundle has every write refused by the global mutation
+  // guard, so fold that in alongside the role gate rather than offering
+  // affordances that would silently do nothing. Demo passes through — those
+  // writes never reach Firestore and the affordance is the sign-in CTA.
+  // `isOwner` stays PURE identity; compatibility is exposed separately as
+  // `canOwnerWrite`. Folding it into the identity makes an owner momentarily
+  // stop being an owner, which elsewhere tears down mid-edit forms.
+  const { updateRequired } = useClientCompatibility()
+  const writeCompatible = isDemo || !updateRequired
+  const roleCanWrite = useCanWrite(isDemo ? undefined : tripId, isDemo)
+  const canWrite = roleCanWrite && writeCompatible
   const isOwner  = useIsTripOwner(isDemo ? undefined : tripId, isDemo)
+  const canOwnerWrite = isOwner && writeCompatible
   const memberChips = membersToTripMembers(fbMembers ?? [])
 
   // Compiler memoises these derivations. The per-day bucket + trip-wide
@@ -252,7 +282,7 @@ export function useSchedulePageState(): SchedulePageState {
   }
 
   return {
-    isDemo, canWrite, isOwner,
+    isDemo, canWrite, roleCanWrite, writeCompatible, isOwner, canOwnerWrite,
 
     // Loading covers two cases:
     //   1. Cloud trips fetch in flight (auth resolved, query pending)

@@ -27,7 +27,7 @@ export default function SchedulePage() {
   const state = useSchedulePageState()
   const [routePreviewOpen, setRoutePreviewOpen] = useState(false)
   const {
-    isDemo, canWrite, isOwner,
+    isDemo, canWrite, roleCanWrite, writeCompatible, isOwner, canOwnerWrite,
     cloudTripsLoading, cloudTripsError, cloudTripsEmpty, refetchTrips,
     trips, selectedTrip, dateRange, display, items, dayTotal,
     schedules, tripTotal, grouped, isLoading,
@@ -67,6 +67,7 @@ export default function SchedulePage() {
       <EmptyTrips
         onCreate={() => setCreateTripOpen(true)}
         onScanInvite={openInviteScanner}
+        writeEnabled={writeCompatible}
       />
       {modals}
     </>
@@ -143,6 +144,7 @@ export default function SchedulePage() {
             onScanInvite={openInviteScanner}
             canDeleteLast={!isDemo}
             isOwner={isOwner}
+            writeEnabled={writeCompatible}
           />
         </div>
 
@@ -151,8 +153,8 @@ export default function SchedulePage() {
           tripDays={dateRange.length}
           scheduleCount={schedules.length}
           tripTotal={tripTotal}
-          canInvite={isOwner}
-          canEdit={isOwner}
+          canInvite={canOwnerWrite}
+          canEdit={canOwnerWrite}
           onEditTrip={() => setEditTripOpen(true)}
           onInvite={() => isDemo ? setSignInOpen(true) : setInviteOpen(true)}
         />
@@ -170,6 +172,7 @@ export default function SchedulePage() {
           dayTotal={dayTotal}
           isLoading={isLoading && !isDemo}
           canWrite={canWrite}
+          roleCanWrite={roleCanWrite}
           currency={selectedTrip.currency}
           routeAction={routeAction}
           onAdd={scheduleModal.openAdd}

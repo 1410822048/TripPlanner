@@ -22,6 +22,8 @@ import { Trash2, ArrowLeftRight, LogOut, MoreVertical, Crown } from 'lucide-reac
 import { useMembers, useRemoveMember, useUpdateMemberRole, useTransferOwnership } from '@/features/members/hooks/useMembers'
 import { memberToTripMember } from '@/features/members/utils'
 import { useUid } from '@/hooks/useAuth'
+import { useClientCompatibility } from '@/hooks/useClientCompatibility'
+import { getClientWriteBlockReason } from '@/services/clientCompatibility'
 import { toast } from '@/shared/toast'
 import type { Member, Trip } from '@/types'
 
@@ -50,13 +52,30 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
   const [confirmLeave, setConfirmLeave] = useState(false)
 
   const isOwner = uid === trip.ownerId
+  // Kept separate from `isOwner` on purpose: folding it in would invert
+  // through the `!isOwner` below and offer a blocked OWNER the leave button.
+  // Every write here is refused by the global mutation guard anyway, and the
+  // refusal is deliberately toast-free, so the affordances must go instead.
+  const { updateRequired } = useClientCompatibility()
+  const writeCompatible = !updateRequired
   // Only a signed-in non-owner member can leave (owner must transfer or
   // delete). Guard on uid so a transient undefined-uid render doesn't flash
   // the affordance before ownership is known.
-  const canLeave = !!uid && !isOwner
+  const canLeave = !!uid && !isOwner && writeCompatible
+
+  /** Hiding the affordances only affects renders after the epoch flips; a
+   *  sheet already on screen can still submit. The global toast deliberately
+   *  stays silent for this rejection, so each entry point says it itself. */
+  function blockedByStaleBundle(): boolean {
+    const reason = getClientWriteBlockReason()
+    if (!reason) return false
+    toast.error(reason)
+    return true
+  }
 
   async function handleConfirmRemove() {
     if (!pendingRemove) return
+    if (blockedByStaleBundle()) return
     const target = pendingRemove
     try {
       await removeMut.mutateAsync(target.id)
@@ -67,6 +86,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
 
   async function handleConfirmTransfer() {
     if (!pendingTransfer) return
+    if (blockedByStaleBundle()) return
     const target = pendingTransfer
     try {
       await transferMut.mutateAsync(target.userId)
@@ -77,6 +97,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
 
   async function handleToggleRole(m: Member) {
     if (m.role === 'owner') return
+    if (blockedByStaleBundle()) return
     const next = m.role === 'editor' ? 'viewer' : 'editor'
     try {
       await updateRoleMut.mutateAsync({ memberId: m.id, role: next })
@@ -149,7 +170,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
                   const isSelf = m.userId === uid
                   // Owner can manage any non-owner member (change role /
                   // transfer / remove) via the `...` action sheet.
-                  const canManage = isOwner && m.role !== 'owner' && !isSelf
+                  const canManage = isOwner && writeCompatible && m.role !== 'owner' && !isSelf
                   return (
                     <li
                       key={m.id}

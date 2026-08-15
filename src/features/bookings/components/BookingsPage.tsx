@@ -27,7 +27,7 @@ import BookingsListSkeleton from './BookingsListSkeleton'
 import { bookingDisplayName, BOOKING_TYPE_META, BOOKING_TYPE_ORDER } from '../utils'
 import { hasShareParams, sharedBookingDraftFromSearch, type SharedBookingDraft } from '../linkDraft'
 import { parseStoredDate, toLocalDateString } from '@/utils/dates'
-import { getClientWriteBlockReason } from '@/services/clientCompatibility'
+import { getClientWriteBlockReason, UPDATE_REQUIRED_EMPTY_STATE } from '@/services/clientCompatibility'
 
 type BookingOverlay =
   | { kind: 'detail'; bookingId: string }
@@ -64,9 +64,9 @@ function formatWhen(b: Booking): string {
 }
 
 export default function BookingsPage() {
-  const { ctx, uid, cloudTripId, mutationTripId, isDemo, canWrite, modal, signIn } =
+  const { ctx, uid, cloudTripId, mutationTripId, isDemo, canWrite, roleCanWrite, modal, signIn } =
     useFeatureListPage<Booking>()
-  const swipe = useSwipeOpen()
+  const swipe = useSwipeOpen(canWrite)
   const [bookingOverlay, setBookingOverlay] = useState<BookingOverlay>(null)
   const [sharedDraft, setSharedDraft] = useState<SharedBookingDraft | null>(null)
 
@@ -223,6 +223,10 @@ export default function BookingsPage() {
   function handleSwipeDelete(b: Booking) {
     swipe.closeAll()
     if (isDemo) { signIn.open(); return }
+    // A dispatched gesture can still land after the epoch flip, and the
+    // global toast deliberately skips UpdateRequiredError.
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) { toast.error(writeBlockReason); return }
     deleteMut.mutate({
       bookingId: b.id,
       attachments: { coverImage: b.coverImage, document: b.document },
@@ -305,7 +309,9 @@ export default function BookingsPage() {
             title="尚未建立訂單"
             description={canWrite
               ? '將航班、飯店、火車等確認文件集中在這裡吧'
-              : '你目前以檢視者身分加入。只有擁有者和編輯者可以新增訂單。'}
+              : roleCanWrite
+                ? UPDATE_REQUIRED_EMPTY_STATE
+                : '你目前以檢視者身分加入。只有擁有者和編輯者可以新增訂單。'}
             actions={canWrite ? (
               <button
                 type="button"

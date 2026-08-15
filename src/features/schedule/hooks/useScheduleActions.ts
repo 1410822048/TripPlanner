@@ -6,6 +6,7 @@ import { useCreateSchedule, useDeleteSchedule, useUpdateSchedule, nextScheduleOr
 import type { UseFormModalResult } from '@/hooks/useFormModal'
 import type { CreateScheduleInput, Schedule } from '@/types'
 import { buildScheduleUpdate } from '../services/scheduleService'
+import { getClientWriteBlockReason } from '@/services/clientCompatibility'
 import { toast } from '@/shared/toast'
 import { simulateFailureMaybe } from '@/utils/devFailures'
 
@@ -69,10 +70,15 @@ export function useScheduleActions(opts: {
   async function onScheduleDelete() {
     if (!scheduleModal.editTarget) { scheduleModal.close(); return }
     if (isDemo) { scheduleModal.close(); openSignIn(); return }
+    // A sheet that was open when the epoch flipped still fires this, and the
+    // global toast deliberately skips UpdateRequiredError — surface it in the
+    // modal banner the same way save does.
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) { scheduleModal.setError(writeBlockReason); return }
     try {
       await deleteMut.mutateAsync(scheduleModal.editTarget.id)
       scheduleModal.close()
-    } catch { /* the hook's onError already surfaced the toast */ }
+    } catch { /* non-silent hook — the global toast covers non-epoch errors */ }
   }
 
   return {

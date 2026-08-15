@@ -3,9 +3,10 @@
 // the CTAs are wired from SchedulePage.
 import { Plus, QrCode } from 'lucide-react'
 
-export default function EmptyTrips({ onCreate, onScanInvite }: {
+export default function EmptyTrips({ onCreate, onScanInvite, writeEnabled = true }: {
   onCreate:     () => void
   onScanInvite: () => void
+  writeEnabled?: boolean
 }) {
   return (
     <div className="bg-app min-h-full flex flex-col items-center justify-center px-6 py-10">
@@ -17,23 +18,25 @@ export default function EmptyTrips({ onCreate, onScanInvite }: {
         在同一個 App 管理行程、費用與心願。<br />
         先建立一趟旅程吧。
       </p>
-      <div className="flex flex-col items-center gap-2.5">
-        <button
-          onClick={onCreate}
-          className="inline-flex items-center gap-1.5 px-6 py-3 rounded-chip border-none bg-teal text-white text-[13.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
-          style={{ boxShadow: '0 6px 20px rgba(61,139,122,0.28)' }}
-        >
-          <Plus size={15} strokeWidth={2.5} />
-          建立新旅程
-        </button>
-        <button
-          onClick={onScanInvite}
-          className="inline-flex items-center gap-1.5 whitespace-nowrap px-5 py-2.5 rounded-chip border border-border bg-surface text-pick text-[12.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:bg-pick-pale hover:border-pick"
-        >
-          <QrCode size={14} strokeWidth={2.4} className="shrink-0" />
-          掃描 QR Code 加入
-        </button>
-      </div>
+      {writeEnabled && (
+        <div className="flex flex-col items-center gap-2.5">
+          <button
+            onClick={onCreate}
+            className="inline-flex items-center gap-1.5 px-6 py-3 rounded-chip border-none bg-teal text-white text-[13.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
+            style={{ boxShadow: '0 6px 20px rgba(61,139,122,0.28)' }}
+          >
+            <Plus size={15} strokeWidth={2.5} />
+            建立新旅程
+          </button>
+          <button
+            onClick={onScanInvite}
+            className="inline-flex items-center gap-1.5 whitespace-nowrap px-5 py-2.5 rounded-chip border border-border bg-surface text-pick text-[12.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:bg-pick-pale hover:border-pick"
+          >
+            <QrCode size={14} strokeWidth={2.4} className="shrink-0" />
+            掃描 QR Code 加入
+          </button>
+        </div>
+      )}
     </div>
   )
 }

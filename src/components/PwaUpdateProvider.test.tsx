@@ -122,9 +122,10 @@ describe('PwaUpdateProvider lifecycle', () => {
     })
 
     expect(update).toHaveBeenCalledOnce()
-    // One independent boot check plus the registration callback. The real
-    // service single-flights these if they overlap.
-    expect(harness.refreshCompatibility).toHaveBeenCalledTimes(2)
+    // The boot check already stamped the manifest floor, so the registration
+    // callback's manifest check is throttled away. The worker check still
+    // fires because the two floors are tracked independently.
+    expect(harness.refreshCompatibility).toHaveBeenCalledOnce()
   })
 
   it('captures a passive service-worker update failure instead of leaking a rejection', async () => {
@@ -142,6 +143,96 @@ describe('PwaUpdateProvider lifecycle', () => {
 
     expect(harness.captureError)
       .toHaveBeenCalledWith(failure, { source: 'pwa-sw-update-check' })
+  })
+
+  it('retries after a failed check instead of burning the floor on it', async () => {
+    const nowSpy = vi.spyOn(performance, 'now').mockReturnValue(1_000)
+    try {
+      harness.refreshCompatibility.mockRejectedValueOnce(new Error('offline'))
+      render(<PwaUpdateProvider><span>child</span></PwaUpdateProvider>)
+      await act(async () => { await Promise.resolve(); await Promise.resolve() })
+      expect(harness.refreshCompatibility).toHaveBeenCalledOnce()
+
+      // Well inside the 30s floor, but the boot check failed — coming back
+      // online is exactly the signal that says "retry now", so a floor that
+      // counted the failure would strand an obsolete bundle until the timer.
+      await act(async () => { window.dispatchEvent(new Event('online')) })
+      expect(harness.refreshCompatibility).toHaveBeenCalledTimes(2)
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('replays an online signal that arrived while a failing check was still in flight', async () => {
+    let rejectBootCheck!: (error: Error) => void
+    harness.refreshCompatibility.mockImplementationOnce(
+      () => new Promise((_, reject) => { rejectBootCheck = reject }),
+    )
+    render(<PwaUpdateProvider><span>child</span></PwaUpdateProvider>)
+    expect(harness.refreshCompatibility).toHaveBeenCalledOnce()
+
+    // online fires while the boot check is still pending. It must not start a
+    // duplicate, but it must not be forgotten either — the pending check may
+    // predate the network coming back, so its failure proves nothing.
+    await act(async () => { window.dispatchEvent(new Event('online')) })
+    expect(harness.refreshCompatibility).toHaveBeenCalledOnce()
+
+    await act(async () => {
+      rejectBootCheck(new Error('offline'))
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(harness.refreshCompatibility).toHaveBeenCalledTimes(2)
+  })
+
+  it('throttles passive checks while keeping the worker and manifest floors independent', async () => {
+    const nowSpy = vi.spyOn(performance, 'now').mockReturnValue(1_000)
+    try {
+      render(<PwaUpdateProvider><span>child</span></PwaUpdateProvider>)
+      expect(harness.refreshCompatibility).toHaveBeenCalledOnce()
+
+      const update = vi.fn(async () => undefined)
+      await registerWorker({ update } as unknown as ServiceWorkerRegistration)
+      // Runs even though the boot manifest check just stamped — a shared floor
+      // would swallow the first post-launch worker check.
+      expect(update).toHaveBeenCalledOnce()
+      expect(harness.refreshCompatibility).toHaveBeenCalledOnce()
+
+      await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
+      expect(update).toHaveBeenCalledOnce()
+      expect(harness.refreshCompatibility).toHaveBeenCalledOnce()
+
+      nowSpy.mockReturnValue(1_000 + 30_001)
+      await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
+      expect(update).toHaveBeenCalledTimes(2)
+      expect(harness.refreshCompatibility).toHaveBeenCalledTimes(2)
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('keeps checking after a wall-clock rollback because the floor is monotonic', async () => {
+    // The wall clock jumps back an hour (NTP sync / manual re-set) right after
+    // the boot check. If the floor read Date.now(), the elapsed time would be
+    // hugely negative and every passive check would be swallowed until the
+    // clock caught back up — a stale bundle would never learn the new
+    // minimumWriteEpoch. performance.now() is monotonic and doesn't care.
+    const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
+    const perfSpy = vi.spyOn(performance, 'now').mockReturnValue(1_000)
+    try {
+      render(<PwaUpdateProvider><span>child</span></PwaUpdateProvider>)
+      await act(async () => { await Promise.resolve() })
+      expect(harness.refreshCompatibility).toHaveBeenCalledOnce()
+
+      dateSpy.mockReturnValue(1_000_000 - 3_600_000)
+      perfSpy.mockReturnValue(1_000 + 30_001)
+      await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
+      expect(harness.refreshCompatibility).toHaveBeenCalledTimes(2)
+    } finally {
+      dateSpy.mockRestore()
+      perfSpy.mockRestore()
+    }
   })
 })
 
@@ -212,5 +303,57 @@ describe('requestUpdate recovery path', () => {
     await act(async () => { fireEvent.click(requestButton()) })
 
     expect(update).toHaveBeenCalledTimes(2)
+  })
+
+  it('refreshes the manifest too, so an emergency rollback lands without waiting', async () => {
+    const update = vi.fn(async () => undefined)
+    renderWithConsumer()
+    await registerWorker({ update, waiting: null } as unknown as ServiceWorkerRegistration)
+    harness.refreshCompatibility.mockClear()
+    update.mockClear()
+
+    await act(async () => { fireEvent.click(requestButton()) })
+
+    // Bypasses the passive floor that boot + registration just stamped.
+    expect(harness.refreshCompatibility).toHaveBeenCalledOnce()
+    expect(update).toHaveBeenCalledOnce()
+  })
+
+  it('fetches fresh after a colliding passive check settles instead of riding it', async () => {
+    const perfSpy = vi.spyOn(performance, 'now').mockReturnValue(1_000)
+    try {
+      const update = vi.fn(async () => undefined)
+      renderWithConsumer()
+      await registerWorker({ update, waiting: null } as unknown as ServiceWorkerRegistration)
+
+      // A passive manifest check goes up and stays pending.
+      let rejectPassive!: (error: Error) => void
+      harness.refreshCompatibility.mockImplementationOnce(
+        () => new Promise((_, reject) => { rejectPassive = reject }),
+      )
+      perfSpy.mockReturnValue(1_000 + 30_001)
+      await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
+      expect(harness.refreshCompatibility).toHaveBeenCalledTimes(2)
+
+      // The CTA lands while that request is still in flight. The service
+      // single-flight would hand the pre-tap request back, so the forced
+      // check must WAIT for it and then issue a fresh GET — a failed (or
+      // pre-rollback) passive response must not make the tap a silent no-op.
+      await act(async () => { fireEvent.click(requestButton()) })
+      expect(harness.refreshCompatibility).toHaveBeenCalledTimes(2)
+      expect(requestButton().textContent).toBe('checking')
+
+      await act(async () => {
+        rejectPassive(new Error('offline'))
+        await Promise.resolve()
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(harness.refreshCompatibility).toHaveBeenCalledTimes(3)
+      // The checking latch waited for the fresh fetch, not the doomed one.
+      expect(requestButton().textContent).toBe('request update')
+    } finally {
+      perfSpy.mockRestore()
+    }
   })
 })

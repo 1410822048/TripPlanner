@@ -8,6 +8,7 @@ import {
   workerFetch,
 } from '@/services/workerBase'
 import { PlaceRefSchema, type PlaceRef } from '@/types/schedule'
+import { assertClientWriteCompatible, isUpdateRequiredError } from '@/services/clientCompatibility'
 
 const CoordinateSchema = z.tuple([z.number(), z.number()])
 const DisplayGeometrySchema = z.object({
@@ -145,6 +146,9 @@ const ROUTE_ERROR_COPY: Readonly<Record<string, string>> = {
 /** Convert the typed Worker protocol into stable user-facing copy. Backend
  * details stay available on the error for diagnostics but never render in UI. */
 export function routeErrorMessage(reason: unknown, operation: RouteOperation): string {
+  // Before the generic fallbacks: 「請重新預覽後再試」 would be a lie for an
+  // obsolete bundle — no amount of re-previewing unblocks it, only updating.
+  if (isUpdateRequiredError(reason)) return reason.message
   if (reason instanceof WorkerRejected) {
     const stableCopy = reason.code ? ROUTE_ERROR_COPY[reason.code] : undefined
     if (stableCopy) return stableCopy
@@ -180,7 +184,9 @@ function placeRequestKey(mode: string, tripId: string, query: string, context: P
 }
 
 function cachedPlaceRequest(key: string, load: () => Promise<PlaceCandidate[]>): Promise<PlaceCandidate[]> {
-  const now = Date.now()
+  // performance.now():cache 是 module-scope in-memory(不跨 reload),
+  // 用單調時鐘讓 TTL 不受時鐘回撥 / 前跳影響
+  const now = performance.now()
   const cached = placeCache.get(key)
   if (cached && cached.expiresAt > now) return Promise.resolve(cached.value)
   if (cached) placeCache.delete(key)
@@ -190,7 +196,7 @@ function cachedPlaceRequest(key: string, load: () => Promise<PlaceCandidate[]>):
   const generation = placeCacheGeneration
   const request = load().then(value => {
     if (placeCacheGeneration === generation) {
-      placeCache.set(key, { expiresAt: Date.now() + PLACE_CACHE_TTL_MS, value })
+      placeCache.set(key, { expiresAt: performance.now() + PLACE_CACHE_TTL_MS, value })
     }
     return value
   })
@@ -273,6 +279,11 @@ export async function requestRoutePlaceResolution(
 }
 
 export async function applyRoutePreview(tripId: string, preview: RoutePreview): Promise<{ status: 'applied' | 'already_applied'; revision: string }> {
+  // Schema Epoch choke point. This is the one Worker WRITE that does not go
+  // through a TanStack mutation, so the global MutationCache guard never sees
+  // it — and the Worker writes with the Admin SDK, so rules cannot stop an
+  // obsolete bundle either. A stale-open preview modal must be refused here.
+  assertClientWriteCompatible()
   const token = await preflightIdToken()
   const base = requireWorkerWriteBase()
   try {
