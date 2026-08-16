@@ -238,11 +238,15 @@ export default function WishPage() {
   }
 
   function handleSaveDeadline(deadlineAtInput: Date | null) {
-    if (!cloudTripId) return
     // The mutation targets the LIVE trip — a sheet opened on trip A must not
-    // write A's date into trip B after a background reselect. Sheet stays
-    // open so the owner closes it deliberately.
-    if (!deadlineSheet || deadlineSheet.tripId !== cloudTripId || deadlineSheet.uid !== uid) {
+    // write A's date into trip B after a background reselect. A vanished live
+    // trip/uid (cloud → demo / no-trip) is the same fail-closed branch, not a
+    // silent early-return. Sheet stays open so the owner closes it
+    // deliberately.
+    if (
+      !deadlineSheet || !cloudTripId || !uid ||
+      deadlineSheet.tripId !== cloudTripId || deadlineSheet.uid !== uid
+    ) {
       toast.error(FORM_SCOPE_CHANGED_MESSAGE)
       return
     }

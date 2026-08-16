@@ -29,7 +29,8 @@ const harness = vi.hoisted(() => ({
   modalEditTarget: null as Expense | null,
   modalScopeChanged: false,
   writeBlockReason: null as string | null,
-  cloudTripId: 'trip-1',
+  cloudTripId: 'trip-1' as string | undefined,
+  isDemo: false,
 }))
 
 vi.mock('@/components/ui/BottomSheet', () => ({
@@ -61,14 +62,18 @@ vi.mock('@/features/attachments/components/AttachmentPreviewModal', () => ({
 
 vi.mock('@/hooks/useFeatureListPage', () => ({
   useFeatureListPage: () => ({
+    // ctx.status stays 'cloud' even for the demo-transition tests: the
+    // handlers under test read only the destructured isDemo/cloudTripId,
+    // and a real 'demo' status would drag in the mock-data render pipeline
+    // these mocks don't provide.
     ctx: {
       status: 'cloud',
-      trip: { id: harness.cloudTripId, title: 'Tokyo', ownerId: 'owner-1' },
+      trip: { id: harness.cloudTripId ?? 'demo', title: 'Tokyo', ownerId: 'owner-1' },
     },
     uid: harness.uid,
     cloudTripId: harness.cloudTripId,
-    mutationTripId: harness.cloudTripId,
-    isDemo: false,
+    mutationTripId: harness.cloudTripId ?? '',
+    isDemo: harness.isDemo,
     canWrite: harness.canWrite,
     isOwner: harness.isOwner,
     canOwnerWrite: harness.canOwnerWrite,
@@ -276,6 +281,7 @@ beforeEach(() => {
   harness.modalScopeChanged = false
   harness.writeBlockReason = null
   harness.cloudTripId = 'trip-1'
+  harness.isDemo = false
   toastMocks.error.mockReset()
   toastMocks.success.mockReset()
 })
@@ -414,6 +420,23 @@ describe('ExpensePage read-first expense flow', () => {
     expect(harness.createSettlement).not.toHaveBeenCalled()
     expect(toastMocks.error).toHaveBeenCalledWith('旅程或帳號已切換，請關閉表單後重新開啟')
     // The sheet stays open — the receiver closes and redoes it deliberately.
+    expect(screen.getByRole('dialog', { name: 'settle-sheet' })).toBeTruthy()
+  })
+
+  it('keeps the settle sheet draft when the session signs out into demo', () => {
+    const view = render(<ExpensePage />)
+    fireEvent.click(screen.getByRole('button', { name: 'record-settlement' }))
+
+    // cloud → demo transition: the scope guard must run BEFORE the demo
+    // branch, whose setRecordTarget(null) would wipe the date/note draft.
+    harness.isDemo = true
+    harness.cloudTripId = undefined
+    view.rerender(<ExpensePage />)
+    fireEvent.click(screen.getByRole('button', { name: 'mock settle submit' }))
+
+    expect(harness.createSettlement).not.toHaveBeenCalled()
+    expect(harness.openSignIn).not.toHaveBeenCalled()
+    expect(toastMocks.error).toHaveBeenCalledWith('旅程或帳號已切換，請關閉表單後重新開啟')
     expect(screen.getByRole('dialog', { name: 'settle-sheet' })).toBeTruthy()
   })
 

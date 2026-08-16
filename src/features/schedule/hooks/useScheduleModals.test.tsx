@@ -144,6 +144,21 @@ describe('useScheduleModals scope-derived management modals', () => {
     expect(hook.result.current.membersOpen).toBe(true)
   })
 
+  it('stays closed on an A→B→A round trip instead of resurrecting', () => {
+    const hook = renderWithTrip(TRIP)
+    act(() => hook.result.current.setMembersOpen(true))
+
+    // The mismatch is a scope TRANSITION: the stamp must be cleared on the
+    // first mismatch, or returning to trip A re-matches the old stamp and
+    // the modal reopens without any user action.
+    hook.rerender({ currentTrip: { id: 'trip-2', title: 'Osaka' } as Trip })
+    expect(hook.result.current.membersOpen).toBe(false)
+
+    hook.rerender({ currentTrip: TRIP })
+    expect(hook.result.current.membersOpen).toBe(false)
+    expect(hook.result.current.anyOpen).toBe(false)
+  })
+
   it('closes them when the account changes even on the same trip', () => {
     const hook = renderWithTrip(TRIP)
     act(() => hook.result.current.setMembersOpen(true))

@@ -85,6 +85,16 @@ export function useScheduleModals(opts: {
   const [membersOpenedOn, setMembersOpenedOn] = useState<OpenedScope | null>(null)
   const scopeStillCurrent = (s: OpenedScope | null) =>
     s !== null && s.tripId === currentTrip?.id && s.uid === uid
+  // A mismatch is a scope TRANSITION, not re-derivable view state: the stamp
+  // is cleared permanently on first mismatch (render-phase adjust, so the
+  // close is synchronous). Deriving alone would let an A→B→A round trip
+  // re-match the old stamp and reopen the modal on its own.
+  if (inviteOpenedOn !== null && !scopeStillCurrent(inviteOpenedOn)) {
+    setInviteOpenedOn(null)
+  }
+  if (membersOpenedOn !== null && !scopeStillCurrent(membersOpenedOn)) {
+    setMembersOpenedOn(null)
+  }
   const inviteOpen  = scopeStillCurrent(inviteOpenedOn)
   const membersOpen = scopeStillCurrent(membersOpenedOn)
   const setInviteOpen = (open: boolean) =>

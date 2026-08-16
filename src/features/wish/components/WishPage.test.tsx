@@ -11,7 +11,8 @@ const harness = vi.hoisted(() => ({
   wishes: [] as Wish[],
   writeBlockReason: null as string | null,
   modalScopeChanged: false,
-  cloudTripId: 'trip-1',
+  cloudTripId: 'trip-1' as string | undefined,
+  isDemo: false,
   // Non-null = a trip-level voting deadline; toMillis in the past closes voting.
   deadlineAt: null as { toMillis: () => number } | null,
 }))
@@ -23,10 +24,14 @@ vi.mock('@/shared/toast', () => ({ toast: toastMocks }))
 
 vi.mock('@/hooks/useFeatureListPage', () => ({
   useFeatureListPage: () => ({
+    // ctx.status stays 'cloud' even for the demo-transition test: the
+    // handler under test reads only the destructured isDemo/cloudTripId,
+    // and a real 'demo' status would drag in the mock-data render pipeline
+    // these mocks don't provide.
     ctx: {
       status: 'cloud',
       trip: {
-        id: harness.cloudTripId,
+        id: harness.cloudTripId ?? 'demo',
         title: 'Tokyo',
         wishVotingDeadlineAt: harness.deadlineAt,
         wishVotingDeadlineNotifiedAt: null,
@@ -34,8 +39,8 @@ vi.mock('@/hooks/useFeatureListPage', () => ({
     },
     uid: 'u1',
     cloudTripId: harness.cloudTripId,
-    mutationTripId: harness.cloudTripId,
-    isDemo: false,
+    mutationTripId: harness.cloudTripId ?? '',
+    isDemo: harness.isDemo,
     isOwner: false,
     canOwnerWrite: false,
     writeCompatible: harness.writeBlockReason === null,
@@ -143,6 +148,7 @@ beforeEach(() => {
   harness.writeBlockReason = null
   harness.modalScopeChanged = false
   harness.cloudTripId = 'trip-1'
+  harness.isDemo = false
   harness.deadlineAt = null
   toastMocks.error.mockReset()
 })
@@ -222,6 +228,22 @@ describe('WishPage cross-trip scope', () => {
     expect(harness.setDeadline).not.toHaveBeenCalled()
     expect(toastMocks.error).toHaveBeenCalledWith('旅程或帳號已切換，請關閉表單後重新開啟')
     // Sheet stays open — the owner closes and redoes it deliberately.
+    expect(screen.getByRole('dialog', { name: 'deadline-sheet' })).toBeTruthy()
+  })
+
+  it('fails closed instead of going silent when the live trip vanishes', () => {
+    const view = render(<WishPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'mock open deadline' }))
+
+    // cloud → demo: cloudTripId is gone. The old `if (!cloudTripId) return`
+    // was a silent no-op — the fail-closed copy must surface instead.
+    harness.isDemo = true
+    harness.cloudTripId = undefined
+    view.rerender(<WishPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'mock deadline save' }))
+
+    expect(harness.setDeadline).not.toHaveBeenCalled()
+    expect(toastMocks.error).toHaveBeenCalledWith('旅程或帳號已切換，請關閉表單後重新開啟')
     expect(screen.getByRole('dialog', { name: 'deadline-sheet' })).toBeTruthy()
   })
 

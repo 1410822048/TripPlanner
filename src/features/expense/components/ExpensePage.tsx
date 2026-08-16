@@ -247,16 +247,21 @@ export default function ExpensePage() {
     }
   }
   function handleRecordSettlement(submit: SettlementRecordSubmit) {
-    if (isDemo) { setRecordTarget(null); signIn.open(); return }
-    if (!uid) { toast.error('正在準備登入，請稍候'); return }
-    // The mutation binds to the LIVE trip id, and the Worker's
+    // Scope BEFORE the demo branch: a sheet opened on a cloud trip whose
+    // session then signed out into demo would otherwise have its draft
+    // (date / note / currency) wiped by setRecordTarget(null) below. The
+    // mutation binds to the LIVE trip id, and the Worker's
     // expectedRemainingMinor is only a numeric CAS — a same-pair,
     // same-remaining trip B would accept trip A's record. Keep the sheet
-    // open so the receiver can close and redo it deliberately.
+    // open so the receiver can close and redo it deliberately. A sheet
+    // genuinely opened in demo captured {undefined, undefined} and still
+    // matches, so it falls through to the sign-in prompt as before.
     if (recordTarget && (recordTarget.tripId !== cloudTripId || recordTarget.uid !== uid)) {
       toast.error(FORM_SCOPE_CHANGED_MESSAGE)
       return
     }
+    if (isDemo) { setRecordTarget(null); signIn.open(); return }
+    if (!uid) { toast.error('正在準備登入，請稍候'); return }
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) { toast.error(writeBlockReason); return }
     // Mint settlementId here (not inside the service) so the optimistic
