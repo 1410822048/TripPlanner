@@ -126,14 +126,20 @@ export default function TripModalsHost({ state }: Props) {
               fallback from AppLayout. Modal pops up when chunk arrives;
               after first open the chunk is cached so subsequent opens
               are instant. */}
+          {/* Keyed by trip id: these hold pending confirms (remove /
+              transfer / leave) in internal state, which must never survive
+              a trip switch — the open state itself already derives closed
+              on switch (useScheduleModals), the key clears the internals. */}
           <Suspense fallback={null}>
             <InviteModal
+              key={currentTrip.id}
               isOpen={inviteOpen}
               onClose={() => setInviteOpen(false)}
               trip={currentTrip}
             />
           </Suspense>
           <MembersModal
+            key={currentTrip.id}
             isOpen={membersOpen}
             onClose={() => setMembersOpen(false)}
             trip={currentTrip}

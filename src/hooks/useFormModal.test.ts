@@ -71,4 +71,15 @@ describe('useFormModal scope capture', () => {
 
     expect(result.current.scopeChanged).toBe(false)
   })
+
+  it('fails closed when a captured scope loses its live counterpart', () => {
+    const { result, rerender } = renderModal({ tripId: 'trip-a', uid: 'u1' })
+
+    act(() => result.current.openAdd())
+    // A call site that stops providing the live scope must not silently
+    // regain write access — treat "nothing to compare against" as changed.
+    rerender({ scope: undefined })
+
+    expect(result.current.scopeChanged).toBe(true)
+  })
 })

@@ -71,9 +71,26 @@ export function useScheduleModals(opts: {
   // where copyTripOpen was still true. The snapshot stays until next open.
   const [copyTripSource, setCopyTripSource] = useState<Trip | null>(null)
   const [signInOpen,     setSignInOpen]     = useState(false)
-  const [inviteOpen,     setInviteOpen]     = useState(false)
   const [inviteScannerOpen, setInviteScannerOpen] = useState(false)
-  const [membersOpen,    setMembersOpen]    = useState(false)
+
+  // Invite / Members are MANAGEMENT modals bound to the live trip prop —
+  // generate/revoke/remove/transfer/leave would silently target trip B after
+  // a background reselect. They hold no draft, so instead of refusing at
+  // save time (the form-modal strategy) their open state is stamped with the
+  // {tripId, uid} it was opened under and DERIVES closed the moment either
+  // changes. TripModalsHost additionally keys them by trip id so a reopen
+  // never resurrects a previous trip's pending confirm.
+  type OpenedScope = { tripId: string | undefined; uid: string | undefined }
+  const [inviteOpenedOn,  setInviteOpenedOn]  = useState<OpenedScope | null>(null)
+  const [membersOpenedOn, setMembersOpenedOn] = useState<OpenedScope | null>(null)
+  const scopeStillCurrent = (s: OpenedScope | null) =>
+    s !== null && s.tripId === currentTrip?.id && s.uid === uid
+  const inviteOpen  = scopeStillCurrent(inviteOpenedOn)
+  const membersOpen = scopeStillCurrent(membersOpenedOn)
+  const setInviteOpen = (open: boolean) =>
+    setInviteOpenedOn(open ? { tripId: currentTrip?.id, uid } : null)
+  const setMembersOpen = (open: boolean) =>
+    setMembersOpenedOn(open ? { tripId: currentTrip?.id, uid } : null)
 
   // AccountPage's "Planner" card navigates here with state.openCreateTrip
   // = true to deep-link straight into the create-trip flow. Consume the

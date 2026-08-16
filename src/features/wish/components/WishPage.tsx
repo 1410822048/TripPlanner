@@ -45,7 +45,11 @@ export default function WishPage() {
     useFeatureListPage<Wish>()
   const [activeTab, setActiveTab] = useState<WishCategory>('place')
   const [detailWishId, setDetailWishId] = useState<string | null>(null)
-  const [deadlineSheetOpen, setDeadlineSheetOpen] = useState(false)
+  // Non-null while the deadline sheet is open; carries the {tripId, uid} it
+  // was opened under so a background trip switch can't write A's date into B.
+  const [deadlineSheet, setDeadlineSheet] = useState<
+    { tripId: string | undefined; uid: string | undefined } | null
+  >(null)
 
   // Reactive clock for the Wish deadline. Render stays pure; the effect below
   // advances this only when the cutoff is reached.
@@ -137,12 +141,13 @@ export default function WishPage() {
   const title = ctx.trip.title
 
   function handleSave({ input, attachment }: WishFormResult) {
-    if (votingClosed) { modal.close(); toast.error('投票已截止'); return }
     if (isDemo) { modal.close(); signIn.open(); return }
-    if (!uid) { toast.error('正在準備登入，請稍候'); return }
-    // The mutations bind to the LIVE trip id — a form opened on another trip
-    // (background reselect after kick / remote delete) must not write here.
+    // Scope BEFORE votingClosed: the deadline belongs to the LIVE trip, so a
+    // form dragged onto an already-closed trip B would otherwise be closed
+    // (draft eaten) by B's deadline instead of refused with the draft kept.
     if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
+    if (votingClosed) { modal.close(); toast.error('投票已截止'); return }
+    if (!uid) { toast.error('正在準備登入，請稍候'); return }
 
     // Optimistic close (mirrors ExpensePage). Modal closes immediately;
     // the hook's onMutate adds an overlay operation so the card shows at
@@ -171,9 +176,10 @@ export default function WishPage() {
 
   function handleDelete() {
     if (!modal.editTarget) return
-    if (votingClosed) { modal.close(); toast.error('投票已截止'); return }
     if (isDemo) { modal.close(); signIn.open(); return }
+    // Same ordering as handleSave: scope before the live trip's deadline.
     if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
+    if (votingClosed) { modal.close(); toast.error('投票已截止'); return }
     const target = modal.editTarget
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) {
@@ -233,15 +239,22 @@ export default function WishPage() {
 
   function handleSaveDeadline(deadlineAtInput: Date | null) {
     if (!cloudTripId) return
+    // The mutation targets the LIVE trip — a sheet opened on trip A must not
+    // write A's date into trip B after a background reselect. Sheet stays
+    // open so the owner closes it deliberately.
+    if (!deadlineSheet || deadlineSheet.tripId !== cloudTripId || deadlineSheet.uid !== uid) {
+      toast.error(FORM_SCOPE_CHANGED_MESSAGE)
+      return
+    }
     if (votingClosed) {
-      setDeadlineSheetOpen(false)
+      setDeadlineSheet(null)
       toast.error('投票已截止')
       return
     }
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) { toast.error(writeBlockReason); return }
     setDeadlineMut.mutate({ tripId: cloudTripId, deadlineAt: deadlineAtInput })
-    setDeadlineSheetOpen(false)
+    setDeadlineSheet(null)
   }
 
   function handleEditFromDetail(w: Wish) {
@@ -281,7 +294,7 @@ export default function WishPage() {
           deadlineLocked={deadlineLocked}
           canSetDeadline={canOwnerWrite}
           isSaving={setDeadlineMut.isPending}
-          onOpenSheet={() => setDeadlineSheetOpen(true)}
+          onOpenSheet={() => setDeadlineSheet({ tripId: cloudTripId, uid })}
         />
       )}
 
@@ -472,12 +485,12 @@ export default function WishPage() {
         reason="若要為心願投票，"
       />
 
-      {deadlineSheetOpen && (
+      {deadlineSheet && (
         <WishDeadlineSheet
           isOpen
           currentDeadlineAt={deadlineAt}
           isSaving={setDeadlineMut.isPending}
-          onClose={() => setDeadlineSheetOpen(false)}
+          onClose={() => setDeadlineSheet(null)}
           onSave={handleSaveDeadline}
         />
       )}

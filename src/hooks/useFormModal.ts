@@ -76,11 +76,15 @@ export function useFormModal<T extends Identifiable>(
     setOpenScope(null)
   }
 
+  // Fail-closed: a scope captured at open with NO live scope to compare
+  // against is treated as changed — the call site that stopped providing
+  // one must not silently regain write access.
   const scopeChanged =
     isOpen &&
     openScope !== null &&
-    scope !== undefined &&
-    (openScope.tripId !== scope.tripId || openScope.uid !== scope.uid)
+    (scope === undefined ||
+      openScope.tripId !== scope.tripId ||
+      openScope.uid !== scope.uid)
 
   return {
     isOpen,

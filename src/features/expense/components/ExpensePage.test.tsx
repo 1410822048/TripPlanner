@@ -29,6 +29,7 @@ const harness = vi.hoisted(() => ({
   modalEditTarget: null as Expense | null,
   modalScopeChanged: false,
   writeBlockReason: null as string | null,
+  cloudTripId: 'trip-1',
 }))
 
 vi.mock('@/components/ui/BottomSheet', () => ({
@@ -62,11 +63,11 @@ vi.mock('@/hooks/useFeatureListPage', () => ({
   useFeatureListPage: () => ({
     ctx: {
       status: 'cloud',
-      trip: { id: 'trip-1', title: 'Tokyo', ownerId: 'owner-1' },
+      trip: { id: harness.cloudTripId, title: 'Tokyo', ownerId: 'owner-1' },
     },
     uid: harness.uid,
-    cloudTripId: 'trip-1',
-    mutationTripId: 'trip-1',
+    cloudTripId: harness.cloudTripId,
+    mutationTripId: harness.cloudTripId,
     isDemo: false,
     canWrite: harness.canWrite,
     isOwner: harness.isOwner,
@@ -164,8 +165,20 @@ vi.mock('./SettlementSummary', () => ({
   ),
 }))
 vi.mock('./SettlementRecordSheet', () => ({
-  default: ({ members }: { members: TripMember[] }) => (
-    <div role="dialog" aria-label="settle-sheet" data-members={members.map(m => m.id).join(',')} />
+  // Exposes onSave so a test can drive the record submission — the sheet's
+  // own fields are covered by its dedicated spec.
+  default: ({ members, onSave }: {
+    members: TripMember[]
+    onSave: (submit: Record<string, unknown>) => void
+  }) => (
+    <div role="dialog" aria-label="settle-sheet" data-members={members.map(m => m.id).join(',')}>
+      <button
+        type="button"
+        onClick={() => onSave({ fromUid: 'u2', toUid: 'u1', amountMinor: 600 })}
+      >
+        mock settle submit
+      </button>
+    </div>
   ),
 }))
 vi.mock('./ExpenseFormModal', () => ({
@@ -262,6 +275,7 @@ beforeEach(() => {
   harness.modalEditTarget = null
   harness.modalScopeChanged = false
   harness.writeBlockReason = null
+  harness.cloudTripId = 'trip-1'
   toastMocks.error.mockReset()
   toastMocks.success.mockReset()
 })
@@ -383,6 +397,32 @@ describe('ExpensePage read-first expense flow', () => {
     // above and unmount this form mid-edit, discarding the user's draft.
     expect(screen.getByRole('dialog', { name: 'expense-edit' })).toBeTruthy()
     expect(screen.queryByRole('dialog', { name: '費用詳情' })).toBeNull()
+  })
+
+  it('refuses to record a settlement into a trip the sheet was not opened on', () => {
+    const view = render(<ExpensePage />)
+    fireEvent.click(screen.getByRole('button', { name: 'record-settlement' }))
+
+    // Background reselect while the sheet is open. The Worker's
+    // expectedRemainingMinor is only a numeric CAS — a same-pair,
+    // same-remaining trip would accept the record — so the client must
+    // refuse on its own.
+    harness.cloudTripId = 'trip-2'
+    view.rerender(<ExpensePage />)
+    fireEvent.click(screen.getByRole('button', { name: 'mock settle submit' }))
+
+    expect(harness.createSettlement).not.toHaveBeenCalled()
+    expect(toastMocks.error).toHaveBeenCalledWith('旅程或帳號已切換，請關閉表單後重新開啟')
+    // The sheet stays open — the receiver closes and redoes it deliberately.
+    expect(screen.getByRole('dialog', { name: 'settle-sheet' })).toBeTruthy()
+  })
+
+  it('records a settlement when the sheet scope still matches (positive control)', () => {
+    render(<ExpensePage />)
+    fireEvent.click(screen.getByRole('button', { name: 'record-settlement' }))
+    fireEvent.click(screen.getByRole('button', { name: 'mock settle submit' }))
+
+    expect(harness.createSettlement).toHaveBeenCalledOnce()
   })
 
   it('explains the stale bundle instead of silently dropping a settlement delete', () => {

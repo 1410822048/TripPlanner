@@ -7,6 +7,9 @@ import type { Trip } from '@/types'
 const toastMocks = vi.hoisted(() => ({ info: vi.fn() }))
 vi.mock('@/shared/toast', () => ({ toast: toastMocks }))
 
+const authMocks = vi.hoisted(() => ({ uid: 'u1' as string | undefined }))
+vi.mock('@/hooks/useAuth', () => ({ useUid: () => authMocks.uid }))
+
 import { useScheduleModals } from './useScheduleModals'
 
 const TRIP = { id: 'trip-1', title: 'Tokyo' } as Trip
@@ -35,6 +38,7 @@ function render(
 
 beforeEach(() => {
   toastMocks.info.mockReset()
+  authMocks.uid = 'u1'
 })
 
 describe('useScheduleModals deep link', () => {
@@ -106,6 +110,58 @@ describe('useScheduleModals trip menu', () => {
 
     expect(hook.result.current.copyTripOpen).toBe(false)
     expect(hook.result.current.copyTripSource).toBeNull()
+  })
+})
+
+// Invite / Members are management modals bound to the live trip prop: their
+// destructive actions (remove / transfer / leave, generate / revoke) would
+// target trip B after a background reselect, so their open state is stamped
+// with the {tripId, uid} it was opened under and derives closed on change.
+describe('useScheduleModals scope-derived management modals', () => {
+  const renderWithTrip = (initial: Trip) =>
+    renderHook(
+      ({ currentTrip }: { currentTrip: Trip }) =>
+        useScheduleModals({ isDemo: false, currentTrip }),
+      { wrapper: wrapper(['/schedule']), initialProps: { currentTrip: initial } },
+    )
+
+  it('closes members and invite the moment the trip switches', () => {
+    const hook = renderWithTrip(TRIP)
+    act(() => {
+      hook.result.current.setMembersOpen(true)
+      hook.result.current.setInviteOpen(true)
+    })
+    expect(hook.result.current.membersOpen).toBe(true)
+    expect(hook.result.current.inviteOpen).toBe(true)
+
+    hook.rerender({ currentTrip: { id: 'trip-2', title: 'Osaka' } as Trip })
+
+    expect(hook.result.current.membersOpen).toBe(false)
+    expect(hook.result.current.inviteOpen).toBe(false)
+
+    // Reopening under the new trip stamps a fresh scope — not stuck closed.
+    act(() => hook.result.current.setMembersOpen(true))
+    expect(hook.result.current.membersOpen).toBe(true)
+  })
+
+  it('closes them when the account changes even on the same trip', () => {
+    const hook = renderWithTrip(TRIP)
+    act(() => hook.result.current.setMembersOpen(true))
+    expect(hook.result.current.membersOpen).toBe(true)
+
+    authMocks.uid = 'u2'
+    hook.rerender({ currentTrip: TRIP })
+
+    expect(hook.result.current.membersOpen).toBe(false)
+  })
+
+  it('folds the derived close into anyOpen so the lazy host can unmount', () => {
+    const hook = renderWithTrip(TRIP)
+    act(() => hook.result.current.setMembersOpen(true))
+    expect(hook.result.current.anyOpen).toBe(true)
+
+    hook.rerender({ currentTrip: { id: 'trip-2', title: 'Osaka' } as Trip })
+    expect(hook.result.current.anyOpen).toBe(false)
   })
 })
 

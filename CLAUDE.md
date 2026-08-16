@@ -175,7 +175,10 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 
 ### Modal 生命週期
 - **key-based remount**: 所有 form modal 用 `<Modal key={editTarget?.id ?? 'new'}>` —— 切換 edit target 自動 unmount + remount,每次都用全新的 useState init,不靠 setState-in-effect 同步 props
-- **scope 捕捉(跨 trip 防護)**: `useFormModal` 在 open 時 snapshot `{ tripId, uid }`,save/delete handler 檢查 `modal.scopeChanged` —— mutation hooks 綁的是**即時** trip id,被踢 / 旅程被他人刪除會讓 `useCurrentTripSync` 背景改選,開著的表單若照存會把 trip A 的草稿(含 A 的成員 splits)無聲寫進 trip B;demo → 登入的轉換同理。mismatch 時 `setError(FORM_SCOPE_CHANGED_MESSAGE)` **保留草稿**,絕不用 effect 自動關 modal(會吃掉草稿)。SettlementRecordSheet 不需要:Worker 的 `expectedRemainingMinor` 會拒絕跨 trip 寫入
+- **scope 捕捉(跨 trip 防護)**: mutation hooks 綁的是**即時** trip id,被踢 / 旅程被他人刪除會讓 `useCurrentTripSync` 背景改選,開著的 modal 若照存會把 trip A 的內容無聲寫進 trip B;demo → 登入轉換同理。兩種策略,依「有沒有草稿」選:
+  - **有草稿(5 個 entity form + SettlementRecordSheet + WishDeadlineSheet)**: open 時 snapshot `{ tripId, uid }`(`useFormModal` scope 參數 / sheet 自帶),save/delete 時 mismatch → `FORM_SCOPE_CHANGED_MESSAGE` **保留內容拒絕寫入**,絕不用 effect 自動關(會吃草稿)。SettlementRecordSheet **必須**有 client guard —— Worker 的 `expectedRemainingMinor` 只是數值 CAS,同 pair 同餘額的另一個 trip 會通過。scope 比對必須**先於**任何讀即時 trip 的分支(如 wish 的 `votingClosed` 會 `modal.close()` 吃掉草稿)
+  - **無草稿的管理 modal(MembersModal / InviteModal)**: open state 蓋 `{ tripId, uid }` 章,trip / 帳號一變即 **derive 成關閉**(`useScheduleModals`),並以 `key={currentTrip.id}` remount 清掉 pending confirm(remove / transfer / leave)—— 否則重開會復活上一個 trip 的確認面板
+  - `useFormModal.scopeChanged` 對「captured 存在但 live scope 是 undefined」fail-closed
 - **autofocus**: 第一個 input 用 `useAutoFocus(ref, isOpen)` 自動 focus
 - **bottom sheet**: `BottomSheet` 元件 + `FormModalShell` 包一層 SaveButton,所有 form modal(Schedule/Booking/Expense/Wish/Planning/EditTrip)共用
 

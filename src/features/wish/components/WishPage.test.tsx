@@ -7,8 +7,13 @@ const harness = vi.hoisted(() => ({
   setModalError: vi.fn(),
   createWish: vi.fn(),
   deleteWish: vi.fn(),
+  setDeadline: vi.fn(),
   wishes: [] as Wish[],
   writeBlockReason: null as string | null,
+  modalScopeChanged: false,
+  cloudTripId: 'trip-1',
+  // Non-null = a trip-level voting deadline; toMillis in the past closes voting.
+  deadlineAt: null as { toMillis: () => number } | null,
 }))
 
 const toastMocks = vi.hoisted(() => ({
@@ -21,15 +26,15 @@ vi.mock('@/hooks/useFeatureListPage', () => ({
     ctx: {
       status: 'cloud',
       trip: {
-        id: 'trip-1',
+        id: harness.cloudTripId,
         title: 'Tokyo',
-        wishVotingDeadlineAt: null,
+        wishVotingDeadlineAt: harness.deadlineAt,
         wishVotingDeadlineNotifiedAt: null,
       },
     },
     uid: 'u1',
-    cloudTripId: 'trip-1',
-    mutationTripId: 'trip-1',
+    cloudTripId: harness.cloudTripId,
+    mutationTripId: harness.cloudTripId,
     isDemo: false,
     isOwner: false,
     canOwnerWrite: false,
@@ -39,6 +44,7 @@ vi.mock('@/hooks/useFeatureListPage', () => ({
       key: 'new',
       editTarget: null as Wish | null,
       saveError: null,
+      scopeChanged: harness.modalScopeChanged,
       openAdd: vi.fn(),
       openEdit: vi.fn(),
       close: harness.closeModal,
@@ -66,7 +72,7 @@ vi.mock('../hooks/useWishes', async () => {
 vi.mock('@/features/members/hooks/useMembers', () => ({ useMembers: () => ({ data: [] }) }))
 vi.mock('@/features/members/utils', () => ({ membersToTripMembers: () => [] }))
 vi.mock('@/features/trips/hooks/useTrips', () => ({
-  useSetWishVotingDeadline: () => ({ mutate: vi.fn(), isPending: false }),
+  useSetWishVotingDeadline: () => ({ mutate: harness.setDeadline, isPending: false }),
 }))
 vi.mock('@/services/clientCompatibility', () => ({
   getClientWriteBlockReason: () => harness.writeBlockReason,
@@ -98,8 +104,20 @@ vi.mock('./WishCard', () => ({
       : null,
 }))
 vi.mock('./WishDetailSheet', () => ({ default: () => null }))
-vi.mock('./WishVotingDeadlineBar', () => ({ default: () => null }))
-vi.mock('./WishDeadlineSheet', () => ({ default: () => null }))
+// Unconditional open button: the real bar gates on canSetDeadline, but these
+// tests drive the sheet lifecycle, not the affordance gating.
+vi.mock('./WishVotingDeadlineBar', () => ({
+  default: ({ onOpenSheet }: { onOpenSheet: () => void }) => (
+    <button type="button" onClick={onOpenSheet}>mock open deadline</button>
+  ),
+}))
+vi.mock('./WishDeadlineSheet', () => ({
+  default: ({ onSave }: { onSave: (d: Date | null) => void }) => (
+    <div role="dialog" aria-label="deadline-sheet">
+      <button type="button" onClick={() => onSave(null)}>mock deadline save</button>
+    </div>
+  ),
+}))
 vi.mock('./WishListSkeleton', () => ({ default: () => null }))
 vi.mock('./WishPageSkeleton', () => ({ default: () => null }))
 vi.mock('@/components/ui/NoTripEmptyState', () => ({ default: () => null }))
@@ -120,8 +138,12 @@ beforeEach(() => {
   harness.setModalError.mockReset()
   harness.createWish.mockReset()
   harness.deleteWish.mockReset()
+  harness.setDeadline.mockReset()
   harness.wishes = []
   harness.writeBlockReason = null
+  harness.modalScopeChanged = false
+  harness.cloudTripId = 'trip-1'
+  harness.deadlineAt = null
   toastMocks.error.mockReset()
 })
 
@@ -169,5 +191,45 @@ describe('WishPage write compatibility preflight', () => {
 
     expect(harness.deleteWish).not.toHaveBeenCalled()
     expect(toastMocks.error).toHaveBeenCalledWith('請先更新 App 才能儲存')
+  })
+})
+
+describe('WishPage cross-trip scope', () => {
+  it('checks the scope BEFORE the live trip deadline so the draft survives', () => {
+    // The form was opened on trip A; the live trip is now an already-closed
+    // trip B. votingClosed-first would close the modal and eat the draft —
+    // the scope refusal must win.
+    harness.modalScopeChanged = true
+    harness.deadlineAt = { toMillis: () => 1 }   // long past → votingClosed
+
+    render(<WishPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'mock wish save' }))
+
+    expect(harness.createWish).not.toHaveBeenCalled()
+    expect(harness.setModalError).toHaveBeenCalledWith('旅程或帳號已切換，請關閉表單後重新開啟')
+    expect(harness.closeModal).not.toHaveBeenCalled()
+    expect(toastMocks.error).not.toHaveBeenCalledWith('投票已截止')
+  })
+
+  it('refuses to write a deadline into a trip the sheet was not opened on', () => {
+    const view = render(<WishPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'mock open deadline' }))
+
+    harness.cloudTripId = 'trip-2'
+    view.rerender(<WishPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'mock deadline save' }))
+
+    expect(harness.setDeadline).not.toHaveBeenCalled()
+    expect(toastMocks.error).toHaveBeenCalledWith('旅程或帳號已切換，請關閉表單後重新開啟')
+    // Sheet stays open — the owner closes and redoes it deliberately.
+    expect(screen.getByRole('dialog', { name: 'deadline-sheet' })).toBeTruthy()
+  })
+
+  it('saves the deadline when the sheet scope still matches (positive control)', () => {
+    render(<WishPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'mock open deadline' }))
+    fireEvent.click(screen.getByRole('button', { name: 'mock deadline save' }))
+
+    expect(harness.setDeadline).toHaveBeenCalledWith({ tripId: 'trip-1', deadlineAt: null })
   })
 })

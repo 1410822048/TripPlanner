@@ -62,8 +62,16 @@ export default function ExpensePage() {
   // 「済み」on a suggestion row — drives the sheet open + seeds it with
   // the balance-engine's suggested (fromUid, toUid, amountMinor). Sheet
   // closes by setting back to null; the parent owns the mutation.
+  // Carries the {tripId, uid} the sheet was opened under: the Worker's
+  // expectedRemainingMinor check is only a numeric CAS — two trips with
+  // the same pair and the same remaining would pass it, so a background
+  // trip switch must be refused client-side.
   const [recordTarget, setRecordTarget] = useState<
-    { fromUid: string; toUid: string; amountMinor: number } | null
+    {
+      suggestion: { fromUid: string; toUid: string; amountMinor: number }
+      tripId:     string | undefined
+      uid:        string | undefined
+    } | null
   >(null)
   const [expenseOverlay, setExpenseOverlay] = useState<ExpenseOverlay>(null)
 
@@ -241,6 +249,14 @@ export default function ExpensePage() {
   function handleRecordSettlement(submit: SettlementRecordSubmit) {
     if (isDemo) { setRecordTarget(null); signIn.open(); return }
     if (!uid) { toast.error('正在準備登入，請稍候'); return }
+    // The mutation binds to the LIVE trip id, and the Worker's
+    // expectedRemainingMinor is only a numeric CAS — a same-pair,
+    // same-remaining trip B would accept trip A's record. Keep the sheet
+    // open so the receiver can close and redo it deliberately.
+    if (recordTarget && (recordTarget.tripId !== cloudTripId || recordTarget.uid !== uid)) {
+      toast.error(FORM_SCOPE_CHANGED_MESSAGE)
+      return
+    }
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) { toast.error(writeBlockReason); return }
     // Mint settlementId here (not inside the service) so the optimistic
@@ -383,7 +399,7 @@ export default function ExpensePage() {
           // currency they actually received in (for display + audit). The
           // cleared amount itself is fixed at pair-remaining (full clear);
           // the sheet only exposes currency + date + note.
-          setRecordTarget(suggestion)
+          setRecordTarget({ suggestion, tripId: cloudTripId, uid })
         }}
         onDeleteSettlement={id => {
           if (isDemo) { signIn.open(); return }
@@ -480,11 +496,11 @@ export default function ExpensePage() {
           ExpenseFormModal above). */}
       {recordTarget && (
         <SettlementRecordSheet
-          key={`${recordTarget.fromUid}-${recordTarget.toUid}-${recordTarget.amountMinor}`}
+          key={`${recordTarget.suggestion.fromUid}-${recordTarget.suggestion.toUid}-${recordTarget.suggestion.amountMinor}`}
           isOpen
           onClose={() => setRecordTarget(null)}
           onSave={handleRecordSettlement}
-          suggested={recordTarget}
+          suggested={recordTarget.suggestion}
           tripCurrency={currency}
           // Ghosts included: a departed member can still be the PAYER of a
           // suggestion (their debt outlives their membership), and the
