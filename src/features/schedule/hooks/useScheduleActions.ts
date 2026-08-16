@@ -3,7 +3,7 @@
 // Errors surface in the modal's inline banner rather than a toast, which
 // is why the mutations are created `silent`.
 import { useCreateSchedule, useDeleteSchedule, useUpdateSchedule, nextScheduleOrder } from './useSchedules'
-import type { UseFormModalResult } from '@/hooks/useFormModal'
+import { FORM_SCOPE_CHANGED_MESSAGE, type UseFormModalResult } from '@/hooks/useFormModal'
 import type { CreateScheduleInput, Schedule } from '@/types'
 import { buildScheduleUpdate } from '../services/scheduleService'
 import { getClientWriteBlockReason } from '@/services/clientCompatibility'
@@ -39,6 +39,9 @@ export function useScheduleActions(opts: {
   async function onScheduleSave(data: CreateScheduleInput) {
     if (isDemo) { scheduleModal.close(); openSignIn(); return }
     if (!uid) { toast.error('正在準備登入，請稍候'); return }
+    // The mutations bind to the LIVE trip id — a form opened on another trip
+    // (background reselect after kick / remote delete) must not write here.
+    if (scheduleModal.scopeChanged) { scheduleModal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
     scheduleModal.clearError()
     try {
       if (scheduleModal.editTarget) {
@@ -70,6 +73,7 @@ export function useScheduleActions(opts: {
   async function onScheduleDelete() {
     if (!scheduleModal.editTarget) { scheduleModal.close(); return }
     if (isDemo) { scheduleModal.close(); openSignIn(); return }
+    if (scheduleModal.scopeChanged) { scheduleModal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
     // A sheet that was open when the epoch flipped still fires this, and the
     // global toast deliberately skips UpdateRequiredError — surface it in the
     // modal banner the same way save does.

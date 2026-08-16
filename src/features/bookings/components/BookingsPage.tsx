@@ -28,6 +28,7 @@ import { bookingDisplayName, BOOKING_TYPE_META, BOOKING_TYPE_ORDER } from '../ut
 import { hasShareParams, sharedBookingDraftFromSearch, type SharedBookingDraft } from '../linkDraft'
 import { parseStoredDate, toLocalDateString } from '@/utils/dates'
 import { getClientWriteBlockReason, UPDATE_REQUIRED_EMPTY_STATE } from '@/services/clientCompatibility'
+import { FORM_SCOPE_CHANGED_MESSAGE } from '@/hooks/useFormModal'
 
 type BookingOverlay =
   | { kind: 'detail'; bookingId: string }
@@ -145,6 +146,10 @@ export default function BookingsPage() {
   function handleSave({ input, coverImage, document }: BookingFormResult) {
     if (isDemo) { setSharedDraft(null); modal.close(); signIn.open(); return }
     if (!uid) { setSharedDraft(null); toast.error('正在準備登入，請稍候'); return }
+    // Before setSharedDraft(null): a refused save must keep the draft. The
+    // mutations bind to the LIVE trip id — a form opened on another trip
+    // (background reselect after kick / remote delete) must not write here.
+    if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) {
       modal.setError(writeBlockReason)
@@ -182,6 +187,7 @@ export default function BookingsPage() {
   function handleCreateManyFromPdf({ inputs, document }: BookingFormBatchResult) {
     if (isDemo) { setSharedDraft(null); modal.close(); signIn.open(); return }
     if (!uid) { setSharedDraft(null); toast.error('正在準備登入，請稍候'); return }
+    if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) {
       modal.setError(writeBlockReason)
@@ -265,6 +271,7 @@ export default function BookingsPage() {
     const target = modal.editTarget
     if (!target) return
     if (isDemo) { modal.close(); signIn.open(); return }
+    if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) {
       modal.setError(writeBlockReason)

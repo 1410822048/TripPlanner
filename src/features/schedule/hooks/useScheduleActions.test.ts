@@ -38,9 +38,9 @@ const input = (over: Partial<CreateScheduleInput> = {}): CreateScheduleInput => 
 const schedule = (over: Partial<Schedule> & { id: string }): Schedule =>
   ({ tripId: 't1', order: 0, ...input(), ...over }) as Schedule
 
-function makeModal(editTarget: Schedule | null = null) {
+function makeModal(editTarget: Schedule | null = null, scopeChanged = false) {
   return {
-    isOpen: true, key: 'k', editTarget, saveError: null,
+    isOpen: true, key: 'k', editTarget, saveError: null, scopeChanged,
     openAdd: vi.fn(), openEdit: vi.fn(), close: vi.fn(),
     setError: vi.fn(), clearError: vi.fn(),
   } as unknown as UseFormModalResult<Schedule> & { close: ReturnType<typeof vi.fn>; setError: ReturnType<typeof vi.fn> }
@@ -133,6 +133,16 @@ describe('useScheduleActions save', () => {
     expect(mutationMocks.create).not.toHaveBeenCalled()
     expect(toastMocks.error).toHaveBeenCalled()
   })
+
+  it('refuses to save a draft into a trip the form was not opened on', async () => {
+    const { hook, modal } = render({ modal: makeModal(null, true) })
+
+    await act(async () => { await hook.result.current.onScheduleSave(input()) })
+
+    expect(mutationMocks.create).not.toHaveBeenCalled()
+    expect(modal.setError).toHaveBeenCalledWith('旅程或帳號已切換，請關閉表單後重新開啟')
+    expect(modal.close).not.toHaveBeenCalled()
+  })
 })
 
 describe('useScheduleActions delete', () => {
@@ -163,6 +173,18 @@ describe('useScheduleActions delete', () => {
 
     expect(mutationMocks.remove).not.toHaveBeenCalled()
     expect(modal.close).toHaveBeenCalled()
+  })
+
+  it('refuses to delete through a form opened on another trip', async () => {
+    const { hook, modal } = render({ modal: makeModal(schedule({ id: 'a' }), true) })
+
+    await act(async () => { await hook.result.current.onScheduleDelete() })
+
+    // The delete mutation is bound to the LIVE trip id — deleting 'a' there
+    // would target a doc in the wrong trip.
+    expect(mutationMocks.remove).not.toHaveBeenCalled()
+    expect(modal.setError).toHaveBeenCalledWith('旅程或帳號已切換，請關閉表單後重新開啟')
+    expect(modal.close).not.toHaveBeenCalled()
   })
 
   it('surfaces the stale-bundle reason in the modal banner instead of deleting', async () => {

@@ -38,6 +38,7 @@ import { rankWishes, toConsensus } from '../utils'
 import { WISH_CATEGORIES } from '../categories'
 import { useSetWishVotingDeadline } from '@/features/trips/hooks/useTrips'
 import { getClientWriteBlockReason } from '@/services/clientCompatibility'
+import { FORM_SCOPE_CHANGED_MESSAGE } from '@/hooks/useFormModal'
 
 export default function WishPage() {
   const { ctx, uid, cloudTripId, mutationTripId, isDemo, isOwner, canOwnerWrite, writeCompatible, modal, signIn } =
@@ -139,6 +140,9 @@ export default function WishPage() {
     if (votingClosed) { modal.close(); toast.error('投票已截止'); return }
     if (isDemo) { modal.close(); signIn.open(); return }
     if (!uid) { toast.error('正在準備登入，請稍候'); return }
+    // The mutations bind to the LIVE trip id — a form opened on another trip
+    // (background reselect after kick / remote delete) must not write here.
+    if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
 
     // Optimistic close (mirrors ExpensePage). Modal closes immediately;
     // the hook's onMutate adds an overlay operation so the card shows at
@@ -169,6 +173,7 @@ export default function WishPage() {
     if (!modal.editTarget) return
     if (votingClosed) { modal.close(); toast.error('投票已截止'); return }
     if (isDemo) { modal.close(); signIn.open(); return }
+    if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
     const target = modal.editTarget
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) {

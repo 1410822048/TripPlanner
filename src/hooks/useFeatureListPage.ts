@@ -74,16 +74,21 @@ export interface FeatureListPageState<T extends Identifiable> {
 export function useFeatureListPage<T extends Identifiable>(): FeatureListPageState<T> {
   const ctx = useTripContext()
   const uid = useUid()
-  const modal = useFormModal<T>()
+
+  const cloudTripId    = ctx.status === 'cloud' ? ctx.trip.id : undefined
+  const mutationTripId = cloudTripId ?? ''
+  const isDemo         = ctx.status === 'demo'
+
+  // The mutation hooks below bind to the LIVE trip id, so the modal captures
+  // {tripId, uid} at open — `modal.scopeChanged` lets save/delete refuse when
+  // a background reselect (kick / remote delete) or an account transition
+  // swapped the trip out from under an open form.
+  const modal = useFormModal<T>({ tripId: cloudTripId, uid })
   const [signInOpen, setSignInOpen] = useState(false)
 
   // Compiler memoises these — no manual useCallback needed.
   const openSignIn  = () => setSignInOpen(true)
   const closeSignIn = () => setSignInOpen(false)
-
-  const cloudTripId    = ctx.status === 'cloud' ? ctx.trip.id : undefined
-  const mutationTripId = cloudTripId ?? ''
-  const isDemo         = ctx.status === 'demo'
 
   // Role gates baked into the abstraction so individual pages don't
   // each re-derive them (the duplicated `useCanWrite(cloudTripId, isDemo)`

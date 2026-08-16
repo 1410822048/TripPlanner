@@ -35,6 +35,7 @@ import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { currencySymbol } from '@/utils/currency'
 import { formatMinorAmount, formatMinorNumber } from '@/utils/money'
 import { getClientWriteBlockReason } from '@/services/clientCompatibility'
+import { FORM_SCOPE_CHANGED_MESSAGE } from '@/hooks/useFormModal'
 
 type ExpenseOverlay =
   | { kind: 'detail'; expenseId: string }
@@ -191,6 +192,9 @@ export default function ExpensePage() {
   function handleSave({ input, attachment }: ExpenseFormResult) {
     if (isDemo) { modal.close(); signIn.open(); return }
     if (!uid) { toast.error('正在準備登入，請稍候'); return }
+    // The mutations bind to the LIVE trip id — a form opened on another trip
+    // (background reselect after kick / remote delete) must not write here.
+    if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
 
     // Optimistic close: the modal goes away IMMEDIATELY and the overlay
     // shows the new row before Firestore + Storage have done anything.

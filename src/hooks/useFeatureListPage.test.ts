@@ -1,4 +1,4 @@
-import { renderHook } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
@@ -6,13 +6,15 @@ const harness = vi.hoisted(() => ({
   roleCanWrite:   true,
   roleIsOwner:    true,
   updateRequired: false,
+  cloudTripId:    'trip-1',
+  uid:            'uid-1' as string | undefined,
 }))
 
-vi.mock('./useAuth', () => ({ useUid: () => 'uid-1' }))
+vi.mock('./useAuth', () => ({ useUid: () => harness.uid }))
 vi.mock('./useTripContext', () => ({
   useTripContext: () => harness.isDemo
     ? { status: 'demo',  trip: { id: 'demo-trip' } }
-    : { status: 'cloud', trip: { id: 'trip-1' } },
+    : { status: 'cloud', trip: { id: harness.cloudTripId } },
 }))
 vi.mock('@/features/trips/hooks/useTripRole', () => ({
   useCanWrite:    () => harness.roleCanWrite,
@@ -31,6 +33,8 @@ beforeEach(() => {
   harness.roleCanWrite   = true
   harness.roleIsOwner    = true
   harness.updateRequired = false
+  harness.cloudTripId    = 'trip-1'
+  harness.uid            = 'uid-1'
 })
 
 describe('useFeatureListPage write gates', () => {
@@ -83,6 +87,21 @@ describe('useFeatureListPage write gates', () => {
     expect({ canWrite, roleCanWrite, isOwner, canOwnerWrite, writeCompatible }).toEqual({
       canWrite: false, roleCanWrite: false, isOwner: false, canOwnerWrite: false, writeCompatible: false,
     })
+  })
+
+  it('wires the modal scope so a background trip switch flags the open form', () => {
+    const { result, rerender } = renderHook(() => useFeatureListPage<{ id: string }>())
+
+    act(() => result.current.modal.openAdd())
+    expect(result.current.modal.scopeChanged).toBe(false)
+
+    // Kicked / trip deleted elsewhere → useCurrentTripSync reselects while
+    // the form stays mounted. The save handlers key on this flag to refuse
+    // writing the trip-A draft into trip B.
+    harness.cloudTripId = 'trip-2'
+    rerender()
+
+    expect(result.current.modal.scopeChanged).toBe(true)
   })
 
   it('leaves demo affordances open so the sign-in prompt stays reachable', () => {

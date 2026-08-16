@@ -27,6 +27,7 @@ const harness = vi.hoisted(() => ({
   deleteSettlement: vi.fn(),
   modalIsOpen: false,
   modalEditTarget: null as Expense | null,
+  modalScopeChanged: false,
   writeBlockReason: null as string | null,
 }))
 
@@ -75,6 +76,7 @@ vi.mock('@/hooks/useFeatureListPage', () => ({
       isOpen: harness.modalIsOpen,
       key: 'closed',
       editTarget: harness.modalEditTarget,
+      scopeChanged: harness.modalScopeChanged,
       openAdd: harness.openAdd,
       openEdit: harness.openEdit,
       close: harness.closeModal,
@@ -258,12 +260,28 @@ beforeEach(() => {
   harness.deleteSettlement.mockReset()
   harness.modalIsOpen = false
   harness.modalEditTarget = null
+  harness.modalScopeChanged = false
   harness.writeBlockReason = null
   toastMocks.error.mockReset()
   toastMocks.success.mockReset()
 })
 
 describe('ExpensePage read-first expense flow', () => {
+  it('refuses to save a draft into a trip the form was not opened on', () => {
+    harness.modalIsOpen = true
+    harness.modalScopeChanged = true
+
+    render(<ExpensePage />)
+    fireEvent.click(screen.getByRole('button', { name: 'mock expense save' }))
+
+    // The trip was switched out from under the open form (background
+    // reselect after a kick / remote delete) — the trip-A draft must not
+    // be written into trip B, and the draft must survive for the user.
+    expect(harness.createExpense).not.toHaveBeenCalled()
+    expect(harness.setModalError).toHaveBeenCalledWith('旅程或帳號已切換，請關閉表單後重新開啟')
+    expect(harness.closeModal).not.toHaveBeenCalled()
+  })
+
   it('keeps the optimistic-close form mounted when this client is write-incompatible', () => {
     harness.modalIsOpen = true
     harness.modalEditTarget = null

@@ -5,6 +5,7 @@
 // trip a copy would snapshot.
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { useUid } from '@/hooks/useAuth'
 import { useFormModal, type UseFormModalResult } from '@/hooks/useFormModal'
 import type { Schedule, Trip } from '@/types'
 import type { MenuActionKey } from '@/features/trips/types'
@@ -54,7 +55,11 @@ export function useScheduleModals(opts: {
 }): ScheduleModalsState {
   const { isDemo, currentTrip } = opts
 
-  const scheduleModal = useFormModal<Schedule>()
+  // Same scope capture as useFeatureListPage: the save/delete mutations bind
+  // to the live trip id, so a form opened on trip A must refuse to write
+  // after a background reselect swapped it to trip B.
+  const uid = useUid()
+  const scheduleModal = useFormModal<Schedule>({ tripId: currentTrip?.id, uid })
   const [scheduleDetailId, setScheduleDetailId] = useState<string | null>(null)
   const [editTripOpen,   setEditTripOpen]   = useState(false)
   const [createTripOpen, setCreateTripOpen] = useState(false)

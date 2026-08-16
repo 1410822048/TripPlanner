@@ -29,6 +29,7 @@ import type { TripMember } from '@/features/trips/types'
 import PlanningFormModal from './PlanningFormModal'
 import PlanningRow from './PlanningRow'
 import { getClientWriteBlockReason } from '@/services/clientCompatibility'
+import { FORM_SCOPE_CHANGED_MESSAGE } from '@/hooks/useFormModal'
 
 type PlanningMember = TripMember & { name: string }
 
@@ -102,6 +103,9 @@ export default function PlanningPage() {
 
   async function handleSave(input: CreatePlanItemInput) {
     if (isDemo) { modal.close(); signIn.open(); return }
+    // The mutations bind to the LIVE trip id — a form opened on another trip
+    // (background reselect after kick / remote delete) must not write here.
+    if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
     // Before the role check: canWrite folds in compatibility, so an
     // out-of-date editor would otherwise be told they lack permission.
     const writeBlockReason = getClientWriteBlockReason()
@@ -127,6 +131,7 @@ export default function PlanningPage() {
   async function handleDelete() {
     if (!modal.editTarget) return
     if (isDemo) { modal.close(); signIn.open(); return }
+    if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) { modal.setError(writeBlockReason); return }
     if (!canWrite) { toast.error('你沒有刪除權限'); return }
