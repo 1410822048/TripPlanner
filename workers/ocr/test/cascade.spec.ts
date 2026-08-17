@@ -157,6 +157,26 @@ describe('cascadeMemberAdd removal-aware refuse', () => {
 		])
 	})
 
+	it('guards every transform with exists:true so no deleted doc is resurrected', async () => {
+		// A transform on a MISSING doc does not fail -- Firestore creates it
+		// carrying only the transformed field. A doc deleted between
+		// listDocNames and commit would come back as a memberIds-only shell
+		// that no schema parses and orphan-purge reads as "still referenced".
+		vi.mocked(firestore.listDocNames).mockResolvedValueOnce([
+			'projects/demo/databases/(default)/documents/trips/trip-1/expenses/e1',
+		])
+		vi.mocked(firestore.getDocFields).mockResolvedValueOnce(rosterFields(['caller-uid']))
+		txReads.push(rosterFields(['caller-uid']))
+
+		await cascade()
+
+		const writes = txCommits.flat()
+		expect(writes.length).toBeGreaterThan(1)   // entity doc + trip doc + seed
+		for (const w of writes) {
+			expect(w.currentDocument).toEqual({ exists: true })
+		}
+	})
+
 	it('seeds the member doc with the roster read INSIDE its transaction', async () => {
 		vi.mocked(firestore.getDocFields).mockResolvedValueOnce(rosterFields(['caller-uid', 'other-member']))
 		txReads.push(rosterFields(['caller-uid', 'other-member']))

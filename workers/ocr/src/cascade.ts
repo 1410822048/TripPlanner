@@ -200,8 +200,8 @@ async function runCascade(
   //
   // Same roster guard as the chunks, and the roster comes from the
   // transaction's own read rather than a separate GET: a kick landing here
-  // would otherwise seed a doc it is about to delete, and the transform
-  // would fail on the missing doc AFTER the ACL damage was already done.
+  // would otherwise seed a doc it is about to delete, using a roster that
+  // was already stale when it was fetched.
   await runRosterGuardedTx(accessToken, projectId, req, roster => [
     arrayUnionWrite(
       buildDocName(projectId, `trips/${req.tripId}/members/${req.memberUid}`),
@@ -219,6 +219,18 @@ function arrayUnionWrite(document: string, memberUids: string[]): TxWrite {
   return {
     op: 'transform',
     document,
+    // MANDATORY. A transform-only write on a MISSING document does not
+    // fail -- Firestore commits it 200 and CREATES the doc carrying only
+    // the transformed field (verified against the emulator). Without this
+    // precondition, a doc deleted between listDocNames and commit comes
+    // back as a shell with nothing but memberIds: an entity no schema
+    // parses, that orphan-purge then reads as "still referenced". With it,
+    // the commit fails 404 NOT_FOUND (note: not 412, so the tx wrapper
+    // treats it as definitive rather than burning the retry budget), and
+    // the caller recovers by re-running the cascade -- /invite-redeem's
+    // already-member branch re-lists the docs, this time without the
+    // deleted one.
+    currentDocument: { exists: true },
     fieldTransforms: [{
       fieldPath:             'memberIds',
       appendMissingElements: { values: memberUids.map(u => ({ stringValue: u })) },

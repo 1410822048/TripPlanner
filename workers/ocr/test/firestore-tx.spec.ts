@@ -116,6 +116,50 @@ describe('runFirestoreTransaction', () => {
 		expect(result).toBe('done')
 	})
 
+	it('serializes a transform write with its exists precondition', async () => {
+		// The precondition is the whole reason the membership cascade can use
+		// a transform safely: WITHOUT it Firestore commits a transform on a
+		// missing doc 200 and creates a shell carrying only that field
+		// (verified against the emulator). If it were dropped in encoding,
+		// every deleted-mid-cascade doc would come back as a shell.
+		let commitBody: Record<string, unknown> | undefined
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input)
+			if (url.includes(':beginTransaction')) {
+				return new Response(JSON.stringify({ transaction: 'tx-1' }), { status: 200 })
+			}
+			if (url.includes(':commit')) {
+				commitBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+				return new Response(JSON.stringify({ commitTime: 't', writeResults: [{}] }), { status: 200 })
+			}
+			throw new Error(`unexpected URL ${url}`)
+		}) as typeof fetch
+
+		await runFirestoreTransaction('fake-token', 'demo', async () => ({
+			writes: [{
+				op:              'transform',
+				document:        'projects/demo/databases/(default)/documents/trips/t1/expenses/e1',
+				currentDocument: { exists: true },
+				fieldTransforms: [{
+					fieldPath:             'memberIds',
+					appendMissingElements: { values: [{ stringValue: 'u1' }] },
+				}],
+			}],
+			result: undefined,
+		}))
+
+		expect((commitBody as { writes: unknown[] }).writes).toEqual([{
+			transform: {
+				document: 'projects/demo/databases/(default)/documents/trips/t1/expenses/e1',
+				fieldTransforms: [{
+					fieldPath:             'memberIds',
+					appendMissingElements: { values: [{ stringValue: 'u1' }] },
+				}],
+			},
+			currentDocument: { exists: true },
+		}])
+	})
+
 	it('retries on 409 ABORTED -- closes the stale-read race', async () => {
 		// First commit: 409 (someone wrote one of our read docs).
 		// Wrapper begins a fresh tx, re-reads, commits successfully.

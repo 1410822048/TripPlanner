@@ -384,7 +384,9 @@ T2 kick 的 strip cascade 清空各 doc   T3 cascade 的 arrayUnion 落地 → M
 
 roster strip 寫的就是每個 chunk tx 讀的那份 trip doc,所以:strip 前開始的 chunk 會在 commit 時 ABORT(wrapper 重試 → 重讀 → 拒絕),strip 後開始的 chunk 直接讀到已剝離的 roster 而拒絕。strip 之前就 commit 的 chunk 由 kick 自己的 strip cascade 收乾淨。**不可改成單一大 transaction**(Firestore commit 上限 500 writes);chunk 之間不需要原子性 —— arrayUnion 冪等,部分套用可重跑。
 
-member doc 的 roster seed 走同一個 guard,且 roster 取自**該 tx 自己的讀**而非另一次 GET:否則 kick 落在中間時,會把 roster seed 到一個即將被刪的 doc 上,transform 在 missing doc 上失敗時 ACL 傷害已經造成。`TxWrite` 因此新增 `op: 'transform'`(top-level `transform`,對應 SDK 的 arrayUnion;與 `update` 空 mask 不同,transform 打在 missing doc 上會失敗而非生出空殼)。
+member doc 的 roster seed 走同一個 guard,且 roster 取自**該 tx 自己的讀**而非另一次 GET(否則 kick 落在中間時,會拿已經過期的 roster 去 seed 一個即將被刪的 doc)。
+
+`TxWrite` 為此新增 `op: 'transform'`(top-level `transform`,對應 SDK 的 arrayUnion)。**每一筆都必須帶 `currentDocument: { exists: true }`** —— transform 打在不存在的 doc 上**不會失敗**:Firestore 回 200 並建立一個只帶該欄位的空殼(已對 emulator 實測;SDK `updateDoc` 的 not-found 來自 precondition,不是 transform 本身)。少了它,`listDocNames` 與 commit 之間被刪掉的 doc 會復活成沒有任何 schema 能 parse 的空殼,而 orphan-purge 還會判定它「仍被引用」。帶了它,commit 失敗碼是 **404 NOT_FOUND(不是 412)**,所以 tx wrapper 視為確定性失敗、不會空燒重試預算;呼叫端靠重跑 cascade 收斂(`/invite-redeem` 的 already-member 分支會重新 list,那時已不含被刪的 doc)。
 
 **P1 closed 2026-05-20** — 之前的 `tripDeletionActive` cascade-window 是 KNOWN BROKEN(owner 可 raw SDK 開窗繞過 tombstone)。透過把 tripCascade 搬到 Worker `/cascade-trip-delete`(admin SDK bypass rules)+ `trips/{id}` 根 doc 與 `expenses/{id}` 子集合 doc 各上 `allow delete: if false` 封死兩條 integrity-critical hard-delete 路徑。**只有這兩種 doc 必走 Worker**;其他 subcollections(schedules / bookings / wishes / planning / settlements / invites / members)維持原本的 `canWrite` / `isTripOwner` / `memberOfDoc` client-side delete rules — 正常編輯 UX,沒有 replay-style invariant 要保護。`deletionStartedAt` 欄位 + helper 全數移除。10-day receipt-purge cron 同批 ship,跑 daily UTC 03:00。
 

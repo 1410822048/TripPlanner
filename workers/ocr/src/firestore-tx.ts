@@ -78,10 +78,14 @@ export interface TxUpdateWrite {
  *
  *  `appendMissingElements` is the REST equivalent of the SDK's
  *  `arrayUnion` — idempotent, so a retried transaction re-applying it is
- *  a no-op. Unlike an `update` with an empty mask, a transform on a
- *  MISSING document fails instead of conjuring an empty doc, which is
- *  what the membership cascade wants: a doc deleted mid-cascade must
- *  surface, not be recreated as a shell carrying only memberIds. */
+ *  a no-op.
+ *
+ *  A transform on a MISSING document does NOT fail: Firestore commits it
+ *  200 and creates the doc carrying only the transformed field (the SDK's
+ *  `updateDoc` gets its does-not-exist error from the precondition, not
+ *  from the transform). Callers that must not conjure documents have to
+ *  pass `currentDocument: { exists: true }` themselves — the commit then
+ *  fails 404 NOT_FOUND, which the retry classifier treats as definitive. */
 export interface TxTransformWrite {
   op:              'transform'
   /** Full document resource name -- same shape as TxUpdateWrite.document. */
