@@ -4,7 +4,15 @@
 // Mutation paths only read this in-memory snapshot synchronously; allowing a
 // network request here would destroy the immediate optimistic interaction.
 
-export const CLIENT_SCHEMA_EPOCH = 1 as const
+/** Bump whenever a deployed bundle stops being able to produce a valid
+ *  write — a new mandatory request field, a changed wire contract, a
+ *  removed endpoint. Raising the manifest's `minimumWriteEpoch` past an
+ *  installed bundle's value is the ONLY thing that stops it writing;
+ *  shipping Pages does not evict a Service Worker already on a device.
+ *
+ *  Epoch 2: `/expense-update` requires `expectedCurrentReceiptPath` on
+ *  receipt-touching writes, which epoch-1 bundles never send. */
+export const CLIENT_SCHEMA_EPOCH = 2 as const
 export const CLIENT_COMPATIBILITY_STORAGE_KEY = 'tripmate:client-compatibility:v1'
 
 const MANIFEST_URL = '/compatibility.json'

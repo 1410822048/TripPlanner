@@ -1,4 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { CLIENT_SCHEMA_EPOCH } from './clientCompatibility'
+
+/** Minimums expressed RELATIVE to the bundle's own epoch. Hardcoding
+ *  literals here made every epoch bump look like a regression: the gate's
+ *  contract is "block when minimum exceeds MY epoch", not "block at 2". */
+const SAME    = CLIENT_SCHEMA_EPOCH
+const BLOCKED = CLIENT_SCHEMA_EPOCH + 1
+const OLDER   = CLIENT_SCHEMA_EPOCH - 1
 
 const jsonResponse = (value: unknown, init: ResponseInit = {}) => new Response(
   JSON.stringify(value),
@@ -41,8 +49,8 @@ describe('client compatibility manifest contract', () => {
   it('allows an equal epoch and blocks an obsolete client synchronously', async () => {
     const service = await loadService()
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ revision: 1, minimumWriteEpoch: 1 }))
-      .mockResolvedValueOnce(jsonResponse({ revision: 2, minimumWriteEpoch: 2 }))
+      .mockResolvedValueOnce(jsonResponse({ revision: 1, minimumWriteEpoch: SAME }))
+      .mockResolvedValueOnce(jsonResponse({ revision: 2, minimumWriteEpoch: BLOCKED }))
     vi.stubGlobal('fetch', fetchMock)
 
     await service.refreshClientCompatibility()
@@ -58,9 +66,9 @@ describe('client compatibility manifest contract', () => {
   it('ignores older revisions but lets a newer revision lower the minimum for rollback', async () => {
     const service = await loadService()
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ revision: 5, minimumWriteEpoch: 2 }))
-      .mockResolvedValueOnce(jsonResponse({ revision: 4, minimumWriteEpoch: 0 }))
-      .mockResolvedValueOnce(jsonResponse({ revision: 6, minimumWriteEpoch: 1 }))
+      .mockResolvedValueOnce(jsonResponse({ revision: 5, minimumWriteEpoch: BLOCKED }))
+      .mockResolvedValueOnce(jsonResponse({ revision: 4, minimumWriteEpoch: OLDER }))
+      .mockResolvedValueOnce(jsonResponse({ revision: 6, minimumWriteEpoch: SAME }))
     vi.stubGlobal('fetch', fetchMock)
 
     await service.refreshClientCompatibility()
@@ -68,24 +76,24 @@ describe('client compatibility manifest contract', () => {
 
     await service.refreshClientCompatibility()
     expect(service.getClientCompatibilitySnapshot().manifest)
-      .toEqual({ revision: 5, minimumWriteEpoch: 2 })
+      .toEqual({ revision: 5, minimumWriteEpoch: BLOCKED })
 
     await service.refreshClientCompatibility()
     expect(service.getClientCompatibilitySnapshot())
-      .toEqual({ manifest: { revision: 6, minimumWriteEpoch: 1 }, updateRequired: false })
+      .toEqual({ manifest: { revision: 6, minimumWriteEpoch: SAME }, updateRequired: false })
   })
 
   it('rejects conflicting content at the same revision without changing the decision', async () => {
     const service = await loadService()
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ revision: 3, minimumWriteEpoch: 1 }))
-      .mockResolvedValueOnce(jsonResponse({ revision: 3, minimumWriteEpoch: 2 }))
+      .mockResolvedValueOnce(jsonResponse({ revision: 3, minimumWriteEpoch: SAME }))
+      .mockResolvedValueOnce(jsonResponse({ revision: 3, minimumWriteEpoch: BLOCKED }))
     vi.stubGlobal('fetch', fetchMock)
 
     await service.refreshClientCompatibility()
     await expect(service.refreshClientCompatibility()).rejects.toThrow('相同 revision')
     expect(service.getClientCompatibilitySnapshot())
-      .toEqual({ manifest: { revision: 3, minimumWriteEpoch: 1 }, updateRequired: false })
+      .toEqual({ manifest: { revision: 3, minimumWriteEpoch: SAME }, updateRequired: false })
   })
 
   it.each([
@@ -124,24 +132,24 @@ describe('client compatibility manifest contract', () => {
     expect(second).toBe(first)
     expect(fetchMock).toHaveBeenCalledOnce()
 
-    resolveFetch(jsonResponse({ revision: 1, minimumWriteEpoch: 1 }))
+    resolveFetch(jsonResponse({ revision: 1, minimumWriteEpoch: SAME }))
     await expect(first).resolves.toMatchObject({ updateRequired: false })
   })
 
   it('hydrates from storage and accepts only a newer cross-tab decision', async () => {
     window.localStorage.setItem(
       'tripmate:client-compatibility:v1',
-      JSON.stringify({ revision: 7, minimumWriteEpoch: 2 }),
+      JSON.stringify({ revision: 7, minimumWriteEpoch: BLOCKED }),
     )
     const service = await loadService()
 
     expect(service.getClientCompatibilitySnapshot().updateRequired).toBe(true)
     service.syncClientCompatibilityFromStorage(null)
-    service.syncClientCompatibilityFromStorage(JSON.stringify({ revision: 6, minimumWriteEpoch: 0 }))
+    service.syncClientCompatibilityFromStorage(JSON.stringify({ revision: 6, minimumWriteEpoch: OLDER }))
     expect(service.getClientCompatibilitySnapshot().updateRequired).toBe(true)
 
-    service.syncClientCompatibilityFromStorage(JSON.stringify({ revision: 8, minimumWriteEpoch: 1 }))
+    service.syncClientCompatibilityFromStorage(JSON.stringify({ revision: 8, minimumWriteEpoch: SAME }))
     expect(service.getClientCompatibilitySnapshot())
-      .toEqual({ manifest: { revision: 8, minimumWriteEpoch: 1 }, updateRequired: false })
+      .toEqual({ manifest: { revision: 8, minimumWriteEpoch: SAME }, updateRequired: false })
   })
 })

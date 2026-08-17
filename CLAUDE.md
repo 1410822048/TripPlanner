@@ -268,7 +268,8 @@ global MutationCache.onMutate:同步檢查 Schema Epoch(只讀 memory snapshot,�
 - **`activeDate` 以 trip 為鍵**(`{ tripId, date }`)。只做 `dateRange.includes()` 不夠 —— 兩個旅程日期重疊(或複製出來的旅程)時,舊日期仍然合法,刪除 / 退出後會被下一個旅程繼承。改成 keyed 後,任何切換都自動失效,刪除 / 退出因此完全不需要碰 `activeDate`(事前 reset 會在失敗時吃掉選日,放 `onSuccess` 則會被晚到的回呼清掉之後才選的日期)。
 - **`/route-apply` 是唯一不經 useMutation 的 Worker 寫入**,epoch preflight 放在 `applyRoutePreview` service choke point(涵蓋所有 stale-open caller);`routeErrorMessage` 對 `UpdateRequiredError` 回原文案,避免 fallback 成「請重新預覽後再試」這種兌現不了的建議。其他 Worker write 端點全部包在 mutation hooks 內,由全域 guard 涵蓋 —— 新增直接 `workerFetch` 寫入時必須比照。
 - **不走 TanStack 的直接寫入**(`features/account`)採分類豁免,不要一律擋:只有 `usePushNotifications.enable()`(建立完整 token entity)在 `Notification.requestPermission()` 前 preflight;`disable()` / 登出 `revokeStoredPushToken` / 權限撤銷後的清理屬 cleanup,**永遠放行**,否則舊 client 會被困在無法關閉通知的狀態;通知已讀 / 忽略只寫 timestamp 欄位,一併放行。
-- 發版採兩段式：先部署新 epoch client（minimum 仍容許舊版）→ 更新窗口後,提高 manifest minimum 再部署 Pages。Firestore 清空不會清掉裝置上的舊 PWA bundle。
+- 發版採兩段式：先部署新 epoch client（minimum 仍容許舊版）→ 更新窗口後,提高 manifest minimum 再部署 Pages。Firestore 清空不會清掉裝置上的舊 PWA bundle,**部署 Pages 也不會** —— 已安裝的 SW 會一直跑到使用者更新為止,所以「讓舊 bundle 停止寫入」只有提高 manifest minimum 這一條路。
+- 當這一版的 Worker 會**拒絕舊 bundle 送得出來的請求**(新必填欄位 / 改掉的 wire 契約)時,epoch 兩段式要再接第三段:cutoff 生效後才部署 strict Worker,否則兩者之間的窗口全是 400。範例見「附件 stale-replace 契約」。
 
 ## 複雜流程詳解
 
@@ -383,7 +384,16 @@ Soft-delete + Receipt-purge 設計:
 
 比對一律 `readNestedString(...) ?? null`,讓「map 不存在」與「明確 null」collapse 成同一件事(對應 client 的 `existing?.path ?? null`)。不符 → 409。
 
-**部署順序:Pages → Worker**(與 rules 的 tighten 相反)。top-level request schema 沒有 `.strict()`,Zod 預設 strip,所以新 client 送新欄位給舊 Worker 是安全的;反過來先上 Worker 會讓所有舊 bundle 的收據替換 / 刪除吃 400。
+**部署順序必須走 Schema Epoch 四階段**,單純「先 Pages 再 Worker」**不夠** —— 部署 Pages 不會清掉裝置上已安裝的 SW / bundle,舊 bundle 會繼續跑到使用者自己更新為止,strict Worker 一上線它的收據替換 / 刪除就吃 400:
+
+1. `CLIENT_SCHEMA_EPOCH = 2`、manifest 仍留 `minimumWriteEpoch: 1` → 部署 Pages
+2. 等更新窗口(讓裝置換到 epoch-2 bundle)
+3. manifest 提到 `{ revision: 2, minimumWriteEpoch: 2 }` → 再部署一次 Pages(manifest 由 Pages 提供)。此刻起 epoch-1 bundle **全面停寫**,由 `AppCompatibilityGate` 顯示更新 CTA —— 它不會再有機會送出缺欄位的請求
+4. 確認 cutoff 生效後,才部署 strict Worker
+
+方向與 rules tighten 相反(那邊是 Worker→Pages→rules);差別在於這裡的舊寫入者是**使用者裝置上的 bundle**,只有 epoch gate 能讓它停手。順帶一提 top-level request schema 沒有 `.strict()`(Zod 預設 strip),所以第 1 階段新欄位送到舊 Worker 會被無害丟棄。
+
+booking 的覆蓋率收緊不需要 epoch —— client 一直就送精確的 touched set,舊 bundle 本來就合規;需要 epoch 的是 expense 的新必填欄位。
 
 ### 成員 ACL cascade(add 側的 roster guard)
 
