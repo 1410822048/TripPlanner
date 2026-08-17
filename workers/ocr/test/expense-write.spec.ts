@@ -537,7 +537,13 @@ describe('expenseUpdate endpoint', () => {
 
 		await expenseUpdate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'TRIP_CURRENCY', receipt: null } },
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				patch: { mode: 'TRIP_CURRENCY', receipt: null },
+				// Deleting the receipt touches it, so the stale-replace
+				// snapshot is mandatory. The seeded expense carries none.
+				expectedCurrentReceiptPath: null,
+			},
 			'{}', BUCKET,
 		)
 
@@ -1116,6 +1122,7 @@ describe('expenseUpdate with intentIds (Phase 3.5)', () => {
 				tripId: TRIP_ID, expenseId: EXPENSE_ID,
 				patch: { mode: 'TRIP_CURRENCY', title: 'Edited title' },
 				intentIds: [NEW_FULL_INTENT_ID],
+				expectedCurrentReceiptPath: null,   // seeded expense has no receipt
 			},
 			'{}', BUCKET,
 		)
@@ -1173,6 +1180,131 @@ describe('expenseUpdate with intentIds (Phase 3.5)', () => {
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(ExpenseValidationError)
+	})
+
+	// ─── Stale-replace snapshot contract ────────────────────────────
+	// Mirrors bookings' expectedCurrentPaths coverage rule. The guard is
+	// worthless if a caller can simply omit the snapshot, so it is
+	// mandatory on exactly the writes that touch the receipt and rejected
+	// on the ones that don't.
+	const RECEIPT_PATH = `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/receipt.webp`
+
+	/** Seeded expense that already carries a receipt at RECEIPT_PATH. */
+	function seedAuthWithReceipt() {
+		const alive = aliveExpenseReadDoc()
+		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, {
+			...alive,
+			fields: {
+				...alive.fields,
+				receipt: { mapValue: { fields: {
+					path: { stringValue: RECEIPT_PATH },
+					type: { stringValue: 'image/webp' },
+				} } },
+			},
+		})
+	}
+
+	it('rejects a receipt REPLACE with no snapshot (the bypass)', async () => {
+		seedAuthWithReceipt()
+
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				patch: { mode: 'TRIP_CURRENCY', title: 'x' },
+				intentIds: [NEW_FULL_INTENT_ID],
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({
+			name:  'ExpenseValidationError',
+			field: 'expectedCurrentReceiptPath',
+		})
+		// Rejected pre-tx: the uploaded intent is never consumed.
+		expect(capturedTxResult).toBeNull()
+	})
+
+	it('rejects a receipt DELETE with no snapshot', async () => {
+		seedAuthWithReceipt()
+
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				patch: { mode: 'TRIP_CURRENCY', receipt: null },
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({
+			name:  'ExpenseValidationError',
+			field: 'expectedCurrentReceiptPath',
+		})
+		expect(capturedTxResult).toBeNull()
+	})
+
+	it('rejects a snapshot on an update that does not touch the receipt', async () => {
+		// Keeps the two sides from drifting into a silently-unguarded
+		// write: a caller sending the snapshot for a text-only edit has the
+		// wrong model of what it is doing.
+		seedAuthWithReceipt()
+
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				patch: { mode: 'TRIP_CURRENCY', title: 'text only' },
+				expectedCurrentReceiptPath: RECEIPT_PATH,
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({
+			name:  'ExpenseValidationError',
+			field: 'expectedCurrentReceiptPath',
+		})
+		expect(capturedTxResult).toBeNull()
+	})
+
+	it('rejects with 409 when the live receipt drifted since the editor loaded', async () => {
+		// Tab B replaced the receipt while this editor's form was open.
+		// Committing would overwrite Tab B's doc AND orphan its blob.
+		seedAuthWithReceipt()
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${NEW_FULL_INTENT_ID}`,
+			intentDoc(NEW_FULL_INTENT_ID, 'full', NEW_FULL_PATH))
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
+			storageMeta({ path: NEW_FULL_PATH, intentId: NEW_FULL_INTENT_ID, kind: 'full' }),
+		)
+
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				patch: { mode: 'TRIP_CURRENCY', title: 'x' },
+				intentIds: [NEW_FULL_INTENT_ID],
+				expectedCurrentReceiptPath: `trips/${TRIP_ID}/expenses/${EXPENSE_ID}/stale-old.webp`,
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ status: 409 })
+		expect(capturedTxResult).toBeNull()
+	})
+
+	it('accepts a matching snapshot (positive control)', async () => {
+		seedAuthWithReceipt()
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${NEW_FULL_INTENT_ID}`,
+			intentDoc(NEW_FULL_INTENT_ID, 'full', NEW_FULL_PATH))
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
+			storageMeta({ path: NEW_FULL_PATH, intentId: NEW_FULL_INTENT_ID, kind: 'full' }),
+		)
+
+		await expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				patch: { mode: 'TRIP_CURRENCY', title: 'x' },
+				intentIds: [NEW_FULL_INTENT_ID],
+				expectedCurrentReceiptPath: RECEIPT_PATH,
+			},
+			'{}', BUCKET,
+		)
+		expect(capturedTxResult).not.toBeNull()
 	})
 })
 

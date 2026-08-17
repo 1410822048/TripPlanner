@@ -1474,3 +1474,105 @@ describe('bookingFileUpdate: stale-replace guard', () => {
 		expect(writes).toHaveLength(2)
 	})
 })
+
+describe('bookingFileUpdate: stale-replace snapshot coverage', () => {
+	// The guard above is only as strong as its coverage. Entries are
+	// per-role optional in shape, so an under-populated map used to walk
+	// past every comparison — the caller could overwrite (and orphan)
+	// whatever another editor had just committed with no 409 at all.
+	it('rejects an EMPTY snapshot map while replacing a role (the bypass)', async () => {
+		seedUpdateAuth()
+
+		await expect(bookingFileUpdate(
+			CALLER_UID,
+			{
+				tripId:               TRIP_ID,
+				bookingId:            BOOKING_ID,
+				patch:                { title: 'x' },
+				attachments:          { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: {},
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({
+			name:  'BookingValidationError',
+			field: 'expectedCurrentPaths.document',
+		})
+		// Rejected pre-tx: no intent is consumed, no blob is stranded.
+		expect(capturedTxResult).toBeNull()
+	})
+
+	it('rejects a CLEARED role with no snapshot', async () => {
+		// Clearing detaches the live file and purges its blob, so it needs
+		// the same proof-of-freshness as a replace. (This endpoint always
+		// carries at least one replace -- pure detach/text-only edits go
+		// through the client SDK -- so the gap shows up as a mixed save.)
+		seedUpdateAuth()
+
+		await expect(bookingFileUpdate(
+			CALLER_UID,
+			{
+				tripId:               TRIP_ID,
+				bookingId:            BOOKING_ID,
+				patch:                { title: 'x' },
+				attachments:          { document: [FULL_INTENT_ID] },
+				clearAttachments:     ['coverImage'],
+				expectedCurrentPaths: { document: FULL_PATH },   // coverImage unguarded
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({
+			name:  'BookingValidationError',
+			field: 'expectedCurrentPaths.coverImage',
+		})
+		expect(capturedTxResult).toBeNull()
+	})
+
+	it('rejects a snapshot for a role the update does not touch', async () => {
+		// Not a security hole on its own, but it means the caller's model of
+		// its own write is wrong — and a silently-ignored entry is exactly
+		// how the missing-entry bypass reads at a glance.
+		seedUpdateAuth()
+
+		await expect(bookingFileUpdate(
+			CALLER_UID,
+			{
+				tripId:               TRIP_ID,
+				bookingId:            BOOKING_ID,
+				patch:                { title: 'x' },
+				attachments:          { document: [FULL_INTENT_ID] },
+				expectedCurrentPaths: { document: FULL_PATH, coverImage: null },
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({
+			name:  'BookingValidationError',
+			field: 'expectedCurrentPaths.coverImage',
+		})
+		expect(capturedTxResult).toBeNull()
+	})
+
+	it('accepts the same map when BOTH its roles are genuinely touched', async () => {
+		// Positive control, and the contrast that proves the rule keys on
+		// the touched set rather than on the map: the identical
+		// { document, coverImage } snapshot is rejected above (coverImage
+		// untouched) and accepted here (coverImage cleared).
+		seedUpdateAuth()
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: NEW_FULL_PATH }))
+		vi.mocked(storage.headR2Object).mockResolvedValueOnce(
+			storageMeta({ path: NEW_FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full' }),
+		)
+
+		const result = await bookingFileUpdate(
+			CALLER_UID,
+			{
+				tripId:               TRIP_ID,
+				bookingId:            BOOKING_ID,
+				patch:                { title: 'x' },
+				attachments:          { document: [FULL_INTENT_ID] },
+				clearAttachments:     ['coverImage'],
+				expectedCurrentPaths: { document: FULL_PATH, coverImage: null },
+			},
+			'{}', BUCKET,
+		)
+		expect(result).toEqual({ ok: true })
+	})
+})

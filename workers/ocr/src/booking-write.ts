@@ -276,7 +276,12 @@ async function authorizeBookingCreateTx(
  *  role (`null` = first-attach, editor saw no file). If the live doc has drifted (Tab B
  *  already replaced/detached), this caller's upload would silently
  *  overwrite Tab B's commit AND orphan Tab B's blob -- reject so the
- *  client can re-load and re-confirm. Mirrors authorizeWishUpdateTx. */
+ *  client can re-load and re-confirm. Mirrors authorizeWishUpdateTx.
+ *
+ *  Coverage of `expectedCurrentPaths` is NOT this function's job: it is
+ *  established pre-tx by requireExactExpectedPathCoverage, so by the time
+ *  we get here every touched role is guaranteed to have an entry and this
+ *  loop cannot be short-circuited by an under-populated map. */
 async function authorizeBookingUpdateTx(
   tx:                  TxContext,
   tripId:              string,
@@ -353,6 +358,47 @@ function rejectConflictingAttachmentActions(req: {
       throw new BookingValidationError(
         `attachments.${role}`,
         'cannot clear and replace the same attachment role',
+      )
+    }
+  }
+}
+
+/** File roles this update writes: replaced (intent ids) ∪ cleared. Derived
+ *  by the Worker from the operations themselves, never taken from the
+ *  caller -- the snapshot set is checked against THIS, so letting the
+ *  caller declare it would hand back the bypass. */
+function touchedAttachmentRoles(req: {
+  attachments: Partial<Record<BookingAttachmentRole, string[]>>
+  clearAttachments?: BookingAttachmentRole[]
+}): Set<BookingAttachmentRole> {
+  const touched = new Set<BookingAttachmentRole>(req.clearAttachments ?? [])
+  for (const role of Object.keys(req.attachments) as BookingAttachmentRole[]) {
+    if (req.attachments[role]) touched.add(role)
+  }
+  return touched
+}
+
+/** The stale-replace guard is only as strong as its coverage. Entries are
+ *  per-role and used to be optional, so `expectedCurrentPaths: {}` walked
+ *  past every comparison: a caller could overwrite (and orphan) whatever
+ *  another editor had just committed, with no 409. Require the snapshot
+ *  set to equal the touched set EXACTLY -- a missing entry is that bypass,
+ *  and an extra one means the caller's model of its own write is wrong. */
+function requireExactExpectedPathCoverage(req: BookingFileUpdateRequest) {
+  const touched = touchedAttachmentRoles(req)
+  for (const role of touched) {
+    if (!(role in req.expectedCurrentPaths)) {
+      throw new BookingValidationError(
+        `expectedCurrentPaths.${role}`,
+        'expectedCurrentPaths must carry a snapshot for every replaced or cleared role',
+      )
+    }
+  }
+  for (const role of Object.keys(req.expectedCurrentPaths) as BookingAttachmentRole[]) {
+    if (!touched.has(role)) {
+      throw new BookingValidationError(
+        `expectedCurrentPaths.${role}`,
+        'expectedCurrentPaths carries a role this update does not replace or clear',
       )
     }
   }
@@ -547,7 +593,11 @@ export const BookingFileUpdateRequestSchema = z.object({
    *  obvious). */
   patch:     z.unknown(),
   /** Stale-replace guard for every touched file role. Worker reads the
-   *  current role filePath inside the tx and rejects with 409 on mismatch. */
+   *  current role filePath inside the tx and rejects with 409 on mismatch.
+   *  Entries stay per-role optional in the SHAPE, but coverage is enforced
+   *  against the Worker-derived touched set (see
+   *  requireExactExpectedPathCoverage) -- optional-and-unchecked was the
+   *  `{}` bypass. */
   expectedCurrentPaths: ExpectedBookingPathsSchema,
   /** Role-specific replacement intent ids. */
   attachments: BookingAttachmentGroupsSchema,
@@ -658,6 +708,7 @@ async function doUpdate(
   const { patch, rawKeys } = parseBookingUpdateBody(req.patch)
   const attachmentGroups = requestAttachmentGroups(req)
   rejectConflictingAttachmentActions(req)
+  requireExactExpectedPathCoverage(req)
 
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)

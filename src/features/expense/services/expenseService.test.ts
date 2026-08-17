@@ -335,6 +335,61 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
     expect(headers.Authorization).toMatch(/^Bearer /)
   })
 
+  // ── Stale-replace snapshot on the wire ────────────────────────
+  // The Worker demands expectedCurrentReceiptPath on exactly the updates
+  // that touch the receipt and rejects it on the others, so these pin the
+  // client's half of that contract: getting it wrong is a 400 on every
+  // receipt edit, or a silently-unguarded overwrite of another tab.
+
+  /** The JSON body the client posted to the Worker. */
+  const sentBody = () =>
+    JSON.parse(String((fetchMock.mock.calls[0]![1] as RequestInit).body)) as Record<string, unknown>
+
+  it('updateExpense sends the loaded receipt path when REPLACING the receipt', async () => {
+    uploadReceiptMock.mockResolvedValueOnce(mockReceipt())
+    fetchMock.mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }))
+
+    const { updateExpense } = await import('./expenseService')
+    await updateExpense('t1', 'exp-1', { title: 'Edit' }, {
+      uid: 'editor-uid',
+      attachment: new File([], 'r.jpg'),
+      existingPaths: { path: 'trips/t1/expenses/exp-1/old.webp' },
+    })
+
+    expect(sentBody().expectedCurrentReceiptPath).toBe('trips/t1/expenses/exp-1/old.webp')
+  })
+
+  it('updateExpense sends null when DELETING a receipt the editor never saw', async () => {
+    // `null` is the "editor saw no receipt" sentinel, matching the
+    // Worker's absent-map normalisation. Omitting the key entirely would
+    // be rejected as a missing snapshot.
+    fetchMock.mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }))
+
+    const { updateExpense } = await import('./expenseService')
+    await updateExpense('t1', 'exp-1', { title: 'Edit' }, {
+      uid: 'editor-uid',
+      attachment: null,
+    })
+
+    const body = sentBody()
+    expect('expectedCurrentReceiptPath' in body).toBe(true)
+    expect(body.expectedCurrentReceiptPath).toBeNull()
+  })
+
+  it('updateExpense omits the snapshot on a text-only edit', async () => {
+    // The Worker rejects a snapshot on writes that do not touch the
+    // receipt, so sending one here would break every text-only save.
+    fetchMock.mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }))
+
+    const { updateExpense } = await import('./expenseService')
+    await updateExpense('t1', 'exp-1', { title: 'Edit' }, {
+      uid: 'editor-uid',
+      existingPaths: { path: 'trips/t1/expenses/exp-1/old.webp' },
+    })
+
+    expect('expectedCurrentReceiptPath' in sentBody()).toBe(false)
+  })
+
   // ── Old-paths cleanup in ambiguous branch ─────────────────────
   // Regression: updateExpense's ambiguous catch used to only
   // enqueue the NEW blob, leaving the OLD blob stranded if Worker

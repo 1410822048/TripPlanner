@@ -418,12 +418,20 @@ export async function updateExpense(
       data:     { traceId: uploadedNew.traceId, endpoint: '/expense-update', tripId, expenseId },
     })
   }
+  // Stale-replace snapshot: the receipt path this editor loaded with
+  // (`null` = they saw no receipt). Sent on exactly the writes that touch
+  // the receipt -- the Worker requires it there and rejects it elsewhere,
+  // so the two sides can't drift into a silently-unguarded write. Without
+  // it, a concurrent replace in another tab is overwritten and its blob
+  // orphaned. Same contract as bookings' expectedCurrentPaths.
+  const receiptTouched = attachment === null || attachment instanceof File
   try {
     await workerFetch(workerBase, idToken, '/expense-update', {
       tripId,
       expenseId,
       patch,
       ...(uploadedNew ? { intentIds: uploadedNew.intentIds } : {}),
+      ...(receiptTouched ? { expectedCurrentReceiptPath: existingPaths?.path ?? null } : {}),
     }, uploadedNew ? { traceId: uploadedNew.traceId } : undefined)
   } catch (e) {
     // Two blobs may need cleanup after a failed update:

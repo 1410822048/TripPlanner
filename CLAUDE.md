@@ -373,6 +373,18 @@ Soft-delete + Receipt-purge 設計:
 - firestore.rules:create 鎖 `deletedAt == null` + `receiptPurgedAt == null`;update 的 deletedAt 可 null↔Timestamp 但有 10 天 restore window;receiptPurgedAt 強制 `unchanged`(只有 Worker admin 寫得到)
 - 沒做 restore UI(B1 決定);資料層保留 10 天
 
+### 附件 stale-replace 契約(expense / booking / wish)
+
+三個 Worker file-write 端點共用一個不變式:**寫附件前必須證明自己看到的是最新狀態**。否則 Tab A 會蓋掉 Tab B 剛 commit 的替換,並讓 B 的 blob 變孤兒(空殼上 `referencedPaths()` 讀不到東西,blob 會被 storage-scan 當 orphan 清掉)。
+
+- `wish`:`expectedCurrentPath`(單一 image,schema 必填)
+- `expense`:`expectedCurrentReceiptPath` —— schema 可選,但**在 doUpdate 依「是否碰到 receipt」強制**:`intentIds` 存在或 `patch.receipt === null` 時**必填**,否則**禁止**。schema 不設必填是因為 text-only 更新共用這個端點,無條件必填等於白白擋掉它們
+- `booking`:`expectedCurrentPaths` per-role map。**覆蓋率由 Worker 自行推導的 touched set 檢查**(`requireExactExpectedPathCoverage`):touched = `attachments` 的 role ∪ `clearAttachments`,snapshot 的 key 集合必須**完全相等**。entries 光是 optional 而沒有覆蓋率檢查,`expectedCurrentPaths: {}` 就能繞過全部比對 —— 這是實際存在過的洞。touched set **絕不可**由呼叫端宣告,否則等於把繞過方式還回去
+
+比對一律 `readNestedString(...) ?? null`,讓「map 不存在」與「明確 null」collapse 成同一件事(對應 client 的 `existing?.path ?? null`)。不符 → 409。
+
+**部署順序:Pages → Worker**(與 rules 的 tighten 相反)。top-level request schema 沒有 `.strict()`,Zod 預設 strip,所以新 client 送新欄位給舊 Worker 是安全的;反過來先上 Worker 會讓所有舊 bundle 的收據替換 / 刪除吃 400。
+
 ### 成員 ACL cascade(add 側的 roster guard)
 
 `cascadeMemberAdd`(`workers/ocr/src/cascade.ts`)把 uid arrayUnion 到 trip doc 與每個子集合 doc 的 `memberIds[]`。**每個 ≤500 writes 的 chunk 都跑在自己的 transaction 內,並在 tx 中重讀 trip roster**;plain-GET 的前置檢查只是 fail-fast,單靠它是 TOCTOU:

@@ -23,6 +23,7 @@ import { z }                                                        from 'zod'
 import { getAdminToken, getProjectId }                              from './admin'
 import {
   readString,
+  readNestedString,
   type FsValue,
 }                                                                   from './firestore'
 import {
@@ -78,6 +79,19 @@ export const ExpenseUpdateRequestSchema = z.object({
    *  rejected. `patch.receipt: null` (deletion sentinel) remains valid
    *  but is mutually exclusive with intentIds. */
   intentIds: z.array(z.string().min(1).max(60)).min(1).max(2).optional(),
+  /** Stale-replace guard. The client passes the `receipt.path` it loaded
+   *  the expense with (`null` = editor saw no receipt). Worker reads the
+   *  live path inside the tx and 409s on mismatch, closing the
+   *  Tab-A-overwrites-Tab-B race that also orphans Tab B's blob.
+   *
+   *  Optional in the schema, MANDATORY whenever the write touches the
+   *  receipt (intentIds present, or patch.receipt=null) and REJECTED
+   *  otherwise — enforced in doUpdate, where the parsed patch reveals the
+   *  deletion sentinel. Schema-optional because text-only updates share
+   *  this endpoint and have no receipt write to guard; making it
+   *  unconditionally required would reject them for nothing.
+   *  Mirrors /wish-file-update's `expectedCurrentPath`. */
+  expectedCurrentReceiptPath: z.union([z.string(), z.null()]).optional(),
 })
 export type ExpenseUpdateRequest = z.infer<typeof ExpenseUpdateRequestSchema>
 
@@ -482,6 +496,26 @@ async function doUpdate(
   // deletion sentinel out-of-band so the receipt object can never
   // reach the parser by accident.
   const receiptDeletion = patchBody.receipt === null
+
+  // Stale-replace snapshot coverage. The guard is only as strong as its
+  // mandatory-ness: if the caller could omit the snapshot, it could
+  // overwrite (and orphan) whatever another editor just committed. Demand
+  // it on exactly the writes that touch the receipt, and reject it on the
+  // ones that don't so a caller's model of its own write can't silently
+  // drift from what it is actually sending.
+  const receiptTouched = receiptDeletion || (req.intentIds?.length ?? 0) > 0
+  if (receiptTouched && req.expectedCurrentReceiptPath === undefined) {
+    throw new ExpenseValidationError(
+      'expectedCurrentReceiptPath',
+      'expectedCurrentReceiptPath is required when the update sets or deletes the receipt',
+    )
+  }
+  if (!receiptTouched && req.expectedCurrentReceiptPath !== undefined) {
+    throw new ExpenseValidationError(
+      'expectedCurrentReceiptPath',
+      'expectedCurrentReceiptPath must be omitted when the update does not touch the receipt',
+    )
+  }
   // Strip `receipt` from the parseable body so a stray key from
   // future client-side bugs can't sneak in via Zod's default strip()
   // behavior (it would silently drop the field, but explicit removal
@@ -508,6 +542,21 @@ async function doUpdate(
       throw new CascadeError(409, 'cannot edit a tombstoned expense')
     }
     assertCanEditExpenseAfterSettlement(ctx, current.fields)
+
+    // Stale-replace guard, AFTER authz so an unauthorized caller learns
+    // nothing about the current receipt. `readNestedString` yields
+    // undefined when the receipt map is absent -- normalise to null so
+    // absent and explicit-null collapse the same way the client's
+    // `existingPaths?.path ?? null` does.
+    if (receiptTouched) {
+      const currentReceiptPath = readNestedString(current.fields, 'receipt', 'path') ?? null
+      if (currentReceiptPath !== req.expectedCurrentReceiptPath) {
+        throw new CascadeError(
+          409,
+          'expense receipt has been replaced or removed since the editor loaded',
+        )
+      }
+    }
 
     // Phase 3.5: consume intents inside tx and validate the built
     // receipt separately. Mirror of doCreate path. Done INSIDE the tx
