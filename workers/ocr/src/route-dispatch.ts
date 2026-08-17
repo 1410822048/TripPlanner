@@ -238,9 +238,24 @@ export async function handleJsonRoute<TData, TResult>(args: {
     // Everything above is a shape we anticipated. Reaching here means we
     // did not, and the client is told nothing but "Internal error" — so
     // this is the one branch that has to leave the Worker.
+    //
+    // Unanticipated does not mean unclassified: a plain Error or a
+    // TxRestError raised by tx.get still escaped a transaction BODY, so the
+    // wrapper marked it and we know nothing was written. Passing that
+    // through is what stops the client keeping a phantom optimistic row for
+    // a write that never happened. Unmarked failures — a commit-phase
+    // TxRestError, TxCommitAmbiguous, PostCommitError (constructed outside
+    // any body, so the mark on its cause never reaches it) — fall through
+    // unstamped and stay ambiguous.
     const err = e instanceof Error ? e : new Error(String(e))
     console.error(`[${args.endpoint}] internal error: ${err.message}${trace}`)
     args.report(`[${args.endpoint}] ${err.message}`, { error: serializeErrorChain(err) })
-    return json({ error: 'Internal error' }, 500, args.cors)
+    return json(
+      isPrecommitError(e)
+        ? { error: 'Internal error', precommit: true }
+        : { error: 'Internal error' },
+      500,
+      args.cors,
+    )
   }
 }

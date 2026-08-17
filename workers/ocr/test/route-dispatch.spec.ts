@@ -313,6 +313,41 @@ describe('handleJsonRoute — precommit marking', () => {
 		expect(body.error).toBe('trip.memberIds is empty')
 	})
 
+	it('stamps precommit on a generic 500 when the error escaped a tx body', async () => {
+		// The mark is set on ANY throwable, not just CascadeError. A plain
+		// Error (or a TxRestError from tx.get) reaching the generic branch
+		// still provably wrote nothing, so dropping the mark here would put
+		// the phantom-row bug back for every non-CascadeError failure.
+		stubBeginTransaction()
+		const res = await handleJsonRoute({
+			...baseArgs,
+			endpoint: 'expense-create',
+			handle: async () => {
+				await runFirestoreTransaction('token', 'demo', async () => {
+					throw new Error('materializer blew up')
+				})
+				return 'unreachable'
+			},
+		})
+		expect(res.status).toBe(500)
+		const body = await res.json() as { error: string; precommit?: boolean }
+		expect(body.error).toBe('Internal error')
+		expect(body.precommit).toBe(true)
+	})
+
+	it('leaves TxCommitAmbiguous unstamped on the generic 500', async () => {
+		// Counter-case for the branch above: a commit-phase failure is
+		// thrown by commitTransaction, never by the body, so it carries no
+		// mark and must keep the optimistic row alive.
+		const res = await handleJsonRoute({
+			...baseArgs,
+			handle: async () => { throw new TxCommitAmbiguous(new Error('commit timed out')) },
+		})
+		expect(res.status).toBe(500)
+		const body = await res.json() as { precommit?: boolean }
+		expect(body.precommit).toBeUndefined()
+	})
+
 	it('reports PostCommitError as an ambiguous 500 even though its cause is marked precommit', async () => {
 		// Keeps the redeem flow honest: the request already committed and
 		// only a LATER transaction failed. That later transaction
