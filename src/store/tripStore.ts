@@ -77,7 +77,7 @@ function emptyAccountState() {
 
 export const useTripStore = create<TripStore>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       ...emptyAccountState(),
       ownerUid: null,
 
@@ -99,16 +99,22 @@ export const useTripStore = create<TripStore>()(
       // when a DIFFERENT uid resolves — which also covers the two paths a
       // sign-out hook cannot see, a cold start under another account and an
       // A→B switch with no signed-out moment in between.
-      claimForOwner: (uid) =>
+      claimForOwner: (uid) => {
+        // Bail BEFORE set(): persist has no dirty check — it runs
+        // `set(...args); return setItem()`, so even a reducer returning the
+        // same state still writes localStorage. The observer re-fires on
+        // every token refresh, so `set(s => s)` would be a write (and a
+        // chance to throw) each time.
+        if (get().ownerUid === uid) return
         set((s) => {
-          if (s.ownerUid === uid) return s
           // Unowned (null) is claimed WITHOUT discarding: there is no other
           // account to protect against. Only state stamped with a different
           // uid gets wiped. Blobs of unknown provenance never reach here —
           // the v1→v2 migration already discarded them.
           if (s.ownerUid === null) return { ownerUid: uid }
           return { ...emptyAccountState(), ownerUid: uid }
-        }),
+        })
+      },
     }),
     {
       name: 'tripmate-trip-store',

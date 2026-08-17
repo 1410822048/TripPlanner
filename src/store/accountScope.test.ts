@@ -169,6 +169,95 @@ describe('auth wiring', () => {
   })
 })
 
+describe('storage failure must not cost the user their session', () => {
+  it('isolates both stores and completes sign-in when localStorage rejects writes', async () => {
+    // zustand's persist writes on EVERY set (middleware.mjs: `set(...args);
+    // return setItem()`), so a quota / SecurityError propagates straight out
+    // of claimForOwner. Unhandled it aborts the auth observer before
+    // setGlobal, stranding the app on the loading splash — a full outage
+    // caused by a full disk.
+    seed(TRIP_KEY, {
+      selectedTripId: 'trip-a', selectedTripAt: 111,
+      recentTripIds: ['trip-a'], tripOrder: ['trip-a'], ownerUid: 'uid-a',
+    }, 2)
+    seed(VIEWED_KEY, { viewed: { 'trip-shared': { expense: 5_000 } }, ownerUid: 'uid-a' }, 2)
+
+    const { trip, viewed, reconcileAccountScope } = await loadStores()
+    const setItem = vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
+      const error = new Error('QuotaExceededError')
+      error.name = 'QuotaExceededError'
+      throw error
+    })
+    try {
+      expect(() => reconcileAccountScope('uid-b')).not.toThrow()
+    } finally {
+      setItem.mockRestore()
+    }
+
+    // BOTH stores reset: a throw from the first must not skip the second.
+    // The in-memory write lands before persist attempts storage, so
+    // isolation holds for this session — only its persistence is lost.
+    expect(trip.getState().selectedTripId).toBeNull()
+    expect(trip.getState().ownerUid).toBe('uid-b')
+    expect(viewed.getState().viewed).toEqual({})
+    expect(viewed.getState().ownerUid).toBe('uid-b')
+  })
+
+  it('still publishes the signed-in state through the real auth observer', async () => {
+    // The store assertions above prove isolation; this proves the OUTAGE is
+    // gone. An unhandled throw here never reaches setGlobal, so the app sits
+    // on `loading` forever with no error to explain it.
+    seed(TRIP_KEY, {
+      selectedTripId: 'trip-a', selectedTripAt: 111,
+      recentTripIds: ['trip-a'], tripOrder: ['trip-a'], ownerUid: 'uid-a',
+    }, 2)
+
+    let emit: ((user: { uid: string } | null) => void) | undefined
+    vi.doMock('@/services/firebase', () => ({
+      getFirebaseAuth: async () => ({
+        auth: { authStateReady: async () => {}, currentUser: null },
+        onAuthStateChanged: (_auth: unknown, cb: (u: { uid: string } | null) => void) => {
+          emit = cb
+          return () => {}
+        },
+        getRedirectResult: async () => null,
+      }),
+    }))
+
+    const { renderHook, waitFor } = await import('@testing-library/react')
+    const { useAuth } = await import('../hooks/useAuth')
+    const view = renderHook(() => useAuth(true))
+    await waitFor(() => expect(emit).toBeDefined())
+
+    const setItem = vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
+      throw new Error('QuotaExceededError')
+    })
+    try {
+      emit!({ uid: 'uid-b' })
+    } finally {
+      setItem.mockRestore()
+    }
+
+    await waitFor(() => expect(view.result.current.state.status).toBe('signed-in'))
+    vi.doUnmock('@/services/firebase')
+  })
+
+  it('does not touch storage at all when re-claiming for the same uid', async () => {
+    // persist has no dirty check, so a plain `set(s => s)` would still write
+    // on every auth fire — pointless churn AND a needless chance to throw.
+    const { trip, reconcileAccountScope } = await loadStores()
+    reconcileAccountScope('uid-a')
+    const setItem = vi.spyOn(window.localStorage, 'setItem')
+
+    reconcileAccountScope('uid-a')
+    reconcileAccountScope('uid-a')
+
+    expect(setItem).not.toHaveBeenCalled()
+    expect(trip.getState().ownerUid).toBe('uid-a')
+    setItem.mockRestore()
+  })
+})
+
 describe('v1 → v2 migration', () => {
   it('discards a pre-ownerUid blob rather than letting the next signer claim it', async () => {
     // A v1 blob has unknown provenance. Merge-defaulting ownerUid to null

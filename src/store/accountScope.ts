@@ -8,6 +8,27 @@
 // for activity they have never seen.
 import { useTripStore }       from './tripStore'
 import { useLastViewedStore } from './lastViewedStore'
+import { captureError }       from '@/services/sentry'
+
+/** Run one store's claim in isolation.
+ *
+ *  zustand's persist writes localStorage on every `set` and does not catch
+ *  the result, so a quota / SecurityError (Safari private mode, a full
+ *  disk) propagates straight out. Unhandled it would abort the auth
+ *  observer before it publishes the signed-in state, stranding the app on
+ *  the loading splash — a full outage caused by a full disk. Per-store so a
+ *  failure in the first cannot skip the second.
+ *
+ *  The in-memory reset has already applied when persist throws (it runs
+ *  `set(...)` first), so account isolation still holds for this session;
+ *  only its persistence is lost, and the next successful write restores it. */
+function safeClaim(store: string, claim: () => void): void {
+  try {
+    claim()
+  } catch (error) {
+    captureError(error, { source: `account-scope:${store}` })
+  }
+}
 
 /**
  * Reconcile every account-scoped store against the resolved uid.
@@ -25,6 +46,6 @@ import { useLastViewedStore } from './lastViewedStore'
  */
 export function reconcileAccountScope(uid: string | null): void {
   if (!uid) return
-  useTripStore.getState().claimForOwner(uid)
-  useLastViewedStore.getState().claimForOwner(uid)
+  safeClaim('trip', () => useTripStore.getState().claimForOwner(uid))
+  safeClaim('last-viewed', () => useLastViewedStore.getState().claimForOwner(uid))
 }

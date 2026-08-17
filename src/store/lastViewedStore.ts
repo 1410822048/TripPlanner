@@ -43,7 +43,7 @@ interface LastViewedStore {
 
 export const useLastViewedStore = create<LastViewedStore>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       viewed: {},
       ownerUid: null,
       markViewed: (tripId, feature, ts) =>
@@ -65,14 +65,17 @@ export const useLastViewedStore = create<LastViewedStore>()(
           delete next[tripId]
           return { viewed: next }
         }),
-      claimForOwner: (uid) =>
+      claimForOwner: (uid) => {
+        // Bail before set() — see tripStore.claimForOwner: persist writes on
+        // every set, dirty or not.
+        if (get().ownerUid === uid) return
         set((s) => {
-          if (s.ownerUid === uid) return s
           // Unowned is claimed as-is; only another account's watermarks are
-          // discarded. See tripStore.claimForOwner.
+          // discarded.
           if (s.ownerUid === null) return { ownerUid: uid }
           return { viewed: {}, ownerUid: uid }
-        }),
+        })
+      },
     }),
     {
       name: 'tripmate-last-viewed',

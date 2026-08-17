@@ -208,6 +208,9 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 - **登出不清**(`uid === null` 直接 return)—— 保留狀態才能讓同一個人回來接續
 - **v1→v2 migration 直接丟棄舊 blob**,不是 merge-default `ownerUid: null`。來路不明的狀態若被下一個登入者認領,就正是這個欄位要擋的洩漏。代價只是一輪未讀紅點與排序重建
 - watermark 是最尖的一塊:兩個帳號可能是**同一個 trip** 的成員,繼承來的 watermark 會壓掉新使用者從沒看過的更新,表現成「沒有新動態」而不是壞掉
+- **claim 必須在 `set()` 之前用 `get()` 比對**。zustand persist 沒有 dirty check(`middleware.mjs`:`set(...args); return setItem()`)—— 即使 reducer 回傳同一個 state 讓 vanilla 跳過 listener,persist 仍會寫 localStorage。observer 每次 token refresh 都會 fire,所以 `set(s => s)` 等於每次都寫一次、也每次都給一次拋錯機會
+- **每個 store 各自 try/catch(`safeClaim`)**。persist 不接 `setItem` 的錯,quota / SecurityError(Safari 無痕、磁碟滿)會一路冒到 auth observer,讓它到不了 `setGlobal` —— 整個 app 卡在 loading,一個滿硬碟造成全站不可用。記憶體重置在 persist 拋錯前就完成了,所以當次 session 的隔離仍成立,只是沒被持久化
+- 測試 localStorage 要 spy `window.localStorage`,**不是 `Storage.prototype`** —— 後者在 jsdom 攔不到 zustand 的寫入,會讓「沒拋錯 / 沒寫入」兩種斷言雙雙假通過
 
 ### Demo vs Cloud mode
 - `useTripContext` 回傳 4 狀態:`loading` / `no-trip` / `demo` / `cloud`
