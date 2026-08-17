@@ -18,7 +18,13 @@ vi.mock('@/shared/toast', () => ({
 }))
 
 import { queryClient } from './queryClient'
-import { refreshClientCompatibility } from './clientCompatibility'
+import { refreshClientCompatibility, CLIENT_SCHEMA_EPOCH } from './clientCompatibility'
+
+/** Relative to the bundle's own epoch, not a literal: the guard fires when
+ *  the manifest minimum EXCEEDS this bundle's epoch, so hardcoding a number
+ *  turns every epoch bump into a false regression. */
+const BLOCKED = CLIENT_SCHEMA_EPOCH + 1
+const ALLOWED = CLIENT_SCHEMA_EPOCH
 
 const response = (revision: number, minimumWriteEpoch: number) => new Response(
   JSON.stringify({ revision, minimumWriteEpoch }),
@@ -27,12 +33,12 @@ const response = (revision: number, minimumWriteEpoch: number) => new Response(
 
 describe('global mutation compatibility guard', () => {
   beforeAll(async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => response(10_000, 2)))
+    vi.stubGlobal('fetch', vi.fn(async () => response(10_000, BLOCKED)))
     await refreshClientCompatibility()
   })
 
   afterAll(async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => response(10_001, 1)))
+    vi.stubGlobal('fetch', vi.fn(async () => response(10_001, ALLOWED)))
     await refreshClientCompatibility()
     queryClient.getMutationCache().clear()
     vi.unstubAllGlobals()
