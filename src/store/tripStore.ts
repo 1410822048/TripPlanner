@@ -42,6 +42,15 @@ interface TripStore {
    * vanish under stale ordering.
    */
   tripOrder: string[]
+  /**
+   * The uid this persisted state belongs to; `null` before any account has
+   * claimed it. Everything above is a PER-ACCOUNT preference — which trip
+   * you were on, your personal ordering — so it must not survive an account
+   * switch on a shared device. localStorage outlives sign-out, Firestore
+   * wipes and PWA updates alike, so this stamp is the only thing that can
+   * tell "resuming" from "someone else's leftovers".
+   */
+  ownerUid: string | null
 
   // ─── Actions ───────────────────────────────────────────────────
   /** Pick a trip as active. Also promotes the id into recentTripIds[0]. */
@@ -49,15 +58,28 @@ interface TripStore {
   /** Clear selection (sign-out). */
   clearTrip:         () => void
   setTripOrder:      (ids: string[]) => void
+  /** Bind this state to `uid`, atomically discarding it first when it
+   *  belonged to somebody else. Idempotent for the same uid, so it is safe
+   *  to call on every auth-state fire. */
+  claimForOwner:     (uid: string) => void
+}
+
+/** Account-scoped slice, reset wholesale on an owner change. Rebuilt per
+ *  call so no caller can mutate a shared literal into the next reset. */
+function emptyAccountState() {
+  return {
+    selectedTripId: null,
+    selectedTripAt: 0,
+    recentTripIds:  [] as string[],
+    tripOrder:      [] as string[],
+  }
 }
 
 export const useTripStore = create<TripStore>()(
   persist(
     (set) => ({
-      selectedTripId: null,
-      selectedTripAt: 0,
-      recentTripIds:  [],
-      tripOrder:      [],
+      ...emptyAccountState(),
+      ownerUid: null,
 
       setSelectedTripId: (id) =>
         set((s) => ({
@@ -71,6 +93,22 @@ export const useTripStore = create<TripStore>()(
       clearTrip: () => set({ selectedTripId: null, selectedTripAt: 0 }),
 
       setTripOrder: (ids) => set({ tripOrder: ids }),
+
+      // Sign-out deliberately does NOT reset: keeping the state lets the
+      // same person resume where they left off. The discard happens here,
+      // when a DIFFERENT uid resolves — which also covers the two paths a
+      // sign-out hook cannot see, a cold start under another account and an
+      // A→B switch with no signed-out moment in between.
+      claimForOwner: (uid) =>
+        set((s) => {
+          if (s.ownerUid === uid) return s
+          // Unowned (null) is claimed WITHOUT discarding: there is no other
+          // account to protect against. Only state stamped with a different
+          // uid gets wiped. Blobs of unknown provenance never reach here —
+          // the v1→v2 migration already discarded them.
+          if (s.ownerUid === null) return { ownerUid: uid }
+          return { ...emptyAccountState(), ownerUid: uid }
+        }),
     }),
     {
       name: 'tripmate-trip-store',
@@ -84,12 +122,20 @@ export const useTripStore = create<TripStore>()(
       // persist's merge falls the missing field back to the initial
       // state (`0`), which behaves as "stale" — the desired safe default
       // for any pre-existing persisted blob.
-      version: 1,
+      //
+      // v2 added `ownerUid`. Merge-defaulting it to null would be WRONG
+      // here: the first account to sign in afterwards would claim state it
+      // may not own, which is the exact leak the field exists to stop. A
+      // blob of unknown provenance is therefore discarded — cheap, since
+      // selection and ordering both rebuild themselves in one session.
+      version: 2,
+      migrate: () => ({ ...emptyAccountState(), ownerUid: null }),
       partialize: (s) => ({
         selectedTripId: s.selectedTripId,
         selectedTripAt: s.selectedTripAt,
         recentTripIds:  s.recentTripIds,
         tripOrder:      s.tripOrder,
+        ownerUid:       s.ownerUid,
       }),
     }
   )

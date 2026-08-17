@@ -199,6 +199,16 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 - 切到該 tab → `useEffect` 觸發 `markViewed(currentTripId, feature)`,圓點清除
 - `useDeleteTrip onSuccess` 呼叫 `clearTrip(tripId)`,避免 localStorage 累積
 
+### 帳號隔離(persisted store 的 `ownerUid`)
+
+`tripStore`(selectedTripId / recentTripIds / tripOrder)與 `lastViewedStore`(badge watermark)都是**每帳號**偏好,而 localStorage 撐過登出、Firestore 清空與 PWA 更新,所以同一台裝置換帳號時會被下一個人繼承。兩個 store 因此都在 persisted payload 帶 `ownerUid`:
+
+- **只在別人的 uid 已蓋章時清空**。`ownerUid === null`(未認領)直接認領不清 —— 沒有另一個帳號要防
+- **`reconcileAccountScope(uid)` 掛在 auth observer,且必須在 `lastObservedUid` 轉場守衛之外**。那個守衛刻意跳過初次 restore(避免每次開機都清 cache),而初次 restore 正是**冷啟動換帳號**:上一手的狀態已經 hydrate,卻從未與現在解析出的帳號比對過。用 uid 本身比對也順帶涵蓋「A→B 中間沒有 signed-out fire」
+- **登出不清**(`uid === null` 直接 return)—— 保留狀態才能讓同一個人回來接續
+- **v1→v2 migration 直接丟棄舊 blob**,不是 merge-default `ownerUid: null`。來路不明的狀態若被下一個登入者認領,就正是這個欄位要擋的洩漏。代價只是一輪未讀紅點與排序重建
+- watermark 是最尖的一塊:兩個帳號可能是**同一個 trip** 的成員,繼承來的 watermark 會壓掉新使用者從沒看過的更新,表現成「沒有新動態」而不是壞掉
+
 ### Demo vs Cloud mode
 - `useTripContext` 回傳 4 狀態:`loading` / `no-trip` / `demo` / `cloud`
 - **Demo**: 未登入訪客看 mock data(東京五日間 trip)。**任何寫入動作 → 開 SignInModal 而非 mutate**

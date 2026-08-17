@@ -5,6 +5,7 @@ import { getFirebaseAuth } from '@/services/firebase'
 import { clearAttachmentUrlCache } from './useAttachmentUrl'
 import { clearAllListOverlays } from './listOverlay'
 import { markPerf } from '@/utils/perf'
+import { reconcileAccountScope } from '@/store/accountScope'
 
 export type AuthState =
   | { status: 'loading'; wasSignedIn: boolean }
@@ -142,6 +143,13 @@ function initAuth(): Promise<void> {
         // (it fires this observer with u=null). Skips the initial restore
         // (lastObservedUid null → same uid, no-op).
         const nextUid = u?.uid ?? null
+        // OUTSIDE the transition guard below on purpose. That guard skips
+        // the initial restore, which is exactly the cold-start case: the
+        // previous session's persisted state is already hydrated and has
+        // never been compared against the account now resolving. Keying on
+        // the uid itself also covers an A→B switch with no signed-out fire
+        // in between.
+        reconcileAccountScope(nextUid)
         if (nextUid !== lastObservedUid) {
           if (lastObservedUid !== null) {
             clearAttachmentUrlCache()
