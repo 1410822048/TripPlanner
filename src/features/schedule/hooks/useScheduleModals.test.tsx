@@ -146,16 +146,23 @@ describe('useScheduleModals scope-derived management modals', () => {
 
   it('stays closed on an A→B→A round trip instead of resurrecting', () => {
     const hook = renderWithTrip(TRIP)
-    act(() => hook.result.current.setMembersOpen(true))
+    // BOTH stamps: each is cleared independently, so asserting only one
+    // would leave the other's clearing branch untested.
+    act(() => {
+      hook.result.current.setMembersOpen(true)
+      hook.result.current.setInviteOpen(true)
+    })
 
     // The mismatch is a scope TRANSITION: the stamp must be cleared on the
     // first mismatch, or returning to trip A re-matches the old stamp and
     // the modal reopens without any user action.
     hook.rerender({ currentTrip: { id: 'trip-2', title: 'Osaka' } as Trip })
     expect(hook.result.current.membersOpen).toBe(false)
+    expect(hook.result.current.inviteOpen).toBe(false)
 
     hook.rerender({ currentTrip: TRIP })
     expect(hook.result.current.membersOpen).toBe(false)
+    expect(hook.result.current.inviteOpen).toBe(false)
     expect(hook.result.current.anyOpen).toBe(false)
   })
 
