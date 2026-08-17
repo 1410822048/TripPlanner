@@ -388,8 +388,10 @@ Soft-delete + Receipt-purge 設計:
 
 1. `CLIENT_SCHEMA_EPOCH = 2`、manifest 仍留 `minimumWriteEpoch: 1` → 部署 Pages
 2. 等更新窗口(讓裝置換到 epoch-2 bundle)
-3. manifest 提到 `{ revision: 2, minimumWriteEpoch: 2 }` → 再部署一次 Pages(manifest 由 Pages 提供)。此刻起 epoch-1 bundle **全面停寫**,由 `AppCompatibilityGate` 顯示更新 CTA —— 它不會再有機會送出缺欄位的請求
-4. 確認 cutoff 生效後,才部署 strict Worker
+3. manifest 提到 `{ revision: 2, minimumWriteEpoch: 2 }` → 再部署一次 Pages(manifest 由 Pages 提供)。**已成功取得 revision 2 manifest 的** epoch-1 bundle 從此停寫,由 `AppCompatibilityGate` 顯示更新 CTA
+4. 確認 production `/compatibility.json` 真的是 revision 2、並等過 active-client 的 refresh 窗口後,才部署 strict Worker
+
+**cutoff 不是全域同步生效,別這樣宣稱。** `clientCompatibility.ts` 在 module load 時**同步** hydrate localStorage 裡的舊 manifest,refresh 是非同步 effect,而未知狀態一律 fail-open(這是刻意的:寧可放行也不要因為 manifest 抓不到就鎖死全 app)。所以休眠很久的裝置醒來時,會先帶著 `{revision:1, minimumWriteEpoch:1}` 的 cached snapshot 放行寫入,直到 refresh 落地為止 —— 這段窗口內的請求仍會打到 strict Worker 並吃 400。epoch gate 的作用是把這類 400 從「所有舊 bundle 持續發生」壓到「少數晚到 client 的一次性殘留」,**Worker 才是最終邊界**。要做到零 400 只能讓 Worker 保留 backward-compatible grace 或版本化端點,這裡不值得。
 
 方向與 rules tighten 相反(那邊是 Worker→Pages→rules);差別在於這裡的舊寫入者是**使用者裝置上的 bundle**,只有 epoch gate 能讓它停手。順帶一提 top-level request schema 沒有 `.strict()`(Zod 預設 strip),所以第 1 階段新欄位送到舊 Worker 會被無害丟棄。
 
