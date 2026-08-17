@@ -382,6 +382,7 @@ client 對 Worker 失敗只有兩種處置:**definitive → 回滾樂觀列**,**
 - `cascadePrecommit` route flag 保留給**開 tx 之前**就拋出的 CascadeError(plain-GET precheck),那些 wrapper 看不到
 - **`PostCommitError`**:已經 commit、後續階段才失敗。**它不是 `CascadeError`,所以碰不到蓋 precommit 的分支**,自然落到 ambiguous 的 generic 500 —— 機制就在包裝本身,dispatcher 不需要額外分支(加了反而讓 Sentry 少一層 wrapper frame)
 - `/invite-redeem` 是目前唯一需要它的地方:membership 已 commit,而 post-tx 的 `cascadeMemberAdd` 自批次 1 起會跑自己的 transaction,**它的 CascadeError 會帶著 precommit 標記** —— 那對它自己的 tx 為真、對這個 request 為假。不包就會回滾一個真的加入了的成員
+- 同一處的 cascade **暫時性失敗會自動重試一次**(`cascadeWithRepairRetry`)。使用者沒有理由自己重新 redeem —— 在他眼中已經加入了 —— 所以被 blip 撕裂的 ACL projection 會一直留著,讓他成為一個讀不到子集合的成員。重試安全是因為 cascade 的寫入全是冪等 arrayUnion + `exists` precondition;順帶讓「doc 在 cascade 途中被刪」自我收斂(第一次撞 404,第二次重新 list 就沒有它了)。**`CascadeError` 不重試** —— 那是政策拒絕(被踢 / trip 刪除中),狀態穩定,再試一次只是白跑並埋掉原因。無論哪種,最終仍包成 `PostCommitError`
 - tx mock(`test/helpers/tx-mock.ts`)取代整個模組,所以會構造 / instanceof 這些 class 的 spec 必須先 spread `importActual`,否則 `new PostCommitError` 拿到 undefined,TypeError 讀起來像通過
 
 ### 附件 stale-replace 契約(expense / booking / wish)

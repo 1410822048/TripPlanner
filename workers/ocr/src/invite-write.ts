@@ -313,18 +313,55 @@ async function doInviteRedeem(
     //
     // Recovery is the already-member branch above: a re-redeem re-runs the
     // cascade (arrayUnion is idempotent) and repairs the torn projection.
+    // But the user has no reason to re-redeem — as far as they can tell they
+    // joined — so a torn projection would just sit there, leaving them a
+    // member who cannot read the trip's subcollections. Repair it here.
     try {
-      await cascadeMemberAdd(
-        callerUid,
-        { tripId: req.tripId, memberUid: callerUid },
-        serviceAccountJson,
-      )
+      await cascadeWithRepairRetry(callerUid, req.tripId, serviceAccountJson)
     } catch (cascadeError) {
       throw new PostCommitError(cascadeError)
     }
   }
 
   return { outcome: result.outcome, role: result.role }
+}
+
+/** Run the ACL cascade, retrying ONCE on a transient failure.
+ *
+ *  Safe to repeat because every write it makes is an idempotent arrayUnion
+ *  guarded by `currentDocument.exists` — re-running re-lists the docs and
+ *  re-applies, which is a no-op wherever the first pass landed. That also
+ *  makes the retry the convergence path for a doc deleted mid-cascade: the
+ *  first attempt fails its exists-precondition (404), the second lists
+ *  without that doc and succeeds.
+ *
+ *  A `CascadeError` is NOT retried. It is a policy refusal — the caller was
+ *  kicked, the trip is being deleted, the roster genuinely no longer holds
+ *  them — so the state is stable and a second attempt only burns a round
+ *  trip while hiding the reason. Everything else (contention exhaustion, a
+ *  commit whose response was lost, Firestore 5xx, a network blip) is worth
+ *  exactly one more try.
+ *
+ *  Either way the caller still wraps the final failure in PostCommitError:
+ *  membership is already committed, so the REQUEST stays ambiguous no
+ *  matter how definitive the cascade's own failure was. */
+async function cascadeWithRepairRetry(
+  callerUid:          string,
+  tripId:             string,
+  serviceAccountJson: string,
+): Promise<void> {
+  const run = () => cascadeMemberAdd(
+    callerUid, { tripId, memberUid: callerUid }, serviceAccountJson,
+  )
+  try {
+    await run()
+  } catch (first) {
+    if (first instanceof CascadeError) throw first
+    console.warn(
+      `[invite-redeem] post-commit cascade failed, retrying once: ${(first as Error)?.message ?? first}`,
+    )
+    await run()
+  }
 }
 
 /** Build the write set for /invite-redeem. Two writes:

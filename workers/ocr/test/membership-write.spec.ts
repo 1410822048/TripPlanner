@@ -135,7 +135,7 @@ import {
 	InviteCreateRequestSchema,
 	MembershipValidationError,
 } from '../src/membership-write'
-import { CascadeError } from '../src/cascade'
+import { CascadeError, cascadeMemberAdd } from '../src/cascade'
 import { PostCommitError } from '../src/firestore-tx'
 
 const TRIP_ID    = 'trip-1'
@@ -259,6 +259,14 @@ beforeEach(() => {
 	notificationCleanupCalls.length = 0
 	cascadeCalls.length    = 0
 	capturedTxResult       = null
+	// Reset the mock ITSELF, not just the call log beside it: call counts
+	// accumulated across tests, and a per-test mockRejectedValue leaked into
+	// every test that followed.
+	vi.mocked(cascadeMemberAdd).mockReset()
+	vi.mocked(cascadeMemberAdd).mockImplementation(async (_uid, req) => {
+		cascadeCalls.push({ tripId: req.tripId, memberUid: req.memberUid })
+		return { updatedDocs: 1 }
+	})
 })
 
 // ─── /invite-redeem ──────────────────────────────────────────────
@@ -419,6 +427,67 @@ describe('inviteRedeem endpoint', () => {
 		// Cascade MUST run after repair -- subcollection memberIds[] are
 		// still missing caller and require arrayUnion projection.
 		expect(cascadeCalls).toEqual([{ tripId: TRIP_ID, memberUid: INVITEE }])
+	})
+
+	it('repairs a transient cascade failure by retrying once, and reports success', async () => {
+		// The user has no reason to re-redeem — they think they joined — so a
+		// projection torn by a blip would just sit there, leaving them a
+		// member who cannot read the trip's subcollections. Retrying is safe
+		// because every cascade write is an idempotent arrayUnion.
+		seedFreshRedeem()
+		const { cascadeMemberAdd } = await import('../src/cascade')
+		vi.mocked(cascadeMemberAdd)
+			.mockRejectedValueOnce(new Error('firestore 503'))
+			.mockResolvedValueOnce({ updatedDocs: 3 })
+
+		const result = await inviteRedeem(
+			INVITEE,
+			{ tripId: TRIP_ID, token: VALID_TOK, displayName: DISPLAY },
+			'{}',
+		)
+
+		expect(result).toEqual({ outcome: 'joined', role: 'editor' })
+		expect(vi.mocked(cascadeMemberAdd)).toHaveBeenCalledTimes(2)
+	})
+
+	it('gives up after the second transient failure and reports the LAST error', async () => {
+		seedFreshRedeem()
+		const { cascadeMemberAdd } = await import('../src/cascade')
+		const second = new Error('firestore 503 again')
+		vi.mocked(cascadeMemberAdd)
+			.mockRejectedValueOnce(new Error('firestore 503'))
+			.mockRejectedValueOnce(second)
+
+		const rejection = await inviteRedeem(
+			INVITEE,
+			{ tripId: TRIP_ID, token: VALID_TOK, displayName: DISPLAY },
+			'{}',
+		).then(() => null, (e: unknown) => e)
+
+		expect(vi.mocked(cascadeMemberAdd)).toHaveBeenCalledTimes(2)
+		expect(rejection).toBeInstanceOf(PostCommitError)
+		expect((rejection as PostCommitError).cause).toBe(second)
+	})
+
+	it('does NOT retry a CascadeError — a policy refusal is a stable state', async () => {
+		// Kicked mid-redeem: the roster genuinely no longer holds the caller,
+		// so a second attempt only burns a round trip and buries the reason.
+		seedFreshRedeem()
+		const { cascadeMemberAdd } = await import('../src/cascade')
+		const refusal = new CascadeError(403, 'member is not in trip roster — cascade refused')
+		vi.mocked(cascadeMemberAdd).mockRejectedValue(refusal)
+
+		const rejection = await inviteRedeem(
+			INVITEE,
+			{ tripId: TRIP_ID, token: VALID_TOK, displayName: DISPLAY },
+			'{}',
+		).then(() => null, (e: unknown) => e)
+
+		expect(vi.mocked(cascadeMemberAdd)).toHaveBeenCalledOnce()
+		// Still ambiguous to the client: the membership committed regardless
+		// of how definitive the cascade's own refusal was.
+		expect(rejection).toBeInstanceOf(PostCommitError)
+		expect((rejection as PostCommitError).cause).toBe(refusal)
 	})
 
 	it('wraps a post-tx cascade failure so the committed join is never reported as rejected', async () => {
