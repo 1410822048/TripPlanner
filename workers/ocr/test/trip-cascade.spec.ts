@@ -122,6 +122,41 @@ describe('cascadeTripDelete - Storage prefix boundary', () => {
 		)
 	})
 
+	it('drains uploadIntents, which the purge cron cannot be relied on to reap', async () => {
+		// The cron only matches intents on expiresAt / usedAt: a used intent
+		// would linger 7 more days after its trip is gone, and one whose
+		// window field is absent or malformed matches no purge query at all
+		// and stays forever. firestore.rules also promises the trip purge
+		// reaps these -- a promise that was false while this was missing.
+		await cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', BUCKET)
+
+		expect(firestore.listDocNames).toHaveBeenCalledWith(
+			'fake-admin-token',
+			'demo-project',
+			'trips/abc/uploadIntents',
+		)
+	})
+
+	it('drains EVERY trip-scoped subcollection the codebase writes to', async () => {
+		// Completeness, not a fixed list: the failure mode is that someone
+		// adds a subcollection and forgets this array, which is exactly how
+		// uploadIntents was missed. Keep this roster in step with the paths
+		// the Worker and client actually write.
+		const EXPECTED = [
+			'schedules', 'expenses', 'wishes', 'bookings', 'planning',
+			'settlements', 'settlementPairLocks', 'routeApplications',
+			'_purges', 'uploadIntents', 'invites', 'inviteState', 'members',
+		]
+		await cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', BUCKET)
+
+		const drained = vi.mocked(firestore.listDocNames).mock.calls
+			.map(call => String(call[2]).replace('trips/abc/', ''))
+		expect(drained).toEqual(EXPECTED)
+		// members LAST: a rule-respecting fallback path must not lose write
+		// permission partway through the drain.
+		expect(drained.at(-1)).toBe('members')
+	})
+
 	it('rejects when caller uid does not match trip ownerId', async () => {
 		vi.mocked(firestore.getDocFields).mockResolvedValueOnce({
 			ownerId: { stringValue: 'someone-else' },

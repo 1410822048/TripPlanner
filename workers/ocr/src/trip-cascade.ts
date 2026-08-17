@@ -77,11 +77,18 @@ export type TripDeleteRequest = z.infer<typeof TripDeleteRequestSchema>
 /** Subcollections under /trips/{tripId} to drain. Members LAST so any
  *  rule-respecting fallback path doesn't lose write perm mid-cascade.
  *  Keep this Worker-local copy in sync with trip-owned subcollections; the
- *  worker bundle stays standalone, no client-types import. */
+ *  worker bundle stays standalone, no client-types import.
+ *
+ *  EVERY subcollection written under trips/{tripId} must appear here.
+ *  `uploadIntents` was missing, so intent docs outlived their trip: the
+ *  purge cron only matches on `expiresAt` / `usedAt`, which meant used
+ *  intents lingered a further 7 days and any doc whose window field was
+ *  absent or malformed matched no purge query at all and stayed forever. */
 const TRIP_SUBCOLLECTIONS = [
   'schedules', 'expenses', 'wishes', 'bookings',
   'planning', 'settlements', 'settlementPairLocks',
-  'routeApplications', '_purges', 'invites', 'inviteState', 'members',
+  'routeApplications', '_purges', 'uploadIntents',
+  'invites', 'inviteState', 'members',
 ] as const
 
 export interface CascadeTripResult {
