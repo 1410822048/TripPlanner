@@ -102,9 +102,9 @@ export const useTripStore = create<TripStore>()(
       claimForOwner: (uid) => {
         // Bail BEFORE set(): persist has no dirty check — it runs
         // `set(...args); return setItem()`, so even a reducer returning the
-        // same state still writes localStorage. The observer re-fires on
-        // every token refresh, so `set(s => s)` would be a write (and a
-        // chance to throw) each time.
+        // same state still writes localStorage. reconcileAccountScope runs
+        // on every auth resolution, so `set(s => s)` would be a write (and a
+        // chance to throw) on each one.
         if (get().ownerUid === uid) return
         set((s) => {
           // Unowned (null) is claimed WITHOUT discarding: there is no other
