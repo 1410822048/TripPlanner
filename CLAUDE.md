@@ -373,6 +373,19 @@ Soft-delete + Receipt-purge 設計:
 - firestore.rules:create 鎖 `deletedAt == null` + `receiptPurgedAt == null`;update 的 deletedAt 可 null↔Timestamp 但有 10 天 restore window;receiptPurgedAt 強制 `unchanged`(只有 Worker admin 寫得到)
 - 沒做 restore UI(B1 決定);資料層保留 10 天
 
+### 成員 ACL cascade(add 側的 roster guard)
+
+`cascadeMemberAdd`(`workers/ocr/src/cascade.ts`)把 uid arrayUnion 到 trip doc 與每個子集合 doc 的 `memberIds[]`。**每個 ≤500 writes 的 chunk 都跑在自己的 transaction 內,並在 tx 中重讀 trip roster**;plain-GET 的前置檢查只是 fail-fast,單靠它是 TOCTOU:
+
+```
+T0 cascade 讀 roster(含 M)   T1 /member-remove commit removingAt + roster strip
+T2 kick 的 strip cascade 清空各 doc   T3 cascade 的 arrayUnion 落地 → M 回到所有 ACL,踢人被倒轉
+```
+
+roster strip 寫的就是每個 chunk tx 讀的那份 trip doc,所以:strip 前開始的 chunk 會在 commit 時 ABORT(wrapper 重試 → 重讀 → 拒絕),strip 後開始的 chunk 直接讀到已剝離的 roster 而拒絕。strip 之前就 commit 的 chunk 由 kick 自己的 strip cascade 收乾淨。**不可改成單一大 transaction**(Firestore commit 上限 500 writes);chunk 之間不需要原子性 —— arrayUnion 冪等,部分套用可重跑。
+
+member doc 的 roster seed 走同一個 guard,且 roster 取自**該 tx 自己的讀**而非另一次 GET:否則 kick 落在中間時,會把 roster seed 到一個即將被刪的 doc 上,transform 在 missing doc 上失敗時 ACL 傷害已經造成。`TxWrite` 因此新增 `op: 'transform'`(top-level `transform`,對應 SDK 的 arrayUnion;與 `update` 空 mask 不同,transform 打在 missing doc 上會失敗而非生出空殼)。
+
 **P1 closed 2026-05-20** — 之前的 `tripDeletionActive` cascade-window 是 KNOWN BROKEN(owner 可 raw SDK 開窗繞過 tombstone)。透過把 tripCascade 搬到 Worker `/cascade-trip-delete`(admin SDK bypass rules)+ `trips/{id}` 根 doc 與 `expenses/{id}` 子集合 doc 各上 `allow delete: if false` 封死兩條 integrity-critical hard-delete 路徑。**只有這兩種 doc 必走 Worker**;其他 subcollections(schedules / bookings / wishes / planning / settlements / invites / members)維持原本的 `canWrite` / `isTripOwner` / `memberOfDoc` client-side delete rules — 正常編輯 UX,沒有 replay-style invariant 要保護。`deletionStartedAt` 欄位 + helper 全數移除。10-day receipt-purge cron 同批 ship,跑 daily UTC 03:00。
 
 ### Sign-in prompt 時機

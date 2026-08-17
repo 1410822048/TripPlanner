@@ -32,10 +32,11 @@ const BASE = 'https://firestore.googleapis.com/v1'
  *      (the historical default; preserved so existing call-sites
  *      that omit `op` still type-check)
  *    - `op: 'delete'` → hard-delete the document at `document`
+ *    - `op: 'transform'` → transform-only write (no field payload)
  *
- *  Both branches accept `currentDocument` for optimistic concurrency
+ *  All branches accept `currentDocument` for optimistic concurrency
  *  (e.g. `{ exists: true }` to reject a delete-before-read race). */
-export type TxWrite = TxUpdateWrite | TxDeleteWrite
+export type TxWrite = TxUpdateWrite | TxDeleteWrite | TxTransformWrite
 
 export interface TxUpdateWrite {
   op?:             'update'
@@ -68,6 +69,31 @@ export interface TxUpdateWrite {
     fieldPath:        string
     setToServerValue: 'REQUEST_TIME'
   }>
+}
+
+/** Transform-only write: applies `fieldTransforms` without touching any
+ *  other field. The REST `Write` proto exposes this as a top-level
+ *  `transform` (as opposed to `updateTransforms`, which rides along with
+ *  an `update` and therefore needs a field payload + mask).
+ *
+ *  `appendMissingElements` is the REST equivalent of the SDK's
+ *  `arrayUnion` — idempotent, so a retried transaction re-applying it is
+ *  a no-op. Unlike an `update` with an empty mask, a transform on a
+ *  MISSING document fails instead of conjuring an empty doc, which is
+ *  what the membership cascade wants: a doc deleted mid-cascade must
+ *  surface, not be recreated as a shell carrying only memberIds. */
+export interface TxTransformWrite {
+  op:              'transform'
+  /** Full document resource name -- same shape as TxUpdateWrite.document. */
+  document:        string
+  fieldTransforms: Array<{
+    fieldPath:             string
+    appendMissingElements: { values: FsValue[] }
+  }>
+  currentDocument?: {
+    exists?:     boolean
+    updateTime?: string
+  }
 }
 
 export interface TxDeleteWrite {
@@ -584,6 +610,15 @@ async function commitTransaction(
       // don't apply to deletes -- a hard delete drops the whole doc.
       return {
         delete: w.document,
+        ...(w.currentDocument ? { currentDocument: w.currentDocument } : {}),
+      }
+    }
+    if (w.op === 'transform') {
+      return {
+        transform: {
+          document:        w.document,
+          fieldTransforms: w.fieldTransforms,
+        },
         ...(w.currentDocument ? { currentDocument: w.currentDocument } : {}),
       }
     }

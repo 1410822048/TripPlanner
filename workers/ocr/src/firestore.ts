@@ -66,62 +66,6 @@ export async function docExists(
   throw new Error(`docExists ${path} → ${res.status}: ${detail.slice(0, 200)}`)
 }
 
-/** Read a doc's `memberIds` array via the REST GET endpoint. Returns
- *  an empty array if the field is missing. Throws on any non-2xx. */
-export async function getDocMemberIds(
-  accessToken: string,
-  projectId:   string,
-  path:        string,
-): Promise<string[]> {
-  const res = await fetch(fullName(projectId, path), {
-    ...NO_CACHE,
-    headers: { Authorization: `Bearer ${accessToken}` },
-  })
-  await assertOk(res, `getDocMemberIds ${path}`)
-  const data = await res.json() as { fields?: Record<string, FsValue> }
-  return readStringArray(data.fields, 'memberIds')
-}
-
-/** arrayUnion MULTIPLE values onto a single doc's memberIds field.
- *  Used to seed a freshly-created invitee member doc with the full
- *  trip roster — the invitee couldn't read trip.memberIds at create
- *  time so wrote `[invitee.uid]` only; the owner's same-doc
- *  array-contains listener filter never matches that doc. This call
- *  brings the doc up to the same {full roster} as every other
- *  member doc. Idempotent. */
-export async function arrayUnionMembersOnDoc(
-  accessToken: string,
-  projectId:   string,
-  docName:     string,
-  memberUids:  string[],
-): Promise<void> {
-  if (memberUids.length === 0) return
-  const res = await fetch(
-    `${BASE}/projects/${projectId}/databases/(default)/documents:commit`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization:  `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        writes: [{
-          transform: {
-            document: docName,
-            fieldTransforms: [{
-              fieldPath: 'memberIds',
-              appendMissingElements: {
-                values: memberUids.map(u => ({ stringValue: u })),
-              },
-            }],
-          },
-        }],
-      }),
-    },
-  )
-  await assertOk(res, 'arrayUnionMembersOnDoc')
-}
-
 /** List every document name in a collection. Handles pagination so
  *  large subcollections don't drop docs. Returns the FULL document
  *  resource names (`projects/.../documents/trips/abc/schedules/xyz`)
@@ -159,55 +103,13 @@ export async function listDocNames(
   return out
 }
 
-/** arrayUnion `memberUid` onto every doc's `memberIds` field. Done as
- *  a single Firestore commit when possible (max 500 writes per commit
- *  per the API limit). The transform fieldPath `memberIds` uses
- *  `appendMissingElements` which is the REST equivalent of arrayUnion
- *  in the SDKs — idempotent if uid is already present. */
-export async function batchArrayUnionMemberIds(
-  accessToken:    string,
-  projectId:      string,
-  docNames:       string[],
-  memberUid:      string,
-): Promise<void> {
-  if (docNames.length === 0) return
-  for (let i = 0; i < docNames.length; i += 500) {
-    const chunk = docNames.slice(i, i + 500)
-    const writes = chunk.map(name => ({
-      transform: {
-        document: name,
-        fieldTransforms: [
-          {
-            fieldPath: 'memberIds',
-            appendMissingElements: {
-              values: [{ stringValue: memberUid }],
-            },
-          },
-        ],
-      },
-    }))
-    const res = await fetch(
-      `${BASE}/projects/${projectId}/databases/(default)/documents:commit`,
-      {
-        method:  'POST',
-        headers: {
-          Authorization:  `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ writes }),
-      },
-    )
-    await assertOk(res, 'batchArrayUnion')
-  }
-}
-
 /** Strip a departed member (kicked via /member-remove, or self-left via
  *  /member-leave) from a trip's docs in a SINGLE commit per chunk:
  *  `removeAllFromArray(memberIds, memberUid)` on EVERY doc, plus
  *  `removeAllFromArray(votes, memberUid)` for wish docs and
  *  `delete(completedBy.memberUid)` for planning docs on the SAME write.
- *  Symmetric to `batchArrayUnionMemberIds`
- *  (the add side) -- same 500-writes-per-commit chunking + error shape.
+ *  Same 500-writes-per-commit chunking + error shape as the add side
+ *  (cascade.ts, which runs its chunks inside roster-guarded transactions).
  *
  *  Why votes rides in this commit rather than a follow-up call: the
  *  memberIds strip is the load-bearing ACL removal (must precede the

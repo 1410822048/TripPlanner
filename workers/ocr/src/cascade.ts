@@ -23,13 +23,11 @@ import { getAdminToken, getProjectId, invalidateAdminToken } from './admin'
 import {
   docExists,
   getDocFields,
-  getDocMemberIds,
   listDocNames,
-  batchArrayUnionMemberIds,
-  arrayUnionMembersOnDoc,
   buildDocName,
   readStringArray,
 } from './firestore'
+import { runFirestoreTransaction, type TxWrite } from './firestore-tx'
 import { mapWithConcurrency }                from './concurrency'
 
 export interface CascadeRequest {
@@ -164,9 +162,30 @@ async function runCascade(
   const docNames: string[] = lists.flat()
   docNames.push(buildDocName(projectId, `trips/${req.tripId}`))
 
-  // Single commit per 500-doc chunk; idempotent on re-run via
-  // appendMissingElements (arrayUnion REST equivalent).
-  await batchArrayUnionMemberIds(accessToken, projectId, docNames, req.memberUid)
+  // One transaction per chunk, each RE-READING the trip roster inside the
+  // transaction. The plain-GET check above is only a fast fail: on its own
+  // it is TOCTOU, and the window is exactly wide enough to undo a kick.
+  //   T0 cascade reads roster (includes M)
+  //   T1 /member-remove commits removingAt + roster strip
+  //   T2 its strip cascade clears memberIds everywhere
+  //   T3 cascade's arrayUnion lands -> M is back in every ACL, kick undone
+  // Reading the trip doc INSIDE each chunk's transaction closes it: the
+  // roster strip at T1 is a write to that same doc, so a chunk that read
+  // before it aborts at commit (wrapper retries -> re-reads -> refuses),
+  // and a chunk that begins after it reads the stripped roster and refuses
+  // outright. Chunks that committed BEFORE the strip are cleaned up by the
+  // kick's own strip cascade, so no residue survives either way.
+  //
+  // Chunked rather than one mega-transaction because Firestore caps a
+  // commit at 500 writes; the trip-doc read is what ties the chunks
+  // together, not atomicity across them (arrayUnion is idempotent, so a
+  // partially-applied cascade is re-runnable).
+  for (let i = 0; i < docNames.length; i += TX_WRITE_LIMIT) {
+    const chunk = docNames.slice(i, i + TX_WRITE_LIMIT)
+    await runRosterGuardedTx(accessToken, projectId, req, () =>
+      chunk.map(name => arrayUnionWrite(name, [req.memberUid])),
+    )
+  }
 
   // Special case: the freshly-created invitee member doc was written
   // by the client with memberIds=[invitee.uid] only — the invitee
@@ -175,19 +194,59 @@ async function runCascade(
   // seed the full roster. Without this step, owner / existing
   // members' listeners (filtered by array-contains own-uid) never
   // match the new member doc, so the new joiner doesn't appear in
-  // their UI in real time. Fix: read trip.memberIds (just patched
-  // above to include invitee) and arrayUnion that full roster onto
-  // the invitee's member doc. Result: every member doc carries the
+  // their UI in real time. Fix: arrayUnion the full roster onto the
+  // invitee's member doc. Result: every member doc carries the
   // identical roster — invariant restored.
-  const freshRoster = await getDocMemberIds(
-    accessToken, projectId, `trips/${req.tripId}`,
-  )
-  await arrayUnionMembersOnDoc(
-    accessToken,
-    projectId,
-    buildDocName(projectId, `trips/${req.tripId}/members/${req.memberUid}`),
-    freshRoster,
-  )
+  //
+  // Same roster guard as the chunks, and the roster comes from the
+  // transaction's own read rather than a separate GET: a kick landing here
+  // would otherwise seed a doc it is about to delete, and the transform
+  // would fail on the missing doc AFTER the ACL damage was already done.
+  await runRosterGuardedTx(accessToken, projectId, req, roster => [
+    arrayUnionWrite(
+      buildDocName(projectId, `trips/${req.tripId}/members/${req.memberUid}`),
+      roster,
+    ),
+  ])
 
   return { updatedDocs: docNames.length }
+}
+
+/** Firestore's per-commit write cap. Also the transaction write cap. */
+const TX_WRITE_LIMIT = 500
+
+function arrayUnionWrite(document: string, memberUids: string[]): TxWrite {
+  return {
+    op: 'transform',
+    document,
+    fieldTransforms: [{
+      fieldPath:             'memberIds',
+      appendMissingElements: { values: memberUids.map(u => ({ stringValue: u })) },
+    }],
+  }
+}
+
+/** Run `buildWrites` inside a transaction that has re-read the trip and
+ *  verified the cascade target is still on the roster. `buildWrites`
+ *  receives the roster as read INSIDE the transaction, so callers that
+ *  need it (the member-doc seed) get a value the commit-time conflict
+ *  check covers. Throws CascadeError — which the tx wrapper classifies as
+ *  non-retryable — so a genuine refusal surfaces instead of burning the
+ *  retry budget. */
+async function runRosterGuardedTx(
+  accessToken: string,
+  projectId:   string,
+  req:         CascadeRequest,
+  buildWrites: (roster: string[]) => TxWrite[],
+): Promise<void> {
+  await runFirestoreTransaction<void>(accessToken, projectId, async tx => {
+    const trip = await tx.get(`trips/${req.tripId}`)
+    if (!trip.exists) throw new CascadeError(404, 'trip not found')
+    if ('deletingAt' in trip.fields) throw new CascadeError(410, 'trip is being deleted')
+    const roster = readStringArray(trip.fields, 'memberIds')
+    if (!roster.includes(req.memberUid)) {
+      throw new CascadeError(403, 'member is not in trip roster — cascade refused')
+    }
+    return { writes: buildWrites(roster), result: undefined }
+  })
 }
