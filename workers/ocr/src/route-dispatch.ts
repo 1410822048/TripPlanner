@@ -21,7 +21,7 @@
 import type { z } from 'zod'
 import { CascadeError } from './cascade'
 import { FxError }          from './fx-rate'
-import { TxRetryExhausted } from './firestore-tx'
+import { TxRetryExhausted, isPrecommitError } from './firestore-tx'
 import { serializeErrorChain, type ReportWorkerError } from './sentry'
 
 /** Truncated uid for logs. 6-char prefix + ellipsis is enough to
@@ -225,7 +225,12 @@ export async function handleJsonRoute<TData, TResult>(args: {
     }
     if (e instanceof CascadeError) {
       console.warn(`[${args.endpoint}] ${e.status} ${e.message}${trace}`)
-      const body = args.cascadePrecommit
+      // Two ways to establish pre-commit, and the DERIVED one is preferred:
+      // isPrecommitError is stamped by the tx wrapper at the moment it knows
+      // the commit had not run, so it cannot go stale. The route flag stays
+      // for CascadeErrors thrown BEFORE the transaction opens (plain-GET
+      // prechecks), which the wrapper never sees.
+      const body = (args.cascadePrecommit || isPrecommitError(e))
         ? { error: e.message, precommit: true }
         : { error: e.message }
       return json(body, e.status, args.cors)

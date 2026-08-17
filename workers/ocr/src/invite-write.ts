@@ -11,6 +11,7 @@ import { cascadeMemberAdd, withTokenRetry, CascadeError }   from './cascade'
 import {
   runFirestoreTransaction,
   docResourceName,
+  PostCommitError,
   type TxWrite,
 }                                                           from './firestore-tx'
 import {
@@ -302,11 +303,25 @@ async function doInviteRedeem(
        result.outcome === 'joined'
     || (result.outcome === 'already-member' && result.tripRosterIncludesCaller)
   if (needsCascade) {
-    await cascadeMemberAdd(
-      callerUid,
-      { tripId: req.tripId, memberUid: callerUid },
-      serviceAccountJson,
-    )
+    // POST-COMMIT. The member doc + trip roster are already live by now, so
+    // a cascade failure must never surface as a definitive rejection: the
+    // client would roll the join back visually while the membership stands.
+    // Wrapping is load-bearing rather than cosmetic — the cascade runs its
+    // own transactions, so its CascadeError arrives carrying the wrapper's
+    // precommit mark, which is true of THAT transaction and false of this
+    // request. PostCommitError is what makes the dispatcher ignore it.
+    //
+    // Recovery is the already-member branch above: a re-redeem re-runs the
+    // cascade (arrayUnion is idempotent) and repairs the torn projection.
+    try {
+      await cascadeMemberAdd(
+        callerUid,
+        { tripId: req.tripId, memberUid: callerUid },
+        serviceAccountJson,
+      )
+    } catch (cascadeError) {
+      throw new PostCommitError(cascadeError)
+    }
   }
 
   return { outcome: result.outcome, role: result.role }

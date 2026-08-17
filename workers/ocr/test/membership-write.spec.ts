@@ -27,7 +27,14 @@ const txGetResponses = new Map<string, MockReadDoc>()
 const txGetCalls: string[] = []
 let capturedTxResult: { writes: unknown[]; result: unknown } | null = null
 
-vi.mock('../src/firestore-tx', () => createFirestoreTxMock({
+// Spread the REAL module first: the helper replaces the transaction
+// RUNNER, not the error taxonomy. /invite-redeem constructs a real
+// PostCommitError when its post-commit cascade fails, and a stubbed-out
+// module would leave that `undefined` at the `new` site — a TypeError that
+// reads like the test passing.
+vi.mock('../src/firestore-tx', async () => ({
+	...await vi.importActual<typeof import('../src/firestore-tx')>('../src/firestore-tx'),
+	...createFirestoreTxMock({
 	get: async (path) => {
 		txGetCalls.push(path)
 		const response = txGetResponses.get(path)
@@ -50,6 +57,7 @@ vi.mock('../src/firestore-tx', () => createFirestoreTxMock({
 		throw new Error(`unexpected tx.get('${path}') -- not seeded`)
 	},
 	onResult: result => { capturedTxResult = result },
+	}),
 }))
 
 // Non-tx REST helpers used by /member-remove cascade phase. Each is
@@ -128,6 +136,7 @@ import {
 	MembershipValidationError,
 } from '../src/membership-write'
 import { CascadeError } from '../src/cascade'
+import { PostCommitError } from '../src/firestore-tx'
 
 const TRIP_ID    = 'trip-1'
 const OWNER_UID  = 'owner-uid'
@@ -410,6 +419,35 @@ describe('inviteRedeem endpoint', () => {
 		// Cascade MUST run after repair -- subcollection memberIds[] are
 		// still missing caller and require arrayUnion projection.
 		expect(cascadeCalls).toEqual([{ tripId: TRIP_ID, memberUid: INVITEE }])
+	})
+
+	it('wraps a post-tx cascade failure so the committed join is never reported as rejected', async () => {
+		// The membership + roster are already live when the cascade runs.
+		// Since batch-1 the cascade runs its own transactions, so its
+		// CascadeError arrives carrying the tx wrapper's precommit mark —
+		// true of THAT transaction, false of this request. Unwrapped, the
+		// dispatcher would stamp precommit and the client would roll the
+		// join back visually while the membership stands on the server.
+		seedFreshRedeem()
+		const { cascadeMemberAdd } = await import('../src/cascade')
+		const marked = new CascadeError(403, 'member is not in trip roster — cascade refused')
+		Object.defineProperty(marked, Symbol.for('tripmate.tx.precommit'), { value: true })
+		vi.mocked(cascadeMemberAdd).mockRejectedValueOnce(marked)
+
+		const rejection = await inviteRedeem(
+			INVITEE,
+			{ tripId: TRIP_ID, token: VALID_TOK, displayName: DISPLAY },
+			'{}',
+		).then(() => null, (e: unknown) => e)
+
+		// PostCommitError is NOT a CascadeError, so it cannot reach the
+		// dispatcher's stamp-precommit path — it lands on the ambiguous
+		// generic 500 and the client keeps its optimistic state.
+		expect(rejection).toBeInstanceOf(PostCommitError)
+		expect(rejection).not.toBeInstanceOf(CascadeError)
+		expect((rejection as PostCommitError).cause).toBe(marked)
+		// The write really did commit — that is the whole point.
+		expect(capturedTxResult!.writes).toHaveLength(2)
 	})
 
 	it('already-member + removingAt set: kick-in-flight → 409, no writes, no cascade', async () => {

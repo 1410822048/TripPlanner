@@ -14,14 +14,20 @@
 // Why a dedicated file: when the catchers' contract changes (e.g. add
 // a `field` to the FxError body, or change status mapping), this is
 // where the regression should fire -- not deep inside an endpoint spec.
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { z } from 'zod'
 import {
 	fxErrorCatcher, chainCatchers, validationErrorCatcher, handleJsonRoute,
 } from '../src/route-dispatch'
 import { FxError } from '../src/fx-rate'
 import { CascadeError } from '../src/cascade'
-import { TxRetryExhausted, TxCommitAmbiguous } from '../src/firestore-tx'
+import {
+	TxRetryExhausted,
+	TxCommitAmbiguous,
+	PostCommitError,
+	isPrecommitError,
+	runFirestoreTransaction,
+} from '../src/firestore-tx'
 import type { ReportWorkerError } from '../src/sentry'
 
 describe('fxErrorCatcher', () => {
@@ -267,5 +273,79 @@ describe('handleJsonRoute — precommit marking', () => {
 		expect(res.status).toBe(503)
 		const body = await res.json() as { error: string; precommit?: boolean }
 		expect(body.precommit).toBeUndefined()
+	})
+
+	/** Minimal Firestore stub: only :beginTransaction has to succeed for the
+	 *  wrapper to reach the body, which is where these tests throw. */
+	function stubBeginTransaction() {
+		vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+			if (String(input).includes(':beginTransaction')) {
+				return new Response(JSON.stringify({ transaction: 'tx-1' }), { status: 200 })
+			}
+			throw new Error(`unexpected fetch ${String(input)}`)
+		}))
+	}
+	afterEach(() => { vi.unstubAllGlobals() })
+
+	it('stamps precommit from the tx wrapper WITHOUT any route flag', async () => {
+		stubBeginTransaction()
+		// The derived half: a CascadeError thrown inside a transaction body
+		// escapes carrying the wrapper's mark, because at that point the
+		// commit provably had not run. Routes whose whole body is one
+		// transaction get definitive rejection for free — no per-route
+		// boolean to keep in sync with the code.
+		const res = await handleJsonRoute({
+			...baseArgs,
+			endpoint: 'expense-update',
+			handle: async () => {
+				await runFirestoreTransaction('token', 'demo', async () => {
+					throw new CascadeError(500, 'trip.memberIds is empty')
+				})
+				return 'unreachable'
+			},
+		})
+		expect(res.status).toBe(500)
+		const body = await res.json() as { error: string; precommit?: boolean }
+		// A bare 500 here is exactly the phantom-row bug: the client would
+		// treat it as ambiguous and keep an optimistic row for a write that
+		// never happened.
+		expect(body.precommit).toBe(true)
+		expect(body.error).toBe('trip.memberIds is empty')
+	})
+
+	it('reports PostCommitError as an ambiguous 500 even though its cause is marked precommit', async () => {
+		// Keeps the redeem flow honest: the request already committed and
+		// only a LATER transaction failed. That later transaction
+		// legitimately marks its own error precommit — true of it, false of
+		// the request — so the request must NOT be reported as definitive,
+		// or the client rolls back a membership that is live on the server.
+		//
+		// The mechanism is the wrapping itself, not a dispatcher branch:
+		// PostCommitError is not a CascadeError, so it cannot reach the
+		// stamp-precommit path and lands on the ambiguous generic 500. This
+		// test therefore fails if anyone makes PostCommitError extend
+		// CascadeError, or unwraps the cause before rethrowing.
+		stubBeginTransaction()
+		const report = vi.fn<ReportWorkerError>()
+		let marked: unknown
+		try {
+			await runFirestoreTransaction('token', 'demo', async () => {
+				throw new CascadeError(403, 'member is not in trip roster — cascade refused')
+			})
+		} catch (e) { marked = e }
+		expect(isPrecommitError(marked)).toBe(true)   // precondition of this test
+
+		const res = await handleJsonRoute({
+			...baseArgs,
+			endpoint: 'invite-redeem',
+			report,
+			handle: async () => { throw new PostCommitError(marked) },
+		})
+		expect(res.status).toBe(500)
+		const body = await res.json() as { error: string; precommit?: boolean }
+		expect(body.precommit).toBeUndefined()
+		expect(body.error).toBe('Internal error')
+		// A half-applied write is an operator problem, not just a user one.
+		expect(report).toHaveBeenCalledOnce()
 	})
 })

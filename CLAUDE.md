@@ -374,6 +374,16 @@ Soft-delete + Receipt-purge 設計:
 - firestore.rules:create 鎖 `deletedAt == null` + `receiptPurgedAt == null`;update 的 deletedAt 可 null↔Timestamp 但有 10 天 restore window;receiptPurgedAt 強制 `unchanged`(只有 Worker admin 寫得到)
 - 沒做 restore UI(B1 決定);資料層保留 10 天
 
+### Worker 錯誤分類(precommit / ambiguous / post-commit)
+
+client 對 Worker 失敗只有兩種處置:**definitive → 回滾樂觀列**,**ambiguous → 保留並等 listener 對帳**。分錯的代價是不對稱的 —— 把確定沒寫入的錯誤講成 ambiguous 會留下永遠不會被 server 取代的 phantom row;把已經寫入的講成 definitive 會回滾掉線上真實存在的資料。
+
+- **precommit 標記由 `runFirestoreTransaction` 自己蓋**(`isPrecommitError`):body 拋錯時 commit 尚未執行,而且先前的 attempt 不可能已 commit(成功會 return、ABORTED 沒寫入、ambiguous 直接拋不重試)。**derived 而非宣告**,所以不會像手維護的 route flag 那樣,在有人於 tx 之後加工作時默默說謊
+- `cascadePrecommit` route flag 保留給**開 tx 之前**就拋出的 CascadeError(plain-GET precheck),那些 wrapper 看不到
+- **`PostCommitError`**:已經 commit、後續階段才失敗。**它不是 `CascadeError`,所以碰不到蓋 precommit 的分支**,自然落到 ambiguous 的 generic 500 —— 機制就在包裝本身,dispatcher 不需要額外分支(加了反而讓 Sentry 少一層 wrapper frame)
+- `/invite-redeem` 是目前唯一需要它的地方:membership 已 commit,而 post-tx 的 `cascadeMemberAdd` 自批次 1 起會跑自己的 transaction,**它的 CascadeError 會帶著 precommit 標記** —— 那對它自己的 tx 為真、對這個 request 為假。不包就會回滾一個真的加入了的成員
+- tx mock(`test/helpers/tx-mock.ts`)取代整個模組,所以會構造 / instanceof 這些 class 的 spec 必須先 spread `importActual`,否則 `new PostCommitError` 拿到 undefined,TypeError 讀起來像通過
+
 ### 附件 stale-replace 契約(expense / booking / wish)
 
 三個 Worker file-write 端點共用一個不變式:**寫附件前必須證明自己看到的是最新狀態**。否則 Tab A 會蓋掉 Tab B 剛 commit 的替換,並讓 B 的 blob 變孤兒(空殼上 `referencedPaths()` 讀不到東西,blob 會被 storage-scan 當 orphan 清掉)。

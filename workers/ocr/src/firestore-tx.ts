@@ -246,6 +246,51 @@ export class TxCancelled extends Error {
   }
 }
 
+/** Marks an error as PROVABLY pre-commit: it escaped a transaction body,
+ *  so that transaction wrote nothing. `Symbol.for` rather than a class so
+ *  the fact travels on whatever the body threw (CascadeError, a domain
+ *  error, anything) without forcing every thrower to know about it. */
+const PRECOMMIT_MARK = Symbol.for('tripmate.tx.precommit')
+
+function markPrecommit(e: unknown): void {
+  if (e !== null && typeof e === 'object') {
+    Object.defineProperty(e, PRECOMMIT_MARK, {
+      value: true, enumerable: false, configurable: true,
+    })
+  }
+}
+
+/** True when the error left Firestore untouched by the transaction that
+ *  produced it. DERIVED, never asserted by a route: the wrapper knows the
+ *  commit had not run yet, where a hand-maintained per-route flag goes
+ *  stale the moment someone adds work after the transaction.
+ *
+ *  Scope caveat that callers MUST respect: this says "the transaction it
+ *  came from committed nothing", NOT "this request committed nothing". A
+ *  route that commits and then runs another transaction (the invite-redeem
+ *  cascade) can surface a marked error while its own write is already
+ *  live — which is what PostCommitError exists to override. */
+export function isPrecommitError(e: unknown): boolean {
+  return e !== null && typeof e === 'object'
+    && (e as Record<symbol, unknown>)[PRECOMMIT_MARK] === true
+}
+
+/** A later phase failed AFTER this request already committed something.
+ *  The failure must NOT be reported as definitive: the client would roll
+ *  back state that is live on the server. Wrapping preserves the original
+ *  in `cause` for logs while forcing ambiguous handling downstream, and it
+ *  overrides any precommit mark the inner error picked up from its own
+ *  (uncommitted) transaction. */
+export class PostCommitError extends Error {
+  readonly cause: unknown
+  constructor(cause: unknown) {
+    const detail = (cause as Error)?.message ?? String(cause)
+    super(`post-commit phase failed: ${detail}`)
+    this.name  = 'PostCommitError'
+    this.cause = cause
+  }
+}
+
 const MAX_RETRIES = 5
 /** Base + cap + jitter for retry backoff. Without backoff a contended
  *  doc (e.g. two near-simultaneous expense updates on the same trip)
@@ -339,7 +384,20 @@ export async function runFirestoreTransaction<T>(
       // The body only READS + computes + returns writes -- the actual
       // writes land in commitTransaction below. So re-running the body
       // on a retry is always safe: nothing has been written yet.
-      const bodyResult = await body(ctx)
+      //
+      // A throw from here is therefore provably pre-commit, and not just
+      // for this attempt: an earlier attempt that committed would have
+      // RETURNED, one that aborted wrote nothing, and an ambiguous one
+      // throws without retrying. Mark it so the dispatcher can report a
+      // definitive rejection instead of leaving the client with a phantom
+      // optimistic row.
+      let bodyResult: TxResult<T>
+      try {
+        bodyResult = await body(ctx)
+      } catch (bodyError) {
+        markPrecommit(bodyError)
+        throw bodyError
+      }
       await commitTransaction(accessToken, projectId, txId, bodyResult.writes, options.signal)
       return bodyResult.result
     } catch (e) {
