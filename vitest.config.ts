@@ -37,6 +37,11 @@ export default defineConfig({
     include: [
       'src/**/*.{test,spec}.{ts,tsx}',
       'packages/**/src/**/*.{test,spec}.{ts,tsx}',
+      // Cross-surface repo invariants (client + Worker together). They live
+      // outside src/ because they belong to neither, and they run HERE
+      // rather than in the Worker suite because that one runs in a workerd
+      // isolate with no filesystem to scan.
+      'tests/invariants/**/*.{test,spec}.ts',
     ],
   },
 })
