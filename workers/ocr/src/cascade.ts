@@ -27,7 +27,7 @@ import {
   buildDocName,
   readStringArray,
 } from './firestore'
-import { runFirestoreTransaction, type TxWrite } from './firestore-tx'
+import { runFirestoreTransaction, PostCommitError, type TxWrite } from './firestore-tx'
 import { mapWithConcurrency }                from './concurrency'
 
 export interface CascadeRequest {
@@ -89,6 +89,15 @@ export async function withTokenRetry<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn()
   } catch (e) {
+    // A post-commit failure must NEVER replay the request: the write
+    // already landed, and this wrapper exists to refresh a stale admin
+    // token BEFORE anything is written. Checked ahead of the message sniff
+    // because PostCommitError embeds its cause's text, so a wrapped
+    // `... → 401` would otherwise match and re-run a committed
+    // /invite-redeem end to end -- membership transaction included --
+    // multiplying with the retries already inside cascadeMemberAdd and
+    // cascadeWithRepairRetry.
+    if (e instanceof PostCommitError) throw e
     const msg = (e as Error).message ?? ''
     if (msg.includes(' -> 401') || msg.includes(' → 401')) {
       console.warn('[cascade] firestore returned 401; invalidating cached admin token and retrying once')

@@ -43,7 +43,11 @@ const txReads: Array<Record<string, FsValue>> = []
 /** Write batches captured per committed transaction. */
 let txCommits: TxWrite[][] = []
 
-vi.mock('../src/firestore-tx', () => ({
+// Spread the real module first: cascade.ts instanceof-checks PostCommitError
+// in withTokenRetry, and a stubbed-out module leaves that `undefined` — the
+// resulting TypeError reads like an assertion failure.
+vi.mock('../src/firestore-tx', async () => ({
+	...await vi.importActual<typeof import('../src/firestore-tx')>('../src/firestore-tx'),
 	runFirestoreTransaction: vi.fn(async (
 		_token:   string,
 		_project: string,
@@ -66,6 +70,7 @@ vi.mock('../src/firestore-tx', () => ({
 }))
 
 import { withTokenRetry, cascadeMemberAdd, CascadeError } from '../src/cascade'
+import { PostCommitError } from '../src/firestore-tx'
 import * as admin from '../src/admin'
 import * as firestore from '../src/firestore'
 
@@ -123,6 +128,22 @@ describe('withTokenRetry', () => {
 		const invalidateSpy = vi.spyOn(admin, 'invalidateAdminToken').mockImplementation(() => {})
 		await expect(withTokenRetry(fn)).rejects.toThrow('500')
 		expect(fn).toHaveBeenCalledTimes(1)
+		expect(invalidateSpy).not.toHaveBeenCalled()
+	})
+
+	it('never replays a PostCommitError, even when its cause reads like a 401', async () => {
+		// PostCommitError embeds its cause's message, so a wrapped
+		// `... → 401` matches the sniff below and would re-run the whole
+		// request -- for /invite-redeem that means replaying a COMMITTED
+		// membership transaction, and multiplying with the retries already
+		// inside cascadeMemberAdd and cascadeWithRepairRetry.
+		const fn = vi.fn().mockRejectedValue(
+			new PostCommitError(new Error('docExists trips/x/members/y -> 401: token expired')),
+		)
+		const invalidateSpy = vi.spyOn(admin, 'invalidateAdminToken').mockImplementation(() => {})
+
+		await expect(withTokenRetry(fn)).rejects.toBeInstanceOf(PostCommitError)
+		expect(fn).toHaveBeenCalledOnce()
 		expect(invalidateSpy).not.toHaveBeenCalled()
 	})
 
