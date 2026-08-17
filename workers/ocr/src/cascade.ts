@@ -223,8 +223,11 @@ function arrayUnionWrite(document: string, memberUids: string[]): TxWrite {
     // fail -- Firestore commits it 200 and CREATES the doc carrying only
     // the transformed field (verified against the emulator). Without this
     // precondition, a doc deleted between listDocNames and commit comes
-    // back as a shell with nothing but memberIds: an entity no schema
-    // parses, that orphan-purge then reads as "still referenced". With it,
+    // back as a shell with nothing but memberIds -- and because it carries
+    // memberIds it MATCHES the members' array-contains listeners, so every
+    // client tries to parse an entity with no fields. Its attachment isn't
+    // saved either: referencedPaths() reads no receipt/image/document off
+    // the shell, so the blob is judged orphan and purged. With it,
     // the commit fails 404 NOT_FOUND (note: not 412, so the tx wrapper
     // treats it as definitive rather than burning the retry budget), and
     // the caller recovers by re-running the cascade -- /invite-redeem's

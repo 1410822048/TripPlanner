@@ -160,8 +160,10 @@ describe('cascadeMemberAdd removal-aware refuse', () => {
 	it('guards every transform with exists:true so no deleted doc is resurrected', async () => {
 		// A transform on a MISSING doc does not fail -- Firestore creates it
 		// carrying only the transformed field. A doc deleted between
-		// listDocNames and commit would come back as a memberIds-only shell
-		// that no schema parses and orphan-purge reads as "still referenced".
+		// listDocNames and commit would come back as a memberIds-only shell:
+		// it matches the members' array-contains listeners but has no fields
+		// to parse, and its blob is purged as an orphan since the shell
+		// references nothing.
 		vi.mocked(firestore.listDocNames).mockResolvedValueOnce([
 			'projects/demo/databases/(default)/documents/trips/trip-1/expenses/e1',
 		])
