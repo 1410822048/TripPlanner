@@ -320,7 +320,3 @@ export interface CreateForeignSettlementInput {
   settledOn:              string
   note?:                  string
 }
-
-export type CreateSettlementInput =
-  | CreateTripSettlementInput
-  | CreateForeignSettlementInput

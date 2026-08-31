@@ -198,7 +198,6 @@ export type ExpenseCreateInput = z.infer<ReturnType<typeof makeExpenseCreateSche
 export function makeExpenseUpdateSchema() {
   return makeExpenseCreateSchema().partial()
 }
-export type ExpenseUpdateInput = z.infer<ReturnType<typeof makeExpenseUpdateSchema>>
 
 /** Output shape of `buildReceiptFromIntents` + the Worker-stored
  *  receipt field in Firestore. Defined here next to `makeReceiptSchema`
@@ -397,7 +396,6 @@ export function makeForeignExpenseUpdateSchema() {
     validateForeignSourceDomain(data, ctx, { required: true })
   })
 }
-export type ExpenseForeignUpdateInput = z.infer<ReturnType<typeof makeForeignExpenseUpdateSchema>>
 
 // ─── Cross-field validation (needs trip member roster) ────────────
 

@@ -70,7 +70,6 @@ const BookingPdfExtractResultSchema = z.object({
 
 export type BookingPdfExtractedField = z.infer<typeof ExtractedFieldSchema>
 export type BookingPdfExtractBookingType = z.infer<typeof BookingTypeSchema>
-export type BookingPdfExtractSegmentRole = z.infer<typeof SegmentRoleSchema>
 export type BookingPdfExtractCandidate = z.infer<typeof BookingPdfExtractCandidateSchema>
 export type BookingPdfExtractResult = z.infer<typeof BookingPdfExtractResultSchema>
 

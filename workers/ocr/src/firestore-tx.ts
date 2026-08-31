@@ -219,21 +219,6 @@ export interface TxResult<T> {
   result: T
 }
 
-/**
- * Thrown when the transaction body explicitly chooses to abort
- * (e.g., validation failure that should NOT trigger a retry).
- * Different from the implicit retry-on-ABORTED path -- this is
- * the caller saying "stop trying, return this error to the user".
- */
-export class TxAbort extends Error {
-  readonly cause: unknown
-  constructor(cause: unknown) {
-    super('transaction body aborted')
-    this.name = 'TxAbort'
-    this.cause = cause
-  }
-}
-
 /** Caller-owned deadline/cancellation fired before a transaction could
  * produce a definitive result. Unlike a commit timeout, read-only preview
  * cancellation is never ambiguous and must not enter the retry loop. */
@@ -357,9 +342,12 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * modified concurrently, the commit fails with ABORTED and the
  * helper re-runs the body (up to MAX_RETRIES).
  *
- * Throw `TxAbort` from the body to surface a non-retryable error
- * (e.g., validation failure). Any other throw is rethrown after
- * the in-progress transaction's implicit rollback.
+ * A throw from the body that isn't one of the classified retry-eligible
+ * cases below (ABORTED / RPC timeout / transient 5xx) is treated as
+ * non-retryable and rethrown after the in-progress transaction's
+ * implicit rollback -- ordinary domain errors (validation failures,
+ * CascadeError, etc.) already get this treatment with no special class
+ * needed.
  *
  * Note: this is a READ-WRITE transaction (`options.readWrite`).
  * Reads via tx.get are taken at the transaction's snapshot point

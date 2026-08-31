@@ -132,8 +132,6 @@ export interface OptimisticForeignPatch extends OptimisticPatchBase {
   sourceAmountMinor: number
 }
 
-export type OptimisticSettlementPatch = OptimisticTripPatch | OptimisticForeignPatch
-
 /** Defensive cap — long trips with many splits accumulate settlement
  *  records over time. 200 covers a 14-day group trip with margin. */
 const LIST_LIMIT = 200

@@ -15,7 +15,7 @@
 | 即時同步 | Firestore `onSnapshot` 包裝在 `createRealtimeListHook` factory |
 | 收據 OCR | **Cloudflare Worker** + **Qwen primary / Claude fallback**(workers/ocr/) |
 | Hosting | **Cloudflare Pages**(`tripmate-2wg.pages.dev`) |
-| 觀測 | Sentry(@sentry/react,init 同步;拆獨立 `vendor-sentry` chunk + modulepreload 平行下載) |
+| 觀測 | Sentry(@sentry/browser,idle 延遲初始化;拆獨立 `vendor-sentry` chunk,排除在 modulepreload + PWA precache 之外) |
 | 測試 | Vitest + @cloudflare/vitest-pool-workers(Worker 測試) |
 | CI | GitHub Actions(`.github/workflows/ci.yml`) |
 | Pre-commit | Lefthook(typecheck/lint/test gating) |

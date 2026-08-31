@@ -3,24 +3,10 @@
 // (Worker-authoritative /booking-file-create + /booking-file-update),
 // so this file is purge-only. Kept as a module rather than inlined into
 // bookingService because deleteBooking + updateBooking's safePurge
-// ladder + trip cascade all reach for `purgeAttachments` independently.
+// ladder + trip cascade all reach for `purgeBookingAttachments` independently.
 
 import { deleteAttachmentObject } from '@/services/attachmentStorage'
 import type { BookingAttachment } from '@/types'
-
-/**
- * Delete the full + thumb storage objects for an existing attachment.
- * Thumb path may be missing on PDFs -- deleteAttachmentObject tolerates
- * that along with already-deleted objects.
- */
-export async function purgeAttachments(
-  existing: BookingAttachment | undefined,
-): Promise<void> {
-  if (!existing) return
-  const tasks: Promise<void>[] = [deleteAttachmentObject(existing.filePath)]
-  if (existing.thumbPath) tasks.push(deleteAttachmentObject(existing.thumbPath))
-  await Promise.all(tasks)
-}
 
 export function bookingAttachmentPaths(
   ...attachments: Array<BookingAttachment | undefined>

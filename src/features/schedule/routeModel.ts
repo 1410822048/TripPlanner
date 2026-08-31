@@ -45,11 +45,6 @@ export function shouldRequestLocationAutocomplete(input: LocationAutocompleteInp
   return input.isOpen && input.query.trim().length >= 2 && input.location?.status !== 'resolved'
 }
 
-export type RouteOptimizationBlockedReason =
-  | 'too-many-schedules'
-  | 'unresolved-locations'
-  | 'mixed-time-zones'
-
 export type RouteOptimizationAvailability =
   | { status: 'hidden' }
   | { status: 'ready' }
