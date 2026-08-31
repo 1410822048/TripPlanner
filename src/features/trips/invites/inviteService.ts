@@ -150,12 +150,23 @@ export async function createInvite(
  * Owner lists all invites for a trip. Expired invites are included so the
  * UI can present a full audit view; callers filter client-side.
  */
-export async function listInvites(tripId: string): Promise<Invite[]> {
-  const { db, collection, getDocs } = await getFirebase()
-  const snap = await getDocs(collection(db, ...P.invites(tripId)))
+async function readInvites(tripId: string, fromServer: boolean): Promise<Invite[]> {
+  const { db, collection, getDocs, getDocsFromServer } = await getFirebase()
+  const ref  = collection(db, ...P.invites(tripId))
+  const snap = await (fromServer ? getDocsFromServer(ref) : getDocs(ref))
   return snap.docs
     .map(d => toInvite(d.id, d.data()))
     .sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis())
+}
+
+export function listInvites(tripId: string): Promise<Invite[]> {
+  return readInvites(tripId, false)
+}
+
+/** Same list, never answered from Firestore's local cache — the cache is
+ *  exactly what an ambiguous revoke leaves in doubt. */
+export function listInvitesFromServer(tripId: string): Promise<Invite[]> {
+  return readInvites(tripId, true)
 }
 
 /**

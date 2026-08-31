@@ -12,15 +12,25 @@ function memberFromDoc(d: QueryDocumentSnapshot): Member {
   return firestoreDocFromSchema(MemberDocSchema, d, 'memberFromDoc')
 }
 
-export async function getMembersByTrip(tripId: string, uid: string): Promise<Member[]> {
-  const { db, collection, query, where, orderBy, getDocs } = await getFirebase()
+async function readMembers(tripId: string, uid: string, fromServer: boolean): Promise<Member[]> {
+  const { db, collection, query, where, orderBy, getDocs, getDocsFromServer } = await getFirebase()
   const q = query(
     collection(db, ...P.members(tripId)),
     where('memberIds', 'array-contains', uid),
     orderBy('joinedAt'),
   )
-  const snap = await getDocs(q)
+  const snap = await (fromServer ? getDocsFromServer(q) : getDocs(q))
   return parseListSnapshot(snap, memberFromDoc)
+}
+
+export function getMembersByTrip(tripId: string, uid: string): Promise<Member[]> {
+  return readMembers(tripId, uid, false)
+}
+
+/** Same query, never answered from Firestore's local cache. Used to settle
+ *  an ambiguous roster write, where that cache is the state in question. */
+export function getMembersByTripFromServer(tripId: string, uid: string): Promise<Member[]> {
+  return readMembers(tripId, uid, true)
 }
 
 /**

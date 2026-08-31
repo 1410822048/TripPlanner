@@ -1,19 +1,22 @@
 // src/features/trips/invites/useInvites.ts
-// TanStack Query wrappers for invite lifecycle. Pattern matches useTrips:
-// optimistic cache updates on create/revoke, invalidate-on-error, toast on
-// failure. acceptInvite additionally invalidates useMyTrips so the newly-
-// joined trip shows up in the switcher immediately.
+// TanStack Query wrappers for invite lifecycle. Create and redeem seed the
+// cache from their authoritative Worker response; revoke is optimistic as a
+// read-time overlay op (see hooks/listOverlay.ts). Failures toast through
+// the global MutationCache.
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { User } from 'firebase/auth'
 import {
   createInvite,
   listInvites,
+  listInvitesFromServer,
   subscribeToInvites,
   revokeInvite,
   acceptInvite,
   type AcceptResult,
 } from './inviteService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
+import { createListOverlay } from '@/hooks/listOverlay'
+import { useTripListMutation } from '@/hooks/useTripListMutation'
 import { tripKeys } from '@/features/trips/queryKeys'
 import { MUTATION_ACTION, type MutationMeta } from '@/services/queryClient'
 import type { Invite, Trip } from '@/types'
@@ -21,6 +24,14 @@ import type { Invite, Trip } from '@/types'
 const inviteKeys = {
   ofTrip: (tripId: string, _uid?: string) => ['invites', tripId] as const,
 }
+
+/** Revoke only. Creation isn't optimistic and must not become so: the token
+ *  and expiry are minted by the Worker, so the response IS the row — there
+ *  is nothing to guess ahead of it. */
+export const inviteOverlay = createListOverlay<Invite>({
+  insert: 'head',
+  source: 'invites',
+})
 
 /** Internal realtime base — subscribes to /trips/{tripId}/invites for
  *  any tripId we feed it. Wrapped by useInvites below to layer on the
@@ -30,6 +41,7 @@ const useInvitesBase = createRealtimeListHook<Invite>({
   initialFetch:    listInvites,
   subscribe:       (tripId, _uid, onData, onError) => subscribeToInvites(tripId, onData, onError),
   source:          'useInvites',
+  overlay:         inviteOverlay,
 })
 
 /**
@@ -61,21 +73,29 @@ export function useCreateInvite() {
   })
 }
 
-export function useRevokeInvite(tripId: string | undefined) {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (token: string) => revokeInvite(tripId!, token),
-    meta: { action: MUTATION_ACTION.REVOKE_INVITE } satisfies MutationMeta,
-    onMutate: (token) => {
-      if (!tripId) return { prev: undefined as Invite[] | undefined }
-      const key  = inviteKeys.ofTrip(tripId)
-      const prev = qc.getQueryData<Invite[]>(key)
-      if (prev) qc.setQueryData<Invite[]>(key, prev.filter(i => i.id !== token))
-      return { prev }
+/**
+ * Revoke the active invite. The card disappears immediately and comes back
+ * if the Worker refuses (409 on an already-rotated token).
+ *
+ * `whenUnconfirmable: 'drop'` — a link that looks revoked but isn't can
+ * still be redeemed, so an unreachable server reveals rather than hides.
+ */
+export function useRevokeInvite(tripId: string) {
+  return useTripListMutation<Invite, string>({
+    tripId,
+    keyFactory: inviteKeys.ofTrip,
+    mutate:     token => revokeInvite(tripId, token),
+    overlay: {
+      controller: inviteOverlay,
+      op: token => ({
+        kind: 'remove',
+        id:   token,
+        confirms: base => !base.some(i => i.id === token),
+        authoritativeFetch: () => listInvitesFromServer(tripId),
+        whenUnconfirmable: 'drop',
+      }),
     },
-    onError: (_err, _token, ctx) => {
-      if (tripId && ctx?.prev !== undefined) qc.setQueryData(inviteKeys.ofTrip(tripId), ctx.prev)
-    },
+    action: MUTATION_ACTION.REVOKE_INVITE,
   })
 }
 
