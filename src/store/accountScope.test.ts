@@ -3,6 +3,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const TRIP_KEY   = 'tripmate-trip-store'
 const VIEWED_KEY = 'tripmate-last-viewed'
 
+// reconcileFirestoreOwner does real Firestore-SDK lifecycle work (terminate /
+// clearIndexedDbPersistence) that belongs to firebase.test.ts, not here. Spy
+// on it so this file only asserts that reconcileAccountScope WIRES it in
+// with the resolved uid — the actual IDB behaviour is covered separately.
+const firebaseServiceMocks = vi.hoisted(() => ({
+  reconcileFirestoreOwner: vi.fn(() => Promise.resolve()),
+}))
+vi.mock('@/services/firebase', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/firebase')>()
+  return { ...actual, reconcileFirestoreOwner: firebaseServiceMocks.reconcileFirestoreOwner }
+})
+
 /** Re-import the stores so `persist` re-hydrates from whatever the test
  *  seeded into localStorage — the hydration happens once at module load. */
 async function loadStores() {
@@ -22,6 +34,7 @@ function seed(key: string, state: Record<string, unknown>, version: number) {
 
 beforeEach(() => {
   window.localStorage.clear()
+  firebaseServiceMocks.reconcileFirestoreOwner.mockClear()
   // persist() hydrates once at module load, so the seeded blob is only read
   // if the module graph is rebuilt for each test.
   vi.resetModules()
@@ -126,6 +139,30 @@ describe('cold start under another account', () => {
   })
 })
 
+// Firestore's own offline cache (IndexedDB) has no per-user scoping either.
+// reconcileFirestoreOwner is unit-tested in firebase.test.ts; this only
+// asserts reconcileAccountScope actually WIRES it in with the resolved
+// uid — the exact spot the previous version of this file's Firestore fix
+// got wrong by checking tripStore.ownerUid inside getFirebase() instead,
+// which raced main.tsx's eager hint-based warm-up.
+describe('Firestore IDB reconciliation wiring', () => {
+  it('calls reconcileFirestoreOwner with the resolved uid', async () => {
+    const { reconcileAccountScope } = await loadStores()
+
+    reconcileAccountScope('uid-a')
+
+    expect(firebaseServiceMocks.reconcileFirestoreOwner).toHaveBeenCalledWith('uid-a')
+  })
+
+  it('does NOT call reconcileFirestoreOwner on sign-out (null uid)', async () => {
+    const { reconcileAccountScope } = await loadStores()
+
+    reconcileAccountScope(null)
+
+    expect(firebaseServiceMocks.reconcileFirestoreOwner).not.toHaveBeenCalled()
+  })
+})
+
 // The reconcile above is only as good as WHERE it is wired. useAuth already
 // has a uid-change guard that deliberately skips the initial restore (so a
 // normal boot doesn't nuke caches) — putting the reconcile inside it would
@@ -147,6 +184,9 @@ describe('auth wiring', () => {
         },
         getRedirectResult: async () => null,
       }),
+      // accountScope.ts imports this too; missing it would throw
+      // "reconcileFirestoreOwner is not a function" from reconcileAccountScope.
+      reconcileFirestoreOwner: firebaseServiceMocks.reconcileFirestoreOwner,
     }))
 
     const { renderHook, waitFor } = await import('@testing-library/react')
@@ -222,6 +262,7 @@ describe('storage failure must not cost the user their session', () => {
         },
         getRedirectResult: async () => null,
       }),
+      reconcileFirestoreOwner: firebaseServiceMocks.reconcileFirestoreOwner,
     }))
 
     const { renderHook, waitFor } = await import('@testing-library/react')

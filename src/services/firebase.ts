@@ -3,6 +3,7 @@
 // behind dynamic imports so the demo mode (no real tripId → query hooks
 // disabled → no service calls) ships zero firebase code. Separate bundles
 // for firestore and auth let each feature pay only for what it uses.
+import { captureError } from '@/services/sentry'
 import type { FirebaseApp } from 'firebase/app'
 import type { Firestore } from 'firebase/firestore'
 import type { Auth } from 'firebase/auth'
@@ -75,10 +76,13 @@ const FORCE_FIRESTORE_LONG_POLLING = import.meta.env.PROD
 const FIRESTORE_LONG_POLLING_TIMEOUT_SECONDS = 25
 
 /** Share one in-flight/resolved load, but release a rejected Promise so a
- * transient chunk or initialization failure can be retried explicitly. */
-function retryableLazy<T>(load: () => Promise<T>): () => Promise<T> {
+ * transient chunk or initialization failure can be retried explicitly.
+ * `.reset()` forces the NEXT call to redo `load()` even after a successful
+ * resolve — used by reconcileFirestoreOwner to force re-initialization
+ * after an account-switch tears down a live instance. */
+function retryableLazy<T>(load: () => Promise<T>): (() => Promise<T>) & { reset: () => void } {
   let promise: Promise<T> | null = null
-  return () => {
+  const fn = (): Promise<T> => {
     if (!promise) {
       promise = load().catch(error => {
         promise = null
@@ -87,6 +91,8 @@ function retryableLazy<T>(load: () => Promise<T>): () => Promise<T> {
     }
     return promise
   }
+  fn.reset = () => { promise = null }
+  return fn
 }
 
 const getApp = retryableLazy(async (): Promise<FirebaseApp> => {
@@ -95,6 +101,11 @@ const getApp = retryableLazy(async (): Promise<FirebaseApp> => {
 })
 
 let firestoreEmulatorConnected = false
+// True once getFirebase()'s loader has started this page load — lets
+// reconcileFirestoreOwner tell "nothing has touched IndexedDB yet" (safe to
+// delete the raw databases) from "a live instance may still hold it open"
+// (must terminate() first). Reset alongside getFirebase.reset().
+let firestoreEverRequested = false
 
 /**
  * Lazy-load + initialize the Firestore bundle. Cached: subsequent calls
@@ -113,6 +124,7 @@ let firestoreEmulatorConnected = false
  * to getFirestore() defaults (HMR double-init).
  */
 export const getFirebase = retryableLazy(async (): Promise<FirebaseBundle> => {
+  firestoreEverRequested = true
   const [app, fs] = await Promise.all([getApp(), import('firebase/firestore')])
   // `ignoreUndefinedProperties` lets optional form fields pass through as
   // `undefined` without triggering "Unsupported field value: undefined".
@@ -144,6 +156,106 @@ export const getFirebase = retryableLazy(async (): Promise<FirebaseBundle> => {
   }
   return { db, ...fs }
 })
+
+// ─── Firestore IDB account isolation ─────────────────────────────────────────
+// `persistentLocalCache` stores documents and pending offline mutations in
+// IndexedDB with no per-user scoping. If a different account signs in on the
+// same device, the previous account's IDB data (including un-synced writes)
+// would still be present — the IDB equivalent of the localStorage leak
+// accountScope.ts closes for tripStore/lastViewedStore.
+//
+// MUST be driven by reconcileAccountScope with the AUTHORITATIVE resolved
+// uid, never by a check inside getFirebase() itself: main.tsx's hint-based
+// eager warm-up (`if (readAuthHint()) void getFirebase()`) can run before
+// the real uid is known — the hint is a boolean set from a PRIOR session,
+// unrelated to the uid onAuthStateChanged is about to resolve this session.
+// Comparing against tripStore.ownerUid at getFirebase()-call time would read
+// a stale value in exactly the cold-start account-switch case this exists
+// to catch (an earlier version of this function had that bug).
+//
+// If Firestore already mounted under the stale account by the time this
+// runs, `terminate()` must release its grip on IndexedDB first —
+// `clearIndexedDbPersistence()` throws on a still-started instance — then
+// `getFirebase.reset()` forces the next call to build a fresh instance
+// (`initializeFirestore` is documented as safe to call again post-terminate).
+// If Firestore was never touched this page load, no live instance holds the
+// databases open, so a direct delete is sufficient and avoids paying for an
+// init+teardown neither side needs.
+//
+// KNOWN LIMITATION (verified by reading the bundled SDK source, not just its
+// docs): `clearIndexedDbPersistence()` ultimately calls the bare
+// `indexedDB.deleteDatabase()` and only wires `onsuccess`/`onerror` — it does
+// NOT handle `onblocked`. A delete request is blocked for as long as ANOTHER
+// tab (any account) still holds an open connection to the same database, and
+// an unhandled `onblocked` never fires success OR error — the SDK's promise
+// simply never settles. `persistentMultipleTabManager()` makes multi-tab a
+// supported usage pattern here, so this isn't a purely theoretical case.
+// `withTimeout` below prevents that from hanging this function forever; the
+// residual risk (a same-name IndexedDB open queued behind a still-blocked
+// delete) is accepted rather than solved, since it degrades to "this tab's
+// Firestore cache stays uninitialized until the other tab closes" rather
+// than data corruption or a security gap — the rules/query-uid boundary
+// mentioned above still holds throughout.
+const FS_IDB_OWNER_KEY = 'tripmate:fs-idb-owner'
+const CLEAR_PERSISTENCE_TIMEOUT_MS = 3_000
+
+function withTimeout(p: Promise<void>, ms: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms)
+    p.then(
+      () => { clearTimeout(timer); resolve() },
+      e => { clearTimeout(timer); reject(e) },
+    )
+  })
+}
+
+async function deleteFirestoreIdbDatabases(): Promise<void> {
+  if (typeof indexedDB === 'undefined' || !('databases' in indexedDB)) return
+  const dbs = await indexedDB.databases()
+  await Promise.all(
+    dbs
+      .filter(d => d.name?.startsWith('firestore'))
+      .map(d => new Promise<void>(ok => {
+        const r = indexedDB.deleteDatabase(d.name!)
+        r.onsuccess = r.onerror = r.onblocked = () => ok()
+      })),
+  )
+}
+
+/** Reconcile Firestore's IndexedDB persistence against the account that just
+ * resolved. Called from reconcileAccountScope — best-effort and non-fatal;
+ * Firestore security rules and query-level uid filtering remain the
+ * authoritative access boundary regardless of whether this succeeds. */
+export async function reconcileFirestoreOwner(uid: string): Promise<void> {
+  if (typeof window === 'undefined' || FIREBASE_EMULATOR_MODE) return
+  try {
+    const storedOwner = localStorage.getItem(FS_IDB_OWNER_KEY)
+    if (storedOwner === uid) return
+
+    if (storedOwner !== null) {
+      if (firestoreEverRequested) {
+        const bundle = await getFirebase()
+        await bundle.terminate(bundle.db)
+        try {
+          await withTimeout(bundle.clearIndexedDbPersistence(bundle.db), CLEAR_PERSISTENCE_TIMEOUT_MS)
+        } catch (e) {
+          // Likely another tab still has the database open (onblocked never
+          // settles the SDK's promise) — see the limitation note above.
+          // Non-fatal: still reset so the next getFirebase() builds a fresh
+          // instance rather than reusing the terminated one.
+          captureError(e, { source: 'reconcileFirestoreOwner:clearIndexedDbPersistence' })
+        }
+        getFirebase.reset()
+        firestoreEverRequested = false
+      } else {
+        await deleteFirestoreIdbDatabases()
+      }
+    }
+    localStorage.setItem(FS_IDB_OWNER_KEY, uid)
+  } catch (e) {
+    captureError(e, { source: 'reconcileFirestoreOwner' })
+  }
+}
 
 let authEmulatorConnected = false
 

@@ -5,9 +5,12 @@
 // badge watermarks) would otherwise be inherited by whoever signs in next on
 // a shared device. Watermarks are the sharp edge: two accounts can be
 // members of the SAME trip, so inherited ones suppress the new user's badges
-// for activity they have never seen.
+// for activity they have never seen. Firestore's own offline cache
+// (IndexedDB, no per-user scoping) has the analogous leak — see
+// reconcileFirestoreOwner in services/firebase.ts.
 import { useTripStore }       from './tripStore'
 import { useLastViewedStore } from './lastViewedStore'
+import { reconcileFirestoreOwner } from '@/services/firebase'
 import { captureError }       from '@/services/sentry'
 
 /** Run one store's claim in isolation.
@@ -48,4 +51,11 @@ export function reconcileAccountScope(uid: string | null): void {
   if (!uid) return
   safeClaim('trip', () => useTripStore.getState().claimForOwner(uid))
   safeClaim('last-viewed', () => useLastViewedStore.getState().claimForOwner(uid))
+  // Firestore's persistentLocalCache IDB has no per-user scoping of its own;
+  // this is the ONLY point that carries the authoritative resolved uid, so
+  // the reconciliation MUST run from here rather than from inside
+  // getFirebase() itself — see reconcileFirestoreOwner's comment for why a
+  // getFirebase()-time check races the eager warm-up in main.tsx. Fire-and-
+  // forget: reconcileFirestoreOwner already captures its own failures.
+  void reconcileFirestoreOwner(uid)
 }
