@@ -6,6 +6,5 @@
 // members→useTrips import would risk a cross-feature dependency cycle.
 export const tripKeys = {
   mine:   (uid: string)                 => ['trips', 'mine', uid] as const,
-  myIds:  (uid: string)                 => ['trips', 'my-ids', uid] as const,
   detail: (uid: string, tripId: string) => ['trips', 'detail', uid, tripId] as const,
 }

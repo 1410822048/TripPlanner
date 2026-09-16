@@ -4,7 +4,7 @@
 // least once:
 //   - L3 (R3) regression: list-vs-get permission gap. A user who is a
 //     non-owner member of any trip got 403 when trip fetching switched to
-//     a `where(documentId, 'in', ids)` query because root /trips LIST is closed.
+//     a `where(documentId, 'in', ids)` query without a membership constraint.
 //   - H2 (R2): immutable fields on update payloads.
 //   - Wish vote-toggle diff predicate (only the caller's own uid; only
 //     `votes` + `updatedAt` may change).
@@ -12,12 +12,12 @@
 // We don't aim for 100% rule coverage — just the spots most likely to
 // regress on rule edits. The emulator interprets the same .rules file
 // the deploy uses, so passing here is strong evidence the deploy is safe.
-import { afterAll, beforeAll, beforeEach, describe, test } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest'
 import { assertFails, assertSucceeds } from '@firebase/rules-unit-testing'
 import {
   collection, doc, getDoc, getDocs, query, where,
   setDoc, updateDoc, deleteDoc, deleteField, serverTimestamp, Timestamp,
-  documentId, writeBatch,
+  documentId, writeBatch, onSnapshot, limit, disableNetwork, enableNetwork,
 } from 'firebase/firestore'
 import {
   setupTestEnv, teardownTestEnv, seedFixture,
@@ -58,14 +58,24 @@ describe('/trips/{tripId} read', () => {
     await assertFails(getDoc(doc(asAnon(env).firestore(), 'trips', TRIP_ID)))
   })
 
-  // The L3 regression: no client can list /trips, even by exact id. The
-  // app lists accessible trips through the /members collection-group query.
-  test('LIST: editor cannot query trips by documentId in [...] (closed root LIST)', async () => {
+  // A finite documentId query can be checked against each actual document.
+  test('LIST: editor can query exact IDs when every trip authorizes them', async () => {
     const q = query(
       collection(asEditor(env).firestore(), 'trips'),
       where(documentId(), 'in', [TRIP_ID]),
     )
-    await assertFails(getDocs(q))
+    const result = await assertSucceeds(getDocs(q))
+    expect(result.docs.map(d => d.id)).toEqual([TRIP_ID])
+  })
+
+  test('LIST: exact IDs cannot include an unauthorized trip', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'trips', 'private-trip'), { memberIds: [STRANGER_UID] })
+    })
+    await assertFails(getDocs(query(collection(asEditor(env).firestore(), 'trips'),
+      where(documentId(), 'in', [TRIP_ID, 'private-trip']))))
+    await assertFails(getDocs(query(collection(asStranger(env).firestore(), 'trips'),
+      where(documentId(), 'in', [TRIP_ID]))))
   })
 
   test('LIST: owner cannot query trips with their own ownerId filter', async () => {
@@ -74,6 +84,54 @@ describe('/trips/{tripId} read', () => {
       where('ownerId', '==', OWNER_UID),
     )
     await assertFails(getDocs(q))
+  })
+
+  test.each([OWNER_UID, EDITOR_UID, VIEWER_UID])('LIST: %s can query their own memberships', async uid => {
+    const db = env.authenticatedContext(uid).firestore()
+    const result = await assertSucceeds(getDocs(query(collection(db, 'trips'), where('memberIds', 'array-contains', uid), limit(50))))
+    expect(result.docs.map(d => d.id)).toEqual([TRIP_ID])
+  })
+
+  test('LIST: stranger sees no other tenant trips and cannot query someone else\'s uid', async () => {
+    const db = asStranger(env).firestore()
+    const result = await assertSucceeds(getDocs(query(collection(db, 'trips'), where('memberIds', 'array-contains', STRANGER_UID))))
+    expect(result.empty).toBe(true)
+    await assertFails(getDocs(query(collection(db, 'trips'), where('memberIds', 'array-contains', OWNER_UID))))
+    await assertFails(getDocs(collection(db, 'trips')))
+  })
+
+  test('LIST: signed-out query is rejected even with the membership filter', async () => {
+    await assertFails(getDocs(query(collection(asAnon(env).firestore(), 'trips'), where('memberIds', 'array-contains', OWNER_UID))))
+  })
+
+  test('LIST: reconnect reconciles membership removal and keeps the query live', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'trips', 'other-trip'), { memberIds: [EDITOR_UID], title: 'other' })
+    })
+    const updates: string[][] = []
+    const errors: Error[] = []
+    const db = asEditor(env).firestore()
+    const unsub = onSnapshot(query(collection(db, 'trips'), where('memberIds', 'array-contains', EDITOR_UID)),
+      snap => updates.push(snap.docs.map(d => `${d.id}:${d.data().title}`).sort()),
+      error => errors.push(error),
+    )
+    try {
+      await vi.waitFor(() => expect(updates.at(-1)).toHaveLength(2))
+      await disableNetwork(db)
+      await env.withSecurityRulesDisabled(async ctx => {
+        const batch = writeBatch(ctx.firestore())
+        batch.update(doc(ctx.firestore(), 'trips', TRIP_ID), { memberIds: [OWNER_UID, VIEWER_UID] })
+        batch.update(doc(ctx.firestore(), 'trips', TRIP_ID, 'members', EDITOR_UID), { removingAt: Timestamp.now() })
+        await batch.commit()
+      })
+      await enableNetwork(db)
+      await vi.waitFor(() => expect(updates.at(-1)).toEqual(['other-trip:other']))
+      await env.withSecurityRulesDisabled(async ctx => {
+        await updateDoc(doc(ctx.firestore(), 'trips', 'other-trip'), { title: 'changed' })
+      })
+      await vi.waitFor(() => expect(updates.at(-1)).toEqual(['other-trip:changed']))
+      expect(errors).toEqual([])
+    } finally { unsub() }
   })
 })
 
@@ -96,6 +154,17 @@ describe('/trips/{tripId} write', () => {
     await assertFails(
       updateDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID), { ownerId: STRANGER_UID }),
     )
+  })
+
+  test('trip membership cannot be injected or removed through client updates', async () => {
+    for (const context of [asOwner(env), asEditor(env), asStranger(env)]) {
+      await assertFails(updateDoc(doc(context.firestore(), 'trips', TRIP_ID), {
+        memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID, STRANGER_UID],
+      }))
+    }
+    await assertFails(updateDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID), {
+      memberIds: [OWNER_UID],
+    }))
   })
 
   test('owner cannot rewrite createdAt on update (immutable guard)', async () => {
@@ -234,6 +303,11 @@ describe('/trips/{tripId} wishVotingDeadline', () => {
     await assertSucceeds(
       setDoc(doc(asOwner(env).firestore(), 'trips', 'wvd-fresh-1'), freshTripPayload()),
     )
+  })
+
+  test('trip create cannot seed other users into the membership array', async () => {
+    await assertFails(setDoc(doc(asOwner(env).firestore(), 'trips', 'injected-trip'),
+      freshTripPayload({ memberIds: [OWNER_UID, STRANGER_UID] })))
   })
 
   test('trip country is required, uppercase, and protected by the field allowlist', async () => {

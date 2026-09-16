@@ -34,7 +34,7 @@ interface RealtimeListOverlayConfig<T> {
   /** Optimistic ops replayed over server truth at read time. Applying it
    *  here means every consumer of the list gets the merge — there is no
    *  unmerged read path to forget about. Conditional on T so lists that
-   *  aren't row-shaped (useMyTripIds is a string[]) can't opt in. */
+   *  aren't row-shaped (e.g. string[]) can't opt in. */
   overlay?: T extends { id: string } ? ListOverlayController<T> : never
 }
 
@@ -67,10 +67,12 @@ export type RealtimeListConfig<T> = RealtimeListConfigUidRequired<T> | RealtimeL
 interface SharedListener {
   refCount:        number
   unsub?:          () => void
-  pendingRelease?: boolean
+  disposed:        boolean
+  error?:          Error
+  retry:           () => void
 }
 
-const listeners = new Map<string, SharedListener>()
+const registries = new WeakMap<QueryClient, Map<string, SharedListener>>()
 
 function acquireListener<T>(
   queryKey: QueryKey,
@@ -82,61 +84,90 @@ function acquireListener<T>(
   ) => Promise<() => void>,
   source:   string,
 ): () => void {
-  const id = JSON.stringify(queryKey)
+  let listeners = registries.get(qc)
+  if (!listeners) {
+    listeners = new Map()
+    registries.set(qc, listeners)
+  }
+  const registry = listeners
+  const id = hashKey(queryKey)
   const existing = listeners.get(id)
   if (existing) {
     existing.refCount += 1
-    return () => releaseListener(id, existing)
+    existing.retry()
+    return () => releaseListener(registry, id, existing)
   }
 
-  const entry: SharedListener = { refCount: 1 }
-  listeners.set(id, entry)
+  const entry: SharedListener = { refCount: 1, disposed: false, retry: () => {} }
+  registry.set(id, entry)
+  let generation = 0
 
-  void startFn(
-    next => {
-      qc.setQueryData<T[]>(queryKey, next)
-    },
-    err => {
-      const code = (err as { code?: string }).code
-      if (code === 'permission-denied') {
-        if (import.meta.env.DEV) {
-          console.warn(`[${source}:${scope}] listener permission revoked`, err)
-        }
+  const start = () => {
+    const attempt = ++generation
+    entry.error = undefined
+    const isCurrent = () => !entry.disposed && generation === attempt && registry.get(id) === entry
+    const fail = (error: Error, failureSource: string) => {
+      if (!isCurrent() || entry.refCount === 0) return
+      // A listen error is terminal. Keep consumer ownership, but invalidate
+      // this attempt so late callbacks / init completion cannot revive it.
+      generation += 1
+      entry.error = error
+      entry.unsub?.()
+      entry.unsub = undefined
+      void qc.cancelQueries({ queryKey, exact: true })
+      qc.getQueryCache().find<T[]>({ queryKey, exact: true })?.setState({
+        status: 'error', error, fetchStatus: 'idle', errorUpdatedAt: Date.now(),
+      })
+      captureError(error, { source: failureSource, key: scope })
+    }
+
+    void Promise.resolve().then(() => {
+      if (!isCurrent()) return
+      return startFn(
+        next => {
+          if (!isCurrent() || entry.refCount === 0) return
+          // Cancel before publishing so an older getDocs/refetch cannot
+          // overwrite this snapshot when its promise resolves.
+          void qc.cancelQueries({ queryKey, exact: true })
+          qc.setQueryData<T[]>(queryKey, next)
+        },
+        error => fail(error, source),
+      )
+    }).then(unsub => {
+      if (!unsub) return
+      if (!isCurrent()) {
+        unsub()
         return
       }
-      const e = err instanceof Error ? err : new Error(String(err))
-      const tagged = new Error(`[${source}:${scope}] ${e.message}`)
-      tagged.name  = e.name
-      tagged.stack = e.stack
-      captureError(tagged, { source, key: scope })
-    },
-  ).then(u => {
-    if (entry.pendingRelease) {
-      u()
-      return
-    }
-    entry.unsub = u
-  }).catch(e => {
-    // Drop the failed entry so a later acquire can retry, but only while
-    // it is still the registered one — a newer generation must survive.
-    if (listeners.get(id) === entry) listeners.delete(id)
-    captureError(e, { source: `${source}/subscribe-init`, key: scope })
-  })
+      entry.unsub = unsub
+    }).catch(error => {
+      fail(error instanceof Error ? error : new Error(String(error)), source + '/subscribe-init')
+    })
+  }
+  entry.retry = () => {
+    if (entry.error && !entry.disposed && entry.refCount > 0) start()
+  }
+  start()
 
-  return () => releaseListener(id, entry)
+  return () => releaseListener(registry, id, entry)
 }
 
 /** `expected` pins the generation this release belongs to. A consumer that
  *  outlived its own entry (subscribe failed, or it was already released)
  *  must not decrement whatever entry now holds the same key. */
-function releaseListener(id: string, expected: SharedListener): void {
+function releaseListener(listeners: Map<string, SharedListener>, id: string, expected: SharedListener): void {
   const entry = listeners.get(id)
   if (entry !== expected) return
   entry.refCount -= 1
   if (entry.refCount > 0) return
-  listeners.delete(id)
-  if (entry.unsub) entry.unsub()
-  else entry.pendingRelease = true
+  // StrictMode reacquires in the same task. Final unmount still disables
+  // callbacks immediately (refCount == 0) and closes pending init later.
+  queueMicrotask(() => {
+    if (listeners.get(id) !== entry || entry.refCount > 0) return
+    entry.disposed = true
+    listeners.delete(id)
+    entry.unsub?.()
+  })
 }
 
 /**
@@ -174,7 +205,13 @@ export function createRealtimeListHook<T>(
     const queryKey = queryKeyFactory(key ?? '', uid)
     const result = useQuery<T[]>({
       queryKey,
-      queryFn:   () => runInitialFetch(key!, uid),
+      queryFn:   async ({ signal }) => {
+        // Refetch can restart a failed listener while its consumers remain.
+        registries.get(qc)?.get(hashKey(queryKey))?.retry()
+        const data = await runInitialFetch(key!, uid)
+        signal.throwIfAborted()
+        return data
+      },
       enabled:   callerEnabled,
       staleTime: Infinity,
     })

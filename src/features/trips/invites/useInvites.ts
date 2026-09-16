@@ -100,13 +100,10 @@ export function useRevokeInvite(tripId: string) {
 }
 
 /**
- * Redeem an invite. On success, the trip + id caches are seeded with
+ * Redeem an invite. On success, the trip cache is seeded with
  * the freshly-joined trip so the switcher reflects membership without
  * waiting for the realtime listener's first push (~100-300ms).
- * Listeners then take over: useMyTripIds picks up the new member doc
- * via its collection-group subscription, and useMyTrips opens a doc
- * listener for the new trip, so any subsequent changes flow through
- * naturally.
+ * The membership-filtered trips listener carries subsequent updates.
  *
  * The trip object travels back through the mutation result so the
  * caller (InvitePage) can use it to switch the active trip before
@@ -128,9 +125,6 @@ export function useAcceptInvite() {
       if (!trip) return  // listeners will reconcile within a few hundred ms
       qc.setQueryData<Trip[]>(tripKeys.mine(user.uid), prev =>
         prev ? [trip, ...prev.filter(t => t.id !== trip.id)] : [trip],
-      )
-      qc.setQueryData<string[]>(tripKeys.myIds(user.uid), prev =>
-        prev ? [trip.id, ...prev.filter(id => id !== trip.id)] : [trip.id],
       )
     },
   })

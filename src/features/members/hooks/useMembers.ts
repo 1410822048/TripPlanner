@@ -116,7 +116,6 @@ export function useTransferOwnership(tripId: string | undefined) {
       if (!tripId || !uid) return
       qc.invalidateQueries({ queryKey: memberKeys.all(tripId, uid) })
       qc.invalidateQueries({ queryKey: tripKeys.mine(uid) })
-      qc.invalidateQueries({ queryKey: tripKeys.myIds(uid) })
     },
   })
 }

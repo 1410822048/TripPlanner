@@ -12,7 +12,7 @@
 //
 // Rehydration rules (evaluated in order):
 //   1. Demo mode (no uid)               → no-op
-//   1.5. selectedTripId freshly set     → grace skip (let the /members
+//   1.5. selectedTripId freshly set     → grace skip (let the trips
 //        listener catch up before snapping away or clearing). Solves
 //        the invite-accept race: the Worker's admin SDK write isn't
 //        visible to this client's onSnapshot until ~hundreds of ms
@@ -46,28 +46,32 @@ const SELECTION_GRACE_MS = 3000
 
 export function useCurrentTripSync(): void {
   const uid = useUid()
-  const isDemo = !uid
   const { selectedTripId, selectedTripAt, recentTripIds, setSelectedTripId } = useTripStore()
   const { data: myTrips } = useMyTrips(uid)
 
   useEffect(() => {
-    if (isDemo || !myTrips) return
-    // Grace skip — see rule 1.5 in the header docblock. Must run BEFORE
-    // the empty-clear and reselect branches so a freshly-set id (from
-    // acceptInvite, including first-trip-via-invite) is honoured even
-    // when myTrips is briefly empty or briefly missing the new id
-    // before the listener catches up.
-    if (selectedTripId && Date.now() - selectedTripAt < SELECTION_GRACE_MS) return
-    if (myTrips.length === 0) {
-      if (selectedTripId) setSelectedTripId(null)
-      return
-    }
+    if (!uid || !myTrips) return
     // Selection still valid → no write (avoid recents churn on every
     // trip-doc cache push).
     if (selectedTripId && myTrips.some(t => t.id === selectedTripId)) return
-    // Reselect priority: most-recent that's still accessible → newest.
-    const tripById = new Map(myTrips.map(t => [t.id, t]))
-    const recent   = recentTripIds.find(id => tripById.has(id))
-    setSelectedTripId(recent ?? myTrips[0]?.id ?? null)
-  }, [isDemo, myTrips, selectedTripId, selectedTripAt, recentTripIds, setSelectedTripId])
+    const reconcile = () => {
+      if (myTrips.length === 0) {
+        if (selectedTripId) setSelectedTripId(null)
+        return
+      }
+      // Reselect priority: most-recent that's still accessible → newest.
+      const tripIds = new Set(myTrips.map(t => t.id))
+      const recent = recentTripIds.find(id => tripIds.has(id))
+      setSelectedTripId(recent ?? myTrips[0]?.id ?? null)
+    }
+    const remaining = selectedTripId ? SELECTION_GRACE_MS - (Date.now() - selectedTripAt) : 0
+    if (remaining <= 0) {
+      reconcile()
+      return
+    }
+    // Expiry must run even when no further snapshot arrives. A new list,
+    // selection, account or unmount cancels this captured reconciliation.
+    const timer = setTimeout(reconcile, remaining)
+    return () => clearTimeout(timer)
+  }, [uid, myTrips, selectedTripId, selectedTripAt, recentTripIds, setSelectedTripId])
 }

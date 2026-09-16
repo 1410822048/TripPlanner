@@ -26,7 +26,7 @@
 // individually visited. Running them here closes that gap.
 import { useEffect } from 'react'
 import { useQueries, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
-import { useMyTrips, useMyTripIds } from '@/features/trips/hooks/useTrips'
+import { useMyTrips } from '@/features/trips/hooks/useTrips'
 import { memberKeys } from './useMembers'
 import { getMembersByTrip, subscribeToMembers } from '../services/memberService'
 import { captureError } from '@/services/sentry'
@@ -35,8 +35,7 @@ import type { Member, Trip } from '@/types'
 export interface UseAllTripMembersResult {
   /** Full Trip docs for the signed-in user, undefined while loading. */
   trips:         Trip[] | undefined
-  /** Trip ids only — resolves before `trips`, exposed so callers that
-   *  only need ids can avoid waiting on the per-trip getDoc fan-out. */
+  /** Derived from the same trip list; undefined until it resolves. */
   tripIds:       string[] | undefined
   /** One UseQueryResult<Member[]> per trip, in the same order as `tripIds`. */
   memberResults: UseQueryResult<Member[]>[]
@@ -48,7 +47,7 @@ export interface UseAllTripMembersResult {
 export function useAllTripMembers(uid: string | undefined): UseAllTripMembersResult {
   const qc = useQueryClient()
   const { data: trips,   isPending: tripsPending } = useMyTrips(uid)
-  const { data: tripIds }                          = useMyTripIds(uid)
+  const tripIds = trips?.map(trip => trip.id)
   const ids = tripIds ?? []
   // Stable string for effect dep; arrays are fresh refs every render.
   const idsKey = ids.join(',')
@@ -57,7 +56,7 @@ export function useAllTripMembers(uid: string | undefined): UseAllTripMembersRes
     queries: ids.map(id => ({
       queryKey:  memberKeys.all(id, uid),
       // uid is guaranteed truthy whenever this fires: `enabled: !!tripIds`
-      // gates on the upstream useMyTripIds(uid) returning data, which
+      // gates on the upstream useMyTrips(uid) returning data, which
       // itself only succeeds with a real uid. The `if (!uid)` short-circuit
       // makes the contract explicit so TS doesn't need a `uid!`.
       queryFn:   () => uid ? getMembersByTrip(id, uid) : Promise.resolve([]),

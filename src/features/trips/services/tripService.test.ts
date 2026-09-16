@@ -1,111 +1,84 @@
-// Service-layer regression tests for tripService's /members
-// collection-group → tripId extraction.
-//
-// Pin: a member doc carrying `removingAt` (the mid-removal marker the
-// Worker stamps BEFORE stripping memberIds + deleting the doc, for both
-// /member-remove and /member-leave) must NOT surface its trip id. This CG
-// query matches on `userId` — NOT `memberIds` — so without the filter the
-// trip lingers in the switcher until the final delete lands, and a failed
-// delete would leave a permanent ghost id. Both paths must drop marker-
-// present docs: the one-shot getMyTripIds (via memberDocsToTripIds) and
-// the realtime subscribeToMyTripIds (via fromDoc + postProcess).
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Timestamp } from 'firebase/firestore'
 
 const mocks = vi.hoisted(() => ({
-  getDocsMock:               vi.fn(),
-  subscribeToCollectionMock: vi.fn(),
-  captureErrorMock:          vi.fn(),
+  getDocs: vi.fn(), onSnapshot: vi.fn(), captureError: vi.fn(), markPerf: vi.fn(),
+  collection: vi.fn((...args: unknown[]) => ({ collection: args.slice(1) })),
+  query: vi.fn((...args: unknown[]) => ({ query: args })),
+  where: vi.fn((...args: unknown[]) => ({ where: args })),
+  limit: vi.fn((n: number) => ({ limit: n })),
 }))
+vi.mock('@/services/firebase', () => ({ getFirebase: async () => ({ db: {}, ...mocks }) }))
+vi.mock('@/services/sentry', () => ({ captureError: mocks.captureError }))
+vi.mock('@/utils/perf', () => ({ markPerf: mocks.markPerf }))
+import { getMyTrips, subscribeToMyTrips } from './tripService'
 
-vi.mock('@/services/firebase', () => ({
-  getFirebase: vi.fn(async () => ({
-    db:              {},
-    collectionGroup: vi.fn(() => ({ _kind: 'cg' })),
-    query:           vi.fn((...args: unknown[]) => ({ _kind: 'query', args })),
-    where:           vi.fn((...args: unknown[]) => ({ _kind: 'where', args })),
-    limit:           vi.fn((n: number) => ({ _kind: 'limit', n })),
-    getDocs:         mocks.getDocsMock,
-  })),
-}))
-
-vi.mock('@/services/realtimeQuery', () => ({
-  subscribeToCollection: mocks.subscribeToCollectionMock,
-}))
-
-vi.mock('@/services/sentry', () => ({
-  captureError: mocks.captureErrorMock,
-}))
-
-import { getMyTripIds, subscribeToMyTripIds } from './tripService'
-
-// Minimal /members collection-group doc shape both paths read: data() for
-// the removingAt marker, ref.parent.parent.id for the parent trip id.
-interface FakeMemberDoc {
-  data: () => Record<string, unknown>
-  ref:  { parent: { parent: { id: string } | null } }
+function tripDoc(id: string, millis = 1) {
+  const ts = Timestamp.fromMillis(millis)
+  return { id, data: vi.fn(() => ({
+    title: id, destination: 'Taipei', startDate: ts, endDate: ts,
+    currency: 'TWD', defaultCountryCode: 'TW', ownerId: 'u1', memberIds: ['u1'],
+    formerMemberNames: {}, wishVotingDeadlineAt: null, wishVotingDeadlineNotifiedAt: null,
+    createdAt: ts, updatedAt: ts,
+  })) }
 }
-function memberDoc(tripId: string | null, opts: { removingAt?: boolean } = {}): FakeMemberDoc {
-  return {
-    data: () => ({ userId: 'u1', ...(opts.removingAt ? { removingAt: { seconds: 1, nanoseconds: 0 } } : {}) }),
-    ref:  { parent: { parent: tripId === null ? null : { id: tripId } } },
-  }
-}
+const snap = (docs: Array<{ id: string; data: () => object }>) => ({ docs, size: docs.length })
+beforeEach(() => vi.clearAllMocks())
 
-beforeEach(() => {
-  mocks.getDocsMock.mockReset()
-  mocks.subscribeToCollectionMock.mockReset()
-  mocks.captureErrorMock.mockReset()
-})
-
-describe('getMyTripIds — removingAt filter', () => {
-  it('drops trip ids whose member doc carries removingAt', async () => {
-    mocks.getDocsMock.mockResolvedValueOnce({
-      size: 3,
-      docs: [memberDoc('t1'), memberDoc('t2', { removingAt: true }), memberDoc('t3')],
-    })
-
-    expect(await getMyTripIds('u1')).toEqual(['t1', 't3'])
-    expect(mocks.captureErrorMock).not.toHaveBeenCalled()  // no truncation
+describe('membership-filtered trips', () => {
+  it('fetches directly with the same query used by the single listener', async () => {
+    mocks.getDocs.mockResolvedValue(snap([]))
+    await getMyTrips('u1')
+    const unsub = vi.fn()
+    mocks.onSnapshot.mockReturnValue(unsub)
+    expect(await subscribeToMyTrips('u1', vi.fn(), vi.fn())).toBe(unsub)
+    expect(mocks.getDocs.mock.calls[0]![0]).toEqual(mocks.onSnapshot.mock.calls[0]![0])
+    expect(mocks.collection).toHaveBeenCalledWith({}, 'trips')
+    expect(mocks.where).toHaveBeenCalledWith('memberIds', 'array-contains', 'u1')
+    expect(mocks.limit).toHaveBeenCalledWith(50)
   })
 
-  it('all-clean docs pass through, deduped', async () => {
-    mocks.getDocsMock.mockResolvedValueOnce({
-      size: 2,
-      docs: [memberDoc('t1'), memberDoc('t1')],  // defensive dedup
-    })
-
-    expect(await getMyTripIds('u1')).toEqual(['t1'])
+  it('sorts full parsed trips by createdAt and estimates pending timestamps', async () => {
+    const a = tripDoc('a', 1), b = tripDoc('b', 2)
+    mocks.getDocs.mockResolvedValue(snap([a, b]))
+    expect((await getMyTrips('u1')).map(t => t.id)).toEqual(['b', 'a'])
+    expect(a.data).toHaveBeenCalledWith({ serverTimestamps: 'estimate' })
   })
 
-  it('a sole removingAt doc yields no ids', async () => {
-    mocks.getDocsMock.mockResolvedValueOnce({
-      size: 1,
-      docs: [memberDoc('t1', { removingAt: true })],
-    })
-
-    expect(await getMyTripIds('u1')).toEqual([])
+  it('skips malformed documents without discarding valid trips', async () => {
+    mocks.getDocs.mockResolvedValue(snap([{ id: 'bad', data: () => ({}) }, tripDoc('good')]))
+    expect((await getMyTrips('u1')).map(t => t.id)).toEqual(['good'])
+    expect(mocks.captureError).toHaveBeenCalledTimes(1)
   })
-})
 
-describe('subscribeToMyTripIds — removingAt filter', () => {
-  it('fromDoc maps clean→id, removingAt→"", orphan→""; postProcess drops blanks + dedups', () => {
-    mocks.subscribeToCollectionMock.mockReturnValue(() => {})
+  it.each([0, 1, 50])('handles %i rows and warns only at the cap', async count => {
+    mocks.getDocs.mockResolvedValue(snap(Array.from({ length: count }, (_, i) => tripDoc(String(i)))))
+    expect(await getMyTrips('u1')).toHaveLength(count)
+    expect(mocks.captureError).toHaveBeenCalledTimes(count === 50 ? 1 : 0)
+  })
 
-    subscribeToMyTripIds('u1', () => {}, () => {})
+  it('publishes joins, metadata changes and departures; marks first nonempty push once', async () => {
+    const onData = vi.fn(), onError = vi.fn()
+    await subscribeToMyTrips('u1', onData, onError)
+    const publish = mocks.onSnapshot.mock.calls[0]![1] as (s: ReturnType<typeof snap>) => void
+    publish(snap([]))
+    expect(mocks.markPerf).not.toHaveBeenCalled()
+    publish(snap([tripDoc('a'), tripDoc('b', 2)]))
+    expect(onData.mock.lastCall![0].map((t: { id: string }) => t.id)).toEqual(['b', 'a'])
+    publish(snap([tripDoc('a', 3)]))
+    expect(onData.mock.lastCall![0]).toHaveLength(1)
+    publish(snap([]))
+    expect(onData.mock.lastCall![0]).toEqual([])
+    expect(mocks.markPerf).toHaveBeenCalledExactlyOnceWith('mytrips-first-publish')
+    expect(mocks.onSnapshot.mock.calls[0]![2]).toBe(onError)
+  })
 
-    expect(mocks.subscribeToCollectionMock).toHaveBeenCalledTimes(1)
-    const opts = mocks.subscribeToCollectionMock.mock.calls[0]![0] as {
-      fromDoc:     (d: FakeMemberDoc) => string
-      postProcess: (ids: string[]) => string[]
-    }
-
-    // fromDoc: clean → trip id; removingAt → '' (filtered downstream);
-    // orphan (no parent trip) → '' as well.
-    expect(opts.fromDoc(memberDoc('t1'))).toBe('t1')
-    expect(opts.fromDoc(memberDoc('t2', { removingAt: true }))).toBe('')
-    expect(opts.fromDoc(memberDoc(null))).toBe('')
-
-    // postProcess: drop the '' blanks (removingAt + orphans) and dedup.
-    expect(opts.postProcess(['t1', '', 't1', 't2', ''])).toEqual(['t1', 't2'])
+  it('keeps listener parsing tolerant and reports truncation', async () => {
+    const onData = vi.fn()
+    await subscribeToMyTrips('u1', onData, vi.fn())
+    const publish = mocks.onSnapshot.mock.calls[0]![1] as (s: ReturnType<typeof snap>) => void
+    publish(snap([{ id: 'bad', data: () => ({}) }, ...Array.from({ length: 49 }, (_, i) => tripDoc(String(i)))]))
+    expect(onData.mock.lastCall![0]).toHaveLength(49)
+    expect(mocks.captureError).toHaveBeenCalledTimes(2)
   })
 })

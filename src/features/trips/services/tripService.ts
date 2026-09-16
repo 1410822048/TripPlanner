@@ -4,12 +4,15 @@
 //   - tripCascade.ts:  deleteTrip + Storage cleanup orchestration
 //   - tripCopy.ts:     copyTrip (template duplication)
 import type { User } from 'firebase/auth'
-import { getFirebase } from '@/services/firebase'
+import { getFirebase, type FirebaseBundle } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { toLocalMidnightTimestamp } from '@/utils/dates'
 import { captureError } from '@/services/sentry'
 import { normalizeMemberDisplayName } from '@/features/members/utils'
 import { subscribeToCollection } from '@/services/realtimeQuery'
+import { parseListSnapshot } from '@/services/parseListSnapshot'
+import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
+import { markPerf } from '@/utils/perf'
 import { CreateTripSchema, UpdateTripSchema, TripDocSchema, type CreateTripInput, type UpdateTripInput, type Trip } from '@/types/trip'
 
 /** Defensive cap on the trips-per-user query. Real users don't have 50+
@@ -17,87 +20,48 @@ import { CreateTripSchema, UpdateTripSchema, TripDocSchema, type CreateTripInput
  *  and we should add proper pagination + a "browse trips" UI. */
 const TRIPS_LIMIT = 50
 
-/**
- * Stage 1 of "fetch all my trips": a single collection-group query on
- * /members filtered by `userId == uid`. Returns just the trip ids the user
- * belongs to. Exposed as a separate service so callers that need the ids
- * earlier than the full Trip[] (e.g. AccountPage's per-trip member fan-out)
- * can fire off downstream queries in parallel with stage 2 below.
- */
-export async function getMyTripIds(uid: string): Promise<string[]> {
-  const { db, collectionGroup, query, where, limit, getDocs } = await getFirebase()
-  const memberSnap = await getDocs(
-    query(collectionGroup(db, 'members'), where('userId', '==', uid), limit(TRIPS_LIMIT)),
-  )
-  if (memberSnap.size >= TRIPS_LIMIT) {
-    captureError(new Error(`getMyTripIds truncated at ${TRIPS_LIMIT}`), { uid })
+/** Shared query for initial fetch, refetch and live updates.
+ * Limit bounds the result set; client sorting does not promise newest 50. */
+function myTripsQuery({ db, collection, query, where, limit }: FirebaseBundle, uid: string) {
+  return query(collection(db, ...P.trips()), where('memberIds', 'array-contains', uid), limit(TRIPS_LIMIT))
+}
+
+function sortTrips(trips: Trip[]): Trip[] {
+  return trips.sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis())
+}
+
+export async function getMyTrips(uid: string): Promise<Trip[]> {
+  const bundle = await getFirebase()
+  const snap = await bundle.getDocs(myTripsQuery(bundle, uid))
+  if (snap.size >= TRIPS_LIMIT) {
+    captureError(new Error('getMyTrips truncated at ' + TRIPS_LIMIT), { uid })
   }
-  return memberDocsToTripIds(memberSnap.docs)
+  return sortTrips(parseListSnapshot(snap, d => firestoreDocFromSchema(TripDocSchema, d, 'getMyTrips')))
 }
 
-/** Extract unique parent trip ids from /members collection-group docs.
- *  Shared by the one-shot fetcher and the realtime listener so both
- *  produce identical output shapes.
- *
- *  Skips docs carrying `removingAt`: this CG query matches on `userId`
- *  (NOT `memberIds`), so a member doc mid-removal — the Worker stamps the
- *  marker BEFORE stripping memberIds + deleting the doc, for both kick
- *  (/member-remove) and self-leave (/member-leave) — would otherwise keep
- *  its trip id in the list until the final delete lands, and a failed
- *  delete would leave a permanent ghost. Marker present ⇒ already departed. */
-function memberDocsToTripIds(
-  docs: ReadonlyArray<{
-    data():  Record<string, unknown> | undefined
-    ref:     { parent: { parent: { id: string } | null } }
-  }>,
-): string[] {
-  return Array.from(new Set(
-    docs
-      .filter(d => !d.data()?.removingAt)
-      .map(d => d.ref.parent.parent?.id)
-      .filter((id): id is string => !!id),
-  ))
-}
-
-/**
- * Realtime variant of getMyTripIds — fires whenever a member doc owned
- * by `uid` is added or removed (the user joined or left a trip), so the
- * trip switcher surfaces new memberships without a manual reload.
- */
-export const subscribeToMyTripIds = (
-  uid:    string,
-  onData: (data: string[]) => void,
+export function subscribeToMyTrips(
+  uid: string,
+  onData: (trips: Trip[]) => void,
   onError: (e: Error) => void,
-) => subscribeToCollection<string>({
-  buildQuery: ({ db, collectionGroup, query, where, limit }) =>
-    query(collectionGroup(db, 'members'), where('userId', '==', uid), limit(TRIPS_LIMIT)),
-  // We want trip ids, not Member objects — fromDoc extracts the parent id.
-  // A doc carrying `removingAt` is mid-removal (kick / self-leave); emit ''
-  // so postProcess's filter(Boolean) drops it — see memberDocsToTripIds for
-  // why the userId-based CG query needs this (else the trip lingers / ghosts
-  // until the final member-doc delete).
-  fromDoc:     d => d.data().removingAt ? '' : (d.ref.parent.parent?.id ?? ''),
-  postProcess: ids => Array.from(new Set(ids.filter(Boolean))),
-  source:      'subscribeToMyTripIds',
-  limit:       TRIPS_LIMIT,
-}, onData, onError)
+): Promise<() => void> {
+  let firstPublishMarked = false
+  return subscribeToCollection<Trip>({
+    buildQuery: bundle => myTripsQuery(bundle, uid),
+    fromDoc: d => firestoreDocFromSchema(TripDocSchema, d, 'subscribeToMyTrips'),
+    postProcess: sortTrips,
+    source: 'subscribeToMyTrips',
+    limit: TRIPS_LIMIT,
+  }, trips => {
+    onData(trips)
+    if (!firstPublishMarked && trips.length > 0) {
+      firstPublishMarked = true
+      markPerf('mytrips-first-publish')
+    }
+  }, onError)
+}
 
-/**
- * Stage 2: parallel `getDoc` per trip id, gated by the /trips/{id} `get`
- * rule (accepts any member regardless of role). Orphan ids (parent trip
- * missing) are filtered out. Each doc is validated through TripDocSchema
- * so downstream code can trust the shape.
- *
- * NOTE: A previous version tried to batch this with
- *   `where(documentId(), 'in', chunkedIds)`
- * to reduce round-trips. That refactor was reverted because the `in`
- * query routes through the /trips LIST rule (`ownerId == uid`), which
- * rejects the whole query if the user is a non-owner member of ANY trip
- * in the chunk — producing a 403 across the user's entire trip fetch.
- * Per-doc getDoc goes through the GET rule (`isMember`) and works for
- * every role. The N getDoc round-trips are acceptable because trips
- * per user is small (cap TRIPS_LIMIT = 50, real usage <10).
- */
+/** Explicit document reads for invite redemption and server-only cold boot.
+ * These do not depend on the bounded trip-list query. */
 export async function getTripsByIds(
   tripIds: string[],
   source: 'default' | 'server' = 'default',
@@ -144,32 +108,6 @@ function parseTripSnap(
     return []
   }
   return [{ id: d.id, ...parsed.data } as Trip]
-}
-
-/**
- * Subscribe to a single trip doc — Trip metadata (title / dates /
- * icon / etc.) pushed live so SchedulePage's header reflects owner
- * edits without a reload. Returns an unsubscribe fn.
- *
- * Snapshot results: `null` if doc was deleted, `Trip` on success.
- * Schema failures pass `null` and log to Sentry — the caller can
- * decide whether to drop the trip from its aggregate list.
- */
-export async function subscribeToTrip(
-  tripId:  string,
-  onData:  (trip: Trip | null) => void,
-  onError: (e: Error) => void,
-): Promise<() => void> {
-  const { db, doc, onSnapshot } = await getFirebase()
-  return onSnapshot(
-    doc(db, ...P.trip(tripId)),
-    snap => {
-      if (!snap.exists()) { onData(null); return }
-      const trips = parseTripSnap(snap, 'subscribeToTrip')
-      onData(trips[0] ?? null)
-    },
-    onError,
-  )
 }
 
 /**

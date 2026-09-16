@@ -293,10 +293,8 @@ service cloud.firestore {
       // in the collection-group (Firestore doesn't auto-cascade
       // subcollection deletes from a parent doc delete in the Console).
       allow get: if resource == null || memberOfDoc();
-      // Root /trips queries are intentionally closed. The app discovers
-      // accessible trip ids through the /members collection-group query
-      // above, then getDoc(...) each trip by id.
-      allow list: if false;
+      // Queries must prove membership with memberIds array-contains uid.
+      allow list: if memberOfDoc();
       // Anyone signed-in may create a trip they own; ownerId is pinned
       // to their uid. memberIds must start as exactly [uid] so the
       // initial roster matches the owner-only state; Worker membership

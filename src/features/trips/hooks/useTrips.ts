@@ -1,26 +1,8 @@
-// src/features/trips/hooks/useTrips.ts
-// Realtime-backed via:
-//   - useMyTripIds: a /members collection-group listener filtered by
-//     `userId == uid`. Pushes the new id list whenever the user joins
-//     or leaves a trip.
-//   - useMyTrips:   useMyTripIds + per-trip doc listeners. Aggregates
-//     N trip-doc pushes into a single Trip[] cache so the trip
-//     switcher / SchedulePage header / etc. all reflect metadata
-//     edits live.
-//
-// We deliberately do NOT use `where(documentId(), 'in', ids)` for the
-// per-trip fetch — it routes through the /trips LIST rule (owner-only)
-// and 403s for non-owner members. The L3 (R3) regression in 2026-04
-// burnt this in once already; sticking with N independent listeners
-// keeps reads identical for a typical 5-trip user and avoids that
-// pitfall entirely.
-import { useEffect } from 'react'
-import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { User } from 'firebase/auth'
 import {
   createTrip,
-  getMyTripIds, getTripsByIds,
-  subscribeToMyTripIds,
+  getMyTrips, subscribeToMyTrips,
   updateTrip, setWishVotingDeadline,
 } from '../services/tripService'
 import { deleteTrip } from '../services/tripCascade'
@@ -33,65 +15,15 @@ import { toLocalMidnightTimestamp } from '@/utils/dates'
 import { MUTATION_ACTION, type MutationMeta } from '@/services/queryClient'
 import { useLastViewedStore } from '@/store/lastViewedStore'
 import { tripKeys } from '../queryKeys'
-import { acquireSharedTripSubscription, syncSharedTripIds } from './sharedTripSubscriptions'
 import type { CreateTripInput, Trip } from '@/types'
 
-/**
- * Realtime trip-id list — collection-group listener on /members
- * filtered to docs owned by this uid. Resolves ~half the time of
- * useMyTrips because it skips the per-trip getDoc fan-out, exposing
- * the ids early for callers (AccountPage's member fan-out) that can
- * start downstream queries in parallel.
- */
-export const useMyTripIds = createRealtimeListHook<string>({
-  queryKeyFactory: tripKeys.myIds,
-  initialFetch:    getMyTripIds,
-  subscribe:       (uid, _uid2, onData, onError) => subscribeToMyTripIds(uid, onData, onError),
-  source:          'useMyTripIds',
+/** One membership-filtered list shared by all consumers of this uid. */
+export const useMyTrips = createRealtimeListHook<Trip>({
+  queryKeyFactory: tripKeys.mine,
+  initialFetch: getMyTrips,
+  subscribe: (uid, _authUid, onData, onError) => subscribeToMyTrips(uid, onData, onError),
+  source: 'useMyTrips',
 })
-
-/**
- * Realtime trip list. Internally:
- *   1. subscribes to the user's member-collection-group (via
- *      useMyTripIds) to keep the id list fresh,
- *   2. retains a module-level controller that opens one trip-doc listener
- *      per id and aggregates pushes into tripKeys.mine(uid)'s array cache.
- *
- * The controller is ref-counted per QueryClient + uid, so AppLayout and page
- * hooks share parsing/cache publication instead of duplicating it. Membership
- * changes (join / leave) still update the id set independently, and the final
- * consumer release disposes every underlying listener.
- */
-export function useMyTrips(uid: string | undefined): UseQueryResult<Trip[]> {
-  const qc = useQueryClient()
-  const idsResult = useMyTripIds(uid)
-  const ids = idsResult.data ?? []
-  // Stable string for effect dep: array refs change every render, but
-  // joining means same-content arrays produce same dep, so listeners
-  // only re-subscribe on actual id changes.
-  const idsKey = ids.join(',')
-
-  const result = useQuery<Trip[]>({
-    queryKey:  tripKeys.mine(uid ?? ''),
-    queryFn:   () => getTripsByIds(ids),
-    enabled:   !!uid && idsResult.isSuccess,
-    staleTime: Infinity,
-  })
-
-  useEffect(() => {
-    if (!uid) return
-    return acquireSharedTripSubscription(qc, uid)
-  }, [uid, qc])
-
-  const idsResultIsSuccess = idsResult.isSuccess
-  useEffect(() => {
-    if (!uid || !idsResultIsSuccess) return
-    const idList = idsKey ? idsKey.split(',') : []
-    syncSharedTripIds(qc, uid, idList)
-  }, [uid, idsKey, idsResultIsSuccess, qc])
-
-  return result
-}
 
 export function useCreateTrip() {
   const qc = useQueryClient()
@@ -99,15 +31,9 @@ export function useCreateTrip() {
     mutationFn: ({ input, user }: { input: CreateTripInput; user: User }) =>
       createTrip(input, user),
     onSuccess: (trip, { user }) => {
-      // Seed both list caches so switcher (mine) + AccountPage's parallel
-      // member fan-out (my-ids) pick up the new trip immediately without a
-      // round-trip. Without the my-ids update, AccountPage's collaborator
-      // count would lag until the cache invalidates.
+      // Seed the trip list; member IDs are derived by consumers.
       qc.setQueryData<Trip[]>(tripKeys.mine(user.uid), prev =>
         prev ? [trip, ...prev.filter(t => t.id !== trip.id)] : [trip],
-      )
-      qc.setQueryData<string[]>(tripKeys.myIds(user.uid), prev =>
-        prev ? [trip.id, ...prev.filter(id => id !== trip.id)] : [trip.id],
       )
     },
   })
@@ -126,9 +52,6 @@ export function useCopyTrip() {
     onSuccess: ({ trip }, { user }) => {
       qc.setQueryData<Trip[]>(tripKeys.mine(user.uid), prev =>
         prev ? [trip, ...prev.filter(t => t.id !== trip.id)] : [trip],
-      )
-      qc.setQueryData<string[]>(tripKeys.myIds(user.uid), prev =>
-        prev ? [trip.id, ...prev.filter(id => id !== trip.id)] : [trip.id],
       )
     },
   })
@@ -211,14 +134,11 @@ export function useDeleteTrip(uid: string | undefined) {
     },
     meta: { action: MUTATION_ACTION.DELETE } satisfies MutationMeta,
     onMutate: (tripId) => {
-      if (!uid) return { prevTrips: undefined as Trip[] | undefined, prevIds: undefined as string[] | undefined }
+      if (!uid) return { prevTrips: undefined as Trip[] | undefined }
       const tripsKey = tripKeys.mine(uid)
-      const idsKey   = tripKeys.myIds(uid)
       const prevTrips = qc.getQueryData<Trip[]>(tripsKey)
-      const prevIds   = qc.getQueryData<string[]>(idsKey)
       if (prevTrips) qc.setQueryData<Trip[]>(tripsKey, prevTrips.filter(t => t.id !== tripId))
-      if (prevIds)   qc.setQueryData<string[]>(idsKey, prevIds.filter(id => id !== tripId))
-      return { prevTrips, prevIds }
+      return { prevTrips }
     },
     onSuccess: (_data, tripId) => {
       // Drop per-trip lastViewed entry so localStorage doesn't accumulate
@@ -228,7 +148,6 @@ export function useDeleteTrip(uid: string | undefined) {
     onError: (_err, _vars, ctx) => {
       if (uid) {
         if (ctx?.prevTrips !== undefined) qc.setQueryData(tripKeys.mine(uid), ctx.prevTrips)
-        if (ctx?.prevIds   !== undefined) qc.setQueryData(tripKeys.myIds(uid), ctx.prevIds)
       }
     },
     // Race: Worker cascade can complete server-side, but the HTTP
@@ -242,7 +161,6 @@ export function useDeleteTrip(uid: string | undefined) {
     onSettled: () => {
       if (!uid) return
       qc.invalidateQueries({ queryKey: tripKeys.mine(uid) })
-      qc.invalidateQueries({ queryKey: tripKeys.myIds(uid) })
     },
   })
 }
@@ -266,14 +184,11 @@ export function useLeaveTrip(uid: string | undefined) {
     },
     meta: { action: MUTATION_ACTION.DELETE } satisfies MutationMeta,
     onMutate: (tripId) => {
-      if (!uid) return { prevTrips: undefined as Trip[] | undefined, prevIds: undefined as string[] | undefined }
+      if (!uid) return { prevTrips: undefined as Trip[] | undefined }
       const tripsKey = tripKeys.mine(uid)
-      const idsKey   = tripKeys.myIds(uid)
       const prevTrips = qc.getQueryData<Trip[]>(tripsKey)
-      const prevIds   = qc.getQueryData<string[]>(idsKey)
       if (prevTrips) qc.setQueryData<Trip[]>(tripsKey, prevTrips.filter(t => t.id !== tripId))
-      if (prevIds)   qc.setQueryData<string[]>(idsKey, prevIds.filter(id => id !== tripId))
-      return { prevTrips, prevIds }
+      return { prevTrips }
     },
     onSuccess: (_data, tripId) => {
       useLastViewedStore.getState().clearTrip(tripId)
@@ -281,18 +196,16 @@ export function useLeaveTrip(uid: string | undefined) {
     onError: (_err, _vars, ctx) => {
       if (uid) {
         if (ctx?.prevTrips !== undefined) qc.setQueryData(tripKeys.mine(uid), ctx.prevTrips)
-        if (ctx?.prevIds   !== undefined) qc.setQueryData(tripKeys.myIds(uid), ctx.prevIds)
       }
     },
-    // Same lost-response reconcile as useDeleteTrip: the /members
-    // collection-group listener pushes the leave to the cache, but a lost
+    // Same lost-response reconcile as useDeleteTrip: the trips
+    // listener pushes the leave to the cache, but a lost
     // HTTP response would otherwise roll back to the pre-mutation snapshot
     // and revive the trip as a ghost row. Invalidate forces a fresh query
     // that re-syncs with server truth regardless of which path won.
     onSettled: () => {
       if (!uid) return
       qc.invalidateQueries({ queryKey: tripKeys.mine(uid) })
-      qc.invalidateQueries({ queryKey: tripKeys.myIds(uid) })
     },
   })
 }
