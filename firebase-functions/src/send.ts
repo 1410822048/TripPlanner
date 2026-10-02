@@ -29,6 +29,10 @@ export function isRetryableSendErrorCode(code: string | undefined): boolean {
     || code === 'messaging/server-unavailable'
     || code === 'messaging/internal-error'
     || code === 'messaging/unknown-error'
+    || code === 'messaging/quota-exceeded'
+    || code === 'messaging/message-rate-exceeded'
+    || code === 'messaging/device-message-rate-exceeded'
+    || code === 'messaging/topics-message-rate-exceeded'
 }
 
 export function hasRetryableSendError(errorCodes: Record<string, number>): boolean {
@@ -44,7 +48,7 @@ export function chunk<T>(items: readonly T[], size = MAX_SEND_TOKENS): T[][] {
 export function isInvalidTokenCode(code: string | undefined): boolean {
   return code === 'messaging/registration-token-not-registered'
     || code === 'messaging/invalid-registration-token'
-    || code === 'messaging/invalid-argument'
+  // invalid-argument 也可能是 payload 錯誤，不足以判定裝置失效。
 }
 
 function dataPayload(event: NormalizedPushEvent, targetUid: string): Record<string, string> {

@@ -299,7 +299,21 @@ service cloud.firestore {
       // to their uid. memberIds must start as exactly [uid] so the
       // initial roster matches the owner-only state; Worker membership
       // endpoints extend it as invitees redeem.
+      // 與 TripDocSchema 必填欄位對齊；hasOnly 不會要求欄位存在。
+      function validTripReadFields() {
+        return request.resource.data.keys().hasAll([
+          'ownerId','title','destination','startDate','endDate','currency',
+          'defaultCountryCode','memberIds','wishVotingDeadlineAt',
+          'wishVotingDeadlineNotifiedAt','createdAt','updatedAt'
+        ])
+        && request.resource.data.startDate is timestamp
+        && request.resource.data.endDate is timestamp
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp;
+      }
+
       allow create: if isSignedIn()
+                    && validTripReadFields()
                     && request.resource.data.keys().hasOnly([
                          'ownerId','title','destination','startDate','endDate',
                          'currency','defaultCountryCode','icon','memberIds','lastActivityByFeature',
@@ -319,10 +333,6 @@ service cloud.firestore {
                     && request.resource.data.destination is string
                     && request.resource.data.destination.size() <= 200
                     && request.resource.data.memberIds == [uid()]
-                    && (!('startDate' in request.resource.data)
-                          || request.resource.data.startDate is timestamp)
-                    && (!('endDate' in request.resource.data)
-                          || request.resource.data.endDate is timestamp)
                     && (!('currency' in request.resource.data)
                           || (request.resource.data.currency is string
                               && request.resource.data.currency.size() == 3))
@@ -352,6 +362,7 @@ service cloud.firestore {
       //      the rule stays lenient.
       allow update: if (
         isTripOwner(tripId)
+        && validTripReadFields()
         && request.resource.data.keys().hasOnly([
              'ownerId','title','destination','startDate','endDate',
              'currency','defaultCountryCode','icon','memberIds','lastActivityByFeature',
@@ -388,10 +399,6 @@ service cloud.firestore {
         && request.resource.data.title.size() <= 100
         && request.resource.data.destination is string
         && request.resource.data.destination.size() <= 200
-        && (!('startDate' in request.resource.data)
-              || request.resource.data.startDate is timestamp)
-        && (!('endDate' in request.resource.data)
-              || request.resource.data.endDate is timestamp)
         && unchanged('lastActivityByFeature')
         && (!('currency' in request.resource.data)
               || (request.resource.data.currency is string
@@ -403,6 +410,7 @@ service cloud.firestore {
                   && request.resource.data.icon.size() <= 8))
       ) || (
         memberOfDoc()
+        && validTripReadFields()
         && changedOnly(['lastActivityByFeature', 'updatedAt'])
         && request.resource.data.lastActivityByFeature is map
         && request.resource.data.lastActivityByFeature.keys().hasOnly(
@@ -429,6 +437,18 @@ service cloud.firestore {
         // same writeBatch as trip creation. Invite redeem and manual
         // member writes are Worker-authoritative.
         allow create: if isSignedIn()
+          && request.resource.data.keys().hasAll([
+            'tripId','userId','displayName','role','memberIds','joinedAt'
+          ])
+          && request.resource.data.keys().hasOnly([
+            'tripId','userId','displayName','avatarUrl','role','memberIds','joinedAt'
+          ])
+          && request.resource.data.tripId == tripId
+          && request.resource.data.joinedAt is timestamp
+          && request.resource.data.joinedAt == request.time
+          && (!('avatarUrl' in request.resource.data)
+            || (request.resource.data.avatarUrl is string
+              && request.resource.data.avatarUrl.size() <= 2048))
           && memberId == uid()
           && uid() in request.resource.data.memberIds
           && request.resource.data.userId == uid()

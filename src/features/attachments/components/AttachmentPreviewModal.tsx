@@ -15,7 +15,10 @@
 // standalone PWA out to Safari. pdf.js renders in-app uniformly instead.
 // The top-bar "別タブで開く" anchor stays as an escape hatch (and PdfPreview
 // shows the same anchor if pdf.js fails to parse the bytes).
-import { lazy, Suspense, useEffect } from 'react'
+import { lazy, Suspense, useRef } from 'react'
+import { createPortal } from 'react-dom'
+import { useModalFocus } from '@/hooks/useModalFocus'
+import { useMainScrollLock } from '@/hooks/useMainScrollLock'
 import { X, ExternalLink, FileText, Loader2 } from 'lucide-react'
 
 const PdfPreview = lazy(() => import('./PdfPreview'))
@@ -29,25 +32,20 @@ interface Props {
 }
 
 export default function AttachmentPreviewModal({ url, fileType, fileName, onClose }: Props) {
-  // Escape closes. Lock body scroll while open so the page underneath
-  // doesn't drift on iOS rubberband.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', onKey)
-    const main = document.querySelector<HTMLElement>('main')
-    const prevOverflow = main?.style.overflow
-    if (main) main.style.overflow = 'hidden'
-    return () => {
-      document.removeEventListener('keydown', onKey)
-      if (main && prevOverflow !== undefined) main.style.overflow = prevOverflow
-    }
-  }, [onClose])
+  const previewRef = useRef<HTMLDivElement>(null)
+  useModalFocus(previewRef, true, onClose, 300)
+  useMainScrollLock(true)
 
   const isImage = (fileType ?? '').startsWith('image/')
   const isPdf   = fileType === 'application/pdf'
 
-  return (
+  return createPortal(
     <div
+      ref={previewRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={fileName}
+      tabIndex={-1}
       onClick={onClose}
       className="fixed inset-0 z-[300] bg-black/85 flex flex-col"
       style={{ touchAction: isPdf ? 'auto' : 'none' }}
@@ -146,6 +144,7 @@ export default function AttachmentPreviewModal({ url, fileType, fileName, onClos
           </a>
         </div>
       )}
-    </div>
+    </div>,
+    document.body,
   )
 }

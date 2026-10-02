@@ -40,6 +40,7 @@ export const useExpenses = createRealtimeListHook<Expense>({
   subscribe:       (tripId, uid, onData, onError) => subscribeToExpenses(tripId, uid, onData, onError),
   source:          'useExpenses',
   requiresUid:     true,
+  requireServerConfirmation: true,
   overlay:         expenseOverlay,
 })
 

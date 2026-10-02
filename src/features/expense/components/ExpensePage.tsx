@@ -60,10 +60,10 @@ export default function ExpensePage() {
   const { data: fbExpenses, isLoading } = expenseQuery
   const { data: fbMembers } = memberQuery
   const { data: fbSettlements } = settlementQuery
-  const expensesReady = isDemo || (fbExpenses !== undefined && !expenseQuery.isError && !expenseQuery.isPending)
-  const membersReady = isDemo || (fbMembers !== undefined && !memberQuery.isError && !memberQuery.isPending)
+  const expensesReady = isDemo || (fbExpenses !== undefined && !expenseQuery.isError && !expenseQuery.isPending && expenseQuery.dataUpdatedAt > 0)
+  const membersReady = isDemo || (fbMembers !== undefined && !memberQuery.isError && !memberQuery.isPending && memberQuery.dataUpdatedAt > 0)
   const ledgerReady = expensesReady && membersReady && (isDemo ||
-    (fbSettlements !== undefined && !settlementQuery.isError && !settlementQuery.isPending))
+    (fbSettlements !== undefined && !settlementQuery.isError && !settlementQuery.isPending && settlementQuery.dataUpdatedAt > 0))
   const ledgerError = expenseQuery.error ?? memberQuery.error ?? settlementQuery.error
   const settlements = ctx.status === 'cloud' ? (fbSettlements ?? []) : []
   const createSettlementMut = useCreateSettlement(mutationTripId)

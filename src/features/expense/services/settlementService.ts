@@ -23,9 +23,9 @@
 import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
-import { parseListSnapshot } from '@/services/parseListSnapshot'
+import { parseServerListSnapshot } from '@/services/parseListSnapshot'
 import { P } from '@/services/paths'
-import { subscribeToCollection } from '@/services/realtimeQuery'
+import { subscribeToCollection, type ListSnapshotMetadata } from '@/services/realtimeQuery'
 import {
   requireWorkerWriteBase, preflightIdToken, workerFetch,
 } from '@/services/workerBase'
@@ -139,32 +139,32 @@ function settlementFromDoc(d: QueryDocumentSnapshot): SettlementRecord {
   return firestoreDocFromSchema(SettlementDocSchema, d, 'settlementFromDoc')
 }
 
-async function readSettlements(tripId: string, fromServer: boolean): Promise<SettlementRecord[]> {
-  const { db, collection, query, where, orderBy, limit, getDocs, getDocsFromServer } = await getFirebase()
+async function readSettlements(tripId: string): Promise<SettlementRecord[]> {
+  const { db, collection, query, where, orderBy, limit, getDocsFromServer } = await getFirebase()
   const q = query(
     collection(db, ...P.settlements(tripId)),
     where('deletedAt', '==', null),
     orderBy('createdAt', 'desc'),
     limit(LIST_LIMIT + 1),
   )
-  const snap = await (fromServer ? getDocsFromServer(q) : getDocs(q))
-  return parseListSnapshot(snap, settlementFromDoc, { limit: LIST_LIMIT })
+  const snap = await getDocsFromServer(q)
+  return parseServerListSnapshot(snap, settlementFromDoc, LIST_LIMIT)
 }
 
 export function getSettlementsByTrip(tripId: string): Promise<SettlementRecord[]> {
-  return readSettlements(tripId, false)
+  return readSettlements(tripId)
 }
 
 /** Server-only read, used to settle an ambiguous write. `getDocs` can be
  *  answered from Firestore's local cache, which is exactly the state we
  *  are trying to check against. */
 export function getSettlementsByTripFromServer(tripId: string): Promise<SettlementRecord[]> {
-  return readSettlements(tripId, true)
+  return readSettlements(tripId)
 }
 
 export const subscribeToSettlements = (
   tripId: string,
-  onData: (rows: SettlementRecord[]) => void,
+  onData: (rows: SettlementRecord[], metadata?: ListSnapshotMetadata) => void,
   onError: (e: Error) => void,
 ) => subscribeToCollection<SettlementRecord>({
   buildQuery: ({ db, collection, query, where, orderBy, limit }) => query(

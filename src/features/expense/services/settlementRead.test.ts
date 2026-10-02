@@ -16,7 +16,7 @@ vi.mock('@/services/firestoreDocFromSchema', () => ({
 import { getSettlementsByTrip, getSettlementsByTripFromServer, subscribeToSettlements } from './settlementService'
 
 function snapshot(size: number, invalid = false): QuerySnapshot {
-  return { size, docs: Array.from({ length: size }, (_, index) => ({ id: invalid && index === 0 ? 'bad' : String(index) })) } as unknown as QuerySnapshot
+  return { size, docs: Array.from({ length: size }, (_, index) => ({ id: invalid && index === 0 ? 'bad' : String(index) })), metadata: { fromCache: false, hasPendingWrites: false } } as unknown as QuerySnapshot
 }
 beforeEach(() => vi.clearAllMocks())
 
@@ -37,7 +37,7 @@ it('applies the same strict policy to the settlement listener', async () => {
   const onData = vi.fn()
   const onError = vi.fn()
   await subscribeToSettlements('t', onData, onError)
-  const callback = fb.onSnapshot.mock.calls[0]![1] as (snap: QuerySnapshot) => void
+  const callback = fb.onSnapshot.mock.calls[0]![2] as (snap: QuerySnapshot) => void
   callback(snapshot(201))
   callback(snapshot(1, true))
   expect(onError).toHaveBeenCalledTimes(2)

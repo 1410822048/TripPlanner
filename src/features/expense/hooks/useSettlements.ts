@@ -40,6 +40,7 @@ export const useSettlements = createRealtimeListHook<SettlementRecord>({
   subscribe:       (tripId, _uid, onData, onError) => subscribeToSettlements(tripId, onData, onError),
   source:          'useSettlements',
   requiresUid:     true,
+  requireServerConfirmation: true,
   overlay:         settlementOverlay,
 })
 

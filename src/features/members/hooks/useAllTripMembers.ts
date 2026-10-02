@@ -26,10 +26,10 @@
 // individually visited. Running them here closes that gap.
 import { useEffect } from 'react'
 import { useQueries, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
+import { acquireListener, retrySharedListener } from '@/hooks/createRealtimeListHook'
 import { useMyTrips } from '@/features/trips/hooks/useTrips'
 import { memberKeys } from './useMembers'
 import { getMembersByTrip, subscribeToMembers } from '../services/memberService'
-import { captureError } from '@/services/sentry'
 import type { Member, Trip } from '@/types'
 
 export interface UseAllTripMembersResult {
@@ -59,8 +59,13 @@ export function useAllTripMembers(uid: string | undefined): UseAllTripMembersRes
       // gates on the upstream useMyTrips(uid) returning data, which
       // itself only succeeds with a real uid. The `if (!uid)` short-circuit
       // makes the contract explicit so TS doesn't need a `uid!`.
-      queryFn:   () => uid ? getMembersByTrip(id, uid) : Promise.resolve([]),
-      enabled:   !!tripIds,
+      queryFn:   async ({ signal }: { signal: AbortSignal }) => {
+        retrySharedListener(qc, memberKeys.all(id, uid))
+        const data = uid ? await getMembersByTrip(id, uid) : []
+        signal.throwIfAborted()
+        return data
+      },
+      enabled:   !!tripIds && !!uid,
       // Listener is the source of truth once attached (see effect below).
       staleTime: Infinity,
     })),
@@ -74,29 +79,14 @@ export function useAllTripMembers(uid: string | undefined): UseAllTripMembersRes
     // which is why we keyed on the joined string in the first place.
     const idList = idsKey ? idsKey.split(',') : []
     if (idList.length === 0 || !uid) return
-    let mounted = true
-    const unsubs: Array<() => void> = []
-
-    idList.forEach(id => {
-      void subscribeToMembers(
-        id,
-        uid,
-        (data: Member[]) => {
-          if (mounted) qc.setQueryData<Member[]>(memberKeys.all(id, uid), data)
-        },
-        err => captureError(err, { source: 'useAllTripMembers/members', tripId: id }),
-      ).then(unsub => {
-        if (mounted) unsubs.push(unsub)
-        else unsub()
-      }).catch(e => {
-        captureError(e, { source: 'useAllTripMembers/subscribe-init', tripId: id })
-      })
-    })
-
-    return () => {
-      mounted = false
-      unsubs.forEach(u => u())
-    }
+    // 與單旅程頁共享 generation／refcount／metadata，避免另一個 caller
+    // 把快取 roster 蓋回同一 query key，誤標成已經 server 確認。
+    const releases = idList.map(id => acquireListener<Member>(
+      memberKeys.all(id, uid), id, qc,
+      (onData, onError) => subscribeToMembers(id, uid, onData, onError),
+      'useAllTripMembers/members', true,
+    ))
+    return () => releases.forEach(release => release())
   }, [idsKey, qc, uid])
 
   // `fetchStatus !== 'idle'` excludes the disabled-because-no-uid state,

@@ -3,6 +3,7 @@ import { useEffect, useId, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 import { useBottomSheet } from '@/hooks/useBottomSheet'
 import { useModalFocus } from '@/hooks/useModalFocus'
+import { useMainScrollLock } from '@/hooks/useMainScrollLock'
 
 interface Props {
   isOpen:   boolean
@@ -24,21 +25,7 @@ export default function BottomSheet({ isOpen, title, onClose, dismissible = true
   // 開啟時鎖住 <main> scroll（app 的實際滾動容器）
   // iOS Safari: overflow:hidden 單獨不足以阻止 rubberband，需搭配 touch-action:none
   // 並保留/還原 scrollTop 避免位置跳回頂端
-  useEffect(() => {
-    if (!isOpen) return
-    const main = document.querySelector<HTMLElement>('main')
-    if (!main) return
-    const prevOverflow   = main.style.overflow
-    const prevTouchAction = main.style.touchAction
-    const scrollTop = main.scrollTop
-    main.style.overflow   = 'hidden'
-    main.style.touchAction = 'none'
-    return () => {
-      main.style.overflow   = prevOverflow
-      main.style.touchAction = prevTouchAction
-      main.scrollTop = scrollTop
-    }
-  }, [isOpen])
+  useMainScrollLock(isOpen)
 
   // 防止 iOS Safari 在 backdrop 上的 touchmove 冒泡觸發 viewport bounce
   useEffect(() => {

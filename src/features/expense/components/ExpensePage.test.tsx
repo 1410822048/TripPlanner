@@ -14,6 +14,7 @@ const harness = vi.hoisted(() => ({
   expensePending: false,
   settlementPending: false,
   membersPending: false,
+  unconfirmed: false,
   refetch: vi.fn(),
   uid: 'u1',
   canWrite: true,
@@ -113,6 +114,7 @@ vi.mock('../hooks/useExpenses', async () => {
     expenseKeys:      { all: (tripId: string, uid?: string) => ['expenses', tripId, uid ?? ''] },
     expenseOverlay:   createListOverlay({ insert: 'head', source: 'expenses-test' }),
     useExpenses:      () => ({ data: harness.expensePending ? undefined : harness.expenses,
+      dataUpdatedAt: harness.unconfirmed ? 0 : 1,
       isLoading: harness.expensePending, isPending: harness.expensePending,
       isError: !!harness.expenseError, error: harness.expenseError, refetch: harness.refetch }),
     useCreateExpense: () => ({ mutate: harness.createExpense }),
@@ -123,6 +125,7 @@ vi.mock('../hooks/useExpenses', async () => {
 
 vi.mock('../hooks/useSettlements', () => ({
   useSettlements: () => ({ data: harness.settlementPending ? undefined : harness.settlements,
+    dataUpdatedAt: harness.unconfirmed ? 0 : 1,
     isPending: harness.settlementPending, isError: !!harness.settlementError,
     error: harness.settlementError, refetch: harness.refetch }),
   useCreateSettlement: () => ({ mutate: harness.createSettlement }),
@@ -131,6 +134,7 @@ vi.mock('../hooks/useSettlements', () => ({
 
 vi.mock('@/features/members/hooks/useMembers', () => ({
   useMembers: () => ({ data: harness.membersPending ? undefined : harness.members,
+    dataUpdatedAt: harness.unconfirmed ? 0 : 1,
     isPending: harness.membersPending, refetch: harness.refetch }),
 }))
 
@@ -272,6 +276,7 @@ beforeEach(() => {
   harness.expensePending = false
   harness.settlementPending = false
   harness.membersPending = false
+  harness.unconfirmed = false
   harness.refetch.mockReset().mockResolvedValue(undefined)
   harness.expenses = [receiptExpense()]
   harness.members = MEMBERS
@@ -304,6 +309,16 @@ beforeEach(() => {
 })
 
 describe('ExpensePage read-first expense flow', () => {
+  it('does not authorize cached ledger data as a complete ledger', () => {
+    harness.unconfirmed = true
+    harness.modalIsOpen = true
+    render(<ExpensePage />)
+    expect(screen.queryByRole('button', { name: 'record-settlement' })).toBeNull()
+    expect(screen.getByText('正在載入完整帳務資料…')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'mock expense save' }))
+    expect(harness.createExpense).not.toHaveBeenCalled()
+    expect(harness.closeModal).not.toHaveBeenCalled()
+  })
   it.each(['expensePending', 'settlementPending', 'membersPending'] as const)('does not compute settlement suggestions while %s', key => {
     harness[key] = true
     render(<ExpensePage />)

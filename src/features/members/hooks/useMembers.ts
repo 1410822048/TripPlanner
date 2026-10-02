@@ -40,6 +40,7 @@ export const useMembers = createRealtimeListHook<Member>({
   subscribe:       (tripId, uid, onData, onError) => subscribeToMembers(tripId, uid, onData, onError),
   source:          'useMembers',
   requiresUid:     true,
+  requireServerConfirmation: true,
   overlay:         memberOverlay,
 })
 

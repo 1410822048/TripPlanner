@@ -54,13 +54,16 @@ describe('send helpers', () => {
   test('classifies token cleanup errors', () => {
     expect(isInvalidTokenCode('messaging/registration-token-not-registered')).toBe(true)
     expect(isInvalidTokenCode('messaging/invalid-registration-token')).toBe(true)
-    expect(isInvalidTokenCode('messaging/invalid-argument')).toBe(true)
+    expect(isInvalidTokenCode('messaging/invalid-argument')).toBe(false)
     expect(isInvalidTokenCode('messaging/unavailable')).toBe(false)
   })
 
   test('classifies retryable FCM send errors', () => {
     expect(isRetryableSendErrorCode('messaging/unavailable')).toBe(true)
     expect(isRetryableSendErrorCode('messaging/internal-error')).toBe(true)
+    for (const code of ['quota-exceeded', 'message-rate-exceeded', 'device-message-rate-exceeded', 'topics-message-rate-exceeded']) {
+      expect(isRetryableSendErrorCode(`messaging/${code}`)).toBe(true)
+    }
     expect(isRetryableSendErrorCode('messaging/registration-token-not-registered')).toBe(false)
     expect(isRetryableSendErrorCode('messaging/invalid-argument')).toBe(false)
   })

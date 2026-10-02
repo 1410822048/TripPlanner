@@ -1,10 +1,12 @@
 import { z } from 'zod'
 import { getAdminToken, getProjectId } from './admin'
 import { CascadeError, withTokenRetry } from './cascade'
-import { getDocFields, readString, type FsValue } from './firestore'
+import { getDocFields, readString } from './firestore'
 import { expenseIsSettlementLocked } from './expense-write'
 import { assertWishVotingOpen } from './wish-write'
-import { TxRetryExhausted } from './firestore-tx'
+import { runFirestoreTransaction, TxRetryExhausted, type TxWrite } from './firestore-tx'
+import { requireTripMember as requireTripMemberTx } from './membership-shared'
+import { referencedPaths } from './orphan-purge'
 import { TripIdRe } from './field-validation'
 import { deleteR2Object, getR2Object } from './r2-storage'
 import { MAX_ATTACHMENT_BYTES, uploadAttachmentToIntent } from './upload-intent'
@@ -161,31 +163,9 @@ async function requireTripMember(
   })
 }
 
-async function requireActiveTripMember(
-  callerUid:          string,
-  tripId:             string,
-  serviceAccountJson: string,
-): Promise<{ role: string | undefined; isOwner: boolean; trip: Record<string, FsValue> }> {
-  return withTokenRetry(async () => {
-    const accessToken = await getAdminToken(serviceAccountJson)
-    const projectId = getProjectId(serviceAccountJson)
-    const [trip, member] = await Promise.all([
-      getDocFields(accessToken, projectId, `trips/${tripId}`),
-      getDocFields(accessToken, projectId, `trips/${tripId}/members/${callerUid}`),
-    ])
-    if (!trip) throw new CascadeError(404, 'trip not found')
-    if ('deletingAt' in trip) throw new CascadeError(410, 'trip is being deleted')
-    if (!member) throw new CascadeError(403, 'caller is not a trip member')
-    if ('removingAt' in member) throw new CascadeError(403, 'caller is being removed from the trip')
-    // Trip fields come back with the caller so entity-specific gates (the
-    // wish voting deadline) can reuse them instead of re-reading the doc.
-    return { role: readString(member, 'role'), isOwner: readString(trip, 'ownerId') === callerUid, trip }
-  })
-}
-
 /**
- * Deleting an attachment mutates the entity that owns it, so it has to
- * clear the same gates the entity's write path does. Without that this
+ * Cleanup must clear the entity's write gates and prove it no longer
+ * references the object. Without that this
  * endpoint becomes the way around them: an editor who cannot edit a
  * settled expense could still destroy its receipt, and a proposer frozen
  * out by the voting deadline could still destroy their wish's image —
@@ -196,50 +176,59 @@ async function authorizeDelete(
   callerUid:          string,
   tripId:             string,
   parsed:             ParsedAttachmentPath,
+  path:               string,
   serviceAccountJson: string,
 ): Promise<void> {
-  const membership = await requireActiveTripMember(callerUid, tripId, serviceAccountJson)
-
-  if (parsed.collection === 'wishes') {
-    // Deadline first: firestore.rules gates wish delete on wishVotingOpen
-    // with NO owner exemption, so this must not sit behind the owner
-    // short-circuit below.
-    assertWishVotingOpen({ fields: membership.trip })
-    if (membership.isOwner) return
-
-    await withTokenRetry(async () => {
-      const accessToken = await getAdminToken(serviceAccountJson)
-      const projectId = getProjectId(serviceAccountJson)
-      const wish = await getDocFields(
-        accessToken, projectId, `trips/${tripId}/wishes/${parsed.entityId}`,
-      )
-      if (!wish) throw new CascadeError(404, 'wish not found')
-      if (readString(wish, 'proposedBy') !== callerUid) {
-        throw new CascadeError(403, 'only the wish proposer or trip owner may delete this attachment')
+  await withTokenRetry(async () => {
+    const accessToken = await getAdminToken(serviceAccountJson)
+    const projectId = getProjectId(serviceAccountJson)
+    await runFirestoreTransaction(accessToken, projectId, async tx => {
+      const { trip, member } = await requireTripMemberTx(tx, tripId, callerUid)
+      if ('removingAt' in member.fields) throw new CascadeError(403, 'caller is being removed from the trip')
+      const isOwner = readString(trip.fields, 'ownerId') === callerUid
+      const role = readString(member.fields, 'role')
+      const entity = await tx.get(`trips/${tripId}/${parsed.collection}/${parsed.entityId}`)
+      if (parsed.collection === 'wishes') {
+        assertWishVotingOpen(trip)
+        if (!isOwner) {
+          if (!entity.exists) throw new CascadeError(404, 'wish not found')
+          if (readString(entity.fields, 'proposedBy') !== callerUid) {
+            throw new CascadeError(403, 'only the wish proposer or trip owner may delete this attachment')
+          }
+        }
+      } else {
+        if (role !== 'owner' && role !== 'editor') throw new CascadeError(403, 'caller cannot delete this attachment')
+        if (parsed.collection === 'expenses' && !isOwner) {
+          if (!entity.exists) throw new CascadeError(404, 'expense not found')
+          if (expenseIsSettlementLocked(entity.fields)) {
+            throw new CascadeError(403, 'only the trip owner may delete this attachment after the expense has been settled')
+          }
+        }
       }
-    })
-    return
-  }
-
-  if (membership.role !== 'owner' && membership.role !== 'editor') {
-    throw new CascadeError(403, 'caller cannot delete this attachment')
-  }
-
-  if (parsed.collection === 'expenses' && !membership.isOwner) {
-    await withTokenRetry(async () => {
-      const accessToken = await getAdminToken(serviceAccountJson)
-      const projectId = getProjectId(serviceAccountJson)
-      const expense = await getDocFields(
-        accessToken, projectId, `trips/${tripId}/expenses/${parsed.entityId}`,
-      )
-      if (!expense) throw new CascadeError(404, 'expense not found')
-      if (expenseIsSettlementLocked(expense)) {
-        throw new CascadeError(
-          403, 'only the trip owner may delete this attachment after the expense has been settled',
-        )
+      // Cleanup 只能刪已脫離實體引用的物件；包含 soft-delete 保留期內的收據。
+      if (referencedPaths(parsed.collection, entity.fields).has(path)) {
+        throw new CascadeError(409, '附件仍被使用，請先透過原項目的編輯流程移除或替換附件')
       }
+      const intents = await tx.runQuery({
+        parent: `trips/${tripId}`, collection: 'uploadIntents',
+        filters: [{ fieldPath: 'path', op: 'EQUAL', value: { stringValue: path } }], limit: 2,
+      })
+      if (intents.length > 1) throw new CascadeError(409, '附件上傳紀錄異常，請稍後重試')
+      const writes: TxWrite[] = []
+      for (const intent of intents) {
+        if (readString(intent.fields, 'status') === 'used') continue
+        if (!isOwner && readString(intent.fields, 'uid') !== callerUid) {
+          throw new CascadeError(403, '只有上傳者或旅程擁有者可以取消尚未使用的附件')
+        }
+        // 同一交易撤銷尚未消耗的 intent；consume 或 upload 的 concurrent
+        // commit 必須重試，不能在 R2 清理後重新綁定已刪路徑。
+        writes.push({ op: 'delete', document: intent.name, currentDocument: { exists: true } })
+      }
+      // used intent 不可重用；無 intent 的舊路徑也不能透過 Worker 重新綁定。
+      // R2 side effect 留在交易外，不會隨 Firestore contention 重跑。
+      return { writes, result: undefined }
     })
-  }
+  })
 }
 
 async function dispatchAttachment<T>(args: {
@@ -341,7 +330,7 @@ export function handleAttachmentDelete(
     run: async () => {
       const locator = AttachmentDeleteRequestSchema.parse(args.body)
       const parsed = parseAttachmentPath(locator.path, locator.tripId)
-      await authorizeDelete(args.uid, locator.tripId, parsed, args.env.FIREBASE_SERVICE_ACCOUNT)
+      await authorizeDelete(args.uid, locator.tripId, parsed, locator.path, args.env.FIREBASE_SERVICE_ACCOUNT)
       await deleteR2Object(args.env.ATTACHMENTS, locator.path)
       return { ok: true as const }
     },

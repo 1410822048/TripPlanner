@@ -14,8 +14,8 @@
 import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
 import { captureError } from '@/services/sentry'
-import { parseListSnapshot } from '@/services/parseListSnapshot'
-import { subscribeToCollection } from '@/services/realtimeQuery'
+import { parseListSnapshot, parseServerListSnapshot } from '@/services/parseListSnapshot'
+import { subscribeToCollection, type ListSnapshotMetadata } from '@/services/realtimeQuery'
 
 export interface TripScopedListServices<T> {
   /** One-shot fetch with the same shape as the realtime subscriber so
@@ -31,7 +31,7 @@ export interface TripScopedListServices<T> {
   subscribe: (
     tripId:  string,
     uid:     string,
-    onData:  (data: T[]) => void,
+    onData:  (data: T[], metadata?: ListSnapshotMetadata) => void,
     onError: (e: Error)  => void,
   ) => Promise<() => void>
 }
@@ -73,11 +73,11 @@ export function createTripScopedListServices<T>(
       ...orderClauses,
       fb.limit(LIM + (requireComplete ? 1 : 0)),
     )
-    const snap = await (fromServer ? fb.getDocsFromServer(q) : fb.getDocs(q))
+    const snap = await (fromServer || requireComplete ? fb.getDocsFromServer(q) : fb.getDocs(q))
     if (!requireComplete && snap.size >= LIM) {
       captureError(new Error(`${source} truncated at ${LIM}`), { tripId, source })
     }
-    const items = parseListSnapshot(snap, fromDoc, requireComplete ? { limit: LIM } : undefined)
+    const items = requireComplete ? parseServerListSnapshot(snap, fromDoc, LIM) : parseListSnapshot(snap, fromDoc)
     return postProcess ? postProcess(items) : items
   }
 

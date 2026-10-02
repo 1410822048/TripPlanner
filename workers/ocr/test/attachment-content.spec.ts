@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { FsValue } from '../src/firestore'
+import type { TxContext, TxResult } from '../src/firestore-tx'
 
 const { docFields, uploadMock, getObjectMock, deleteObjectMock } = vi.hoisted(() => ({
-  docFields: new Map<string, Record<string, unknown> | null>(),
+  docFields: new Map<string, Record<string, FsValue> | null>(),
   uploadMock: vi.fn(),
   getObjectMock: vi.fn(),
   deleteObjectMock: vi.fn(async () => undefined),
@@ -24,6 +26,24 @@ vi.mock('../src/firestore', async () => {
 vi.mock('../src/cascade', async () => {
   const actual = await vi.importActual<typeof import('../src/cascade')>('../src/cascade')
   return { ...actual, withTokenRetry: <T>(run: () => Promise<T>) => run() }
+})
+
+vi.mock('../src/firestore-tx', async () => {
+  const actual = await vi.importActual<typeof import('../src/firestore-tx')>('../src/firestore-tx')
+  return {
+    ...actual,
+    runFirestoreTransaction: async <T>(_token: string, _project: string, body: (tx: TxContext) => Promise<TxResult<T>>) => {
+      const result = await body({
+        get: async path => {
+          const fields = docFields.get(path)
+          return { exists: fields != null, fields: fields ?? {}, name: path, updateTime: null }
+        },
+        runQuery: async () => [],
+      })
+      expect(result.writes).toEqual([])
+      return result.result
+    },
+  }
 })
 
 vi.mock('../src/upload-intent', async () => {
@@ -274,6 +294,58 @@ describe('attachment delete proxy', () => {
   // gates the entity's write path does — otherwise this endpoint is simply
   // the way around them, and irreversibly so.
   describe('mirrors the entity write gates', () => {
+    it.each(['coverImage', 'document'] as const)('protects booking %s thumbnail references', async field => {
+      seedMembership('editor')
+      const path = `trips/${TRIP_ID}/bookings/b1/thumb.webp`
+      docFields.set(`trips/${TRIP_ID}/bookings/b1`, {
+        [field]: { mapValue: { fields: { thumbPath: { stringValue: path } } } },
+      })
+      const response = await handleAttachmentDelete({
+        body: { tripId: TRIP_ID, path }, uid: UID, cors: CORS, env: ENV, report: REPORT,
+      })
+      expect(response.status).toBe(409)
+      expect(deleteObjectMock).not.toHaveBeenCalled()
+    })
+    it.each(['editor', 'owner'] as const)('rejects deletion of a referenced receipt by %s', async role => {
+      seedMembership(role)
+      if (role === 'owner') docFields.set(`trips/${TRIP_ID}`, { ownerId: { stringValue: UID } })
+      docFields.set(`trips/${TRIP_ID}/expenses/expense-1`, {
+        receipt: { mapValue: { fields: { path: { stringValue: EXPENSE_PATH } } } },
+      })
+      const response = await handleAttachmentDelete({
+        body: { tripId: TRIP_ID, path: EXPENSE_PATH }, uid: UID, cors: CORS, env: ENV, report: REPORT,
+      })
+      expect(response.status).toBe(409)
+      expect(deleteObjectMock).not.toHaveBeenCalled()
+    })
+
+    it('preserves a soft-deleted receipt until its reference is removed', async () => {
+      seedMembership('editor')
+      docFields.set(`trips/${TRIP_ID}/expenses/expense-1`, {
+        deletedAt: { timestampValue: '2026-10-02T00:00:00Z' },
+        receipt: { mapValue: { fields: { path: { stringValue: EXPENSE_PATH } } } },
+      })
+      const run = () => handleAttachmentDelete({
+        body: { tripId: TRIP_ID, path: EXPENSE_PATH }, uid: UID, cors: CORS, env: ENV, report: REPORT,
+      })
+      expect((await run()).status).toBe(409)
+      docFields.set(`trips/${TRIP_ID}/expenses/expense-1`, {})
+      expect((await run()).status).toBe(200)
+      expect(deleteObjectMock).toHaveBeenCalledOnce()
+    })
+
+    it('rejects deletion of a referenced wish image by its proposer', async () => {
+      seedMembership('viewer')
+      docFields.set(`trips/${TRIP_ID}/wishes/wish-1`, {
+        proposedBy: { stringValue: UID },
+        image: { mapValue: { fields: { path: { stringValue: WISH_PATH } } } },
+      })
+      const response = await handleAttachmentDelete({
+        body: { tripId: TRIP_ID, path: WISH_PATH }, uid: UID, cors: CORS, env: ENV, report: REPORT,
+      })
+      expect(response.status).toBe(409)
+      expect(deleteObjectMock).not.toHaveBeenCalled()
+    })
     const lockedExpense = {
       settlementLockIds: { arrayValue: { values: [{ stringValue: 'settlement-1' }] } },
     }

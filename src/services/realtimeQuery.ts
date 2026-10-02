@@ -19,10 +19,12 @@
 //
 // Each per-collection subscriber drops to a config block that names
 // the query shape and the doc parser; everything else is centralised.
-import type { Query, QueryDocumentSnapshot, QuerySnapshot } from 'firebase/firestore'
+import type { Query, QueryDocumentSnapshot, QuerySnapshot, SnapshotMetadata } from 'firebase/firestore'
 import { getFirebase, type FirebaseBundle } from '@/services/firebase'
 import { captureError } from '@/services/sentry'
 import { parseListSnapshot } from '@/services/parseListSnapshot'
+
+export type ListSnapshotMetadata = Pick<SnapshotMetadata, 'fromCache' | 'hasPendingWrites'>
 
 export interface SubscribeToCollectionOpts<T> {
   /**
@@ -64,32 +66,34 @@ export interface SubscribeToCollectionOpts<T> {
  */
 export async function subscribeToCollection<T>(
   opts:    SubscribeToCollectionOpts<T>,
-  onData:  (data: T[]) => void,
+  onData:  (data: T[], metadata?: ListSnapshotMetadata) => void,
   onError: (e: Error) => void,
 ): Promise<() => void> {
   const bundle = await getFirebase()
   const q = opts.buildQuery(bundle)
-  return bundle.onSnapshot(
-    q,
-    (snap: QuerySnapshot) => {
-      if (!opts.requireComplete && opts.limit !== undefined && snap.size >= opts.limit) {
-        captureError(
-          new Error(`${opts.source} truncated at ${opts.limit}`),
-          { source: opts.source },
-        )
-      }
-      // Per-doc tolerance: see parseListSnapshot for why list reads
-      // skip malformed rows while single-doc reads still throw.
-      let items: T[]
-      try {
-        items = parseListSnapshot(snap, opts.fromDoc,
-          opts.requireComplete ? { limit: opts.limit } : undefined)
-      } catch (error) {
-        onError(error instanceof Error ? error : new Error('帳務資料讀取失敗'))
-        return
-      }
-      onData(opts.postProcess ? opts.postProcess(items) : items)
-    },
-    onError,
-  )
+  const handleSnapshot = (snap: QuerySnapshot) => {
+    if (!opts.requireComplete && opts.limit !== undefined && snap.size >= opts.limit) {
+      captureError(
+        new Error(`${opts.source} truncated at ${opts.limit}`),
+        { source: opts.source },
+      )
+    }
+    // 快取只供預覽，壞資料不得終止 listener 的 server 確認；
+    // server 確認後的帳務結果必須全量通過驗證，禁止略過或截斷。
+    let items: T[]
+    try {
+      const confirmed = !opts.requireComplete || (!snap.metadata.fromCache && !snap.metadata.hasPendingWrites)
+      items = parseListSnapshot(snap, opts.fromDoc,
+        opts.requireComplete && confirmed ? { limit: opts.limit } : undefined)
+    } catch (error) {
+      onError(error instanceof Error ? error : new Error('帳務資料讀取失敗'))
+      return
+    }
+    const data = opts.postProcess ? opts.postProcess(items) : items
+    if (opts.requireComplete) onData(data, snap.metadata)
+    else onData(data)
+  }
+  return opts.requireComplete
+    ? bundle.onSnapshot(q, { includeMetadataChanges: true }, handleSnapshot, onError)
+    : bundle.onSnapshot(q, handleSnapshot, onError)
 }

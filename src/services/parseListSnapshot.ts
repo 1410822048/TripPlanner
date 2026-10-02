@@ -12,6 +12,18 @@
 // getXxxByTrip one-shot read — both paths must apply the same completeness policy.
 import type { QuerySnapshot, QueryDocumentSnapshot } from 'firebase/firestore'
 
+/** 不能以 cache 或未提交的本機寫入確認帳本；只供 server-only 初始／確認讀取。 */
+export function parseServerListSnapshot<T>(
+  snap: QuerySnapshot,
+  fromDoc: (d: QueryDocumentSnapshot) => T,
+  limit?: number,
+): T[] {
+  if (snap.metadata.fromCache || snap.metadata.hasPendingWrites) {
+    throw new Error('帳務資料尚未完成伺服器確認，請連線後重試。')
+  }
+  return parseListSnapshot(snap, fromDoc, { limit })
+}
+
 export function parseListSnapshot<T>(
   snap:    QuerySnapshot,
   fromDoc: (d: QueryDocumentSnapshot) => T,

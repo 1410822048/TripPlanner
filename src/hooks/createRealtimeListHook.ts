@@ -17,10 +17,14 @@ import { hashKey, useQuery, useQueryClient, type QueryClient, type QueryKey, typ
 import { captureError } from '@/services/sentry'
 import { useUid } from '@/hooks/useAuth'
 import type { ListOverlayController, OverlayOp } from '@/hooks/listOverlay'
+import type { ListSnapshotMetadata } from '@/services/realtimeQuery'
 
 const NO_OPS: readonly OverlayOp<never>[] = Object.freeze([])
 
 interface RealtimeListConfigBase {
+  /** initialFetch 必須 server-only。dataUpdatedAt > 0 才代表目前資料
+   *  已由 server 確認；0 的快取／pending 資料只供預覽，不可用於結算。 */
+  requireServerConfirmation?: boolean
   /** Build the query key from the scope key. Receives uid so per-user cache
    *  scoping stays automatic when needed. */
   queryKeyFactory: (key: string, uid?: string) => QueryKey
@@ -45,7 +49,7 @@ export interface RealtimeListConfigUidRequired<T> extends RealtimeListConfigBase
   subscribe: (
     key:     string,
     uid:     string,
-    onData:  (data: T[]) => void,
+    onData:  (data: T[], metadata?: ListSnapshotMetadata) => void,
     onError: (e: Error)  => void,
   ) => Promise<() => void>
 }
@@ -57,7 +61,7 @@ export interface RealtimeListConfigUidOptional<T> extends RealtimeListConfigBase
   subscribe: (
     key:     string,
     uid:     string | undefined,
-    onData:  (data: T[]) => void,
+    onData:  (data: T[], metadata?: ListSnapshotMetadata) => void,
     onError: (e: Error)  => void,
   ) => Promise<() => void>
 }
@@ -74,15 +78,21 @@ interface SharedListener {
 
 const registries = new WeakMap<QueryClient, Map<string, SharedListener>>()
 
-function acquireListener<T>(
+/** 共用 queryFn 的恢復入口；只重啟失敗且仍有使用者的訂閱。 */
+export function retrySharedListener(qc: QueryClient, queryKey: QueryKey): void {
+  registries.get(qc)?.get(hashKey(queryKey))?.retry()
+}
+
+export function acquireListener<T>(
   queryKey: QueryKey,
   scope:    string,
   qc:       QueryClient,
   startFn:  (
-    onData:  (data: T[]) => void,
+    onData:  (data: T[], metadata?: ListSnapshotMetadata) => void,
     onError: (e: Error)  => void,
   ) => Promise<() => void>,
   source:   string,
+  requireServerConfirmation = false,
 ): () => void {
   let listeners = registries.get(qc)
   if (!listeners) {
@@ -100,6 +110,10 @@ function acquireListener<T>(
 
   const entry: SharedListener = { refCount: 1, disposed: false, retry: () => {} }
   registry.set(id, entry)
+  if (requireServerConfirmation) {
+    const cached = qc.getQueryData<T[]>(queryKey)
+    if (cached !== undefined) qc.setQueryData(queryKey, cached, { updatedAt: 0 })
+  }
   let generation = 0
 
   const start = () => {
@@ -124,12 +138,14 @@ function acquireListener<T>(
     void Promise.resolve().then(() => {
       if (!isCurrent()) return
       return startFn(
-        next => {
+        (next, metadata) => {
           if (!isCurrent() || entry.refCount === 0) return
-          // Cancel before publishing so an older getDocs/refetch cannot
-          // overwrite this snapshot when its promise resolves.
-          void qc.cancelQueries({ queryKey, exact: true })
-          qc.setQueryData<T[]>(queryKey, next)
+          const confirmed = !requireServerConfirmation ||
+            (!!metadata && !metadata.fromCache && !metadata.hasPendingWrites)
+          // 快取不得取消尚未完成的 server read。資料與權威更新時間由 Query
+          // 同一次更新發布；0 表示目前資料尚未確認，不另存 ready boolean。
+          if (confirmed) void qc.cancelQueries({ queryKey, exact: true })
+          qc.setQueryData<T[]>(queryKey, next, { updatedAt: confirmed ? Date.now() : 0 })
         },
         error => fail(error, source),
       )
@@ -188,7 +204,7 @@ export function createRealtimeListHook<T>(
   function runSubscribe(
     key:     string,
     uid:     string | undefined,
-    onData:  (data: T[]) => void,
+    onData:  (data: T[], metadata?: ListSnapshotMetadata) => void,
     onError: (e: Error)  => void,
   ): Promise<() => void> {
     if (config.requiresUid) return config.subscribe(key, uid as string, onData, onError)
@@ -207,7 +223,7 @@ export function createRealtimeListHook<T>(
       queryKey,
       queryFn:   async ({ signal }) => {
         // Refetch can restart a failed listener while its consumers remain.
-        registries.get(qc)?.get(hashKey(queryKey))?.retry()
+        retrySharedListener(qc, queryKey)
         const data = await runInitialFetch(key!, uid)
         signal.throwIfAborted()
         return data
@@ -224,6 +240,7 @@ export function createRealtimeListHook<T>(
         qc,
         (onData, onError) => runSubscribe(key, uid, onData, onError),
         source,
+        config.requireServerConfirmation,
       )
       return release
     }, [key, uid, callerEnabled, qc])
@@ -240,9 +257,9 @@ export function createRealtimeListHook<T>(
     // pending → succeeded flip is the only thing that changes. Without it
     // that op would wait for its grace timer.
     useEffect(() => {
-      if (!overlay || !result.data) return
+      if (!overlay || !result.data || (config.requireServerConfirmation && result.dataUpdatedAt === 0)) return
       overlay.reconcile(queryKeyHash, result.data as (T & { id: string })[])
-    }, [queryKeyHash, result.data, ops])
+    }, [queryKeyHash, result.data, result.dataUpdatedAt, ops])
 
     // Remount is one of the three retry triggers: the browser can stay
     // online throughout while the backend is the thing that was failing.

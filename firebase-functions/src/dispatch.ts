@@ -1,4 +1,5 @@
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore'
+import { randomInt } from 'node:crypto'
 import * as logger from 'firebase-functions/logger'
 import { hasRetryableSendError, pushTokenKey, sendPush, type PushTokenRecord, type SendResult } from './send.js'
 import { writeNotificationDocs } from './notifications.js'
@@ -8,7 +9,7 @@ type DedupeStatus = 'pending' | 'sent' | 'partial' | 'failed' | 'retry'
 // Three-way reservation outcome. The load-bearing split is 'done' vs 'held':
 //   'done' → terminally handled (sent/partial) or attempt-capped; safe to
 //            report success, nothing left to deliver.
-//   'held' → another invocation owns a still-valid lease on a pending event;
+//   'held' → another invocation owns a live lease, or retry backoff is active;
 //            the outcome is UNDECIDED, so the caller must throw (defer to a
 //            backoff retry), NOT report success. A success here ends the
 //            platform retry chain — and if the lease-holder was killed
@@ -19,11 +20,18 @@ export type ReservationDecision = 'reserve' | 'done' | 'held'
 export const DISPATCH_LEASE_MS = 10 * 60 * 1000
 export const MAX_DISPATCH_ATTEMPTS = 3
 export const MAX_TOKENS_PER_USER = 20
+const RETRY_BASE_DELAY_MS = 60_000
+
+function retryNotBefore(attempt: number): Timestamp {
+  const delay = RETRY_BASE_DELAY_MS * 2 ** (attempt - 1)
+  return Timestamp.fromMillis(Date.now() + delay + randomInt(0, Math.floor(delay / 5) + 1))
+}
 
 interface ExistingPushEventState {
   status?: unknown
   attempt?: unknown
   leaseExpiresAt?: unknown
+  retryNotBefore?: unknown
 }
 
 function unique(items: readonly string[]): string[] {
@@ -62,6 +70,8 @@ function attemptOf(value: unknown): number {
 export function reservationDecision(state: ExistingPushEventState, nowMs: number): ReservationDecision {
   if (state.status === 'sent' || state.status === 'partial') return 'done'
   if (attemptOf(state.attempt) >= MAX_DISPATCH_ATTEMPTS) return 'done'
+  const retryNotBefore = valueToMillis(state.retryNotBefore)
+  if (retryNotBefore !== null && retryNotBefore > nowMs) return 'held'
   if (state.status !== 'pending') return 'reserve'
 
   const leaseExpiresAtMs = valueToMillis(state.leaseExpiresAt)
@@ -103,6 +113,7 @@ async function reservePushEvent(event: NormalizedPushEvent): Promise<PushReserva
         leaseExpiresAt,
         lastError:  FieldValue.delete(),
         errorCodes: FieldValue.delete(),
+        retryNotBefore: FieldValue.delete(),
       }, { merge: true })
       return { decision: 'reserve', ...progress, attempt: progress.attempt + 1 }
     }
@@ -259,14 +270,14 @@ export async function dispatchPushEvent(event: NormalizedPushEvent | null): Prom
     return
   }
   if (decision === 'held') {
-    // Another invocation owns a live lease. Defer to a platform retry rather
+    // A live lease or retry backoff holds the event. Defer to a platform retry rather
     // than returning success: a success would end the retry chain, and if the
     // lease-holder died mid-dispatch the lease would expire with nobody left
     // to take over (notification silently lost). The throw doesn't bump
     // `attempt` — only an actual reserve does — so this backs off harmlessly
     // until the holder finishes or its lease expires and a retry takes over.
-    logger.info('push event held by an active lease; deferring to retry', { eventId: event.eventId })
-    throw new Error(`push event ${event.eventId} is held by an active lease`)
+    logger.info('push event held by a lease or retry backoff; deferring to retry', { eventId: event.eventId })
+    throw new Error(`push event ${event.eventId} is held by a lease or retry backoff`)
   }
 
   try {
@@ -335,6 +346,7 @@ export async function dispatchPushEvent(event: NormalizedPushEvent | null): Prom
         ? (willRetry ? 'Some FCM sends need retry' : 'FCM retry attempts exhausted')
         : FieldValue.delete(),
       leaseExpiresAt: FieldValue.delete(),
+      retryNotBefore: willRetry ? retryNotBefore(reservation.attempt) : FieldValue.delete(),
     })
     if (willRetry) throw new RetryablePushSendError(result.errorCodes)
   } catch (err) {
@@ -345,6 +357,7 @@ export async function dispatchPushEvent(event: NormalizedPushEvent | null): Prom
       errorCodes: { dispatch: 1 },
       lastError: errorMessage(err),
       leaseExpiresAt: FieldValue.delete(),
+      retryNotBefore: retryNotBefore(reservation.attempt),
     }).catch(updateErr => {
       logger.error('push dispatch failure status update failed', { eventId: event.eventId, updateErr })
     })

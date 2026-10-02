@@ -3,8 +3,8 @@ import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
-import { parseListSnapshot } from '@/services/parseListSnapshot'
-import { subscribeToCollection } from '@/services/realtimeQuery'
+import { parseServerListSnapshot } from '@/services/parseListSnapshot'
+import { subscribeToCollection, type ListSnapshotMetadata } from '@/services/realtimeQuery'
 import { requireWorkerWriteBase, preflightIdToken, workerFetch } from '@/services/workerBase'
 import { MemberDocSchema, type Member } from '@/types/trip'
 
@@ -12,25 +12,25 @@ function memberFromDoc(d: QueryDocumentSnapshot): Member {
   return firestoreDocFromSchema(MemberDocSchema, d, 'memberFromDoc')
 }
 
-async function readMembers(tripId: string, uid: string, fromServer: boolean): Promise<Member[]> {
-  const { db, collection, query, where, orderBy, getDocs, getDocsFromServer } = await getFirebase()
+async function readMembers(tripId: string, uid: string): Promise<Member[]> {
+  const { db, collection, query, where, orderBy, getDocsFromServer } = await getFirebase()
   const q = query(
     collection(db, ...P.members(tripId)),
     where('memberIds', 'array-contains', uid),
     orderBy('joinedAt'),
   )
-  const snap = await (fromServer ? getDocsFromServer(q) : getDocs(q))
-  return parseListSnapshot(snap, memberFromDoc)
+  const snap = await getDocsFromServer(q)
+  return parseServerListSnapshot(snap, memberFromDoc)
 }
 
 export function getMembersByTrip(tripId: string, uid: string): Promise<Member[]> {
-  return readMembers(tripId, uid, false)
+  return readMembers(tripId, uid)
 }
 
 /** Same query, never answered from Firestore's local cache. Used to settle
  *  an ambiguous roster write, where that cache is the state in question. */
 export function getMembersByTripFromServer(tripId: string, uid: string): Promise<Member[]> {
-  return readMembers(tripId, uid, true)
+  return readMembers(tripId, uid)
 }
 
 /**
@@ -41,7 +41,7 @@ export function getMembersByTripFromServer(tripId: string, uid: string): Promise
 export const subscribeToMembers = (
   tripId: string,
   uid:    string,
-  onData: (data: Member[]) => void,
+  onData: (data: Member[], metadata?: ListSnapshotMetadata) => void,
   onError: (e: Error) => void,
 ) => subscribeToCollection<Member>({
   buildQuery: ({ db, collection, query, where, orderBy }) => query(
@@ -51,6 +51,7 @@ export const subscribeToMembers = (
   ),
   fromDoc: memberFromDoc,
   source:  'subscribeToMembers',
+  requireComplete: true,
 }, onData, onError)
 
 /**

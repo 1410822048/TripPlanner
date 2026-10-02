@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { NormalizedPushEvent } from '../model.js'
 
 const harness = vi.hoisted(() => ({
@@ -67,7 +67,14 @@ function responses(codes: (string | null)[]) {
     failureCount: codes.filter(code => code !== null).length,
     responses: codes.map(code => code === null ? { success: true } : { success: false, error: { code } }) }
 }
+let now = 1_800_000_000_000
+function advanceToRetry() {
+  const deadline = harness.rows.get('_pushEvents/e')?.retryNotBefore as { toMillis: () => number }
+  now = deadline.toMillis()
+}
 beforeEach(() => {
+  now = 1_800_000_000_000
+  vi.spyOn(Date, 'now').mockImplementation(() => now)
   harness.rows.clear()
   harness.sendEach.mockReset()
   harness.inbox.mockReset().mockResolvedValue(undefined)
@@ -76,6 +83,7 @@ beforeEach(() => {
     harness.rows.set(`users/u/pushTokens/${name}`, { disabledAt: null, token: name.padEnd(25, '-') })
   }
 })
+afterEach(() => vi.restoreAllMocks())
 
 describe('durable push retries', () => {
   it('retries only transient failures after partial success, retaining terminal counts', async () => {
@@ -84,6 +92,7 @@ describe('durable push retries', () => {
     expect(harness.rows.get('_pushEvents/e')).toMatchObject({ status: 'retry', sentCount: 1, failedCount: 2,
       completedTokenKeys: [pushTokenKey({ uid: 'u', tokenHash: 'ok' }), pushTokenKey({ uid: 'u', tokenHash: 'invalid' })] })
     harness.sendEach.mockResolvedValueOnce(responses([null]))
+    advanceToRetry()
     await dispatchPushEvent(event)
     expect(harness.sendEach.mock.calls[1]![0]).toEqual([expect.objectContaining({ token: 'retry'.padEnd(25, '-') })])
     expect(harness.rows.get('_pushEvents/e')).toMatchObject({ status: 'partial', sentCount: 2, failedCount: 1, attempt: 2 })
@@ -111,6 +120,7 @@ describe('durable push retries', () => {
     harness.sendEach.mockResolvedValueOnce(responses([null, 'messaging/unavailable']))
     await expect(dispatchPushEvent(event)).rejects.toThrow('Retryable FCM')
     for (let attempt = 2; attempt <= MAX_DISPATCH_ATTEMPTS; attempt++) {
+      advanceToRetry()
       harness.sendEach.mockResolvedValueOnce(responses(['messaging/unavailable']))
       if (attempt < MAX_DISPATCH_ATTEMPTS) await expect(dispatchPushEvent(event)).rejects.toThrow('Retryable FCM')
       else await dispatchPushEvent(event)
@@ -122,8 +132,36 @@ describe('durable push retries', () => {
   })
   it('defers while another invocation holds a live lease without sending', async () => {
     harness.rows.set('_pushEvents/e', { status: 'pending', attempt: 1, leaseExpiresAt: { toMillis: () => Date.now() + 60_000 } })
-    await expect(dispatchPushEvent(event)).rejects.toThrow('held by an active lease')
+    await expect(dispatchPushEvent(event)).rejects.toThrow('held by a lease or retry backoff')
     expect(harness.sendEach).not.toHaveBeenCalled()
     expect(harness.inbox).not.toHaveBeenCalled()
+  })
+
+  it('persists quota backoff without consuming attempts or repeating successful devices', async () => {
+    harness.rows.delete('users/u/pushTokens/invalid')
+    harness.sendEach.mockResolvedValueOnce(responses([null, 'messaging/device-message-rate-exceeded']))
+    await expect(dispatchPushEvent(event)).rejects.toThrow('Retryable FCM')
+    const deadline = harness.rows.get('_pushEvents/e')?.retryNotBefore as { toMillis: () => number }
+    expect(deadline.toMillis() - now).toBeGreaterThanOrEqual(60_000)
+    expect(deadline.toMillis() - now).toBeLessThanOrEqual(72_000)
+    await expect(dispatchPushEvent(event)).rejects.toThrow('held')
+    expect(harness.rows.get('_pushEvents/e')?.attempt).toBe(1)
+    expect(harness.sendEach).toHaveBeenCalledOnce()
+    expect(harness.inbox).toHaveBeenCalledOnce()
+    advanceToRetry()
+    harness.sendEach.mockResolvedValueOnce(responses(['messaging/message-rate-exceeded']))
+    await expect(dispatchPushEvent(event)).rejects.toThrow('Retryable FCM')
+    const next = harness.rows.get('_pushEvents/e')?.retryNotBefore as { toMillis: () => number }
+    expect(next.toMillis() - now).toBeGreaterThanOrEqual(120_000)
+    expect(next.toMillis() - now).toBeLessThanOrEqual(144_000)
+    expect(harness.sendEach.mock.calls[1]![0]).toHaveLength(1)
+    expect(harness.rows.get('users/u/pushTokens/retry')?.disabledAt).toBeNull()
+  })
+
+  it('keeps a token active after a generic invalid payload error', async () => {
+    harness.sendEach.mockResolvedValueOnce(responses(['messaging/invalid-argument', null, null]))
+    await dispatchPushEvent(event)
+    expect(harness.rows.get('users/u/pushTokens/ok')?.disabledAt).toBeNull()
+    expect(harness.rows.get('_pushEvents/e')?.status).toBe('partial')
   })
 })

@@ -8,6 +8,7 @@ import { createElement, type ReactNode } from 'react'
 import type { Member } from '@/types'
 
 vi.mock('@/hooks/useAuth', () => ({ useUid: () => 'uid-1' }))
+vi.mock('@/features/trips/hooks/useTrips', () => ({ useMyTrips: () => ({ data: [{ id: 'trip-1' }], isPending: false }) }))
 
 const serviceMocks = vi.hoisted(() => ({
   getMembersByTrip:           vi.fn(),
@@ -21,6 +22,7 @@ const serviceMocks = vi.hoisted(() => ({
 vi.mock('../services/memberService', () => serviceMocks)
 
 import { memberOverlay, useMembers, useRemoveMember, useUpdateMemberRole } from './useMembers'
+import { useAllTripMembers } from './useAllTripMembers'
 
 const TRIP = 'trip-1'
 const KEY_HASH = hashKey(['members', TRIP, 'uid-1'])
@@ -38,7 +40,7 @@ function visible(): { id: string; role: Member['role'] }[] {
 
 let queryClient: QueryClient
 /** The realtime listener's push channel, captured from the subscribe mock. */
-let push: (data: Member[]) => void
+let push: (data: Member[], metadata?: { fromCache: boolean; hasPendingWrites: boolean }) => void
 
 function renderMemberHooks() {
   const wrapper = ({ children }: { children: ReactNode }) =>
@@ -59,8 +61,8 @@ beforeEach(() => {
   serviceMocks.getMembersByTripFromServer.mockResolvedValue([])
   serviceMocks.getMembersByTrip.mockResolvedValue([row('a'), row('b')])
   serviceMocks.subscribeToMembers.mockImplementation(
-    async (_trip: string, _uid: string, onData: (d: Member[]) => void) => {
-      push = onData
+    async (_trip: string, _uid: string, onData: (d: Member[], metadata?: { fromCache: boolean; hasPendingWrites: boolean }) => void) => {
+      push = (data, metadata = { fromCache: false, hasPendingWrites: false }) => onData(data, metadata)
       return () => {}
     },
   )
@@ -103,6 +105,34 @@ describe('useRemoveMember', () => {
 })
 
 describe('concurrent roster edits', () => {
+  it('shares one metadata-aware subscription between the fanout and ledger views', async () => {
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children)
+    const view = renderHook(() => ({ list: useMembers(TRIP), fanout: useAllTripMembers('uid-1') }), { wrapper })
+    await waitFor(() => expect(view.result.current.list.data).toHaveLength(2))
+    expect(serviceMocks.subscribeToMembers).toHaveBeenCalledOnce()
+    act(() => push([row('a')], { fromCache: true, hasPendingWrites: false }))
+    await waitFor(() => expect(view.result.current.list.dataUpdatedAt).toBe(0))
+    expect(view.result.current.fanout.memberResults[0]?.dataUpdatedAt).toBe(0)
+    act(() => push([row('a')]))
+    await waitFor(() => expect(view.result.current.list.dataUpdatedAt).toBeGreaterThan(0))
+    view.unmount()
+  })
+
+  it('does not retire an overlay against a matching cached echo', async () => {
+    serviceMocks.updateMemberRole.mockResolvedValueOnce(undefined)
+    const hook = renderMemberHooks()
+    await waitFor(() => expect(hook.result.current.list.data).toHaveLength(2))
+    await act(async () => {
+      await hook.result.current.updateRole.mutateAsync({ memberId: 'a', role: 'viewer' })
+      push([row('a', 'viewer'), row('b')], { fromCache: true, hasPendingWrites: false })
+    })
+    await waitFor(() => expect(hook.result.current.list.dataUpdatedAt).toBe(0))
+    expect(memberOverlay.getSnapshot(KEY_HASH)).toHaveLength(1)
+    act(() => push([row('a', 'viewer'), row('b')]))
+    await waitFor(() => expect(memberOverlay.getSnapshot(KEY_HASH)).toHaveLength(0))
+    hook.unmount()
+  })
   it('a refused removal leaves an unrelated role change standing', async () => {
     // Two rows, two writes, one fails. Snapshot rollback restored a whole
     // list and so reverted the sibling edit as well; ops only undo their own
@@ -142,6 +172,6 @@ describe('concurrent roster edits', () => {
       push([row('a', 'viewer'), row('b')])
     })
     expect(visible()[0]).toEqual({ id: 'a', role: 'viewer' })
-    expect(memberOverlay.getSnapshot(KEY_HASH)).toHaveLength(0)
+    await waitFor(() => expect(memberOverlay.getSnapshot(KEY_HASH)).toHaveLength(0))
   })
 })
