@@ -2,7 +2,6 @@ import js from '@eslint/js'
 import globals from 'globals'
 import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
-import reactCompiler from 'eslint-plugin-react-compiler'
 import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
@@ -20,19 +19,10 @@ export default defineConfig([
       reactHooks.configs.flat.recommended,
       reactRefresh.configs.vite,
     ],
-    // eslint-plugin-react-compiler surfaces violations of the rules-of-react
-    // that make the compiler bail out of auto-memoising a component. The
-    // codebase is currently at zero violations, so this is `error` rather
-    // than `warn`: CI's `eslint .` doesn't fail on warnings (only the
-    // pre-commit `--max-warnings 0` does, and only on staged files), so
-    // `warn` would let a new violation reach main via --no-verify or a
-    // contributor without husky. The one caveat is the plugin is still an
-    // RC (19.1.0-rc.x) — if a future bump gets noisier it can hard-block
-    // commits; the version is lockfile-pinned, so that only happens on a
-    // deliberate upgrade.
-    plugins: { 'react-compiler': reactCompiler },
     rules: {
-      'react-compiler/react-compiler': 'error',
+      // 穩定版 hooks plugin 已包含 Compiler 診斷；仍以 error 阻擋 CI。
+      ...Object.fromEntries(Object.entries(reactHooks.configs.flat.recommended.rules)
+        .map(([name, setting]) => [name, Array.isArray(setting) ? ['error', ...setting.slice(1)] : 'error'])),
       // Allow `_`-prefixed args / vars to opt out of the unused check —
       // standard convention for "I know this is unused, kept to match a
       // factory / callback signature". Used in queryKeyFactory / subscribe
