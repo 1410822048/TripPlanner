@@ -48,6 +48,8 @@ export interface CreateTripScopedListServicesOpts<T> {
    *  Use multiple entries for tiebreaker columns. */
   orderBy: ReadonlyArray<readonly [field: string, dir?: 'asc' | 'desc']>
   limit:   number
+  /** 帳務列表禁止截斷或略過壞資料；查詢多取一筆以偵測溢出。 */
+  requireComplete?: boolean
   /** Sentry tag for truncation warnings + subscriber errors. Keep it
    *  short (e.g. `'expenses'`, not `'subscribeToExpenses'`). */
   source:  string
@@ -60,7 +62,7 @@ export interface CreateTripScopedListServicesOpts<T> {
 export function createTripScopedListServices<T>(
   opts: CreateTripScopedListServicesOpts<T>,
 ): TripScopedListServices<T> {
-  const { path, fromDoc, orderBy, limit: LIM, source, postProcess } = opts
+  const { path, fromDoc, orderBy, limit: LIM, source, postProcess, requireComplete } = opts
 
   async function read(tripId: string, uid: string, fromServer: boolean): Promise<T[]> {
     const fb = await getFirebase()
@@ -69,13 +71,13 @@ export function createTripScopedListServices<T>(
       fb.collection(fb.db, ...path(tripId)),
       fb.where('memberIds', 'array-contains', uid),
       ...orderClauses,
-      fb.limit(LIM),
+      fb.limit(LIM + (requireComplete ? 1 : 0)),
     )
     const snap = await (fromServer ? fb.getDocsFromServer(q) : fb.getDocs(q))
-    if (snap.size >= LIM) {
+    if (!requireComplete && snap.size >= LIM) {
       captureError(new Error(`${source} truncated at ${LIM}`), { tripId, source })
     }
-    const items = parseListSnapshot(snap, fromDoc)
+    const items = parseListSnapshot(snap, fromDoc, requireComplete ? { limit: LIM } : undefined)
     return postProcess ? postProcess(items) : items
   }
 
@@ -89,11 +91,12 @@ export function createTripScopedListServices<T>(
           collection(db, ...path(tripId)),
           where('memberIds', 'array-contains', uid),
           ...orderBy.map(([f, d]) => ob(f, d ?? 'asc')),
-          lim(LIM),
+          lim(LIM + (requireComplete ? 1 : 0)),
         ),
         fromDoc,
         source,
         limit: LIM,
+        requireComplete,
         ...(postProcess && { postProcess }),
       }, onData, onError)
     },

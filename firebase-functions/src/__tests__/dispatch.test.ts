@@ -148,7 +148,7 @@ describe('push recipient selection', () => {
 })
 
 describe('push send retry classification', () => {
-  test('retries only all-failed retryable FCM results', () => {
+  test('retries transient FCM failures even when other tokens succeeded', () => {
     expect(shouldRetrySendResult({
       sentCount: 0,
       failedCount: 2,
@@ -159,7 +159,7 @@ describe('push send retry classification', () => {
       sentCount: 1,
       failedCount: 1,
       errorCodes: { 'messaging/unavailable': 1 },
-    })).toBe(false)
+    })).toBe(true)
 
     expect(shouldRetrySendResult({
       sentCount: 0,

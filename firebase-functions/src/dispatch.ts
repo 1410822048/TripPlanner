@@ -1,10 +1,10 @@
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore'
 import * as logger from 'firebase-functions/logger'
-import { hasRetryableSendError, sendPush, type PushTokenRecord, type SendResult } from './send.js'
+import { hasRetryableSendError, pushTokenKey, sendPush, type PushTokenRecord, type SendResult } from './send.js'
 import { writeNotificationDocs } from './notifications.js'
 import type { NormalizedPushEvent } from './model.js'
 
-type DedupeStatus = 'pending' | 'sent' | 'partial' | 'failed'
+type DedupeStatus = 'pending' | 'sent' | 'partial' | 'failed' | 'retry'
 // Three-way reservation outcome. The load-bearing split is 'done' vs 'held':
 //   'done' → terminally handled (sent/partial) or attempt-capped; safe to
 //            report success, nothing left to deliver.
@@ -36,8 +36,7 @@ function finalStatus(sentCount: number, failedCount: number): DedupeStatus {
 }
 
 export function shouldRetrySendResult(result: SendResult): boolean {
-  return result.sentCount === 0
-    && result.failedCount > 0
+  return result.failedCount > 0
     && hasRetryableSendError(result.errorCodes)
 }
 
@@ -69,7 +68,15 @@ export function reservationDecision(state: ExistingPushEventState, nowMs: number
   return leaseExpiresAtMs == null || leaseExpiresAtMs <= nowMs ? 'reserve' : 'held'
 }
 
-async function reservePushEvent(event: NormalizedPushEvent): Promise<ReservationDecision> {
+interface PushReservation {
+  decision: ReservationDecision
+  completedTokenKeys: string[]
+  sentCount: number
+  terminalFailedCount: number
+  attempt: number
+}
+
+async function reservePushEvent(event: NormalizedPushEvent): Promise<PushReservation> {
   const db = getFirestore()
   const ref = db.doc(`_pushEvents/${event.eventId}`)
   const nowMs = Date.now()
@@ -77,10 +84,17 @@ async function reservePushEvent(event: NormalizedPushEvent): Promise<Reservation
 
   return db.runTransaction(async tx => {
     const snap = await tx.get(ref)
+    const existing = snap.data() ?? {}
+    const progress = {
+      completedTokenKeys: Array.isArray(existing.completedTokenKeys)
+        ? existing.completedTokenKeys.filter((key): key is string => typeof key === 'string') : [],
+      sentCount: attemptOf(existing.sentCount),
+      terminalFailedCount: attemptOf(existing.terminalFailedCount),
+      attempt: attemptOf(existing.attempt),
+    }
     if (snap.exists) {
-      const existing = snap.data() ?? {}
       const decision = reservationDecision(existing, nowMs)
-      if (decision !== 'reserve') return decision
+      if (decision !== 'reserve') return { decision, ...progress }
 
       tx.set(ref, {
         status:     'pending',
@@ -90,7 +104,7 @@ async function reservePushEvent(event: NormalizedPushEvent): Promise<Reservation
         lastError:  FieldValue.delete(),
         errorCodes: FieldValue.delete(),
       }, { merge: true })
-      return 'reserve'
+      return { decision: 'reserve', ...progress, attempt: progress.attempt + 1 }
     }
 
     tx.create(ref, {
@@ -107,8 +121,10 @@ async function reservePushEvent(event: NormalizedPushEvent): Promise<Reservation
       leaseExpiresAt,
       sentCount:     0,
       failedCount:   0,
+      terminalFailedCount: 0,
+      completedTokenKeys: [],
     })
-    return 'reserve'
+    return { decision: 'reserve', ...progress, attempt: 1 }
   })
 }
 
@@ -236,7 +252,8 @@ async function loadTokens(recipientUids: readonly string[]): Promise<PushTokenRe
 export async function dispatchPushEvent(event: NormalizedPushEvent | null): Promise<void> {
   if (!event) return
 
-  const decision = await reservePushEvent(event)
+  const reservation = await reservePushEvent(event)
+  const { decision } = reservation
   if (decision === 'done') {
     logger.info('push event reservation skipped (already handled)', { eventId: event.eventId })
     return
@@ -281,12 +298,13 @@ export async function dispatchPushEvent(event: NormalizedPushEvent | null): Prom
     }
 
     const pushRecipientUids = selectPushRecipients(event, recipientUids)
-    const tokens = await loadTokens(pushRecipientUids)
+    const completed = new Set(reservation.completedTokenKeys)
+    const tokens = (await loadTokens(pushRecipientUids)).filter(token => !completed.has(pushTokenKey(token)))
     if (tokens.length === 0) {
       await updateEvent(event.eventId, {
-        status:         'sent',
-        sentCount:      0,
-        failedCount:    0,
+        status:         finalStatus(reservation.sentCount, reservation.terminalFailedCount),
+        sentCount:      reservation.sentCount,
+        failedCount:    reservation.terminalFailedCount,
         leaseExpiresAt: FieldValue.delete(),
         lastError:      FieldValue.delete(),
         errorCodes:     FieldValue.delete(),
@@ -294,19 +312,31 @@ export async function dispatchPushEvent(event: NormalizedPushEvent | null): Prom
       return
     }
 
-    const result = await sendPush(event, tokens)
+    let sentCount = reservation.sentCount
+    const result = await sendPush(event, tokens, async batch => {
+      await updateEvent(event.eventId, {
+        ...(batch.completedTokens.length > 0 && {
+          completedTokenKeys: FieldValue.arrayUnion(...batch.completedTokens.map(pushTokenKey)),
+        }),
+        sentCount: FieldValue.increment(batch.sentCount),
+        terminalFailedCount: FieldValue.increment(batch.terminalFailedCount),
+      })
+      sentCount += batch.sentCount
+    })
     const retryableFailure = shouldRetrySendResult(result)
+    const willRetry = retryableFailure && reservation.attempt < MAX_DISPATCH_ATTEMPTS
+    const failedCount = reservation.terminalFailedCount + result.failedCount
     await updateEvent(event.eventId, {
-      status: finalStatus(result.sentCount, result.failedCount),
-      sentCount: result.sentCount,
-      failedCount: result.failedCount,
+      status: willRetry ? 'retry' : finalStatus(sentCount, failedCount),
+      sentCount,
+      failedCount,
       errorCodes: result.errorCodes,
       lastError: retryableFailure
-        ? 'All FCM sends failed with a retryable error'
+        ? (willRetry ? 'Some FCM sends need retry' : 'FCM retry attempts exhausted')
         : FieldValue.delete(),
       leaseExpiresAt: FieldValue.delete(),
     })
-    if (retryableFailure) throw new RetryablePushSendError(result.errorCodes)
+    if (willRetry) throw new RetryablePushSendError(result.errorCodes)
   } catch (err) {
     logger.error('push dispatch failed', { eventId: event.eventId, err })
     if (err instanceof RetryablePushSendError) throw err

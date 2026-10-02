@@ -52,6 +52,7 @@ export interface SubscribeToCollectionOpts<T> {
    * invites: small bounded sets where a cap would be theatre).
    */
   limit?: number
+  requireComplete?: boolean
 }
 
 /**
@@ -71,7 +72,7 @@ export async function subscribeToCollection<T>(
   return bundle.onSnapshot(
     q,
     (snap: QuerySnapshot) => {
-      if (opts.limit !== undefined && snap.size >= opts.limit) {
+      if (!opts.requireComplete && opts.limit !== undefined && snap.size >= opts.limit) {
         captureError(
           new Error(`${opts.source} truncated at ${opts.limit}`),
           { source: opts.source },
@@ -79,7 +80,14 @@ export async function subscribeToCollection<T>(
       }
       // Per-doc tolerance: see parseListSnapshot for why list reads
       // skip malformed rows while single-doc reads still throw.
-      const items = parseListSnapshot(snap, opts.fromDoc)
+      let items: T[]
+      try {
+        items = parseListSnapshot(snap, opts.fromDoc,
+          opts.requireComplete ? { limit: opts.limit } : undefined)
+      } catch (error) {
+        onError(error instanceof Error ? error : new Error('帳務資料讀取失敗'))
+        return
+      }
       onData(opts.postProcess ? opts.postProcess(items) : items)
     },
     onError,

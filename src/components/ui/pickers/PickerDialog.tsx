@@ -1,9 +1,10 @@
 // src/components/ui/pickers/PickerDialog.tsx
 // 共用的置中彈出容器（供 DatePicker / TimePicker 使用）
 // 透過 Portal 渲染到 document.body，避開父層 overflow-hidden 與 BottomSheet 的裁切
-import { useEffect, useRef, type ReactNode, type PointerEvent, type MouseEvent } from 'react'
+import { useRef, type ReactNode, type PointerEvent, type MouseEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { useBottomSheet } from '@/hooks/useBottomSheet'
+import { useModalFocus } from '@/hooks/useModalFocus'
 
 interface Props {
   isOpen:    boolean
@@ -18,6 +19,7 @@ function BottomPickerDialog({
 }: Omit<Props, 'placement'>) {
   const { sheetRef, sheetTransform, backdropOpacity, pointerActive, dragHandlers } =
     useBottomSheet({ isOpen, onClose, dismissRatio: 0.25 })
+  useModalFocus(sheetRef, isOpen, onClose, 300)
   const dragStartYRef = useRef(0)
   const draggedRef = useRef(false)
 
@@ -50,6 +52,7 @@ function BottomPickerDialog({
       />
       <div
         ref={sheetRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -76,13 +79,8 @@ function BottomPickerDialog({
 }
 
 export default function PickerDialog({ isOpen, onClose, title, placement = 'center', children }: Props) {
-  // Esc 關閉（桌面）
-  useEffect(() => {
-    if (!isOpen) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [isOpen, onClose])
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useModalFocus(dialogRef, isOpen && placement === 'center', onClose, 300)
 
   if (!isOpen) return null
   if (placement === 'bottom') {
@@ -92,6 +90,8 @@ export default function PickerDialog({ isOpen, onClose, title, placement = 'cent
   return createPortal(
     <div
       className="fixed inset-0 z-[300] flex items-center justify-center p-4"
+      ref={dialogRef}
+      tabIndex={-1}
       role="dialog"
       aria-modal="true"
       aria-label={title}

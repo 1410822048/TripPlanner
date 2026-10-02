@@ -1,7 +1,8 @@
 // src/components/ui/BottomSheet.tsx
-import { useEffect, useId, useRef, type ReactNode } from 'react'
+import { useEffect, useId, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 import { useBottomSheet } from '@/hooks/useBottomSheet'
+import { useModalFocus } from '@/hooks/useModalFocus'
 
 interface Props {
   isOpen:   boolean
@@ -13,31 +14,12 @@ interface Props {
   children: ReactNode
 }
 
-const FOCUSABLE = [
-  'a[href]',
-  'button:not([disabled])',
-  'input:not([disabled])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
-  '[tabindex]:not([tabindex="-1"])',
-].join(',')
-
 export default function BottomSheet({ isOpen, title, onClose, dismissible = true, footer, children }: Props) {
   const { sheetRef, sheetTransform, backdropOpacity, pointerActive, dragHandlers } =
     useBottomSheet({ isOpen, onClose, dismissible })
 
   const titleId    = useId()
-  const returnRef  = useRef<HTMLElement | null>(null)
-
-  // Escape/close is read through a ref so the focus-management effect below
-  // doesn't depend on `onClose`. Inline arrow props (common at call sites)
-  // would otherwise trigger effect cleanup on every parent render — and the
-  // cleanup refocuses the invoker, which yanks focus out of whatever input
-  // the user is typing into.
-  const onCloseRef = useRef(onClose)
-  useEffect(() => { onCloseRef.current = onClose })
-  const dismissibleRef = useRef(dismissible)
-  useEffect(() => { dismissibleRef.current = dismissible })
+  useModalFocus(sheetRef, isOpen, onClose, 201, dismissible)
 
   // 開啟時鎖住 <main> scroll（app 的實際滾動容器）
   // iOS Safari: overflow:hidden 單獨不足以阻止 rubberband，需搭配 touch-action:none
@@ -71,43 +53,6 @@ export default function BottomSheet({ isOpen, title, onClose, dismissible = true
     }
     document.addEventListener('touchmove', prevent, { passive: false })
     return () => document.removeEventListener('touchmove', prevent)
-  }, [isOpen, sheetRef])
-
-  // Keyboard a11y: Escape closes; Tab/Shift+Tab wraps inside the sheet so
-  // focus can't escape to the underlying page while the dialog is modal.
-  // Focus is moved into the sheet on open and restored to the invoker on close.
-  useEffect(() => {
-    if (!isOpen) return
-    returnRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
-
-    // Next tick so the sheet has mounted and its size is measurable.
-    const raf = requestAnimationFrame(() => sheetRef.current?.focus())
-
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (dismissibleRef.current) onCloseRef.current()
-        return
-      }
-      if (e.key !== 'Tab') return
-      const sheet = sheetRef.current
-      if (!sheet) return
-      const list = sheet.querySelectorAll<HTMLElement>(FOCUSABLE)
-      if (list.length === 0) { e.preventDefault(); sheet.focus(); return }
-      const first = list[0]!
-      const last  = list[list.length - 1]!
-      const active = document.activeElement as HTMLElement | null
-      if (e.shiftKey && (active === first || active === sheet)) { e.preventDefault(); last.focus() }
-      else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus() }
-    }
-    document.addEventListener('keydown', onKey)
-    return () => {
-      cancelAnimationFrame(raf)
-      document.removeEventListener('keydown', onKey)
-      // Restore focus to the element that invoked the sheet (if still alive).
-      const r = returnRef.current
-      if (r && document.contains(r)) r.focus()
-      returnRef.current = null
-    }
   }, [isOpen, sheetRef])
 
   if (!isOpen) return null

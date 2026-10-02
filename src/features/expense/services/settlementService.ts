@@ -24,7 +24,6 @@ import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
 import { parseListSnapshot } from '@/services/parseListSnapshot'
-import { captureError } from '@/services/sentry'
 import { P } from '@/services/paths'
 import { subscribeToCollection } from '@/services/realtimeQuery'
 import {
@@ -146,13 +145,10 @@ async function readSettlements(tripId: string, fromServer: boolean): Promise<Set
     collection(db, ...P.settlements(tripId)),
     where('deletedAt', '==', null),
     orderBy('createdAt', 'desc'),
-    limit(LIST_LIMIT),
+    limit(LIST_LIMIT + 1),
   )
   const snap = await (fromServer ? getDocsFromServer(q) : getDocs(q))
-  if (snap.size >= LIST_LIMIT) {
-    captureError(new Error(`getSettlementsByTrip truncated at ${LIST_LIMIT}`), { tripId })
-  }
-  return parseListSnapshot(snap, settlementFromDoc)
+  return parseListSnapshot(snap, settlementFromDoc, { limit: LIST_LIMIT })
 }
 
 export function getSettlementsByTrip(tripId: string): Promise<SettlementRecord[]> {
@@ -175,11 +171,12 @@ export const subscribeToSettlements = (
     collection(db, ...P.settlements(tripId)),
     where('deletedAt', '==', null),
     orderBy('createdAt', 'desc'),
-    limit(LIST_LIMIT),
+    limit(LIST_LIMIT + 1),
   ),
   fromDoc: settlementFromDoc,
   source:  'subscribeToSettlements',
   limit:   LIST_LIMIT,
+  requireComplete: true,
 }, onData, onError)
 
 /**

@@ -42,6 +42,8 @@ type ExpenseOverlay =
   | { kind: 'receipt'; expenseId: string; returnTo?: 'detail' }
   | null
 
+const LEDGER_UNAVAILABLE_MESSAGE = '帳務資料尚未完整載入，暫時無法清算或修改費用。'
+
 export default function ExpensePage() {
   // `isOwner` is pure identity here on purpose: it drives the settlement-lock
   // override and the readonly redirect below, and a mid-edit flip would
@@ -52,9 +54,17 @@ export default function ExpensePage() {
   const currency = useTripCurrency()
   const symbol   = currencySymbol(currency)
 
-  const { data: fbExpenses, isLoading } = useExpenses(cloudTripId)
-  const { data: fbMembers } = useMembers(cloudTripId)
-  const { data: fbSettlements } = useSettlements(cloudTripId)
+  const expenseQuery = useExpenses(cloudTripId)
+  const memberQuery = useMembers(cloudTripId)
+  const settlementQuery = useSettlements(cloudTripId)
+  const { data: fbExpenses, isLoading } = expenseQuery
+  const { data: fbMembers } = memberQuery
+  const { data: fbSettlements } = settlementQuery
+  const expensesReady = isDemo || (fbExpenses !== undefined && !expenseQuery.isError && !expenseQuery.isPending)
+  const membersReady = isDemo || (fbMembers !== undefined && !memberQuery.isError && !memberQuery.isPending)
+  const ledgerReady = expensesReady && membersReady && (isDemo ||
+    (fbSettlements !== undefined && !settlementQuery.isError && !settlementQuery.isPending))
+  const ledgerError = expenseQuery.error ?? memberQuery.error ?? settlementQuery.error
   const settlements = ctx.status === 'cloud' ? (fbSettlements ?? []) : []
   const createSettlementMut = useCreateSettlement(mutationTripId)
   const deleteSettlementMut = useDeleteSettlement(mutationTripId)
@@ -203,6 +213,7 @@ export default function ExpensePage() {
     // The mutations bind to the LIVE trip id — a form opened on another trip
     // (background reselect after kick / remote delete) must not write here.
     if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
+    if (!ledgerReady) { modal.setError(LEDGER_UNAVAILABLE_MESSAGE); return }
 
     // Optimistic close: the modal goes away IMMEDIATELY and the overlay
     // shows the new row before Firestore + Storage have done anything.
@@ -262,6 +273,7 @@ export default function ExpensePage() {
     }
     if (isDemo) { setRecordTarget(null); signIn.open(); return }
     if (!uid) { toast.error('正在準備登入，請稍候'); return }
+    if (!ledgerReady) { toast.error(LEDGER_UNAVAILABLE_MESSAGE); return }
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) { toast.error(writeBlockReason); return }
     // Mint settlementId here (not inside the service) so the optimistic
@@ -301,6 +313,7 @@ export default function ExpensePage() {
   async function handleSwipeDelete(e: Expense) {
     swipe.closeAll()
     if (isDemo) { signIn.open(); return }
+    if (!ledgerReady) { toast.error(LEDGER_UNAVAILABLE_MESSAGE); return }
     // Epoch first — a dispatched gesture can still land after the flip, and
     // the global toast deliberately skips UpdateRequiredError.
     const writeBlockReason = getClientWriteBlockReason()
@@ -333,11 +346,11 @@ export default function ExpensePage() {
           <div className="mt-1 flex items-baseline gap-0.5">
             <span className="text-[18px] font-bold text-muted leading-none">{symbol}</span>
             <span className="text-[32px] font-black text-ink -tracking-[1px] leading-none tabular-nums">
-              {formatMinorNumber(totalMinor, currency)}
+              {expensesReady ? formatMinorNumber(totalMinor, currency) : '—'}
             </span>
           </div>
 
-          {totalMinor > 0 && categoryStats.length > 0 && (
+          {expensesReady && totalMinor > 0 && categoryStats.length > 0 && (
             <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted tabular-nums">
               {categoryStats.slice(0, 5).map(([cat, amt], i) => {
                 const CatIcon = CATEGORY_ICON[cat]
@@ -355,9 +368,9 @@ export default function ExpensePage() {
 
           <div className="mt-4 pt-4 border-t border-border grid grid-cols-3 gap-2">
             {[
-              { value: String(expenses.length), unit: '筆', label: '費用筆數' },
-              { value: String(members.length),  unit: '人', label: '參與人數' },
-              { value: formatMinorAmount(perPersonMinor, currency), unit: '', label: '每人' },
+              { value: expensesReady ? String(expenses.length) : '—', unit: '筆', label: '費用筆數' },
+              { value: membersReady ? String(members.length) : '—', unit: '人', label: '參與人數' },
+              { value: expensesReady && membersReady ? formatMinorAmount(perPersonMinor, currency) : '—', unit: '', label: '每人' },
             ].map(({ value, unit, label }) => (
               <div key={label} className="flex flex-col items-center gap-1">
                 <div className="flex items-baseline gap-px">
@@ -385,7 +398,7 @@ export default function ExpensePage() {
       </div>
 
       {/* ── SETTLEMENT ─────────────────────────────────────── */}
-      <SettlementSummary
+      {ledgerReady ? <SettlementSummary
         expenses={allExpenses}
         members={members}
         settlements={settlements}
@@ -415,20 +428,25 @@ export default function ExpensePage() {
           if (writeBlockReason) { toast.error(writeBlockReason); return }
           deleteSettlementMut.mutate({ settlementId: id })
         }}
-      />
+      /> : <div className="mx-4 mt-4 rounded-xl border border-border bg-surface p-4 text-sm" role={ledgerError ? 'alert' : 'status'}>
+        <p>{ledgerError ? `帳務資料無法完整載入：${ledgerError.message}` : '正在載入完整帳務資料…'}</p>
+        {ledgerError && <button type="button" className="mt-2 text-teal" onClick={() => {
+          void Promise.allSettled([expenseQuery.refetch(), memberQuery.refetch(), settlementQuery.refetch()])
+        }}>重新載入</button>}
+      </div>}
 
       {/* ── EXPENSE LIST ───────────────────────────────────── */}
       <div className="mt-4 px-4">
         {isLoading && !isDemo ? (
           <ExpenseListSkeleton />
-        ) : expenses.length === 0 ? (
+        ) : expenseQuery.isError ? null : expenses.length === 0 ? (
           <ExpenseListEmpty canWrite={canWrite} roleCanWrite={roleCanWrite} onAdd={modal.openAdd} />
         ) : (
           <ExpenseDateGroups
             expenses={expenses}
             members={members}
             currency={currency}
-            canWrite={canWrite}
+            canWrite={canWrite && ledgerReady}
             swipe={swipe}
             pendingUpdateIds={pendingUpdateIds}
             readonlyExpenseIds={isOwner ? undefined : lockedExpenseIds}
@@ -480,7 +498,7 @@ export default function ExpensePage() {
             if (readonlyRedirectExpenseId) modal.close()
           }}
           onPreviewReceipt={expense => handlePreviewExpenseReceipt(expense, { returnToDetail: true })}
-          onEdit={canWrite && (isOwner || !detailExpenseLocked)
+          onEdit={canWrite && ledgerReady && (isOwner || !detailExpenseLocked)
             ? () => handleEditExpenseFromDetail(detailExpense)
             : undefined}
         />

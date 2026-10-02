@@ -178,6 +178,7 @@ const listServices = createTripScopedListServices<Expense>({
   orderBy: [['date', 'desc'], ['createdAt', 'desc']],
   limit:   LIST_LIMIT,
   source:  'expenses',
+  requireComplete: true,
 })
 
 export const getExpensesByTrip = listServices.fetch

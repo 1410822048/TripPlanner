@@ -14,6 +14,16 @@ export interface SendResult {
   errorCodes: Record<string, number>
 }
 
+export interface SendBatchResult extends SendResult {
+  /** 僅含成功或永久失敗的裝置；暫時失敗留待重試。 */
+  completedTokens: PushTokenRecord[]
+  terminalFailedCount: number
+}
+
+export function pushTokenKey(record: Pick<PushTokenRecord, 'uid' | 'tokenHash'>): string {
+  return JSON.stringify([record.uid, record.tokenHash])
+}
+
 export function isRetryableSendErrorCode(code: string | undefined): boolean {
   return code === 'messaging/unavailable'
     || code === 'messaging/server-unavailable'
@@ -61,11 +71,14 @@ async function disableInvalidToken(record: PushTokenRecord): Promise<void> {
     })
 }
 
-export async function sendPush(event: NormalizedPushEvent, tokens: readonly PushTokenRecord[]): Promise<SendResult> {
+export async function sendPush(
+  event: NormalizedPushEvent,
+  tokens: readonly PushTokenRecord[],
+  onBatch?: (result: SendBatchResult) => Promise<void>,
+): Promise<SendResult> {
   const errorCodes: Record<string, number> = {}
   let sentCount = 0
   let failedCount = 0
-  const invalidTokens: PushTokenRecord[] = []
 
   for (const batch of chunk(tokens)) {
     const result = await getMessaging().sendEach(batch.map(record => ({
@@ -76,16 +89,29 @@ export async function sendPush(event: NormalizedPushEvent, tokens: readonly Push
     sentCount += result.successCount
     failedCount += result.failureCount
 
+    const completedTokens: PushTokenRecord[] = []
+    const invalidTokens: PushTokenRecord[] = []
+    const batchErrors: Record<string, number> = {}
+    let terminalFailedCount = 0
     result.responses.forEach((response, index) => {
-      if (response.success) return
+      const record = batch[index]!
+      if (response.success) { completedTokens.push(record); return }
       const code = response.error?.code ?? 'unknown'
       errorCodes[code] = (errorCodes[code] ?? 0) + 1
-      const record = batch[index]
-      if (record && isInvalidTokenCode(code)) invalidTokens.push(record)
+      batchErrors[code] = (batchErrors[code] ?? 0) + 1
+      if (!isRetryableSendErrorCode(code)) {
+        completedTokens.push(record)
+        terminalFailedCount++
+      }
+      if (isInvalidTokenCode(code)) invalidTokens.push(record)
+    })
+    await Promise.allSettled(invalidTokens.map(disableInvalidToken))
+    // 每批落盤：後續批次中斷仍不重送已完成的裝置；不持久化原始 token。
+    await onBatch?.({
+      sentCount: result.successCount, failedCount: result.failureCount,
+      errorCodes: batchErrors, completedTokens, terminalFailedCount,
     })
   }
-
-  await Promise.allSettled(invalidTokens.map(disableInvalidToken))
 
   return { sentCount, failedCount, errorCodes }
 }

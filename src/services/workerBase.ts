@@ -217,7 +217,18 @@ export async function workerFetch(
     )
   }
 
-  if (res.ok) return res.json()
+  return readWorkerResponse(res, endpoint)
+}
+
+/** 成功標頭不代表本文可讀；寫入可能已提交，本文中斷亦必須保留模糊結果。 */
+async function readWorkerResponse(res: Response, endpoint: string): Promise<unknown> {
+  if (res.ok) {
+    try {
+      return await res.json()
+    } catch (error) {
+      throw new WorkerAmbiguous(`${endpoint}: could not read success response`, error)
+    }
+  }
 
   const detail = await res.text().catch(() => '<unreadable>')
   const parsedError = parseWorkerErrorBody(detail)
@@ -278,17 +289,7 @@ export async function workerRawUpload(
       error,
     )
   }
-  if (res.ok) return res.json()
-
-  const detail = await res.text().catch(() => '<unreadable>')
-  const parsedError = parseWorkerErrorBody(detail)
-  const message = workerErrorMessage(endpoint, res.status, detail, parsedError)
-  const code = typeof parsedError?.code === 'string' ? parsedError.code : undefined
-  const field = typeof parsedError?.field === 'string' ? parsedError.field : undefined
-  if (DEFINITIVE_REJECT_STATUSES.has(res.status) || parsedError?.precommit === true) {
-    throw new WorkerRejected(res.status, message, code, field)
-  }
-  throw new WorkerAmbiguous(message, undefined)
+  return readWorkerResponse(res, endpoint)
 }
 
 type WorkerErrorBody = {

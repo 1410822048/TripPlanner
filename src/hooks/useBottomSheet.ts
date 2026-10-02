@@ -1,6 +1,6 @@
 // src/hooks/useBottomSheet.ts
 // Bottom sheet 開關動畫 + 拖曳收合邏輯，供所有 modal sheet 共用
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 // ─── 收合參數 ────────────────────────────────────────────────────
 /** 下滑超過 sheet 高度的此比例即關閉（0.45 ≈「拖一半」直覺） */
@@ -53,6 +53,8 @@ export function useBottomSheet({
   const dragYRef = useRef(0)
   // Pending close timer — cancelled if sheet reopens before it fires.
   const closeTimerRef = useRef<number | undefined>(undefined)
+  const onCloseRef = useRef(onClose)
+  useLayoutEffect(() => { onCloseRef.current = onClose }, [onClose])
 
   // ─── Animation lifecycle tied to `isOpen` ──────────────────────
   // These two effects orchestrate the enter / exit animation. Both contain
@@ -65,17 +67,26 @@ export function useBottomSheet({
 
   // 關閉 modal 時重置 dragY + mounted；開啟時取消任何未 fire 的 close timer
   useEffect(() => {
-    if (!isOpen) {
-      /* eslint-disable react-hooks/set-state-in-effect */
-      setDragY(0)
-      setMounted(false)
-      /* eslint-enable react-hooks/set-state-in-effect */
-      dragYRef.current = 0
-    } else if (closeTimerRef.current !== undefined) {
+    const gesture = drag.current
+    if (closeTimerRef.current !== undefined) {
       clearTimeout(closeTimerRef.current)
       closeTimerRef.current = undefined
     }
-  }, [isOpen])
+    if (!isOpen || !dismissible) {
+      /* eslint-disable react-hooks/set-state-in-effect */
+      setDragY(0)
+      if (!isOpen) setMounted(false)
+      setPointerActive(false)
+      /* eslint-enable react-hooks/set-state-in-effect */
+      dragYRef.current = 0
+      gesture.dragging = false
+    }
+    return () => {
+      if (closeTimerRef.current !== undefined) clearTimeout(closeTimerRef.current)
+      closeTimerRef.current = undefined
+      gesture.dragging = false
+    }
+  }, [isOpen, dismissible])
 
   // 開啟時：先渲染在畫面外（translateY 100%），一 frame 後切 mounted=true
   // → transition 自動把 sheet 從 100% 滑到 0，與拖曳用同一套動畫系統
@@ -84,10 +95,14 @@ export function useBottomSheet({
   // and pass cleanly.)
   useEffect(() => {
     if (!isOpen) return
+    let innerRaf: number | undefined
     const raf = requestAnimationFrame(() => {
-      requestAnimationFrame(() => setMounted(true))
+      innerRaf = requestAnimationFrame(() => setMounted(true))
     })
-    return () => cancelAnimationFrame(raf)
+    return () => {
+      cancelAnimationFrame(raf)
+      if (innerRaf !== undefined) cancelAnimationFrame(innerRaf)
+    }
   }, [isOpen])
 
   // ─── 手勢 ────────────────────────────────────────────────────
@@ -97,7 +112,7 @@ export function useBottomSheet({
   }
 
   function onPointerDown(e: React.PointerEvent) {
-    if (!dismissible) return
+    if (!isOpen || !dismissible || closeTimerRef.current !== undefined) return
     drag.current.startY    = e.clientY
     // performance.now():拖曳中若遇時鐘回撥,Date.now() 差值會被 clamp 成
     // 1ms,算出巨大 velocity 而誤觸 dismiss(sheet 內是表單,草稿會沒了)
@@ -144,12 +159,19 @@ export function useBottomSheet({
       dragYRef.current = window.innerHeight
       closeTimerRef.current = window.setTimeout(() => {
         closeTimerRef.current = undefined
-        onClose()
+        onCloseRef.current()
       }, CLOSE_ANIM_MS)
     } else {
       setDragY(0)
       dragYRef.current = 0
     }
+  }
+
+  function onPointerCancel() {
+    if (!drag.current.dragging) return
+    setDragActive(false)
+    setDragY(0)
+    dragYRef.current = 0
   }
 
   // ─── 衍生值 ───────────────────────────────────────────────────
@@ -172,7 +194,7 @@ export function useBottomSheet({
       onPointerDown,
       onPointerMove,
       onPointerUp,
-      onPointerCancel: onPointerUp,
+      onPointerCancel,
     },
   }
 }

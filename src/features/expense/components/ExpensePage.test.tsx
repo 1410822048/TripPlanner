@@ -9,6 +9,12 @@ const harness = vi.hoisted(() => ({
   expenses: [] as Expense[],
   members: [] as TripMember[],
   settlements: [] as unknown[],
+  expenseError: null as Error | null,
+  settlementError: null as Error | null,
+  expensePending: false,
+  settlementPending: false,
+  membersPending: false,
+  refetch: vi.fn(),
   uid: 'u1',
   canWrite: true,
   isOwner: false,
@@ -106,7 +112,9 @@ vi.mock('../hooks/useExpenses', async () => {
   return {
     expenseKeys:      { all: (tripId: string, uid?: string) => ['expenses', tripId, uid ?? ''] },
     expenseOverlay:   createListOverlay({ insert: 'head', source: 'expenses-test' }),
-    useExpenses:      () => ({ data: harness.expenses, isLoading: false }),
+    useExpenses:      () => ({ data: harness.expensePending ? undefined : harness.expenses,
+      isLoading: harness.expensePending, isPending: harness.expensePending,
+      isError: !!harness.expenseError, error: harness.expenseError, refetch: harness.refetch }),
     useCreateExpense: () => ({ mutate: harness.createExpense }),
     useUpdateExpense: () => ({ mutate: harness.updateExpense }),
     useDeleteExpense: () => ({ mutateAsync: harness.deleteExpense }),
@@ -114,13 +122,16 @@ vi.mock('../hooks/useExpenses', async () => {
 })
 
 vi.mock('../hooks/useSettlements', () => ({
-  useSettlements: () => ({ data: harness.settlements }),
+  useSettlements: () => ({ data: harness.settlementPending ? undefined : harness.settlements,
+    isPending: harness.settlementPending, isError: !!harness.settlementError,
+    error: harness.settlementError, refetch: harness.refetch }),
   useCreateSettlement: () => ({ mutate: harness.createSettlement }),
   useDeleteSettlement: () => ({ mutate: harness.deleteSettlement }),
 }))
 
 vi.mock('@/features/members/hooks/useMembers', () => ({
-  useMembers: () => ({ data: harness.members }),
+  useMembers: () => ({ data: harness.membersPending ? undefined : harness.members,
+    isPending: harness.membersPending, refetch: harness.refetch }),
 }))
 
 vi.mock('@/features/members/utils', () => ({
@@ -256,6 +267,12 @@ function receiptExpense(overrides: Partial<Expense> = {}): Expense {
 }
 
 beforeEach(() => {
+  harness.expenseError = null
+  harness.settlementError = null
+  harness.expensePending = false
+  harness.settlementPending = false
+  harness.membersPending = false
+  harness.refetch.mockReset().mockResolvedValue(undefined)
   harness.expenses = [receiptExpense()]
   harness.members = MEMBERS
   harness.settlements = []
@@ -287,6 +304,31 @@ beforeEach(() => {
 })
 
 describe('ExpensePage read-first expense flow', () => {
+  it.each(['expensePending', 'settlementPending', 'membersPending'] as const)('does not compute settlement suggestions while %s', key => {
+    harness[key] = true
+    render(<ExpensePage />)
+    expect(screen.queryByRole('button', { name: 'record-settlement' })).toBeNull()
+    expect(screen.getByText('正在載入完整帳務資料…')).toBeTruthy()
+  })
+  it('hides stale financial totals on an integrity error and offers a full retry', () => {
+    harness.expenseError = new Error('帳務資料格式異常')
+    render(<ExpensePage />)
+    expect(screen.queryByRole('button', { name: 'record-settlement' })).toBeNull()
+    expect(screen.getByRole('alert').textContent).toContain('帳務資料格式異常')
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(3)
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }))
+    expect(harness.refetch).toHaveBeenCalledTimes(3)
+  })
+  it('preserves an open settlement draft if the ledger becomes incomplete', () => {
+    const view = render(<ExpensePage />)
+    fireEvent.click(screen.getByRole('button', { name: 'record-settlement' }))
+    harness.settlementError = new Error('讀取上限')
+    view.rerender(<ExpensePage />)
+    fireEvent.click(screen.getByRole('button', { name: 'mock settle submit' }))
+    expect(harness.createSettlement).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: 'settle-sheet' })).toBeTruthy()
+    expect(toastMocks.error).toHaveBeenCalledWith(expect.stringContaining('尚未完整載入'))
+  })
   it('refuses to save a draft into a trip the form was not opened on', () => {
     harness.modalIsOpen = true
     harness.modalScopeChanged = true
