@@ -36,6 +36,7 @@ firebase-functions/lib
 # GCP-console key downloads use <project>-<keyId>.json (no "firebase-adminsdk"
 # in the name), so the pattern above misses them — match those too.
 tripplanner-80a4f-*.json
+gha-creds-*.json
 
 # ─── Firebase CLI artefacts ────────────────────────────────────
 .firebase/

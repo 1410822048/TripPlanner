@@ -9,6 +9,12 @@ on:
   push:
     branches: ['**']
   pull_request:
+  workflow_dispatch:
+    inputs:
+      verify_only:
+        description: Validate CI and keyless Google deployment access without publishing
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -92,3 +98,110 @@ jobs:
           VITE_FIREBASE_MESSAGING_SENDER_ID: '0'
           VITE_FIREBASE_VAPID_KEY: ci-placeholder
           VITE_FIREBASE_APP_ID: '0:ci'
+
+  deploy:
+    name: Deploy production
+    needs: check
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && vars.PRODUCTION_DEPLOY_ENABLED == 'true'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    # Do not interrupt a release between Worker, Functions, Rules and Pages.
+    concurrency:
+      group: tripmate-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Reject a superseded commit
+        env:
+          TESTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$TESTED_SHA"
+
+      - name: Check deployment configuration
+        env:
+          VERIFY_ONLY: ${{ inputs.verify_only }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_DEPLOY_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+        run: |
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID GCP_WORKLOAD_IDENTITY_PROVIDER GCP_DEPLOY_SERVICE_ACCOUNT; do
+            if [ "$VERIFY_ONLY" = 'true' ] && [[ "$name" == CLOUDFLARE_* ]]; then continue; fi
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing production configuration: $name"
+              exit 1
+            fi
+          done
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup npm
+        run: npm install --global npm@11.21.0
+
+      # Install before obtaining cloud credentials; never expose them to CI tests.
+      - name: Install
+        run: npm ci
+
+      - name: Authenticate Google Cloud with WIF
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: tripplanner-80a4f
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Verify keyless infrastructure access
+        run: |
+          gcloud firestore indexes composite list --project tripplanner-80a4f --format='value(name)' >/dev/null
+          gcloud run services list --region asia-east1 --project tripplanner-80a4f --format='value(metadata.name)' >/dev/null
+          gcloud artifacts repositories describe gcf-artifacts --location asia-east1 --project tripplanner-80a4f --format='value(name)' >/dev/null
+          npx -y firebase-tools@latest functions:list --project tripplanner-80a4f >/dev/null
+
+      - name: Deploy tested production revision
+        if: inputs.verify_only != true
+        env:
+          CI: 'true'
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_VAPID_KEY: ${{ vars.VITE_FIREBASE_VAPID_KEY }}
+          VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
+          VITE_SENTRY_DSN: ${{ vars.VITE_SENTRY_DSN }}
+          VITE_MAPBOX_TOKEN: ${{ vars.VITE_MAPBOX_TOKEN }}
+        run: npm run deploy:prod
+
+      - name: Verify production assets
+        if: inputs.verify_only != true
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const base = 'https://tripmate-2wg.pages.dev';
+          for (const path of ['/index.html', '/sw.js', '/compatibility.json']) {
+            let matches = false;
+            for (let attempt = 0; attempt < 12; attempt++) {
+              const response = await fetch(base + path, { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
+              matches = response.ok && Buffer.from(await response.arrayBuffer()).equals(fs.readFileSync('dist' + path));
+              if (matches) break;
+              await new Promise(resolve => setTimeout(resolve, 5_000));
+            }
+            if (!matches) throw new Error(`Production asset differs from tested revision: ${path}`);
+            console.log(`Verified ${path}`);
+          }
+          NODE
