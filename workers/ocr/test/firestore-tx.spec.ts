@@ -271,6 +271,22 @@ describe('runFirestoreTransaction', () => {
 		expect(calls.some(c => c.url.includes(':commit'))).toBe(false)
 	})
 
+	it('skips the rollback on 401 (the rejected token cannot authorize it)', async () => {
+		let rollbacks = 0
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const url = String(input)
+			if (url.includes(':beginTransaction')) return new Response(JSON.stringify({ transaction: 'tx-1' }), { status: 200 })
+			if (url.includes(':batchGet')) return new Response('{"error":"unauthenticated"}', { status: 401 })
+			if (url.includes(':rollback')) { rollbacks += 1; return new Response('{}', { status: 200 }) }
+			throw new Error(`unexpected URL ${url}`)
+		}) as typeof fetch
+		await expect(runFirestoreTransaction('fake-token', 'demo', async tx => {
+			await tx.get('trips/t1')
+			return { writes: [], result: 'unreachable' }
+		})).rejects.toThrow()
+		expect(rollbacks).toBe(0)
+	})
+
 	it('a failing rollback never masks the original error', async () => {
 		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
 			const url = String(input)

@@ -37,7 +37,9 @@ export const InviteRedeemRequestSchema = z.object({
   tripId:      z.string().regex(TripIdRe),
   token:       z.string().regex(TokenRe),
   displayName: z.string().min(1).max(100),
-  avatarUrl:   z.string().url().max(2000).optional(),
+  // https only: `z.string().url()` alone also accepts javascript: / data:
+  // URLs, and this value is rendered by every member's client.
+  avatarUrl:   z.string().url().max(2000).regex(/^https:\/\//, 'avatarUrl must be https').optional(),
 }).strict()
 export type InviteRedeemRequest = z.infer<typeof InviteRedeemRequestSchema>
 
@@ -385,7 +387,10 @@ function buildInviteWrites(
     userId:      { stringValue: callerUid },
     displayName: { stringValue: req.displayName },
     role:        { stringValue: role },
-    inviteToken: { stringValue: req.token },
+    // The invite token is deliberately NOT persisted here: member docs are
+    // readable by every trip member, and the token is a live bearer link
+    // until it expires/rotates — storing it let any viewer copy the current
+    // invite and bring in people without being the owner.
     memberIds:   encodeMemberIds(roster),
   }
   if (req.avatarUrl) {

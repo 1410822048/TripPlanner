@@ -101,7 +101,13 @@ async function exchangeToken(tokenUri: string, jwt: string): Promise<TokenExchan
 }
 
 /** Returns a Google OAuth 2.0 access token scoped for Firestore admin
- *  access. Reuses an in-process cache until ~60s before expiry. */
+ *  access. Reuses an in-process cache until ~60s before expiry.
+ *
+ *  Deliberately NO shared in-flight Promise for cold-start concurrency:
+ *  in Workers, a promise whose I/O belongs to request A cannot safely be
+ *  awaited by request B — if A finishes or is cancelled first, B hangs or
+ *  gets a cross-request-context error. A few duplicate token exchanges on
+ *  a cold isolate are the cheaper failure mode. */
 export async function getAdminToken(serviceAccountJson: string): Promise<string> {
   const now = Date.now()
   if (cached && cached.expiresAtMs > now + 60_000) {

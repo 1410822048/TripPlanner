@@ -230,3 +230,24 @@ describe('purgeExpiredReceipts - clears receipt + stamps marker', () => {
 		expect(firestore.updateDocFields).not.toHaveBeenCalled()
 	})
 })
+
+describe('purgeExpiredReceipts subrequest budget', () => {
+	it('stops mid-page at the budget and reports budgetHit (other cron jobs keep their share)', async () => {
+		const docs = Array.from({ length: 200 }, (_, i) =>
+			docWithReceipt(`projects/demo-project/databases/(default)/documents/trips/t/expenses/e${i}`, {
+				path: `trips/t/expenses/e${i}/receipt.webp`, deletedAtMs: 1_000 + i,
+			}))
+		vi.mocked(firestore.queryReceiptPurgeCandidates).mockResolvedValueOnce({ docs })
+		// Budget 13 = 1 query + 3 docs x 4 subrequests.
+		const report = await purgeExpiredReceipts('{}', BUCKET, { subrequestBudget: 13 })
+		expect(report.budgetHit).toBe(true)
+		expect(report.scanned).toBe(3)
+		expect(vi.mocked(firestore.queryReceiptPurgeCandidates)).toHaveBeenCalledTimes(1)
+	})
+
+	it('does not query at all when the budget cannot cover one doc', async () => {
+		const report = await purgeExpiredReceipts('{}', BUCKET, { subrequestBudget: 4 })
+		expect(report).toMatchObject({ scanned: 0, budgetHit: true })
+		expect(vi.mocked(firestore.queryReceiptPurgeCandidates)).not.toHaveBeenCalled()
+	})
+})

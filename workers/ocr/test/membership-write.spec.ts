@@ -312,7 +312,8 @@ describe('inviteRedeem endpoint', () => {
 		expect(memberWrite.currentDocument).toEqual({ exists: false })
 		expect(memberWrite.fields.displayName).toEqual({ stringValue: DISPLAY })
 		expect(memberWrite.fields.role).toEqual({ stringValue: 'editor' })
-		expect(memberWrite.fields.inviteToken).toEqual({ stringValue: VALID_TOK })
+		// The bearer token must never land on the member-readable doc.
+		expect(memberWrite.fields).not.toHaveProperty('inviteToken')
 		// Full computed roster ([owner, invitee]) lands on the member doc
 		// so existing members' array-contains listeners see the new joiner.
 		expect(memberWrite.fields.memberIds).toEqual({
@@ -339,6 +340,15 @@ describe('inviteRedeem endpoint', () => {
 
 		// Post-tx cascade fires for the invitee uid.
 		expect(cascadeCalls).toEqual([{ tripId: TRIP_ID, memberUid: INVITEE }])
+	})
+
+	it('avatarUrl: rejects non-https schemes (javascript:, data:, http:)', async () => {
+		const { InviteRedeemRequestSchema } = await import('../src/invite-write')
+		for (const avatarUrl of ['javascript:alert(1)', 'data:image/png;base64,AAAA', 'http://example.com/x.png']) {
+			expect(InviteRedeemRequestSchema.safeParse({
+				tripId: TRIP_ID, token: VALID_TOK, displayName: DISPLAY, avatarUrl,
+			}).success).toBe(false)
+		}
 	})
 
 	it('avatarUrl: included on member doc when present in request body', async () => {

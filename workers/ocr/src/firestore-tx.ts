@@ -406,7 +406,9 @@ export async function runFirestoreTransaction<T>(
       // writer of the same docs (trip doc / member docs) meanwhile.
       // Release it explicitly. Once the commit RPC has been sent the
       // transaction is ended (or ambiguous) and must not be touched.
-      if (txId !== undefined && !commitStarted) {
+      // Skipped on 401: the same rejected token can't authorize the
+      // rollback either, it would only add up to TX_ROLLBACK_TIMEOUT_MS.
+      if (txId !== undefined && !commitStarted && !isUnauthorized(e)) {
         await rollbackTransaction(accessToken, projectId, txId)
       }
 

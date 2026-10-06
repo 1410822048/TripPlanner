@@ -249,7 +249,9 @@ export async function acceptInvite(
     displayName: string
     avatarUrl?:  string
   } = { tripId, token, displayName }
-  if (user.photoURL) payload.avatarUrl = user.photoURL
+  // Worker accepts https avatars only; drop anything else rather than fail
+  // the whole redemption over a cosmetic field.
+  if (user.photoURL?.startsWith('https://')) payload.avatarUrl = user.photoURL
 
   const result = await workerFetch(workerBase, idToken, '/invite-redeem', payload) as {
     ok:      true

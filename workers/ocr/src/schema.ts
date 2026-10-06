@@ -151,12 +151,15 @@ export type OcrIgnoredLine = z.infer<typeof OcrIgnoredLineSchema>
 // so the client can show a "couldn't read" message instead of a
 // schema-mismatch one.
 export const OcrResponseSchema = z.object({
-  items:    z.array(OcrItemSchema),
+  // Capped like the expense write path (expense-validate: items ≤ 100,
+  // adjustments ≤ 50): a prompt-injected receipt can't balloon the response or the
+  // client form with lines that could never be saved anyway.
+  items:    z.array(OcrItemSchema).max(100),
   /** Adjustment lines extracted from the receipt — discounts, taxes,
    *  service charges, tips. Always present (empty when none); the field
    *  is required so consumers don't have to differentiate "no adjustments"
    *  from "older OCR build". Phase B contract. */
-  adjustments: z.array(OcrAdjustmentSchema),
+  adjustments: z.array(OcrAdjustmentSchema).max(50),
   /** Visible receipt lines that were deliberately ignored because they
    *  do not affect the grand total (included-tax disclosures, payment
    *  method, change, receipt id, address/phone/footer noise). Always
