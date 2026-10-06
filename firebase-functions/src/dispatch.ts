@@ -5,6 +5,8 @@ import { hasRetryableSendError, pushTokenKey, sendPush, type PushTokenRecord, ty
 import { writeNotificationDocs } from './notifications.js'
 import type { NormalizedPushEvent } from './model.js'
 
+const PUSH_EVENT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+
 type DedupeStatus = 'pending' | 'sent' | 'partial' | 'failed' | 'retry'
 // Three-way reservation outcome. The load-bearing split is 'done' vs 'held':
 //   'done' → terminally handled (sent/partial) or attempt-capped; safe to
@@ -91,6 +93,11 @@ async function reservePushEvent(event: NormalizedPushEvent): Promise<PushReserva
   const ref = db.doc(`_pushEvents/${event.eventId}`)
   const nowMs = Date.now()
   const leaseExpiresAt = Timestamp.fromMillis(nowMs + DISPATCH_LEASE_MS)
+  // TTL anchor (Firestore TTL policy on `_pushEvents.expiresAt`, see
+  // docs/runbooks/firestore-ttl-notifications.md). These docs are only a
+  // dedupe/lease record; 30 days comfortably outlives the platform's event
+  // retry window, after which a re-delivery can no longer arrive.
+  const expiresAt = Timestamp.fromMillis(nowMs + PUSH_EVENT_RETENTION_MS)
 
   return db.runTransaction(async tx => {
     const snap = await tx.get(ref)
@@ -134,6 +141,7 @@ async function reservePushEvent(event: NormalizedPushEvent): Promise<PushReserva
       failedCount:   0,
       terminalFailedCount: 0,
       completedTokenKeys: [],
+      expiresAt,
     })
     return { decision: 'reserve', ...progress, attempt: 1 }
   })

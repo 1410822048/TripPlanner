@@ -43,7 +43,16 @@ function retryingDocument<const Document extends string>(document: Document) {
 // fans the array out to dispatch. Each event carries its own eventId, so the
 // `_pushEvents` dedupe/lease stays per-notification.
 async function dispatchAll(events: NormalizedPushEvent[]): Promise<void> {
-  await Promise.all(events.map(dispatchPushEvent))
+  // allSettled, not all: with Promise.all one event throwing (e.g. `held`
+  // by another instance's lease) rejected the invocation while the sibling
+  // event was still mid-send, so the platform could freeze it and that
+  // notification waited a full lease expiry for a retry to finish it.
+  const results = await Promise.allSettled(events.map(dispatchPushEvent))
+  const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+  if (failures.length === 1) throw failures[0]!.reason
+  if (failures.length > 1) {
+    throw new AggregateError(failures.map(f => f.reason), `${failures.length} push events failed`)
+  }
 }
 
 interface ChildInput {

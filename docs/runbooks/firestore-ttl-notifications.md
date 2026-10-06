@@ -48,3 +48,19 @@ gcloud firestore fields ttls update expiresAt \
 ```
 
 停用後既有文件不受影響,只是不再自動過期——不會有資料被意外清空的風險。
+
+## 4. `_pushEvents` TTL(推播去重紀錄)
+
+`_pushEvents/{eventId}` 是 Functions 的去重 / lease 紀錄，每個通知事件一筆。新建立的文件帶
+`expiresAt`(建立時間 + 30 天，見 `firebase-functions/src/dispatch.ts`)，遠超過平台事件重送的
+時間窗。設定一次 TTL 後即自動清理，否則會隨使用量線性成長：
+
+```bash
+gcloud firestore fields ttls update expiresAt \
+  --collection-group=_pushEvents \
+  --enable-ttl \
+  --project=tripplanner-80a4f
+```
+
+驗證方式同第 2 節(`--collection-group=_pushEvents`)。加入此欄位之前建立的舊文件沒有
+`expiresAt`,TTL 不會刪除它們;如需清理，可另行以 Admin SDK 刪除 `createdAt` 早於 30 天的文件。
