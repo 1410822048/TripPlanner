@@ -18,7 +18,9 @@
 | 觀測 | Sentry(@sentry/browser,idle 延遲初始化;拆獨立 `vendor-sentry` chunk,排除在 modulepreload + PWA precache 之外) |
 | 測試 | Vitest + @cloudflare/vitest-pool-workers(Worker 測試) |
 | CI | GitHub Actions(`.github/workflows/ci.yml`) |
-| Pre-commit | Lefthook(typecheck/lint/test gating) |
+| Pre-commit | Husky + lint-staged：完整 workspace typecheck、staged TypeScript ESLint；完整測試由 CI 執行 |
+
+依賴工具固定 npm 11.21.0（CI 與 Functions engine）；Node 22 驗證。CI 使用嚴格 `npm ci`、audit gate 與完整 SHA 固定的 Actions。相容性與安全 override 維護方式見 `docs/runbooks/dependency-security-overrides.md`；本次升級與暫緩原因見 `docs/reviews/2026-10-06-production-audit.md`。
 
 ## 資料模型(Firestore)
 
@@ -30,13 +32,13 @@ trips/{tripId}
   ├── expenses/{expenseId}       # 費用 + splits + 可選 items[](OCR)
   ├── wishes/{wishId}            # 願望清單 + votes[]
   ├── plannings/{planItemId}     # 行前準備 checklist
-  ├── settlements/{id}           # 「X 給 Y 還了 ¥Z」雙邊任一可記錄,balance 當 reverse expense 計入
+  ├── settlements/{id}           # 收款人確認，Worker 交易／冪等檢查；僅減少既存 debt
   └── (trip doc 本體:title/dest/dates/ownerId/icon/currency)
 
 invites/{token}                  # token 在 URL fragment(不進 server log)
 ```
 
-**所有 5 個 feature entity(schedules/expenses/bookings/wishes/plannings)都帶有 `createdBy` + `updatedBy` + `createdAt` + `updatedAt`。`updatedBy` 在每次 create / update / toggle / vote 都會被服務層寫入當前 uid,rules 用 `request.resource.data.updatedBy == uid()` 鎖死,client 偽造會被 Firestore 拒。底部 tab 紅點過濾自己的寫入就是靠這個欄位(`useFeatureBadges`)。Booking 在加 updatedBy 同時補了 createdBy / updatedAt(過去只有 createdAt)。**
+**所有 5 個 feature entity(schedules/expenses/bookings/wishes/plannings)都帶有 `createdBy` + `updatedBy` + `createdAt` + `updatedAt`。`updatedBy` 在每次 create / update / toggle / vote 都會被服務層寫入當前 uid,rules 用 `request.resource.data.updatedBy == uid()` 鎖死,client 偽造會被 Firestore 拒。BottomNav 紅點另讀 trip doc 的 `lastActivityByFeature[feature] = { ts, by }`，以 `by` 排除自己的動態；不另外監聽 entity collections。**
 
 R2:`trips/{tripId}/expenses/{expenseId}/receipt.webp` + `thumb.webp` 等(private bucket,WebP thumbnail variants)。
 
@@ -90,13 +92,13 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 - **CRUD**: `useCreateExpense` / `useUpdateExpense` / `useDeleteExpense`(`features/expense/hooks/useExpenses.ts`)
 - **特色 1 — OCR**: 拍照 → 自動觸發 `useOcrFlow` → Cloudflare Worker → OCR provider 解析收據 → 填入 items[] + 標題 + 金額
 - **特色 2 — Items 模式**: items.length > 0 時,平均分攤 / 自訂 split 收起,改用 chip-per-row 多選分擔者,splits 反算
-- **特色 3 — Settlement (debt-edge model)**: 演算法在 `services/settlement.ts`,**pairwise gross → applied(cap)→ remaining → normalize → net** 五步純函式。核心不變式: **settlement 只能 reduce 既存 debt,不能 create 反向 debt** — 刪 expense 後不會冒出反方向應付款,超出天然債務的部分變 `orphan` 顯式 surface。`paid` / `owed` 顯示**只看 expenses**(不被 settlement 污染);`net` 來自 normalize 後的剩餘 debt。**受取人(toUid)唯一可按「済み」**(firestore.rules 鎖死;付款人視覺上不是按鈕,是 Clock + 「受取待ち」status pill)。Settlement 歷史:預設展開最近 2 筆,行內兩段刪除(`settledBy` 才能刪)。詳見「複雜流程詳解 / Settlement debt-edge model」
+- **特色 3 — Settlement (debt-edge model)**: 演算法在 `services/settlement.ts`,**pairwise gross → applied(cap)→ remaining → normalize → net** 五步純函式。核心不變式: **settlement 只能 reduce 既存 debt,不能 create 反向 debt** — 刪 expense 後不會冒出反方向應付款,超出天然債務的部分變 `orphan` 顯式 surface。`paid` / `owed` 顯示**只看 expenses**(不被 settlement 污染);`net` 來自 normalize 後的剩餘 debt。**受取人(toUid)唯一可按「已收款」**(firestore.rules 鎖死;付款人視覺上不是按鈕,是 Clock + 「等待收款」status pill)。Settlement 歷史:預設展開最近 2 筆,行內兩段刪除(`settledBy` 才能刪)。詳見「複雜流程詳解 / Settlement debt-edge model」
 - **特色 4 — 列表日期 fold**: `ExpenseDateGroups` 預設展開最近 2 天(`DEFAULT_EXPANDED_DAYS`);user override 用 `useState<Map<date,bool>>` 記,加新費用造成日期 reorder 時 toggle 選擇不被覆蓋
-- **Optimistic close**: 按存 → modal 立刻收 → list 顯示半透明 row + 旋轉「保存中…」(overlay pending 偵測)→ server truth 一致時撤下 overlay
+- **Optimistic close**: 按存 → modal 立刻收 → list 顯示半透明 row + 旋轉「儲存中…」(overlay pending 偵測)→ server truth 一致時撤下 overlay
 - **觸發**:
   - 點 `+` → ExpenseFormModal
   - 拍照按鈕 → capture=environment + auto-OCR
-  - 上傳按鈕 → 純上傳,手動點「✨ 明細を読み取る」才 OCR
+  - 上傳按鈕 → 純上傳,手動點「讀取明細」才 OCR
   - 滑左 row → 刪除
   - 點 row(非 pending)→ edit
 
@@ -122,7 +124,7 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 - **CRUD**: 無(純導覽 + 統計)
 - **顯示**: 旅程總日數 / 過往住宿 thumbnails / 共遊圈 chips
 - **觸發**:
-  - 點「新規旅程」→ navigate to `/schedule` with `state.openCreateTrip = true`
+  - 點「旅程建立者 / Planner」→ navigate to `/schedule` with `state.openCreateTrip = true`
   - 點「過往住宿」→ `/past-lodging`
   - 點「共遊圈」→ `/social-circle`
   - 登入 / 登出 → useAuth
@@ -144,7 +146,7 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 | `useSettlements` / `useCreateSettlement` / `useDeleteSettlement` | Settlement 記錄 CRUD + realtime listener。**受取人(toUid)唯一可建立**(rule + UI 雙層 gate);delete 由 `settledBy` 或 trip owner 觸發。算法層在 `services/settlement.ts` 的 `computeBalancesFull` 回 `{ balances, orphans }` |
 | `useFeatureBadges` | 讀 trip doc 的 `lastActivityByFeature`(**0 個額外 listener**,搭現有 trip-doc listener 便車),對比 `lastViewedStore` 算 unread,驅動 BottomNav 紅點 |
 | `useOnlineStatus` | 訂閱 `online`/`offline` event,搭配 `OfflineBanner` 顯示離線提示 |
-| `createRealtimeListHook` | Generic factory:onSnapshot → TanStack Query cache 同步;**module-level refcount listener dedup**(AppLayout + page 共用 1 個 onSnapshot,降 50% reads) |
+| `createRealtimeListHook` | Generic factory:onSnapshot → TanStack Query cache 同步；同 scope/query 透過 module-level refcount 共用 listener，generation 防止舊帳號／舊訂閱回寫 |
 | `subscribeToCollection` | 統一 Firestore listener 工廠(throws → captureError) |
 | `firestoreDocFromSchema` | doc snapshot → Zod parse(失敗送 Sentry) |
 | `createListOverlay` / `applyOverlays` | **樂觀狀態的唯一機制**:query cache 只放 server truth,op(create/patch/remove)在讀取時重播。`confirms` 決定何時撤下,`authoritativeFetch` 走 `getDocsFromServer` 定奪 ambiguous 寫入 |
@@ -160,14 +162,14 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 | `MemberAvatar` | 純圓 avatar(read-only)— SettlementSummary、voter stack、ExpenseFormModal 的 paidBy / split picker 都用這個。內建 Google photo `<img>` + onError 退回 label fallback |
 | `CurrencyInput` | 帶幣值前綴的 number input。**Flex layout 而非 absolute span**,任意 symbol 寬度都不會跟 placeholder「0」重疊(NT$ / CN¥ / HK$ 等多字元 symbol 用這個解)。`size='default'`(42px 主欄)/ `'compact'`(36px row 用)兩種變體 |
 | `SkeletonBar` / `SkeletonContainer` / `PageHeaderSkeleton` / `PageSkeletonShell` | Skeleton primitives;Container 支援 `embedded` prop 避免 nested animate-pulse |
-| `OfflineBanner` | 離線時頂部 amber 細條,回線後 2s「同期しました」綠條 |
+| `OfflineBanner` | 離線時頂部 amber 細條,回線後 2s「已同步」綠條 |
 | `Toaster` 加 action button | `toast.error(msg, { action: { label, onClick } })`;timerId tracked → manual dismiss 清 timer |
 
 ## UI 互動模式(每個 list page 通用)
 
 ### 滑左刪除(swipe-to-delete)
 - **手勢**: row 上左滑(`useSwipeRow` 偵測 pointer move),露出 80px 紅色刪除按鈕
-- **兩段確認**: 點刪除 → 變「**確認削除**」紅字 → 再點才真的刪
+- **兩段確認**: 點刪除 → 變「**確認刪除**」紅字 → 再點才真的刪
 - **取消**: 點其他地方(別的 row / page 空白)或反方向滑 → 自動收起
 - **跨 row 互斥**: `useSwipeOpen` 確保同時只有一個 row 處於 open(換 row 滑會關掉前一個)
 - **權限 gate**: 沒 delete 權限(viewer)時,`useSwipeRow` 接收 `enabled: false`,手勢被吃掉,改成純 tap-to-edit row
@@ -289,7 +291,7 @@ global MutationCache.onMutate:同步檢查 Schema Epoch(只讀 memory snapshot,�
 ### Expense receipt OCR pipeline
 
 ```
-使用者點「📷 撮影」(<input capture="environment">)
+使用者點「拍攝並讀取」(<input capture="environment">)
   ↓ iOS 自動轉 JPEG
 onCameraPicked:
   → compressImage(file)            ← canvas → 1920px WebP ~200KB
@@ -320,9 +322,9 @@ validate(): items.every(i => i.allocations.length > 0) && sum(items) === total
 materializeExpenseSplits(items, adjustments, members) → ExpenseSplit[] → 進 Firestore
 ```
 
-**「📎 ファイルから追加」差別**: 同樣的 compressImage → pickFile,但**不**自動跑 OCR,改顯示「✨ 明細を読み取る」按鈕,使用者點才 ocr.run。
+**「附加檔案」差別**: 同樣的 compressImage → pickFile,但**不**自動跑 OCR,改顯示「讀取明細」按鈕,使用者點才 ocr.run。
 
-**錯誤路徑**: `OcrError.kind` 分 `auth / rate-limit / parse / network / config / unknown`,在 `ocrErrorCopy()` 轉成日文 toast 文案。
+**錯誤路徑**: `OcrError.kind` 分 `auth / rate-limit / parse / network / config / unknown`,在 `ocrErrorCopy()` 轉成繁體中文 toast 文案。
 
 ### Trip switcher(SchedulePage 內)
 
@@ -337,7 +339,7 @@ materializeExpenseSplits(items, adjustments, members) → ExpenseSplit[] → 進
   - `share` → InviteModal(產生 invite link with token in URL fragment)
   - `members` → MembersModal(查看 + 移除成員,owner only)
   - `delete` → DeleteConfirm inline → 刪 trip + cascade R2
-- **AccountPage 點「新規旅程」** → navigate to `/schedule` with `state.openCreateTrip = true` → SchedulePage 偵測 location state 自動開 CreateTripModal
+- **AccountPage 點「旅程建立者 / Planner」** → navigate to `/schedule` with `state.openCreateTrip = true` → SchedulePage 偵測 location state 自動開 CreateTripModal
 
 ### Schedule day timeline
 
@@ -368,7 +370,7 @@ materializeExpenseSplits(items, adjustments, members) → ExpenseSplit[] → 進
 
 `paid` / `owed` 顯示**只看 active expenses**(soft-deleted 排除,跟 UI 顯示一致)。`net` 才反映 settlement 後的當下狀態。
 
-UI(`SettlementSummary`)結構: 成員淨額 → 支払い提案(只 receiver 看到 green「済み」 button,其他人 Clock + 「受取待ち」status)→ 清算済み記録(預設展開 2 筆 + 兩段刪除)→ orphan 警告 banner(amber, **reason-aware**)。
+UI(`SettlementSummary`)結構: 成員淨額 → 付款建議(只 receiver 看到 green「已收款」 button,其他人 Clock + 「等待收款」status)→ 已清算紀錄(預設展開 2 筆 + 兩段刪除)→ orphan 警告 banner(amber, **reason-aware**)。
 
 ### Settlement phase-2: chronological replay + orphan reason 分類
 
@@ -474,9 +476,13 @@ Demo / not-signed-in 使用者點任何「寫入」action 都會跳 SignInModal�
 npm run dev                                # vite dev server
 npm run build                              # tsc -b + vite build(含 React Compiler)
 npm run deploy:pages                       # build + Cloudflare Pages deploy
-npx vitest run                             # 全測試
-npx tsc --noEmit                           # typecheck only
-npx eslint src                             # lint
+npm test                                   # 前端 + 共用 packages 測試
+npm --workspace workers/ocr exec -- vitest run # Worker 測試
+npm run functions:test                     # Functions 測試
+npm run test:rules                         # Firestore Rules emulator 測試
+npm run typecheck                          # 全部 workspace typecheck
+npm run lint                               # 前端 + Worker lint
+npm run deploy:prod                        # 正式部署安全編排
 firebase deploy --only firestore           # firestore rules + indexes
 cd workers/ocr && npm run deploy            # production Worker + production R2 binding
 cd workers/ocr && npx wrangler tail        # Worker 即時 log
