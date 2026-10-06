@@ -48,8 +48,10 @@ Provider condition 同時比對上述 repo ID、owner ID、ref、environment sub
 與 event；service account 的 `roles/iam.workloadIdentityUser` 只綁該 repo ID。
 
 部署帳號不授予 Owner／Editor，也不授予 Firestore entity 資料讀寫權限。
-Project roles 為 Cloud Functions Developer、Firebase Viewer、Firebase Rules Admin、
-Datastore Index Admin、Service Usage Consumer，以及自訂 `tripmateDeploymentHygiene`。
+Project roles 為 Cloud Functions Developer、Firebase Rules Admin、Datastore Index Admin、
+Service Usage Consumer，以及自訂 `tripmateDeploymentHygiene`／`tripmateDeploymentMetadata`。
+Metadata role 僅含 firebase.projects.get、firebase.clients.get 與 firebaseextensions.configs.list；
+不使用含 Firestore entity 讀取權限的 Firebase Viewer。
 自訂 role 僅含 Cloud Run services get/list、revisions get/list/delete 與 operations get。
 Artifact Registry Repo Admin 僅授予 `asia-east1/gcf-artifacts` repository；
 Service Account User 僅授予目前 Functions build/runtime 使用的 compute service account。
