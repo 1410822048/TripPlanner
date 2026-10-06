@@ -54,6 +54,13 @@ describe('OCR worker routing', () => {
 		expect(res.headers.get('Access-Control-Allow-Methods')).toContain('GET')
 	})
 
+	it('CORS wildcard matches https preview deploys only, never plain http', async () => {
+		const ok = await call('OPTIONS', '/ocr', { headers: { Origin: 'https://feature-x.tripmate-2wg.pages.dev' } })
+		expect(ok.headers.get('Access-Control-Allow-Origin')).toBe('https://feature-x.tripmate-2wg.pages.dev')
+		const insecure = await call('OPTIONS', '/ocr', { headers: { Origin: 'http://feature-x.tripmate-2wg.pages.dev' } })
+		expect(insecure.headers.get('Access-Control-Allow-Origin')).not.toBe('http://feature-x.tripmate-2wg.pages.dev')
+	})
+
 	it('CORS preflight allows upload trace and fixed attachment locator headers', async () => {
 		// Regression pin for the upload-flow observability header:
 		// mintAndUploadEntityIntents sends `X-Upload-Trace-Id` on every

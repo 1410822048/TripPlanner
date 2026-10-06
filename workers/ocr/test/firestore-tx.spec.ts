@@ -250,6 +250,66 @@ describe('runFirestoreTransaction', () => {
 		).rejects.toBeInstanceOf(ValidationFail)
 	})
 
+	it('rolls back the transaction when the body rejects (releases locks early)', async () => {
+		const calls: Array<{ url: string; body: string }> = []
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input)
+			calls.push({ url, body: String(init?.body ?? '') })
+			if (url.includes(':beginTransaction')) return new Response(JSON.stringify({ transaction: 'tx-1' }), { status: 200 })
+			if (url.includes(':batchGet')) return new Response(JSON.stringify([{ missing: 'projects/demo/databases/(default)/documents/trips/t1' }]), { status: 200 })
+			if (url.includes(':rollback')) return new Response('{}', { status: 200 })
+			throw new Error(`unexpected URL ${url}`)
+		}) as typeof fetch
+		class DomainReject extends Error {}
+		await expect(runFirestoreTransaction('fake-token', 'demo', async tx => {
+			await tx.get('trips/t1')
+			throw new DomainReject('settlement locked')
+		})).rejects.toBeInstanceOf(DomainReject)
+		const rollback = calls.find(c => c.url.includes(':rollback'))
+		expect(rollback).toBeDefined()
+		expect(JSON.parse(rollback!.body)).toEqual({ transaction: 'tx-1' })
+		expect(calls.some(c => c.url.includes(':commit'))).toBe(false)
+	})
+
+	it('a failing rollback never masks the original error', async () => {
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const url = String(input)
+			if (url.includes(':beginTransaction')) return new Response(JSON.stringify({ transaction: 'tx-1' }), { status: 200 })
+			if (url.includes(':rollback')) throw new Error('network down')
+			throw new Error(`unexpected URL ${url}`)
+		}) as typeof fetch
+		class DomainReject extends Error {}
+		await expect(runFirestoreTransaction('fake-token', 'demo', async () => {
+			throw new DomainReject('nope')
+		})).rejects.toBeInstanceOf(DomainReject)
+	})
+
+	it('retries an ABORTED commit with retryTransaction and does not roll back a sent commit', async () => {
+		const begins: string[] = []
+		let commits = 0
+		let rollbacks = 0
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input)
+			if (url.includes(':beginTransaction')) {
+				begins.push(String(init?.body ?? ''))
+				return new Response(JSON.stringify({ transaction: `tx-${begins.length}` }), { status: 200 })
+			}
+			if (url.includes(':rollback')) { rollbacks += 1; return new Response('{}', { status: 200 }) }
+			if (url.includes(':commit')) {
+				commits += 1
+				return commits === 1
+					? new Response(JSON.stringify({ error: { status: 'ABORTED' } }), { status: 409 })
+					: new Response(JSON.stringify({ commitTime: 't', writeResults: [] }), { status: 200 })
+			}
+			throw new Error(`unexpected URL ${url}`)
+		}) as typeof fetch
+		const result = await runFirestoreTransaction('fake-token', 'demo', async () => ({ writes: [], result: 'ok' }))
+		expect(result).toBe('ok')
+		expect(JSON.parse(begins[0]!)).toEqual({ options: { readWrite: {} } })
+		expect(JSON.parse(begins[1]!)).toEqual({ options: { readWrite: { retryTransaction: 'tx-1' } } })
+		expect(rollbacks).toBe(0)
+	})
+
 	it('exposes batchGet "missing" rows as exists=false (no error)', async () => {
 		mockFetchSequence([
 			{ matches: ':beginTransaction', status: 200, body: { transaction: 'tx-1' } },

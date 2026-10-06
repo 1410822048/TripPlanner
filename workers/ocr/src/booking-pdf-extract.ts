@@ -9,6 +9,7 @@ import {
   OcrError,
 } from './claude'
 import { requestQwenValidatedJson, type QwenConfig } from './qwen'
+import { isHttpUrl } from './field-validation'
 
 const ISO_DATE_OR_EMPTY = z.string().regex(/^$|^\d{4}-\d{2}-\d{2}$/)
 const IATA_CODE_OR_EMPTY = z.string().regex(/^$|^[A-Z]{3}$/)
@@ -198,6 +199,15 @@ function normalizeExtractedCandidate(value: unknown): unknown {
   if (candidate.bookingType !== 'flight') {
     if (isRecord(candidate.originIataCode)) candidate.originIataCode.value = ''
     if (isRecord(candidate.destinationIataCode)) candidate.destinationIataCode.value = ''
+  }
+  // The prompt asks for an http(s) URL, but the PDF is attacker-controlled
+  // input to the model (prompt injection). Enforce it here so a
+  // `javascript:` / `data:` link never reaches the client draft UI, not
+  // only at save time (booking-write's isHttpUrl).
+  if (isRecord(candidate.link) && typeof candidate.link.value === 'string'
+      && candidate.link.value !== '' && !isHttpUrl(candidate.link.value)) {
+    candidate.link.value = ''
+    candidate.link.confidence = 0
   }
   return candidate
 }

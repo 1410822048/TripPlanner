@@ -61,6 +61,15 @@ const MAX_ATTEMPTS = 10
  *  tomorrow's pass drain the rest. */
 const SOFT_DEADLINE_MS = 14 * 60 * 1000
 
+/** This job's share of the ~1000-subrequest pool shared by the four daily
+ *  cron jobs (run in parallel; storage-scan reserves 300,
+ *  upload-intent-purge 200). A `_purges` backlog used to be able to drain
+ *  the whole pool and fail the other jobs mid-batch. Per entry: entity
+ *  read + R2 delete + queue-doc delete/update; per page: 1 query. Entries
+ *  not reached stay queued for tomorrow. */
+const SUBREQUEST_BUDGET     = 200
+const SUBREQUESTS_PER_ENTRY = 3
+
 export interface OrphanPurgeReport {
   scanned:         number
   /** Successful idempotent cleanup operations. R2 delete does not
@@ -69,6 +78,8 @@ export interface OrphanPurgeReport {
   falseOrphans:    number
   giveUps:         number
   deadlineHit:     boolean
+  /** Whether SUBREQUEST_BUDGET stopped the drain before the queue ended. */
+  budgetHit:       boolean
 }
 
 /** Collections the cron knows how to verify against. Schedules
@@ -242,14 +253,17 @@ function parsePurgeEntry(
 export async function drainOrphanPurges(
   serviceAccountJson: string,
   bucket:             R2Bucket,
+  opts: { subrequestBudget?: number } = {},
 ): Promise<OrphanPurgeReport> {
+  const budget = opts.subrequestBudget ?? SUBREQUEST_BUDGET
+  let used = 0
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
 
   const startedAt = Date.now()
   const ageCutoffMs = startedAt - MIN_AGE_MS
   const report: OrphanPurgeReport = {
-    scanned: 0, blobsDeleted: 0, falseOrphans: 0, giveUps: 0, deadlineHit: false,
+    scanned: 0, blobsDeleted: 0, falseOrphans: 0, giveUps: 0, deadlineHit: false, budgetHit: false,
   }
 
   let cursorDocName:    string | undefined
@@ -266,6 +280,11 @@ export async function drainOrphanPurges(
       report.deadlineHit = true
       break
     }
+    if (used + 1 + SUBREQUESTS_PER_ENTRY > budget) {
+      report.budgetHit = true
+      break
+    }
+    used += 1
 
     let page
     try {
@@ -302,6 +321,11 @@ export async function drainOrphanPurges(
         report.deadlineHit = true
         break
       }
+      if (used + SUBREQUESTS_PER_ENTRY > budget) {
+        report.budgetHit = true
+        break
+      }
+      used += SUBREQUESTS_PER_ENTRY
       report.scanned += 1
       // Per-entry try/catch: a malformed legacy entry (e.g. schedule
       // entityRef from before the rules tightening) should NOT stop
@@ -318,7 +342,7 @@ export async function drainOrphanPurges(
         )
       }
     }
-    if (report.deadlineHit) break
+    if (report.deadlineHit || report.budgetHit) break
 
     // Advance cursor past the last processed doc's (createdAt, name).
     // If the last doc had no usable createdAt, we have no valid cursor

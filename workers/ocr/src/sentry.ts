@@ -166,6 +166,8 @@ export async function captureMessage(
         'X-Sentry-Auth': auth,
       },
       body,
+      // Telemetry must never hold a request / cron open.
+      signal: AbortSignal.timeout(5_000),
     })
     if (!res.ok) {
       console.warn(`[sentry] envelope POST → ${res.status}`)

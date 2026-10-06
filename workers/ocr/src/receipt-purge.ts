@@ -45,6 +45,16 @@ const PAGE_SIZE = 200
  *  rightfully falls out of the scan). */
 const SOFT_DEADLINE_MS = 14 * 60 * 1000
 
+/** This job's share of the ~1000-subrequest pool that all four daily cron
+ *  jobs share (they run in parallel via waitUntil; storage-scan reserves
+ *  300, upload-intent-purge 200). Without a cap a backlog here could drain
+ *  the pool and make the OTHER jobs fail mid-batch with "Too many
+ *  subrequests". Per doc: up to 2 R2 deletes + 2 Firestore patches; per
+ *  page: 1 query. Already-stamped docs drop out of the query, so stopping
+ *  mid-page loses nothing — tomorrow continues. */
+const SUBREQUEST_BUDGET   = 200
+const SUBREQUESTS_PER_DOC = 4
+
 export interface PurgeReport {
   scanned:         number
   /** Successful idempotent cleanup operations. The key may already
@@ -54,6 +64,8 @@ export interface PurgeReport {
   /** Whether the soft deadline fired (vs. natural end of scan). Lets
    *  the cron log surface "we left some work" without crying wolf. */
   deadlineHit:     boolean
+  /** Whether SUBREQUEST_BUDGET stopped the run before the scan ended. */
+  budgetHit:       boolean
 }
 
 /**
@@ -66,14 +78,17 @@ export interface PurgeReport {
 export async function purgeExpiredReceipts(
   serviceAccountJson: string,
   bucket:             R2Bucket,
+  opts: { subrequestBudget?: number } = {},
 ): Promise<PurgeReport> {
+  const budget = opts.subrequestBudget ?? SUBREQUEST_BUDGET
+  let used = 0
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
 
   const cutoffMs = Date.now() - RECEIPT_RETENTION_MS
   const startedAt = Date.now()
   const report: PurgeReport = {
-    scanned: 0, receiptsDeleted: 0, docsPatched: 0, deadlineHit: false,
+    scanned: 0, receiptsDeleted: 0, docsPatched: 0, deadlineHit: false, budgetHit: false,
   }
 
   let cursorDocName:     string | undefined
@@ -84,6 +99,11 @@ export async function purgeExpiredReceipts(
       report.deadlineHit = true
       break
     }
+    if (used + 1 + SUBREQUESTS_PER_DOC > budget) {
+      report.budgetHit = true
+      break
+    }
+    used += 1
 
     const page = await queryReceiptPurgeCandidates(
       accessToken,
@@ -96,6 +116,11 @@ export async function purgeExpiredReceipts(
     if (page.docs.length === 0) break
 
     for (const doc of page.docs) {
+      if (used + SUBREQUESTS_PER_DOC > budget) {
+        report.budgetHit = true
+        break
+      }
+      used += SUBREQUESTS_PER_DOC
       report.scanned += 1
       const path = stripDocPrefix(doc.name, projectId)
 
@@ -151,6 +176,7 @@ export async function purgeExpiredReceipts(
     // runQuery starts where we left off. Skip if the page returned
     // fewer than PAGE_SIZE — we're at end of scan and another query
     // would just re-fetch zero rows.
+    if (report.budgetHit) break
     if (page.docs.length < PAGE_SIZE) break
     const last = page.docs[page.docs.length - 1]
     cursorDocName     = last.name

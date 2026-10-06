@@ -540,3 +540,25 @@ describe('parseVisibleDateRanges', () => {
 		expect(parseVisibleDateRanges('2026年9月18日〜26日')).toHaveLength(1)
 	})
 })
+
+describe('booking PDF link sanitising', () => {
+	it.each([
+		['javascript:alert(document.cookie)'],
+		['data:text/html,<script>alert(1)</script>'],
+		['www.example.com/no-scheme'],
+	])('drops a non-http(s) link %s returned by the model (prompt injection)', async link => {
+		const booking = { ...VALID_RESULT.bookings[0]!, link: { value: link, confidence: 0.9, evidence: link } }
+		stubQwenAndCaptureRequest({ ...VALID_RESULT, bookings: [booking] })
+		const result = await extractBookingPdfFields(request(), CFG)
+		expect(result.bookings[0]!.link.value).toBe('')
+		expect(result.bookings[0]!.link.confidence).toBe(0)
+	})
+
+	it('keeps a genuine https link', async () => {
+		const url = 'https://www.airbnb.com/rooms/123'
+		const booking = { ...VALID_RESULT.bookings[0]!, link: { value: url, confidence: 0.9, evidence: url } }
+		stubQwenAndCaptureRequest({ ...VALID_RESULT, bookings: [booking] })
+		const result = await extractBookingPdfFields(request(), CFG)
+		expect(result.bookings[0]!.link.value).toBe(url)
+	})
+})

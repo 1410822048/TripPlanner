@@ -23,6 +23,16 @@ function fullName(projectId: string, path: string): string {
 // staleness would be a correctness bug, not a perf gain.
 const NO_CACHE: RequestInit = { cache: 'no-store' }
 
+/** Per-call ceiling for these NON-transactional REST calls (the tx path
+ *  has its own 9s RPC timeout). Cron + cascade paths use them; without a
+ *  timeout one hung runQuery could stall a job until the platform kills
+ *  it. Generous (15s) because a few are batch commits of up to 500 writes.
+ *  Fresh signal per call: AbortSignal.timeout starts counting at creation. */
+const FS_REST_TIMEOUT_MS = 15_000
+function restInit(): RequestInit {
+  return { ...NO_CACHE, signal: AbortSignal.timeout(FS_REST_TIMEOUT_MS) }
+}
+
 async function assertOk(response: Response, operation: string): Promise<void> {
   if (response.ok) return
   const detail = await response.text().catch(() => '')
@@ -36,7 +46,7 @@ async function runQueryRows<T>(
   operation: string,
 ): Promise<T[]> {
   const response = await fetch(`${BASE}/${parent}:runQuery`, {
-    ...NO_CACHE,
+    ...restInit(),
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -57,7 +67,7 @@ export async function docExists(
   path:        string,
 ): Promise<boolean> {
   const res = await fetch(fullName(projectId, path), {
-    ...NO_CACHE,
+    ...restInit(),
     headers: { Authorization: `Bearer ${accessToken}` },
   })
   if (res.status === 200) return true
@@ -89,7 +99,7 @@ export async function listDocNames(
     // a separate query that strips fields.
     if (pageToken) url.searchParams.set('pageToken', pageToken)
     const res = await fetch(url, {
-      ...NO_CACHE,
+      ...restInit(),
       headers: { Authorization: `Bearer ${accessToken}` },
     })
     await assertOk(res, `listDocNames ${collection}`)
@@ -167,6 +177,7 @@ export async function batchStripDepartedMember(
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ writes }),
+        signal: AbortSignal.timeout(FS_REST_TIMEOUT_MS),
       },
     )
     await assertOk(res, 'batchStripDepartedMember')
@@ -192,7 +203,7 @@ export async function getDocFields(
   path:        string,
 ): Promise<Record<string, FsValue> | null> {
   const res = await fetch(fullName(projectId, path), {
-    ...NO_CACHE,
+    ...restInit(),
     headers: { Authorization: `Bearer ${accessToken}` },
   })
   if (res.status === 404) return null
@@ -228,6 +239,7 @@ export async function batchDeleteDocs(
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ writes }),
+        signal: AbortSignal.timeout(FS_REST_TIMEOUT_MS),
       },
     )
     await assertOk(res, 'batchDeleteDocs')
@@ -329,7 +341,7 @@ export async function deleteDoc(
   path:        string,
 ): Promise<void> {
   const res = await fetch(fullName(projectId, path), {
-    ...NO_CACHE,
+    ...restInit(),
     method:  'DELETE',
     headers: { Authorization: `Bearer ${accessToken}` },
   })
@@ -580,7 +592,7 @@ export async function stampWishDeadlineNotifiedIfUnchanged(
   url.searchParams.set('currentDocument.updateTime', queriedUpdateTime)
 
   const res = await fetch(url, {
-    ...NO_CACHE,
+    ...restInit(),
     method:  'PATCH',
     headers: {
       Authorization:  `Bearer ${accessToken}`,
@@ -756,7 +768,7 @@ export async function setScanCursor(
     },
   }
   const res = await fetch(url, {
-    ...NO_CACHE,
+    ...restInit(),
     method: 'PATCH',
     headers: {
       Authorization:  `Bearer ${accessToken}`,
@@ -876,7 +888,7 @@ export async function updateDocFields(
   url.searchParams.set('currentDocument.exists', 'true')
 
   const res = await fetch(url, {
-    ...NO_CACHE,
+    ...restInit(),
     method:  'PATCH',
     headers: {
       Authorization:  `Bearer ${accessToken}`,
@@ -925,7 +937,7 @@ export async function deleteDocFields(
   for (const fp of fieldPaths) url.searchParams.append('updateMask.fieldPaths', fp)
   url.searchParams.set('currentDocument.exists', 'true')
   const res = await fetch(url, {
-    ...NO_CACHE,
+    ...restInit(),
     method:  'PATCH',
     headers: {
       Authorization:  `Bearer ${accessToken}`,

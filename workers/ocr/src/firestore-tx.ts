@@ -344,8 +344,8 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  *
  * A throw from the body that isn't one of the classified retry-eligible
  * cases below (ABORTED / RPC timeout / transient 5xx) is treated as
- * non-retryable and rethrown after the in-progress transaction's
- * implicit rollback -- ordinary domain errors (validation failures,
+ * non-retryable and rethrown after an explicit best-effort rollback of
+ * the in-progress transaction -- ordinary domain errors (validation failures,
  * CascadeError, etc.) already get this treatment with no special class
  * needed.
  *
@@ -361,13 +361,21 @@ export async function runFirestoreTransaction<T>(
 ): Promise<T> {
   let lastError: unknown
   const startMs = Date.now()
+  // Id of the previous attempt's transaction when it lost a commit
+  // conflict; passed as `retryTransaction` so Firestore keeps the retry's
+  // lock priority instead of queueing it behind newer contenders.
+  let retryOf: string | undefined
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    let txId: string | undefined
+    let commitStarted = false
     try {
       throwIfCancelled(options.signal)
-      const txId = await beginTransaction(accessToken, projectId, options.signal)
+      txId = await beginTransaction(accessToken, projectId, options.signal, retryOf)
+      retryOf = undefined
+      const activeTxId = txId
       const ctx: TxContext = {
-        get:      path  => readDocInTransaction (accessToken, projectId, path,  txId, options.signal),
-        runQuery: query => runQueryInTransaction(accessToken, projectId, query, txId, options.signal),
+        get:      path  => readDocInTransaction (accessToken, projectId, path,  activeTxId, options.signal),
+        runQuery: query => runQueryInTransaction(accessToken, projectId, query, activeTxId, options.signal),
       }
       // The body only READS + computes + returns writes -- the actual
       // writes land in commitTransaction below. So re-running the body
@@ -386,10 +394,21 @@ export async function runFirestoreTransaction<T>(
         markPrecommit(bodyError)
         throw bodyError
       }
-      await commitTransaction(accessToken, projectId, txId, bodyResult.writes, options.signal)
+      commitStarted = true
+      await commitTransaction(accessToken, projectId, activeTxId, bodyResult.writes, options.signal)
       return bodyResult.result
     } catch (e) {
       lastError = e
+
+      // A transaction abandoned BEFORE its commit (domain rejection from
+      // the body, read failure, cancellation) still holds its server-side
+      // locks until Firestore's idle timeout (~60s), stalling every other
+      // writer of the same docs (trip doc / member docs) meanwhile.
+      // Release it explicitly. Once the commit RPC has been sent the
+      // transaction is ended (or ambiguous) and must not be touched.
+      if (txId !== undefined && !commitStarted) {
+        await rollbackTransaction(accessToken, projectId, txId)
+      }
 
       // Commit response lost to the per-RPC timeout -> AMBIGUOUS. The
       // write MAY have applied server-side. We deliberately do NOT
@@ -436,6 +455,7 @@ export async function runFirestoreTransaction<T>(
                    : 'ABORTED'
         console.warn(`[firestore-tx] ${kind} attempt ${attempt + 1}/${MAX_RETRIES}: ${(e as Error)?.message ?? e}`)
         const elapsed = Date.now() - startMs
+        if (isAborted(e) && commitStarted) retryOf = txId
         if (attempt < MAX_RETRIES - 1 && elapsed < TX_TOTAL_DEADLINE_MS) {
           await sleep(backoffDelay(attempt), options.signal)
           continue
@@ -494,7 +514,12 @@ function rpcSignal(externalSignal?: AbortSignal): AbortSignal {
   return externalSignal ? AbortSignal.any([timeout, externalSignal]) : timeout
 }
 
-async function beginTransaction(accessToken: string, projectId: string, signal?: AbortSignal): Promise<string> {
+async function beginTransaction(
+  accessToken:       string,
+  projectId:         string,
+  signal?:           AbortSignal,
+  retryTransaction?: string,
+): Promise<string> {
   const url = `${BASE}/projects/${projectId}/databases/(default)/documents:beginTransaction`
   const res = await fetch(url, {
     cache: 'no-store',
@@ -503,7 +528,9 @@ async function beginTransaction(accessToken: string, projectId: string, signal?:
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ options: { readWrite: {} } }),
+    body: JSON.stringify({
+      options: { readWrite: retryTransaction ? { retryTransaction } : {} },
+    }),
     signal: rpcSignal(signal),
   })
   if (!res.ok) {
@@ -512,6 +539,30 @@ async function beginTransaction(accessToken: string, projectId: string, signal?:
   }
   const data = await res.json() as { transaction: string }
   return data.transaction
+}
+
+const TX_ROLLBACK_TIMEOUT_MS = 2_000
+
+/** Best-effort `documents:rollback`. Never throws and never waits longer
+ *  than TX_ROLLBACK_TIMEOUT_MS: it only shortens lock retention, the
+ *  caller's own error is what matters. Deliberately NOT tied to the
+ *  caller's abort signal -- a cancelled request is exactly the case
+ *  whose locks should be released. */
+async function rollbackTransaction(accessToken: string, projectId: string, txId: string): Promise<void> {
+  try {
+    await fetch(`${BASE}/projects/${projectId}/databases/(default)/documents:rollback`, {
+      cache: 'no-store',
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ transaction: txId }),
+      signal: AbortSignal.timeout(TX_ROLLBACK_TIMEOUT_MS),
+    })
+  } catch {
+    /* best-effort */
+  }
 }
 
 async function readDocInTransaction(

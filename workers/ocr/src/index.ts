@@ -242,7 +242,10 @@ function originAllowed(origin: string, patterns: string[]): boolean {
   return patterns.some(p => {
     if (p.startsWith('*.')) {
       const suffix = p.slice(1)  // ".tripmate-2wg.pages.dev"
-      return host.endsWith(suffix) && host.length > suffix.length
+      // Wildcards are for Pages preview deploys, which are always https;
+      // plain http stays limited to exact entries (localhost dev).
+      return parsed.protocol === 'https:'
+        && host.endsWith(suffix) && host.length > suffix.length
     }
     return p === origin
   })
@@ -883,7 +886,9 @@ export default {
       console.log(`[auth] ok uid=${uidTag(uid)}${trace}`)
     } catch (e) {
       console.warn(`[auth] invalid token: ${(e as Error).message}${trace}`)
-      return json({ error: `Invalid token: ${(e as Error).message}` }, 401, cors)
+      // Detail stays in the log only: echoing jose's reason ("exp" claim
+      // failed / no matching kid) gives unauthenticated callers a verifier oracle.
+      return json({ error: 'Invalid token' }, 401, cors)
     }
 
     // ─── Rate limit (per-uid, two-layer) ──────────────────────────────
@@ -996,7 +1001,7 @@ export default {
           console.log(
             `[cron] receipt-purge done scanned=${report.scanned} ` +
             `receiptsDeleted=${report.receiptsDeleted} docsPatched=${report.docsPatched} ` +
-            `deadlineHit=${report.deadlineHit}`,
+            `deadlineHit=${report.deadlineHit} budgetHit=${report.budgetHit}`,
           )
         })
         .catch(err => reportCronFailure('receipt-purge', err)),
@@ -1014,7 +1019,7 @@ export default {
           console.log(
             `[cron] orphan-purge done scanned=${report.scanned} ` +
             `blobsDeleted=${report.blobsDeleted} falseOrphans=${report.falseOrphans} ` +
-            `giveUps=${report.giveUps} deadlineHit=${report.deadlineHit}`,
+            `giveUps=${report.giveUps} deadlineHit=${report.deadlineHit} budgetHit=${report.budgetHit}`,
           )
         })
         .catch(err => reportCronFailure('orphan-purge', err)),

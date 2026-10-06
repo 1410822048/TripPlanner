@@ -396,6 +396,19 @@ describe('drainOrphanPurges', () => {
 		)
 	})
 
+	it('stops at the subrequest budget so the parallel cron jobs keep their share', async () => {
+		const base = `projects/${PROJECT_ID}/databases/(default)/documents/trips/${TRIP_ID}/_purges/p-budget`
+		vi.mocked(firestore.queryOrphanPurgeCandidates).mockResolvedValueOnce({
+			docs: Array.from({ length: 500 }, (_, i) => ({ name: `${base}-${i}`, fields: purgeDoc() })),
+		})
+		vi.mocked(firestore.getDocFields).mockResolvedValue(null)
+		// Budget 10 = 1 query + 3 entries x 3 subrequests.
+		const report = await drainOrphanPurges('{}', BUCKET, { subrequestBudget: 10 })
+		expect(report.budgetHit).toBe(true)
+		expect(report.scanned).toBe(3)
+		expect(vi.mocked(firestore.queryOrphanPurgeCandidates)).toHaveBeenCalledTimes(1)
+	})
+
 	it('P2: mid-drain query failure preserves partial counts in the error message', async () => {
 		// Mid-drain failure case: first page succeeds (processes one
 		// confirmed orphan -- blobsDeleted=1), second page rejects.
@@ -420,7 +433,7 @@ describe('drainOrphanPurges', () => {
 		// so each is a confirmed orphan that gets deleted.
 		vi.mocked(firestore.getDocFields).mockResolvedValue(null)
 
-		await expect(drainOrphanPurges('{}', BUCKET)).rejects.toThrow(
+		await expect(drainOrphanPurges('{}', BUCKET, { subrequestBudget: 10_000 })).rejects.toThrow(
 			/queryOrphanPurgeCandidates failed mid-drain.*scanned=500.*blobsDeleted=500.*503/,
 		)
 	})
