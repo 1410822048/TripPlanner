@@ -369,10 +369,23 @@ export async function toggleWishVote(
   uid: string,
   isVoting: boolean,
 ): Promise<void> {
-  const { db, doc, updateDoc, arrayUnion, arrayRemove, serverTimestamp } = await getFirebase()
-  await updateDoc(doc(db, ...P.wish(tripId, wishId)), {
-    votes: isVoting ? arrayUnion(uid) : arrayRemove(uid),
-    ...auditUpdate(uid, serverTimestamp()),
-  })
+  const { db, doc, updateDoc, getDocFromServer, arrayUnion, arrayRemove, serverTimestamp } = await getFirebase()
+  const ref = doc(db, ...P.wish(tripId, wishId))
+  try {
+    await updateDoc(ref, {
+      votes: isVoting ? arrayUnion(uid) : arrayRemove(uid),
+      ...auditUpdate(uid, serverTimestamp()),
+    })
+  } catch (e) {
+    // arrayUnion of an existing vote (another tab already voted, a double
+    // tap, a stale optimistic state) is a no-op on `votes`, which the rules
+    // refuse (they require exactly ±1 of the caller's uid). If the server
+    // already holds the state the user asked for, that's success.
+    if ((e as { code?: string })?.code !== 'permission-denied') throw e
+    const snap = await getDocFromServer(ref).catch(() => null)
+    const votes = snap?.exists() ? (snap.data().votes as unknown) : undefined
+    if (!Array.isArray(votes) || votes.includes(uid) !== isVoting) throw e
+    return
+  }
   void bumpTripActivity(tripId, 'wish', uid)
 }

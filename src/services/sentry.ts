@@ -124,6 +124,12 @@ export function initSentry(): void {
           'ResizeObserver loop limit exceeded',
           'ResizeObserver loop completed with undelivered notifications',
         ],
+        // `integrations: []` does NOT disable Sentry's default integrations
+        // (HttpContext, Breadcrumbs, ...): they still attach location.href
+        // to events and navigation breadcrumbs. On /invite/:tripId#token
+        // that is a live, redeemable invite token — strip URL fragments.
+        beforeSend:       event => scrubSentryEvent(event),
+        beforeBreadcrumb: crumb => scrubSentryBreadcrumb(crumb),
       })
       sentryRef = { captureException, addBreadcrumb }
       window.removeEventListener('error', bufferGlobalError)
@@ -156,6 +162,37 @@ export function initSentry(): void {
   } else {
     setTimeout(load, 1500)
   }
+}
+
+/** Drop the `#fragment` from a URL string (invite tokens live there). */
+export function stripUrlFragment(url: string): string {
+  const i = url.indexOf('#')
+  return i === -1 ? url : url.slice(0, i)
+}
+
+function scrubUrlFields(obj: Record<string, unknown> | undefined): void {
+  if (!obj) return
+  for (const key of ['url', 'from', 'to']) {
+    const v = obj[key]
+    if (typeof v === 'string') obj[key] = stripUrlFragment(v)
+  }
+}
+
+/** beforeSend: scrub URL fragments from the request context and any
+ *  breadcrumbs already attached to the event. Exported for tests. */
+export function scrubSentryEvent<E extends {
+  request?:     { url?: string }
+  breadcrumbs?: Array<{ data?: Record<string, unknown> }>
+}>(event: E): E {
+  if (event.request?.url) event.request.url = stripUrlFragment(event.request.url)
+  for (const crumb of event.breadcrumbs ?? []) scrubUrlFields(crumb.data)
+  return event
+}
+
+/** beforeBreadcrumb: navigation / fetch crumbs carry from/to/url. */
+export function scrubSentryBreadcrumb<B extends { data?: Record<string, unknown> }>(crumb: B): B {
+  scrubUrlFields(crumb.data)
+  return crumb
 }
 
 /**

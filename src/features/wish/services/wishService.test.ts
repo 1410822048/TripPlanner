@@ -48,6 +48,7 @@ const mocks = vi.hoisted(() => {
     // Firestore SDK shims
     setDocMock:           vi.fn(),
     updateDocMock:        vi.fn(),
+    getDocFromServerMock: vi.fn(),
     deleteDocMock:        vi.fn(),
     deleteFieldMock:      vi.fn(() => ({ _kind: 'deleteField' })),
     serverTimestampMock:  vi.fn(() => ({ _kind: 'serverTimestamp' })),
@@ -75,6 +76,7 @@ vi.mock('@/services/firebase', () => ({
     doc:             mocks.docMock,
     setDoc:          mocks.setDocMock,
     updateDoc:       mocks.updateDocMock,
+    getDocFromServer: mocks.getDocFromServerMock,
     deleteDoc:       mocks.deleteDocMock,
     deleteField:     mocks.deleteFieldMock,
     serverTimestamp: mocks.serverTimestampMock,
@@ -118,7 +120,7 @@ vi.mock('@/utils/image', () => ({
   compressImage: mocks.compressImageMock,
 }))
 
-import { deleteWish, createWish, updateWish } from './wishService'
+import { deleteWish, createWish, updateWish, toggleWishVote } from './wishService'
 import type { WishImage } from '@/types'
 
 const IMAGE: WishImage = {
@@ -690,5 +692,34 @@ describe('updateWish', () => {
     expect(mocks.workerFetchMock).not.toHaveBeenCalled()
     expect(mocks.requestUploadIntentsMock).not.toHaveBeenCalled()
     expect(mocks.safePurgeMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('toggleWishVote', () => {
+  const denied = Object.assign(new Error('denied'), { code: 'permission-denied' })
+
+  beforeEach(() => {
+    mocks.updateDocMock.mockReset()
+    mocks.getDocFromServerMock.mockReset()
+    mocks.bumpTripActivityMock.mockReset()
+  })
+
+  it('treats a refused no-op vote as success when the server already has it', async () => {
+    mocks.updateDocMock.mockRejectedValueOnce(denied)
+    mocks.getDocFromServerMock.mockResolvedValueOnce({ exists: () => true, data: () => ({ votes: ['u1', 'u2'] }) })
+    await expect(toggleWishVote('t1', 'w1', 'u1', true)).resolves.toBeUndefined()
+  })
+
+  it('still surfaces a real denial (server state differs from intent)', async () => {
+    mocks.updateDocMock.mockRejectedValueOnce(denied)
+    mocks.getDocFromServerMock.mockResolvedValueOnce({ exists: () => true, data: () => ({ votes: ['u2'] }) })
+    await expect(toggleWishVote('t1', 'w1', 'u1', true)).rejects.toBe(denied)
+  })
+
+  it('does not swallow non-permission errors', async () => {
+    const offline = Object.assign(new Error('offline'), { code: 'unavailable' })
+    mocks.updateDocMock.mockRejectedValueOnce(offline)
+    await expect(toggleWishVote('t1', 'w1', 'u1', false)).rejects.toBe(offline)
+    expect(mocks.getDocFromServerMock).not.toHaveBeenCalled()
   })
 })

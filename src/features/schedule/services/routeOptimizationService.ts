@@ -105,10 +105,14 @@ export async function requestRoutePreview(tripId: string, date: string): Promise
   if (existing) return existing
 
   const request = (async () => {
+    // Same base as /route-apply: the preview mints a previewToken that
+    // only the Worker which signed it accepts, and the preview reads trip
+    // data with the admin SDK — a preview env must not fall back to prod.
+    const base  = requireWorkerWriteBase()
     const token = await preflightIdToken()
     const body = { tripId, date }
     return parseResponse(RoutePreviewSchema, await workerFetch(
-      WORKER_BASE_URL,
+      base,
       token,
       '/route-preview',
       body,

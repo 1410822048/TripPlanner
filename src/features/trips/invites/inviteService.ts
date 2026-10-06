@@ -91,8 +91,10 @@ function toInvite(id: string, data: Record<string, unknown>): Invite {
   // is dropped, not fatal; we project down to the Invite shape.
   const result = InviteDocSchema.safeParse(data)
   if (!result.success) {
-    captureError(result.error, { source: 'inviteService/toInvite', docId: id })
-    throw new InviteError('failed', `Invite ${id} failed schema validation`)
+    // The invite doc id IS the redeemable token — never ship it to
+    // telemetry or into error messages.
+    captureError(result.error, { source: 'inviteService/toInvite' })
+    throw new InviteError('failed', 'Invite failed schema validation')
   }
   const parsed = result.data
   return {

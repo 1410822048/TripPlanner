@@ -10,11 +10,13 @@ import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'
 
-/** Read the trip's current `memberIds` array. Returns an empty array
- *  on any failure (missing doc, missing field, Firestore error) — the
- *  entity create still proceeds with an empty roster rather than
- *  blocking the user. A later membership Worker cascade reconciles
- *  projections on membership changes. */
+/** Read the trip's current `memberIds` array.
+ *
+ *  A read failure is RETHROWN (after capture). It used to resolve to `[]`
+ *  "so the create could proceed", but rules (`memberIdsMatchTrip`) reject
+ *  an entity whose memberIds don't equal the trip roster, so the user got
+ *  a misleading permission-denied instead of the real network/read error.
+ *  Callers already surface thrown errors through their mutation UI. */
 export async function getTripMemberIds(tripId: string): Promise<string[]> {
   try {
     const { db, doc, getDoc } = await getFirebase()
@@ -23,6 +25,6 @@ export async function getTripMemberIds(tripId: string): Promise<string[]> {
     return data?.memberIds ?? []
   } catch (e) {
     captureError(e, { source: 'getTripMemberIds', tripId })
-    return []
+    throw e
   }
 }

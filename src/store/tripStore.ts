@@ -94,8 +94,10 @@ export const useTripStore = create<TripStore>()(
 
       setTripOrder: (ids) => set({ tripOrder: ids }),
 
-      // Sign-out deliberately does NOT reset: keeping the state lets the
-      // same person resume where they left off. The discard happens here,
+      // Sign-out deliberately does NOT reset (AccountPage only calls
+      // clearTrip() to drop the current SELECTION, which rules may deny
+      // after sign-out; order / recents survive): keeping the state lets
+      // the same person resume where they left off. The discard happens here,
       // when a DIFFERENT uid resolves — which also covers the two paths a
       // sign-out hook cannot see, a cold start under another account and an
       // A→B switch with no signed-out moment in between.

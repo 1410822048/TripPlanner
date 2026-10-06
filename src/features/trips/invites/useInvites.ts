@@ -21,8 +21,11 @@ import { tripKeys } from '@/features/trips/queryKeys'
 import { MUTATION_ACTION, type MutationMeta } from '@/services/queryClient'
 import type { Invite, Trip } from '@/types'
 
+// uid-scoped like every other list key: invite rows carry live tokens,
+// and an A→B account switch on a shared device must never be served A's
+// cached list (the cache is also not cleared on sign-out).
 const inviteKeys = {
-  ofTrip: (tripId: string, _uid?: string) => ['invites', tripId] as const,
+  ofTrip: (tripId: string, uid?: string) => ['invites', tripId, uid ?? null] as const,
 }
 
 /** Revoke only. Creation isn't optimistic and must not become so: the token
@@ -64,11 +67,11 @@ export function useCreateInvite() {
       user: User
     }) => createInvite(trip, role, user),
     meta: { action: MUTATION_ACTION.CREATE_INVITE } satisfies MutationMeta,
-    onSuccess: (invite) => {
+    onSuccess: (invite, { user }) => {
       // Replace (not prepend) the cache: the service atomically deletes old
       // invites when creating a new one, so after success there should be
       // exactly one invite in the list — the one we just made.
-      qc.setQueryData<Invite[]>(inviteKeys.ofTrip(invite.tripId), [invite])
+      qc.setQueryData<Invite[]>(inviteKeys.ofTrip(invite.tripId, user.uid), [invite])
     },
   })
 }

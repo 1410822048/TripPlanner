@@ -10,14 +10,17 @@
 // Error handling: each standalone route wraps its component in an
 // ErrorBoundary with a route-scoped fallback. A crash inside one page (bad
 // Firestore doc, thrown in a hook, etc.) then shows a recoverable screen
-// instead of unmounting the whole app. AppLayout's children share the root
-// ErrorBoundary from App.tsx, so don't need per-route wrappers.
+// instead of unmounting the whole app. AppLayout and its tabs use
+// `errorElement` instead: React Router's data router puts its OWN boundary
+// around every route, so the App-level ErrorBoundary never sees their
+// throws (they used to land on RR's default English error screen).
 import { Suspense, type ReactNode } from 'react'
 import { createBrowserRouter, Navigate } from 'react-router-dom'
 import AppLayout from '@/layouts/AppLayout'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import PageLoadingSkeleton from '@/components/ui/PageLoadingSkeleton'
 import RouteErrorFallback from './RouteErrorFallback'
+import RouteErrorElement from './RouteErrorElement'
 import SchedulePage from '@/features/schedule/components/SchedulePage'
 import {
   ExpensePage,
@@ -44,14 +47,15 @@ export const router = createBrowserRouter([
   {
     path: '/',
     element: <AppLayout />,
+    errorElement: <RouteErrorElement />,
     children: [
       { index: true,      element: <Navigate to="/schedule" replace /> },
-      { path: 'schedule', element: <SchedulePage /> },
-      { path: 'expense',  element: <ExpensePage  /> },
-      { path: 'bookings', element: <BookingsPage /> },
-      { path: 'wish',     element: <WishPage     /> },
-      { path: 'planning', element: <PlanningPage /> },
-      { path: 'account',  element: <AccountPage  /> },
+      { path: 'schedule', element: <SchedulePage />, errorElement: <RouteErrorElement /> },
+      { path: 'expense',  element: <ExpensePage  />, errorElement: <RouteErrorElement /> },
+      { path: 'bookings', element: <BookingsPage />, errorElement: <RouteErrorElement /> },
+      { path: 'wish',     element: <WishPage     />, errorElement: <RouteErrorElement /> },
+      { path: 'planning', element: <PlanningPage />, errorElement: <RouteErrorElement /> },
+      { path: 'account',  element: <AccountPage  />, errorElement: <RouteErrorElement /> },
     ],
   },
   // Token lives in the URL fragment (`#`), not the path, so it never enters
