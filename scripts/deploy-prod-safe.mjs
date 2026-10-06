@@ -239,8 +239,13 @@ function run(command, commandArgs, options = {}) {
   return { ok: result.status === 0, output, stdout, stderr };
 }
 
+// firebase-tools is a pinned devDependency (lockfile-verified by `npm ci`).
+// `--no-install` makes npx use ONLY that local copy and fail rather than
+// fetch whatever is newest from the registry: this process holds GCP and
+// Cloudflare deploy credentials, so an unpinned `@latest` would hand them
+// to any compromised release of firebase-tools or its dependencies.
 function firebase(commandArgs, options = {}) {
-  return run(bin('npx'), ['-y', 'firebase-tools@latest', ...commandArgs], {
+  return run(bin('npx'), ['--no-install', 'firebase', ...commandArgs], {
     capture: true,
     ...options,
   });

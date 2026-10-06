@@ -22,8 +22,9 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # 15 (not 10): the rules step pulls firebase-tools via npx + downloads the
-    # Firestore emulator jar + boots the JVM before any test runs.
+    # 15 (not 10): the rules step downloads the Firestore emulator jar and
+    # boots the JVM before any test runs (firebase-tools itself is a pinned
+    # devDependency installed by `npm ci`).
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -44,6 +45,17 @@ jobs:
 
       - name: Audit dependencies
         run: npm audit --audit-level=high
+
+      # Cloud Build installs Functions from firebase-functions/package-lock.json,
+      # which npm ignores inside the workspace — so the root audit above never
+      # sees it. Audit it in isolation (outside the repo so npm can't climb to
+      # the workspace root) and fail on runtime drift between the two locks.
+      - name: Audit Functions deploy lockfile
+        run: |
+          node scripts/check-functions-lock.mjs
+          tmp="$(mktemp -d)"
+          cp firebase-functions/package.json firebase-functions/package-lock.json "$tmp/"
+          (cd "$tmp" && npm audit --package-lock-only --audit-level=high)
 
       - name: Lint
         run: npm run lint
@@ -75,7 +87,7 @@ jobs:
       # This is exactly the kind of check that shouldn't require every dev to
       # install a JDK locally — CI is the environment that has Java.
       - name: Setup Java
-        # 21 (not 17): firebase-tools@latest dropped support for JDK < 21, so
+        # 21 (not 17): current firebase-tools dropped support for JDK < 21, so
         # the emulator refuses to start on anything older.
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
@@ -169,7 +181,7 @@ jobs:
           gcloud firestore indexes composite list --project tripplanner-80a4f --format='value(name)' >/dev/null
           gcloud run services list --region asia-east1 --project tripplanner-80a4f --format='value(metadata.name)' >/dev/null
           gcloud artifacts repositories describe gcf-artifacts --location asia-east1 --project tripplanner-80a4f --format='value(name)' >/dev/null
-          npx -y firebase-tools@latest functions:list --project tripplanner-80a4f >/dev/null
+          npx --no-install firebase functions:list --project tripplanner-80a4f >/dev/null
 
       - name: Deploy tested production revision
         if: inputs.verify_only != true
