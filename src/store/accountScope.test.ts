@@ -75,6 +75,24 @@ describe('account-scoped persisted state', () => {
     expect(viewed.getState().ownerUid).toBe('uid-b')
   })
 
+  it('returns a promise that settles only after the Firestore owner reconcile', async () => {
+    // The auth observer awaits this before publishing signed-in, so the new
+    // account's listeners never attach to the instance being terminated.
+    const { reconcileAccountScope } = await loadStores()
+    let release!: () => void
+    firebaseServiceMocks.reconcileFirestoreOwner.mockImplementationOnce(
+      () => new Promise<void>(resolve => { release = resolve }),
+    )
+    let settled = false
+    const pending = reconcileAccountScope('uid-b').then(() => { settled = true })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    release()
+    await pending
+    expect(settled).toBe(true)
+    await expect(reconcileAccountScope(null)).resolves.toBeUndefined()
+  })
+
   it('keeps state for the SAME uid, so a repeat resolution is a no-op', async () => {
     const { trip, viewed, reconcileAccountScope } = await loadStores()
     reconcileAccountScope('uid-a')

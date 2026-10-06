@@ -47,15 +47,18 @@ function safeClaim(store: string, claim: () => void): void {
  * sign-out is what lets the same person resume. The discard happens when a
  * DIFFERENT uid actually resolves.
  */
-export function reconcileAccountScope(uid: string | null): void {
-  if (!uid) return
+export function reconcileAccountScope(uid: string | null): Promise<void> {
+  if (!uid) return Promise.resolve()
   safeClaim('trip', () => useTripStore.getState().claimForOwner(uid))
   safeClaim('last-viewed', () => useLastViewedStore.getState().claimForOwner(uid))
   // Firestore's persistentLocalCache IDB has no per-user scoping of its own;
   // this is the ONLY point that carries the authoritative resolved uid, so
   // the reconciliation MUST run from here rather than from inside
   // getFirebase() itself — see reconcileFirestoreOwner's comment for why a
-  // getFirebase()-time check races the eager warm-up in main.tsx. Fire-and-
-  // forget: reconcileFirestoreOwner already captures its own failures.
-  void reconcileFirestoreOwner(uid)
+  // getFirebase()-time check races the eager warm-up in main.tsx.
+  // Returned (never rejects: reconcileFirestoreOwner captures its own
+  // failures) so the auth observer can hold back publishing `signed-in`
+  // until an owner switch has terminated + reset the old Firestore
+  // instance; otherwise the new user's listeners attach to the old one.
+  return reconcileFirestoreOwner(uid)
 }

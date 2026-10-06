@@ -6,6 +6,7 @@ import { clearAttachmentUrlCache } from './useAttachmentUrl'
 import { clearAllListOverlays } from './listOverlay'
 import { markPerf } from '@/utils/perf'
 import { reconcileAccountScope } from '@/store/accountScope'
+import { captureError } from '@/services/sentry'
 
 export type AuthState =
   | { status: 'loading'; wasSignedIn: boolean }
@@ -72,6 +73,7 @@ function readAuthBootstrapHint(): boolean {
 let currentState: AuthState = { status: 'loading', wasSignedIn: readAuthBootstrapHint() }
 const listeners = new Set<() => void>()
 let initPromise: Promise<void> | null = null
+let bootFailed = false
 // Track the last observed uid so an account switch / sign-out purges the
 // attachment objectURL cache (private image bytes must not survive across
 // users on a shared device). `null` = signed-out / never-signed-in.
@@ -135,6 +137,16 @@ function initAuth(): Promise<void> {
       // for the settled currentUser.
       await auth.authStateReady()
       markPerf('auth-state-ready')
+      // Auth events are published strictly in order, and each one only
+      // after its account-scope reconciliation has settled. On an account
+      // switch reconcileFirestoreOwner terminates the old Firestore
+      // instance, clears its IndexedDB cache and resets getFirebase();
+      // publishing `signed-in` before that finished let the new user's
+      // realtime hooks grab the soon-to-be-terminated instance (silent
+      // dead listeners / "client has already been terminated" until a
+      // reload). For the common same-owner case the promise resolves
+      // immediately, so this only costs a microtask.
+      let authEventChain: Promise<void> = Promise.resolve()
       onAuthStateChanged(auth, u => {
         writeAuthHint(!!u)
         markPerf(u ? 'auth-state-signed-in' : 'auth-state-signed-out')
@@ -149,24 +161,38 @@ function initAuth(): Promise<void> {
         // never been compared against the account now resolving. Keying on
         // the uid itself also covers an A→B switch with no signed-out fire
         // in between.
-        reconcileAccountScope(nextUid)
-        if (nextUid !== lastObservedUid) {
-          if (lastObservedUid !== null) {
-            clearAttachmentUrlCache()
-            clearAllListOverlays()
-            void import('@/features/schedule/services/routeOptimizationService')
-              .then(({ clearRoutePlaceSearchCache }) => clearRoutePlaceSearchCache())
-          }
-          lastObservedUid = nextUid
-        }
-        if (!u && redirectError) {
-          setGlobal({ status: 'error', error: redirectError })
-          redirectError = null
-          return
-        }
-        setGlobal(u ? { status: 'signed-in', user: u } : { status: 'signed-out' })
+        const scopeReady = reconcileAccountScope(nextUid)
+        authEventChain = authEventChain
+          .then(() => scopeReady)
+          .then(() => {
+            if (nextUid !== lastObservedUid) {
+              if (lastObservedUid !== null) {
+                clearAttachmentUrlCache()
+                clearAllListOverlays()
+                void import('@/features/schedule/services/routeOptimizationService')
+                  .then(({ clearRoutePlaceSearchCache }) => clearRoutePlaceSearchCache())
+              }
+              lastObservedUid = nextUid
+            }
+            if (!u && redirectError) {
+              setGlobal({ status: 'error', error: redirectError })
+              redirectError = null
+              return
+            }
+            setGlobal(u ? { status: 'signed-in', user: u } : { status: 'signed-out' })
+          })
+          .catch(e => {
+            captureError(e, { source: 'auth-observer' })
+            setGlobal(u ? { status: 'signed-in', user: u } : { status: 'signed-out' })
+          })
       })
     } catch (e) {
+      // Boot failed before the observer was wired (e.g. auth chunk failed
+      // to load on a flaky network). Remember it so an explicit user
+      // action (signInWithGoogle) re-boots; NOT cleared here, because
+      // useAuth() calls initAuth() during render whenever initPromise is
+      // null and an auto-retry there would loop on a persistent failure.
+      bootFailed = true
       setGlobal({ status: 'error', error: e instanceof Error ? e : new Error(String(e)) })
     }
   })()
@@ -203,6 +229,14 @@ export function useAuth(enabled?: boolean): UseAuthResult {
 
   // Compiler memoises these — manual useCallback would be redundant.
   const signInWithGoogle = async () => {
+    // Previous boot never wired onAuthStateChanged: without a re-boot a
+    // successful sign-in would never be published and the app would stay
+    // in the error state.
+    if (bootFailed) {
+      bootFailed  = false
+      initPromise = null
+      void initAuth()
+    }
     const { auth, GoogleAuthProvider, signInWithPopup, signInWithRedirect } = await getFirebaseAuth()
     const provider = new GoogleAuthProvider()
     try {
@@ -211,9 +245,13 @@ export function useAuth(enabled?: boolean): UseAuthResult {
       const code = (e as { code?: string })?.code
       // Popup blocked / unsupported → redirect. Page navigates away; result
       // is picked up by getRedirectResult on return.
+      // `auth/cancelled-popup-request` means a second popup superseded
+      // this one (e.g. a double tap) and that popup is still in progress:
+      // neither redirect (would yank the page from under it) nor surface
+      // an error — the live popup's own call reports the outcome.
+      if (code === 'auth/cancelled-popup-request') return
       if (code === 'auth/popup-blocked'
-        || code === 'auth/operation-not-supported-in-this-environment'
-        || code === 'auth/cancelled-popup-request') {
+        || code === 'auth/operation-not-supported-in-this-environment') {
         writeAuthRedirectPending(true)
         try {
           await signInWithRedirect(auth, provider)

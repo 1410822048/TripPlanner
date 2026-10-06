@@ -62,7 +62,14 @@ export function useTripContext(): TripContext {
     if (!authState.wasSignedIn) return { status: 'demo', trip: demoTrip }
     return { status: 'loading' }
   }
-  if (authState.status === 'signed-out') return { status: 'demo', trip: demoTrip }
+  // Auth error (redirect-return failure, auth chunk load failure): uid is
+  // undefined so useMyTrips is disabled and `tripsPending` stays true
+  // forever — falling through left Wish / Planning / Bookings / Expense
+  // on a permanent skeleton. Treat it like signed-out (demo + sign-in
+  // CTA), the same way SchedulePage already does.
+  if (authState.status === 'signed-out' || authState.status === 'error') {
+    return { status: 'demo', trip: demoTrip }
+  }
 
   // Signed-in branches:
   if (currentTrip) return { status: 'cloud', trip: currentTrip }
