@@ -300,6 +300,31 @@ service cloud.firestore {
       // initial roster matches the owner-only state; Worker membership
       // endpoints extend it as invitees redeem.
       // 與 TripDocSchema 必填欄位對齊；hasOnly 不會要求欄位存在。
+      // Badge bump (bumpTripActivity): exactly ONE feature stamp changes
+      // per write and it must be `{ ts: request.time, by: caller }`.
+      // Without the value check a viewer could write e.g. `schedule: 1`,
+      // which fails the client TripDocSchema and silently drops the trip
+      // from every member's list (and the owner path can't repair it,
+      // since it pins lastActivityByFeature unchanged). Removal of a
+      // stamp is refused too (the changed key must still be a map).
+      function validActivityStamp(next, changed, k) {
+        return !(k in changed)
+          || (k in next
+              && next[k] is map
+              && next[k].keys().hasOnly(['ts', 'by'])
+              && next[k].ts == request.time
+              && next[k].by == uid());
+      }
+      function validActivityBump() {
+        let next = request.resource.data.lastActivityByFeature;
+        let changed = next.diff(resource.data.get('lastActivityByFeature', {})).affectedKeys();
+        return changed.size() == 1
+          && validActivityStamp(next, changed, 'schedule')
+          && validActivityStamp(next, changed, 'bookings')
+          && validActivityStamp(next, changed, 'expense')
+          && validActivityStamp(next, changed, 'wish')
+          && validActivityStamp(next, changed, 'planning');
+      }
       function validTripReadFields() {
         return request.resource.data.keys().hasAll([
           'ownerId','title','destination','startDate','endDate','currency',
@@ -416,6 +441,7 @@ service cloud.firestore {
         && request.resource.data.lastActivityByFeature.keys().hasOnly(
              ['schedule', 'bookings', 'expense', 'wish', 'planning']
            )
+        && validActivityBump()
       );
       // Trip doc hard-delete is forbidden for ALL clients. The only
       // legitimate path is `/cascade-trip-delete` on the Worker, which
@@ -801,6 +827,9 @@ service cloud.firestore {
               && unchanged('proposedBy')
               && unchanged('createdAt')
               && unchanged('memberIds')
+              // votes only move through the voter path below (one uid,
+              // the caller's own); the proposer path must not rewrite it.
+              && unchanged('votes')
               && request.resource.data.updatedBy == uid()
               && request.resource.data.title is string
               && request.resource.data.title.size() > 0
@@ -830,13 +859,19 @@ service cloud.firestore {
               changedOnly(['votes', 'updatedAt', 'updatedBy'])
               && request.resource.data.updatedBy == uid()
               && (
+                // Set equality pins every OTHER voter in place: without it
+                // [A,B] -> [C,X,Y] passes the size/membership checks and
+                // wipes A/B while injecting arbitrary uids. The size check
+                // stays to reject duplicate entries ([A,C,C]).
                 (request.resource.data.votes.size() == resource.data.votes.size() + 1
-                  && uid() in request.resource.data.votes
-                  && !(uid() in resource.data.votes))
+                  && !(uid() in resource.data.votes)
+                  && request.resource.data.votes.toSet()
+                       == resource.data.votes.toSet().union([uid()].toSet()))
                 ||
                 (request.resource.data.votes.size() == resource.data.votes.size() - 1
-                  && !(uid() in request.resource.data.votes)
-                  && uid() in resource.data.votes)
+                  && uid() in resource.data.votes
+                  && request.resource.data.votes.toSet()
+                       == resource.data.votes.toSet().difference([uid()].toSet()))
               )
             )
           )

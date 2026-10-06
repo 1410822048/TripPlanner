@@ -147,13 +147,17 @@ export const TripDocSchema = z.object({
   // 的 `displayName: z.string().min(1).max(100)` 對齊 —— 兩邊都是同一個
   // 名字的入口,cap 一旦漂移就是 Worker 比 rules 寬的老問題。
   formerMemberNames: z.record(z.string().min(1), z.string().min(1).max(100)).default({}),
+  // 紅點 badge 只是 UX 輔助:單一 stamp 壞掉時只丟掉那個 stamp(.catch),
+  // 不能讓整筆 trip 解析失敗而從所有成員的列表消失。rules 端
+  // validActivityBump() 也會擋格式錯誤的寫入,這裡是防禦第二層
+  // (含規則收緊前已寫入的舊壞資料)。
   lastActivityByFeature: z.object({
-    schedule: ActivityStampSchema.optional(),
-    expense:  ActivityStampSchema.optional(),
-    bookings: ActivityStampSchema.optional(),
-    wish:     ActivityStampSchema.optional(),
-    planning: ActivityStampSchema.optional(),
-  }).optional(),
+    schedule: ActivityStampSchema.optional().catch(undefined),
+    expense:  ActivityStampSchema.optional().catch(undefined),
+    bookings: ActivityStampSchema.optional().catch(undefined),
+    wish:     ActivityStampSchema.optional().catch(undefined),
+    planning: ActivityStampSchema.optional().catch(undefined),
+  }).optional().catch(undefined),
   /** Cascade write-quiesce marker. Worker-controlled (admin SDK). */
   deletingAt: TimestampSchema.nullable().optional(),
   // Always present: the database is initialized from the current schema and

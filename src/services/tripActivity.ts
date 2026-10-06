@@ -11,10 +11,10 @@
 // glitched would be terrible UX. Eventually-consistent — next mutation
 // reconciles.
 //
-// `by` is intentionally NOT validated server-side: the badge filter
-// (skip if by === currentUid) is a client UX nicety. Forging `by` would
-// only cause the forger's own badge to fire incorrectly — no security
-// or data-integrity impact, so we keep the rule lenient.
+// Rules (validActivityBump) pin the payload shape: exactly one feature
+// per write, `{ ts: serverTimestamp(), by: <caller uid> }`. A malformed
+// stamp used to be able to fail TripDocSchema and hide the whole trip,
+// so keep this payload in that exact shape.
 import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { captureError } from '@/services/sentry'

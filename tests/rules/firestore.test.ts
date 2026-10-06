@@ -1005,6 +1005,62 @@ describe('/trips/{tripId}/wishes vote toggle', () => {
     )
   })
 
+  test('vote toggle CANNOT replace other voters while adding self (set equality)', async () => {
+    // Seed votes = [EDITOR]. Size +1 and caller-in-new used to be enough:
+    // [EDITOR] -> [VIEWER, OWNER] wiped EDITOR's vote and injected OWNER.
+    await assertFails(
+      updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
+        votes: [VIEWER_UID, OWNER_UID],
+        updatedBy: VIEWER_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('vote toggle CANNOT add a duplicate of self', async () => {
+    await assertFails(
+      updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
+        votes: [EDITOR_UID, VIEWER_UID, VIEWER_UID],
+        updatedBy: VIEWER_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('vote removal CANNOT swap in a different uid', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await updateDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
+        votes: [EDITOR_UID, VIEWER_UID, OWNER_UID],
+      })
+    })
+    // Size -1 and caller-not-in-new hold, but OWNER's vote is dropped.
+    await assertFails(
+      updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
+        votes: [EDITOR_UID],
+        updatedBy: VIEWER_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+    await assertSucceeds(
+      updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
+        votes: [EDITOR_UID, OWNER_UID],
+        updatedBy: VIEWER_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('proposer CANNOT rewrite votes through the proposer edit path', async () => {
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
+        title: 'Same wish',
+        votes: [EDITOR_UID, OWNER_UID, VIEWER_UID],
+        updatedBy: EDITOR_UID,
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
   test('proposer can edit their own wish title', async () => {
     await assertSucceeds(
       updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
@@ -3875,6 +3931,55 @@ describe('notification inbox rules', () => {
         doc(asOwner(env).firestore(), 'users', OWNER_UID, 'notifications', NOTIFICATION_ID),
         { dismissedAt: serverTimestamp(), body: 'forged body' },
       ),
+    )
+  })
+})
+
+// ─── Trip activity badge bump (bumpTripActivity) ───────────────────
+// Any member may bump exactly one feature stamp, and only with
+// `{ ts: serverTimestamp(), by: <self> }`. A malformed value would fail
+// the client TripDocSchema and drop the trip from every member's list.
+describe('/trips/{tripId} lastActivityByFeature bump', () => {
+  test('viewer can bump one feature with { ts: serverTimestamp, by: self }', async () => {
+    await assertSucceeds(
+      updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID), {
+        'lastActivityByFeature.wish': { ts: serverTimestamp(), by: VIEWER_UID },
+      }),
+    )
+  })
+
+  test.each([
+    ['a non-map value', 1],
+    ['a forged by', { ts: serverTimestamp(), by: OWNER_UID }],
+    ['an extra key', { ts: serverTimestamp(), by: VIEWER_UID, x: 'y'.repeat(100) }],
+    ['a client timestamp', { ts: new Date(0), by: VIEWER_UID }],
+  ])('viewer cannot bump with %s', async (_label, value) => {
+    await assertFails(
+      updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID), {
+        'lastActivityByFeature.schedule': value,
+      }),
+    )
+  })
+
+  test('viewer cannot bump two features in one write', async () => {
+    await assertFails(
+      updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID), {
+        'lastActivityByFeature.wish':     { ts: serverTimestamp(), by: VIEWER_UID },
+        'lastActivityByFeature.schedule': { ts: serverTimestamp(), by: VIEWER_UID },
+      }),
+    )
+  })
+
+  test('viewer cannot delete an existing stamp', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await updateDoc(doc(ctx.firestore(), 'trips', TRIP_ID), {
+        'lastActivityByFeature.wish': { ts: serverTimestamp(), by: EDITOR_UID },
+      })
+    })
+    await assertFails(
+      updateDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID), {
+        'lastActivityByFeature.wish': deleteField(),
+      }),
     )
   })
 })
