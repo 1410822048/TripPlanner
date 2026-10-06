@@ -112,7 +112,9 @@ const MATERIALIZE_ERROR_COPY = {
   NON_MEMBER_ALLOCATION:                  '明細的分攤對象包含非成員',
   DUPLICATE_ITEM_ALLOCATION_MEMBER:       '同一位成員重複出現',
   DUPLICATE_ITEM_ID:                      '明細 ID 重複',
-  ADJUSTMENT_NOT_POSITIVE_INTEGER:        '請確認折扣或調整金額',
+  // Also hit when a tiny foreign-currency adjustment rounds to 0 after FX
+  // conversion (e.g. ¥1 discount on a USD trip) — say so explicitly.
+  ADJUSTMENT_NOT_POSITIVE_INTEGER:        '請確認折扣或調整金額（外幣金額換算後若不足最小單位也會出現此提示）',
   ADJUSTMENT_UNKNOWN_KIND:                '請確認折扣或調整類型',
   UNKNOWN_SCOPE:                          '請確認折扣或調整範圍',
   ITEM_SCOPE_NO_TARGET:                   '請選擇目標明細',

@@ -174,6 +174,19 @@ describe('buildOcrExpenseDraft — adjustments', () => {
     expect(draft.adjustmentText).toEqual({ 'id-3': '50' })
   })
 
+  it('reads a printed "-300" discount as 300 (sign comes from kind, not the text)', () => {
+    const draft = buildOcrExpenseDraft(
+      ocrResult({
+        items:       [ocrItem('A', '1000')],
+        totalText:   '700',
+        adjustments: [ocrAdj({ amountText: '-300' })],
+      }),
+      ctx({ tripCurrency: 'JPY' }),
+      makeNewId(),
+    )
+    expect(draft.adjustments[0]!.amountMinor).toBe(300)
+  })
+
   it('drops an out-of-range ITEM target instead of making it receipt-wide', () => {
     const draft = buildOcrExpenseDraft(
       ocrResult({

@@ -29,6 +29,14 @@ import type { SettlementRecord } from '@/types/settlement'
  *                     subsequent delete shrunk what was within. Both
  *                     causes contribute to the leftover; the per-row
  *                     amount can't be cleanly attributed to one.
+ *   EXPENSE_CHANGED — an expense involving this pair was EDITED after the
+ *                     settlement was recorded (owner may edit settlement-
+ *                     locked expenses). The replay only knows each
+ *                     expense's CURRENT splits, so it can't reconstruct
+ *                     the debt as it stood at recording; without this
+ *                     reason such cases were mislabelled OVERPAYMENT —
+ *                     which the Worker (amount = remaining) can no longer
+ *                     actually produce.
  *   UNKNOWN         — at settlement.createdAt, no expense was recorded
  *                     on this pair (gross == 0). Defensive should-
  *                     never-happen guard: with `allow delete: if false`
@@ -40,7 +48,7 @@ import type { SettlementRecord } from '@/types/settlement'
  *                     visibly instead of silently masquerading as a
  *                     different reason.
  */
-export type OrphanReason = 'OVERPAYMENT' | 'EXPENSE_DELETED' | 'MIXED' | 'UNKNOWN'
+export type OrphanReason = 'OVERPAYMENT' | 'EXPENSE_DELETED' | 'EXPENSE_CHANGED' | 'MIXED' | 'UNKNOWN'
 
 /** Lazy-create `record[key]` as an empty sub-map and return it for in-place
  *  writes. Local copy of settlement.ts's helper — see the file header for
@@ -69,6 +77,15 @@ function ensureSlot<T>(
 interface SettlementReplayInfo {
   atRecording: 'NO_EXPENSE' | 'WITHIN' | 'OVER'
   overpayment: number
+  /** A live expense involving either party was updated after recording. */
+  editedAfter?: boolean
+  /** An expense involving either party was soft-deleted after recording. */
+  deletedAfter?: boolean
+}
+
+function involves(e: Expense, a: string, b: string): boolean {
+  if (e.paidBy === a || e.paidBy === b) return true
+  return e.splits.some(sp => sp.memberId === a || sp.memberId === b)
 }
 
 /**
@@ -141,7 +158,21 @@ export function buildOrphanReasonMap(
     } else {
       atRecording = 'WITHIN'
     }
-    out.set(st.id, { atRecording, overpayment })
+    let editedAfter  = false
+    let deletedAfter = false
+    for (const e of expenses) {
+      if (!involves(e, st.fromUid, st.toUid)) continue
+      if (e.deletedAt) {
+        if ((e.deletedAt.toMillis?.() ?? 0) > ev.ts) deletedAfter = true
+      } else {
+        // updatedAt > createdAt: the doc was actually edited (not just
+        // created after the settlement, which the replay already models).
+        const uMs = e.updatedAt?.toMillis?.() ?? 0
+        const cMs = e.createdAt?.toMillis?.() ?? 0
+        if (uMs > ev.ts && uMs > cMs) editedAfter = true
+      }
+    }
+    out.set(st.id, { atRecording, overpayment, editedAfter, deletedAfter })
   }
   return out
 }
@@ -155,7 +186,14 @@ export function buildOrphanReasonMap(
  * actively consuming.
  */
 export function classifyOrphan(info: SettlementReplayInfo | undefined, leftover: number): OrphanReason {
-  if (!info || info.atRecording === 'NO_EXPENSE')        return 'UNKNOWN'
+  if (!info) return 'UNKNOWN'
+  // A later edit invalidates the replay's view of the debt at recording
+  // (it only sees current splits). A later delete on a WITHIN settlement
+  // still explains the leftover on its own, so that keeps its reason.
+  if (info.editedAfter && !(info.atRecording === 'WITHIN' && info.deletedAfter)) {
+    return 'EXPENSE_CHANGED'
+  }
+  if (info.atRecording === 'NO_EXPENSE')                 return 'UNKNOWN'
   if (info.atRecording === 'WITHIN')                     return 'EXPENSE_DELETED'
   // atRecording === 'OVER'
   if (leftover - info.overpayment > SETTLEMENT_EPS)      return 'MIXED'

@@ -159,8 +159,18 @@ export function canonicalizeRate(input: number | string): string {
   // precision but covers any future provider without precision loss
   // for typical FX magnitudes. Then strip trailing zeros and a bare
   // trailing decimal point.
-  const fixed   = input.toFixed(12)
-  const trimmed = fixed.replace(/0+$/, '').replace(/\.$/, '')
+  //
+  // Prefer the shortest round-trip form (String(n)) when it is plain
+  // decimal with ≤12 fraction digits: toFixed(12) exposes binary noise
+  // once the integer part grows (99999.99 → "99999.990000000005"), which
+  // broke the byte-stable canonical promise for e.g. VND/IDR-scale rates.
+  // Fall back to toFixed(12) for exponent forms (1e-7) and genuinely
+  // long fractions (0.1 + 0.2 → "0.3" rather than 17 noisy digits).
+  const shortest = String(input)
+  const shortestFrac = shortest.includes('.') ? shortest.length - shortest.indexOf('.') - 1 : 0
+  const trimmed = /^\d+(\.\d+)?$/.test(shortest) && shortestFrac <= 12
+    ? shortest
+    : input.toFixed(12).replace(/0+$/, '').replace(/\.$/, '')
   if (!isCanonicalRateString(trimmed)) {
     throw new Error(`fx-core: canonicalisation produced non-canonical: ${trimmed}`)
   }

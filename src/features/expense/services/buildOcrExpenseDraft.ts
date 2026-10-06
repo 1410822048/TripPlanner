@@ -87,8 +87,11 @@ export function buildOcrExpenseDraft(
   const itemMinors = result.items.map((it, i) =>
     strictParse(it.amountText, `item[${i}] ${it.name}`),
   )
+  // Adjustment sign is carried by `kind` (DISCOUNT subtracts), so a
+  // receipt printing "-300" for a discount means 300 — the clamp in
+  // strictParse would otherwise turn it into 0 ("請輸入金額").
   const adjustmentMinors = result.adjustments.map((adj, i) =>
-    strictParse(adj.amountText, `adjustment[${i}] ${adj.label}`),
+    strictParse(adj.amountText.replace(/^\s*[-−–]\s*/, ''), `adjustment[${i}] ${adj.label}`),
   )
   const totalMinor = strictParse(result.totalText, 'total')
 

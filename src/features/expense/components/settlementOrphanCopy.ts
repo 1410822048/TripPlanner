@@ -16,6 +16,7 @@ import type { OrphanReason } from '../services/settlement'
 export const ORPHAN_REASON_COPY: Record<OrphanReason, string> = {
   OVERPAYMENT:     '屬於過度支付。多出的金額視為對方的預存金,無需額外操作。',
   EXPENSE_DELETED: '對應的費用已被刪除。如不需要可從下方刪除這筆清算。',
+  EXPENSE_CHANGED: '對應的費用在清算後被修改,應付金額已變動。如不需要可從下方刪除這筆清算。',
   MIXED:           '同時包含過度支付與已刪除費用兩種情況。可逐筆檢查並刪除。',
   UNKNOWN:         '找不到對應的費用。如不需要可從下方刪除這筆清算。',
 }
@@ -27,6 +28,7 @@ export const ORPHAN_REASON_COPY: Record<OrphanReason, string> = {
 export const ORPHAN_REASON_LABEL: Record<OrphanReason, string> = {
   OVERPAYMENT:     '多付',
   EXPENSE_DELETED: '已刪除',
+  EXPENSE_CHANGED: '已修改',
   MIXED:           '混合',
   UNKNOWN:         '不明',
 }

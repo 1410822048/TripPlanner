@@ -10,6 +10,7 @@ import { useReducer } from 'react'
 import type { Expense, ExpenseSplit } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import { formatMinorForInput } from '@/utils/money'
+import { splitEqually } from '../utils'
 
 export type SplitMode = 'equal' | 'custom'
 
@@ -86,16 +87,25 @@ function initFromExpense(
   }
   const splitCurrency = seed?.currency ?? editTarget.currency
   const splitRows     = seed?.splits   ?? editTarget.splits
+  // "Equal" only when the stored rows are EXACTLY what splitEqually would
+  // produce for those members — a ±1 tolerance used to classify a custom
+  // 501/500 split as equal, and re-saving then re-split it (moving a unit
+  // to whoever is first). Rows are tried with and without zero shares so
+  // e.g. ¥2 over 3 people ([1,1,0]) still reads as equal across all 3.
+  const total = splitRows.reduce((sum, s) => sum + s.amountMinor, 0)
+  const matchesEqual = (rows: typeof splitRows) =>
+    rows.length > 0 &&
+    splitEqually(total, rows.map(r => r.memberId))
+      .every((e, i) => e.amountMinor === rows[i]!.amountMinor)
   const nonZero = splitRows.filter(s => s.amountMinor > 0)
-  const first = nonZero[0]
-  const allEqual =
-    first !== undefined &&
-    nonZero.every(s => Math.abs(s.amountMinor - first.amountMinor) <= 1)
+  const equalRows = matchesEqual(splitRows) ? splitRows
+                  : matchesEqual(nonZero)   ? nonZero
+                  : null
 
-  if (allEqual) {
+  if (equalRows) {
     return {
       mode:     'equal',
-      included: new Set(nonZero.map(s => s.memberId)),
+      included: new Set(equalRows.map(s => s.memberId)),
       custom:   {},
     }
   }

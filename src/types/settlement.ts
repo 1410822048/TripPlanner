@@ -1,8 +1,10 @@
 // src/types/settlement.ts
 // Settlement records — bilateral "X paid Y back" entries stored in
-// trips/{tripId}/settlements/{id}. Treated as reverse expenses by
-// computeBalances: applying a settlement reduces from's net debt by
-// the amount(paid += amountMinor on from, owed += amountMinor on to).
+// trips/{tripId}/settlements/{id}. Under the debt-edge model
+// (services/settlement.ts) a settlement only REDUCES the existing
+// pairwise debt from → to, capped at that debt (any excess surfaces as an
+// orphan). It is NOT a reverse expense: `paid` / `owed` reflect expenses
+// only; `net` comes from the remaining debt after settlements.
 //
 // Money domain: amountMinor is integer minor units (matches the trip
 // currency's minor unit), per the money refactor. Distinct from

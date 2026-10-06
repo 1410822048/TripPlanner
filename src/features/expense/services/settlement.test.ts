@@ -44,7 +44,10 @@ function mkExpense(
     createdBy: 'u',
     updatedBy: 'u',
     createdAt: TS,
-    updatedAt: TS,
+    // "Never edited": tests override createdAt with tsAt(...) and the
+    // orphan classifier treats updatedAt > createdAt (after a settlement)
+    // as a post-settlement edit, so keep updatedAt at the epoch here.
+    updatedAt: tsAt(0),
     deletedAt: null,
     receiptPurgedAt: null,
   }
@@ -446,6 +449,22 @@ describe('orphan reason classification (phase-2)', () => {
     expect(balances.find(b => b.memberId === 'm1')!.paid).toBe(0)
     expect(balances.find(b => b.memberId === 'm2')!.owed).toBe(0)
     for (const b of balances) expect(b.net).toBe(0)
+  })
+
+  it('EXPENSE_CHANGED: owner edited a settled expense afterwards (not a false OVERPAYMENT)', () => {
+    // t=1000 m1 pays 1000, m2 owes 500. t=2000 m2 settles 500 (exactly the
+    // debt). t=3000 owner edits the split so m2 owes only 300. The replay
+    // only sees CURRENT splits, so it used to call this a 200 OVERPAYMENT.
+    const expense = {
+      ...mkExpense('m1', 1000, [['m1', 700], ['m2', 300]]),
+      createdAt: tsAt(1000),
+      updatedAt: tsAt(3000),
+    }
+    const settlement = { ...mkSettlement('m2', 'm1', 500), createdAt: tsAt(2000) }
+    const { orphans } = computeBalancesFull([expense], MEMBERS, [settlement])
+    expect(orphans).toEqual([
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 200, settlementId: 's_m2_m1_500', reason: 'EXPENSE_CHANGED' },
+    ])
   })
 
   it('OVERPAYMENT distinguished from EXPENSE_DELETED when expense existed at recording', () => {

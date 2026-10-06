@@ -79,6 +79,13 @@ describe('currencyFractionDigits', () => {
 })
 
 describe('canonicalizeRate', () => {
+  test('does not leak binary noise for large-integer-part rates', () => {
+    expect(canonicalizeRate(99999.99)).toBe('99999.99')
+    expect(canonicalizeRate(17415.23295)).toBe('17415.23295')
+    expect(canonicalizeRate(0.1 + 0.2)).toBe('0.3')
+    expect(canonicalizeRate(1e-7)).toBe('0.0000001')
+  })
+
   test('passes already-canonical strings through', () => {
     expect(canonicalizeRate('146.2')).toBe('146.2')
     expect(canonicalizeRate('1')).toBe('1')
