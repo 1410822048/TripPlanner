@@ -166,6 +166,39 @@ describe('ScheduleFormModal location autocomplete', () => {
     }
   })
 
+  test('does not search while an IME composition is in progress, only after it ends', async () => {
+    vi.useFakeTimers()
+    try {
+      requestRouteAutocomplete.mockResolvedValue([])
+      render(
+        <ScheduleFormModal
+          tripId="trip-1"
+          editTarget={null}
+          defaultDate="2026-07-20"
+          schedules={[]}
+          defaultCountryCode="JP"
+          isOpen
+          isSaving={false}
+          onClose={() => undefined}
+          onSave={() => undefined}
+        />,
+      )
+      const input = screen.getByRole('combobox')
+      fireEvent.compositionStart(input)
+      fireEvent.change(input, { target: { value: 'ㄉㄨㄥ' } })
+      await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+      expect(requestRouteAutocomplete).not.toHaveBeenCalled()
+
+      fireEvent.change(input, { target: { value: '東京' } })
+      fireEvent.compositionEnd(input)
+      await act(async () => { await vi.advanceTimersByTimeAsync(150) })
+      expect(requestRouteAutocomplete).toHaveBeenCalledTimes(1)
+      expect(requestRouteAutocomplete.mock.calls[0]![1]).toBe('東京')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   test('shows progress promptly while autocomplete is still pending', async () => {
     vi.useFakeTimers()
     try {

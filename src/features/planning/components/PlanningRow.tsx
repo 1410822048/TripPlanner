@@ -158,9 +158,12 @@ function PlanningRow({
                   />
                 )
                 return (
+                  // role="img": aria-label on a generic <span> is ignored by
+                  // screen readers, so the per-member status was never read.
                   <span
                     key={member.id}
-                    aria-label={memberDone ? '已完成' : '未準備'}
+                    role="img"
+                    aria-label={`${member.displayName}:${memberDone ? '已完成' : '未準備'}`}
                     aria-current={member.id === currentUid ? 'true' : undefined}
                   >
                     {avatar}

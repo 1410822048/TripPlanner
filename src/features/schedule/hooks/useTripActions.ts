@@ -12,6 +12,7 @@ import type { TripItem } from '@/features/trips/types'
 import { tripTimestampToDateString } from '@/utils/dates'
 import { toast } from '@/shared/toast'
 import { getClientWriteBlockReason } from '@/services/clientCompatibility'
+import { userErrorMessage } from '@/utils/errorMessage'
 
 export interface TripActions {
   selectTrip:   (item: TripItem) => void
@@ -196,7 +197,7 @@ export function useTripActions(opts: {
         toast.info(`${orphanedSchedules} 個行程位於新的日期範圍之外`)
       }
     } catch (e) {
-      toast.error(e instanceof Error ? `複製失敗：${e.message}` : '複製失敗')
+      toast.error(`複製失敗：${userErrorMessage(e, '請稍後再試')}`)
     }
   }
 

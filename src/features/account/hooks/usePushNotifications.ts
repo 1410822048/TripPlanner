@@ -16,6 +16,7 @@ import {
   saveToken,
   writeStoredPushTokenHash,
 } from '../services/pushTokenService'
+import { userErrorMessage } from '@/utils/errorMessage'
 
 export type PushSupport = 'checking' | 'supported' | 'unsupported' | 'ios-not-installed'
 export type PushPermission = 'default' | 'granted' | 'denied' | 'unknown'
@@ -224,7 +225,7 @@ export function usePushNotifications(uid: string | undefined): UsePushNotificati
       setState('not-enabled')
     } catch (e) {
       if (canApply()) {
-        setError(e instanceof Error ? e.message : '無法關閉通知')
+        setError(userErrorMessage(e, '無法關閉通知'))
         setState('error')
       }
     } finally {

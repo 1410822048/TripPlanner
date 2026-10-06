@@ -76,7 +76,9 @@ export default function EditTripModal({
   function validate() {
     const e: Record<string, string> = {}
     if (!state.title.trim()) e.title = '請輸入行程名稱'
+    else if (state.title.trim().length > 50) e.title = '行程名稱最多 50 字'
     if (!state.dest.trim())  e.dest  = '請輸入目的地'
+    else if (state.dest.trim().length > 200) e.dest = '目的地最多 200 字'
     if (!state.startDate)    e.startDate = '請選擇開始日期'
     if (!state.endDate)      e.endDate   = '請選擇結束日期'
     if (!/^[A-Z]{2}$/.test(state.defaultCountryCode)) e.defaultCountryCode = '請選擇旅程國家'
@@ -137,6 +139,7 @@ export default function EditTripModal({
         <input
           ref={titleRef}
           value={state.title}
+          maxLength={50}
           onChange={e => setField('title', e.target.value)}
           placeholder="例：東京五日間"
           className={inputClass(!!errors.title)}
@@ -148,6 +151,7 @@ export default function EditTripModal({
           <MapPin size={14} className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-muted" />
           <input
             value={state.dest}
+            maxLength={200}
             onChange={e => setField('dest', e.target.value)}
             placeholder="例：東京 · 淺草 · 新宿"
             className={`${inputClass(!!errors.dest)} pl-[34px]`}

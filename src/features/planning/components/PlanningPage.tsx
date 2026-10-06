@@ -30,6 +30,7 @@ import PlanningFormModal from './PlanningFormModal'
 import PlanningRow from './PlanningRow'
 import { getClientWriteBlockReason } from '@/services/clientCompatibility'
 import { FORM_SCOPE_CHANGED_MESSAGE } from '@/hooks/useFormModal'
+import { userErrorMessage } from '@/utils/errorMessage'
 
 type PlanningMember = TripMember & { name: string }
 
@@ -124,7 +125,7 @@ export default function PlanningPage() {
       }
       modal.close()
     } catch (err) {
-      modal.setError(err instanceof Error ? err.message : '儲存失敗')
+      modal.setError(userErrorMessage(err, '儲存失敗'))
     }
   }
 

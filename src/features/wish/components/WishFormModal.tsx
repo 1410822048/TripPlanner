@@ -192,6 +192,7 @@ export default function WishFormModal({
         <input
           ref={titleRef}
           value={state.title}
+          maxLength={100}
           onChange={e => setField('title', e.target.value)}
           placeholder="例：築地市場、壽司大、淺草寺"
           className={inputClass(!!errors.title)}
@@ -201,6 +202,7 @@ export default function WishFormModal({
       <FormField label="説明">
         <textarea
           value={state.description}
+          maxLength={500}
           onChange={e => setField('description', e.target.value)}
           placeholder="是什麼地方？為什麼想去？"
           rows={2}
@@ -228,6 +230,7 @@ export default function WishFormModal({
           type="url"
           inputMode="url"
           value={state.link}
+          maxLength={500}
           onChange={e => setField('link', e.target.value)}
           placeholder="https://example.com/event"
           className={inputClass(!!errors.link)}

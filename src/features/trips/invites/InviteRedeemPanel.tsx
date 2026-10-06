@@ -8,6 +8,7 @@ import { toast } from '@/shared/toast'
 import { useAcceptInvite } from './useInvites'
 import { getInvite, InviteError, formatInviteExpiry } from './inviteService'
 import type { Invite } from '@/types'
+import { userErrorMessage } from '@/utils/errorMessage'
 
 interface InviteRedeemPanelProps {
   tripId:            string | undefined
@@ -50,7 +51,7 @@ export default function InviteRedeemPanel({
     catch (e) {
       const code = (e as { code?: string })?.code
       if (code !== 'auth/popup-closed-by-user') {
-        toast.error(e instanceof Error ? e.message : '登入失敗')
+        toast.error(userErrorMessage(e, '登入失敗'))
       }
     } finally { setSigningIn(false) }
   }
@@ -65,7 +66,7 @@ export default function InviteRedeemPanel({
       onDone()
     } catch (e) {
       if (isCurrent && !isCurrent()) return
-      toast.error(e instanceof Error ? `加入失敗：${e.message}` : '加入失敗')
+      toast.error(`加入失敗：${userErrorMessage(e, '請稍後再試')}`)
     }
   }
 

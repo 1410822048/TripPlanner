@@ -9,6 +9,7 @@ import { buildScheduleUpdate } from '../services/scheduleService'
 import { getClientWriteBlockReason } from '@/services/clientCompatibility'
 import { toast } from '@/shared/toast'
 import { simulateFailureMaybe } from '@/utils/devFailures'
+import { userErrorMessage } from '@/utils/errorMessage'
 
 export interface ScheduleActions {
   isSaving: boolean
@@ -66,7 +67,7 @@ export function useScheduleActions(opts: {
       }
       scheduleModal.close()
     } catch (err) {
-      scheduleModal.setError(err instanceof Error ? err.message : '儲存失敗')
+      scheduleModal.setError(userErrorMessage(err, '儲存失敗'))
     }
   }
 

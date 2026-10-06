@@ -95,6 +95,7 @@ export default function PlanningFormModal({
         <input
           ref={titleRef}
           value={state.title}
+          maxLength={100}
           onChange={e => setField('title', e.target.value)}
           placeholder="例如：護照、充電器、換匯"
           className={inputClass(!!errors.title)}
@@ -104,6 +105,7 @@ export default function PlanningFormModal({
       <FormField label="備註">
         <textarea
           value={state.note}
+          maxLength={500}
           onChange={e => setField('note', e.target.value)}
           placeholder="數量、尺寸或補充說明"
           rows={3}

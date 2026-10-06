@@ -407,6 +407,7 @@ export default function BookingFormModal({
                 <span className="block text-[9px] font-black leading-none text-muted">DEPARTURE</span>
                 <input
                   value={state.origin}
+                  maxLength={60}
                   onChange={e => setField('origin', e.target.value)}
                   placeholder={state.type === 'flight' ? 'TPE' : '東京駅'}
                   aria-label="出發地"
@@ -421,6 +422,7 @@ export default function BookingFormModal({
                 <span className="block text-[9px] font-black leading-none text-muted">ARRIVAL</span>
                 <input
                   value={state.destination}
+                  maxLength={60}
                   onChange={e => setField('destination', e.target.value)}
                   placeholder={state.type === 'flight' ? 'NRT' : '京都駅'}
                   aria-label="目的地"
@@ -451,6 +453,7 @@ export default function BookingFormModal({
         >
           <input
             value={state.title}
+            maxLength={100}
             onChange={e => setField('title', e.target.value)}
             placeholder={titlePlaceholder(state.type)}
             className={inputClass(!!errors.title)}
@@ -462,6 +465,7 @@ export default function BookingFormModal({
         <FormField label="確認編號" className="flex-1">
           <input
             value={state.confirmationCode}
+            maxLength={64}
             onChange={e => setField('confirmationCode', e.target.value)}
             placeholder="ABC123"
             className={`${inputClass(false)} font-mono tracking-tight`}
@@ -470,6 +474,7 @@ export default function BookingFormModal({
         <FormField label="提供者" className="flex-1">
           <input
             value={state.provider}
+            maxLength={60}
             onChange={e => setField('provider', e.target.value)}
             placeholder={providerPlaceholder(state.type)}
             className={inputClass(false)}
@@ -479,7 +484,7 @@ export default function BookingFormModal({
 
       {showRange ? (
         <div className="flex gap-2.5">
-          <FormField label="Check-in" className="flex-1">
+          <FormField label="入住" className="flex-1">
             <DatePicker
               value={state.checkIn}
               onChange={v => {
@@ -497,7 +502,7 @@ export default function BookingFormModal({
               maxDate={tripEndDate}
             />
           </FormField>
-          <FormField label="Check-out" error={errors.checkOut} className="flex-1">
+          <FormField label="退房" error={errors.checkOut} className="flex-1">
             <DatePicker
               ref={checkOutRef}
               value={state.checkOut}
@@ -565,6 +570,7 @@ export default function BookingFormModal({
       <FormField label="備註">
         <textarea
           value={state.note}
+          maxLength={2000}
           onChange={e => setField('note', e.target.value)}
           placeholder="備註（座位、機場櫃檯資訊等）"
           rows={2}

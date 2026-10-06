@@ -149,9 +149,15 @@ export default function ScheduleFormModal({
 
   const titleRef = useRef<HTMLInputElement>(null)
   useAutoFocus(titleRef, isOpen)
+  // IME (注音 / 拼音 / かな) composition in progress. Each intermediate
+  // composition state fires onChange; without this gate the debounced
+  // autocomplete sent half-typed bopomofo queries to the Worker/Geoapify
+  // and flashed "找不到符合的地點". The search runs once on compositionend.
+  const [isLocationComposing, setIsLocationComposing] = useState(false)
 
   useEffect(() => {
     if (!locationSearchEnabled) return
+    if (isLocationComposing) return
     const query = state.location.trim()
     if (!shouldRequestLocationAutocomplete({ isOpen, query, location: state.locationRef })) return
     const controller = new AbortController()
@@ -198,6 +204,7 @@ export default function ScheduleFormModal({
     }
   }, [
     locationSearchEnabled,
+    isLocationComposing,
     isOpen,
     state.location,
     state.locationRef,
@@ -322,6 +329,7 @@ export default function ScheduleFormModal({
         <input
           ref={titleRef}
           value={state.title}
+          maxLength={200}
           onChange={e => setField('title', e.target.value)}
           placeholder="例如：參觀淺草雷門"
           className={inputClass(!!errors.title)}
@@ -450,6 +458,7 @@ export default function ScheduleFormModal({
             <MapPin size={14} className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-muted" />
             <input
               value={state.location}
+              maxLength={200}
               role={locationSearchEnabled ? 'combobox' : undefined}
               aria-autocomplete={locationSearchEnabled ? 'list' : undefined}
               aria-expanded={locationSearchEnabled ? visibleSuggestions.length > 0 : undefined}
@@ -463,7 +472,12 @@ export default function ScheduleFormModal({
                   ? 'schedule-location-loading'
                   : autocompleteError ? 'schedule-location-error' : undefined}
               aria-activedescendant={locationSearchEnabled && activeSuggestion >= 0 && activeSuggestion < visibleSuggestions.length ? `schedule-location-option-${activeSuggestion}` : undefined}
+              onCompositionStart={() => setIsLocationComposing(true)}
+              onCompositionEnd={() => setIsLocationComposing(false)}
               onKeyDown={e => {
+                // Arrow/Enter keys belong to the IME candidate window while
+                // composing (Safari still reports the real e.key there).
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return
                 if (e.key === 'ArrowDown' && visibleSuggestions.length > 0) {
                   e.preventDefault()
                   setActiveSuggestion(index => Math.min(index + 1, visibleSuggestions.length - 1))
@@ -541,6 +555,7 @@ export default function ScheduleFormModal({
       <FormField label="備註">
         <textarea
           value={state.desc}
+          maxLength={2000}
           onChange={e => setField('desc', e.target.value)}
           placeholder="備註或注意事項"
           rows={3}

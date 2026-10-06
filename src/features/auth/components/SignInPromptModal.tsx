@@ -10,6 +10,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { toast } from '@/shared/toast'
 import { DEV_EMULATOR_USERS, signInWithEmulatorRole, type EmulatorRole } from '@/services/emulatorAuth'
 import { FIREBASE_EMULATOR_MODE } from '@/services/firebase'
+import { userErrorMessage } from '@/utils/errorMessage'
 
 interface Props {
   isOpen:   boolean
@@ -33,7 +34,7 @@ export default function SignInPromptModal({ isOpen, onClose, reason, onSignedIn 
     } catch (e) {
       const code = (e as { code?: string })?.code
       if (code !== 'auth/popup-closed-by-user') {
-        toast.error(e instanceof Error ? e.message : '登入失敗')
+        toast.error(userErrorMessage(e, '登入失敗'))
       }
     } finally { setSigningIn(false) }
   }

@@ -112,8 +112,8 @@ export interface Trip {
 }
 
 export const CreateTripSchema = z.object({
-  title:       z.string().min(1, '請輸入行程名稱').max(50),
-  destination: z.string().min(1, '請輸入目的地'),
+  title:       z.string().min(1, '請輸入行程名稱').max(50, '行程名稱最多 50 字'),
+  destination: z.string().min(1, '請輸入目的地').max(200, '目的地最多 200 字'),
   icon:        z.string().optional(),
   startDate:   z.string().min(1, '請選擇開始日期'),
   endDate:     z.string().min(1, '請選擇結束日期'),
@@ -179,9 +179,9 @@ export interface Member {
   role: 'owner' | 'editor' | 'viewer'
   joinedAt: Timestamp
   /**
-   * Populated when the member doc was created via invite redemption. Carries
-   * the token used so Firestore rules can verify the matching invite exists
-   * at create time. Kept post-commit as an audit trail.
+   * LEGACY, read-only. Older invite redemptions stored the (bearer) token
+   * here; the Worker no longer writes it because member docs are readable by
+   * every member. Never read or display it.
    */
   inviteToken?: string
   /**

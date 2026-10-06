@@ -18,6 +18,7 @@ import { useTripStore } from '@/store/tripStore'
 import { CreateTripSchema } from '@/types/trip'
 import { toast } from '@/shared/toast'
 import { countryAfterCurrencyChange } from '@/features/trips/countryContext'
+import { userErrorMessage } from '@/utils/errorMessage'
 
 interface Props {
   isOpen:  boolean
@@ -94,7 +95,7 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
       close()
       toast.success(`已建立「${trip.title}」`)
     } catch (e) {
-      toast.error(e instanceof Error ? `建立失敗：${e.message}` : '建立失敗')
+      toast.error(`建立失敗：${userErrorMessage(e, '請稍後再試')}`)
     }
   }
 
@@ -104,7 +105,7 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
     catch (e) {
       const code = (e as { code?: string })?.code
       if (code !== 'auth/popup-closed-by-user') {
-        toast.error(e instanceof Error ? e.message : '登入失敗')
+        toast.error(userErrorMessage(e, '登入失敗'))
       }
     } finally { setSigningIn(false) }
   }
@@ -159,6 +160,7 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
       <FormField label="旅程名稱" error={errors.title} required>
         <input
           value={title}
+          maxLength={50}
           onChange={e => setTitle(e.target.value)}
           placeholder="例：東京五日間"
           className={inputClass(!!errors.title)}
@@ -170,6 +172,7 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
           <MapPin size={14} className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-muted" />
           <input
             value={destination}
+            maxLength={200}
             onChange={e => setDestination(e.target.value)}
             placeholder="例：東京 · 淺草 · 新宿"
             className={`${inputClass(!!errors.destination)} pl-[34px]`}

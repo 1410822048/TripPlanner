@@ -3,6 +3,7 @@
 // object can be called from anywhere (mutation handlers, services) — no
 // provider / hook plumbing. The <Toaster /> component subscribes via hook.
 import { create } from 'zustand'
+import { userErrorMessage } from '@/utils/errorMessage'
 
 export type ToastKind = 'success' | 'error' | 'info'
 
@@ -58,9 +59,10 @@ export const toast = {
    * Convenience wrapper for global mutation errors. `action` is the verb
    * phrase for the operation (e.g. '行程の追加', '保存', '削除').
    */
-  mutationError: (err: unknown, action: string) =>
-    useToastStore.getState().push(
-      'error',
-      err instanceof Error ? `${action}失敗：${err.message}` : `${action}失敗`,
-    ),
+  mutationError: (err: unknown, action: string) => {
+    // Firebase codes → 繁中 (never the English SDK text); our own errors
+    // keep their message.
+    const detail = userErrorMessage(err, '')
+    useToastStore.getState().push('error', detail ? `${action}失敗：${detail}` : `${action}失敗`)
+  },
 }

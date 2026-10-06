@@ -50,6 +50,7 @@ import { revokeStoredPushToken } from '../services/pushTokenService'
 import { writePushOwnerUid } from '../services/pushOwnerStore'
 import type { TripMember } from '@/features/trips/types'
 import type { Trip } from '@/types'
+import { userErrorMessage } from '@/utils/errorMessage'
 
 // Fallback thumbnail deck for the "過往の旅程" card when the user has
 // no hotel bookings (yet) or none of them carry an attachment image.
@@ -149,7 +150,7 @@ export default function AccountPage() {
     catch (e) {
       const code = (e as { code?: string })?.code
       if (code !== 'auth/popup-closed-by-user') {
-        toast.error(e instanceof Error ? e.message : '登入失敗')
+        toast.error(userErrorMessage(e, '登入失敗'))
       }
     } finally { setSigningIn(false) }
   }
@@ -178,7 +179,7 @@ export default function AccountPage() {
       }
     } catch (e) {
       if (pushOwnerCleared && uid) void writePushOwnerUid(uid)
-      toast.error(e instanceof Error ? e.message : '登出失敗')
+      toast.error(userErrorMessage(e, '登出失敗'))
     } finally { setSigningOut(false) }
   }
 
