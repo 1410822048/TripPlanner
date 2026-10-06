@@ -1,3 +1,17 @@
+# Security headers for every static response (Pages Functions such as the
+# /__/auth proxy set their own). CSP ships as REPORT-ONLY first: violations
+# only show up in the browser console, nothing is blocked. After a week of
+# clean real-world use (sign-in popup, PDF preview, map, OCR upload, push),
+# rename the header to `Content-Security-Policy` to enforce it.
+# X-Frame-Options stays SAMEORIGIN, not DENY: the Firebase Auth helper
+# iframe is served same-origin through the /__/auth proxy.
+/*
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: SAMEORIGIN
+  Referrer-Policy: strict-origin-when-cross-origin
+  Content-Security-Policy-Report-Only: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.googleusercontent.com https://api.mapbox.com; font-src 'self' data:; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://tripmate-ocr.tripmate.workers.dev https://api.frankfurter.dev https://api.mapbox.com https://events.mapbox.com https://*.tiles.mapbox.com https://*.ingest.sentry.io https://*.ingest.us.sentry.io; worker-src 'self' blob:; frame-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; manifest-src 'self'
+
 /sw.js
   Cache-Control: no-cache
 
