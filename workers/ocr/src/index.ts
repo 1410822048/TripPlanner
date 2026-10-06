@@ -151,6 +151,7 @@ import {
   ATTACHMENT_TRIP_HEADER,
 }                                                 from './attachment-content'
 import { checkGlobalRateLimit }                   from './rate-limiter'
+import { MAX_JSON_BODY_BYTES, readBoundedJson, RequestBodyTooLargeError } from './request-body'
 import {
   autocompleteRoutePlace,
   previewRoute,
@@ -864,7 +865,7 @@ export default {
     // burning CPU on JWT verification. 9MB covers an 8MB base64 image +
     // JSON envelope; cascade / membership bodies are <1KB.
     const contentLength = Number(request.headers.get('content-length') ?? '0')
-    if (contentLength > 9 * 1024 * 1024) {
+    if (contentLength > MAX_JSON_BODY_BYTES) {
       console.warn(`[body] too large: contentLength=${contentLength}${trace}`)
       return json({ error: 'Body too large' }, 413, cors)
     }
@@ -913,8 +914,12 @@ export default {
     let body: unknown = undefined
     if ((route.bodyMode ?? 'json') === 'json') {
       try {
-        body = await request.json()
-      } catch {
+        body = await readBoundedJson(request)
+      } catch (error) {
+        if (error instanceof RequestBodyTooLargeError) {
+          console.warn(`[body] streamed body too large${trace}`)
+          return json({ error: 'Body too large' }, 413, cors)
+        }
         console.warn(`[body] not valid JSON${trace}`)
         return json({ error: 'Invalid JSON' }, 400, cors)
       }
