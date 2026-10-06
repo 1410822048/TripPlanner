@@ -5,7 +5,7 @@
   "main": "lib/index.js",
   "engines": {
     "node": "22",
-    "npm": "11.17.0"
+    "npm": "11.21.0"
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
@@ -16,10 +16,16 @@
   },
   "dependencies": {
     "firebase-admin": "^14.2.0",
-    "firebase-functions": "^7.3.2"
+    "firebase-functions": "^7.4.0"
   },
   "devDependencies": {
     "typescript": "~6.0.2",
     "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "uuid": "^11.1.1",
+    "rimraf": {
+      "glob": "^13.0.6"
+    }
   }
 }
