@@ -459,10 +459,23 @@ export function validateExpenseCrossField(
   }
 
   let sum = 0
+  const seenSplitMembers = new Set<string>()
   for (let i = 0; i < payload.splits.length; i++) {
     const s = payload.splits[i]!  // safe by loop bound
     if (!memberIds.includes(s.memberId)) {
       throw new ExpenseValidationError(`splits[${i}].memberId`, `${s.memberId} is not a trip member`)
+    }
+    // Same invariant the foreign path enforces (DUPLICATE_SOURCE_SPLIT_MEMBER):
+    // one row per member, otherwise list keys / split editing break.
+    if (seenSplitMembers.has(s.memberId)) {
+      throw new ExpenseValidationError(`splits[${i}].memberId`, `${s.memberId} appears more than once`)
+    }
+    seenSplitMembers.add(s.memberId)
+    // Defense in depth for paths that build splits AFTER schema parsing
+    // (foreign-currency conversion): a negative split fails the client
+    // ExpenseDocSchema and takes down the whole trip's expense listener.
+    if (!Number.isInteger(s.amountMinor) || s.amountMinor < 0) {
+      throw new ExpenseValidationError(`splits[${i}].amountMinor`, 'must be a non-negative integer')
     }
     sum += s.amountMinor
   }

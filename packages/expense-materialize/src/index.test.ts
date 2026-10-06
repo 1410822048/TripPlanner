@@ -1002,6 +1002,53 @@ describe('convertSourceSplitsToTarget', () => {
     ])
   })
 
+  it('never produces a negative split when many small shares each round up', () => {
+    // ¥5 split 5 ways into USD at 0.6843: each ¥1 rounds to 1 cent but the
+    // total converts to 3 cents. The old largest-line residual gave [-1,1,1,1,1].
+    const result = convertSourceSplitsToTarget({
+      sourceSplits: ['a', 'b', 'c', 'd', 'e'].map(memberId => ({ memberId, amountMinor: 1 })),
+      sourceAmountMinor:     5,
+      rateDecimal:           '0.006843',
+      sourceFractionDigits:  0,
+      targetFractionDigits:  2,
+    })
+    expect(result.amountMinor).toBe(3)
+    expect(result.splits.every(s => s.amountMinor >= 0)).toBe(true)
+    expect(result.splits.reduce((sum, s) => sum + s.amountMinor, 0)).toBe(3)
+  })
+
+  it('spreads conversion residual instead of charging it all to one member', () => {
+    // 25,000 VND / 4 into USD: old algorithm gave [23,25,25,25].
+    const result = convertSourceSplitsToTarget({
+      sourceSplits: ['a', 'b', 'c', 'd'].map(memberId => ({ memberId, amountMinor: 6250 })),
+      sourceAmountMinor:     25000,
+      rateDecimal:           '0.0000392',
+      sourceFractionDigits:  0,
+      targetFractionDigits:  2,
+    })
+    const amounts = result.splits.map(s => s.amountMinor)
+    expect(amounts.reduce((a, b) => a + b, 0)).toBe(result.amountMinor)
+    expect(Math.max(...amounts) - Math.min(...amounts)).toBeLessThanOrEqual(1)
+  })
+
+  it('keeps every split non-negative and summing to the total across a sweep', () => {
+    for (let n = 2; n <= 8; n++) {
+      for (let yen = n; yen <= 400; yen += 7) {
+        const base = Math.floor(yen / n)
+        const sourceSplits = Array.from({ length: n }, (_, i) => ({
+          memberId:    `m${i}`,
+          amountMinor: base + (i < yen - base * n ? 1 : 0),
+        }))
+        const result = convertSourceSplitsToTarget({
+          sourceSplits, sourceAmountMinor: yen, rateDecimal: '0.006843',
+          sourceFractionDigits: 0, targetFractionDigits: 2,
+        })
+        expect(result.splits.every(s => s.amountMinor >= 0)).toBe(true)
+        expect(result.splits.reduce((sum, s) => sum + s.amountMinor, 0)).toBe(result.amountMinor)
+      }
+    }
+  })
+
   it('rejects source split sums that do not match the source total', () => {
     expectThrows(() => convertSourceSplitsToTarget({
       sourceSplits: [

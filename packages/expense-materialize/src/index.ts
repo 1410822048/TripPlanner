@@ -815,10 +815,10 @@ export function convertSourceLinesToTarget(
  * of "manual total split": the user only entered a total and per-member
  * shares, so there is no receipt item to persist or render.
  *
- * The split sum is validated in source currency first. Each split is then
- * converted independently and reconciled to the authoritative converted
- * receipt total via largest-line residual allocation, keeping the Worker
- * authoritative while preserving the user's split proportions.
+ * The split sum is validated in source currency first. The authoritative
+ * converted receipt total is then apportioned by the source split amounts
+ * (largest remainder), keeping the Worker authoritative while preserving
+ * the user's split proportions without ever producing a negative split.
  */
 export function convertSourceSplitsToTarget(
   input: ConvertSourceSplitsToTargetInput,
@@ -879,16 +879,17 @@ export function convertSourceSplitsToTarget(
     sourceFractionDigits,
     targetFractionDigits,
   })
-  const rawTripSplits = sourceSplits.map(split => convertMinorHalfEven({
-    sourceMinor: split.amountMinor,
-    rateDecimal,
-    sourceFractionDigits,
-    targetFractionDigits,
-  }))
-  const tripSplits = allocateRoundingResidual({
-    lines:       rawTripSplits,
-    targetTotal: tripAmountMinor,
-  })
+  // Apportion the authoritative converted total by the source shares
+  // (largest remainder). The previous "convert each split, dump the
+  // residual on the largest line" approach could push that line NEGATIVE
+  // when many small splits each round up (¥5 / 5 people -> USD gave
+  // [-1,1,1,1,1]), and always charged the whole residual to one member.
+  // Largest remainder guarantees every split >= 0, Σ == tripAmountMinor,
+  // and each member within 1 minor unit of their exact share.
+  const tripSplits = apportionByWeight(
+    tripAmountMinor,
+    sourceSplits.map(split => split.amountMinor),
+  )
 
   return {
     amountMinor: tripAmountMinor,
