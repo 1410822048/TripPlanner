@@ -512,6 +512,22 @@ describe('settlementCreate endpoint', () => {
 		])
 	})
 
+	it('fails closed (500) on an expense whose amount is not a valid integer -- never reads it as 0', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`, memberReadDoc(FROM_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			notFoundReadDoc(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`))
+		seedLock(FROM_UID, TO_UID)
+		seedDebt(FROM_UID, TO_UID, 200)
+		const corrupt = txQueryResponses.get(`trips/${TRIP_ID}|expenses`)![0]!
+		corrupt.fields.amountMinor = { doubleValue: 200 } as unknown as MockReadDoc['fields'][string]
+
+		await expect(settlementCreate(TO_UID, baseCreatePayload(), '{}'))
+			.rejects.toMatchObject({ status: 500 })
+		expect(capturedTxResult).toBeNull()
+	})
+
 	it('writes appliedSources with expense/item lineage for audit after later item deletion', async () => {
 		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))

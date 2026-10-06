@@ -667,6 +667,33 @@ describe('expenseUpdate endpoint', () => {
 		)).rejects.toBeInstanceOf(ExpenseValidationError)
 	})
 
+	it('rejects create/update when the editor is being removed (removingAt)', async () => {
+		// Mirrors rules canWrite(): /member-remove stamps removingAt before the
+		// non-tx cascade deletes the member doc; the kicked editor must not
+		// keep writing through the Worker in that window.
+		const removing: MockReadDoc = {
+			...memberReadDoc('editor'),
+			fields: {
+				role:       { stringValue: 'editor' },
+				removingAt: { timestampValue: '2026-10-06T00:00:00Z' },
+			},
+		}
+		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, removing)
+		await expect(expenseCreate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validExpensePayload() },
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ status: 403 })
+
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, aliveExpenseReadDoc())
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'TRIP_CURRENCY', title: 'Edit' } },
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ status: 403 })
+	})
+
 	it('rejects update when caller is viewer (role check at authorize)', async () => {
 		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('viewer'))

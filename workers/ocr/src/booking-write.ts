@@ -52,6 +52,7 @@ import {
   type FsValue,
 }                                                                   from './firestore'
 import { withTokenRetry, CascadeError }                             from './cascade'
+import { assertMemberNotRemoving }                                   from './membership-shared'
 import {
   runFirestoreTransaction,
   docResourceName,
@@ -252,6 +253,7 @@ async function authorizeBookingCreateTx(
   if (!trip.exists)                throw new CascadeError(404, 'trip not found')
   if ('deletingAt' in trip.fields) throw new CascadeError(410, 'trip is being deleted')
   if (!member.exists)              throw new CascadeError(403, 'caller is not a trip member')
+  assertMemberNotRemoving(member.fields)
 
   const role = readString(member.fields, 'role')
   if (role !== 'owner' && role !== 'editor') {
@@ -297,6 +299,7 @@ async function authorizeBookingUpdateTx(
   if (!trip.exists)                throw new CascadeError(404, 'trip not found')
   if ('deletingAt' in trip.fields) throw new CascadeError(410, 'trip is being deleted')
   if (!member.exists)              throw new CascadeError(403, 'caller is not a trip member')
+  assertMemberNotRemoving(member.fields)
 
   const role = readString(member.fields, 'role')
   if (role !== 'owner' && role !== 'editor') {

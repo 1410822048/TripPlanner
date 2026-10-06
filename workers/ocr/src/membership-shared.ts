@@ -54,6 +54,19 @@ export function assertTripNotDeleting(trip: TxReadDoc): void {
   }
 }
 
+/** 403 if the member doc carries `removingAt` -- the kick marker that
+ *  `/member-remove` commits (with the roster strip) BEFORE the non-tx
+ *  cascade deletes the member doc. Mirrors firestore.rules `canWrite()` /
+ *  `isActiveMember()`: without it a kicked editor keeps writing through
+ *  Worker endpoints for the whole cascade window (or indefinitely, if the
+ *  cascade fails and the owner never retries). `/member-leave` must NOT
+ *  call this -- a self-leave retry has to get past a stale marker. */
+export function assertMemberNotRemoving(memberFields: Record<string, FsValue>): void {
+  if ('removingAt' in memberFields) {
+    throw new CascadeError(403, 'caller is being removed from the trip')
+  }
+}
+
 /** Decode `memberIds` from a doc's REST fields. Returns empty array when
  *  the field is missing or contains non-string entries -- defensive
  *  decode that mirrors firestore.ts/getDocMemberIds without the round trip. */

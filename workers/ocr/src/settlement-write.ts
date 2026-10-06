@@ -62,6 +62,7 @@ import {
   type FsValue,
 }                                                           from './firestore'
 import { withTokenRetry, CascadeError }                     from './cascade'
+import { assertMemberNotRemoving }                                   from './membership-shared'
 import {
   runFirestoreTransaction,
   docResourceName,
@@ -161,6 +162,7 @@ async function authorizeMemberTx(
   if (!trip.exists)                throw new CascadeError(404, 'trip not found')
   if ('deletingAt' in trip.fields) throw new CascadeError(410, 'trip is being deleted')
   if (!member.exists)              throw new CascadeError(403, 'caller is not a trip member')
+  assertMemberNotRemoving(member.fields)
 
   const currency = readString(trip.fields, 'currency')
   if (!currency) {
@@ -174,15 +176,25 @@ async function authorizeMemberTx(
 
 // ─── Decoders: REST fields → domain shapes ────────────────────────
 
+/** Fail-closed money decode for the debt math. `Number(x?.integerValue ?? 0)`
+ *  silently read a missing / doubleValue / corrupt amount as 0, which
+ *  understates the pair's debt and lets a settlement be recorded for the
+ *  wrong remaining amount. A doc we can't decode is a 500, not a zero. */
+function requireMinor(fields: Record<string, FsValue> | undefined, key: string, what: string): number {
+  const n = readInteger(fields, key)
+  if (n === null) throw new CascadeError(500, `${what}: ${key} is not a valid integer`)
+  return n
+}
+
 function decodeExpenseForDomain(fields: Record<string, FsValue>): CoreExpense {
-  const amountMinor = Number(fields.amountMinor?.integerValue ?? 0)
+  const amountMinor = requireMinor(fields, 'amountMinor', 'expense')
   const paidBy = readString(fields, 'paidBy') ?? ''
   const splitArr = (fields.splits as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []
   const splits = splitArr.map(v => {
     const inner = v.mapValue?.fields ?? {}
     return {
       memberId:    readString(inner, 'memberId') ?? '',
-      amountMinor: Number(inner.amountMinor?.integerValue ?? 0),
+      amountMinor: requireMinor(inner, 'amountMinor', 'expense split'),
     }
   })
   return { amountMinor, paidBy, splits }
@@ -191,7 +203,7 @@ function decodeExpenseForDomain(fields: Record<string, FsValue>): CoreExpense {
 function decodeSettlementForDomain(fields: Record<string, FsValue>): CoreSettlement {
   const fromUid = readString(fields, 'fromUid') ?? ''
   const toUid   = readString(fields, 'toUid')   ?? ''
-  const amountMinor = Number(fields.amountMinor?.integerValue ?? 0)
+  const amountMinor = requireMinor(fields, 'amountMinor', 'settlement')
   // createdAt arrives as Firestore Timestamp -> REST timestampValue ISO 8601.
   // Convert to ms epoch for computePairwiseRemaining's sort step.
   // The rules pin createdAt == request.time on every create so every
@@ -793,6 +805,7 @@ async function doDelete(
     if (!trip.exists)                  throw new CascadeError(404, 'trip not found')
     if ('deletingAt' in trip.fields)   throw new CascadeError(410, 'trip is being deleted')
     if (!member.exists)                throw new CascadeError(403, 'caller is not a trip member')
+    assertMemberNotRemoving(member.fields)
     if (!settlement.exists) {
       // Idempotent: delete-of-missing returns ok. Matches the existing
       // client `deleteDoc` behaviour (Firestore SDK silently no-ops on

@@ -33,6 +33,7 @@ import {
   type FsValue,
 }                                                                   from './firestore'
 import { withTokenRetry, CascadeError }                             from './cascade'
+import { assertMemberNotRemoving }                                   from './membership-shared'
 import {
   runFirestoreTransaction,
   docResourceName,
@@ -166,6 +167,7 @@ async function authorizeWishCreateTx(
   // tripId can't distinguish "deadline passed" from "not a member" via the
   // error message — both collapse to the same 403 as far as they can tell.
   if (!member.exists)              throw new CascadeError(403, 'caller is not a trip member')
+  assertMemberNotRemoving(member.fields)
   assertWishVotingOpen(trip)
 
   const role = readString(member.fields, 'role')
@@ -416,6 +418,7 @@ async function authorizeWishUpdateTx(
   // tripId can't distinguish "deadline passed" from "not a member" via the
   // error message — both collapse to the same 403 as far as they can tell.
   if (!member.exists)              throw new CascadeError(403, 'caller is not a trip member')
+  assertMemberNotRemoving(member.fields)
   assertWishVotingOpen(trip)
 
   const role = readString(member.fields, 'role')
@@ -644,6 +647,7 @@ export async function wishDelete(
         // non-member probing a tripId must not be able to tell "deadline
         // passed" from "not a member".
         if (!member.exists)              throw new CascadeError(403, 'caller is not a trip member')
+        assertMemberNotRemoving(member.fields)
         assertWishVotingOpen(trip)
 
         // Already gone → succeed. There is no identity check to make here

@@ -22,6 +22,7 @@ import type { FsValue }                       from './firestore'
 import { getR2Object }                        from './r2-storage'
 import { expenseIsSettlementLocked }          from './expense-write'
 import { CascadeError }                       from './cascade'
+import { assertMemberNotRemoving }                                   from './membership-shared'
 import { OCR_SUPPORTED_IMAGE_MIME_TYPES, type OcrResponse, type OcrSupportedImageMimeType } from './schema'
 import { TripIdRe }                           from './field-validation'
 
@@ -126,6 +127,7 @@ async function authorizeAndLocateReceipt(
   if (!tripFields)                  throw new CascadeError(404, 'trip not found')
   if ('deletingAt' in tripFields)   throw new CascadeError(410, 'trip is being deleted')
   if (!memberFields)                throw new CascadeError(403, 'caller is not a trip member')
+  assertMemberNotRemoving(memberFields)
   const role = readString(memberFields, 'role')
   if (role !== 'owner' && role !== 'editor') {
     throw new CascadeError(403, 'caller role is not owner/editor')
