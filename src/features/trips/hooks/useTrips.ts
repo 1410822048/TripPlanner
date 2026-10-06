@@ -11,7 +11,7 @@ import { copyTrip, type CopyTripInput, type CopyTripResult } from '../services/t
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
 import { getFirebase } from '@/services/firebase'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
-import { toLocalMidnightTimestamp } from '@/utils/dates'
+import { toTripDateTimestamp } from '@/utils/dates'
 import { MUTATION_ACTION, type MutationMeta } from '@/services/queryClient'
 import { useLastViewedStore } from '@/store/lastViewedStore'
 import { tripKeys } from '../queryKeys'
@@ -76,20 +76,21 @@ export function useUpdateTrip(uid: string | undefined) {
         if (updates.destination !== undefined) next.destination = updates.destination
         if (updates.icon        !== undefined) next.icon        = updates.icon
         if (updates.currency    !== undefined) next.currency    = updates.currency
-        if (updates.startDate) next.startDate = toLocalMidnightTimestamp(updates.startDate, Timestamp)
-        if (updates.endDate)   next.endDate   = toLocalMidnightTimestamp(updates.endDate,   Timestamp)
+        if (updates.startDate) next.startDate = toTripDateTimestamp(updates.startDate, Timestamp)
+        if (updates.endDate)   next.endDate   = toTripDateTimestamp(updates.endDate,   Timestamp)
         return next
       }))
       return { prev }
     },
-    onError: (_err, _vars, ctx) => {
-      if (uid && ctx?.prev !== undefined) qc.setQueryData(tripKeys.mine(uid), ctx.prev)
+    // Re-sync from the server instead of restoring the onMutate snapshot:
+    // `tripKeys.mine` is fed by a realtime listener, so writing `prev`
+    // back would clobber any snapshot pushed in the meantime (another
+    // member's edit, a newly joined trip) and the listener won't re-push
+    // an unchanged doc. Success needs no refetch: the optimistic patch
+    // covers every rendered field and the listener confirms it.
+    onError: () => {
+      if (uid) void qc.invalidateQueries({ queryKey: tripKeys.mine(uid) })
     },
-    // No onSettled invalidate: the optimistic patch already covers every field
-    // the UI renders (title / destination / icon / dates). The only field
-    // diverging from the server is `updatedAt`, which isn't displayed anywhere,
-    // so a full refetch would just re-download N trips for no visible benefit.
-    // Concurrent cross-client edits are rare on trip metadata — acceptable tradeoff.
   })
 }
 
@@ -114,8 +115,9 @@ export function useSetWishVotingDeadline(uid: string | undefined) {
       }))
       return { prev }
     },
-    onError: (_err, _vars, ctx) => {
-      if (uid && ctx?.prev !== undefined) qc.setQueryData(tripKeys.mine(uid), ctx.prev)
+    // Same reasoning as useUpdateTrip: re-sync, never restore a snapshot.
+    onError: () => {
+      if (uid) void qc.invalidateQueries({ queryKey: tripKeys.mine(uid) })
     },
   })
 }
@@ -145,11 +147,9 @@ export function useDeleteTrip(uid: string | undefined) {
       // stale records for deleted trips.
       useLastViewedStore.getState().clearTrip(tripId)
     },
-    onError: (_err, _vars, ctx) => {
-      if (uid) {
-        if (ctx?.prevTrips !== undefined) qc.setQueryData(tripKeys.mine(uid), ctx.prevTrips)
-      }
-    },
+    // No snapshot restore on error: onSettled's invalidate below re-syncs
+    // with server truth, and writing `prevTrips` back would clobber
+    // listener pushes that landed while the request was in flight.
     // Race: Worker cascade can complete server-side, but the HTTP
     // response can be lost (network blip, Worker timeout, iOS
     // background tab kill). The Firestore listener pushes the
@@ -193,11 +193,9 @@ export function useLeaveTrip(uid: string | undefined) {
     onSuccess: (_data, tripId) => {
       useLastViewedStore.getState().clearTrip(tripId)
     },
-    onError: (_err, _vars, ctx) => {
-      if (uid) {
-        if (ctx?.prevTrips !== undefined) qc.setQueryData(tripKeys.mine(uid), ctx.prevTrips)
-      }
-    },
+    // No snapshot restore on error: onSettled's invalidate below re-syncs
+    // with server truth, and writing `prevTrips` back would clobber
+    // listener pushes that landed while the request was in flight.
     // Same lost-response reconcile as useDeleteTrip: the trips
     // listener pushes the leave to the cache, but a lost
     // HTTP response would otherwise roll back to the pre-mutation snapshot

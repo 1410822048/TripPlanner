@@ -1,7 +1,8 @@
 // src/utils/dates.ts
-// Shared date helpers. The whole codebase uses a single timezone convention:
-// trip/schedule/expense dates are stored as "local midnight" Firestore
-// Timestamps, and displayed/edited as local 'YYYY-MM-DD' strings. Mixing
+// Shared date helpers. Calendar dates are displayed/edited as 'YYYY-MM-DD'
+// strings. Trip start/end are stored as Timestamps at 00:00 UTC (see
+// toTripDateTimestamp / tripTimestampToDateString — never read them via
+// ts.toDate() + local getters, which shifts the day across timezones). Mixing
 // `toISOString()` (UTC) into this chain shifts dates by one day in east-of-
 // UTC locales, which is the bug these helpers exist to prevent.
 //
@@ -35,22 +36,48 @@ export function parseStoredDate(s: string): Date {
 }
 
 /**
- * Build a Firestore Timestamp at local midnight for a 'YYYY-MM-DD' string.
- * The Timestamp factory is injected so this helper stays bundle-neutral —
- * callers pass the one from `getFirebase()`. Using this keeps all trip-
- * date writes aligned on the local-midnight convention.
+ * Build the Firestore Timestamp stored for a trip calendar date
+ * ('YYYY-MM-DD' → that date at 00:00 UTC). The Timestamp factory is
+ * injected so this helper stays bundle-neutral — callers pass the one
+ * from `getFirebase()`.
+ *
+ * Why UTC and not local midnight: trip members (or the same person after
+ * flying abroad) live in different timezones. A Taipei local-midnight
+ * Timestamp read back with `toLocalDateString(ts.toDate())` in PDT is the
+ * PREVIOUS day, so the whole trip range shifted by one and the last day's
+ * schedules lost their day chip. Always read back with
+ * `tripTimestampToDateString`.
  */
-export function toLocalMidnightTimestamp<T>(
+export function toTripDateTimestamp<T>(
   dateStr: string,
   TimestampCtor: { fromDate: (d: Date) => T },
 ): T {
-  return TimestampCtor.fromDate(fromLocalDateString(dateStr))
+  const [y, m, d] = dateStr.split('-').map(Number)
+  return TimestampCtor.fromDate(new Date(Date.UTC(y!, m! - 1, d!)))
 }
 
 /**
- * Inclusive day count between two local-midnight Timestamps. The Timestamps
- * share the same time-of-day so a fixed 86,400,000 ms divisor is exact —
- * no DST drift within a single trip's date range.
+ * Read a stored trip date Timestamp back as its calendar date
+ * ('YYYY-MM-DD'), independent of the viewer's timezone.
+ *
+ * Handles both encodings in the database: current writes (00:00 UTC) and
+ * legacy writes (00:00 in the writer's local zone, i.e. up to ±12h away
+ * from UTC midnight). Rounding to the NEAREST UTC midnight (+12h, then
+ * take the UTC date) maps both to the intended calendar day for any
+ * writer offset in (-12h, +12h].
+ */
+export function tripTimestampToDateString(ts: { toMillis: () => number }): string {
+  const d  = new Date(ts.toMillis() + 12 * 3_600_000)
+  const y  = d.getUTCFullYear()
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0')
+  const dd = String(d.getUTCDate()).padStart(2, '0')
+  return `${y}-${mm}-${dd}`
+}
+
+/**
+ * Inclusive day count between two stored trip-date Timestamps. Rounding
+ * the difference absorbs the ≤12h skew when one bound is a legacy
+ * local-midnight write and the other a current UTC-midnight write.
  */
 export function daysBetween(start: Timestamp, end: Timestamp): number {
   return Math.round((end.toMillis() - start.toMillis()) / 86_400_000) + 1

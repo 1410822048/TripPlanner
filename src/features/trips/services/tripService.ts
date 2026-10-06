@@ -6,7 +6,7 @@
 import type { User } from 'firebase/auth'
 import { getFirebase, type FirebaseBundle } from '@/services/firebase'
 import { P } from '@/services/paths'
-import { toLocalMidnightTimestamp } from '@/utils/dates'
+import { toTripDateTimestamp } from '@/utils/dates'
 import { captureError } from '@/services/sentry'
 import { normalizeMemberDisplayName } from '@/features/members/utils'
 import { subscribeToCollection } from '@/services/realtimeQuery'
@@ -124,8 +124,8 @@ export async function createTrip(input: CreateTripInput, user: User): Promise<Tr
   const tripRef   = doc(collection(db, ...P.trips()))
   const memberRef = doc(db, ...P.member(tripRef.id, user.uid))
 
-  const startTs = toLocalMidnightTimestamp(data.startDate, Timestamp)
-  const endTs   = toLocalMidnightTimestamp(data.endDate,   Timestamp)
+  const startTs = toTripDateTimestamp(data.startDate, Timestamp)
+  const endTs   = toTripDateTimestamp(data.endDate,   Timestamp)
   const icon    = data.icon ?? '✈️'
 
   // memberIds is denormalised onto trip + every member/entity doc so
@@ -216,8 +216,8 @@ export async function updateTrip(
   if (validated.icon        !== undefined) patch.icon        = validated.icon
   if (validated.currency    !== undefined) patch.currency    = validated.currency
   if (validated.defaultCountryCode !== undefined) patch.defaultCountryCode = validated.defaultCountryCode
-  if (validated.startDate) patch.startDate = toLocalMidnightTimestamp(validated.startDate, Timestamp)
-  if (validated.endDate)   patch.endDate   = toLocalMidnightTimestamp(validated.endDate,   Timestamp)
+  if (validated.startDate) patch.startDate = toTripDateTimestamp(validated.startDate, Timestamp)
+  if (validated.endDate)   patch.endDate   = toTripDateTimestamp(validated.endDate,   Timestamp)
   await updateDoc(doc(db, ...P.trip(tripId)), patch)
 }
 

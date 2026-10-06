@@ -26,7 +26,7 @@ import type { CreateScheduleInput, Schedule, Trip } from '@/types'
 import type { MenuActionKey, TripItem } from '@/features/trips/types'
 import { MOCK_SCHEDULES } from '../mocks'
 import { buildDateRange, groupByDate } from '../utils'
-import { toLocalDateString } from '@/utils/dates'
+import { tripTimestampToDateString } from '@/utils/dates'
 
 // Adapter: Firestore Trip → presentation TripItem. `icon` is persisted on
 // the Trip doc (default ✈️ for trips created before the field existed).
@@ -39,8 +39,8 @@ function cloudTripToItem(trip: Trip, uid: string | undefined): TripItem {
     title:     trip.title,
     dest:      trip.destination,
     emoji:     trip.icon ?? '✈️',
-    startDate: toLocalDateString(trip.startDate.toDate()),
-    endDate:   toLocalDateString(trip.endDate.toDate()),
+    startDate: tripTimestampToDateString(trip.startDate),
+    endDate:   tripTimestampToDateString(trip.endDate),
     members:   [],
     ownedByMe: !!uid && trip.ownerId === uid,
     currency:  trip.currency,

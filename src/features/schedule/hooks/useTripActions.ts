@@ -9,7 +9,7 @@ import type { CopyTripInput } from '@/features/trips/services/tripCopy'
 import type { AuthState } from '@/hooks/useAuth'
 import type { CreateTripInput, Trip } from '@/types'
 import type { TripItem } from '@/features/trips/types'
-import { toLocalDateString } from '@/utils/dates'
+import { tripTimestampToDateString } from '@/utils/dates'
 import { toast } from '@/shared/toast'
 import { getClientWriteBlockReason } from '@/services/clientCompatibility'
 
@@ -85,9 +85,9 @@ export function useTripActions(opts: {
     if (data.title !== currentTrip.title)       updates.title       = data.title
     if (data.dest  !== currentTrip.destination) updates.destination = data.dest
     if (data.emoji !== (currentTrip.icon ?? '✈️')) updates.icon     = data.emoji
-    if (data.startDate !== toLocalDateString(currentTrip.startDate.toDate()))
+    if (data.startDate !== tripTimestampToDateString(currentTrip.startDate))
       updates.startDate = data.startDate
-    if (data.endDate !== toLocalDateString(currentTrip.endDate.toDate()))
+    if (data.endDate !== tripTimestampToDateString(currentTrip.endDate))
       updates.endDate = data.endDate
     if (data.currency !== currentTrip.currency) updates.currency = data.currency
     if (data.defaultCountryCode !== currentTrip.defaultCountryCode)

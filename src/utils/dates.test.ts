@@ -3,8 +3,8 @@
 // EditTripModal's orphan-detection. These functions are pure + small
 // but the off-by-one risk on "is a date inclusive or exclusive" caused
 // the previous toISOString() bug; tests guard against the regression.
-import { describe, expect, test } from 'vitest'
-import { addDays, diffDays, toLocalDateString, fromLocalDateString } from './dates'
+import { describe, expect, it, test } from 'vitest'
+import { addDays, diffDays, toLocalDateString, fromLocalDateString, toTripDateTimestamp, tripTimestampToDateString } from './dates'
 
 describe('addDays', () => {
   test('adds positive days', () => {
@@ -77,5 +77,28 @@ describe('toLocalDateString / fromLocalDateString', () => {
     // for some dates near the boundary.
     const d = new Date(2026, 4, 1)   // local May 1
     expect(toLocalDateString(d)).toBe('2026-05-01')
+  })
+})
+
+describe('trip date Timestamps (timezone-independent calendar dates)', () => {
+  const Ts = { fromDate: (d: Date) => ({ toMillis: () => d.getTime() }) }
+
+  it('round-trips a calendar date through the stored Timestamp', () => {
+    for (const day of ['2026-01-01', '2026-03-08', '2026-11-05', '2028-02-29']) {
+      expect(tripTimestampToDateString(toTripDateTimestamp(day, Ts))).toBe(day)
+    }
+  })
+
+  it('stores 00:00 UTC regardless of the writer timezone', () => {
+    expect(toTripDateTimestamp('2026-11-01', Ts).toMillis()).toBe(Date.UTC(2026, 10, 1))
+  })
+
+  it('reads legacy local-midnight writes from any offset in (-12h, +12h] as the same day', () => {
+    // Legacy encoding = 00:00 in the WRITER's zone. Taipei (+8) wrote
+    // 2026-11-01 as 2026-10-31T16:00Z; a PDT viewer used to see 10/31.
+    for (const offsetHours of [-11, -8, -3, 0, 5.5, 8, 9, 12]) {
+      const legacy = { toMillis: () => Date.UTC(2026, 10, 1) - offsetHours * 3_600_000 }
+      expect(tripTimestampToDateString(legacy)).toBe('2026-11-01')
+    }
   })
 })

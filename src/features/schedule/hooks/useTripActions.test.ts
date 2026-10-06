@@ -29,7 +29,11 @@ vi.mock('@/services/clientCompatibility', () => ({
 
 import { useTripActions } from './useTripActions'
 
-const ts = (iso: string) => ({ toDate: () => new Date(`${iso}T00:00:00`) })
+// Stored trip dates are 00:00 UTC (toTripDateTimestamp).
+const ts = (iso: string) => {
+  const ms = Date.parse(`${iso}T00:00:00Z`)
+  return { toDate: () => new Date(ms), toMillis: () => ms }
+}
 
 const trip = (id: string, over: Partial<Trip> = {}): Trip => ({
   id, title: `Trip ${id}`, destination: 'Tokyo', ownerId: 'uid-1',

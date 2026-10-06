@@ -26,7 +26,7 @@ import BookingReadonlyModal from './BookingReadonlyModal'
 import BookingsListSkeleton from './BookingsListSkeleton'
 import { bookingDisplayName, BOOKING_TYPE_META, BOOKING_TYPE_ORDER } from '../utils'
 import { hasShareParams, sharedBookingDraftFromSearch, type SharedBookingDraft } from '../linkDraft'
-import { parseStoredDate, toLocalDateString } from '@/utils/dates'
+import { parseStoredDate, tripTimestampToDateString } from '@/utils/dates'
 import { getClientWriteBlockReason, UPDATE_REQUIRED_EMPTY_STATE } from '@/services/clientCompatibility'
 import { FORM_SCOPE_CHANGED_MESSAGE } from '@/hooks/useFormModal'
 
@@ -129,10 +129,10 @@ export default function BookingsPage() {
   // DatePicker so check-in / check-out land on the trip's first month
   // and disable days outside the range.
   const tripStartDate = ctx.status === 'cloud'
-    ? toLocalDateString(ctx.trip.startDate.toDate())
+    ? tripTimestampToDateString(ctx.trip.startDate)
     : ctx.trip.startDate
   const tripEndDate = ctx.status === 'cloud'
-    ? toLocalDateString(ctx.trip.endDate.toDate())
+    ? tripTimestampToDateString(ctx.trip.endDate)
     : ctx.trip.endDate
 
   // Group by booking type for the section headers. Order is fixed so the

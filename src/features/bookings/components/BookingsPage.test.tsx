@@ -86,8 +86,8 @@ vi.mock('@/hooks/useFeatureListPage', () => ({
       trip: {
         id: 'trip-1',
         title: 'Tokyo',
-        startDate: { toDate: () => new Date('2026-06-17T00:00:00') },
-        endDate: { toDate: () => new Date('2026-06-20T00:00:00') },
+        startDate: { toDate: () => new Date(Date.UTC(2026, 5, 17)), toMillis: () => Date.UTC(2026, 5, 17) },
+        endDate: { toDate: () => new Date(Date.UTC(2026, 5, 20)), toMillis: () => Date.UTC(2026, 5, 20) },
       },
     },
     uid: harness.uid,
