@@ -7,10 +7,11 @@ import {
   type MessagePayload,
 } from 'firebase/messaging/sw'
 import { ExpirationPlugin } from 'workbox-expiration'
-import { cleanupOutdatedCaches, createHandlerBoundToURL, precacheAndRoute } from 'workbox-precaching'
+import { addPlugins, cleanupOutdatedCaches, createHandlerBoundToURL, precacheAndRoute } from 'workbox-precaching'
 import { NavigationRoute, registerRoute } from 'workbox-routing'
 import { CacheFirst } from 'workbox-strategies'
 import { readPushOwnerUid } from './features/account/services/pushOwnerStore'
+import { precacheRedirectPlugin } from './services/precacheRedirectPlugin'
 
 const sw = self as unknown as ServiceWorkerGlobalScope
 type PrecacheManifest = Parameters<typeof precacheAndRoute>[0]
@@ -23,6 +24,7 @@ const firebaseConfig = {
   appId:             import.meta.env.VITE_FIREBASE_APP_ID              ?? '1:000000:web:demo',
 }
 
+addPlugins([precacheRedirectPlugin])
 precacheAndRoute((self as unknown as { __WB_MANIFEST: PrecacheManifest }).__WB_MANIFEST)
 cleanupOutdatedCaches()
 
