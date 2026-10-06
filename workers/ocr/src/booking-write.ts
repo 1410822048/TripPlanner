@@ -172,10 +172,14 @@ const CLEARABLE_BOOKING_FIELDS = new Set([
 /** Parse `checkIn` ('YYYY-MM-DD' or 'YYYY-MM-DDTHH:mm') to an ISO 8601
  *  string suitable for Firestore REST `timestampValue`. Returns null
  *  for unparseable input -- caller falls back to createdAt for the
- *  sortDate slot. Mirrors `checkInToTimestamp` in bookingService.ts;
- *  Date.parse handles both forms natively. */
+ *  sortDate slot. Mirrors `checkInToTimestamp` in bookingService.ts:
+ *  both treat the wall-clock value as UTC (the Worker runs in UTC, the
+ *  client does not), so client- and Worker-written docs sort the same. */
 function parseCheckInIso(checkIn: string): string | null {
-  const d = new Date(checkIn)
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(checkIn) ? `${checkIn}T00:00:00Z`
+            : /(Z|[+-]\d{2}:\d{2})$/.test(checkIn) ? checkIn
+            : `${checkIn}Z`
+  const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return null
   return d.toISOString()
 }

@@ -194,10 +194,10 @@ function HotelPassCard({ booking, whenLabel }: Props) {
       <div className="px-4 pt-3 pb-3">
         <div className="grid grid-cols-3 gap-3">
           {checkInLabel && (
-            <PassFactCell fact={{ label: 'Check-in', value: checkInLabel, icon: CalendarDays }} />
+            <PassFactCell fact={{ label: '入住', value: checkInLabel, icon: CalendarDays }} />
           )}
           {checkOutLabel && (
-            <PassFactCell fact={{ label: 'Check-out', value: checkOutLabel, icon: CalendarDays }} />
+            <PassFactCell fact={{ label: '退房', value: checkOutLabel, icon: CalendarDays }} />
           )}
           {booking.confirmationCode ? (
             <PassFactCell fact={{ label: '確認編號', value: booking.confirmationCode, icon: Hash, mono: true }} />

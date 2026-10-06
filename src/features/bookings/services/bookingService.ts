@@ -228,7 +228,15 @@ function checkInToTimestamp(
   Timestamp: typeof import('firebase/firestore').Timestamp,
 ) {
   if (!checkIn) return null
-  const d = new Date(checkIn)
+  // Wall-clock-as-UTC for BOTH shapes (same rule as the Worker's
+  // parseCheckInIso). `new Date(s)` reads 'YYYY-MM-DD' as UTC but
+  // 'YYYY-MM-DDTHH:mm' as device-local, so a date-only and a timed booking
+  // on the same day sorted ~8h apart in Taipei — and differently from
+  // Worker-written docs. sortDate is only an ordering key, never displayed.
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(checkIn) ? `${checkIn}T00:00:00Z`
+            : /(Z|[+-]\d{2}:\d{2})$/.test(checkIn) ? checkIn
+            : `${checkIn}Z`
+  const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return null
   return Timestamp.fromDate(d)
 }

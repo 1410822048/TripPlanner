@@ -80,7 +80,7 @@ vi.mock('@/services/firebase', () => ({
     // checkIn handling — Timestamp.fromDate fires only on the sortDate
     // recompute path in client-side updateBooking. Tests that hit that
     // path supply checkIn explicitly.
-    Timestamp: { fromDate: vi.fn(() => ({ _kind: 'timestamp' })) },
+    Timestamp: { fromDate: vi.fn((d: Date) => ({ _kind: 'timestamp', ms: d.getTime() })) },
   })),
 }))
 
@@ -299,6 +299,25 @@ describe('createBooking', () => {
     expect(mocks.compressImageMock).not.toHaveBeenCalled()
     expect(mocks.requestUploadIntentsMock).not.toHaveBeenCalled()
     expect(mocks.uploadToIntentMock).not.toHaveBeenCalled()
+  })
+
+  it('sortDate treats date-only and timed checkIn as UTC wall clock (same as the Worker)', async () => {
+    for (const [checkIn, iso] of [
+      ['2026-05-15',       '2026-05-15T00:00:00Z'],
+      ['2026-05-15T10:30', '2026-05-15T10:30:00Z'],
+    ] as const) {
+      mocks.setDocMock.mockClear()
+      mocks.setDocMock.mockResolvedValueOnce(undefined)
+      await createBooking(
+        't1',
+        { type: 'hotel', title: 'Hotel', checkIn } as unknown as Parameters<typeof createBooking>[1],
+        EMPTY_FILES,
+        'u1',
+        'b-new',
+      )
+      const payload = mocks.setDocMock.mock.calls[0]![1] as { sortDate: { ms: number } }
+      expect(payload.sortDate.ms).toBe(Date.parse(iso))
+    }
   })
 
   it('with image File: upload-first → POST /booking-file-create, NO client setDoc', async () => {

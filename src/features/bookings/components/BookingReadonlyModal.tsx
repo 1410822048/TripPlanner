@@ -269,13 +269,13 @@ function StayTimeline({
   return (
     <div className="border-t border-border px-4 py-3">
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
-        <TimelinePoint label="Check-in" value={start} />
+        <TimelinePoint label="入住" value={start} />
         <div className="flex items-center gap-1">
           <span className="w-2 h-2 rounded-full" style={{ backgroundColor: accent }} />
           <span className="w-9 border-t border-dashed border-border" />
           <span className="w-2 h-2 rounded-full bg-border" />
         </div>
-        <TimelinePoint label="Check-out" value={end} align="right" />
+        <TimelinePoint label="退房" value={end} align="right" />
       </div>
     </div>
   )
