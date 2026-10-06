@@ -34,8 +34,13 @@ import AppCompatibilityGate from '@/components/AppCompatibilityGate'
  */
 ;(() => {
   const KEY = 'tripmate-session-init'
-  if (sessionStorage.getItem(KEY)) return
-  sessionStorage.setItem(KEY, '1')
+  try {
+    if (sessionStorage.getItem(KEY)) return
+    sessionStorage.setItem(KEY, '1')
+  } catch {
+    // 儲存被封鎖時保留目前網址，避免啟動失敗或把重載誤判為全新工作階段。
+    return
+  }
 
   const path = window.location.pathname
   const isBookingShareTarget = path === '/bookings' && hasShareParams(window.location.search)
