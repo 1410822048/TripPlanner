@@ -10,6 +10,7 @@ import {
   readString,
   readStringArray,
   readTimestampMs,
+  encodeStringArray,
   listDocNames,
   batchStripDepartedMember,
   deleteUserTripNotifications,
@@ -125,9 +126,7 @@ export async function requireTripOwner(
 
 /** Encode a list of uids as a Firestore REST arrayValue payload. */
 export function encodeMemberIds(uids: string[]): FsValue {
-  return {
-    arrayValue: { values: uids.map(u => ({ stringValue: u })) },
-  }
+  return encodeStringArray(uids)
 }
 
 // ─── Shared member-strip (member-remove + member-leave) ────────────

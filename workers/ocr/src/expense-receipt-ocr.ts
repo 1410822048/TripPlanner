@@ -17,7 +17,7 @@
 // the expense (via /expense-update).
 import { z }                                  from 'zod'
 import { getAdminToken, getProjectId }        from './admin'
-import { getDocFields, readString }           from './firestore'
+import { getDocFields, readMap, readString }  from './firestore'
 import type { FsValue }                       from './firestore'
 import { getR2Object }                        from './r2-storage'
 import { expenseIsSettlementLocked }          from './expense-write'
@@ -63,10 +63,6 @@ export type ReceiptOcrExtractor = (
   currency:    string | undefined,
 ) => Promise<OcrResponse>
 
-/** mapValue → inner fields, or undefined when the field is absent / not a map. */
-function readMap(fields: Record<string, FsValue>, key: string): Record<string, FsValue> | undefined {
-  return (fields[key] as { mapValue?: { fields?: Record<string, FsValue> } } | undefined)?.mapValue?.fields
-}
 
 function supportedOcrMimeType(contentType: string | undefined): OcrSupportedImageMimeType | null {
   const normalized = contentType?.split(';', 1)[0]?.trim().toLowerCase()

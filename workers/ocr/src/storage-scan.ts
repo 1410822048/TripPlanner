@@ -37,6 +37,7 @@
 // → skip + report, do NOT delete. Same invariant as orphan-purge.ts.
 // Storage delete failures bubble up to the per-candidate try/catch and
 // log; no retry budget (this is a daily cron, tomorrow tries again).
+import { mapWithConcurrency } from './concurrency'
 import { deleteR2Object, headR2Object, listR2Objects } from './r2-storage'
 import { getDocFields, getScanCursor, setScanCursor, clearScanCursor, readString, readTimestampMs } from './firestore'
 import { referencedPaths, type ValidCollection } from './orphan-purge'
@@ -321,7 +322,7 @@ export async function scanOrphanStorage(
     // off the shared cursor until depleted; this avoids the all-at-once
     // Promise.all blast that would spike subrequest pool usage above
     // the cron-trigger budget.
-    await pMap(candidates, async ({ obj, parsed }) => {
+    await mapWithConcurrency(candidates, CONCURRENCY, async ({ obj, parsed }) => {
       if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
         report.deadlineHit = true
         return
@@ -415,7 +416,7 @@ export async function scanOrphanStorage(
           `[storage-scan] candidate recheck failed obj=${obj.name}: ${(e as Error).message}`,
         )
       }
-    }, CONCURRENCY)
+    })
 
     if (report.deadlineHit) break
     if (report.budgetHit) break
@@ -508,29 +509,6 @@ async function tryDelete(
       `[storage-scan] delete failed obj=${obj.name}: ${(e as Error).message}`,
     )
   }
-}
-
-/** Bounded-concurrency async iterator. Spawns `min(concurrency, items)`
- *  workers, each pulls from a shared cursor until depleted. Plain
- *  Promise.all would blast all candidates at once and overshoot the
- *  cron-trigger subrequest budget on an all-orphan page; this lets us
- *  cap in-flight work without sequential bottleneck. */
-async function pMap<T>(
-  items:       T[],
-  fn:          (item: T) => Promise<void>,
-  concurrency: number,
-): Promise<void> {
-  if (items.length === 0) return
-  let cursor = 0
-  const workerCount = Math.min(concurrency, items.length)
-  const workers = Array.from({ length: workerCount }, async () => {
-    while (cursor < items.length) {
-      const i = cursor
-      cursor += 1
-      await fn(items[i]!)
-    }
-  })
-  await Promise.all(workers)
 }
 
 /** R2 daily maintenance: verify-before-delete orphan reconciliation only. */

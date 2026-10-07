@@ -24,7 +24,6 @@ import {
   convertMinorHalfEven,
   estimateSourceMinorAtMostTargetHalfEven,
 }                                          from '@tripmate/fx-core'
-import { type FsValue }                    from './firestore'
 import {
   SettlementValidationError,
   type TripCurrencyContext,
@@ -51,34 +50,8 @@ export interface ForeignRate {
   targetFractionDigits: number
 }
 
-/** Encode FxSnapshot as a Firestore map. `fetchedAt` is set to null
- *  here -- the caller adds an `updateTransforms` entry pinned to
- *  REQUEST_TIME so Firestore stamps the field at commit. Writing both
- *  is intentional: the field MUST appear in the map so the create
- *  Write's `currentDocument.exists=false` doesn't reject the transform
- *  as targeting a missing parent.
- *
- *  Inline (vs sharing from fx-rate.ts with expense-write) is deliberate:
- *  both writers shaping the same fxSnapshot map keeps the contract
- *  obvious at the write site, and the read-schema test
- *  (settlement.test.ts FX cross-field equality) catches any divergence. */
-export function encodeFxSnapshot(fx: FxSnapshot): FsValue {
-  return {
-    mapValue: {
-      fields: {
-        provider:             { stringValue:  fx.provider },
-        baseCurrency:         { stringValue:  fx.baseCurrency },
-        quoteCurrency:        { stringValue:  fx.quoteCurrency },
-        requestedDate:        { stringValue:  fx.requestedDate },
-        rateDate:             { stringValue:  fx.rateDate },
-        rateDecimal:          { stringValue:  fx.rateDecimal },
-        sourceAmountMinor:    { integerValue: String(fx.sourceAmountMinor) },
-        convertedAmountMinor: { integerValue: String(fx.convertedAmountMinor) },
-        fetchedAt:            { nullValue:    null },
-      },
-    },
-  }
-}
+// One encoder for both expense and settlement fxSnapshot maps.
+export { encodeFxSnapshot } from './expense-foreign-codec'
 
 /** NETWORK half. Rejects same-currency (caller should use TRIP_CURRENCY),
  *  then resolves the FX rate for (sourceCurrency, tripCurrency, settledOn)

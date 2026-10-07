@@ -374,6 +374,16 @@ export function readStringArray(fields: Record<string, FsValue> | null | undefin
     .filter((v): v is string => typeof v === 'string')
 }
 
+/** Decode a map field's inner fields. Undefined when absent or not a map. */
+export function readMap(fields: Record<string, FsValue> | null | undefined, key: string): Record<string, FsValue> | undefined {
+  return fields?.[key]?.mapValue?.fields
+}
+
+/** Encode a list of strings as a Firestore REST arrayValue. */
+export function encodeStringArray(values: readonly string[]): FsValue {
+  return { arrayValue: { values: values.map(value => ({ stringValue: value })) } }
+}
+
 /** Extract the trailing document id from a Firestore REST resource name. */
 export function docIdFromName(name: string): string | null {
   const id = name.split('/').pop()

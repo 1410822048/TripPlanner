@@ -12,7 +12,7 @@
 // wish's `proposedBy`) makes a generic write factory uglier than the
 // hand-written variants.
 import type { QueryDocumentSnapshot } from 'firebase/firestore'
-import { getFirebase } from '@/services/firebase'
+import { getFirebase, type FirebaseBundle } from '@/services/firebase'
 import { captureError } from '@/services/sentry'
 import { parseListSnapshot, parseServerListSnapshot } from '@/services/parseListSnapshot'
 import { subscribeToCollection, type ListSnapshotMetadata } from '@/services/realtimeQuery'
@@ -64,15 +64,20 @@ export function createTripScopedListServices<T>(
 ): TripScopedListServices<T> {
   const { path, fromDoc, orderBy, limit: LIM, source, postProcess, requireComplete } = opts
 
-  async function read(tripId: string, uid: string, fromServer: boolean): Promise<T[]> {
-    const fb = await getFirebase()
-    const orderClauses = orderBy.map(([f, d]) => fb.orderBy(f, d ?? 'asc'))
-    const q = fb.query(
+  // One query for both the one-shot read and the listener, so the two can
+  // never drift apart on filters, order or the +1 completeness probe.
+  function buildQuery(fb: FirebaseBundle, tripId: string, uid: string) {
+    return fb.query(
       fb.collection(fb.db, ...path(tripId)),
       fb.where('memberIds', 'array-contains', uid),
-      ...orderClauses,
+      ...orderBy.map(([f, d]) => fb.orderBy(f, d ?? 'asc')),
       fb.limit(LIM + (requireComplete ? 1 : 0)),
     )
+  }
+
+  async function read(tripId: string, uid: string, fromServer: boolean): Promise<T[]> {
+    const fb = await getFirebase()
+    const q = buildQuery(fb, tripId, uid)
     const snap = await (fromServer || requireComplete ? fb.getDocsFromServer(q) : fb.getDocs(q))
     if (!requireComplete && snap.size >= LIM) {
       captureError(new Error(`${source} truncated at ${LIM}`), { tripId, source })
@@ -87,12 +92,7 @@ export function createTripScopedListServices<T>(
 
     subscribe(tripId, uid, onData, onError) {
       return subscribeToCollection<T>({
-        buildQuery: ({ db, collection, query, where, orderBy: ob, limit: lim }) => query(
-          collection(db, ...path(tripId)),
-          where('memberIds', 'array-contains', uid),
-          ...orderBy.map(([f, d]) => ob(f, d ?? 'asc')),
-          lim(LIM + (requireComplete ? 1 : 0)),
-        ),
+        buildQuery: fb => buildQuery(fb, tripId, uid),
         fromDoc,
         source,
         limit: LIM,

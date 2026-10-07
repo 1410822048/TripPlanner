@@ -21,7 +21,8 @@ import {
   type TxWrite,
   type TxReadDoc,
 }                                          from './firestore-tx'
-import { type FsValue }                    from './firestore'
+import { encodeStringArray, readStringArray } from './firestore'
+import { canonicalPairKey }                 from '@tripmate/settlement-core'
 
 // ─── Pair-key / Pair-lock path ────────────────────────────────────
 
@@ -46,8 +47,9 @@ import { type FsValue }                    from './firestore'
  *  not leave that on the floor for a future reviewer to re-discover.
  *  `:` is a legal Firestore doc-id character (only `/` is banned). */
 export function pairKey(a: string, b: string): string {
-  const [lo, hi] = a < b ? [a, b] : [b, a]
-  return `${lo.length}:${lo}:${hi.length}:${hi}`
+  // Single definition in settlement-core so client and Worker can never
+  // disagree on which lock doc a pair maps to.
+  return canonicalPairKey(a, b)
 }
 export function pairLockPath(tripId: string, a: string, b: string): string {
   return `trips/${tripId}/settlementPairLocks/${pairKey(a, b)}`
@@ -72,20 +74,9 @@ export function buildLockWrite(projectId: string, lockPath: string, settlementId
 
 // ─── settlementLockIds reference-set (de/encode) ──────────────────
 
-export function encodeStringArray(values: string[]): FsValue {
-  return {
-    arrayValue: {
-      values: values.map(value => ({ stringValue: value })),
-    },
-  }
-}
-
-export function decodeStringArrayField(fields: Record<string, FsValue> | undefined, key: string): string[] {
-  const arr = (fields?.[key] as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []
-  return arr
-    .map(v => (v as { stringValue?: string }).stringValue)
-    .filter((s): s is string => typeof s === 'string')
-}
+// Shared REST codecs; the lock-specific names stay as aliases for callers.
+export { encodeStringArray }
+export const decodeStringArrayField = readStringArray
 
 // ─── Expense settlementLockIds writes (create + delete symmetry) ──
 

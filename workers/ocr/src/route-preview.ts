@@ -1,5 +1,5 @@
 import { getAdminToken } from './admin'
-import { readString, type FsValue } from './firestore'
+import { readMap, readString, type FsValue } from './firestore'
 import { requireTripMember } from './membership-shared'
 import { runFirestoreTransaction, TxCancelled, type TxReadDoc } from './firestore-tx'
 import {
@@ -134,9 +134,6 @@ function readNumber(fields: Record<string, FsValue>, key: string): number | unde
   return undefined
 }
 
-function readMap(fields: Record<string, FsValue>, key: string): Record<string, FsValue> | undefined {
-  return fields[key]?.mapValue?.fields
-}
 
 function readPlace(fields: Record<string, FsValue>): PlaceCandidate | undefined {
   const location = readMap(fields, 'location')
