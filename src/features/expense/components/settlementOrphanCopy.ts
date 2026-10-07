@@ -14,7 +14,10 @@ import type { OrphanReason } from '../services/settlement'
  * `orphanReasonExplain` 改走 generic「展開逐筆確認」提示。
  */
 export const ORPHAN_REASON_COPY: Record<OrphanReason, string> = {
-  OVERPAYMENT:     '屬於過度支付。多出的金額視為對方的預存金,無需額外操作。',
+  // Leftover is NOT carried into balances (it only gets absorbed if a new
+  // debt in the same direction appears later), so don't call it a
+  // prepayment people can ignore.
+  OVERPAYMENT:     '記錄時金額超過當時的欠款。多出的部分不計入餘額；如為誤記，可從下方刪除這筆清算。',
   EXPENSE_DELETED: '對應的費用已被刪除。如不需要可從下方刪除這筆清算。',
   EXPENSE_CHANGED: '對應的費用在清算後被修改,應付金額已變動。如不需要可從下方刪除這筆清算。',
   MIXED:           '同時包含過度支付與已刪除費用兩種情況。可逐筆檢查並刪除。',

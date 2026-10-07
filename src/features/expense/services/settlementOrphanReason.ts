@@ -81,6 +81,17 @@ interface SettlementReplayInfo {
   editedAfter?: boolean
   /** An expense involving either party was soft-deleted after recording. */
   deletedAfter?: boolean
+  /** Lineage-based facts, only for settlements carrying the Worker's
+   *  `appliedExpenseIds` / `appliedSources`: the exact expenses the
+   *  settlement was applied against. Authoritative over the replay. */
+  lineageDeleted?: boolean
+  lineageEdited?:  boolean
+}
+
+/** Expenses a settlement was applied against, from its Worker lineage. */
+function lineageExpenseIds(st: SettlementRecord): string[] {
+  if (st.appliedExpenseIds && st.appliedExpenseIds.length > 0) return st.appliedExpenseIds
+  return [...new Set((st.appliedSources ?? []).map(s => s.expenseId))]
 }
 
 function involves(e: Expense, a: string, b: string): boolean {
@@ -128,6 +139,7 @@ export function buildOrphanReasonMap(
   const pairGrossT:   Record<string, Record<string, number>> = {}
   const pairAppliedT: Record<string, Record<string, number>> = {}
   const out = new Map<string, SettlementReplayInfo>()
+  const expenseById = new Map(expenses.map(e => [e.id, e]))
 
   for (const ev of events) {
     if (ev.type === 'expense_create' || ev.type === 'expense_delete') {
@@ -172,7 +184,24 @@ export function buildOrphanReasonMap(
         if (uMs > ev.ts && uMs > cMs) editedAfter = true
       }
     }
-    out.set(st.id, { atRecording, overpayment, editedAfter, deletedAfter })
+    // Lineage (Worker-written since settlement lineage shipped) names the
+    // exact expenses this settlement cleared, so it can tell "edited away"
+    // and "deleted" apart even when an edit removed the pair from the
+    // expense entirely — something the current-splits replay cannot see.
+    let lineageDeleted = false
+    let lineageEdited  = false
+    for (const id of lineageExpenseIds(st)) {
+      const e = expenseById.get(id)
+      if (!e) { lineageDeleted = true; continue }
+      if (e.deletedAt) {
+        if ((e.deletedAt.toMillis?.() ?? 0) > ev.ts) lineageDeleted = true
+        continue
+      }
+      const uMs = e.updatedAt?.toMillis?.() ?? 0
+      const cMs = e.createdAt?.toMillis?.() ?? 0
+      if (uMs > ev.ts && uMs > cMs) lineageEdited = true
+    }
+    out.set(st.id, { atRecording, overpayment, editedAfter, deletedAfter, lineageDeleted, lineageEdited })
   }
   return out
 }
@@ -187,6 +216,9 @@ export function buildOrphanReasonMap(
  */
 export function classifyOrphan(info: SettlementReplayInfo | undefined, leftover: number): OrphanReason {
   if (!info) return 'UNKNOWN'
+  // Lineage first: it knows which expenses this settlement actually cleared.
+  if (info.lineageDeleted) return 'EXPENSE_DELETED'
+  if (info.lineageEdited)  return 'EXPENSE_CHANGED'
   // A later edit invalidates the replay's view of the debt at recording
   // (it only sees current splits). A later delete on a WITHIN settlement
   // still explains the leftover on its own, so that keeps its reason.

@@ -467,6 +467,34 @@ describe('orphan reason classification (phase-2)', () => {
     ])
   })
 
+  it('lineage: an expense edited so it no longer involves the pair is EXPENSE_CHANGED, not UNKNOWN', () => {
+    // e1: m1 paid 500 split m1/m2 → m2 owes m1 250; settled 250 with lineage
+    // [e1]. Owner then rewrites e1 to "m3 paid, m3 only". The replay sees no
+    // pair expense at recording (current splits) and used to say UNKNOWN.
+    const expense = {
+      ...mkExpense('m3', 500, [['m3', 500]]),
+      id: 'e1',
+      createdAt: tsAt(1000),
+      updatedAt: tsAt(3000),
+    }
+    const settlement = { ...mkSettlement('m2', 'm1', 250), createdAt: tsAt(2000), appliedExpenseIds: ['e1'] }
+    const { orphans } = computeBalancesFull([expense], MEMBERS, [settlement])
+    expect(orphans.map(o => o.reason)).toEqual(['EXPENSE_CHANGED'])
+  })
+
+  it('lineage: edited then deleted is EXPENSE_DELETED (not MIXED)', () => {
+    const expense = {
+      ...mkExpense('m1', 120, [['m1', 60], ['m2', 60]]),
+      id: 'e1',
+      createdAt: tsAt(1000),
+      updatedAt: tsAt(4000),
+      deletedAt: tsAt(4000),
+    }
+    const settlement = { ...mkSettlement('m2', 'm1', 100), createdAt: tsAt(2000), appliedExpenseIds: ['e1'] }
+    const { orphans } = computeBalancesFull([expense], MEMBERS, [settlement])
+    expect(orphans.map(o => o.reason)).toEqual(['EXPENSE_DELETED'])
+  })
+
   it('OVERPAYMENT distinguished from EXPENSE_DELETED when expense existed at recording', () => {
     // m2 owed m1 30 (expense gross=30). Settlement of 50 recorded while
     // the expense was still alive — classifier sees gross>0 + over →
