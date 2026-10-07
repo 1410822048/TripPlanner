@@ -24,6 +24,9 @@ import { getFirebase, type FirebaseBundle } from '@/services/firebase'
 import { captureError } from '@/services/sentry'
 import { parseListSnapshot } from '@/services/parseListSnapshot'
 
+/** Sources whose truncation was already reported this page load. */
+const reportedTruncation = new Set<string>()
+
 export type ListSnapshotMetadata = Pick<SnapshotMetadata, 'fromCache' | 'hasPendingWrites'>
 
 export interface SubscribeToCollectionOpts<T> {
@@ -72,7 +75,11 @@ export async function subscribeToCollection<T>(
   const bundle = await getFirebase()
   const q = opts.buildQuery(bundle)
   const handleSnapshot = (snap: QuerySnapshot) => {
-    if (!opts.requireComplete && opts.limit !== undefined && snap.size >= opts.limit) {
+    if (!opts.requireComplete && opts.limit !== undefined && snap.size >= opts.limit
+        && !reportedTruncation.has(opts.source)) {
+      // Once per source per page load: a capped list stays capped, and every
+      // later snapshot would otherwise send the same event again.
+      reportedTruncation.add(opts.source)
       captureError(
         new Error(`${opts.source} truncated at ${opts.limit}`),
         { source: opts.source },

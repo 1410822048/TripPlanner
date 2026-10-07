@@ -882,7 +882,6 @@ export default {
     try {
       const claims = await verifyFirebaseToken(token, env.FIREBASE_PROJECT_ID)
       uid = claims.sub
-      console.log(`[auth] ok uid=${uidTag(uid)}${trace}`)
     } catch (e) {
       console.warn(`[auth] invalid token: ${(e as Error).message}${trace}`)
       // Detail stays in the log only: echoing jose's reason ("exp" claim

@@ -13,7 +13,9 @@ const mocks = vi.hoisted(() => ({
   },
 }))
 vi.mock('@/hooks/useAuth', () => ({ useUid: () => mocks.uid }))
-vi.mock('@/store/tripStore', () => ({ useTripStore: () => mocks.state }))
+vi.mock('@/store/tripStore', () => ({
+  useTripStore: (selector?: (s: typeof mocks.state) => unknown) => (selector ? selector(mocks.state) : mocks.state),
+}))
 vi.mock('./useTrips', () => ({ useMyTrips: () => ({ data: mocks.trips }) }))
 import { useCurrentTripSync } from './useCurrentTripSync'
 

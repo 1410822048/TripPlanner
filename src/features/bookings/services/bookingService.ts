@@ -187,7 +187,7 @@ export async function getMyHotelBookings(uid: string): Promise<Booking[]> {
     limit(LIST_LIMIT),
   ))
   if (snap.size >= LIST_LIMIT) {
-    captureError(new Error(`getMyHotelBookings truncated at ${LIST_LIMIT}`), { uid })
+    captureError(new Error(`getMyHotelBookings truncated at ${LIST_LIMIT}`), { source: 'getMyHotelBookings' })
   }
   return parseListSnapshot(snap, bookingFromDoc)
 }

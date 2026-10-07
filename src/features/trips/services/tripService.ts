@@ -34,7 +34,7 @@ export async function getMyTrips(uid: string): Promise<Trip[]> {
   const bundle = await getFirebase()
   const snap = await bundle.getDocs(myTripsQuery(bundle, uid))
   if (snap.size >= TRIPS_LIMIT) {
-    captureError(new Error('getMyTrips truncated at ' + TRIPS_LIMIT), { uid })
+    captureError(new Error('getMyTrips truncated at ' + TRIPS_LIMIT), { source: 'getMyTrips' })
   }
   return sortTrips(parseListSnapshot(snap, d => firestoreDocFromSchema(TripDocSchema, d, 'getMyTrips')))
 }

@@ -46,7 +46,12 @@ const SELECTION_GRACE_MS = 3000
 
 export function useCurrentTripSync(): void {
   const uid = useUid()
-  const { selectedTripId, selectedTripAt, recentTripIds, setSelectedTripId } = useTripStore()
+  // Field selectors: subscribing to the whole store re-rendered the app
+  // shell on every unrelated store write.
+  const selectedTripId    = useTripStore(s => s.selectedTripId)
+  const selectedTripAt    = useTripStore(s => s.selectedTripAt)
+  const recentTripIds     = useTripStore(s => s.recentTripIds)
+  const setSelectedTripId = useTripStore(s => s.setSelectedTripId)
   const { data: myTrips } = useMyTrips(uid)
 
   useEffect(() => {
