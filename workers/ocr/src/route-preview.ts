@@ -1,5 +1,6 @@
 import { getAdminToken } from './admin'
-import { readMap, readString, type FsValue } from './firestore'
+import { getDocFields, readMap, readString, type FsValue } from './firestore'
+import { CascadeError } from './cascade'
 import { requireTripMember } from './membership-shared'
 import { runFirestoreTransaction, TxCancelled, type TxReadDoc } from './firestore-tx'
 import {
@@ -339,16 +340,25 @@ export async function assertRouteEditor(
   serviceAccountJson: string,
   projectId: string,
 ): Promise<void> {
+  // Read-only gate for autocomplete / resolve, called on every keystroke
+  // batch: two parallel GETs instead of a read-only transaction (begin +
+  // two reads + rollback). Nothing is written, so there is no conflict set
+  // to protect; the write path (/route-apply) keeps its transaction.
   const accessToken = await getAdminToken(serviceAccountJson)
-  await runFirestoreTransaction(accessToken, projectId, async tx => {
-    const { member } = await requireTripMember(tx, tripId, uid)
-    assertRouteMemberActive(member)
-    const role = readString(member.fields, 'role')
-    if (role !== 'owner' && role !== 'editor') {
-      throw new RouteValidationError(403, 'role', 'ROUTE_EDITOR_REQUIRED', 'editor permission is required')
-    }
-    return { writes: [], result: undefined }
-  })
+  const [tripFields, memberFields] = await Promise.all([
+    getDocFields(accessToken, projectId, `trips/${tripId}`),
+    getDocFields(accessToken, projectId, `trips/${tripId}/members/${uid}`),
+  ])
+  if (!tripFields)                throw new CascadeError(404, 'trip not found')
+  if ('deletingAt' in tripFields) throw new CascadeError(410, 'trip is being deleted')
+  if (!memberFields)              throw new CascadeError(403, 'caller is not a trip member')
+  if ('removingAt' in memberFields) {
+    throw new RouteValidationError(403, 'membership', 'ROUTE_MEMBER_INACTIVE', 'caller is leaving the trip')
+  }
+  const role = readString(memberFields, 'role')
+  if (role !== 'owner' && role !== 'editor') {
+    throw new RouteValidationError(403, 'role', 'ROUTE_EDITOR_REQUIRED', 'editor permission is required')
+  }
 }
 
 export async function autocompleteRoutePlace(
