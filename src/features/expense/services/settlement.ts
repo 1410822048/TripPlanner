@@ -204,6 +204,36 @@ export function expandWithGhosts(
   return ghosts.length === 0 ? members : [...members, ...ghosts]
 }
 
+/**
+ * Re-order `members` so the uids `expense` already references keep the
+ * relative order they were saved in, while everyone else stays where the
+ * roster put them. The edit form feeds its member order into splitEqually
+ * and the item allocation ordering, whose remainder tie-break follows list
+ * order — and `expandWithGhosts` appends departed members at the tail. Without
+ * this, re-saving an expense after a participant left (even a title-only
+ * edit) would hand the leftover unit to someone else and leave a 1-unit
+ * "edited" orphan behind any settlement that already cleared it.
+ */
+export function orderMembersLikeExpense(members: TripMember[], expense: Expense): TripMember[] {
+  const stored: string[] = []
+  const seen = new Set<string>()
+  const note = (id: string) => {
+    if (seen.has(id)) return
+    seen.add(id)
+    stored.push(id)
+  }
+  for (const s of expense.splits) note(s.memberId)
+  for (const item of expense.items ?? []) {
+    for (const a of item.allocations) note(a.memberId)
+  }
+  const byId = new Map(members.map(m => [m.id, m]))
+  const queue = stored.filter(id => byId.has(id))
+  if (queue.length === 0) return members
+  let next = 0
+  const out = members.map(m => (seen.has(m.id) ? byId.get(queue[next++]!)! : m))
+  return out.every((m, i) => m === members[i]) ? members : out
+}
+
 // ─── Input self-defense ─────────────────────────────────────────────
 
 /**

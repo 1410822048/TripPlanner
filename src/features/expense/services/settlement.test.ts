@@ -4,7 +4,9 @@ import {
   computeBalancesFull,
   expandWithGhosts,
   ghostMember,
+  orderMembersLikeExpense,
 } from './settlement'
+import { splitEqually } from '../utils'
 import {
   computeSettlements,
   computeSettlementSuggestions,
@@ -682,6 +684,33 @@ describe('expandWithGhosts', () => {
     }]
     const r = expandWithGhosts(MEMBERS, [e], [], { gone: '抜けた人' })
     expect(r.find(m => m.id === 'gone')?.displayName).toBe('抜けた人')
+  })
+})
+
+describe('orderMembersLikeExpense', () => {
+  it('keeps the saved split order when a departed participant is appended as a ghost', () => {
+    // m1 paid ¥1000 split m1/m2/m3 → [334,333,333]; m1 then left. The edit
+    // form's roster is [m2, m3, ghost m1]. Re-splitting in that order would
+    // move the extra yen from m1 to m2 on a title-only save.
+    const e = mkExpense('m3', 1000, [['m1', 334], ['m2', 333], ['m3', 333]])
+    const roster = expandWithGhosts(MEMBERS.slice(1), [e])
+    expect(roster.map(m => m.id)).toEqual(['m2', 'm3', 'm1'])
+    const ordered = orderMembersLikeExpense(roster, e)
+    expect(ordered.map(m => m.id)).toEqual(['m1', 'm2', 'm3'])
+    expect(splitEqually(1000, ordered.map(m => m.id)).map(s => s.amountMinor))
+      .toEqual(e.splits.map(s => s.amountMinor))
+  })
+
+  it('leaves non-participants in their roster slots', () => {
+    const extra: TripMember = { id: 'm4', displayName: 'Dan', avatarLabel: 'D', color: '#000', bg: '#fff' }
+    const e = mkExpense('m3', 999, [['m1', 333], ['m3', 333], ['m2', 333]])
+    const roster = [MEMBERS[0]!, extra, MEMBERS[1]!, MEMBERS[2]!]
+    expect(orderMembersLikeExpense(roster, e).map(m => m.id)).toEqual(['m1', 'm4', 'm3', 'm2'])
+  })
+
+  it('returns the same array when the order already matches', () => {
+    const e = mkExpense('m1', 300, [['m1', 100], ['m2', 100], ['m3', 100]])
+    expect(orderMembersLikeExpense(MEMBERS, e)).toBe(MEMBERS)
   })
 })
 

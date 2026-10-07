@@ -6,7 +6,7 @@ import {
 } from '../hooks/useExpenses'
 import { useOverlayPendingRowIds } from '@/hooks/listOverlay'
 import { useSettlements, useCreateSettlement, useDeleteSettlement } from '../hooks/useSettlements'
-import { expandWithGhosts } from '../services/settlement'
+import { expandWithGhosts, orderMembersLikeExpense } from '../services/settlement'
 import { useMembers } from '@/features/members/hooks/useMembers'
 import { membersToTripMembers } from '@/features/members/utils'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
@@ -475,7 +475,9 @@ export default function ExpensePage() {
           // redistribute it. Scoped to the edited doc on purpose: it mirrors
           // the Worker's grandfather rule, which only tolerates refs the doc
           // already carries. Create mode stays roster-pure.
-          members={modal.editTarget ? expandWithGhosts(members, [modal.editTarget], [], formerMemberNames) : members}
+          members={modal.editTarget
+            ? orderMembersLikeExpense(expandWithGhosts(members, [modal.editTarget], [], formerMemberNames), modal.editTarget)
+            : members}
           isSaving={false}
           saveError={modal.saveError}
           onClose={modal.close}
