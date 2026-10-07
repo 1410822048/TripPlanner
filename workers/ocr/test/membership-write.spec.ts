@@ -1552,6 +1552,18 @@ describe('memberRoleUpdate endpoint', () => {
 		expect(capturedTxResult!.writes).toEqual([])
 	})
 
+	it('rejects: target is being removed → 400, no write', async () => {
+		seedAuthorizedRoleUpdate()
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TARGET}`,
+			memberReadDoc(TARGET, 'editor', { removingAt: '2026-10-07T00:00:00Z' }))
+
+		await expect(memberRoleUpdate(
+			OWNER_UID,
+			{ tripId: TRIP_ID, memberUid: TARGET, role: 'viewer' },
+			'{}',
+		)).rejects.toThrow(/being removed/)
+	})
+
 	it('rejects: target not found → 404', async () => {
 		seedAuthorizedRoleUpdate({ targetExists: false })
 

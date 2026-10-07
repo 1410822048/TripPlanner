@@ -264,6 +264,11 @@ async function doMemberRoleUpdate(
     if (!target.exists) {
       throw new CascadeError(404, 'target member not found')
     }
+    // Same guard as owner-transfer: a role write on a member mid-removal
+    // would race the cascade that is about to delete the doc.
+    if ('removingAt' in target.fields) {
+      throw new MembershipValidationError('memberUid', 'target is being removed')
+    }
 
     // Disallow flipping owner role via this path; defensive guard for
     // a state where ownerId on the trip doc and member.role disagree
