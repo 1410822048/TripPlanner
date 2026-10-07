@@ -170,7 +170,8 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
                   const isSelf = m.userId === uid
                   // Owner can manage any non-owner member (change role /
                   // transfer / remove) via the `...` action sheet.
-                  const canManage = isOwner && writeCompatible && m.role !== 'owner' && !isSelf
+                  const removing = m.removingAt !== undefined
+                  const canManage = isOwner && writeCompatible && m.role !== 'owner' && !isSelf && !removing
                   return (
                     <li
                       key={m.id}
@@ -187,7 +188,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
                           {isSelf && <span className="ml-1.5 text-[10.5px] text-muted font-normal">(你)</span>}
                         </div>
                         <div className="text-[10.5px] text-muted mt-0.5">
-                          {roleLabel(m.role)}
+                          {removing ? '移除中…' : roleLabel(m.role)}
                         </div>
                       </div>
                       <RoleChip role={m.role} />

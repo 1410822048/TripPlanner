@@ -205,7 +205,7 @@ function ReadyCard({ invite, accepting, onAccept, onCancel }: {
 
       <div className="px-5 py-4 border-t border-border">
         <div className="flex items-center justify-center gap-2 mb-4">
-          <span className="text-[11.5px] text-muted">你的權限</span>
+          <span className="text-[11.5px] text-muted">加入後的權限</span>
           <span
             className={[
               'px-2.5 py-1 rounded-md text-[11px] font-bold tracking-[0.04em]',
@@ -217,6 +217,10 @@ function ReadyCard({ invite, accepting, onAccept, onCancel }: {
             {isEditor ? '編輯者 · 可編輯' : '檢視者 · 僅可查看'}
           </span>
         </div>
+        {/* The Worker never changes an existing member's role on redeem. */}
+        <p className="m-0 -mt-2 mb-4 text-center text-[10.5px] text-muted">
+          若你已是這趟旅程的成員，將維持原本的權限。
+        </p>
 
         <div className="flex gap-2">
           <button

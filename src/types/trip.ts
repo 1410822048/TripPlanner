@@ -205,6 +205,9 @@ export interface Member {
    * entity docs.
    */
   memberIds: string[]
+  /** Set by /member-remove (and /member-leave) right before the cascade
+   *  deletes this doc. The member can no longer write anything. */
+  removingAt?: Timestamp
 }
 
 export const MemberDocSchema = z.object({
@@ -219,6 +222,7 @@ export const MemberDocSchema = z.object({
   joinedAt:    TimestampSchema,
   inviteToken: z.string().optional(),
   memberIds:   z.array(z.string().min(1)).min(1),
+  removingAt:  TimestampSchema.optional(),
 })
 
 // ─── Invite ───────────────────────────────────────────────────────

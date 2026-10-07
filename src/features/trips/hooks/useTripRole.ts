@@ -9,9 +9,12 @@
 // would result from a viewer tapping a button they shouldn't see.
 //
 // What collections need gating (from firestore.rules audit):
-//   - schedules / bookings / expenses → canWrite (owner/editor only)
-//   - wishes / planning → isMember (any role; viewer can write)
+//   - schedules / bookings / expenses / planning → canWrite (owner/editor)
+//   - planning progress → any member, own entry only
+//   - wishes → any active member (viewer included)
 //   - members (delete/role) → isTripOwner (only owner)
+// A member whose doc carries `removingAt` is mid-kick: every rule and
+// Worker endpoint refuses their writes, so they resolve to no role here.
 //
 // Pages calling this hook should keep the gating list aligned with
 // the rules — if the rules ever loosen 'wishes' from isMember to
@@ -35,7 +38,9 @@ export function useTripRole(tripId: string | undefined): TripRole | null {
   const uid = useUid()
   const { data: members } = useMembers(tripId)
   if (!uid || !members) return null
-  return members.find(m => m.userId === uid)?.role ?? null
+  const me = members.find(m => m.userId === uid)
+  if (!me || me.removingAt) return null
+  return me.role
 }
 
 /**
