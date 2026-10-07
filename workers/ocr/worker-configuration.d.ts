@@ -14,6 +14,7 @@ interface __BaseEnv_Env {
 	ATTACHMENT_UPLOAD_RATE_LIMITER: RateLimit;
 	ATTACHMENT_CONTENT_RATE_LIMITER: RateLimit;
 	ATTACHMENT_DELETE_RATE_LIMITER: RateLimit;
+	FX_PREVIEW_RATE_LIMITER: RateLimit;
 	FIREBASE_PROJECT_ID: "tripplanner-80a4f";
 	ALLOWED_ORIGINS: "https://tripmate-2wg.pages.dev,*.tripmate-2wg.pages.dev,http://localhost:5173,http://127.0.0.1:5173";
 	ANTHROPIC_FOUNDRY_RESOURCE: "aic-claude-eus2";

@@ -170,10 +170,21 @@ export default function ExpenseFormModal({
   // (the hook gates internally). Returns null rate while loading /
   // disabled; save-button gate below blocks submission until the rate
   // resolves so buildExpenseFormResult never has to assume a fallback.
+  // Editing a foreign expense with its date and currencies unchanged: the
+  // Worker reuses the stored rate, so the preview shows that same rate.
+  const storedFx = editTarget?.fxSnapshot
+  const pinnedFx = storedFx
+    && storedFx.baseCurrency  === sourceCurrency
+    && storedFx.quoteCurrency === tripCurrency
+    && storedFx.requestedDate === state.date
+    ? { rateDecimal: storedFx.rateDecimal, rateDate: storedFx.rateDate }
+    : null
   const fxPreview = useFxPreview({
     requestedDate:  state.date,
     sourceCurrency,
     tripCurrency,
+    tripId,
+    pinned:         pinnedFx,
   })
 
   // Receipt attachment — owns the visual preview + file upload state.

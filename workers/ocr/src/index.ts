@@ -180,6 +180,7 @@ import {
 import { captureMessage, serializeErrorChain, type ReportWorkerError } from './sentry'
 
 import { assertOcrTripAccess, ocrTripIdRequired } from './ocr-trip-gate'
+import { fxPreview, FxPreviewRequestSchema } from './fx-preview'
 
 export { GlobalRateLimiter } from './rate-limiter'
 
@@ -313,6 +314,7 @@ export const RATE_CLASSES = {
   'route-preview':    { limiter: 'ROUTE_PREVIEW_RATE_LIMITER',   scope: 'route-preview',    globalLimit: 10 },
   'route-write':      { limiter: 'ROUTE_WRITE_RATE_LIMITER',     scope: 'route-write',      globalLimit: 10 },
   membership:         { limiter: 'CASCADE_RATE_LIMITER',        scope: 'cascade',          globalLimit: 10 },
+  'fx-preview':       { limiter: 'FX_PREVIEW_RATE_LIMITER',     scope: 'fx-preview',       globalLimit: 60 },
 } as const satisfies Record<string, RateClass>
 
 type RateClassKey = keyof typeof RATE_CLASSES
@@ -525,6 +527,16 @@ export const ROUTES: RouteDescriptor[] = [
         validationErrorCatcher(BookingValidationError),
         pdfPageLimitErrorCatcher(),
       ),
+    }),
+  },
+  {
+    path: '/fx-rate', rate: 'fx-preview',
+    dispatch: c => handleJsonRoute({
+      endpoint:    'fx-rate', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
+      schema:      FxPreviewRequestSchema,
+      handle:      data => fxPreview(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog:   (data, result) => `trip=${data.tripId} ${data.sourceCurrency}->${result.tripCurrency} date=${data.requestedDate}`,
+      catchDomain: fxErrorCatcher(),
     }),
   },
   {

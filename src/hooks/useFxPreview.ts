@@ -7,32 +7,27 @@
 // to src/hooks/ during the Settlement FX rollout (Commit 3/4) so the
 // settlement record sheet can reuse it. API unchanged.
 //
-// Trust model:
-//   This hook is PREVIEW ONLY. The Worker's expense-write router is
-//   authoritative for the persisted fxSnapshot + amountMinor. If the
-//   client-fetched rate disagrees with the Worker's authoritative
-//   lookup (rare — same provider, same canonicalization), the Worker
-//   wins. We never persist a client-fetched rate.
+// Rate source:
+//   Cloud trips preview with the Worker's /fx-rate, which answers from the
+//   same cache-first resolveFxRate the expense / settlement writes use (and
+//   pins the rate on a miss). The preview therefore shows the rate the save
+//   will convert with — previously the browser asked Frankfurter directly,
+//   and when the Worker's cached rate for that date was an earlier answer
+//   (e.g. fetched before the ECB published) the saved amount silently
+//   differed from the one on screen. Editing a foreign expense with the same
+//   date and currencies shows the stored rate (`pinned`), which the Worker
+//   reuses. Demo / unconfigured builds keep the direct Frankfurter preview;
+//   nothing is saved there.
 //
 // Cache contract (TanStack Query):
-//   - key:        ['fxPreview', requestedDate, sourceCurrency, tripCurrency]
-//   - enabled:    sourceCurrency !== tripCurrency (skip degenerate path)
-//   - staleTime:  Infinity — historical rates don't change once published;
-//                 same-day pre-publish requests get yesterday's rate
-//                 locked in (matches Worker fx-rate.ts cache semantics).
-//   - retry:      1 — Frankfurter is generally fast and reliable; the
-//                 form layer surfaces "換算レートを取得できません" on
-//                 sustained failure rather than spinning on retries.
-//   - gcTime:     30min (queryClient default) — preview is short-lived
-//                 per form session; longer TTL just wastes memory.
-//
-// Why no Firestore cache:
-//   The client preview is per-user, per-session. Worker-side caching
-//   already deduplicates provider calls across users. A client cache
-//   would either (a) require Firestore read rules on /fxRates (which
-//   we don't grant — admin-only path) or (b) skip the deterministic
-//   provider call, which is ~300ms anyway.
+//   - key:        ['fxPreview', tripId | 'direct', requestedDate, source, trip]
+//   - enabled:    sourceCurrency !== tripCurrency, valid, not future, not pinned
+//   - staleTime:  Infinity — a (date, pair) rate never changes once pinned
+//   - retry:      1
+//   - gcTime:     30min (queryClient default)
 import { useQuery } from '@tanstack/react-query'
+import { z } from 'zod'
+import { requireWorkerWriteBase, workerRead } from '@/services/workerBase'
 import { canonicalizeRate } from '@tripmate/fx-core'
 import { toLocalDateString } from '@/utils/dates'
 
@@ -72,6 +67,15 @@ export interface UseFxPreviewInput {
   sourceCurrency: string
   /** ISO 4217 uppercase — the trip's currency. */
   tripCurrency: string
+  /** Cloud trip id. When set, the rate comes from the Worker's /fx-rate —
+   *  the same cached rate the save will convert with — instead of straight
+   *  from Frankfurter, so the previewed amount is the saved amount. Demo /
+   *  signed-out forms (no trip) keep the direct Frankfurter preview. */
+  tripId?: string | null
+  /** A rate already stored on the expense being edited, valid for exactly
+   *  this (date, source, trip) — the Worker reuses it on update, so the
+   *  preview must show it rather than ask again. */
+  pinned?: { rateDecimal: string; rateDate: string } | null
 }
 
 const FRANKFURTER_BASE = 'https://api.frankfurter.dev/v2/rates'
@@ -104,6 +108,46 @@ interface FrankfurterRow {
   base:  string
   quote: string
   rate:  number
+}
+
+/** Preview from the Worker's write-path rate (see `tripId` above). */
+async function fetchWorkerFxRate(
+  input:  UseFxPreviewInput & { tripId: string },
+  base:   string,
+): Promise<{ rateDecimal: string; rateDate: string }> {
+  const body = await workerRead<unknown>('/fx-rate', {
+    tripId:         input.tripId,
+    requestedDate:  input.requestedDate,
+    sourceCurrency: input.sourceCurrency,
+  }, {
+    base,
+    timeoutMs: 15_000,
+    toError:   failure => new Error(`fx-rate preview failed: ${failure.kind === 'status' ? failure.status : failure.kind}`),
+  })
+  const parsed = WorkerFxRateSchema.safeParse(body)
+  // A trip whose currency differs from what the form believes (another
+  // member changed it before the first expense) must not preview at all.
+  if (!parsed.success || parsed.data.degenerate || parsed.data.tripCurrency !== input.tripCurrency) {
+    throw new Error('fx-rate preview response does not match the request')
+  }
+  return { rateDecimal: parsed.data.rateDecimal, rateDate: parsed.data.rateDate }
+}
+
+const WorkerFxRateSchema = z.discriminatedUnion('degenerate', [
+  z.object({ degenerate: z.literal(true), tripCurrency: z.string() }),
+  z.object({
+    degenerate:   z.literal(false),
+    tripCurrency: z.string(),
+    rateDecimal:  z.string().min(1),
+    rateDate:     z.string().regex(ISO_DATE_RE),
+  }),
+])
+
+/** The privileged Worker base, or null when this build has none configured
+ *  (local / preview without VITE_WORKER_BASE_URL) — then the direct
+ *  Frankfurter preview is the only option. */
+function workerBaseOrNull(): string | null {
+  try { return requireWorkerWriteBase() } catch { return null }
 }
 
 async function fetchFxRate(input: UseFxPreviewInput): Promise<{ rateDecimal: string; rateDate: string }> {
@@ -179,11 +223,18 @@ export function useFxPreview(input: UseFxPreviewInput): FxPreviewResult {
     else if (isFutureDate)  disabledReason = 'future-date'
   }
 
-  const enabled = !isDegenerate && shapeValid && !isFutureDate
+  const pinned  = input.pinned ?? null
+  const enabled = !isDegenerate && shapeValid && !isFutureDate && !pinned
+  const workerBase = input.tripId ? workerBaseOrNull() : null
+  const tripId     = workerBase ? input.tripId! : null
 
   const query = useQuery({
-    queryKey: ['fxPreview', input.requestedDate, input.sourceCurrency, input.tripCurrency],
-    queryFn:  () => fetchFxRate(input),
+    // Source is part of the key: a Worker answer and a direct provider
+    // answer are different claims and must not satisfy each other.
+    queryKey: ['fxPreview', tripId ?? 'direct', input.requestedDate, input.sourceCurrency, input.tripCurrency],
+    queryFn:  () => (tripId && workerBase
+      ? fetchWorkerFxRate({ ...input, tripId }, workerBase)
+      : fetchFxRate(input)),
     enabled,
     // Historical rates immutable once published — see file header.
     staleTime: Infinity,
@@ -195,6 +246,13 @@ export function useFxPreview(input: UseFxPreviewInput): FxPreviewResult {
       rateDecimal: null, rateDate: null,
       isLoading: false, isError: false,
       isDegenerate: true, disabledReason: null,
+    }
+  }
+  if (pinned && !disabledReason) {
+    return {
+      rateDecimal: pinned.rateDecimal, rateDate: pinned.rateDate,
+      isLoading: false, isError: false,
+      isDegenerate: false, disabledReason: null,
     }
   }
   return {

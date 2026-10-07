@@ -543,6 +543,7 @@ export default function ExpensePage() {
           onSave={handleRecordSettlement}
           suggested={recordTarget.suggestion}
           tripCurrency={currency}
+          tripId={cloudTripId}
           // Ghosts included: a departed member can still be the PAYER of a
           // suggestion (their debt outlives their membership), and the
           // sheet looks both parties up by uid. With the live roster only,

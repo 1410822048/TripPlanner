@@ -75,6 +75,9 @@ interface Props {
   /** Trip currency — the currency picker defaults to this; the FX preview
    *  triggers only when the picked currency differs. */
   tripCurrency: string
+  /** Cloud trip id — FX preview then comes from the Worker's write-path
+   *  rate. Null in demo. */
+  tripId?:      string | null
   members:      TripMember[]
   /** Threaded through to FormModalShell for the shared save-button
    *  contract. Always `false` from ExpensePage: this is an optimistic-
@@ -98,7 +101,7 @@ function todayLocal(): string {
 }
 
 export default function SettlementRecordSheet({
-  isOpen, onClose, onSave, suggested, tripCurrency, members, isSaving,
+  isOpen, onClose, onSave, suggested, tripCurrency, tripId, members, isSaving,
 }: Props) {
   // Inline state — sheet is unmounted on close (parent gates with isOpen)
   // and remounts via key when the suggestion identity changes, so every
@@ -131,6 +134,7 @@ export default function SettlementRecordSheet({
     requestedDate:  settledOn,
     sourceCurrency: currency,
     tripCurrency,
+    tripId,
   })
 
   // Foreign-mode derivation: from the suggested trip-currency remaining,

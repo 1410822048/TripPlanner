@@ -150,6 +150,14 @@
 			"name": "ATTACHMENT_DELETE_RATE_LIMITER",
 			"namespace_id": "1012",
 			"simple": { "limit": 60, "period": 60 }
+		},
+		{
+			// /fx-rate: the expense form / settlement sheet FX preview. One
+			// request per (date, currency) the user looks at; the client
+			// caches each answer for the session.
+			"name": "FX_PREVIEW_RATE_LIMITER",
+			"namespace_id": "1013",
+			"simple": { "limit": 60, "period": 60 }
 		}
 	],
 	// Durable Object for cross-PoP rate limiting. Each instance is
