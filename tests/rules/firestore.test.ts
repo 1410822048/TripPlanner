@@ -261,15 +261,11 @@ describe('/trips/{tripId} write', () => {
     })
   })
 
-  test('invite redeem CREATE is rejected when trip.deletingAt is set', async () => {
-    // Members create has three paths; the bootstrap path (owner
-    // self-add at trip creation) intentionally skips tripNotDeleting
-    // because the trip doc is created in the same batch and the
-    // gate's cross-doc get would not yet see the staged write.
-    // Paths 2 (owner manual-add) and 3 (invite redeem) DO get the
-    // gate -- otherwise a friend redeeming an invite during the
-    // owner's cascade would see "joined" then immediately get
-    // wiped, plus the stray member doc could survive timing edges.
+  test('client member self-create is refused on a deleting trip (redeem is Worker-only)', async () => {
+    // Invite redeem moved to the Worker, so the rules refuse this write
+    // whether or not deletingAt is set — the deleting state is kept here
+    // only as the scenario that once mattered. The Worker's /invite-redeem
+    // spec owns the 410 gate now.
     const INVITE_TOKEN = 'invite-during-cascade'
     await env.withSecurityRulesDisabled(async ctx => {
       // Seed a valid invite and pin the trip to deleting state.
