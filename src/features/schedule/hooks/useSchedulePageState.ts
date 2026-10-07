@@ -44,6 +44,7 @@ function cloudTripToItem(trip: Trip, uid: string | undefined): TripItem {
     members:   [],
     ownedByMe: !!uid && trip.ownerId === uid,
     currency:  trip.currency,
+    currencyLocked: trip.ledgerStartedAt !== undefined,
     defaultCountryCode: trip.defaultCountryCode,
   }
 }

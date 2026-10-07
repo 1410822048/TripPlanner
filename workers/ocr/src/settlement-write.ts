@@ -275,13 +275,22 @@ function decodePairExpenseForSettlement(doc: TxReadDoc): PairExpenseForSettlemen
   }
 }
 
+/** Lineage titles are display-only snapshots; cap them at the client's
+ *  read limit (code points, so an emoji is never split) so a legacy long
+ *  expense title can't make the settlement unparseable for every member. */
+const LINEAGE_TITLE_MAX = 100
+function lineageTitle(title: string): string {
+  const chars = Array.from(title)
+  return chars.length <= LINEAGE_TITLE_MAX ? title : chars.slice(0, LINEAGE_TITLE_MAX - 1).join('') + '…'
+}
+
 function encodeAppliedSources(sources: SettlementAppliedSource[]): FsValue {
   return {
     arrayValue: {
       values: sources.map(source => {
         const fields: Record<string, FsValue> = {
           expenseId:    { stringValue:  source.expenseId },
-          expenseTitle: { stringValue:  source.expenseTitle },
+          expenseTitle: { stringValue:  lineageTitle(source.expenseTitle) },
           amountMinor:  { integerValue: String(source.amountMinor) },
         }
         if (source.itemId !== undefined && source.itemName !== undefined) {
@@ -608,6 +617,20 @@ async function doCreate(
     // `deletedAt IS_NULL` query filter enforced.
     const activeExpenseReads = expenseReads
       .filter(d => !(d.fields.deletedAt as { timestampValue?: string } | undefined)?.timestampValue)
+    // Never add up minor units of different currencies: a pair whose
+    // ledger still holds expenses recorded in another currency (trip
+    // currency changed before trip.ledgerStartedAt pinned it) would be
+    // settled for a meaningless total. Refuse until the trip is repaired.
+    const foreignDenominated = activeExpenseReads.find(d => {
+      const c = readString(d.fields, 'currency')
+      return c !== undefined && c !== ctx.currency
+    })
+    if (foreignDenominated) {
+      throw new CascadeError(
+        409,
+        `pair ledger contains an expense recorded in ${readString(foreignDenominated.fields, 'currency')} but the trip currency is ${ctx.currency}`,
+      )
+    }
     const pairExpenses = activeExpenseReads.map(decodePairExpenseForSettlement)
     const expenses = pairExpenses.map(e => ({
       amountMinor: e.amountMinor,

@@ -408,7 +408,10 @@ const ExpenseShape = z.object({
   // the user-facing decimal string in `amountText` and converts via
   // `parseMoneyToMinor` at submit time.
   amountMinor: z.number().int().positive('金額必須大於 0'),
-  currency:    z.string().default('JPY'),
+  // No `.default()` — UpdateExpenseSchema is `.partial()` of this shape and
+  // Zod 4 keeps defaults through `.partial()`, which would inject a
+  // currency into patches that never sent one (same bug class as trip).
+  currency:    CurrencyCodeSchema,
   category:    z.enum(['food','transport','accommodation','activity','shopping','other']),
   paidBy:      z.string().min(1, '請選擇付款人'),
   splits:      z.array(ExpenseSplitSchema).min(1, '至少需選擇一位分攤人'),

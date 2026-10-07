@@ -160,7 +160,8 @@ export function buildOcrExpenseDraft(
   }
   // 標題:OCR 不覆寫使用者已輸入的 title。
   if (result.storeName && !ctx.currentTitle.trim()) {
-    draft.title = result.storeName
+    // Store names reach 120 chars; the expense title cap is 100.
+    draft.title = Array.from(result.storeName).slice(0, 100).join('')
   }
   // Category:拍照即「請幫我自動分類」,只在新增模式覆寫;edit 絕不動。
   if (result.category && !ctx.isEdit) {

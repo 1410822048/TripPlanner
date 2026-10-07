@@ -389,6 +389,16 @@ export default function ExpenseFormModal({
     // be unit-tested without the component. The two side effects stay here:
     //   - setErrors:               drive the inline field banners
     //   - att.pickAttachmentChange: pull the receipt lifecycle into onSave
+    //
+    // An expense recorded in a different currency than the trip (the trip
+    // currency was changed after it was entered) can't be saved as-is: the
+    // amount text is formatted in the expense's currency but would be
+    // re-parsed in the trip's, inflating/deflating it (¥10,000 → $10,000.00).
+    // The Worker refuses it too; say why here instead of a generic error.
+    if (editTarget && editTarget.currency !== tripCurrency) {
+      setErrors({ amount: `這筆費用以 ${editTarget.currency} 記帳，與目前旅程幣別 ${tripCurrency} 不同，無法直接編輯。請先將旅程幣別改回 ${editTarget.currency}。` })
+      return
+    }
     const result = buildExpenseFormResult({
       title:          state.title,
       amountText:     amountText,
@@ -441,6 +451,7 @@ export default function ExpenseFormModal({
         <input
           ref={titleRef}
           value={state.title}
+          maxLength={100}
           onChange={e => setField('title', e.target.value)}
           placeholder="例：壽司大 築地"
           className={inputClass(!!errors.title)}
@@ -580,6 +591,7 @@ export default function ExpenseFormModal({
       <FormField label="備註">
         <textarea
           value={state.note}
+          maxLength={1000}
           onChange={e => setField('note', e.target.value)}
           placeholder="備註等"
           rows={2}

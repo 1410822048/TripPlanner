@@ -15,6 +15,11 @@ export interface TripContext {
    *  one currency per trip). The bind is enforced in doCreate / doUpdate
    *  against parsed.data.currency / merged.currency respectively. */
   currency:   string
+  /** Whether the trip already carries `ledgerStartedAt` (stamped by the
+   *  first expense-create). firestore.rules pins `trip.currency` once the
+   *  marker exists, so the owner can no longer relabel a ledger whose
+   *  amounts are denominated in the current currency. */
+  ledgerStarted: boolean
 }
 
 export function pushUnique(arr: string[], v: string): void {

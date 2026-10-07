@@ -512,6 +512,22 @@ describe('settlementCreate endpoint', () => {
 		])
 	})
 
+	it('refuses (409) to settle a pair whose ledger holds an expense in another currency', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`, memberReadDoc(FROM_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			notFoundReadDoc(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`))
+		seedLock(FROM_UID, TO_UID)
+		seedDebt(FROM_UID, TO_UID, 200)
+		const relabelled = txQueryResponses.get(`trips/${TRIP_ID}|expenses`)![0]!
+		relabelled.fields.currency = { stringValue: 'USD' }
+
+		await expect(settlementCreate(TO_UID, baseCreatePayload(), '{}'))
+			.rejects.toMatchObject({ status: 409 })
+		expect(capturedTxResult).toBeNull()
+	})
+
 	it('fails closed (500) on an expense whose amount is not a valid integer -- never reads it as 0', async () => {
 		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
@@ -526,6 +542,26 @@ describe('settlementCreate endpoint', () => {
 		await expect(settlementCreate(TO_UID, baseCreatePayload(), '{}'))
 			.rejects.toMatchObject({ status: 500 })
 		expect(capturedTxResult).toBeNull()
+	})
+
+	it('truncates a legacy over-long expense title in lineage to the client read cap', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,  memberReadDoc(TO_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${FROM_UID}`, memberReadDoc(FROM_UID))
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			notFoundReadDoc(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`))
+		seedLock(FROM_UID, TO_UID)
+		txQueryResponses.set(`trips/${TRIP_ID}|expenses`, [
+			expenseReadDoc({ id: 'exp-long', title: '店'.repeat(150), paidBy: TO_UID, amountMinor: 200, splits: [[FROM_UID, 200]] }),
+		])
+		txQueryResponses.set(`trips/${TRIP_ID}|settlements`, [])
+
+		await settlementCreate(TO_UID, baseCreatePayload(200), '{}')
+
+		const w = capturedTxResult!.writes[0] as { fields: Record<string, { arrayValue?: { values?: Array<{ mapValue?: { fields: Record<string, { stringValue?: string }> } }> } }> }
+		const title = w.fields.appliedSources.arrayValue!.values![0]!.mapValue!.fields.expenseTitle!.stringValue!
+		expect(Array.from(title).length).toBe(100)
+		expect(title.endsWith('…')).toBe(true)
 	})
 
 	it('writes appliedSources with expense/item lineage for audit after later item deletion', async () => {

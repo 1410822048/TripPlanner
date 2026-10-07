@@ -135,7 +135,10 @@ export interface SettlementRecord {
 // merges { id, ...parsed.data } so entity callers get the full SettlementRecord.
 const SettlementAppliedSourceSchema = z.object({
   expenseId:    z.string().min(1).max(60),
-  expenseTitle: z.string().min(1).max(100),
+  // Read side accepts 200 (the Worker's former expense-title cap) so
+  // settlements written before lineage titles were truncated still parse;
+  // a single over-long one used to fail the whole settlements listener.
+  expenseTitle: z.string().min(1).max(200),
   itemId:       z.string().min(1).max(64).optional(),
   itemName:     z.string().min(1).max(200).optional(),
   amountMinor:  z.number().int().positive(),

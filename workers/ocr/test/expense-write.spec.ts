@@ -158,10 +158,15 @@ const MEMBERS    = ['owner-uid', 'editor-uid', 'viewer-uid']
  *  `currency` defaults to JPY to match validExpensePayload; tests that
  *  exercise the trip-currency bind pass an override (or `null` to
  *  simulate a malformed trip doc with no currency field). */
-function tripReadDoc(overrides: { currency?: string | null; ownerId?: string } = {}): MockReadDoc {
+function tripReadDoc(overrides: { currency?: string | null; ownerId?: string; ledgerStarted?: boolean } = {}): MockReadDoc {
 	const fields: MockReadDoc['fields'] = {
 		memberIds: { arrayValue: { values: MEMBERS.map(uid => ({ stringValue: uid })) } },
 		ownerId:   { stringValue: overrides.ownerId ?? 'owner-uid' },
+	}
+	// Default: a trip that already has a ledger (most specs). The first-
+	// expense stamping of ledgerStartedAt is covered by its own spec.
+	if (overrides.ledgerStarted !== false) {
+		fields.ledgerStartedAt = { timestampValue: '2026-05-01T00:00:00Z' }
 	}
 	if (overrides.currency !== null) {
 		fields.currency = { stringValue: overrides.currency ?? 'JPY' }
@@ -665,6 +670,48 @@ describe('expenseUpdate endpoint', () => {
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(ExpenseValidationError)
+	})
+
+	it('first expense of a trip stamps trip.ledgerStartedAt in the same commit (pins currency)', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc({ ledgerStarted: false }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, notFoundReadDoc(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`))
+		await expenseCreate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validExpensePayload() },
+			'{}', BUCKET,
+		)
+		const writes = capturedTxResult!.writes as Array<{ document: string; updateMask?: string[]; currentDocument?: unknown; updateTransforms?: unknown[] }>
+		const tripWrite = writes.find(w => w.document.endsWith(`/trips/${TRIP_ID}`))
+		expect(tripWrite).toMatchObject({
+			updateMask: [],
+			currentDocument: { exists: true },
+			updateTransforms: [{ fieldPath: 'ledgerStartedAt', setToServerValue: 'REQUEST_TIME' }],
+		})
+	})
+
+	it('later expenses do not touch the trip doc again', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, notFoundReadDoc(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`))
+		await expenseCreate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validExpensePayload() },
+			'{}', BUCKET,
+		)
+		const writes = capturedTxResult!.writes as Array<{ document: string }>
+		expect(writes.some(w => w.document.endsWith(`/trips/${TRIP_ID}`))).toBe(false)
+	})
+
+	it('refuses to edit an expense recorded in a different currency than the trip (no silent relabel)', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc({ currency: 'USD' }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, aliveExpenseReadDoc())
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'TRIP_CURRENCY', title: 'Edit', currency: 'USD' } },
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ status: 409 })
 	})
 
 	it('rejects create/update when the editor is being removed (removingAt)', async () => {

@@ -7,11 +7,14 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn((...args: unknown[]) => ({ query: args })),
   where: vi.fn((...args: unknown[]) => ({ where: args })),
   limit: vi.fn((n: number) => ({ limit: n })),
+  doc: vi.fn((...args: unknown[]) => ({ doc: args.slice(1) })),
+  updateDoc: vi.fn(async (..._args: unknown[]) => undefined),
+  serverTimestamp: vi.fn(() => 'SERVER_TS'),
 }))
 vi.mock('@/services/firebase', () => ({ getFirebase: async () => ({ db: {}, ...mocks }) }))
 vi.mock('@/services/sentry', () => ({ captureError: mocks.captureError }))
 vi.mock('@/utils/perf', () => ({ markPerf: mocks.markPerf }))
-import { getMyTrips, subscribeToMyTrips } from './tripService'
+import { getMyTrips, subscribeToMyTrips, updateTrip } from './tripService'
 
 function tripDoc(id: string, millis = 1) {
   const ts = Timestamp.fromMillis(millis)
@@ -80,5 +83,13 @@ describe('membership-filtered trips', () => {
     publish(snap([{ id: 'bad', data: () => ({}) }, ...Array.from({ length: 49 }, (_, i) => tripDoc(String(i)))]))
     expect(onData.mock.lastCall![0]).toHaveLength(49)
     expect(mocks.captureError).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('updateTrip', () => {
+  it('a rename writes only the title — never a defaulted currency', async () => {
+    await updateTrip('t1', { title: 'Renamed' })
+    expect(mocks.updateDoc).toHaveBeenCalledTimes(1)
+    expect(mocks.updateDoc.mock.calls[0]![1]).toEqual({ updatedAt: 'SERVER_TS', title: 'Renamed' })
   })
 })

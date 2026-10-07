@@ -137,6 +137,36 @@ describe('/trips/{tripId} read', () => {
 
 // ─── Trip write paths ──────────────────────────────────────────────
 describe('/trips/{tripId} write', () => {
+  test('owner can change currency while the trip has no ledger yet', async () => {
+    await assertSucceeds(
+      updateDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID), { currency: 'USD' }),
+    )
+  })
+
+  test('owner CANNOT change currency once ledgerStartedAt exists, but can still rename', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await updateDoc(doc(ctx.firestore(), 'trips', TRIP_ID), { ledgerStartedAt: Timestamp.now() })
+    })
+    await assertFails(
+      updateDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID), { currency: 'USD' }),
+    )
+    await assertSucceeds(
+      updateDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID), { title: 'Renamed' }),
+    )
+    await assertFails(
+      updateDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID), { ledgerStartedAt: deleteField() }),
+    )
+  })
+
+  test('owner cannot set ledgerStartedAt or a non-ISO currency code', async () => {
+    await assertFails(
+      updateDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID), { ledgerStartedAt: serverTimestamp() }),
+    )
+    await assertFails(
+      updateDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID), { currency: 'usd' }),
+    )
+  })
+
   test('owner can update title', async () => {
     await assertSucceeds(
       updateDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID), { title: 'Renamed' }),

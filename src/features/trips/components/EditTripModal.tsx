@@ -183,10 +183,19 @@ export default function EditTripModal({
       </div>
 
       <FormField label="幣別">
-        <CurrencyPicker
-          value={state.currency}
-          onChange={v => setField('currency', v)}
-        />
+        {editTarget?.currencyLocked ? (
+          // Rules pin trip.currency once the ledger has entries: every
+          // recorded amount is denominated in it and is never converted.
+          <div className={`${inputClass(false)} flex items-center justify-between text-muted`}>
+            <span className="text-ink font-semibold">{state.currency}</span>
+            <span className="text-[11px]">已有費用紀錄，無法更改幣別</span>
+          </div>
+        ) : (
+          <CurrencyPicker
+            value={state.currency}
+            onChange={v => setField('currency', v)}
+          />
+        )}
       </FormField>
 
       <FormField label="旅程國家" error={errors.defaultCountryCode} required>

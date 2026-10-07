@@ -38,6 +38,9 @@ export interface TripMember {
 }
 
 export interface TripItem {
+  /** Cloud trips with recorded expenses: currency can no longer change
+   *  (rules pin it once trip.ledgerStartedAt exists). */
+  currencyLocked?: boolean
   id:        string
   title:     string
   dest:      string

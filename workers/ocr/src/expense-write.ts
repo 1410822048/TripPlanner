@@ -236,7 +236,12 @@ async function authorizeCanWriteTx(
   if (!currency) {
     throw new CascadeError(500, 'trip.currency is missing')
   }
-  return { memberIds, isOwner: ownerId === callerUid, currency }
+  return {
+    memberIds,
+    isOwner: ownerId === callerUid,
+    currency,
+    ledgerStarted: 'ledgerStartedAt' in trip.fields,
+  }
 }
 
 export function expenseIsSettlementLocked(fields: Record<string, FsValue>): boolean {
@@ -398,13 +403,25 @@ async function doCreate(
       currentDocument:  { exists: false },
       updateTransforms,
     }
+    // First expense of the trip: stamp `trip.ledgerStartedAt` in the same
+    // commit. From then on firestore.rules pins `trip.currency` — every
+    // amount in the ledger is denominated in it, and the settlement math
+    // has no notion of mixed currencies. Written once (later creates see
+    // the marker and skip it) so the trip doc doesn't become a hot spot.
+    const ledgerWrites: TxWrite[] = ctx.ledgerStarted ? [] : [{
+      document:         docResourceName(projectId, `trips/${req.tripId}`),
+      fields:           {},
+      updateMask:       [],
+      currentDocument:  { exists: true },
+      updateTransforms: [{ fieldPath: 'ledgerStartedAt', setToServerValue: 'REQUEST_TIME' }],
+    }]
     return {
       // Intent mark-used writes go FIRST so they commit alongside the
       // expense doc atomically -- if the expense write rejects (409
       // exists, ABORTED retry, etc.) the intents stay pending and
       // can be retried; if both succeed, intents are used and the
       // expense doc owns the path. No half-state.
-      writes: [...intentMarkUsedWrites, write],
+      writes: [...intentMarkUsedWrites, write, ...ledgerWrites],
       result: { expenseId: req.expenseId },
     }
   })
@@ -544,6 +561,18 @@ async function doUpdate(
       throw new CascadeError(409, 'cannot edit a tombstoned expense')
     }
     assertCanEditExpenseAfterSettlement(ctx, current.fields)
+    // The STORED denomination must match the trip. The client always sends
+    // currency = trip currency, so merging `patch.currency ?? stored` alone
+    // would quietly relabel a ¥10,000 expense as $10,000.00 if the trip
+    // currency had been changed after it was recorded (possible before
+    // trip.ledgerStartedAt pinned it). Refuse instead of rewriting amounts.
+    const storedCurrency = readString(current.fields, 'currency')
+    if (storedCurrency && storedCurrency !== ctx.currency) {
+      throw new CascadeError(
+        409,
+        `expense is recorded in ${storedCurrency} but the trip currency is ${ctx.currency}`,
+      )
+    }
 
     // Stale-replace guard, AFTER authz so an unauthorized caller learns
     // nothing about the current receipt. `readNestedString` yields

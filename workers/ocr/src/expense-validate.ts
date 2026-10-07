@@ -160,7 +160,12 @@ const ExpenseAdjustmentSchema = z.object({
  *  with implicit upper bound from memberIds.includes check). */
 export function makeExpenseCreateSchema() {
   return z.object({
-    title:       z.string().min(1).max(200),
+    // 100 = the client form / UpdateExpenseSchema cap. It used to be 200
+    // here, and a 101–200 char title (OCR store names reach 120) later got
+    // copied into settlement lineage, which the client parses at ≤100 —
+    // one such settlement broke the whole trip's settlements listener.
+    // (Update keeps 200 so pre-existing long titles stay editable.)
+    title:       z.string().min(1).max(100),
     // 1B minor units is a defensive sanity cap: ¥1,000,000,000 (≈ ¥1B)
     // or $10,000,000.00 is far above any realistic single travel
     // expense in any currency this app supports. Below this is a typo
@@ -261,7 +266,7 @@ const ForeignExpenseSplitSchema = z.object({
 })
 
 const ForeignExpenseCreateBaseSchema = z.object({
-  title:             z.string().min(1).max(200),
+  title:             z.string().min(1).max(100),  // same cap as trip-currency create
   // ISO 4217 alpha-3 uppercase. Matches fx-rate.ts CCY_RE + schema.ts
   // trip.currency. The foreign-mode router's cross-field check
   // `sourceCurrency !== tripContext.currency` only makes sense if

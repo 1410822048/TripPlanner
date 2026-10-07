@@ -4,7 +4,7 @@
 // same file rather than splintering further.
 import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
-import { TimestampSchema } from './_shared'
+import { CurrencyCodeSchema, TimestampSchema } from './_shared'
 
 // Per-tab unread-dot key. Mirrors BadgeFeature in lastViewedStore;
 // kept identical so the trip-doc aggregate (lastActivityByFeature)
@@ -92,6 +92,12 @@ export interface Trip {
    */
   deletingAt?: Timestamp | null
   /**
+   * Stamped by the Worker on the trip's first expense. From then on
+   * firestore.rules pins `currency` (every ledger amount is denominated in
+   * it), and the edit form shows the currency read-only.
+   */
+  ledgerStartedAt?: Timestamp
+  /**
    * Owner-set shared cutoff for Wish voting. `null` = no deadline (default).
    * Once past, firestore.rules + the Worker /wish-file-* endpoints reject
    * all wish create/update/delete/vote writes — see wishVotingOpen(tripId).
@@ -117,12 +123,18 @@ export const CreateTripSchema = z.object({
   icon:        z.string().optional(),
   startDate:   z.string().min(1, '請選擇開始日期'),
   endDate:     z.string().min(1, '請選擇結束日期'),
-  currency:    z.string().default('TWD'),
+  // NO `.default()`: in Zod 4, `.partial()` keeps defaults, so a default
+  // here made UpdateTripSchema inject `currency: 'TWD'` into EVERY trip
+  // edit that didn't touch the currency (rename / dates / icon / country),
+  // silently relabelling non-TWD ledgers. Callers pass it explicitly.
+  currency:    CurrencyCodeSchema,
   defaultCountryCode: z.string().regex(/^[A-Z]{2}$/, '請選擇旅程國家'),
 })
 export type CreateTripInput = z.infer<typeof CreateTripSchema>
 
-/** Update payload — fields optional, per-field rules still enforced. */
+/** Update payload — fields optional, per-field rules still enforced.
+ *  CreateTripSchema must stay free of `.default()` (see `currency`):
+ *  `.partial()` would otherwise add the defaulted keys to every patch. */
 export const UpdateTripSchema = CreateTripSchema.partial()
 export type UpdateTripInput = z.infer<typeof UpdateTripSchema>
 
@@ -160,6 +172,7 @@ export const TripDocSchema = z.object({
   }).optional().catch(undefined),
   /** Cascade write-quiesce marker. Worker-controlled (admin SDK). */
   deletingAt: TimestampSchema.nullable().optional(),
+  ledgerStartedAt: TimestampSchema.optional(),
   // Always present: the database is initialized from the current schema and
   // the create rule forces both fields to be written as explicit null values.
   wishVotingDeadlineAt:         TimestampSchema.nullable(),

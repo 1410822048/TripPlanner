@@ -360,7 +360,7 @@ service cloud.firestore {
                     && request.resource.data.memberIds == [uid()]
                     && (!('currency' in request.resource.data)
                           || (request.resource.data.currency is string
-                              && request.resource.data.currency.size() == 3))
+                              && request.resource.data.currency.matches('^[A-Z]{3}$')))
                     && request.resource.data.defaultCountryCode is string
                     && request.resource.data.defaultCountryCode.matches('^[A-Z]{2}$')
                     && (!('icon' in request.resource.data)
@@ -393,6 +393,7 @@ service cloud.firestore {
              'currency','defaultCountryCode','icon','memberIds','lastActivityByFeature',
              'formerMemberNames',
              'deletingAt','wishVotingDeadlineAt','wishVotingDeadlineNotifiedAt',
+             'ledgerStartedAt',
              'createdAt','updatedAt'
            ])
         && unchanged('ownerId')
@@ -407,6 +408,12 @@ service cloud.firestore {
         // lastActivity paths pin their change sets via changedOnly, but
         // the owner-edit path still carries the explicit guard.
         && unchanged('deletingAt')
+        // ledgerStartedAt is stamped by the Worker on the trip's first
+        // expense. Once it exists every amount in the ledger is denominated
+        // in trip.currency (settlement math has no notion of mixed
+        // currencies), so the currency is pinned from then on.
+        && unchanged('ledgerStartedAt')
+        && (!('ledgerStartedAt' in resource.data) || unchanged('currency'))
         // wishVotingDeadlineNotifiedAt is Worker-only (wish-deadline-sweep
         // cron, Admin SDK bypasses rules). The owner may change the deadline
         // only while the current deadline is still open; otherwise there is
@@ -427,7 +434,7 @@ service cloud.firestore {
         && unchanged('lastActivityByFeature')
         && (!('currency' in request.resource.data)
               || (request.resource.data.currency is string
-                  && request.resource.data.currency.size() == 3))
+                  && request.resource.data.currency.matches('^[A-Z]{3}$')))
         && request.resource.data.defaultCountryCode is string
         && request.resource.data.defaultCountryCode.matches('^[A-Z]{2}$')
         && (!('icon' in request.resource.data)

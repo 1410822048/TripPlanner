@@ -91,6 +91,13 @@ describe('SettlementDocSchema — TRIP_CURRENCY (degenerate path)', () => {
     expect(result.success).toBe(true)
   })
 
+  it('still parses legacy lineage with a 101–200 char expense title (listener must not die)', () => {
+    const result = SettlementDocSchema.safeParse(baseDoc({
+      appliedSources: [{ expenseId: 'expense-1', expenseTitle: '店'.repeat(150), amountMinor: 750 }],
+    }))
+    expect(result.success).toBe(true)
+  })
+
   it('parses Worker-derived appliedExpenseIds lock index', () => {
     const result = SettlementDocSchema.safeParse(baseDoc({
       appliedExpenseIds: ['expense-1', 'expense-2'],
