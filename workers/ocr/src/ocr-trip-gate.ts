@@ -11,10 +11,8 @@
 //   2. Once old clients have aged out, set the `OCR_REQUIRE_TRIP_ID` var to
 //      "1" and requests without a tripId are refused.
 
-import { getAdminToken, getProjectId } from './admin'
-import { getDocFields, readString }    from './firestore'
 import { CascadeError }                from './cascade'
-import { assertMemberNotRemoving }     from './membership-shared'
+import { readTripAccess }              from './membership-shared'
 
 export function ocrTripIdRequired(flag: string | undefined): boolean {
   return flag === '1' || flag === 'true'
@@ -33,18 +31,5 @@ export async function assertOcrTripAccess(
     if (requireTripId) throw new CascadeError(400, 'tripId is required')
     return
   }
-  const accessToken = await getAdminToken(serviceAccountJson)
-  const projectId   = getProjectId(serviceAccountJson)
-  const [tripFields, memberFields] = await Promise.all([
-    getDocFields(accessToken, projectId, `trips/${tripId}`),
-    getDocFields(accessToken, projectId, `trips/${tripId}/members/${uid}`),
-  ])
-  if (!tripFields)                throw new CascadeError(404, 'trip not found')
-  if ('deletingAt' in tripFields) throw new CascadeError(410, 'trip is being deleted')
-  if (!memberFields)              throw new CascadeError(403, 'caller is not a trip member')
-  assertMemberNotRemoving(memberFields)
-  const role = readString(memberFields, 'role')
-  if (role !== 'owner' && role !== 'editor') {
-    throw new CascadeError(403, 'caller role is not owner/editor')
-  }
+  await readTripAccess(serviceAccountJson, tripId, uid, { roles: ['owner', 'editor'] })
 }

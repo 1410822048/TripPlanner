@@ -3,9 +3,8 @@ import { getAdminToken, getProjectId } from './admin'
 import { CascadeError, withTokenRetry } from './cascade'
 import { getDocFields, readString } from './firestore'
 import { expenseIsSettlementLocked } from './expense-write'
-import { assertWishVotingOpen } from './wish-write'
 import { runFirestoreTransaction, TxRetryExhausted, type TxWrite } from './firestore-tx'
-import { requireTripMember as requireTripMemberTx } from './membership-shared'
+import { requireTripAccess } from './membership-shared'
 import { referencedPaths } from './orphan-purge'
 import { TripIdRe } from './field-validation'
 import { deleteR2Object, getR2Object } from './r2-storage'
@@ -146,6 +145,10 @@ async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
   return Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('')
 }
 
+/** Thumbnail / file reads. Deliberately ONE member-doc GET, not the shared
+ *  readTripAccess (trip + member): this is the hottest endpoint (one call
+ *  per thumbnail, 600/min) and a deleting trip's blobs are about to go
+ *  anyway. Membership and removingAt are what keep a removed user out. */
 async function requireTripMember(
   callerUid:          string,
   tripId:             string,
@@ -183,13 +186,13 @@ async function authorizeDelete(
     const accessToken = await getAdminToken(serviceAccountJson)
     const projectId = getProjectId(serviceAccountJson)
     await runFirestoreTransaction(accessToken, projectId, async tx => {
-      const { trip, member } = await requireTripMemberTx(tx, tripId, callerUid)
-      if ('removingAt' in member.fields) throw new CascadeError(403, 'caller is being removed from the trip')
-      const isOwner = readString(trip.fields, 'ownerId') === callerUid
-      const role = readString(member.fields, 'role')
+      // Wishes: any member, until voting closes. Expenses / bookings: the
+      // roles that may edit them.
+      const { isOwner } = await requireTripAccess(tx, tripId, callerUid, parsed.collection === 'wishes'
+        ? { wishVotingOpen: true }
+        : { roles: ['owner', 'editor'] })
       const entity = await tx.get(`trips/${tripId}/${parsed.collection}/${parsed.entityId}`)
       if (parsed.collection === 'wishes') {
-        assertWishVotingOpen(trip)
         if (!isOwner) {
           if (!entity.exists) throw new CascadeError(404, 'wish not found')
           if (readString(entity.fields, 'proposedBy') !== callerUid) {
@@ -197,7 +200,6 @@ async function authorizeDelete(
           }
         }
       } else {
-        if (role !== 'owner' && role !== 'editor') throw new CascadeError(403, 'caller cannot delete this attachment')
         if (parsed.collection === 'expenses' && !isOwner) {
           if (!entity.exists) throw new CascadeError(404, 'expense not found')
           if (expenseIsSettlementLocked(entity.fields)) {

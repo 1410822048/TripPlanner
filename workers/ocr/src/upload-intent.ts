@@ -41,7 +41,7 @@ import {
 }                                                                   from './pdf-page-limit'
 import { PdfPageLimitError }                                        from '@tripmate/pdf-page-limit'
 import { TripIdRe }                                                  from './field-validation'
-import { assertWishVotingOpen }                                      from './membership-shared'
+import { requireTripAccess }                                         from './membership-shared'
 
 // ─── Constants ────────────────────────────────────────────────────
 
@@ -173,27 +173,16 @@ async function authorizeUpload(
   callerUid:  string,
   mode:       'create' | 'update',
 ): Promise<void> {
-  // 1. Trip exists + not being cascade-deleted.
-  const trip = await tx.get(`trips/${tripId}`)
-  if (!trip.exists)               throw new CascadeError(404, 'trip not found')
-  if ('deletingAt' in trip.fields) throw new CascadeError(410, 'trip is being deleted')
+  // Wish uploads: any member may propose, until voting closes (no intent
+  // minted after the deadline could ever be consumed — it would only strand
+  // a blob for the cron). Expense / booking: owner or editor; the role is
+  // the whole authz signal for create and update alike.
+  const isWish = entityType === 'wish'
+  await requireTripAccess(tx, tripId, callerUid, isWish
+    ? { wishVotingOpen: true }
+    : { roles: ['owner', 'editor'] })
 
-  // 2. Member doc + role.
-  const member = await tx.get(`trips/${tripId}/members/${callerUid}`)
-  if (!member.exists) throw new CascadeError(403, 'caller is not a trip member')
-  if ('removingAt' in member.fields) {
-    throw new CascadeError(403, 'caller is being removed from the trip')
-  }
-  const role = readString(member.fields, 'role')
-
-  if (entityType === 'wish') {
-    // Wish uploads: any member role can propose.
-    if (role !== 'owner' && role !== 'editor' && role !== 'viewer') {
-      throw new CascadeError(403, 'caller role invalid')
-    }
-    // Same deadline gate as /wish-file-*: after voting closes no intent can
-    // ever be consumed, so minting one only strands a blob for the cron.
-    assertWishVotingOpen(trip)
+  if (isWish) {
     const wish = await tx.get(`trips/${tripId}/wishes/${entityId}`)
     if (mode === 'create') {
       // Phase 3.7 upload-first flow: the wish doc legitimately
@@ -216,12 +205,6 @@ async function authorizeUpload(
     const proposer = readString(wish.fields, 'proposedBy')
     if (proposer !== callerUid) {
       throw new CascadeError(403, 'only the wish proposer can upload a replacement cover')
-    }
-  } else {
-    // expense / booking: editor or owner only. No doc read needed --
-    // role is the sole authz signal regardless of create vs update.
-    if (role !== 'owner' && role !== 'editor') {
-      throw new CascadeError(403, 'caller role is not owner/editor')
     }
   }
 }

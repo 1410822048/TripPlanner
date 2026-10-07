@@ -32,7 +32,7 @@ import {
   type FsValue,
 }                                                                   from './firestore'
 import { withTokenRetry, CascadeError }                             from './cascade'
-import { assertMemberNotRemoving, assertWishVotingOpen }             from './membership-shared'
+import { assertWishVotingOpen, checkTripAccess, requireTripAccess } from './membership-shared'
 import {
   runFirestoreTransaction,
   docResourceName,
@@ -147,28 +147,9 @@ async function authorizeWishCreateTx(
   tripId:    string,
   callerUid: string,
 ): Promise<TripContext> {
-  const [trip, member] = await Promise.all([
-    tx.get(`trips/${tripId}`),
-    tx.get(`trips/${tripId}/members/${callerUid}`),
-  ])
-  if (!trip.exists)               throw new CascadeError(404, 'trip not found')
-  if ('deletingAt' in trip.fields) throw new CascadeError(410, 'trip is being deleted')
-  // Membership is checked BEFORE the deadline gate so a non-member probing a
-  // tripId can't distinguish "deadline passed" from "not a member" via the
-  // error message — both collapse to the same 403 as far as they can tell.
-  if (!member.exists)              throw new CascadeError(403, 'caller is not a trip member')
-  assertMemberNotRemoving(member.fields)
-  assertWishVotingOpen(trip)
-
-  const role = readString(member.fields, 'role')
-  if (role !== 'owner' && role !== 'editor' && role !== 'viewer') {
-    throw new CascadeError(403, 'caller role invalid')
-  }
-
-  const arr = (trip.fields.memberIds as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []
-  const memberIds = arr
-    .map(v => v.stringValue)
-    .filter((s): s is string => typeof s === 'string')
+  // Any role may propose. The deadline is checked after membership (inside
+  // the shared gate) so a non-member can't tell "closed" from "not a member".
+  const { roster: memberIds } = await requireTripAccess(tx, tripId, callerUid, { wishVotingOpen: true })
   if (memberIds.length === 0) {
     throw new CascadeError(500, 'trip.memberIds is empty')
   }
@@ -402,19 +383,9 @@ async function authorizeWishUpdateTx(
     tx.get(`trips/${tripId}/members/${callerUid}`),
     tx.get(`trips/${tripId}/wishes/${wishId}`),
   ])
-  if (!trip.exists)               throw new CascadeError(404, 'trip not found')
-  if ('deletingAt' in trip.fields) throw new CascadeError(410, 'trip is being deleted')
-  // Membership is checked BEFORE the deadline gate so a non-member probing a
-  // tripId can't distinguish "deadline passed" from "not a member" via the
-  // error message — both collapse to the same 403 as far as they can tell.
-  if (!member.exists)              throw new CascadeError(403, 'caller is not a trip member')
-  assertMemberNotRemoving(member.fields)
-  assertWishVotingOpen(trip)
-
-  const role = readString(member.fields, 'role')
-  if (role !== 'owner' && role !== 'editor' && role !== 'viewer') {
-    throw new CascadeError(403, 'caller role invalid')
-  }
+  checkTripAccess(trip.exists ? trip.fields : null, member.exists ? member.fields : null, callerUid, {
+    wishVotingOpen: true,
+  })
   if (!wish.exists) {
     throw new CascadeError(404, 'wish not found')
   }
@@ -631,14 +602,10 @@ export async function wishDelete(
           tx.get(`trips/${req.tripId}/members/${callerUid}`),
           tx.get(wishPath),
         ])
-        if (!trip.exists)                throw new CascadeError(404, 'trip not found')
-        if ('deletingAt' in trip.fields) throw new CascadeError(410, 'trip is being deleted')
-        // Membership before the deadline gate, same as the update path: a
-        // non-member probing a tripId must not be able to tell "deadline
-        // passed" from "not a member".
-        if (!member.exists)              throw new CascadeError(403, 'caller is not a trip member')
-        assertMemberNotRemoving(member.fields)
-        assertWishVotingOpen(trip)
+        // Shared gate (deadline after membership, as on create/update).
+        checkTripAccess(trip.exists ? trip.fields : null, member.exists ? member.fields : null, callerUid, {
+          wishVotingOpen: true,
+        })
 
         // Already gone → succeed. There is no identity check to make here
         // and none is needed: the caller has already proved active

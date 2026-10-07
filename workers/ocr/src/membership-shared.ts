@@ -15,9 +15,11 @@ import {
   batchStripDepartedMember,
   deleteUserTripNotifications,
   deleteDoc,
+  getDocFields,
   type FsValue,
 }                                                           from './firestore'
 import { mapWithConcurrency }                               from './concurrency'
+import { getAdminToken, getProjectId }                      from './admin'
 import { CascadeError, TRIP_SUBCOLLECTIONS }                from './cascade'
 import {
   docResourceName,
@@ -99,13 +101,10 @@ export async function requireTripMember(
   tripId:    string,
   callerUid: string,
 ): Promise<{ trip: TxReadDoc; member: TxReadDoc }> {
-  const [trip, member] = await Promise.all([
-    tx.get(`trips/${tripId}`),
-    tx.get(`trips/${tripId}/members/${callerUid}`),
-  ])
-  if (!trip.exists)   throw new CascadeError(404, 'trip not found')
-  assertTripNotDeleting(trip)
-  if (!member.exists) throw new CascadeError(403, 'caller is not a trip member')
+  // Membership only: removingAt / role are the caller's business here
+  // (member-leave must get past a stale marker; route and attachment
+  // endpoints answer it with their own codes).
+  const { trip, member } = await requireTripAccess(tx, tripId, callerUid, { allowRemoving: true, roles: ANY_ROLE })
   return { trip, member }
 }
 
@@ -116,12 +115,121 @@ export async function requireTripOwner(
   tripId:    string,
   callerUid: string,
 ): Promise<{ trip: TxReadDoc; member: TxReadDoc }> {
-  const { trip, member } = await requireTripMember(tx, tripId, callerUid)
-  const ownerId = readString(trip.fields, 'ownerId')
-  if (ownerId !== callerUid) {
-    throw new CascadeError(403, 'caller is not the trip owner')
-  }
+  const { trip, member, isOwner } = await requireTripAccess(tx, tripId, callerUid, { allowRemoving: true, roles: ANY_ROLE })
+  // trips/{id}.ownerId is the single source of truth, not members.role.
+  if (!isOwner) throw new CascadeError(403, 'caller is not the trip owner')
   return { trip, member }
+}
+
+// ─── One trip-access gate ───────────────────────────────────────────
+//
+// Every endpoint used to read trips/{id} + members/{uid} and check them in
+// its own order with its own wording; the copies drifted (one endpoint
+// answered 403 where the rest answered 410, removingAt had four spellings,
+// an upload path forgot the wish deadline). The order is now fixed here:
+//
+//   404 trip missing → 410 trip deleting → 403 not a member →
+//   403 being removed → 403 wish voting closed → 403 role
+//
+// Only the order and wording live here; endpoint-specific rules (settlement
+// locks, proposer checks, stale paths) stay with the endpoint.
+
+export type TripRole = 'owner' | 'editor' | 'viewer'
+const TRIP_ROLES: readonly TripRole[] = ['owner', 'editor', 'viewer']
+/** Sentinel: skip the role check entirely (membership-only callers). */
+const ANY_ROLE = null
+
+export interface TripAccessOptions {
+  /** Roles allowed through. Default: any of the three. `null` skips the
+   *  role check (legacy membership-only callers). */
+  roles?:          readonly TripRole[] | null
+  /** Let a trip with deletingAt through (default: 410). */
+  allowDeleting?:  boolean
+  /** Let a member carrying removingAt through (default: 403). Only a
+   *  self-leave retry needs this. */
+  allowRemoving?:  boolean
+  /** Also refuse once the trip's wish voting deadline has passed — checked
+   *  after membership so non-members can't probe the deadline. */
+  wishVotingOpen?: boolean
+}
+
+export interface TripAccess {
+  tripFields:   Record<string, FsValue>
+  memberFields: Record<string, FsValue>
+  /** Validated role. Only when the caller passed `roles: null` (role check
+   *  skipped) can an unknown stored role surface here, as 'viewer' — the
+   *  least privileged reading. */
+  role:         TripRole
+  isOwner:      boolean
+  roster:       string[]
+}
+
+/** The checks themselves, over already-read fields (null = doc missing). */
+export function checkTripAccess(
+  tripFields:   Record<string, FsValue> | null,
+  memberFields: Record<string, FsValue> | null,
+  callerUid:    string,
+  opts:         TripAccessOptions = {},
+): TripAccess {
+  if (!tripFields)                                   throw new CascadeError(404, 'trip not found')
+  if (!opts.allowDeleting && 'deletingAt' in tripFields) throw new CascadeError(410, 'trip is being deleted')
+  if (!memberFields)                                 throw new CascadeError(403, 'caller is not a trip member')
+  if (!opts.allowRemoving) assertMemberNotRemoving(memberFields)
+  if (opts.wishVotingOpen) assertWishVotingOpen({ fields: tripFields })
+  const role = readString(memberFields, 'role') as TripRole | undefined
+  if (opts.roles !== null && (!role || !TRIP_ROLES.includes(role))) {
+    throw new CascadeError(403, 'caller role invalid')
+  }
+  const allowed = opts.roles === null ? null : (opts.roles ?? TRIP_ROLES)
+  if (allowed && !allowed.includes(role!)) {
+    throw new CascadeError(403, allowed.length === 1 && allowed[0] === 'owner'
+      ? 'caller is not the trip owner'
+      : `caller role is not ${allowed.join('/')}`)
+  }
+  return {
+    tripFields,
+    memberFields,
+    role: role ?? 'viewer',
+    isOwner: readString(tripFields, 'ownerId') === callerUid,
+    roster:  readStringArray(tripFields, 'memberIds'),
+  }
+}
+
+/** Transactional form: both reads join the tx's conflict set. */
+export async function requireTripAccess(
+  tx:        TxContext,
+  tripId:    string,
+  callerUid: string,
+  opts:      TripAccessOptions = {},
+): Promise<TripAccess & { trip: TxReadDoc; member: TxReadDoc }> {
+  const [trip, member] = await Promise.all([
+    tx.get(`trips/${tripId}`),
+    tx.get(`trips/${tripId}/members/${callerUid}`),
+  ])
+  const access = checkTripAccess(
+    trip.exists ? trip.fields : null,
+    member.exists ? member.fields : null,
+    callerUid,
+    opts,
+  )
+  return { ...access, trip, member }
+}
+
+/** Read-only form (two parallel GETs, no transaction) for endpoints that
+ *  write nothing to Firestore: OCR, FX preview, route search, attachments. */
+export async function readTripAccess(
+  serviceAccountJson: string,
+  tripId:             string,
+  callerUid:          string,
+  opts:               TripAccessOptions = {},
+): Promise<TripAccess> {
+  const accessToken = await getAdminToken(serviceAccountJson)
+  const projectId   = getProjectId(serviceAccountJson)
+  const [tripFields, memberFields] = await Promise.all([
+    getDocFields(accessToken, projectId, `trips/${tripId}`),
+    getDocFields(accessToken, projectId, `trips/${tripId}/members/${callerUid}`),
+  ])
+  return checkTripAccess(tripFields, memberFields, callerUid, opts)
 }
 
 /** Encode a list of uids as a Firestore REST arrayValue payload. */

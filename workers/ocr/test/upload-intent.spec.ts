@@ -198,6 +198,8 @@ describe('static validation (rejects before Firestore tx)', () => {
 describe('authorization (expense/booking: editor+; wish: proposer)', () => {
 	it('trip not found → 404', async () => {
 		txGetResponses.set(`trips/${TRIP_ID}`, notFoundDoc(`trips/${TRIP_ID}`))
+		// The trip and member docs are read together; the trip answer wins.
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberDoc('editor'))
 		await expect(
 			createUploadIntents(CALLER_UID, imageFullReq(), SERVICE_ACCOUNT_JSON),
 		).rejects.toMatchObject({ status: 404 })
@@ -205,6 +207,7 @@ describe('authorization (expense/booking: editor+; wish: proposer)', () => {
 
 	it('trip deletingAt set → 410', async () => {
 		txGetResponses.set(`trips/${TRIP_ID}`, tripDoc({ deletingAt: true }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberDoc('editor'))
 		await expect(
 			createUploadIntents(CALLER_UID, imageFullReq(), SERVICE_ACCOUNT_JSON),
 		).rejects.toMatchObject({ status: 410 })
@@ -329,6 +332,7 @@ describe('authorization (expense/booking: editor+; wish: proposer)', () => {
 
 	it("mode='create' wish: still rejects cascade-deleting trip → 410", async () => {
 		txGetResponses.set(`trips/${TRIP_ID}`, tripDoc({ deletingAt: true }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberDoc('viewer'))
 		await expect(
 			createUploadIntents(
 				CALLER_UID,

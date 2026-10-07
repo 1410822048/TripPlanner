@@ -46,13 +46,11 @@
 import { z }                                                        from 'zod'
 import { getAdminToken, getProjectId }                              from './admin'
 import {
-  readString,
-  readStringArray,
   readNestedString,
   type FsValue,
 }                                                                   from './firestore'
 import { withTokenRetry, CascadeError }                             from './cascade'
-import { assertMemberNotRemoving }                                   from './membership-shared'
+import { checkTripAccess, requireTripAccess }                       from './membership-shared'
 import {
   runFirestoreTransaction,
   docResourceName,
@@ -250,21 +248,7 @@ async function authorizeBookingCreateTx(
   tripId:    string,
   callerUid: string,
 ): Promise<TripContext> {
-  const [trip, member] = await Promise.all([
-    tx.get(`trips/${tripId}`),
-    tx.get(`trips/${tripId}/members/${callerUid}`),
-  ])
-  if (!trip.exists)                throw new CascadeError(404, 'trip not found')
-  if ('deletingAt' in trip.fields) throw new CascadeError(410, 'trip is being deleted')
-  if (!member.exists)              throw new CascadeError(403, 'caller is not a trip member')
-  assertMemberNotRemoving(member.fields)
-
-  const role = readString(member.fields, 'role')
-  if (role !== 'owner' && role !== 'editor') {
-    throw new CascadeError(403, 'caller role is not owner/editor')
-  }
-
-  const memberIds = readStringArray(trip.fields, 'memberIds')
+  const { roster: memberIds } = await requireTripAccess(tx, tripId, callerUid, { roles: ['owner', 'editor'] })
   if (memberIds.length === 0) {
     throw new CascadeError(500, 'trip.memberIds is empty')
   }
@@ -300,15 +284,9 @@ async function authorizeBookingUpdateTx(
     tx.get(`trips/${tripId}/members/${callerUid}`),
     tx.get(`trips/${tripId}/bookings/${bookingId}`),
   ])
-  if (!trip.exists)                throw new CascadeError(404, 'trip not found')
-  if ('deletingAt' in trip.fields) throw new CascadeError(410, 'trip is being deleted')
-  if (!member.exists)              throw new CascadeError(403, 'caller is not a trip member')
-  assertMemberNotRemoving(member.fields)
-
-  const role = readString(member.fields, 'role')
-  if (role !== 'owner' && role !== 'editor') {
-    throw new CascadeError(403, 'caller role is not owner/editor')
-  }
+  checkTripAccess(trip.exists ? trip.fields : null, member.exists ? member.fields : null, callerUid, {
+    roles: ['owner', 'editor'],
+  })
   if (!booking.exists) {
     throw new CascadeError(404, 'booking not found')
   }

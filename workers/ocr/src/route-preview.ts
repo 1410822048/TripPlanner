@@ -1,7 +1,6 @@
 import { getAdminToken } from './admin'
-import { getDocFields, readMap, readString, type FsValue } from './firestore'
-import { CascadeError } from './cascade'
-import { requireTripMember } from './membership-shared'
+import { readMap, readString, type FsValue } from './firestore'
+import { readTripAccess, requireTripMember } from './membership-shared'
 import { runFirestoreTransaction, TxCancelled, type TxReadDoc } from './firestore-tx'
 import {
   createRoutePreviewDeadline,
@@ -338,20 +337,18 @@ export async function assertRouteEditor(
   uid: string,
   tripId: string,
   serviceAccountJson: string,
-  projectId: string,
+  _projectId: string, // unused: the shared gate derives it from the service account
 ): Promise<void> {
   // Read-only gate for autocomplete / resolve, called on every keystroke
   // batch: two parallel GETs instead of a read-only transaction (begin +
   // two reads + rollback). Nothing is written, so there is no conflict set
   // to protect; the write path (/route-apply) keeps its transaction.
-  const accessToken = await getAdminToken(serviceAccountJson)
-  const [tripFields, memberFields] = await Promise.all([
-    getDocFields(accessToken, projectId, `trips/${tripId}`),
-    getDocFields(accessToken, projectId, `trips/${tripId}/members/${uid}`),
-  ])
-  if (!tripFields)                throw new CascadeError(404, 'trip not found')
-  if ('deletingAt' in tripFields) throw new CascadeError(410, 'trip is being deleted')
-  if (!memberFields)              throw new CascadeError(403, 'caller is not a trip member')
+  // Shared order (404 → 410 → 403 non-member); removingAt and role keep
+  // their route error codes below.
+  const { memberFields } = await readTripAccess(serviceAccountJson, tripId, uid, {
+    allowRemoving: true,
+    roles:         null,
+  })
   if ('removingAt' in memberFields) {
     throw new RouteValidationError(403, 'membership', 'ROUTE_MEMBER_INACTIVE', 'caller is leaving the trip')
   }

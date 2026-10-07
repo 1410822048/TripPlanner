@@ -62,7 +62,7 @@ import {
   type FsValue,
 }                                                           from './firestore'
 import { withTokenRetry, CascadeError }                     from './cascade'
-import { assertMemberNotRemoving }                                   from './membership-shared'
+import { checkTripAccess, requireTripAccess }                       from './membership-shared'
 import {
   runFirestoreTransaction,
   docResourceName,
@@ -155,14 +155,8 @@ async function authorizeMemberTx(
   tripId:    string,
   callerUid: string,
 ): Promise<TripCurrencyContext & { ownerId: string | undefined; formerMemberUids: string[] }> {
-  const [trip, member] = await Promise.all([
-    tx.get(`trips/${tripId}`),
-    tx.get(`trips/${tripId}/members/${callerUid}`),
-  ])
-  if (!trip.exists)                throw new CascadeError(404, 'trip not found')
-  if ('deletingAt' in trip.fields) throw new CascadeError(410, 'trip is being deleted')
-  if (!member.exists)              throw new CascadeError(403, 'caller is not a trip member')
-  assertMemberNotRemoving(member.fields)
+  // Any role: recording a receipt is the receiver's right, not an edit.
+  const { trip } = await requireTripAccess(tx, tripId, callerUid)
 
   const currency = readString(trip.fields, 'currency')
   if (!currency) {
@@ -845,10 +839,13 @@ async function doDelete(
       tx.get(`trips/${req.tripId}/members/${callerUid}`),
       tx.get(settlementPath),
     ])
-    if (!trip.exists)                  throw new CascadeError(404, 'trip not found')
-    if ('deletingAt' in trip.fields)   throw new CascadeError(410, 'trip is being deleted')
-    if (!member.exists)                throw new CascadeError(403, 'caller is not a trip member')
-    assertMemberNotRemoving(member.fields)
+    // Settlement read stays in the same parallel batch; the access check
+    // runs over the fields already in hand.
+    checkTripAccess(
+      trip.exists ? trip.fields : null,
+      member.exists ? member.fields : null,
+      callerUid,
+    )
     if (!settlement.exists) {
       // Idempotent: delete-of-missing returns ok. Matches the existing
       // client `deleteDoc` behaviour (Firestore SDK silently no-ops on

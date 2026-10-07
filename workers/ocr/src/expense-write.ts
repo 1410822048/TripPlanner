@@ -41,7 +41,7 @@ import {
 }                                                                   from './expense-foreign-write'
 import { encodeExpense, encodePatch, mergeExpense }                 from './expense-codec'
 import { withTokenRetry, CascadeError }                             from './cascade'
-import { assertMemberNotRemoving }                                   from './membership-shared'
+import { requireTripAccess }                                         from './membership-shared'
 import {
   runFirestoreTransaction,
   docResourceName,
@@ -202,29 +202,10 @@ async function authorizeCanWriteTx(
   tripId:    string,
   callerUid: string,
 ): Promise<TripContext> {
-  const [trip, member] = await Promise.all([
-    tx.get(`trips/${tripId}`),
-    tx.get(`trips/${tripId}/members/${callerUid}`),
-  ])
-  // Same order as every other endpoint: 404 → 410 → 403 (non-member,
-  // removing, role).
-  if (!trip.exists)                throw new CascadeError(404, 'trip not found')
-  if ('deletingAt' in trip.fields) throw new CascadeError(410, 'trip is being deleted')
-  if (!member.exists)              throw new CascadeError(403, 'caller is not a trip member')
-  assertMemberNotRemoving(member.fields)
+  const { tripFields, isOwner, roster: memberIds } = await requireTripAccess(tx, tripId, callerUid, {
+    roles: ['owner', 'editor'],
+  })
 
-  const role = readString(member.fields, 'role')
-  if (role !== 'owner' && role !== 'editor') {
-    throw new CascadeError(403, 'caller role is not owner/editor')
-  }
-  const ownerId = readString(trip.fields, 'ownerId')
-
-  // Extract memberIds[] from the trip doc. Firestore REST shape:
-  // { arrayValue: { values: [{ stringValue: '...' }, ...] } }
-  const arr = (trip.fields.memberIds as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []
-  const memberIds = arr
-    .map(v => v.stringValue)
-    .filter((s): s is string => typeof s === 'string')
   if (memberIds.length === 0) {
     throw new CascadeError(500, 'trip.memberIds is empty')
   }
@@ -232,15 +213,15 @@ async function authorizeCanWriteTx(
   // a missing value here is a data-integrity bug (e.g. raw admin write
   // bypassing the client onboarding flow) and we fail-closed rather
   // than silently let the caller pick the currency.
-  const currency = readString(trip.fields, 'currency')
+  const currency = readString(tripFields, 'currency')
   if (!currency) {
     throw new CascadeError(500, 'trip.currency is missing')
   }
   return {
     memberIds,
-    isOwner: ownerId === callerUid,
+    isOwner,
     currency,
-    ledgerStarted: 'ledgerStartedAt' in trip.fields,
+    ledgerStarted: 'ledgerStartedAt' in tripFields,
   }
 }
 

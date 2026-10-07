@@ -14,10 +14,9 @@
 // The trip currency comes from the trip doc, never from the client.
 
 import { z } from 'zod'
-import { getAdminToken, getProjectId } from './admin'
-import { getDocFields, readString }    from './firestore'
+import { readString }                  from './firestore'
 import { CascadeError }                from './cascade'
-import { assertMemberNotRemoving }     from './membership-shared'
+import { readTripAccess }              from './membership-shared'
 import { TripIdRe }                    from './field-validation'
 import { resolveFxRate }               from './fx-rate'
 
@@ -37,16 +36,7 @@ export async function fxPreview(
   req:                FxPreviewRequest,
   serviceAccountJson: string,
 ): Promise<FxPreviewResponse> {
-  const accessToken = await getAdminToken(serviceAccountJson)
-  const projectId   = getProjectId(serviceAccountJson)
-  const [tripFields, memberFields] = await Promise.all([
-    getDocFields(accessToken, projectId, `trips/${req.tripId}`),
-    getDocFields(accessToken, projectId, `trips/${req.tripId}/members/${uid}`),
-  ])
-  if (!tripFields)                throw new CascadeError(404, 'trip not found')
-  if ('deletingAt' in tripFields) throw new CascadeError(410, 'trip is being deleted')
-  if (!memberFields)              throw new CascadeError(403, 'caller is not a trip member')
-  assertMemberNotRemoving(memberFields)
+  const { tripFields } = await readTripAccess(serviceAccountJson, req.tripId, uid)
 
   const tripCurrency = readString(tripFields, 'currency')
   if (!tripCurrency) throw new CascadeError(500, 'trip.currency is missing')
