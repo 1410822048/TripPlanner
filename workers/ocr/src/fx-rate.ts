@@ -578,17 +578,27 @@ export async function resolveFxRate(
     fetchImpl,
     todayUtc,
   )
-  try {
-    await writeCache(accessToken, projectId, cacheKey, {
-      base:          input.sourceCurrency,
-      quote:         input.tripCurrency,
-      requestedDate: input.requestedDate,
-      rateDate:      provider.rateDate,
-      rateDecimal:   provider.rateDecimal,
-      nowMs:         now.getTime(),
-    }, fetchImpl)
-  } catch (e) {
-    console.warn(`[fx] cache write failed for ${cacheKey}: ${(e as Error).message}`)
+  // Pin only a FINAL answer. A date before today (UTC) is final: its rate
+  // was published that day, or never will be (weekend / holiday → the
+  // earlier rateDate is the answer for good). For today or later, an
+  // earlier rateDate means "not published yet" — caching it froze the
+  // previous day's rate onto every later save for that date, and the
+  // preview endpoint (any member may call it) would trigger that freeze
+  // just by opening a form. Unpinned answers are refetched next time.
+  const isFinal = provider.rateDate === input.requestedDate || input.requestedDate < todayUtc
+  if (isFinal) {
+    try {
+      await writeCache(accessToken, projectId, cacheKey, {
+        base:          input.sourceCurrency,
+        quote:         input.tripCurrency,
+        requestedDate: input.requestedDate,
+        rateDate:      provider.rateDate,
+        rateDecimal:   provider.rateDecimal,
+        nowMs:         now.getTime(),
+      }, fetchImpl)
+    } catch (e) {
+      console.warn(`[fx] cache write failed for ${cacheKey}: ${(e as Error).message}`)
+    }
   }
   return {
     rateDate:    provider.rateDate,

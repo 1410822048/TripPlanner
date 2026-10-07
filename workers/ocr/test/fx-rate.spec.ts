@@ -332,6 +332,37 @@ describe('getFxSnapshot - provider weekend drift', () => {
 		expect(result?.rateDate).toBe('2026-05-29')
 	})
 
+	it('does not pin a not-yet-published answer for today (no cache write)', async () => {
+		// requestedDate is today (UTC) but the provider still answers with
+		// yesterday's rate: caching that would freeze it for the whole day.
+		const today = NOW.toISOString().slice(0, 10)
+		const fetchImpl = sequentialFetch(
+			firestoreMiss(),
+			frankfurterOk('2026-05-29', 'USD', 'JPY', 146.2),
+		)
+		const result = await getFxSnapshot(
+			input({ requestedDate: today }),
+			'svc',
+			{ now: NOW, fetchImpl: fetchImpl as typeof fetch },
+		)
+		expect(result?.rateDate).toBe('2026-05-29')
+		expect(fetchImpl).toHaveBeenCalledTimes(2)   // cache read + provider, no PATCH
+	})
+
+	it('pins a past date even when its rateDate is earlier (weekend: final answer)', async () => {
+		const fetchImpl = sequentialFetch(
+			firestoreMiss(),
+			frankfurterOk('2026-05-22', 'USD', 'JPY', 146.2),
+			new Response('{}', { status: 200 }),
+		)
+		await getFxSnapshot(
+			input({ requestedDate: '2026-05-24' }),
+			'svc',
+			{ now: NOW, fetchImpl: fetchImpl as typeof fetch },
+		)
+		expect(fetchImpl).toHaveBeenCalledTimes(3)   // cache read + provider + PATCH
+	})
+
 	it('rejects a provider rateDate AFTER requestedDate (clock skew / publication anomaly)', async () => {
 		const fetchImpl = sequentialFetch(
 			firestoreMiss(),

@@ -28,7 +28,7 @@ import type {
 } from '@/types/expense'
 import type { TripMember } from '@/features/trips/types'
 import { reconcileReceipt } from '@tripmate/expense-materialize'
-import { convertMinorHalfEven } from '@tripmate/fx-core'
+import { convertMinorHalfEven, isCanonicalRateString } from '@tripmate/fx-core'
 import FormModalShell from '@/components/ui/FormModalShell'
 import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
@@ -178,6 +178,10 @@ export default function ExpenseFormModal({
     && storedFx.baseCurrency  === sourceCurrency
     && storedFx.quoteCurrency === tripCurrency
     && storedFx.requestedDate === state.date
+    // Same test the Worker applies before reusing a stored rate
+    // (expense-foreign-write storedFxRate); a legacy non-canonical rate
+    // is refetched there, so it must not be previewed here.
+    && isCanonicalRateString(storedFx.rateDecimal)
     ? { rateDecimal: storedFx.rateDecimal, rateDate: storedFx.rateDate }
     : null
   const fxPreview = useFxPreview({
