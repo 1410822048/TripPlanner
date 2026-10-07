@@ -103,6 +103,7 @@ export type OcrErrorKind =
   | 'unavailable'
   | 'stale'
   | 'forbidden'
+  | 'trip-forbidden'
   | 'unknown'
 
 // Field declared explicitly (not via constructor-param syntax) because the
@@ -207,7 +208,11 @@ async function postOcrImage<T>(
 
   if (res.status === 401) throw new OcrError('Session expired', 'auth')
   // 403 = not (or no longer) an owner/editor of the trip the scan is for.
-  if (res.status === 403) throw new OcrError('Forbidden: not an editor of this trip', 'forbidden')
+  // 403/404/410 come from the trip gate on a fresh scan: not (or no longer)
+  // an owner/editor, or the trip is gone / being deleted.
+  if (res.status === 403 || res.status === 404 || res.status === 410) {
+    throw new OcrError('Forbidden: not an editor of this trip', 'trip-forbidden')
+  }
   if (res.status === 429) throw new OcrError('Rate limit reached', 'rate-limit')
   if (res.status === 422) throw new OcrError('Could not read receipt', 'parse')
   if (res.status === 502 || res.status === 503 || res.status === 504) {

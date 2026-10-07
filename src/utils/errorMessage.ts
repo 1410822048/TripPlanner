@@ -59,6 +59,13 @@ const WORKER_CODES: Record<string, string> = {
 }
 
 const WORKER_MESSAGES: Array<[RegExp, string]> = [
+  [/trip is being deleted/i,        '這趟旅程正在刪除中'],
+  [/invite expired/i,               '此邀請連結已過期'],
+  [/invite not found/i,             '此邀請連結已失效，請向擁有者索取新連結'],
+  [/invite token is stale/i,        '已有更新的邀請連結，請重新整理後再試'],
+  [/member is being removed|caller is being removed/i, '你已被移出這趟旅程'],
+  [/target is being removed/i,      '這位成員正在被移出旅程'],
+  [/intent .*expired/i,             '上傳逾時，請重新選擇檔案'],
   [/no remaining debt/i,            '這筆欠款已經結清，請重新整理後確認'],
   [/tombstoned expense/i,           '這筆費用已被刪除'],
   [/already exists at this id/i,    '資料已存在，請重新整理後確認'],
@@ -71,7 +78,7 @@ const WORKER_STATUS: Record<number, string> = {
   403: '你沒有這項操作的權限',
   404: '資料已不存在，可能已被其他成員刪除',
   409: '資料已被其他成員更新，請重新整理後再試',
-  410: '這趟旅程正在刪除中',
+  410: '資料已失效，請重新整理後再試',
   413: '內容或檔案太大',
   415: '不支援這個檔案格式',
   429: '操作過於頻繁，請稍後再試',

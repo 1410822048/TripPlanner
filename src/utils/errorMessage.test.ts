@@ -36,6 +36,14 @@ describe('userErrorMessage', () => {
     expect(userErrorMessage(new WorkerRejected(502, 'upstream', 'SOMETHING_NEW'), 'x')).toBe('伺服器暫時無法處理，請稍後再試')
   })
 
+  it('tells invite and upload expiry apart from a deleting trip', () => {
+    expect(userErrorMessage(new WorkerRejected(410, 'invite expired'), 'x')).toBe('此邀請連結已過期')
+    expect(userErrorMessage(new WorkerRejected(404, 'invite not found'), 'x')).toBe('此邀請連結已失效，請向擁有者索取新連結')
+    expect(userErrorMessage(new WorkerRejected(410, 'trip is being deleted'), 'x')).toBe('這趟旅程正在刪除中')
+    expect(userErrorMessage(new WorkerRejected(410, 'intent abc expired'), 'x')).toBe('上傳逾時，請重新選擇檔案')
+    expect(userErrorMessage(new WorkerRejected(410, 'something else'), 'x')).toBe('資料已失效，請重新整理後再試')
+  })
+
   it('keeps a Worker message that is already written in Chinese', () => {
     expect(userErrorMessage(new WorkerRejected(409, '附件仍被使用，請先透過原項目的編輯流程移除或替換附件'), 'x'))
       .toBe('附件仍被使用，請先透過原項目的編輯流程移除或替換附件')

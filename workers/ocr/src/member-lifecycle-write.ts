@@ -134,8 +134,11 @@ async function doMemberRemove(
     // reusable and usually sit in a group chat, so without this the person
     // just removed could tap the same link and walk straight back in with
     // the link's role. Only on a real kick — a repair run over a legacy
-    // partial kick (no member doc) must not rotate the owner's link.
-    if (target.exists && currentInvite.exists) {
+    // partial kick (no member doc) must not rotate the owner's link, and
+    // neither must a retry of a kick whose marker is already set: the first
+    // attempt revoked the link that existed then, and the current one may be
+    // a fresh link the owner made since.
+    if (target.exists && !('removingAt' in target.fields) && currentInvite.exists) {
       const inviteToken = readString(currentInvite.fields, 'token')
       if (inviteToken) {
         writes.push({ op: 'delete', document: docResourceName(projectId, `trips/${req.tripId}/invites/${inviteToken}`) })

@@ -201,6 +201,17 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
                           <MoreVertical size={15} strokeWidth={2} />
                         </button>
                       )}
+                      {/* A removal whose cascade failed leaves removingAt behind
+                          with nothing to sweep it; /member-remove is idempotent,
+                          so the owner can simply run it again. */}
+                      {removing && isOwner && writeCompatible && !isSelf && (
+                        <button
+                          onClick={() => setPendingRemove(m)}
+                          className="h-8 px-2.5 rounded-lg border border-border bg-app text-[11px] font-semibold text-danger hover:bg-tile cursor-pointer transition-colors shrink-0"
+                        >
+                          重試移除
+                        </button>
+                      )}
                     </li>
                   )
                 })}

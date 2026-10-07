@@ -94,6 +94,7 @@ function ocrErrorCopy(e: OcrError): string {
     case 'unavailable': return '讀取服務忙碌中，請稍後再試一次'
     case 'stale':      return '費用已更新，請再次讀取'
     case 'forbidden':  return '你沒有編輯此費用的權限。它可能已清算或權限已變更'
+    case 'trip-forbidden': return '你沒有這趟旅程的編輯權限，無法讀取收據'
     default:           return e.message || '讀取失敗'
   }
 }

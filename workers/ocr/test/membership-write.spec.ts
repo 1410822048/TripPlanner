@@ -967,6 +967,17 @@ describe('memberRemove endpoint', () => {
 			expect(deletedDocs()).toEqual([])
 		})
 
+		it('leaves a newer invite alone when retrying a kick that already set removingAt', async () => {
+			seedAuthorizedRemove()
+			txGetResponses.set(`trips/${TRIP_ID}/members/${TARGET}`,
+				memberReadDoc(TARGET, 'editor', { removingAt: '2026-10-07T00:00:00Z' }))
+			txGetResponses.set(`trips/${TRIP_ID}/inviteState/current`, currentReadDoc(VALID_TOK))
+
+			await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
+
+			expect(deletedDocs()).toEqual([])
+		})
+
 		it('leaves the invite alone on a repair run (target member doc already gone)', async () => {
 			seedAuthorizedRemove({ targetExists: false })
 			txGetResponses.set(`trips/${TRIP_ID}/inviteState/current`, currentReadDoc(VALID_TOK))
