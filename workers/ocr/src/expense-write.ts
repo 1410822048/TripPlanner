@@ -206,16 +206,16 @@ async function authorizeCanWriteTx(
     tx.get(`trips/${tripId}`),
     tx.get(`trips/${tripId}/members/${callerUid}`),
   ])
-  if (!trip.exists)   throw new CascadeError(404, 'trip not found')
-  if (!member.exists) throw new CascadeError(403, 'caller is not a trip member')
+  // Same order as every other endpoint: 404 → 410 → 403 (non-member,
+  // removing, role).
+  if (!trip.exists)                throw new CascadeError(404, 'trip not found')
+  if ('deletingAt' in trip.fields) throw new CascadeError(410, 'trip is being deleted')
+  if (!member.exists)              throw new CascadeError(403, 'caller is not a trip member')
   assertMemberNotRemoving(member.fields)
 
   const role = readString(member.fields, 'role')
   if (role !== 'owner' && role !== 'editor') {
     throw new CascadeError(403, 'caller role is not owner/editor')
-  }
-  if ('deletingAt' in trip.fields) {
-    throw new CascadeError(410, 'trip is being deleted')
   }
   const ownerId = readString(trip.fields, 'ownerId')
 

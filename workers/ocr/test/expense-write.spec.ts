@@ -354,6 +354,18 @@ describe('expenseCreate endpoint', () => {
 		)).rejects.toThrow(/being deleted/i)
 	})
 
+	it('answers 410 before membership for a deleting trip (same order as the other endpoints)', async () => {
+		const trip = tripReadDoc()
+		trip.fields = { ...trip.fields, deletingAt: { timestampValue: '2026-05-22T00:00:00Z' } }
+		txGetResponses.set(`trips/${TRIP_ID}`, trip)
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('viewer'))
+		await expect(expenseCreate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validExpensePayload() },
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ status: 410 })
+	})
+
 	it('rejects when caller is viewer (role check)', async () => {
 		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('viewer'))
