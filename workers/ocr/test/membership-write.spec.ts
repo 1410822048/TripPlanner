@@ -905,7 +905,8 @@ describe('memberRemove endpoint', () => {
 			opts.targetExists === false
 				? notFoundReadDoc(targetPath)
 				: memberReadDoc(TARGET, 'editor'),
-		)
+		)		// No active invite by default; the revocation tests seed one.
+		txGetResponses.set(`trips/${TRIP_ID}/inviteState/current`, notFoundReadDoc(`trips/${TRIP_ID}/inviteState/current`))
 	}
 
 	it('happy path: ACL strip BEFORE member doc delete -- the load-bearing order', async () => {
@@ -937,6 +938,43 @@ describe('memberRemove endpoint', () => {
 		// The single deleteDoc call targets the member doc itself.
 		const deleteCall = restCallOrder[deleteIdx]
 		expect(deleteCall).toContain(`/members/${TARGET}`)
+	})
+
+	describe('active invite revocation', () => {
+		const deletedDocs = () =>
+			(capturedTxResult!.writes as Array<{ op?: string; document: string }>)
+				.filter(w => w.op === 'delete')
+				.map(w => w.document.replace(/^.*\/documents\//, ''))
+
+		it('revokes the current invite link in the same commit as the kick', async () => {
+			seedAuthorizedRemove()
+			txGetResponses.set(`trips/${TRIP_ID}/inviteState/current`, currentReadDoc(VALID_TOK))
+
+			await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
+
+			expect(deletedDocs()).toEqual(expect.arrayContaining([
+				`trips/${TRIP_ID}/invites/${VALID_TOK}`,
+				`trips/${TRIP_ID}/inviteState/current`,
+			]))
+		})
+
+		it('writes no invite deletes when there is no active invite', async () => {
+			seedAuthorizedRemove()
+			txGetResponses.set(`trips/${TRIP_ID}/inviteState/current`, notFoundReadDoc(`trips/${TRIP_ID}/inviteState/current`))
+
+			await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
+
+			expect(deletedDocs()).toEqual([])
+		})
+
+		it('leaves the invite alone on a repair run (target member doc already gone)', async () => {
+			seedAuthorizedRemove({ targetExists: false })
+			txGetResponses.set(`trips/${TRIP_ID}/inviteState/current`, currentReadDoc(VALID_TOK))
+
+			await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
+
+			expect(deletedDocs()).toEqual([])
+		})
 	})
 
 	// The member doc is the ONLY place a person's name lives, and the cascade

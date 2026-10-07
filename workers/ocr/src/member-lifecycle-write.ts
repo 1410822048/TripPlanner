@@ -117,7 +117,10 @@ async function doMemberRemove(
     // members/{uid} doc is already gone. Returning early here would leave
     // a real read-leak via collection-group queries gated on same-doc
     // memberIds.
-    const target = await tx.get(`trips/${req.tripId}/members/${req.memberUid}`)
+    const [target, currentInvite] = await Promise.all([
+      tx.get(`trips/${req.tripId}/members/${req.memberUid}`),
+      tx.get(`trips/${req.tripId}/inviteState/current`),
+    ])
 
     // Removal-quiesce marker + trip-roster strip, built by the shared
     // helper (see buildMemberStripWrites for the full race rationale).
@@ -126,6 +129,19 @@ async function doMemberRemove(
     // concurrent trip-cascade-delete can never land them on a trip being
     // torn down.
     const writes = buildMemberStripWrites(projectId, req.tripId, req.memberUid, target, trip, 'removed', callerUid)
+
+    // Revoke the active invite in the same commit. Invite links are
+    // reusable and usually sit in a group chat, so without this the person
+    // just removed could tap the same link and walk straight back in with
+    // the link's role. Only on a real kick — a repair run over a legacy
+    // partial kick (no member doc) must not rotate the owner's link.
+    if (target.exists && currentInvite.exists) {
+      const inviteToken = readString(currentInvite.fields, 'token')
+      if (inviteToken) {
+        writes.push({ op: 'delete', document: docResourceName(projectId, `trips/${req.tripId}/invites/${inviteToken}`) })
+      }
+      writes.push({ op: 'delete', document: docResourceName(projectId, `trips/${req.tripId}/inviteState/current`) })
+    }
 
     return {
       writes,

@@ -279,7 +279,7 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
         description={pendingRemove && (
           <>
             將從旅程移除 <span className="font-bold text-ink">{pendingRemove.displayName}</span>。<br />
-            除非再次收到邀請，否則無法存取此旅程。
+            除非再次收到邀請，否則無法存取此旅程。目前的邀請連結也會一併失效，需要時請重新產生。
           </>
         )}
         icon={
