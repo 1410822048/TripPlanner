@@ -166,6 +166,7 @@ async function postOcrImage<T>(
   currency: string | undefined,
   signal:   AbortSignal | undefined,
   copy:     { timeout: string; failed: string },
+  tripId?:  string | null,
 ): Promise<T> {
   if (!isOcrSupportedImageFile(file)) {
     throw new OcrError('OCR supports JPEG, PNG, or WebP receipt images', 'parse')
@@ -191,6 +192,8 @@ async function postOcrImage<T>(
         image,
         mimeType: file.type || 'image/jpeg',
         currency,
+        // The Worker gates paid OCR on owner/editor of this trip.
+        ...(tripId ? { tripId } : {}),
       }),
       signal: ocrFetchSignal(signal),
     })
@@ -203,6 +206,8 @@ async function postOcrImage<T>(
   }
 
   if (res.status === 401) throw new OcrError('Session expired', 'auth')
+  // 403 = not (or no longer) an owner/editor of the trip the scan is for.
+  if (res.status === 403) throw new OcrError('Forbidden: not an editor of this trip', 'forbidden')
   if (res.status === 429) throw new OcrError('Rate limit reached', 'rate-limit')
   if (res.status === 422) throw new OcrError('Could not read receipt', 'parse')
   if (res.status === 502 || res.status === 503 || res.status === 504) {
@@ -224,20 +229,20 @@ async function postOcrImage<T>(
  * from receipt symbols. Pass the trip currency for better accuracy on
  * ambiguous receipts (e.g. a "$" that could be USD/TWD/CAD).
  */
-export async function ocrReceipt(file: File, currency?: string, signal?: AbortSignal): Promise<OcrResult> {
+export async function ocrReceipt(file: File, currency?: string, signal?: AbortSignal, tripId?: string | null): Promise<OcrResult> {
   return postOcrImage<OcrResult>('/ocr', file, currency, signal, {
     timeout: 'OCR request timed out',
     failed:  'OCR failed',
-  })
+  }, tripId)
 }
 
 /** Explicit backup path. This is user-triggered; the product path does not
  *  silently double-run models and hide the latency/cost from the user. */
-export async function ocrFallbackReceipt(file: File, currency?: string, signal?: AbortSignal): Promise<OcrResult> {
+export async function ocrFallbackReceipt(file: File, currency?: string, signal?: AbortSignal, tripId?: string | null): Promise<OcrResult> {
   return postOcrImage<OcrResult>('/ocr-fallback', file, currency, signal, {
     timeout: 'OCR fallback timed out',
     failed:  'OCR fallback failed',
-  })
+  }, tripId)
 }
 
 /** Response envelope for the re-OCR-existing-receipt endpoint. Carries the

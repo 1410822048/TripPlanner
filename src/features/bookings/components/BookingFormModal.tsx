@@ -165,11 +165,13 @@ interface Props {
   /** Only present in edit mode for users with delete permission.
    *  Renders a two-step inline confirm above the save button. */
   onDelete?:  () => void
+  /** Cloud trip id, forwarded to PDF extraction (Worker role gate). */
+  tripId?:    string | null
 }
 
 export default function BookingFormModal({
   editTarget, tripStartDate, tripEndDate,
-  isOpen, isSaving, saveError, initialDraft, onClose, onSave, onCreateMany, onDelete,
+  isOpen, isSaving, saveError, initialDraft, onClose, onSave, onCreateMany, onDelete, tripId,
 }: Props) {
   const { state, setField } = useBookingFormState(editTarget, initialDraft)
   const coverSource = editTarget?.coverImage
@@ -237,6 +239,7 @@ export default function BookingFormModal({
     applyPatch: applyDraftPatch,
     openFilePicker: () => pdfFileRef.current?.click(),
     onCreateMany,
+    tripId,
   })
 
   function pickCoverImage() {

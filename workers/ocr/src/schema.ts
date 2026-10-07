@@ -28,6 +28,7 @@
 // to IEEE-754 drift. The model is instructed to emit raw decimal strings
 // matching the currency's fraction digits.
 import { z } from 'zod'
+import { TripIdRe } from './field-validation'
 
 // ─── Request ─────────────────────────────────────────────────────────────
 
@@ -59,6 +60,9 @@ export const OcrRequestSchema = z.object({
    *  pinning the full code set — catches obvious garbage without coupling
    *  to a static list we'd have to maintain. */
   currency: z.string().regex(/^[A-Z]{3}$/, 'currency must be 3 uppercase letters').optional(),
+  /** Trip the scan is for. Optional only during the rollout — see
+   *  ocr-trip-gate.ts. When present the caller must be an owner/editor. */
+  tripId:   z.string().regex(TripIdRe).optional(),
 })
 export type OcrRequest = z.infer<typeof OcrRequestSchema>
 

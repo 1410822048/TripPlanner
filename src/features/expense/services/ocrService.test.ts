@@ -205,6 +205,19 @@ describe('ocrFallbackReceipt', () => {
     expect(call[0]).toBe('https://worker.example.dev/ocr-fallback')
     const sent = JSON.parse(call[1]!.body as string)
     expect(sent).toMatchObject({ mimeType: 'image/webp', currency: 'JPY' })
+    expect(sent).not.toHaveProperty('tripId')
+  })
+
+  it('sends the trip id so the Worker can apply its editor gate, and maps 403', async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(new Response('{"error":"caller role is not owner/editor"}', { status: 403 })),
+    )
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+
+    await expect(ocrFallbackReceipt(new File(['img'], 'receipt.webp', { type: 'image/webp' }), 'JPY', undefined, 'trip-1'))
+      .rejects.toMatchObject({ kind: 'forbidden' })
+    const sent = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)
+    expect(sent.tripId).toBe('trip-1')
   })
 })
 

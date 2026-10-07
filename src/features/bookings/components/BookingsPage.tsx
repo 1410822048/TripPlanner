@@ -394,6 +394,7 @@ export default function BookingsPage() {
           initialDraft={modal.editTarget ? undefined : sharedDraft?.draft}
           tripStartDate={tripStartDate}
           tripEndDate={tripEndDate}
+          tripId={cloudTripId}
           isSaving={false}
           saveError={modal.saveError}
           onClose={handleCloseForm}

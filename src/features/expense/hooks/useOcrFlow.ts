@@ -29,9 +29,12 @@ import {
 } from '../services/ocrService'
 
 interface UseOcrFlowOptions {
-  /** ISO 4217 currency code. Passed to Gemini as a hint when receipt
+  /** ISO 4217 currency code. Passed to the OCR model as a hint when receipt
    *  symbols are ambiguous (e.g. "$" → USD/TWD/CAD). */
   currency: string
+  /** Trip the scan is for — the Worker only runs paid OCR for its
+   *  owner/editors. Null outside a cloud trip (demo). */
+  tripId?: string | null
   /** Fires on successful parse — caller decides how to apply items /
    *  total / storeName to its own form state. */
   onSuccess: (result: OcrResult) => void
@@ -95,7 +98,7 @@ function ocrErrorCopy(e: OcrError): string {
   }
 }
 
-export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFlowResult {
+export function useOcrFlow({ currency, tripId, onSuccess }: UseOcrFlowOptions): UseOcrFlowResult {
   const [loading,   setLoading]   = useState(false)
   const [error,     setError]     = useState<string | null>(null)
   const [lastFile,  setLastFile]  = useState<File | null>(null)
@@ -151,7 +154,7 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
 
   const runWithFile = async (
     file: File,
-    request: (file: File, currency?: string, signal?: AbortSignal) => Promise<OcrResult>,
+    request: (file: File, currency?: string, signal?: AbortSignal, tripId?: string | null) => Promise<OcrResult>,
   ): Promise<void> => {
     const seq = ++requestSeqRef.current
     abortRef.current?.abort()           // cancel any prior in-flight OCR
@@ -163,7 +166,7 @@ export function useOcrFlow({ currency, onSuccess }: UseOcrFlowOptions): UseOcrFl
     setLoading(true)
     setError(null)
     try {
-      const result = await request(file, currency, ac.signal)
+      const result = await request(file, currency, ac.signal, tripId)
       // Superseded by a newer run / setFile / reset → drop silently; the
       // current owner of `loading` will release it.
       if (seq !== requestSeqRef.current) return

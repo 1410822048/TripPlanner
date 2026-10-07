@@ -9,7 +9,7 @@ import {
   OcrError,
 } from './claude'
 import { requestQwenValidatedJson, type QwenConfig } from './qwen'
-import { isHttpUrl } from './field-validation'
+import { isHttpUrl, TripIdRe } from './field-validation'
 
 const ISO_DATE_OR_EMPTY = z.string().regex(/^$|^\d{4}-\d{2}-\d{2}$/)
 const IATA_CODE_OR_EMPTY = z.string().regex(/^$|^[A-Z]{3}$/)
@@ -40,6 +40,8 @@ const BookingPdfTextLineSchema = z.object({
 })
 
 export const BookingPdfExtractRequestSchema = z.object({
+  /** See ocr-trip-gate.ts: optional during the rollout only. */
+  tripId:    z.string().regex(TripIdRe).optional(),
   fileName:  z.string().max(200).optional(),
   pageCount: z.number().int().min(1).max(MAX_PDF_PAGES),
   text:      z.string().trim().min(20).max(BOOKING_PDF_TEXT_MAX_CHARS),

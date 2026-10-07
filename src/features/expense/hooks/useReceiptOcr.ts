@@ -88,6 +88,7 @@ export function useReceiptOcr(input: UseReceiptOcrInput): UseReceiptOcrResult {
 
   const ocr = useOcrFlow({
     currency: tripCurrency,
+    tripId:   existingReceipt.tripId,
     onSuccess: (result) => {
       applyOcrResult(result)
       // markAnalyzed only AFTER a successful apply — a parse-failure throw

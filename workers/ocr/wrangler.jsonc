@@ -16,6 +16,9 @@
 	// the CORS allowlist needs to be readable for debugging.
 	"vars": {
 		"FIREBASE_PROJECT_ID": "tripplanner-80a4f",
+		// OCR_REQUIRE_TRIP_ID: set to "1" once every client sends tripId to
+		// /ocr, /ocr-fallback and /booking-pdf-extract (see src/ocr-trip-gate.ts).
+		// Unset = phase 1: the owner/editor gate applies only when tripId is sent.
 		"ALLOWED_ORIGINS": "https://tripmate-2wg.pages.dev,*.tripmate-2wg.pages.dev,http://localhost:5173,http://127.0.0.1:5173",
 		// SENTRY_DSN is deliberately NOT a var. It is set with
 		// `wrangler secret put SENTRY_DSN` (same value as the frontend's

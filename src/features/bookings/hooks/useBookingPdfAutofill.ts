@@ -76,8 +76,10 @@ export function useBookingPdfAutofill(opts: {
    *  alongside the other hidden pickers, so no ref crosses this boundary. */
   openFilePicker: () => void
   onCreateMany?: (data: { inputs: CreateBookingInput[]; document: File }) => void
+  /** Forwarded to the Worker's owner/editor gate. */
+  tripId?: string | null
 }): BookingPdfAutofill {
-  const { isEdit, sourceFile, pickFile, getState, applyPatch, openFilePicker, onCreateMany } = opts
+  const { isEdit, sourceFile, pickFile, getState, applyPatch, openFilePicker, onCreateMany, tripId } = opts
 
   const [status,  setStatus]  = useState<PdfAutofillStatus>('idle')
   const [message, setMessage] = useState<string | undefined>(undefined)
@@ -136,6 +138,7 @@ export function useBookingPdfAutofill(opts: {
         case 'network':
         case 'unavailable': return '無法連線至讀取服務'
         case 'parse':       return e.message || '無法讀取 PDF，請手動輸入'
+        case 'forbidden':   return '你沒有這趟旅程的編輯權限，無法讀取 PDF'
         case 'unknown':     return '讀取 PDF 失敗'
       }
     }
@@ -159,7 +162,7 @@ export function useBookingPdfAutofill(opts: {
     clearCandidates()
 
     try {
-      const result = await extractBookingPdfAutofill(file, controller.signal)
+      const result = await extractBookingPdfAutofill(file, controller.signal, tripId)
       if (controller.signal.aborted || seqRef.current !== seq) return
       setAnalyzedKey(key)
       if (result.bookings.length > 1) {

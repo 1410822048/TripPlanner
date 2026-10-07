@@ -246,7 +246,7 @@ describe('BookingFormModal PDF autofill intent', () => {
     fireEvent.change(fileInput(container, 'application/pdf,.pdf'), { target: { files: [file] } })
 
     expect(bookingPdfExtractMocks.extractBookingPdfAutofill)
-      .toHaveBeenCalledWith(file, expect.any(AbortSignal))
+      .toHaveBeenCalledWith(file, expect.any(AbortSignal), undefined)
   })
 
   test('can read and re-read the current attached PDF', async () => {
@@ -268,7 +268,7 @@ describe('BookingFormModal PDF autofill intent', () => {
     fireEvent.click(screen.getByRole('button', { name: /讀取 PDF/ }))
 
     expect(bookingPdfExtractMocks.extractBookingPdfAutofill)
-      .toHaveBeenCalledWith(file, expect.any(AbortSignal))
+      .toHaveBeenCalledWith(file, expect.any(AbortSignal), undefined)
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /重新讀取/ })).toBeTruthy()

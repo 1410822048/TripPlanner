@@ -179,6 +179,8 @@ import {
 }                                                 from './route-dispatch'
 import { captureMessage, serializeErrorChain, type ReportWorkerError } from './sentry'
 
+import { assertOcrTripAccess, ocrTripIdRequired } from './ocr-trip-gate'
+
 export { GlobalRateLimiter } from './rate-limiter'
 
 type WorkerEnv = Env & {
@@ -195,6 +197,9 @@ type WorkerEnv = Env & {
    *  var (`wrangler secret put SENTRY_DSN`): absent in local dev and
    *  preview, where captureMessage no-ops. */
   SENTRY_DSN?:              string
+  /** "1" once every client sends tripId to /ocr, /ocr-fallback and
+   *  /booking-pdf-extract (phase 2 of ocr-trip-gate.ts). Unset = phase 1. */
+  OCR_REQUIRE_TRIP_ID?:     string
   /** Per-PoP per-uid rate limiter for the OCR endpoint. Cheap first-line
    *  filter (~0ms). Counters are local to each Cloudflare location. */
   /** Per-PoP per-uid rate limiter for the member-cascade endpoint. */
@@ -727,7 +732,10 @@ export const ROUTES: RouteDescriptor[] = [
       schema:    BookingPdfExtractRequestSchema,
       // Booking confirmation import shares the primary Qwen deployment while
       // keeping its own strict schema, evidence checks, and normalization.
-      handle:    data => extractBookingPdfFields(data, ocrProviderConfig(c.env).qwen),
+      handle:    async data => {
+        await assertOcrTripAccess(c.env.FIREBASE_SERVICE_ACCOUNT, data.tripId, c.uid, ocrTripIdRequired(c.env.OCR_REQUIRE_TRIP_ID))
+        return extractBookingPdfFields(data, ocrProviderConfig(c.env).qwen)
+      },
       formatLog: (_data, result) =>
         `candidates=${result.bookings.length} types=${result.bookings.map(b => b.bookingType).join(',')} fields=${bookingPdfFieldCount(result)} warnings=${result.warnings.length}`,
       catchDomain: ocrErrorCatcher,
@@ -738,7 +746,10 @@ export const ROUTES: RouteDescriptor[] = [
     dispatch: c => handleJsonRoute({
       endpoint:  'ocr', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema:    OcrRequestSchema,
-      handle:    data => runConfiguredOcrProvider(c.env, RECEIPT_OCR_PROVIDERS.primary, data),
+      handle:    async data => {
+        await assertOcrTripAccess(c.env.FIREBASE_SERVICE_ACCOUNT, data.tripId, c.uid, ocrTripIdRequired(c.env.OCR_REQUIRE_TRIP_ID))
+        return runConfiguredOcrProvider(c.env, RECEIPT_OCR_PROVIDERS.primary, data)
+      },
       formatLog: (_data, result) => `items=${result.items.length}`,
       catchDomain: ocrErrorCatcher,
     }),
@@ -748,7 +759,10 @@ export const ROUTES: RouteDescriptor[] = [
     dispatch: c => handleJsonRoute({
       endpoint:  'ocr-fallback', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema:    OcrRequestSchema,
-      handle:    data => runConfiguredOcrProvider(c.env, RECEIPT_OCR_PROVIDERS.fallback, data),
+      handle:    async data => {
+        await assertOcrTripAccess(c.env.FIREBASE_SERVICE_ACCOUNT, data.tripId, c.uid, ocrTripIdRequired(c.env.OCR_REQUIRE_TRIP_ID))
+        return runConfiguredOcrProvider(c.env, RECEIPT_OCR_PROVIDERS.fallback, data)
+      },
       formatLog: (_data, result) => `items=${result.items.length}`,
       catchDomain: ocrErrorCatcher,
     }),

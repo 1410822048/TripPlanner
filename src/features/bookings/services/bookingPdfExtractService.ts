@@ -17,6 +17,7 @@ export type BookingPdfExtractErrorKind =
   | 'parse'
   | 'network'
   | 'unavailable'
+  | 'forbidden'
   | 'unknown'
 
 export class BookingPdfExtractError extends Error {
@@ -224,6 +225,8 @@ function pdfExtractErrorMessage(status: number, detail: string): string {
 export async function extractBookingPdfAutofill(
   file:   File,
   signal?: AbortSignal,
+  /** The Worker only runs paid extraction for this trip's owner/editors. */
+  tripId?: string | null,
 ): Promise<BookingPdfExtractResult> {
   const { auth } = await getFirebaseAuth()
   const user = auth.currentUser
@@ -248,7 +251,7 @@ export async function extractBookingPdfAutofill(
         'Authorization': `Bearer ${token}`,
         'Content-Type':  'application/json',
       },
-      body: JSON.stringify(digest),
+      body: JSON.stringify(tripId ? { ...digest, tripId } : digest),
       signal: bookingPdfFetchSignal(signal),
     })
   } catch (e) {
@@ -261,6 +264,11 @@ export async function extractBookingPdfAutofill(
 
   if (res.status === 401) throw new BookingPdfExtractError('Session expired', 'auth')
   if (res.status === 429) throw new BookingPdfExtractError('Rate limit reached', 'rate-limit')
+  // 403/404/410: not an owner/editor of the trip (or it is gone) — the
+  // Worker's role gate. Same copy as the form's own permission errors.
+  if (res.status === 403 || res.status === 404 || res.status === 410) {
+    throw new BookingPdfExtractError('Forbidden: not an editor of this trip', 'forbidden')
+  }
   if (res.status === 400 || res.status === 413 || res.status === 422) {
     throw new BookingPdfExtractError('無法讀取 PDF，請手動輸入', 'parse')
   }
