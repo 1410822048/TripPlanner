@@ -200,23 +200,8 @@ type WorkerEnv = Env & {
   /** "1" once every client sends tripId to /ocr, /ocr-fallback and
    *  /booking-pdf-extract (phase 2 of ocr-trip-gate.ts). Unset = phase 1. */
   OCR_REQUIRE_TRIP_ID?:     string
-  /** Per-PoP per-uid rate limiter for the OCR endpoint. Cheap first-line
-   *  filter (~0ms). Counters are local to each Cloudflare location. */
-  /** Per-PoP per-uid rate limiter for the member-cascade endpoint. */
-  /** Per-PoP per-uid rate limiter for the trip-delete endpoint.
-   *  Tighter than member cascade because trip-delete is heavy
-   *  (O(100) docs + R2 purge per call). */
-  /** Per-PoP per-uid rate limiter for expense create/update. Same
-   *  cap as OCR (30/min) -- one expense per ~2s sustained covers
-   *  rapid form retries without blowing through Firestore admin
-   *  write quotas. */
-  /** Per-PoP per-uid rate limiter for settlement create/delete.
-   *  Tighter (5/min) than expense -- settlement is a clicked-button
-   *  rare event, and create runs a full pairwise debt computation
-   *  (tx + 2 runQuery reads) per request. */
-  /** Cross-PoP global rate limiter. Durable Object — strongly
-   *  consistent counter per-uid that catches multi-PoP abuse that
-   *  would slip past the per-PoP binding. ~10-50ms latency cost. */
+  // Rate-limiter bindings (per-PoP RateLimit + the GlobalRateLimiter Durable
+  // Object) come from wrangler.jsonc via the generated Env type.
 }
 
 /** Resolve CORS headers for a given request origin. We allowlist

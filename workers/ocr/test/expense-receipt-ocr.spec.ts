@@ -42,7 +42,6 @@ vi.mock('../src/r2-storage', () => ({
 }))
 
 vi.mock('../src/claude', () => ({
-  OCR_PROMPT_VERSION: 'claude-receipt-v3',
   extractReceiptItems: vi.fn(async (_b64: string, mimeType: string, currency: string | undefined) => {
     ocrCalls.push({ mimeType, currency })
     return { items: [{ name: 'コーヒー', amountText: '380' }], adjustments: [], ignoredLines: [], totalText: '380' }

@@ -459,14 +459,3 @@ export function computeBalancesFull(
   return { balances, orphans, participants, pairwise: normalized, gross, applied }
 }
 
-/**
- * 簡化的 API:只回 balances。內部呼叫 computeBalancesFull,丟掉 orphans。
- * 需要 orphan 資訊的(SettlementSummary)請直接用 computeBalancesFull。
- */
-export function computeBalances(
-  expenses:    Expense[],
-  members:     TripMember[],
-  settlements: SettlementRecord[] = [],
-): MemberBalance[] {
-  return computeBalancesFull(expenses, members, settlements).balances
-}

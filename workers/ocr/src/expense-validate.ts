@@ -195,7 +195,6 @@ export function makeExpenseCreateSchema() {
     adjustments: z.array(ExpenseAdjustmentSchema).max(50),
   })
 }
-export type ExpenseCreateInput = z.infer<ReturnType<typeof makeExpenseCreateSchema>>
 
 /** Update payload — partial of the create body. `receipt` is handled
  *  out-of-band by the Worker (deletion sentinel `null` or new intent-

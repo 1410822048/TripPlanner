@@ -77,7 +77,7 @@
 	// Per-uid rate limiting (GA 2025-09). Counters are per Cloudflare
 	// location (eventually consistent) — fine for abuse prevention,
 	// not a hard quota. namespace_id is account-scoped and arbitrary
-	// (just unique); we use 1001-1005 to keep human-readable.
+	// (just unique); we number them from 1001 to keep them human-readable.
 	//   /ocr                  expensive path (OCR provider quota)      → 30/min
 	//   membership endpoints  rare server-heavy writes               → 5/min
 	//   /cascade-trip-delete  HEAVY (full trip cascade + storage)    → 1/min

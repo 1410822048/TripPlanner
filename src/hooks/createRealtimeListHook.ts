@@ -30,8 +30,6 @@ interface RealtimeListConfigBase {
   queryKeyFactory: (key: string, uid?: string) => QueryKey
   /** Identifier for Sentry context on listener errors / init failures. */
   source: string
-  /** Caller-side opt-out. Used by useInvites where only owners subscribe. */
-  isEnabled?: (key: string) => boolean
 }
 
 interface RealtimeListOverlayConfig<T> {
@@ -193,7 +191,7 @@ function releaseListener(listeners: Map<string, SharedListener>, id: string, exp
 export function createRealtimeListHook<T>(
   config: RealtimeListConfig<T>,
 ): (key: string | undefined) => UseQueryResult<T[]> {
-  const { queryKeyFactory, source, isEnabled } = config
+  const { queryKeyFactory, source } = config
   const overlay = config.overlay as ListOverlayController<T & { id: string }> | undefined
 
   function runInitialFetch(key: string, uid: string | undefined): Promise<T[]> {
@@ -215,7 +213,6 @@ export function createRealtimeListHook<T>(
     const qc  = useQueryClient()
     const uid = useUid()
     const callerEnabled = !!key
-      && (isEnabled ? isEnabled(key) : true)
       && (config.requiresUid ? !!uid : true)
 
     const queryKey = queryKeyFactory(key ?? '', uid)

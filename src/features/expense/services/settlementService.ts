@@ -1,8 +1,8 @@
 // src/features/expense/services/settlementService.ts
 // Realtime read + Worker-authoritative write for
 // trips/{tripId}/settlements/{id}. See src/types/settlement.ts for the
-// entity model and why this is treated as a reverse-expense by
-// computeBalances.
+// entity model: a settlement clears a debt edge (from → to) in the
+// debt-edge ledger computed by computeBalancesFull.
 //
 // Reads (list + onSnapshot) stay on the Firebase SDK -- persistentLocalCache
 // covers offline + cross-tab and there's no domain invariant that needs

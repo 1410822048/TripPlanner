@@ -12,7 +12,7 @@
 //     對應可用 deterministic id 直接單元測試。
 //
 // FAIL-FAST 契約(load-bearing):Worker schema 只驗 currency-agnostic 的小數
-// 字串形狀,所以 Gemini 對 JPY 吐 "12.34" 能過 wire 卻會 break
+// 字串形狀,所以 OCR 模型對 JPY 吐 "12.34" 能過 wire 卻會 break
 // parseMoneyToMinor(JPY 0 小數位)。靜默 coerce 成 0 會把垃圾行匯入並把
 // 不一致漏進已存的費用。改成:先把每個欄位 parse 完,第一個失敗就 throw
 // 一個本地化訊息(呼叫端的 useOcrFlow.run catch → receiptErrText banner),

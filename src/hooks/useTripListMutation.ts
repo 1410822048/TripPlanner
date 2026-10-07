@@ -36,8 +36,6 @@ export interface UseTripListMutationOpts<T extends { id: string }, Vars> {
   action:     MutationActionLabel
   /** When true, the global MutationCache.onError skips its toast. */
   silent?:    boolean
-  /** Stable key for `useMutationState` discovery. */
-  mutationKey?: readonly unknown[]
   /** Optional callback that runs after the factory's overlay decision. */
   onError?:   (err: unknown) => void
 }
@@ -54,7 +52,6 @@ export function useTripListMutation<T extends { id: string }, Vars>(
   const overlay = opts.overlay
 
   return useMutation({
-    mutationKey: opts.mutationKey,
     mutationFn: (vars: Vars) => {
       if (!uid) {
         throw new Error(`useTripListMutation[${opts.action}]: uid is undefined`)

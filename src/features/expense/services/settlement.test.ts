@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
 import {
-  computeBalances,
   computeBalancesFull,
   expandWithGhosts,
   ghostMember,
@@ -15,6 +14,11 @@ import { MOCK_TIMESTAMP as TS } from '@/mocks/utils'
 import type { Expense } from '@/types'
 import type { SettlementRecord } from '@/types/settlement'
 import type { TripMember } from '@/features/trips/types'
+
+/** Balances only — the old production wrapper, now test-local. */
+function computeBalances(expenses: Expense[], members: TripMember[], settlements: SettlementRecord[] = []) {
+  return computeBalancesFull(expenses, members, settlements).balances
+}
 
 const MEMBERS: TripMember[] = [
   { id: 'm1', displayName: 'Alice', avatarLabel: 'A', color: '#000', bg: '#fff' },

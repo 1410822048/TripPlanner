@@ -47,7 +47,6 @@ const ANTHROPIC_VERSION = '2023-06-01'
 // truncate the JSON → stop_reason='max_tokens' → 422. 4096 covers typical
 // receipts with headroom while bounding cost.
 const MAX_TOKENS = 4096
-export const OCR_PROMPT_VERSION = 'claude-receipt-v3'
 
 /** Per-request Claude/Foundry config, threaded from the Worker env. */
 export interface ClaudeConfig {

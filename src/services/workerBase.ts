@@ -14,7 +14,7 @@
 // Cloudflare Worker base URL access. Split into two surfaces because
 // the failure modes differ:
 //
-//   1. Read-only OCR (Gemini extraction). Hitting prod from a preview
+//   1. Read-only OCR (receipt extraction). Hitting prod from a preview
 //      build is a minor cost / rate-limit pollution issue -- no data
 //      mutation. Fallback to prod is acceptable.
 //
@@ -59,7 +59,7 @@ const READ_RAW = WRITE_RAW || stripTrailingSlash(
 )
 
 /** Read-only Worker base URL (OCR). Falls back to the prod URL if env
- *  is unset -- safe for Gemini receipt extraction, which doesn't touch
+ *  is unset -- safe for receipt OCR extraction, which doesn't touch
  *  Firestore. */
 export const WORKER_BASE_URL: string = READ_RAW || FALLBACK
 
