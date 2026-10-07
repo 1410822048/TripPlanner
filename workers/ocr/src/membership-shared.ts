@@ -9,6 +9,7 @@
 import {
   readString,
   readStringArray,
+  readTimestampMs,
   listDocNames,
   batchStripDepartedMember,
   deleteUserTripNotifications,
@@ -51,6 +52,17 @@ export class MembershipValidationError extends FieldValidationError {
 export function assertTripNotDeleting(trip: TxReadDoc): void {
   if ('deletingAt' in trip.fields) {
     throw new CascadeError(410, 'trip is being deleted')
+  }
+}
+
+/** Mirrors firestore.rules' wishVotingOpen(tripId). Admin SDK bypasses
+ *  rules entirely, so every Worker path that mutates a wish — or mints an
+ *  upload intent for one — needs its own deadline gate. firestore.rules gates
+ *  wish update AND delete on `wishVotingOpen`, with no owner exemption. */
+export function assertWishVotingOpen(trip: { fields: Record<string, FsValue> }): void {
+  const deadlineMs = readTimestampMs(trip.fields, 'wishVotingDeadlineAt')
+  if (deadlineMs != null && deadlineMs <= Date.now()) {
+    throw new CascadeError(403, 'wish voting deadline has passed')
   }
 }
 

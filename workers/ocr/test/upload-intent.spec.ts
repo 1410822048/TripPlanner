@@ -276,23 +276,40 @@ describe('authorization (expense/booking: editor+; wish: proposer)', () => {
 	// these intents. authorizeUpload must skip the wish-doc-exists +
 	// proposer check on mode='create' (proposer identity is callerUid
 	// by construction). Trip + membership gates still fire.
-	it("mode='create' wish: skips wish-doc-exists check (viewer member, no wish doc seeded → allowed)", async () => {
+	it("mode='create' wish: allowed for a viewer when the wish id is new", async () => {
 		txGetResponses.set(`trips/${TRIP_ID}`, tripDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberDoc('viewer'))
-		// Intentionally do NOT seed the wish doc — authorizeUpload must
-		// not even read it on mode='create'. If it did, the tx mock
-		// would throw "unexpected tx.get" and this test would fail.
+		txGetResponses.set(`trips/${TRIP_ID}/wishes/${ENTITY_ID}`, notFoundDoc(`trips/${TRIP_ID}/wishes/${ENTITY_ID}`))
 		const result = await createUploadIntents(
 			CALLER_UID,
 			imageFullReq({ entityType: 'wish', mode: 'create' }),
 			SERVICE_ACCOUNT_JSON,
 		)
 		expect(result.intents).toHaveLength(1)
-		// Verify the wish doc path was NOT read in the tx.
-		const wishCalls = txGetSpy!.mock.calls.filter(
-			(c) => c[0] === `trips/${TRIP_ID}/wishes/${ENTITY_ID}`,
-		)
-		expect(wishCalls).toHaveLength(0)
+	})
+
+	it("mode='create' wish: refuses an id that already belongs to a wish → 409", async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberDoc('viewer'))
+		txGetResponses.set(`trips/${TRIP_ID}/wishes/${ENTITY_ID}`, wishDoc('someone-else'))
+		await expect(createUploadIntents(
+			CALLER_UID,
+			imageFullReq({ entityType: 'wish', mode: 'create' }),
+			SERVICE_ACCOUNT_JSON,
+		)).rejects.toMatchObject({ status: 409 })
+	})
+
+	it('wish intents are refused once the voting deadline has passed → 403', async () => {
+		const closed = tripDoc()
+		;(closed.fields as Record<string, unknown>).wishVotingDeadlineAt = { timestampValue: '2020-01-01T00:00:00Z' }
+		txGetResponses.set(`trips/${TRIP_ID}`, closed)
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberDoc('viewer'))
+		txGetResponses.set(`trips/${TRIP_ID}/wishes/${ENTITY_ID}`, notFoundDoc(`trips/${TRIP_ID}/wishes/${ENTITY_ID}`))
+		await expect(createUploadIntents(
+			CALLER_UID,
+			imageFullReq({ entityType: 'wish', mode: 'create' }),
+			SERVICE_ACCOUNT_JSON,
+		)).rejects.toMatchObject({ status: 403, message: expect.stringMatching(/deadline/) })
 	})
 
 	it("mode='create' wish: still rejects non-member → 403", async () => {

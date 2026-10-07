@@ -41,6 +41,7 @@ import {
 }                                                                   from './pdf-page-limit'
 import { PdfPageLimitError }                                        from '@tripmate/pdf-page-limit'
 import { TripIdRe }                                                  from './field-validation'
+import { assertWishVotingOpen }                                      from './membership-shared'
 
 // ─── Constants ────────────────────────────────────────────────────
 
@@ -190,18 +191,25 @@ async function authorizeUpload(
     if (role !== 'owner' && role !== 'editor' && role !== 'viewer') {
       throw new CascadeError(403, 'caller role invalid')
     }
+    // Same deadline gate as /wish-file-*: after voting closes no intent can
+    // ever be consumed, so minting one only strands a blob for the cron.
+    assertWishVotingOpen(trip)
+    const wish = await tx.get(`trips/${tripId}/wishes/${entityId}`)
     if (mode === 'create') {
       // Phase 3.7 upload-first flow: the wish doc legitimately
       // doesn't exist yet -- Worker `/wish-file-create` will
       // create it in the same tx that consumes these intents.
-      // Skip the wish-doc-exists + proposer check; proposer
-      // identity is `callerUid` by construction at create time
-      // (Worker stamps proposedBy = callerUid in encodeWish).
+      // Proposer identity is `callerUid` by construction at create
+      // time (Worker stamps proposedBy = callerUid in encodeWish), so
+      // the only check is that the id is really new — otherwise a member
+      // could park blobs under someone else's wish folder.
+      if (wish.exists) {
+        throw new CascadeError(409, 'wish already exists at this id (mode=create)')
+      }
       return
     }
     // mode='update': wish must exist + caller must be proposer.
     // Mirrors firestore.rules' proposer-only update gate.
-    const wish = await tx.get(`trips/${tripId}/wishes/${entityId}`)
     if (!wish.exists) {
       throw new CascadeError(404, 'wish doc not found (mode=update requires the wish to exist)')
     }

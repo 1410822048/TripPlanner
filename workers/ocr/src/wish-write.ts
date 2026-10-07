@@ -29,11 +29,10 @@ import { getAdminToken, getProjectId }                              from './admi
 import {
   readString,
   readNestedString,
-  readTimestampMs,
   type FsValue,
 }                                                                   from './firestore'
 import { withTokenRetry, CascadeError }                             from './cascade'
-import { assertMemberNotRemoving }                                   from './membership-shared'
+import { assertMemberNotRemoving, assertWishVotingOpen }             from './membership-shared'
 import {
   runFirestoreTransaction,
   docResourceName,
@@ -129,18 +128,9 @@ interface TripContext {
   memberIds: string[]
 }
 
-/** Mirrors firestore.rules' wishVotingOpen(tripId). Admin SDK bypasses
- *  rules entirely, so these Worker endpoints need their own deadline gate
- *  or a closed-vote trip could still accept image uploads through them. */
-/** Exported so every path that mutates a wish — including attachment
- *  deletion — enforces the same deadline. firestore.rules gates wish
- *  update AND delete on `wishVotingOpen`, with no owner exemption. */
-export function assertWishVotingOpen(trip: { fields: Record<string, FsValue> }): void {
-  const deadlineMs = readTimestampMs(trip.fields, 'wishVotingDeadlineAt')
-  if (deadlineMs != null && deadlineMs <= Date.now()) {
-    throw new CascadeError(403, 'wish voting deadline has passed')
-  }
-}
+// Lives in membership-shared (upload-intent needs it too); re-exported so
+// existing importers keep working.
+export { assertWishVotingOpen }
 
 /** Wish create authz: caller must be a member of the trip (any role
  *  including viewer — wishes are intentionally low-friction). Trip
