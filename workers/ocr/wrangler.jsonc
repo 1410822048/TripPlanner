@@ -6,6 +6,11 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
 	"upload_source_maps": true,
+	// Halves the uploaded script (pdf.js + zod dominate) and with it the
+	// per-isolate parse cost on cold start. Source maps above keep stack
+	// traces readable. Error classes set `name` explicitly, so nothing
+	// depends on minified identifiers.
+	"minify": true,
 	// Keep the public *.workers.dev URL (frontend calls it).
 	"workers_dev": true,
 	// Disable per-version preview URLs — we don't do gradual rollouts,
