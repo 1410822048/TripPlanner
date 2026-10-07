@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Tests for the re-OCR-existing-receipt client service:
 //   - ocrResultStillApplicable: the race guard (receipt swapped / expense
 //     edited mid-flight → discard). Pure fn, so directly unit-testable

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // 隔離 UI 依賴，保留實際 App 模組的啟動邏輯。

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { renderHook, act } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { useFormModal, type FormModalScope } from './useFormModal'

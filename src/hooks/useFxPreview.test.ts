@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // The future-date gate here is the one that decides whether a
 // foreign-currency expense can be saved at all: with no rate,
 // buildExpenseFormResult refuses to submit. Every component test around it

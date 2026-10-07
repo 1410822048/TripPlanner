@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Edit-mode seeding: an expense only re-opens in "equal" mode when its
 // stored splits are EXACTLY what splitEqually would produce. A ±1
 // tolerance used to treat a custom 500/501 split as equal, and saving

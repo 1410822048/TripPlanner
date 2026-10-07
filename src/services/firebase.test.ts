@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const FS_IDB_OWNER_KEY = 'tripmate:fs-idb-owner'

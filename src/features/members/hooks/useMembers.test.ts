@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // What a snapshot-and-rollback could not do, and an overlay does by
 // construction: undo exactly one operation. The roster list is realtime, so
 // the cache it would have restored is a moving target.

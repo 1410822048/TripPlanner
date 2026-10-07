@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Tests for the P3 money-draft consolidation:
 //   - renormalizeMoneyDraftForCurrency: the pure, historically bug-prone
 //     currency-switch math (golden cases).

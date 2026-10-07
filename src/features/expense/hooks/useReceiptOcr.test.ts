@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Focused unit tests for useReceiptOcr — the parts ExpenseFormModal.test.tsx
 // does NOT reach:
 //   - clearOcrOnly's layering (resets OCR/source only)

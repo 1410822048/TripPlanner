@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Tests for the path-only attachment resolver/hook. Mocks Worker-proxied bytes
 // and stubs URL.createObjectURL/revokeObjectURL
 // (jsdom doesn't implement them).

@@ -17,31 +17,43 @@ export default defineConfig({
     },
   },
   test: {
-    // jsdom so component / hook tests can run; node-only suites still work
-    // here because they don't touch DOM globals. Keeps a single config
-    // instead of splitting projects, which is overkill at this scale.
-    environment: 'jsdom',
-    // RTL DOM cleanup after each test (see vitest.setup.ts). Required because
-    // we don't set `globals: true`, so RTL's auto-cleanup wouldn't register —
-    // without it render() output accumulates across tests in document.body.
+    // RTL DOM cleanup + an in-memory localStorage after each test (see
+    // vitest.setup.ts; it skips the DOM part when there is no document).
+    // Required because we don't set `globals: true`.
     setupFiles: ['./vitest.setup.ts'],
-    // Glob covers .ts (utility tests) AND .tsx (component / hook tests).
-    // The previous .ts-only glob silently dropped any future *.test.tsx
-    // file, which is the scariest kind of test gap — passes by not running.
+    // Two projects, one config. jsdom costs ~0.3s of environment setup per
+    // file, and most plain .ts suites (pure functions, services with mocked
+    // SDKs, packages, invariants) never touch the DOM, so they run in node.
+    // A .ts suite that does need the DOM (renderHook, window, Blob URLs…)
+    // opts in with a `// @vitest-environment jsdom` first line. Component
+    // suites (.tsx) always get jsdom.
     //
     // `packages/**` picks up workspace packages (e.g. @tripmate/settlement-
-    // core) so their internal tests run as part of the root suite. The
-    // Worker still has its own vitest config (workers/ocr/vitest.config.mts)
-    // because it needs the Cloudflare Workers pool; the client + packages
-    // share this one node/jsdom config.
-    include: [
-      'src/**/*.{test,spec}.{ts,tsx}',
-      'packages/**/src/**/*.{test,spec}.{ts,tsx}',
-      // Cross-surface repo invariants (client + Worker together). They live
-      // outside src/ because they belong to neither, and they run HERE
-      // rather than in the Worker suite because that one runs in a workerd
-      // isolate with no filesystem to scan.
-      'tests/invariants/**/*.{test,spec}.ts',
+    // core). The Worker keeps its own vitest config (workers/ocr/
+    // vitest.config.mts) because it needs the Cloudflare Workers pool.
+    // tests/invariants are cross-surface repo checks (client + Worker); they
+    // run here because the Worker suite's workerd isolate has no filesystem.
+    projects: [
+      {
+        extends: true,
+        test: {
+          name:        'dom',
+          environment: 'jsdom',
+          include:     ['src/**/*.{test,spec}.tsx'],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name:        'unit',
+          environment: 'node',
+          include: [
+            'src/**/*.{test,spec}.ts',
+            'packages/**/src/**/*.{test,spec}.{ts,tsx}',
+            'tests/invariants/**/*.{test,spec}.ts',
+          ],
+        },
+      },
     ],
   },
 })

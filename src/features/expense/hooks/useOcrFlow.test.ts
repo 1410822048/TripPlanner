@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Hook-level tests for useOcrFlow's monotonic request guard — the subtlest
 // new logic in the re-OCR work and the easiest to break on a refactor. The
 // network seam (ocrReceipt / ocrExistingExpenseReceipt) is mocked with
