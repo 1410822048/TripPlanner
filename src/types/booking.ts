@@ -5,6 +5,7 @@
 import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
 import { TimestampSchema, isHttpUrl } from './_shared'
+import { ATTACHMENT_PATH_MAX, BOOKING_LIMITS } from '@tripmate/entity-contracts'
 
 /**
  * Attachment metadata for a booking file with an optional smaller thumbnail
@@ -118,9 +119,9 @@ export const BOOKING_ATTACHMENT_MIME_TYPES = [
 
 export const BookingAttachmentSchema = z.object({
   // Path-only: reads go through the Worker proxy; no bearer URL persisted.
-  filePath:  z.string().min(1).max(500),
+  filePath:  z.string().min(1).max(ATTACHMENT_PATH_MAX),
   fileType:  z.enum(BOOKING_ATTACHMENT_MIME_TYPES),
-  thumbPath: z.string().min(1).max(500).optional(),
+  thumbPath: z.string().min(1).max(ATTACHMENT_PATH_MAX).optional(),
 })
 
 export const BookingDocSchema = z.object({
@@ -147,7 +148,7 @@ export const BookingDocSchema = z.object({
   // booking drops out with a Sentry capture, rather than rendering a live
   // link nobody validated. No `''` allowance — the sentinel is translated
   // to a field delete before it reaches storage.
-  link:             z.string().max(500).refine(isHttpUrl).optional(),
+  link:             z.string().max(BOOKING_LIMITS.link).refine(isHttpUrl).optional(),
   note:             z.string().optional(),
   createdBy:        z.string(),
   updatedBy:        z.string(),
@@ -166,28 +167,27 @@ export const BookingDocSchema = z.object({
  */
 export const CreateBookingSchema = z.object({
   type:             z.enum(['flight', 'hotel', 'train', 'bus', 'other']),
-  title:            z.string().max(100).optional(),
-  origin:           z.string().max(60).optional(),
-  destination:      z.string().max(60).optional(),
-  confirmationCode: z.string().max(64).optional(),
-  provider:         z.string().max(60).optional(),
-  // All string caps (title 100 / origin 60 / destination 60 /
-  // confirmationCode 64 / provider 60 / address 500 / link 500 /
-  // checkIn 32 / checkOut 32 / note 2000) mirror firestore.rules booking
-  // create/update AND workers/ocr/src/booking-write.ts. Three-way
+  title:            z.string().max(BOOKING_LIMITS.title).optional(),
+  origin:           z.string().max(BOOKING_LIMITS.origin).optional(),
+  destination:      z.string().max(BOOKING_LIMITS.destination).optional(),
+  confirmationCode: z.string().max(BOOKING_LIMITS.confirmationCode).optional(),
+  provider:         z.string().max(BOOKING_LIMITS.provider).optional(),
+  // All string caps come from @tripmate/entity-contracts BOOKING_LIMITS,
+  // which the Worker (booking-write.ts) imports too; firestore.rules can't
+  // import, so tests/invariants/entityContracts.test.ts compares it. The
   // lockstep is mandatory: the Worker uses admin SDK and bypasses
   // rules, so a looser cap on either side is a real exploit (a
   // megabyte `note` written via Worker bypassing rules cap; or a
   // no-file booking writing client-side past Worker cap).
-  checkIn:          z.string().max(32).optional(),
-  checkOut:         z.string().max(32).optional(),
+  checkIn:          z.string().max(BOOKING_LIMITS.dateText).optional(),
+  checkOut:         z.string().max(BOOKING_LIMITS.dateText).optional(),
   // 住所テキスト or Google Maps URL を受けるため 500(URL は 200 を超え得る)。
-  address:          z.string().max(500).optional(),
+  address:          z.string().max(BOOKING_LIMITS.address).optional(),
   // 予約元 URL。http(s) のみ(href に出すため)。cap 500 は rules / Worker と lockstep。
   // '' はクリア用 sentinel として許可(stripEmpty / deleteField で
   // Firestore には届かないので rules 側は strict のまま)。
-  link:             z.string().max(500).refine(v => v === '' || isHttpUrl(v), 'URL 必須以 http:// 或 https:// 開頭').optional(),
-  note:             z.string().max(2000).optional(),
+  link:             z.string().max(BOOKING_LIMITS.link).refine(v => v === '' || isHttpUrl(v), 'URL 必須以 http:// 或 https:// 開頭').optional(),
+  note:             z.string().max(BOOKING_LIMITS.note).optional(),
 })
 export type CreateBookingInput = z.infer<typeof CreateBookingSchema>
 

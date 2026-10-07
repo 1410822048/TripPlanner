@@ -17,17 +17,10 @@ import type { Timestamp } from 'firebase/firestore'
  *  the scheme (rules are case-sensitive lowercase) and silently strips
  *  embedded tab/newline (rules `.` never matches a newline). So gate on a
  *  lowercase http(s):// prefix + no whitespace, THEN parse for structure.
- *  Mirrored verbatim in workers/ocr/src/field-validation.ts. */
-export function isHttpUrl(v: string): boolean {
-  if (!v.startsWith('http://') && !v.startsWith('https://')) return false
-  if (/\s/.test(v)) return false
-  try {
-    new URL(v)
-    return true
-  } catch {
-    return false
-  }
-}
+ */
+// Single definition in @tripmate/entity-contracts (the Worker imports the
+// same function), so the two can no longer drift.
+export { isHttpUrl } from '@tripmate/entity-contracts'
 
 /**
  * Duck-type Firestore Timestamp validator. We don't `instanceof Timestamp`

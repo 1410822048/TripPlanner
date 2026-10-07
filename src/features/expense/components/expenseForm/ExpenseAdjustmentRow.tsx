@@ -4,6 +4,7 @@
 // target select, and the 適用範圍 summary. Pure presentational — split
 // out of LineItemsSection to shorten the .map() body; no behavior change.
 import { Trash2 } from 'lucide-react'
+import { EXPENSE_LIMITS } from '@tripmate/entity-contracts'
 import {
   EXPENSE_ADJUSTMENT_KINDS,
   type ExpenseAdjustment,
@@ -97,6 +98,7 @@ export default function ExpenseAdjustmentRow({
       <div className="grid grid-cols-[minmax(0,1fr)_minmax(112px,38%)] items-start gap-2">
         <input
           value={adj.label}
+          maxLength={EXPENSE_LIMITS.adjustmentLabel}
           onChange={e => onSetLabel(adj.id, e.target.value)}
           placeholder={`調整 ${index + 1}`}
           aria-label={`調整 ${index + 1} 的標籤`}

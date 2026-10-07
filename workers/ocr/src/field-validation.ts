@@ -1,24 +1,10 @@
 /** Shared request-id shape used by every trip-scoped Worker endpoint. */
 export const TripIdRe = /^[A-Za-z0-9_-]{1,60}$/
 
-/** Verbatim mirror of `isHttpUrl` in src/types/_shared.ts, guarding the
- *  `link` field on both booking and wish. The Worker uses the admin SDK
- *  and bypasses firestore.rules, so its check must match the rules'
- *  canonical set EXACTLY — anything it accepts but the rules
- *  `^https?://.+` regex rejects (uppercase scheme, embedded whitespace;
- *  both of which `new URL()` would silently accept) gets written to the
- *  doc and then jams every later client update. Lowercase http(s)://
- *  prefix + no whitespace, then parse. */
-export function isHttpUrl(v: string): boolean {
-  if (!v.startsWith('http://') && !v.startsWith('https://')) return false
-  if (/\s/.test(v)) return false
-  try {
-    new URL(v)
-    return true
-  } catch {
-    return false
-  }
-}
+/** The shared `link` check (lowercase http(s) prefix, no whitespace, then
+ *  URL parse) — one definition for client and Worker; the Worker bypasses
+ *  firestore.rules, so it must accept exactly what the rules regex does. */
+export { isHttpUrl } from '@tripmate/entity-contracts'
 
 /**
  * Common validation-error contract consumed by validationErrorCatcher.

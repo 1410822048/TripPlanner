@@ -21,6 +21,14 @@
 // the full validation + write via Admin SDK.
 import { z } from 'zod'
 import {
+  ADJUSTMENT_KINDS,
+  ATTACHMENT_PATH_MAX,
+  ENTITY_ID_MAX,
+  EXPENSE_LIMITS,
+  MAX_AMOUNT_MINOR,
+  UID_MAX,
+} from '@tripmate/entity-contracts'
+import {
   materializeExpenseSplits,
   canonicalizeSplits,
   MaterializeError,
@@ -84,16 +92,15 @@ export function makeReceiptSchema(tripId: string, expenseId: string) {
   return z.object({
     // path-only: only path / thumbPath are persisted (thumbPath optional =
     // no thumb variant). Reads go through the Worker proxy; no bearer URL.
-    path:      z.string().min(1).max(500).regex(pathRe, 'receipt.path must match trips/<tripId>/expenses/<expenseId>/...'),
+    path:      z.string().min(1).max(ATTACHMENT_PATH_MAX).regex(pathRe, 'receipt.path must match trips/<tripId>/expenses/<expenseId>/...'),
     type:      z.enum(RECEIPT_MIME),
-    thumbPath: z.string().min(1).max(500).regex(pathRe, 'receipt.thumbPath must match trips/<tripId>/expenses/<expenseId>/...').optional(),
+    thumbPath: z.string().min(1).max(ATTACHMENT_PATH_MAX).regex(pathRe, 'receipt.thumbPath must match trips/<tripId>/expenses/<expenseId>/...').optional(),
   })
 }
 
 // Firebase uid is at most 128 chars. Capping every uid-shaped string
 // here bounds the validation / cross-field-includes cost an attacker
 // could waste with a giant raw-POST payload of multi-MB "uids".
-const UID_MAX = 128
 
 const ExpenseSplitSchema = z.object({
   memberId:    z.string().min(1).max(UID_MAX),
@@ -113,13 +120,13 @@ const ExpenseSplitSchema = z.object({
 // materializer runs in cross-field validation.
 const ExpenseItemAllocationSchema = z.object({
   memberId: z.string().min(1).max(UID_MAX),
-  shares:   z.number().int().positive().max(999),
+  shares:   z.number().int().positive().max(EXPENSE_LIMITS.allocationShares),
 })
 
 const ExpenseItemSchema = z.object({
-  id:          z.string().min(1).max(64),
-  name:        z.string().min(1).max(200),
-  amountMinor: z.number().int().positive().max(1_000_000_000),
+  id:          z.string().min(1).max(ENTITY_ID_MAX),
+  name:        z.string().min(1).max(EXPENSE_LIMITS.itemName),
+  amountMinor: z.number().int().positive().max(MAX_AMOUNT_MINOR),
   // Items use weighted allocations. Member membership is checked in
   // the cross-field pass where we have memberIds in scope.
   allocations: z.array(ExpenseItemAllocationSchema).min(1),
@@ -132,17 +139,15 @@ const ExpenseItemSchema = z.object({
 // their current weight). `UNKNOWN` is OCR-draft-only and NOT accepted
 // here -- the client downgrades it to EXPENSE by default and exposes
 // the adjustment row so the user can switch it to ITEM before saving.
-const ExpenseAdjustmentKindSchema = z.enum([
-  'DISCOUNT', 'COUPON', 'TAX_EXEMPT', 'SURCHARGE', 'TAX', 'TIP', 'OTHER',
-])
+const ExpenseAdjustmentKindSchema = z.enum(ADJUSTMENT_KINDS)
 const ExpenseAdjustmentScopeSchema = z.enum(['ITEM', 'EXPENSE'])
 const ExpenseAdjustmentSchema = z.object({
-  id:           z.string().min(1).max(64),
-  label:        z.string().min(1).max(120),
+  id:           z.string().min(1).max(ENTITY_ID_MAX),
+  label:        z.string().min(1).max(EXPENSE_LIMITS.adjustmentLabel),
   kind:         ExpenseAdjustmentKindSchema,
   scope:        ExpenseAdjustmentScopeSchema,
-  amountMinor:  z.number().int().positive().max(1_000_000_000),
-  targetItemId: z.string().min(1).max(64).optional(),
+  amountMinor:  z.number().int().positive().max(MAX_AMOUNT_MINOR),
+  targetItemId: z.string().min(1).max(ENTITY_ID_MAX).optional(),
 }).refine(
   d => (d.scope === 'ITEM') === (d.targetItemId !== undefined),
   { message: 'targetItemId must be present iff scope === ITEM', path: ['targetItemId'] },
@@ -164,8 +169,8 @@ export function makeExpenseCreateSchema() {
     // here, and a 101–200 char title (OCR store names reach 120) later got
     // copied into settlement lineage, which the client parses at ≤100 —
     // one such settlement broke the whole trip's settlements listener.
-    // (Update keeps 200 so pre-existing long titles stay editable.)
-    title:       z.string().min(1).max(100),
+    // The cap is EXPENSE_LIMITS.title, shared with the client form and schemas.
+    title:       z.string().min(1).max(EXPENSE_LIMITS.title),
     // 1B minor units is a defensive sanity cap: ¥1,000,000,000 (≈ ¥1B)
     // or $10,000,000.00 is far above any realistic single travel
     // expense in any currency this app supports. Below this is a typo
@@ -174,25 +179,25 @@ export function makeExpenseCreateSchema() {
     // Number.MAX_SAFE_INTEGER and the splits/items sum math would
     // silently roll downstream into settlement displaying astronomical
     // debts.
-    amountMinor: z.number().int().positive().max(1_000_000_000),
+    amountMinor: z.number().int().positive().max(MAX_AMOUNT_MINOR),
     currency:    z.string().length(3),
     category:    ExpenseCategorySchema,
     paidBy:      z.string().min(1).max(UID_MAX),
-    splits:      z.array(ExpenseSplitSchema).min(1).max(50),
+    splits:      z.array(ExpenseSplitSchema).min(1).max(EXPENSE_LIMITS.splits),
     date:        z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
-    note:        z.string().max(1000).optional(),
+    note:        z.string().max(EXPENSE_LIMITS.note).optional(),
     // Items + allocations caps: OCR receipts rarely exceed ~30 line
     // items; 100 buys 3× headroom while bounding the worst-case
     // validation cost. Allocations per item caps at 50 to mirror the
     // splits cap (same per-item semantic -- N members on a line).
     items:       z.array(ExpenseItemSchema.extend({
-      allocations: z.array(ExpenseItemAllocationSchema).min(1).max(50),
-    })).max(100).optional(),
+      allocations: z.array(ExpenseItemAllocationSchema).min(1).max(EXPENSE_LIMITS.allocations),
+    })).max(EXPENSE_LIMITS.items).optional(),
     // Phase B: persisted adjustments. Required (default empty array) so
     // every doc carries the field; legacy docs missing it fail
     // parse on read per the no-backcompat decision. Cap at 50 matches
     // a generous receipt: tax + tip + a handful of per-item discounts.
-    adjustments: z.array(ExpenseAdjustmentSchema).max(50),
+    adjustments: z.array(ExpenseAdjustmentSchema).max(EXPENSE_LIMITS.adjustments),
   })
 }
 
@@ -233,10 +238,10 @@ export type ExpenseReceiptOut = z.infer<ReturnType<typeof makeReceiptSchema>>
  *  minor units in the source currency (e.g. USD cents); Worker converts
  *  to trip-currency via convertAndMaterializeFromSource before write. */
 const ForeignExpenseItemSchema = z.object({
-  id:                z.string().min(1).max(64),
-  name:              z.string().min(1).max(200),
-  sourceAmountMinor: z.number().int().positive().max(1_000_000_000),
-  allocations:       z.array(ExpenseItemAllocationSchema).min(1).max(50),
+  id:                z.string().min(1).max(ENTITY_ID_MAX),
+  name:              z.string().min(1).max(EXPENSE_LIMITS.itemName),
+  sourceAmountMinor: z.number().int().positive().max(MAX_AMOUNT_MINOR),
+  allocations:       z.array(ExpenseItemAllocationSchema).min(1).max(EXPENSE_LIMITS.allocations),
 })
 
 /** Source-currency adjustment shape. Sign comes from `kind` (matches
@@ -244,12 +249,12 @@ const ForeignExpenseItemSchema = z.object({
  *  present iff scope === 'ITEM' (mirrors materializer ITEM_SCOPE_NO_
  *  TARGET / EXPENSE_SCOPE_HAS_TARGET runtime gates). */
 const ForeignExpenseAdjustmentSchema = z.object({
-  id:                z.string().min(1).max(64),
-  label:             z.string().min(1).max(120),
+  id:                z.string().min(1).max(ENTITY_ID_MAX),
+  label:             z.string().min(1).max(EXPENSE_LIMITS.adjustmentLabel),
   kind:              ExpenseAdjustmentKindSchema,
   scope:             ExpenseAdjustmentScopeSchema,
-  sourceAmountMinor: z.number().int().positive().max(1_000_000_000),
-  targetItemId:      z.string().min(1).max(64).optional(),
+  sourceAmountMinor: z.number().int().positive().max(MAX_AMOUNT_MINOR),
+  targetItemId:      z.string().min(1).max(ENTITY_ID_MAX).optional(),
 }).refine(
   d => (d.scope === 'ITEM') === (d.targetItemId !== undefined),
   { message: 'targetItemId must be present iff scope === ITEM', path: ['targetItemId'] },
@@ -261,25 +266,25 @@ const ForeignExpenseAdjustmentSchema = z.object({
  *  synthetic receipt rows. */
 const ForeignExpenseSplitSchema = z.object({
   memberId:          z.string().min(1).max(UID_MAX),
-  sourceAmountMinor: z.number().int().nonnegative().max(1_000_000_000),
+  sourceAmountMinor: z.number().int().nonnegative().max(MAX_AMOUNT_MINOR),
 })
 
 const ForeignExpenseCreateBaseSchema = z.object({
-  title:             z.string().min(1).max(100),  // same cap as trip-currency create
+  title:             z.string().min(1).max(EXPENSE_LIMITS.title),  // same cap as trip-currency create
   // ISO 4217 alpha-3 uppercase. Matches fx-rate.ts CCY_RE + schema.ts
   // trip.currency. The foreign-mode router's cross-field check
   // `sourceCurrency !== tripContext.currency` only makes sense if
   // both sides agree on the uppercase normalization; a tolerant
   // `.length(3)` would let 'usd' sneak through and skip the bind.
   sourceCurrency:    z.string().regex(/^[A-Z]{3}$/, 'sourceCurrency must be ISO 4217 alpha-3 uppercase'),
-  sourceAmountMinor: z.number().int().positive().max(1_000_000_000),
+  sourceAmountMinor: z.number().int().positive().max(MAX_AMOUNT_MINOR),
   category:          ExpenseCategorySchema,
   paidBy:            z.string().min(1).max(UID_MAX),
   date:              z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
-  note:              z.string().max(1000).optional(),
-  sourceItems:       z.array(ForeignExpenseItemSchema).min(1).max(100).optional(),
-  sourceAdjustments: z.array(ForeignExpenseAdjustmentSchema).max(50).optional(),
-  sourceSplits:      z.array(ForeignExpenseSplitSchema).min(1).max(50).optional(),
+  note:              z.string().max(EXPENSE_LIMITS.note).optional(),
+  sourceItems:       z.array(ForeignExpenseItemSchema).min(1).max(EXPENSE_LIMITS.items).optional(),
+  sourceAdjustments: z.array(ForeignExpenseAdjustmentSchema).max(EXPENSE_LIMITS.adjustments).optional(),
+  sourceSplits:      z.array(ForeignExpenseSplitSchema).min(1).max(EXPENSE_LIMITS.splits).optional(),
 }).strict()
 
 const FOREIGN_SOURCE_DOMAIN_FIELDS = [

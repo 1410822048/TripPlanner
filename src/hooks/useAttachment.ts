@@ -26,11 +26,12 @@
 // on first render so `pickAttachmentChange()` can tell "user cleared
 // what was there" apart from "create-flow with no attachment".
 import { useRef, useState } from 'react'
+import { MAX_ATTACHMENT_BYTES } from '@tripmate/entity-contracts'
 import { useBlobUrl } from './useBlobUrl'
 import { useAttachmentUrl } from './useAttachmentUrl'
 
 /** Mirrors the Worker upload cap. Files larger than this are rejected. */
-const MAX_FILE_BYTES = 5 * 1024 * 1024
+const MAX_FILE_BYTES = MAX_ATTACHMENT_BYTES
 export const ATTACHMENT_SIZE_ERROR = '檔案大小必須小於 5MB'
 
 /** Tri-state for the service-layer attachment param.

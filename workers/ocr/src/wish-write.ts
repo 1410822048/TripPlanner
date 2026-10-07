@@ -25,6 +25,7 @@
 //                  rejected; this endpoint is the only path that can
 //                  set a new image object
 import { z }                                                        from 'zod'
+import { WISH_LIMITS } from '@tripmate/entity-contracts'
 import { getAdminToken, getProjectId }                              from './admin'
 import {
   readString,
@@ -89,13 +90,13 @@ export class WishValidationError extends FieldValidationError {
  *  the user could only escape by trimming. */
 const CreateWishBodySchema = z.object({
   category:    z.enum(['place', 'food']),
-  title:       z.string().min(1).max(100),
-  description: z.string().max(500).optional(),
+  title:       z.string().min(1).max(WISH_LIMITS.title),
+  description: z.string().max(WISH_LIMITS.description).optional(),
   // Renders into an <a href> — http(s) only, matching the rules regex.
   // No `v === ''` escape hatch here (unlike booking): wishService runs
   // stripEmpty before calling the Worker, so '' never arrives.
-  link:        z.string().max(500).refine(isHttpUrl, 'link must be an http(s) URL').optional(),
-  address:     z.string().max(500).optional(),
+  link:        z.string().max(WISH_LIMITS.link).refine(isHttpUrl, 'link must be an http(s) URL').optional(),
+  address:     z.string().max(WISH_LIMITS.address).optional(),
 })
 type CreateWishBody = z.infer<typeof CreateWishBodySchema>
 
@@ -305,14 +306,14 @@ export type WishFileUpdateRequest = z.infer<typeof WishFileUpdateRequestSchema>
  *  `votes` / `memberIds` are immutable from this endpoint's view. */
 const UpdateWishBodySchema = z.object({
   category:    z.enum(['place', 'food']).optional(),
-  title:       z.string().min(1).max(100).optional(),
-  description: z.string().max(500).optional(),
+  title:       z.string().min(1).max(WISH_LIMITS.title).optional(),
+  description: z.string().max(WISH_LIMITS.description).optional(),
   // Renders into an <a href> — http(s) only, matching the rules regex.
   // `''` IS accepted here, unlike on create: it is the clear sentinel
   // (see CLEARABLE_WISH_FIELDS), and a cleared link never reaches the
   // href. Create has nothing to clear, so it stays strict.
-  link:        z.string().max(500).refine(v => v === '' || isHttpUrl(v), 'link must be an http(s) URL').optional(),
-  address:     z.string().max(500).optional(),
+  link:        z.string().max(WISH_LIMITS.link).refine(v => v === '' || isHttpUrl(v), 'link must be an http(s) URL').optional(),
+  address:     z.string().max(WISH_LIMITS.address).optional(),
 })
 type UpdateWishBody = z.infer<typeof UpdateWishBodySchema>
 

@@ -16,6 +16,7 @@
 // PDF page count remains a consume-time product invariant, so the <=5MB object
 // is parsed before any entity doc may reference it.
 import { z }                                                        from 'zod'
+import { MAX_ATTACHMENT_BYTES } from '@tripmate/entity-contracts'
 import { getAdminToken, getProjectId }                              from './admin'
 import {
   readString,
@@ -51,7 +52,7 @@ import { requireTripAccess }                                         from './mem
 const EXPIRE_MS = 30 * 60 * 1000
 
 /** Hard cap on object size, mirrored by the raw upload endpoint and client. */
-export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
+export { MAX_ATTACHMENT_BYTES }
 
 /** Worker-owned metadata schema version. The client passes it through
  *  opaquely; upload and consume both compare the exact intent-bound shape. */

@@ -5,6 +5,7 @@
 // only renders and calls index-based callbacks. Split out of LineItemsSection
 // to shorten the .map() body.
 import { useState } from 'react'
+import { EXPENSE_LIMITS } from '@tripmate/entity-contracts'
 import { ChevronRight, Trash2, Users } from 'lucide-react'
 import CurrencyInput from '@/components/ui/CurrencyInput'
 import MemberAvatar from '@/components/ui/MemberAvatar'
@@ -57,6 +58,7 @@ export default function ExpenseItemRow({
             descender-safe with explicit leading/padding. */}
         <input
           value={item.name}
+          maxLength={EXPENSE_LIMITS.itemName}
           onChange={e => onSetName(index, e.target.value)}
           placeholder="項目名"
           className={compactInputClass(false)}

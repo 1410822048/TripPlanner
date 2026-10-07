@@ -44,6 +44,7 @@
 //   - PDFs supported (kind='pdf'); thumb intent optional.
 //   - Stale-replace guard via role-specific `filePath` (not `image.path`).
 import { z }                                                        from 'zod'
+import { BOOKING_LIMITS } from '@tripmate/entity-contracts'
 import { getAdminToken, getProjectId }                              from './admin'
 import {
   readNestedString,
@@ -126,21 +127,21 @@ export class BookingValidationError extends FieldValidationError {
  *  user could only escape by trimming. */
 const CreateBookingBodySchema = z.object({
   type:             z.enum(['flight', 'hotel', 'train', 'bus', 'other']),
-  title:            z.string().max(100).optional(),
-  origin:           z.string().max(60).optional(),
-  destination:      z.string().max(60).optional(),
-  confirmationCode: z.string().max(64).optional(),
-  provider:         z.string().max(60).optional(),
-  checkIn:          z.string().max(32).optional(),
-  checkOut:         z.string().max(32).optional(),
+  title:            z.string().max(BOOKING_LIMITS.title).optional(),
+  origin:           z.string().max(BOOKING_LIMITS.origin).optional(),
+  destination:      z.string().max(BOOKING_LIMITS.destination).optional(),
+  confirmationCode: z.string().max(BOOKING_LIMITS.confirmationCode).optional(),
+  provider:         z.string().max(BOOKING_LIMITS.provider).optional(),
+  checkIn:          z.string().max(BOOKING_LIMITS.dateText).optional(),
+  checkOut:         z.string().max(BOOKING_LIMITS.dateText).optional(),
   // 住所テキスト or Google Maps URL を受けるため 500(URL は 200 を超え得る)。
-  address:          z.string().max(500).optional(),
+  address:          z.string().max(BOOKING_LIMITS.address).optional(),
   // 予約元 URL。href に出すため http(s) のみ。`isHttpUrl` は
   // src/types/booking.ts と verbatim 同期(admin SDK は rules を bypass
   // するので、ここの check が緩いと XSS の穴になる)。'' は CLEARABLE
   // sentinel(encodeBookingUpdate が field 削除に変換)なので許可。
-  link:             z.string().max(500).refine(v => v === '' || isHttpUrl(v), 'link must be an http(s) URL').optional(),
-  note:             z.string().max(2000).optional(),
+  link:             z.string().max(BOOKING_LIMITS.link).refine(v => v === '' || isHttpUrl(v), 'link must be an http(s) URL').optional(),
+  note:             z.string().max(BOOKING_LIMITS.note).optional(),
 })
 type CreateBookingBody = z.infer<typeof CreateBookingBodySchema>
 

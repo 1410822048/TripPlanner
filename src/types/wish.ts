@@ -7,6 +7,7 @@
 import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
 import { TimestampSchema, isHttpUrl } from './_shared'
+import { ATTACHMENT_PATH_MAX, WISH_LIMITS } from '@tripmate/entity-contracts'
 
 // Two-category model: 景點 vs 餐廳. Earlier versions had four
 // (place / food / activity / other); the simpler split matches how
@@ -72,8 +73,8 @@ export interface Wish {
 export const WishImageSchema = z.object({
   // Path-only: reads go through the Worker proxy; no bearer URL persisted.
   // thumbPath optional (omitted for thumb-less uploads, no full-path collapse).
-  path:      z.string().min(1).max(500),
-  thumbPath: z.string().min(1).max(500).optional(),
+  path:      z.string().min(1).max(ATTACHMENT_PATH_MAX),
+  thumbPath: z.string().min(1).max(ATTACHMENT_PATH_MAX).optional(),
 })
 
 export const WishDocSchema = z.object({
@@ -87,7 +88,7 @@ export const WishDocSchema = z.object({
   // wish drops out with a Sentry capture, rather than rendering a live
   // link nobody validated. `''` never reaches storage (stripEmpty on
   // create, mask-delete on update), so no clear sentinel to allow.
-  link:        z.string().max(500).refine(isHttpUrl).optional(),
+  link:        z.string().max(WISH_LIMITS.link).refine(isHttpUrl).optional(),
   address:     z.string().optional(),
   image:       WishImageSchema.optional(),
   proposedBy:  z.string(),
@@ -102,14 +103,14 @@ export const WishDocSchema = z.object({
  *  are handled out-of-band. */
 export const CreateWishSchema = z.object({
   category:    z.enum(['place', 'food']),
-  title:       z.string().min(1, '請輸入標題').max(100),
-  description: z.string().max(500).optional(),
+  title:       z.string().min(1, '請輸入標題').max(WISH_LIMITS.title),
+  description: z.string().max(WISH_LIMITS.description).optional(),
   // 提案リンク。href に出すため http(s) のみ。cap 500 は rules / Worker と
   // lockstep。booking と違い '' の逃げ道は不要 — wishService は Worker へ
   // 送る前に stripEmpty するので '' はここまで届かない。
-  link:        z.string().max(500).refine(isHttpUrl, 'URL 必須以 http:// 或 https:// 開頭').optional(),
+  link:        z.string().max(WISH_LIMITS.link).refine(isHttpUrl, 'URL 必須以 http:// 或 https:// 開頭').optional(),
   // 住所テキスト or Google Maps URL を受けるため 500(URL は 200 を超え得る)。
-  address:     z.string().max(500).optional(),
+  address:     z.string().max(WISH_LIMITS.address).optional(),
 })
 export type CreateWishInput = z.infer<typeof CreateWishSchema>
 

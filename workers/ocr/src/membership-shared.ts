@@ -34,7 +34,7 @@ export { TripIdRe } from './field-validation'
 // ─── Shared constants (request-schema building blocks) ─────────────
 /** Trip id shape — shared by every membership request schema. */
 /** Firebase uid length cap — bounds uid-shaped string fields. */
-export const UID_MAX  = 128
+export { UID_MAX } from '@tripmate/entity-contracts'
 
 // ─── Validation error ─────────────────────────────────────────────
 

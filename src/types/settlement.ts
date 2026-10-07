@@ -36,6 +36,7 @@
 //   two values are intentionally decoupled.
 import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
+import { SETTLEMENT_LIMITS } from '@tripmate/entity-contracts'
 import {
   CurrencyCodeSchema,
   type FxSnapshot,
@@ -141,7 +142,7 @@ const SettlementAppliedSourceSchema = z.object({
   // Read side accepts 200 (the Worker's former expense-title cap) so
   // settlements written before lineage titles were truncated still parse;
   // a single over-long one used to fail the whole settlements listener.
-  expenseTitle: z.string().min(1).max(200),
+  expenseTitle: z.string().min(1).max(SETTLEMENT_LIMITS.lineageTitleRead),
   itemId:       z.string().min(1).max(64).optional(),
   itemName:     z.string().min(1).max(200).optional(),
   amountMinor:  z.number().int().positive(),
@@ -165,7 +166,7 @@ export const SettlementDocSchema = z.object({
   currency:    CurrencyCodeSchema,
   settledBy:   z.string().min(1),
   recordedOnBehalfOf: z.string().min(1).optional(),
-  note:        z.string().max(200).optional(),
+  note:        z.string().max(SETTLEMENT_LIMITS.note).optional(),
   appliedSources: z.array(SettlementAppliedSourceSchema).max(80).optional(),
   appliedExpenseIds: z.array(z.string().min(1).max(60)).max(500).optional(),
   createdAt:   TimestampSchema,

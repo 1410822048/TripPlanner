@@ -65,6 +65,7 @@ import {
   currencyFractionDigits,
 } from '@/utils/money'
 import AttachmentPreviewModal from '@/features/attachments/components/AttachmentPreviewModal'
+import { EXPENSE_LIMITS } from '@tripmate/entity-contracts'
 
 
 const CATEGORIES: { value: ExpenseCategory; label: string }[] = [
@@ -462,7 +463,7 @@ export default function ExpenseFormModal({
         <input
           ref={titleRef}
           value={state.title}
-          maxLength={100}
+          maxLength={EXPENSE_LIMITS.title}
           onChange={e => setField('title', e.target.value)}
           placeholder="例：壽司大 築地"
           className={inputClass(!!errors.title)}
@@ -602,7 +603,7 @@ export default function ExpenseFormModal({
       <FormField label="備註">
         <textarea
           value={state.note}
-          maxLength={1000}
+          maxLength={EXPENSE_LIMITS.note}
           onChange={e => setField('note', e.target.value)}
           placeholder="備註等"
           rows={2}

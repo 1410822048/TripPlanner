@@ -28,6 +28,7 @@
 // mints via crypto.randomUUID so the optimistic patch / Worker request /
 // Firestore doc all share one id — see CreateSettlementVariables docstring.
 import { useRef, useState } from 'react'
+import { SETTLEMENT_LIMITS } from '@tripmate/entity-contracts'
 import { ArrowRight, Loader2 } from 'lucide-react'
 import { estimateSourceMinorAtMostTargetHalfEven } from '@tripmate/fx-core'
 
@@ -376,7 +377,7 @@ export default function SettlementRecordSheet({
             value={note}
             onChange={e => setNote(e.target.value)}
             placeholder="例如：燒肉費用清算"
-            maxLength={200}
+            maxLength={SETTLEMENT_LIMITS.note}
             className="w-full min-h-12 px-3 py-2.5 bg-app rounded-input border-[1.5px] border-border text-[16px] leading-6 text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition-colors"
           />
         </FormField>

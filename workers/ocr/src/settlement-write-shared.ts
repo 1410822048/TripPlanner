@@ -13,11 +13,11 @@
 // cross-field reconciliation), so a single shared module is proportionate
 // here — unlike expense, which warrants a separate expense-validate.ts.
 import { z } from 'zod'
+import { SETTLEMENT_LIMITS, UID_MAX } from '@tripmate/entity-contracts'
 import { FieldValidationError, TripIdRe } from './field-validation'
 
 // ─── Request body schemas ─────────────────────────────────────────
 
-const UID_MAX  = 128
 const AMOUNT_MINOR_MAX = 999_999_999_999
 
 /** Settlement create request. Discriminated by `mode`:
@@ -54,7 +54,7 @@ const SettlementCreateBaseSchema = z.object({
   fromUid:      z.string().min(1).max(UID_MAX),
   toUid:        z.string().min(1).max(UID_MAX),
   expectedRemainingMinor: z.number().int().positive().max(AMOUNT_MINOR_MAX),
-  note:         z.string().max(200).optional(),
+  note:         z.string().max(SETTLEMENT_LIMITS.note).optional(),
 })
 
 const SettlementCreateTripSchema = SettlementCreateBaseSchema.extend({

@@ -18,9 +18,10 @@ import { useImageCropFlow } from '@/hooks/useImageCropFlow'
 import { useBlobUrl } from '@/hooks/useBlobUrl'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { WISH_CATEGORIES } from '../categories'
+import { MAX_ATTACHMENT_BYTES, WISH_LIMITS } from '@tripmate/entity-contracts'
 
 const ACCEPT_TYPES = 'image/*'
-const MAX_FILE_BYTES = 5 * 1024 * 1024
+const MAX_FILE_BYTES = MAX_ATTACHMENT_BYTES
 
 // `type` (not `interface`): TS won't widen interfaces to satisfy
 // `Record<string, unknown>` since interfaces are open for declaration
@@ -192,7 +193,7 @@ export default function WishFormModal({
         <input
           ref={titleRef}
           value={state.title}
-          maxLength={100}
+          maxLength={WISH_LIMITS.title}
           onChange={e => setField('title', e.target.value)}
           placeholder="例：築地市場、壽司大、淺草寺"
           className={inputClass(!!errors.title)}
@@ -202,7 +203,7 @@ export default function WishFormModal({
       <FormField label="説明">
         <textarea
           value={state.description}
-          maxLength={500}
+          maxLength={WISH_LIMITS.description}
           onChange={e => setField('description', e.target.value)}
           placeholder="是什麼地方？為什麼想去？"
           rows={2}
@@ -218,7 +219,7 @@ export default function WishFormModal({
           value={state.address}
           onChange={e => setField('address', e.target.value)}
           placeholder="例如：東京都港區芝公園 4-2-8 / Google Maps URL"
-          maxLength={500}
+          maxLength={WISH_LIMITS.address}
           className={inputClass(false)}
         />
       </FormField>
@@ -230,7 +231,7 @@ export default function WishFormModal({
           type="url"
           inputMode="url"
           value={state.link}
-          maxLength={500}
+          maxLength={WISH_LIMITS.link}
           onChange={e => setField('link', e.target.value)}
           placeholder="https://example.com/event"
           className={inputClass(!!errors.link)}

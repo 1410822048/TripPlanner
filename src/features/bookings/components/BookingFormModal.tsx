@@ -26,6 +26,7 @@ import { useBookingPdfAutofill } from '../hooks/useBookingPdfAutofill'
 import BookingPdfAutofillCard from './BookingPdfAutofillCard'
 import BookingAttachmentFields from './BookingAttachmentFields'
 import { isPdfFile } from '../services/bookingPdfText'
+import { BOOKING_LIMITS } from '@tripmate/entity-contracts'
 
 /** Transport types use origin → destination as the primary identifier;
  *  other types use a single title field. */
@@ -117,7 +118,7 @@ function HotelTitleTicketEditor({
                 value={value}
                 onChange={e => onChange(e.target.value)}
                 placeholder="東京虹夕諾雅 / Hoshinoya"
-                maxLength={100}
+                maxLength={BOOKING_LIMITS.title}
                 aria-invalid={!!error}
                 aria-describedby={error ? errorId : undefined}
                 className="min-w-0 flex-1 border-0 bg-transparent p-0 text-[16px] font-black leading-6 text-ink outline-none placeholder:text-[#C8BCA6] focus-visible:ring-0 [&::placeholder]:font-semibold"
@@ -410,7 +411,7 @@ export default function BookingFormModal({
                 <span className="block text-[9px] font-black leading-none text-muted">DEPARTURE</span>
                 <input
                   value={state.origin}
-                  maxLength={60}
+                  maxLength={BOOKING_LIMITS.origin}
                   onChange={e => setField('origin', e.target.value)}
                   placeholder={state.type === 'flight' ? 'TPE' : '東京駅'}
                   aria-label="出發地"
@@ -425,7 +426,7 @@ export default function BookingFormModal({
                 <span className="block text-[9px] font-black leading-none text-muted">ARRIVAL</span>
                 <input
                   value={state.destination}
-                  maxLength={60}
+                  maxLength={BOOKING_LIMITS.destination}
                   onChange={e => setField('destination', e.target.value)}
                   placeholder={state.type === 'flight' ? 'NRT' : '京都駅'}
                   aria-label="目的地"
@@ -456,7 +457,7 @@ export default function BookingFormModal({
         >
           <input
             value={state.title}
-            maxLength={100}
+            maxLength={BOOKING_LIMITS.title}
             onChange={e => setField('title', e.target.value)}
             placeholder={titlePlaceholder(state.type)}
             className={inputClass(!!errors.title)}
@@ -468,7 +469,7 @@ export default function BookingFormModal({
         <FormField label="確認編號" className="flex-1">
           <input
             value={state.confirmationCode}
-            maxLength={64}
+            maxLength={BOOKING_LIMITS.confirmationCode}
             onChange={e => setField('confirmationCode', e.target.value)}
             placeholder="ABC123"
             className={`${inputClass(false)} font-mono tracking-tight`}
@@ -477,7 +478,7 @@ export default function BookingFormModal({
         <FormField label="提供者" className="flex-1">
           <input
             value={state.provider}
-            maxLength={60}
+            maxLength={BOOKING_LIMITS.provider}
             onChange={e => setField('provider', e.target.value)}
             placeholder={providerPlaceholder(state.type)}
             className={inputClass(false)}
@@ -539,7 +540,7 @@ export default function BookingFormModal({
             value={state.address}
             onChange={e => setField('address', e.target.value)}
             placeholder={state.type === 'hotel' ? '例如：東京都台東區淺草 1-1-1 / Google Maps URL' : '例如：上野公園 / Google Maps URL'}
-            maxLength={500}
+            maxLength={BOOKING_LIMITS.address}
             className={inputClass(false)}
           />
         </FormField>
@@ -555,7 +556,7 @@ export default function BookingFormModal({
           onBlur={() => applyLinkDefaults()}
           placeholder="https://..."
           type="url"
-          maxLength={500}
+          maxLength={BOOKING_LIMITS.link}
           className={inputClass(!!errors.link)}
         />
       </FormField>
@@ -573,7 +574,7 @@ export default function BookingFormModal({
       <FormField label="備註">
         <textarea
           value={state.note}
-          maxLength={2000}
+          maxLength={BOOKING_LIMITS.note}
           onChange={e => setField('note', e.target.value)}
           placeholder="備註（座位、機場櫃檯資訊等）"
           rows={2}

@@ -19,6 +19,7 @@
 // 因為是純函式,throw 發生在 return 之前 → 對使用者而言「部分套用」結構上
 // 不可能出現。
 import type { ExpenseAdjustment, ExpenseCategory } from '@/types'
+import { EXPENSE_LIMITS } from '@tripmate/entity-contracts'
 import type { FormItem } from '../hooks/useExpenseItems'
 import type { OcrResult } from './ocrService'
 import { CURRENCY_OPTIONS } from '@/utils/currency'
@@ -161,7 +162,7 @@ export function buildOcrExpenseDraft(
   // 標題:OCR 不覆寫使用者已輸入的 title。
   if (result.storeName && !ctx.currentTitle.trim()) {
     // Store names reach 120 chars; the expense title cap is 100.
-    draft.title = Array.from(result.storeName).slice(0, 100).join('')
+    draft.title = Array.from(result.storeName).slice(0, EXPENSE_LIMITS.title).join('')
   }
   // Category:拍照即「請幫我自動分類」,只在新增模式覆寫;edit 絕不動。
   if (result.category && !ctx.isEdit) {

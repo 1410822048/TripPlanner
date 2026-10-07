@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@tripmate/expense-materialize": "file:../../packages/expense-materialize",
+    "@tripmate/entity-contracts": "file:../../packages/entity-contracts",
     "@tripmate/fx-core": "file:../../packages/fx-core",
     "@tripmate/pdf-page-limit": "file:../../packages/pdf-page-limit",
     "@tripmate/route-estimate-core": "file:../../packages/route-estimate-core",

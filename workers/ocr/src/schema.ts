@@ -28,6 +28,7 @@
 // to IEEE-754 drift. The model is instructed to emit raw decimal strings
 // matching the currency's fraction digits.
 import { z } from 'zod'
+import { ADJUSTMENT_KINDS } from '@tripmate/entity-contracts'
 import { TripIdRe } from './field-validation'
 
 // ─── Request ─────────────────────────────────────────────────────────────
@@ -111,9 +112,7 @@ export type OcrCategory = z.infer<typeof OcrCategorySchema>
 // ExpenseAdjustment shape (src/types/expense.ts + the materializer
 // package). Duplicated here because the Worker bundle should not pull
 // the client types module.
-export const OcrAdjustmentKindSchema = z.enum([
-  'DISCOUNT', 'COUPON', 'TAX_EXEMPT', 'SURCHARGE', 'TAX', 'TIP', 'OTHER',
-])
+export const OcrAdjustmentKindSchema = z.enum(ADJUSTMENT_KINDS)
 export type OcrAdjustmentKind = z.infer<typeof OcrAdjustmentKindSchema>
 
 /** OCR-only scope hint. Persisted adjustments only carry `ITEM` /
@@ -221,7 +220,7 @@ export const OCR_RESPONSE_JSON_SCHEMA = {
           label:  { type: 'string' },
           kind:   {
             type: 'string',
-            enum: ['DISCOUNT', 'COUPON', 'TAX_EXEMPT', 'SURCHARGE', 'TAX', 'TIP', 'OTHER'],
+            enum: [...ADJUSTMENT_KINDS],
           },
           amountText: { type: 'string' },
           suggestedScope: {

@@ -56,6 +56,7 @@
 // creates on the same pair both touch this doc → Firestore aborts one,
 // retry sees the now-committed settlement and reapplies the gate.
 import { getAdminToken, getProjectId }                      from './admin'
+import { EXPENSE_LIMITS } from '@tripmate/entity-contracts'
 import {
   docIdFromName,
   readString,
@@ -274,7 +275,8 @@ function decodePairExpenseForSettlement(doc: TxReadDoc): PairExpenseForSettlemen
 /** Lineage titles are display-only snapshots; cap them at the client's
  *  read limit (code points, so an emoji is never split) so a legacy long
  *  expense title can't make the settlement unparseable for every member. */
-const LINEAGE_TITLE_MAX = 100
+// Written at the expense title cap (+ '…'), well inside what clients read.
+const LINEAGE_TITLE_MAX = EXPENSE_LIMITS.title
 function lineageTitle(title: string): string {
   const chars = Array.from(title)
   return chars.length <= LINEAGE_TITLE_MAX ? title : chars.slice(0, LINEAGE_TITLE_MAX - 1).join('') + '…'

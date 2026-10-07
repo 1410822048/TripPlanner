@@ -37,6 +37,7 @@ import {
   type ConvertAndMaterializeSourceAdjustment,
   type ConvertAndMaterializeSourceItem,
 } from '@tripmate/expense-materialize'
+import { EXPENSE_LIMITS } from '@tripmate/entity-contracts'
 import { currencyFractionDigits, formatMinorAmount } from '@/utils/money'
 import type { FxPreviewDisabledReason } from '@/hooks/useFxPreview'
 import type { SplitMode } from '../hooks/useSplitsState'
@@ -176,8 +177,8 @@ export function buildExpenseFormResult(input: BuildExpenseFormInput): BuildExpen
   // ── 逐欄基本驗證 ──
   const e: Record<string, string> = {}
   if (!title.trim()) e.title = '請輸入標題'
-  else if (title.trim().length > 100) e.title = '標題最多 100 字'
-  if (note.length > 1000) e.note = '備註最多 1000 字'
+  else if (title.trim().length > EXPENSE_LIMITS.title) e.title = `標題最多 ${EXPENSE_LIMITS.title} 字`
+  if (note.length > EXPENSE_LIMITS.note) e.note = `備註最多 ${EXPENSE_LIMITS.note} 字`
   // 透過 Result wrapper 給精準理由 —— 舊 `if (!amountMinor)` 會把 parse 失敗
   // (例:JPY 12.34)誤判成空輸入。
   const amountResult = parsePositiveMoneyToMinorResult(amountText, currency)

@@ -16,6 +16,7 @@
 // user still confirms in the editable modal and SAVE is what actually mutates
 // the expense (via /expense-update).
 import { z }                                  from 'zod'
+import { MAX_ATTACHMENT_BYTES } from '@tripmate/entity-contracts'
 import { getAdminToken, getProjectId }        from './admin'
 import { getDocFields, readMap, readString }  from './firestore'
 import type { FsValue }                       from './firestore'
@@ -28,7 +29,7 @@ import { TripIdRe }                           from './field-validation'
 
 /** Hard ceiling on the receipt object we'll pull into memory + hand to
  *  the OCR model. Mirrors the attachment upload boundary. */
-const MAX_RECEIPT_BYTES = 5 * 1024 * 1024
+const MAX_RECEIPT_BYTES = MAX_ATTACHMENT_BYTES
 const SUPPORTED_OCR_IMAGE_TYPES = new Set<string>(OCR_SUPPORTED_IMAGE_MIME_TYPES)
 
 /** Strict request body. ONLY identifiers + a currency hint cross the wire —

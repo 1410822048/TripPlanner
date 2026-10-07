@@ -1,3 +1,4 @@
+import { MAX_ATTACHMENT_BYTES } from '@tripmate/entity-contracts'
 import {
   drawToBlob,
   PASSTHROUGH_TYPES,
@@ -12,7 +13,7 @@ const RECEIPT_TALL_ASPECT_RATIO     = 2.4
 const RECEIPT_TALL_MIN_SHORT_EDGE   = 768
 const RECEIPT_TALL_MAX_LONG_EDGE    = 3840
 const RECEIPT_MAX_UPSCALE_FACTOR    = 2
-const RECEIPT_FULL_MAX_BYTES        = 5 * 1024 * 1024
+const RECEIPT_FULL_MAX_BYTES        = MAX_ATTACHMENT_BYTES
 const RECEIPT_FULL_ENCODE_CANDIDATES = [
   { quality: 0.90 },
   { quality: 0.82 },

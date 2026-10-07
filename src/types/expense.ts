@@ -9,6 +9,15 @@
 // recompute both work in integer minor units and reject non-integer
 // values loudly.
 import { z } from 'zod'
+import {
+  ADJUSTMENT_KINDS,
+  ATTACHMENT_PATH_MAX,
+  ENTITY_ID_MAX,
+  EXPENSE_LIMITS,
+  UID_MAX,
+  type AdjustmentKindName,
+} from '@tripmate/entity-contracts'
+import type { AdjustmentKind as MaterializerAdjustmentKind } from '@tripmate/expense-materialize'
 import type { Timestamp } from 'firebase/firestore'
 import {
   CurrencyCodeSchema,
@@ -291,26 +300,29 @@ export const ExpenseItemSchema = z.object({
   // Phase B: id required. ITEM-scope adjustments target items by id;
   // optional id would let an adjustment dangle silently. Length cap of
   // 64 accommodates UUIDs + any future short-id scheme.
-  id: z.string().min(1).max(64),
-  name: z.string().min(1).max(200),
+  id: z.string().min(1).max(ENTITY_ID_MAX),
+  name: z.string().min(1).max(EXPENSE_LIMITS.itemName),
   // Phase B: positive integer minor units. Discounts / surcharges / tax
   // / tip migrated to the sibling `adjustments[]` field. The materializer
   // (Worker authoritative split gate) rejects non-positive items with
   // ITEM_NOT_POSITIVE_INTEGER.
   amountMinor: z.number().int().positive(),
   allocations: z.array(z.object({
-    memberId: z.string().min(1).max(128),
-    shares:   z.number().int().positive().max(999),
-  })).min(1, '至少需要一位分攤者').max(50),
+    memberId: z.string().min(1).max(UID_MAX),
+    shares:   z.number().int().positive().max(EXPENSE_LIMITS.allocationShares),
+  })).min(1, '至少需要一位分攤者').max(EXPENSE_LIMITS.allocations),
 })
 
-/** Adjustment kind / scope literals — mirror of
- *  `@tripmate/expense-materialize::AdjustmentKind` / `AdjustmentScope`.
- *  Re-declared here (rather than re-exported) so the Zod parse layer
- *  doesn't take a runtime dep on the materializer package. */
-export const EXPENSE_ADJUSTMENT_KINDS = [
-  'DISCOUNT', 'COUPON', 'TAX_EXEMPT', 'SURCHARGE', 'TAX', 'TIP', 'OTHER',
-] as const
+/** Adjustment kind / scope literals. Kinds come from
+ *  @tripmate/entity-contracts (shared with the Worker validators and the
+ *  OCR schema); the compile-time checks below keep this file's union and
+ *  the materializer's AdjustmentKind on the same set. */
+export const EXPENSE_ADJUSTMENT_KINDS = ADJUSTMENT_KINDS
+type SameSet<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false
+const _kindsMatchUnion: SameSet<ExpenseAdjustmentKind, AdjustmentKindName> = true
+const _kindsMatchMaterializer: SameSet<MaterializerAdjustmentKind, AdjustmentKindName> = true
+void _kindsMatchUnion
+void _kindsMatchMaterializer
 
 export const EXPENSE_ADJUSTMENT_SCOPES = ['ITEM', 'EXPENSE'] as const
 
@@ -329,12 +341,12 @@ export const EXPENSE_ADJUSTMENT_SCOPES = ['ITEM', 'EXPENSE'] as const
  *  EXPENSE_SCOPE_HAS_TARGET). Catching it at the Zod boundary
  *  rejects malformed docs before invoking the materializer. */
 export const ExpenseAdjustmentSchema = z.object({
-  id:           z.string().min(1).max(64),
-  label:        z.string().min(1).max(120),
+  id:           z.string().min(1).max(ENTITY_ID_MAX),
+  label:        z.string().min(1).max(EXPENSE_LIMITS.adjustmentLabel),
   kind:         z.enum(EXPENSE_ADJUSTMENT_KINDS),
   scope:        z.enum(EXPENSE_ADJUSTMENT_SCOPES),
   amountMinor:  z.number().int().positive(),
-  targetItemId: z.string().min(1).max(64).optional(),
+  targetItemId: z.string().min(1).max(ENTITY_ID_MAX).optional(),
 }).refine(
   data => (data.scope === 'ITEM') === (data.targetItemId !== undefined),
   { message: 'targetItemId must be present iff scope === ITEM', path: ['targetItemId'] },
@@ -345,13 +357,13 @@ export const ExpenseAdjustmentSchema = z.object({
  *  name / allocations constraints (the materializer reuses these on the
  *  trip-domain side). */
 export const SourceExpenseItemSchema = z.object({
-  id:                z.string().min(1).max(64),
-  name:              z.string().min(1).max(200),
+  id:                z.string().min(1).max(ENTITY_ID_MAX),
+  name:              z.string().min(1).max(EXPENSE_LIMITS.itemName),
   sourceAmountMinor: z.number().int().positive(),
   allocations:       z.array(z.object({
-    memberId: z.string().min(1).max(128),
-    shares:   z.number().int().positive().max(999),
-  })).min(1, '至少需要一位分攤者').max(50),
+    memberId: z.string().min(1).max(UID_MAX),
+    shares:   z.number().int().positive().max(EXPENSE_LIMITS.allocationShares),
+  })).min(1, '至少需要一位分攤者').max(EXPENSE_LIMITS.allocations),
 })
 
 /** Phase 3b — source-currency adjustment shape. Mirrors
@@ -360,12 +372,12 @@ export const SourceExpenseItemSchema = z.object({
  *  the effective sign / direction comes from `kind` exactly as on the
  *  trip-domain side. */
 export const SourceExpenseAdjustmentSchema = z.object({
-  id:                z.string().min(1).max(64),
-  label:             z.string().min(1).max(120),
+  id:                z.string().min(1).max(ENTITY_ID_MAX),
+  label:             z.string().min(1).max(EXPENSE_LIMITS.adjustmentLabel),
   kind:              z.enum(EXPENSE_ADJUSTMENT_KINDS),
   scope:             z.enum(EXPENSE_ADJUSTMENT_SCOPES),
   sourceAmountMinor: z.number().int().positive(),
-  targetItemId:      z.string().min(1).max(64).optional(),
+  targetItemId:      z.string().min(1).max(ENTITY_ID_MAX).optional(),
 }).refine(
   data => (data.scope === 'ITEM') === (data.targetItemId !== undefined),
   { message: 'targetItemId must be present iff scope === ITEM', path: ['targetItemId'] },
@@ -403,7 +415,7 @@ const ExpenseShape = z.object({
   // and made optional by UpdateExpenseSchema.partial() for text-only
   // patches. Stripped before persistence; never a stored field.
   mode:        z.enum(EXPENSE_PAYMENT_MODES),
-  title:       z.string().min(1, '請輸入標題').max(100),
+  title:       z.string().min(1, '請輸入標題').max(EXPENSE_LIMITS.title),
   // Persist-side: positive integer minor units. The form layer holds
   // the user-facing decimal string in `amountText` and converts via
   // `parseMoneyToMinor` at submit time.
@@ -421,7 +433,7 @@ const ExpenseShape = z.object({
   // form layer constructs them; the Worker materializes splits from
   // (items, adjustments, members) and rejects drift.
   adjustments: z.array(ExpenseAdjustmentSchema),
-  note:        z.string().optional(),
+  note:        z.string().max(EXPENSE_LIMITS.note).optional(),
   // Phase 3c-1 foreign-mode additions. Optional at the shape level so
   // same-currency expenses keep their existing payload unchanged; the
   // service layer routes foreign-vs-trip wire shape based on
@@ -464,9 +476,9 @@ export const EXPENSE_RECEIPT_MIME_TYPES = [
 
 export const ExpenseReceiptSchema = z.object({
   // Path-only: reads go through the Worker proxy; no bearer URL persisted.
-  path:      z.string().min(1).max(500),
+  path:      z.string().min(1).max(ATTACHMENT_PATH_MAX),
   type:      z.enum(EXPENSE_RECEIPT_MIME_TYPES),
-  thumbPath: z.string().min(1).max(500).optional(),
+  thumbPath: z.string().min(1).max(ATTACHMENT_PATH_MAX).optional(),
 })
 
 // FxSnapshot read schema + IsoDate / CanonicalRateDecimal sub-schemas
