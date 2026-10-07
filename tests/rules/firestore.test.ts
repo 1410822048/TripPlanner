@@ -15,7 +15,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest'
 import { assertFails, assertSucceeds } from '@firebase/rules-unit-testing'
 import {
-  collection, doc, getDoc, getDocs, query, where,
+  collection, collectionGroup, doc, getDoc, getDocs, query, where,
   setDoc, updateDoc, deleteDoc, deleteField, serverTimestamp, Timestamp,
   documentId, writeBatch, onSnapshot, limit, disableNetwork, enableNetwork,
 } from 'firebase/firestore'
@@ -90,6 +90,11 @@ describe('/trips/{tripId} read', () => {
     const db = env.authenticatedContext(uid).firestore()
     const result = await assertSucceeds(getDocs(query(collection(db, 'trips'), where('memberIds', 'array-contains', uid), limit(50))))
     expect(result.docs.map(d => d.id)).toEqual([TRIP_ID])
+  })
+
+  test.each([OWNER_UID, EDITOR_UID, VIEWER_UID])('LIST: legacy members collection-group query is denied for %s', async uid => {
+    const db = env.authenticatedContext(uid).firestore()
+    await assertFails(getDocs(query(collectionGroup(db, 'members'), where('userId', '==', uid))))
   })
 
   test('LIST: stranger sees no other tenant trips and cannot query someone else\'s uid', async () => {
@@ -2020,8 +2025,8 @@ describe('fresh trip — immediate listener attach (post-batch-commit)', () => {
   })
 })
 
-// ─── Members collection-group LIST gate ────────────────────────────
-describe('/{path=**}/members collection-group', () => {
+// ─── Trip-scoped member roster LIST gate ───────────────────────────
+describe('/trips/{tripId}/members list', () => {
   test('member can list a trip\'s member roster (filter aligned with same-doc rule)', async () => {
     // Path-specific list query now must align with the same-doc rule
     // (uid in resource.data.memberIds) via array-contains filter.

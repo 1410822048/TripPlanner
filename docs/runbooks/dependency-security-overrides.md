@@ -16,6 +16,26 @@ glob 跨 major 的範圍依 [官方 changelog](https://raw.githubusercontent.com
 
 上游更新後可逐個移除 override；每次需重跑 `npm audit`、前端與 Worker / Functions 測試、Firestore Rules emulator、typecheck、lint 和 production build。不得直接修改 `node_modules`。
 
+## 2026-10-07 Firebase CLI 安全 gate 修補
+
+新增固定版 `firebase-tools@15.32.1` 後，CLI 帶入的 `chokidar@3.6.0` → `braces@3.0.3`
+與 `get-uri@6.0.5` → `basic-ftp@5.3.1` 使原有 high audit gate 失敗。保留 CLI 固定版本，
+只在 `firebase-tools` 子樹 override：
+
+- `chokidar@^4.0.3`：移除沒有修補版的 [braces 遞迴 DoS](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm)。
+- `basic-ftp@^6.2.2`：修補 [FTP list parser ReDoS](https://github.com/advisories/GHSA-c475-qrg2-pj4r)。
+
+Chokidar 4 保留 CommonJS 與 watch/FSWatcher API，但不支援 glob。已查核 CLI 的呼叫：
+Firestore／Realtime Database／Storage 直接監聽 rules 檔；Functions 直接監聽 source 目錄。
+Functions 的自訂 ignored glob 會失效，因此這個 override **不是一般用途的等價升級**；
+本專案 `firebase.json` 的忽略項目只有 node_modules、.git 與 log，仍由 CLI 原有 regex
+覆蓋。日後新增其他 Functions ignore pattern 時需重新評估，不可只依賴該 glob。
+basic-ftp 6 仍提供 get-uri 使用的 CommonJS Client、access/lastMod/list/downloadTo/close API。
+
+保留原有 `npm audit --audit-level=high`，沒有新增漏洞忽略清單或降低 CI 門檻。
+根依賴目前尚有 CLI Pub/Sub 的 OpenTelemetry Core 1.x moderate advisory（含父套件傳遞共 3 項）；
+不強制覆寫為 Core 2.x，以免跨 major 改變 SDK 行為。Functions 獨立 lockfile 仍單獨 audit。
+
 ## 仍由上游帶入的 DOMException 套件
 
 `firebase-admin`／Google SDK → `node-fetch@3.3.2` → `fetch-blob@3.2.0` → `node-domexception@1.0.0`。本次查核最新 node-fetch 仍為 3.3.2；fetch-blob 4.0.0 仍依賴 node-domexception，node-domexception 最新 2.0.2 本身也被標示 deprecated。因此單純升級無法消除此訊息。

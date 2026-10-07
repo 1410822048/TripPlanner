@@ -35,6 +35,10 @@
     "prepare": "husky"
   },
   "overrides": {
+    "firebase-tools": {
+      "chokidar": "^4.0.3",
+      "basic-ftp": "^6.2.2"
+    },
     "@firebase/firestore": {
       "@grpc/grpc-js": "^1.14.5"
     },

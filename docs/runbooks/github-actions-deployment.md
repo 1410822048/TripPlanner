@@ -15,6 +15,10 @@ production job 會 checkout `main` 並比對本次通過 CI 的 `github.sha`。
 若等待期間 main 已前進，舊 run 中止，禁止把尚未驗證的新提交發布。
 部署共用 concurrency group，`cancel-in-progress=false`，不會中途切斷發版。
 
+完整發布順序固定在 `scripts/deploy-prod-safe.mjs`：建置 Web App → preflight →
+Firestore indexes（等待 READY）→ Worker → Functions（等待 ACTIVE）→ Rules → Pages。
+`scripts/audit-trip-currency.mjs` 不在自動部署流程內，不會自動修復或 backfill 使用者資料。
+
 ## Cloudflare 設定
 
 在 [production Environment](https://github.com/1410822048/TripPlanner/settings/environments)
@@ -54,7 +58,9 @@ Metadata role 僅含 firebase.projects.get、firebase.clients.get 與 firebaseex
 不使用含 Firestore entity 讀取權限的 Firebase Viewer。
 自訂 role 僅含 Cloud Run services get/list、revisions get/list/delete 與 operations get。
 Artifact Registry Repo Admin 僅授予 `asia-east1/gcf-artifacts` repository；
-Service Account User 僅授予目前 Functions build/runtime 使用的 compute service account。
+Service Account User 僅授予目前 Functions build/runtime 使用的 compute service account，
+以及 Firebase CLI 部署前置檢查要求的 `tripplanner-80a4f@appspot.gserviceaccount.com`；
+兩者均在指定 service account 本身授權，不在 project 層授權。
 
 若 Firebase CLI 報缺少權限，依錯誤補必要 permission／resource scope，
 不要直接提升為 Editor／Owner。此帳號仍可部署 Functions 及 Rules；能控制這些程式碼
@@ -84,6 +90,12 @@ images；這是既有行為，不是新的備份機制。Firestore／R2 使用�
 **Schema Epoch 仍須人工分階段安排提交。** 自動化不會替你決定 cutoff 或更新窗口。
 增加必填 wire 欄位時，先發布相容 client，再提高 manifest minimum 並等 active-client
 refresh 窗口，最後才發布 strict Worker；不得把四階段壓成一次 main push。
+
+2026-10-07 Round 3 發布例外：使用者確認 Firestore 無資料、只有本人使用，明確授權
+立即停止舊版相容。這次略過貨幣修復／ledger backfill，移除 `/members` collection-group
+查詢規則，並將 Worker `vars.OCR_REQUIRE_TRIP_ID` 固定為 `"1"`；`/ocr`、
+`/ocr-fallback`、`/booking-pdf-extract` 均要求 tripId 與有效 owner/editor 身分。
+裝置上既有 PWA／瀏覽器快取仍須更新，Firestore 空資料不會移除這些本機內容。
 
 ## 金鑰與失敗復原
 

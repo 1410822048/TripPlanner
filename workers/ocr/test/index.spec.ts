@@ -26,6 +26,22 @@ afterEach(() => {
 	runOcrProviderMock.mockReset()
 })
 
+describe('production OCR trip scope', () => {
+	it.each(['/ocr', '/ocr-fallback', '/booking-pdf-extract'])('%s rejects a legacy request before spending model quota', async path => {
+		const route = ROUTES.find(r => r.path === path)!
+		const fetchMock = vi.fn()
+		globalThis.fetch = fetchMock
+		expect(env).toHaveProperty('OCR_REQUIRE_TRIP_ID', '1')
+		const body = path === '/booking-pdf-extract'
+			? { pageCount: 1, text: 'Hotel Sakura confirmation', lines: [{ page: 1, text: 'Hotel Sakura', x: 10, y: 100 }] }
+			: { image: 'a'.repeat(128), mimeType: 'image/webp' }
+		const res = await route.dispatch({ body, cors: {}, uid: 'user-1', env } as never)
+		expect(res.status).toBe(400)
+		expect(runOcrProviderMock).not.toHaveBeenCalled()
+		expect(fetchMock).not.toHaveBeenCalled()
+	})
+})
+
 // `RequestInit` here is workerd's, which is generic over the `cf`
 // properties — the global DOM one the specs write is not assignable to it.
 // Taking the pool's own parameter type keeps the helper honest instead of
