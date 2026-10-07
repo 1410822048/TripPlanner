@@ -3440,6 +3440,63 @@ describe('canWrite removal-quiesce (removingAt gate)', () => {
     )
   })
 
+  function removingWish(memberIds: string[]) {
+    return {
+      tripId: TRIP_ID, category: 'place', title: 'Race wish',
+      proposedBy: EDITOR_UID, updatedBy: EDITOR_UID, votes: [EDITOR_UID],
+      memberIds,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    }
+  }
+
+  test('editor can create a wish BEFORE removingAt is set (baseline)', async () => {
+    await assertSucceeds(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-baseline'),
+        removingWish([OWNER_UID, EDITOR_UID, VIEWER_UID])),
+    )
+  })
+
+  test('editor canNOT create a wish AFTER removingAt is set', async () => {
+    await markEditorRemoving()
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-race'),
+        removingWish([OWNER_UID, EDITOR_UID, VIEWER_UID])),
+    )
+  })
+
+  test('editor canNOT create a wish once stripped from the roster (member doc not yet deleted)', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await updateDoc(doc(ctx.firestore(), 'trips', TRIP_ID), { memberIds: [OWNER_UID, VIEWER_UID] })
+    })
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', 'w-stripped'),
+        removingWish([OWNER_UID, VIEWER_UID])),
+    )
+  })
+
+  test('editor canNOT vote on or edit their wish AFTER removingAt is set', async () => {
+    await markEditorRemoving()
+    await assertFails(
+      updateDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'wishes', WISH_ID), {
+        title: 'Edited while removing', updatedBy: EDITOR_UID, updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('editor canNOT enqueue a _purges doc AFTER removingAt is set', async () => {
+    await markEditorRemoving()
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, '_purges', 'p-race'), {
+        tripId:    TRIP_ID,
+        entityRef: `trips/${TRIP_ID}/expenses/exp-1`,
+        path:      `trips/${TRIP_ID}/expenses/exp-1/abc.webp`,
+        source:    'updateExpense/purge-old-receipt',
+        attempts:  0,
+        createdAt: serverTimestamp(),
+      }),
+    )
+  })
+
   test('removingAt gate is per-trip-member-doc: marker on EDITOR does not affect OWNER writes', async () => {
     await markEditorRemoving()
 

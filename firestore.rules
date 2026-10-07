@@ -763,7 +763,12 @@ service cloud.firestore {
         // can't grant themselves membership: if uid wasn't already in
         // trip.memberIds, no other doc would have them, and they'd be
         // blocked everywhere else.
-        allow create: if exists(memberPath(tripId))
+        // isActiveMember (not bare exists): a member being removed keeps
+        // their doc until the cascade finishes, and the Worker wish paths
+        // already refuse them. The memberIds check closes the window after
+        // the roster strip but before the member doc is deleted.
+        allow create: if isActiveMember(tripId)
+                      && uid() in request.resource.data.memberIds
                       && tripNotDeleting(tripId)
                       && wishVotingOpen(tripId)
                       // Allowlist closes the raw-SDK "stuff arbitrary extra
@@ -821,7 +826,7 @@ service cloud.firestore {
         //      prevents a malicious member from clearing or hijacking
         //      others' votes.
         allow update: if (
-          memberOfDoc() && wishVotingOpen(tripId) && (
+          memberOfDoc() && isActiveMember(tripId) && wishVotingOpen(tripId) && (
             // 1. Proposer path: edit any field EXCEPT ownership / identity.
             (
               resource.data.proposedBy == uid()
@@ -1193,7 +1198,7 @@ service cloud.firestore {
         // createdAt pinned to request.time so cron-side age-gating
         // is honest (a forged old timestamp could otherwise let an
         // attacker push their purge to the front of the queue).
-        allow create: if exists(memberPath(tripId))
+        allow create: if isActiveMember(tripId)
                       && request.resource.data.keys().hasOnly([
                            'tripId','entityRef','path','source','attempts','createdAt'
                          ])
