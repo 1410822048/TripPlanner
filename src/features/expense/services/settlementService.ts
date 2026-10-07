@@ -133,7 +133,8 @@ export interface OptimisticForeignPatch extends OptimisticPatchBase {
 
 /** Defensive cap — long trips with many splits accumulate settlement
  *  records over time. 200 covers a 14-day group trip with margin. */
-const LIST_LIMIT = 200
+export const SETTLEMENT_LIST_LIMIT = 200
+const LIST_LIMIT = SETTLEMENT_LIST_LIMIT
 
 function settlementFromDoc(d: QueryDocumentSnapshot): SettlementRecord {
   return firestoreDocFromSchema(SettlementDocSchema, d, 'settlementFromDoc')

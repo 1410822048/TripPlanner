@@ -47,9 +47,13 @@ export const TRIP_SUBCOLLECTIONS = [
 
 export class CascadeError extends Error {
   readonly status: number
-  constructor(status: number, message: string) {
+  /** Optional stable machine code echoed in the response body so the client
+   *  can show its own copy instead of this (English, log-oriented) message. */
+  readonly code: string | undefined
+  constructor(status: number, message: string, code?: string) {
     super(message)
     this.status = status
+    this.code = code
     this.name = 'CascadeError'
   }
 }

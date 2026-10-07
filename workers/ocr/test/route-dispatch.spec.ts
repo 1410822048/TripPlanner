@@ -264,6 +264,16 @@ describe('handleJsonRoute — precommit marking', () => {
 		expect(body.precommit).toBe(true)
 	})
 
+	it('echoes a CascadeError code so the client can map its own copy', async () => {
+		const res = await handleJsonRoute({
+			...baseArgs,
+			handle: async () => { throw new CascadeError(409, 'stale', 'SETTLEMENT_STALE') },
+		})
+		expect(res.status).toBe(409)
+		const body = await res.json() as { error: string; code?: string }
+		expect(body).toEqual({ error: 'stale', code: 'SETTLEMENT_STALE' })
+	})
+
 	it('does NOT stamp precommit on a CascadeError without the flag (cascade endpoint may be mid-write)', async () => {
 		const res = await handleJsonRoute({
 			...baseArgs,

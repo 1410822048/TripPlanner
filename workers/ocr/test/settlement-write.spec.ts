@@ -869,6 +869,8 @@ describe('settlementCreate endpoint', () => {
 
 		await expect(settlementCreate(TO_UID, baseCreatePayload(), '{}'))
 			.rejects.toThrowError(/settlement suggestion is stale/i)
+		await expect(settlementCreate(TO_UID, baseCreatePayload(), '{}'))
+			.rejects.toMatchObject({ status: 409, code: 'SETTLEMENT_STALE' })
 	})
 
 	it('writes the full remaining debt when the stale guard matches current remaining', async () => {
@@ -897,8 +899,11 @@ describe('settlementCreate endpoint', () => {
 		txQueryResponses.set(`trips/${TRIP_ID}|expenses`,    [])
 		txQueryResponses.set(`trips/${TRIP_ID}|settlements`, [])
 
-		await expect(settlementCreate(TO_UID, baseCreatePayload(), '{}'))
-			.rejects.toThrow(/no remaining debt/i)
+		const err = await settlementCreate(TO_UID, baseCreatePayload(), '{}').then(() => new Error('resolved'), (e: unknown) => e as Error)
+		expect(err.message).toMatch(/no remaining debt/i)
+		// The message reaches the client verbatim — it must not carry uids.
+		expect(err.message).not.toContain(FROM_UID)
+		expect(err.message).not.toContain(TO_UID)
 	})
 
 	it('rejects fromUid === toUid pre-tx (self-settlement guard)', async () => {
@@ -1392,7 +1397,7 @@ describe('read-cap truncation fail-closed (P2 fix)', () => {
 		seedLock(FROM_UID, TO_UID)
 	}
 
-	it('expense read returning limit+1 (501) → CascadeError 503', async () => {
+	it('expense read returning limit+1 (501) → CascadeError 409 PAIR_LEDGER_TOO_LARGE', async () => {
 		setupAuthz()
 		// 501 expenses: each pays a tiny amount, decoder doesn't care
 		// about the math -- the truncation guard fires before pair compute.
@@ -1409,9 +1414,11 @@ describe('read-cap truncation fail-closed (P2 fix)', () => {
 			.rejects.toBeInstanceOf(CascadeError)
 		await expect(settlementCreate(TO_UID, baseCreatePayload(), '{}'))
 			.rejects.toThrow(/too many expenses for this pair/i)
+		await expect(settlementCreate(TO_UID, baseCreatePayload(), '{}'))
+			.rejects.toMatchObject({ status: 409, code: 'PAIR_LEDGER_TOO_LARGE' })
 	})
 
-	it('settlement read returning limit+1 (201) → CascadeError 503', async () => {
+	it('settlement read returning limit+1 (201) → CascadeError 409 PAIR_LEDGER_TOO_LARGE', async () => {
 		setupAuthz()
 		txQueryResponses.set(`trips/${TRIP_ID}|expenses`, [])
 		const tooMany = Array.from({ length: 201 }, (_, i) => settlementReadDoc({

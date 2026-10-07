@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { userErrorMessage } from './errorMessage'
+import { WorkerRejected } from '@/services/workerBase'
 
 function firebaseError(code: string, message: string) {
   return Object.assign(new Error(message), { name: 'FirebaseError', code })
@@ -22,5 +23,21 @@ describe('userErrorMessage', () => {
     expect(userErrorMessage(new Error('結束日期不可早於開始日期'), 'x')).toBe('結束日期不可早於開始日期')
     expect(userErrorMessage('boom', '儲存失敗')).toBe('儲存失敗')
     expect(userErrorMessage(firebaseError('auth/some-new-code', 'Firebase: raw'), 'x')).toBe('Firebase: raw')
+  })
+
+  it('never shows a Worker rejection\'s English log text', () => {
+    expect(userErrorMessage(new WorkerRejected(409, 'settlement suggestion is stale; refresh balances and retry', 'SETTLEMENT_STALE'), 'x'))
+      .toBe('欠款金額已有變動，請重新開啟清算後再試')
+    expect(userErrorMessage(new WorkerRejected(409, 'too many expenses for this pair to compute remaining safely', 'PAIR_LEDGER_TOO_LARGE'), 'x'))
+      .toContain('上限')
+    expect(userErrorMessage(new WorkerRejected(400, 'fromUid: no remaining debt from uid-a to uid-b', undefined, 'fromUid'), 'x'))
+      .toBe('這筆欠款已經結清，請重新整理後確認')
+    expect(userErrorMessage(new WorkerRejected(403, 'caller is not a trip member'), 'x')).toBe('你沒有這項操作的權限')
+    expect(userErrorMessage(new WorkerRejected(502, 'upstream', 'SOMETHING_NEW'), 'x')).toBe('伺服器暫時無法處理，請稍後再試')
+  })
+
+  it('keeps a Worker message that is already written in Chinese', () => {
+    expect(userErrorMessage(new WorkerRejected(409, '附件仍被使用，請先透過原項目的編輯流程移除或替換附件'), 'x'))
+      .toBe('附件仍被使用，請先透過原項目的編輯流程移除或替換附件')
   })
 })

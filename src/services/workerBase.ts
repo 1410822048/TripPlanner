@@ -241,7 +241,7 @@ async function readWorkerResponse(res: Response, endpoint: string): Promise<unkn
   // 5xx / unknown -- ambiguous BY DEFAULT (the Worker may have committed
   // before the response was lost). EXCEPTION: a JSON body with
   // `precommit: true` is the Worker explicitly stating the failure was
-  // thrown BEFORE any Firestore write (FX provider 502, read-cap 503 in a
+  // thrown BEFORE any Firestore write (FX provider 502, trip.currency 500 in a
   // single-tx endpoint). That's definitively safe to roll back, so surface
   // it as WorkerRejected instead of leaving a phantom optimistic row +
   // misleading "still confirming" toast.

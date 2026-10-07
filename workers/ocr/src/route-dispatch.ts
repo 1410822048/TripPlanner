@@ -230,9 +230,11 @@ export async function handleJsonRoute<TData, TResult>(args: {
       // the commit had not run, so it cannot go stale. The route flag stays
       // for CascadeErrors thrown BEFORE the transaction opens (plain-GET
       // prechecks), which the wrapper never sees.
-      const body = (args.cascadePrecommit || isPrecommitError(e))
-        ? { error: e.message, precommit: true }
-        : { error: e.message }
+      const body = {
+        error: e.message,
+        ...(e.code !== undefined ? { code: e.code } : {}),
+        ...(args.cascadePrecommit || isPrecommitError(e) ? { precommit: true } : {}),
+      }
       return json(body, e.status, args.cors)
     }
     // Everything above is a shape we anticipated. Reaching here means we

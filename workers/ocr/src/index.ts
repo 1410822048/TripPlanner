@@ -560,7 +560,7 @@ export const ROUTES: RouteDescriptor[] = [
         validationErrorCatcher(SettlementValidationError),
         fxErrorCatcher(),
       ),
-      // Whole body runs in one tx → every CascadeError (read-cap 503,
+      // Whole body runs in one tx → every CascadeError (read-cap 409,
       // trip.currency 500) is pre-commit; stamp precommit so the client
       // rolls back instead of keeping a phantom settlement on a 5xx.
       cascadePrecommit: true,

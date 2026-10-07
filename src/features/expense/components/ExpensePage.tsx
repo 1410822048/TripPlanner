@@ -7,6 +7,8 @@ import {
 import { useOverlayPendingRowIds } from '@/hooks/listOverlay'
 import { useSettlements, useCreateSettlement, useDeleteSettlement } from '../hooks/useSettlements'
 import { expandWithGhosts, orderMembersLikeExpense } from '../services/settlement'
+import { EXPENSE_LIST_LIMIT } from '../services/expenseService'
+import { SETTLEMENT_LIST_LIMIT } from '../services/settlementService'
 import { useMembers } from '@/features/members/hooks/useMembers'
 import { membersToTripMembers } from '@/features/members/utils'
 import { useFeatureListPage } from '@/hooks/useFeatureListPage'
@@ -43,6 +45,8 @@ type ExpenseOverlay =
   | null
 
 const LEDGER_UNAVAILABLE_MESSAGE = '帳務資料尚未完整載入，暫時無法清算或修改費用。'
+const EXPENSE_CAP_MESSAGE = `這趟旅程的費用紀錄（含已刪除）已達 ${EXPENSE_LIST_LIMIT} 筆上限，無法再新增。`
+const SETTLEMENT_CAP_MESSAGE = `這趟旅程的清算紀錄已達 ${SETTLEMENT_LIST_LIMIT} 筆上限，無法再新增。`
 
 export default function ExpensePage() {
   // `isOwner` is pure identity here on purpose: it drives the settlement-lock
@@ -236,6 +240,14 @@ export default function ExpensePage() {
       toast.error('只有擁有者可以編輯已清算的費用')
       return
     }
+    // The ledger listener reads at most EXPENSE_LIST_LIMIT docs (tombstones
+    // included, the orphan classifier needs them) and refuses to compute a
+    // partial balance past it — one more create would lock the whole page
+    // for every member, with no way back. Refuse it here instead.
+    if (!editing && allExpenses.length >= EXPENSE_LIST_LIMIT) {
+      modal.setError(EXPENSE_CAP_MESSAGE)
+      return
+    }
     modal.close()
     if (editing) {
       updateMut.mutate({
@@ -276,6 +288,9 @@ export default function ExpensePage() {
     if (!ledgerReady) { toast.error(LEDGER_UNAVAILABLE_MESSAGE); return }
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) { toast.error(writeBlockReason); return }
+    // Same reasoning as the expense cap: an active settlement past the
+    // listener's limit would make the ledger unreadable for everyone.
+    if (settlements.length >= SETTLEMENT_LIST_LIMIT) { toast.error(SETTLEMENT_CAP_MESSAGE); return }
     // Mint settlementId here (not inside the service) so the optimistic
     // cache row, the Worker request, and the Firestore doc all share
     // one id. Memory: [[settlement-id-hoist-load-bearing]] — any future

@@ -571,6 +571,7 @@ async function doUpdate(
       throw new CascadeError(
         409,
         `expense is recorded in ${storedCurrency} but the trip currency is ${ctx.currency}`,
+        'LEDGER_CURRENCY_MISMATCH',
       )
     }
 

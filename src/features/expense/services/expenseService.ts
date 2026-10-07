@@ -40,7 +40,8 @@ export { WorkerRejected, WorkerAmbiguous }
  * becomes real we'd add a separate active-only listener for the UI
  * list and keep the unfiltered one scoped to SettlementSummary.
  */
-const LIST_LIMIT = 500
+export const EXPENSE_LIST_LIMIT = 500
+const LIST_LIMIT = EXPENSE_LIST_LIMIT
 
 function expenseFromDoc(d: QueryDocumentSnapshot): Expense {
   return firestoreDocFromSchema(ExpenseDocSchema, d, 'expenseFromDoc')

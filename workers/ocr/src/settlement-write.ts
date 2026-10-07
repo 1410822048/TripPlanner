@@ -612,16 +612,17 @@ async function doCreate(
     const settlementReads = [...settlementFwd, ...settlementRev]
 
     // Fail-closed on truncation. See EXPENSE_READ_LIMIT comment for the
-    // overpay scenario this prevents. 503 rather than 400 because retry
-    // is the right semantics -- a pathological pair (500+ expenses paid
-    // by the same two people) may be transient (mid-bulk-import). Check
-    // the RAW read length (pre soft-delete filter) so truncation can't
-    // hide behind in-memory dropping.
+    // overpay scenario this prevents. 409, not 503: soft-deleted expenses
+    // are never pruned, so a pair past the cap stays past it — telling the
+    // user to "retry later" would be a promise nothing keeps. The stable
+    // code lets the client explain the limit instead. Check the RAW read
+    // length (pre soft-delete filter) so truncation can't hide behind
+    // in-memory dropping.
     if (expenseReads.length > EXPENSE_READ_LIMIT) {
-      throw new CascadeError(503, 'too many expenses for this pair to compute remaining safely (retry later)')
+      throw new CascadeError(409, 'too many expenses for this pair to compute remaining safely', 'PAIR_LEDGER_TOO_LARGE')
     }
     if (settlementReads.length > SETTLEMENT_READ_LIMIT) {
-      throw new CascadeError(503, 'too many settlements for this pair to compute remaining safely (retry later)')
+      throw new CascadeError(409, 'too many settlements for this pair to compute remaining safely', 'PAIR_LEDGER_TOO_LARGE')
     }
 
     // Drop soft-deleted expenses in-memory (the query no longer filters
@@ -642,6 +643,7 @@ async function doCreate(
       throw new CascadeError(
         409,
         `pair ledger contains an expense recorded in ${readString(foreignDenominated.fields, 'currency')} but the trip currency is ${ctx.currency}`,
+        'LEDGER_CURRENCY_MISMATCH',
       )
     }
     const pairExpenses = activeExpenseReads.map(decodePairExpenseForSettlement)
@@ -665,7 +667,8 @@ async function doCreate(
     if (remaining <= SETTLEMENT_EPS) {
       throw new SettlementValidationError(
         'fromUid',
-        `no remaining debt from ${req.fromUid} to ${req.toUid} (it may have been settled already)`,
+        // No uids in the text: this message reaches the client verbatim.
+        'no remaining debt for this pair (it may have been settled already)',
       )
     }
 
@@ -679,7 +682,7 @@ async function doCreate(
     // → sourceAmountMinor=3335 forwards to 5002 < 5003; settlement still
     // writes amountMinor=5003 to clear the debt fully).
     if (Math.abs(remaining - req.expectedRemainingMinor) > SETTLEMENT_EPS) {
-      throw new CascadeError(409, 'settlement suggestion is stale; refresh balances and retry')
+      throw new CascadeError(409, 'settlement suggestion is stale; refresh balances and retry', 'SETTLEMENT_STALE')
     }
 
     const canonicalAmountMinor: number = remaining
