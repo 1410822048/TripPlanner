@@ -38,17 +38,16 @@ import NotificationSettings from './NotificationSettings'
 import AccountPageSkeleton from './AccountPageSkeleton'
 import { StackedEmojiPreview, StackedImagePreview, StackedAvatarPreview } from './StackedPreviews'
 import { useAuth } from '@/hooks/useAuth'
-import { useAllTripMembers } from '@/features/members/hooks/useAllTripMembers'
+import { useCollaboratorSummary } from '@/features/members/hooks/useCollaboratorSummary'
+import { useMyTrips } from '@/features/trips/hooks/useTrips'
 import { useMyHotelBookings } from '@/features/bookings/hooks/useBookings'
 import { useThreeHotelThumbUrls } from '../hooks/useThreeHotelThumbUrls'
-import { memberToTripMember } from '@/features/members/utils'
 import { useTripStore } from '@/store/tripStore'
 import { toast } from '@/shared/toast'
 import { captureError } from '@/services/sentry'
 import { daysBetween } from '@/utils/dates'
 import { revokeStoredPushToken } from '../services/pushTokenService'
 import { writePushOwnerUid } from '../services/pushOwnerStore'
-import type { TripMember } from '@/features/trips/types'
 import type { Trip } from '@/types'
 import { userErrorMessage } from '@/utils/errorMessage'
 
@@ -116,7 +115,8 @@ export default function AccountPage() {
   const navigate = useNavigate()
 
   const uid = state.status === 'signed-in' ? state.user.uid : undefined
-  const { trips, tripIds, memberResults } = useAllTripMembers(uid)
+  const { data: trips } = useMyTrips(uid)
+  const tripIds = trips?.map(trip => trip.id)
   const { data: hotelBookings } = useMyHotelBookings(uid)
 
   // Plain derivations — React Compiler auto-memoises based on inferred
@@ -128,17 +128,7 @@ export default function AccountPage() {
   // Resolve up to 3 private hotel-thumb paths to blob URLs via the Worker.
   const lodgingThumbs = useThreeHotelThumbUrls(hotelBookings)
 
-  const collabSeen  = new Set<string>()
-  const collaboratorChips: TripMember[] = []
-  let   collaboratorCount = 0
-  for (const r of memberResults) {
-    for (const m of r.data ?? []) {
-      if (m.userId === uid || collabSeen.has(m.userId)) continue
-      collabSeen.add(m.userId)
-      collaboratorCount++
-      if (collaboratorChips.length < 3) collaboratorChips.push(memberToTripMember(m))
-    }
-  }
+  const { count: collaboratorCount, chips: collaboratorChips } = useCollaboratorSummary(uid, trips)
 
   const [signingIn,  setSigningIn]  = useState(false)
   const [signingOut, setSigningOut] = useState(false)
