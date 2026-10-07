@@ -127,6 +127,9 @@ export default defineConfig({
       : []),
     VitePWA({
       strategies: 'injectManifest',
+      // Manifest icons are fetched by the OS installer, not by the app shell;
+      // precaching them made every install download ~400 KB of PNGs twice.
+      includeManifestIcons: false,
       srcDir:    'src',
       filename:  'sw.ts',
       // `prompt` keeps the new SW in "waiting" state until the user clicks
@@ -211,6 +214,8 @@ export default defineConfig({
           '**/vendor-sentry-*.js',
           '**/vendor-firebase-*.js',
           '**/jsQR-*.js',
+          // Install-time icons (see includeManifestIcons above).
+          '**/pwa-*.png',
           // pdf.js is only needed for PDF upload validation / preview. Its
           // ~124 KB gz runtime must not compete with the app shell during a
           // fresh PWA install; src/sw.ts caches it after first use instead.
@@ -295,6 +300,11 @@ export default defineConfig({
                 || /node_modules[\\/]firebase[\\/]app(?:[\\/]|$)/.test(id))
                 return 'vendor-firebase-core'
               if (/node_modules[\\/]@firebase[\\/]webchannel-wrapper[\\/]/.test(id))
+                return 'vendor-firebase-firestore'
+              // Firestore's only static consumer of re2js; left ungrouped it
+              // became a shared chunk outside the vendor-firebase-* precache
+              // exclusion and every first visitor downloaded it.
+              if (/node_modules[\\/]re2js[\\/]/.test(id))
                 return 'vendor-firebase-firestore'
               if (/node_modules[\\/]@firebase[\\/]installations[\\/]/.test(id))
                 return 'vendor-firebase-messaging'

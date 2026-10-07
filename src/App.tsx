@@ -12,7 +12,7 @@ import ErrorBoundary from '@/components/ErrorBoundary'
 import Splash from '@/components/Splash'
 import Toaster from '@/shared/Toaster'
 import PerfStrip from '@/components/ui/PerfStrip'
-import { hasShareParams } from '@/features/bookings/linkDraft'
+import { hasShareParams } from '@/features/bookings/shareParams'
 import { PwaUpdateProvider } from '@/components/PwaUpdateProvider'
 import AppCompatibilityGate from '@/components/AppCompatibilityGate'
 

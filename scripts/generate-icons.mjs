@@ -21,6 +21,8 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT      = resolve(__dirname, '..')
 const SOURCE    = resolve(ROOT, 'assets/tripplanner.png')
+// Lossless max compression. No palette: quantising would change pixels.
+const PNG_OPTIONS = { compressionLevel: 9, adaptiveFiltering: true, palette: false }
 const OUT_DIR   = resolve(ROOT, 'public')
 
 if (!existsSync(SOURCE)) {
@@ -48,10 +50,10 @@ async function emit(size, name, opts = {}) {
       create: { width: size, height: size, channels: 4, background: MASKABLE_BG },
     })
       .composite([{ input: resized, top: padPx, left: padPx }])
-      .png()
+      .png(PNG_OPTIONS)
       .toFile(out)
   } else {
-    await sharp(SOURCE).resize(size, size, { fit: 'contain' }).png().toFile(out)
+    await sharp(SOURCE).resize(size, size, { fit: 'contain' }).png(PNG_OPTIONS).toFile(out)
   }
   console.log(`  ✓ ${name}  (${size}×${size})`)
 }

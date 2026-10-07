@@ -59,10 +59,7 @@ export function sharedBookingUrl(url: string | null | undefined, text: string | 
   return cleanSharedUrl(url) || firstUrlInText(text)
 }
 
-export function hasShareParams(search: string): boolean {
-  const params = new URLSearchParams(search)
-  return params.has('url') || params.has('text') || params.has('title')
-}
+export { hasShareParams } from './shareParams'
 
 export function deriveBookingLinkDraft(input: {
   link:   string
