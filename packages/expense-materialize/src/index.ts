@@ -32,7 +32,7 @@
 //   in practice. UI may gain an explicit signed `direction` field in a
 //   later phase if that default is wrong often enough.
 
-import { convertMinorHalfEven, allocateRoundingResidual } from '@tripmate/fx-core'
+import { convertMinorHalfEven } from '@tripmate/fx-core'
 
 // ─── Public types ─────────────────────────────────────────────────
 
@@ -675,7 +675,7 @@ export interface ConvertAndMaterializeFromSourceResult {
  *      independently via `convertMinorHalfEven`.
  *   4. Compute signedAdjustmentSumTrip = Σ sign(kind) × tripAdjMinor.
  *   5. expectedItemSum = tripAmountMinor - signedAdjustmentSumTrip;
- *      reconcile per-line items via `allocateRoundingResidual` so
+ *      reconcile per-line items via a largest-effective-line residual so
  *      Σ tripItems === expectedItemSum (residual lands on largest item).
  *   6. Run `materializeExpenseSplits` over the trip-currency
  *      items+adjustments+members to derive splits.
@@ -774,14 +774,33 @@ export function convertSourceLinesToTarget(
   // Step 5: reconcile per-item sum. We need
   //   Σ tripItems + signedTripAdjSum === tripAmountMinor
   // so the expected per-item sum is `tripAmountMinor - signedTripAdjSum`.
-  // `allocateRoundingResidual` puts the drift on the LARGEST line —
-  // tie-broken by first index — which keeps relative distortion minimal
-  // and is deterministic for client/Worker parity.
+  // The drift goes to the item with the largest EFFECTIVE amount — its
+  // converted value after its own ITEM-scope adjustments — tie-broken by
+  // first index (deterministic for client/Worker parity). Picking the
+  // largest RAW line instead (allocateRoundingResidual) broke receipts whose
+  // largest line is fully discounted (BOGO / free-item coupon): e.g. a
+  // ¥1,980 set with a ¥1,980 ITEM coupon converts to 1326¢ vs 1327¢ after
+  // the residual lands on the set, and the materializer then rejects it as
+  // OVER_DISCOUNT_ITEM — ~14% of such receipts across common rates.
   const expectedItemSum = tripAmountMinor - signedTripAdjSum
-  const tripItemMinor   = allocateRoundingResidual({
-    lines:       tripItemRaw,
-    targetTotal: expectedItemSum,
+  const effective = tripItemRaw.slice()
+  sourceAdjustments.forEach((adj, i) => {
+    if (adj.scope !== 'ITEM' || adj.targetItemId === undefined) return
+    const target = sourceItems.findIndex(item => item.id === adj.targetItemId)
+    if (target >= 0) effective[target] = effective[target]! + adjustmentSign(adj.kind) * tripAdjMinor[i]!
   })
+  const tripItemMinor = tripItemRaw.slice()
+  if (tripItemMinor.length > 0) {
+    let residual = expectedItemSum
+    for (const v of tripItemRaw) residual -= v
+    let target = 0
+    for (let i = 1; i < effective.length; i++) {
+      if (effective[i]! > effective[target]!) target = i
+    }
+    tripItemMinor[target] = tripItemMinor[target]! + residual
+  } else if (expectedItemSum !== 0) {
+    throw new Error(`expense-materialize: cannot allocate residual ${expectedItemSum} to empty lines`)
+  }
 
   // Step 6: build trip-currency materializer inputs and delegate to
   // the canonical split gate. The materializer rejects any item that

@@ -1103,3 +1103,27 @@ describe('reconcileReceipt', () => {
     })).toThrow(MaterializeError)
   })
 })
+
+describe('convertAndMaterializeFromSource — fully discounted largest line', () => {
+  it('saves a JPY receipt whose largest line is fully covered by an ITEM coupon (USD trip)', () => {
+    // ¥1,980 set + ¥1,980 ITEM coupon, two ¥480 drinks, total ¥960 at 0.0067.
+    // The residual used to land on the set (1326¢) below its coupon (1327¢)
+    // and the materializer rejected the receipt as OVER_DISCOUNT_ITEM.
+    const result = convertAndMaterializeFromSource({
+      sourceItems: [
+        { id: 'set',    amountMinor: 1980, allocations: [{ memberId: 'A', shares: 1 }] },
+        { id: 'drink1', amountMinor: 480,  allocations: [{ memberId: 'A', shares: 1 }] },
+        { id: 'drink2', amountMinor: 480,  allocations: [{ memberId: 'B', shares: 1 }] },
+      ],
+      sourceAdjustments: [{ id: 'c', kind: 'COUPON', scope: 'ITEM', amountMinor: 1980, targetItemId: 'set' }],
+      sourceAmountMinor: 960,
+      rateDecimal: '0.0067',
+      sourceFractionDigits: 0,
+      targetFractionDigits: 2,
+      members: ['A', 'B'],
+    } as Parameters<typeof convertAndMaterializeFromSource>[0])
+    const sum = result.splits.reduce((s, x) => s + x.amountMinor, 0)
+    expect(sum).toBe(result.amountMinor)
+    expect(result.splits.every(x => x.amountMinor >= 0)).toBe(true)
+  })
+})
