@@ -501,6 +501,41 @@ describe('orphan reason classification (phase-2)', () => {
     expect(orphans.map(o => o.reason)).toEqual(['EXPENSE_DELETED'])
   })
 
+  it('lineage: the orphan lands on the settlement whose source was deleted, not the newest one', () => {
+    // e1: m2 owes m1 100 → s1 (100, sources [e1]); e2: m2 owes m1 50 →
+    // s2 (50, sources [e2]); then e1 is deleted. The pair over-covers by
+    // 100, and all of it belongs to s1 — chronology alone used to split it
+    // 50/50 and point the user at s2, whose expense is still there.
+    const e1 = { ...mkExpense('m1', 200, [['m1', 100], ['m2', 100]], '_e1'), id: 'e1', createdAt: tsAt(1000), deletedAt: tsAt(5000), updatedAt: tsAt(5000) }
+    const e2 = { ...mkExpense('m1', 100, [['m1', 50], ['m2', 50]], '_e2'), id: 'e2', createdAt: tsAt(3000) }
+    const s1: SettlementRecord = {
+      ...mkSettlement('m2', 'm1', 100, '_1'), createdAt: tsAt(2000),
+      appliedExpenseIds: ['e1'], appliedSources: [{ expenseId: 'e1', expenseTitle: 't', amountMinor: 100 }],
+    }
+    const s2: SettlementRecord = {
+      ...mkSettlement('m2', 'm1', 50, '_2'), createdAt: tsAt(4000),
+      appliedExpenseIds: ['e2'], appliedSources: [{ expenseId: 'e2', expenseTitle: 't', amountMinor: 50 }],
+    }
+    const { orphans, balances } = computeBalancesFull([e1, e2], MEMBERS, [s1, s2])
+    expect(orphans).toEqual([
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 100, settlementId: s1.id, reason: 'EXPENSE_DELETED' },
+    ])
+    // Attribution never moves money: everyone is square.
+    expect(balances.every(b => b.net === 0)).toBe(true)
+  })
+
+  it('lineage: two settlements sharing one source expense are not both treated as backed', () => {
+    // e1 (m2 owes m1 100) cleared in two halves, then reduced to 60:
+    // 40 of lineage is lost, and the later half is the one that ran past
+    // what is left of e1.
+    const e1 = { ...mkExpense('m1', 120, [['m1', 60], ['m2', 60]], '_e1'), id: 'e1', createdAt: tsAt(1000), updatedAt: tsAt(5000) }
+    const src = (amountMinor: number) => [{ expenseId: 'e1', expenseTitle: 't', amountMinor }]
+    const s1: SettlementRecord = { ...mkSettlement('m2', 'm1', 50, '_1'), createdAt: tsAt(2000), appliedExpenseIds: ['e1'], appliedSources: src(50) }
+    const s2: SettlementRecord = { ...mkSettlement('m2', 'm1', 50, '_2'), createdAt: tsAt(3000), appliedExpenseIds: ['e1'], appliedSources: src(50) }
+    const { orphans } = computeBalancesFull([e1], MEMBERS, [s1, s2])
+    expect(orphans.map(o => [o.settlementId, o.amountMinor])).toEqual([[s2.id, 40]])
+  })
+
   it('OVERPAYMENT distinguished from EXPENSE_DELETED when expense existed at recording', () => {
     // m2 owed m1 30 (expense gross=30). Settlement of 50 recorded while
     // the expense was still alive — classifier sees gross>0 + over →

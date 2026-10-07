@@ -275,6 +275,70 @@ function isSettlementSafe(s: SettlementRecord): boolean {
   return true
 }
 
+// ─── Orphan attribution by lineage ──────────────────────────────────
+
+/** How much of one settlement's recorded lineage is no longer backed by
+ *  a live expense. Sources draw on each expense's CURRENT contribution to
+ *  the pair (`from`'s split in an expense paid by `to`), shared out in
+ *  chronological order, so two settlements that cleared the same expense
+ *  are not both counted as backed by it. Settlements without lineage
+ *  (legacy) or with a truncated source list only report what they name. */
+function lineageShortfalls(
+  pairSettlements: SettlementRecord[],
+  activeExpenses:  Expense[],
+): Map<string, number> {
+  const from = pairSettlements[0]!.fromUid
+  const to   = pairSettlements[0]!.toUid
+  const capacity = new Map<string, number>()
+  for (const e of activeExpenses) {
+    if (e.paidBy !== to) continue
+    const share = e.splits.reduce((sum, sp) => sp.memberId === from ? sum + sp.amountMinor : sum, 0)
+    if (share > 0) capacity.set(e.id, share)
+  }
+  const out = new Map<string, number>()
+  for (const st of pairSettlements) {
+    let lost = 0
+    for (const src of st.appliedSources ?? []) {
+      const available = capacity.get(src.expenseId) ?? 0
+      const taken = Math.min(src.amountMinor, available)
+      capacity.set(src.expenseId, available - taken)
+      lost += src.amountMinor - taken
+    }
+    out.set(st.id, Math.min(lost, st.amountMinor))
+  }
+  return out
+}
+
+/** Split a pair's total leftover across its settlements: first to the ones
+ *  whose own sources disappeared (oldest first, each up to its shortfall),
+ *  then — for leftover lineage can't explain, e.g. legacy records or a
+ *  genuine overpayment — newest first, which is what the old chronological
+ *  cap produced. Σ result === leftover, and no settlement is charged more
+ *  than its own amount. */
+function attributeLeftover(
+  chronological:  SettlementRecord[],
+  leftover:       number,
+  activeExpenses: Expense[],
+): Array<{ settlement: SettlementRecord; amountMinor: number }> {
+  const shortfall = lineageShortfalls(chronological, activeExpenses)
+  const charged = new Map<string, number>()
+  let rest = leftover
+  for (const st of chronological) {
+    if (rest <= 0) break
+    const take = Math.min(rest, shortfall.get(st.id) ?? 0)
+    if (take > 0) { charged.set(st.id, take); rest -= take }
+  }
+  for (let i = chronological.length - 1; i >= 0 && rest > 0; i--) {
+    const st = chronological[i]!
+    const already = charged.get(st.id) ?? 0
+    const take = Math.min(rest, st.amountMinor - already)
+    if (take > 0) { charged.set(st.id, already + take); rest -= take }
+  }
+  return chronological
+    .filter(st => (charged.get(st.id) ?? 0) > 0)
+    .map(st => ({ settlement: st, amountMinor: charged.get(st.id)! }))
+}
+
 // ─── Debt-edge model: 主算法 ───────────────────────────────────────
 
 /**
@@ -394,6 +458,14 @@ export function computeBalancesFull(
   const applied: Record<string, Record<string, number>> = {}
   const orphans: OrphanSettlement[] = []
 
+  // The pair's TOTAL leftover does not depend on order (applied is
+  // min(Σ settlements, gross) however it is folded), so the fold below only
+  // fixes how much each pair over-covers. WHICH settlement carries that
+  // leftover is decided by lineage (attributeLeftover): the settlement whose
+  // recorded sources were deleted or reduced is the one to point at — not
+  // simply the newest one, which may still be fully backed by live expenses.
+  const leftoverByPair = new Map<string, number>()
+  const pairSettlements = new Map<string, SettlementRecord[]>()
   for (const st of sortedSettlements) {
     if (st.fromUid === st.toUid) continue
     ensure(st.fromUid); ensure(st.toUid)
@@ -402,21 +474,32 @@ export function computeBalancesFull(
     const already = appliedSlot[st.toUid] ?? 0
     const usable = Math.min(st.amountMinor, Math.max(0, debt - already))
     appliedSlot[st.toUid] = already + usable
-    const leftover = st.amountMinor - usable
-    if (leftover > SETTLEMENT_EPS) {
+    const key = `${st.fromUid}\u0000${st.toUid}`
+    leftoverByPair.set(key, (leftoverByPair.get(key) ?? 0) + (st.amountMinor - usable))
+    const list = pairSettlements.get(key)
+    if (list) list.push(st)
+    else pairSettlements.set(key, [st])
+  }
+
+  for (const [key, list] of pairSettlements) {
+    const leftover = leftoverByPair.get(key) ?? 0
+    if (leftover <= SETTLEMENT_EPS) continue
+    for (const { settlement: st, amountMinor } of attributeLeftover(list, leftover, activeExpenses)) {
+      if (amountMinor <= SETTLEMENT_EPS) continue
       // Per-settlement entry instead of per-pair sum so UI can target
-      // the exact unmatched record for one-tap delete. Multiple entries
-      // can share a (fromUserId, toUserId) pair if several settlements
-      // on that pair have leftover.
+      // the exact unmatched record for one-tap delete.
       orphans.push({
         fromUserId:   st.fromUid,
         toUserId:     st.toUid,
-        amountMinor:  leftover,
+        amountMinor,
         settlementId: st.id,
-        reason:       classifyOrphan(replayById.get(st.id), leftover),
+        reason:       classifyOrphan(replayById.get(st.id), amountMinor),
       })
     }
   }
+  // Stable output order: chronological, as before.
+  const chronoIndex = new Map(sortedSettlements.map((st, i) => [st.id, i]))
+  orphans.sort((a, b) => (chronoIndex.get(a.settlementId) ?? 0) - (chronoIndex.get(b.settlementId) ?? 0))
 
   // Steps 3-4 (remaining + normalize) delegate to @tripmate/settlement-
   // core so this file and the Worker's create-gate share one canonical
