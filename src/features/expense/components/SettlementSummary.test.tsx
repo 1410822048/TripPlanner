@@ -71,6 +71,20 @@ describe('SettlementSummary — receiver-only record gate', () => {
     expect(screen.getByRole('button', RECORD_BTN)).toBeTruthy()
   })
 
+  it('lets the trip owner record for a payee who has LEFT the trip', () => {
+    // A (payee u1) left; owner u3 is signed in. Nobody else can ever
+    // confirm A's receipt, so the owner gets a 代記 button.
+    const C: TripMember = { id: 'u3', displayName: 'Carol', avatarLabel: 'C', color: '#000', bg: '#fff' }
+    render(<SettlementSummary {...base({ members: [B, C], uid: 'u3', canRecordForDeparted: true, formerMemberNames: { u1: 'Alice' } })} />)
+    expect(screen.getByRole('button', { name: /代 .*記錄已收到/ })).toBeTruthy()
+  })
+
+  it('a non-owner gets no 代記 button for a departed payee', () => {
+    const C: TripMember = { id: 'u3', displayName: 'Carol', avatarLabel: 'C', color: '#000', bg: '#fff' }
+    render(<SettlementSummary {...base({ members: [B, C], uid: 'u3', formerMemberNames: { u1: 'Alice' } })} />)
+    expect(screen.queryByRole('button', { name: /記錄已收到/ })).toBeNull()
+  })
+
   it('withholds the button from a PAYEE who has been removed', () => {
     // u1 is the payee AND the signed-in user AND no longer on the roster —
     // the window between removal and the listener catching up. uid still

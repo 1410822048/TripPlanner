@@ -45,11 +45,15 @@ interface Props {
   /** Removes a previously recorded settlement. Used to clean up
    *  orphans whose expense was deleted, or to undo a premature「済み」. */
   onDeleteSettlement: (id: string) => void
+  /** Trip owner: may record the receipt for a receiver who has LEFT the
+   *  trip (nobody else can confirm it any more). The Worker enforces it
+   *  and marks the row `recordedOnBehalfOf`. */
+  canRecordForDeparted?: boolean
 }
 
 export default function SettlementSummary({
   expenses, members, settlements, formerMemberNames, currency, uid, canDeleteAnySettlement,
-  onRecordSettlement, onDeleteSettlement,
+  canRecordForDeparted = false, onRecordSettlement, onDeleteSettlement,
 }: Props) {
   // computeBalancesFull also returns `participants` (members + ghosts
   // for kicked-out uids still in expenses/settlements). Reusing that
@@ -179,7 +183,8 @@ export default function SettlementSummary({
                 // would be offering an action the Worker refuses. (In the
                 // window BEFORE that listener lands you are not a ghost
                 // yet, and the Worker is what turns it down.)
-                const canRecord = uid != null && uid === s.toId && !to.isGhost
+                const recordForDeparted = canRecordForDeparted && to.isGhost === true && uid !== s.fromId
+                const canRecord = (uid != null && uid === s.toId && !to.isGhost) || recordForDeparted
                 const isPayer   = uid != null && uid === s.fromId
                 // settledContext (應清算 / 已清算 / 還差) is computed in the
                 // settlement domain — the UI just renders it when present.
@@ -210,11 +215,13 @@ export default function SettlementSummary({
                           toUid:       s.toId,
                           amountMinor: s.amountMinor,
                         })}
-                        aria-label={`記錄已收到 ${from.displayName} 支付的 ${formatMinorAmount(s.amountMinor, currency)}`}
+                        aria-label={recordForDeparted
+                          ? `代 ${to.displayName}（已退出）記錄已收到 ${from.displayName} 支付的 ${formatMinorAmount(s.amountMinor, currency)}`
+                          : `記錄已收到 ${from.displayName} 支付的 ${formatMinorAmount(s.amountMinor, currency)}`}
                         className="shrink-0 flex items-center gap-1 px-2.5 h-7 rounded-full border-none bg-teal text-white text-[10.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
                       >
                         <Check size={11} strokeWidth={2.8} />
-                        已收款
+                        {recordForDeparted ? '代記已收款' : '已收款'}
                       </button>
                     ) : (
                       <div

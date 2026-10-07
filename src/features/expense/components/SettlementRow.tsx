@@ -97,6 +97,9 @@ export default function SettlementRow({ record, from, to, currency, expenses, ca
             {formatMinorAmount(record.amountMinor, currency)}
           </div>
         )}
+        {record.recordedOnBehalfOf && (
+          <div className="text-[10px] text-muted font-medium mt-px">由旅程擁有者代為記錄</div>
+        )}
         {sourceHint && (
           <div className="text-[10px] text-muted font-medium mt-px truncate" title={sourceHint}>
             {sourceHint}

@@ -910,9 +910,38 @@ describe('settlementCreate endpoint', () => {
 	})
 
 	it('rejects when caller is not the receiver (toUid mismatch)', async () => {
-		// Pre-tx receiver-only invariant fires before any seeding matters.
 		const someoneElse = 'other-uid'
+		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${someoneElse}`, memberReadDoc(someoneElse))
 		await expect(settlementCreate(someoneElse, baseCreatePayload(), '{}'))
+			.rejects.toBeInstanceOf(SettlementValidationError)
+		expect(capturedTxResult).toBeNull()
+	})
+
+	it('trip owner may record on behalf of a receiver who has LEFT (marked recordedOnBehalfOf)', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc('JPY', {
+			ownerId: { stringValue: OWNER_UID },
+			formerMemberNames: { mapValue: { fields: { [TO_UID]: { stringValue: 'Bob' } } } },
+		}))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`, memberReadDoc(OWNER_UID, 'owner'))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`, notFoundReadDoc(`trips/${TRIP_ID}/members/${TO_UID}`))
+		txGetResponses.set(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`,
+			notFoundReadDoc(`trips/${TRIP_ID}/settlements/${SETTLEMENT_ID}`))
+		seedLock(FROM_UID, TO_UID)
+		seedDebt(FROM_UID, TO_UID, 200)
+
+		await settlementCreate(OWNER_UID, baseCreatePayload(), '{}')
+		const w = capturedTxResult!.writes[0] as { fields: Record<string, { stringValue?: string }> }
+		expect(w.fields.toUid).toEqual({ stringValue: TO_UID })
+		expect(w.fields.settledBy).toEqual({ stringValue: OWNER_UID })
+		expect(w.fields.recordedOnBehalfOf).toEqual({ stringValue: TO_UID })
+	})
+
+	it('trip owner may NOT record on behalf of a receiver who is still a member', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc('JPY', { ownerId: { stringValue: OWNER_UID } }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`, memberReadDoc(OWNER_UID, 'owner'))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`, memberReadDoc(TO_UID))
+		await expect(settlementCreate(OWNER_UID, baseCreatePayload(), '{}'))
 			.rejects.toBeInstanceOf(SettlementValidationError)
 	})
 
@@ -951,9 +980,8 @@ describe('settlementCreate endpoint', () => {
 			.rejects.toBeInstanceOf(SettlementValidationError)
 	})
 
-	// The mirror case needs no code: toUid must equal the caller, and the
-	// caller must be an active member, so nobody can assert that a
-	// DEPARTED member received money.
+	// A departed member can't record for themselves (no longer a member);
+	// only the trip owner may record on their behalf (tested above).
 	it('cannot record money as received by a departed member', async () => {
 		txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/members/${TO_UID}`,

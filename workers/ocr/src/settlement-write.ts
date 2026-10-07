@@ -154,7 +154,7 @@ async function authorizeMemberTx(
   tx:        TxContext,
   tripId:    string,
   callerUid: string,
-): Promise<TripCurrencyContext> {
+): Promise<TripCurrencyContext & { ownerId: string | undefined; formerMemberUids: string[] }> {
   const [trip, member] = await Promise.all([
     tx.get(`trips/${tripId}`),
     tx.get(`trips/${tripId}/members/${callerUid}`),
@@ -171,7 +171,9 @@ async function authorizeMemberTx(
     // currency since the cross-check below short-circuits.
     throw new CascadeError(500, 'trip.currency is missing')
   }
-  return { currency }
+  const former = (trip.fields.formerMemberNames as { mapValue?: { fields?: Record<string, unknown> } } | undefined)
+    ?.mapValue?.fields ?? {}
+  return { currency, ownerId: readString(trip.fields, 'ownerId'), formerMemberUids: Object.keys(former) }
 }
 
 // ─── Decoders: REST fields → domain shapes ────────────────────────
@@ -419,15 +421,10 @@ async function doCreate(
   req:                SettlementCreateRequest,
   serviceAccountJson: string,
 ): Promise<{ settlementId: string }> {
-  // Receiver-only invariant -- mirrors the rule's `toUid == uid()` gate.
-  // Checked before tx begins (pure input-shape failure, no point burning
-  // a tx round-trip on it).
-  if (req.toUid !== callerUid) {
-    throw new SettlementValidationError(
-      'toUid',
-      'only the receiver may record a settlement (toUid must equal the caller uid)',
-    )
-  }
+  // Receiver-only invariant (`toUid == caller`), with ONE exception checked
+  // inside the tx: the trip owner may record on behalf of a receiver who
+  // has LEFT the trip — otherwise debts owed to a departed member could
+  // never be cleared by anyone. The doc then carries `recordedOnBehalfOf`.
   if (req.fromUid === req.toUid) {
     throw new SettlementValidationError(
       'fromUid',
@@ -440,6 +437,21 @@ async function doCreate(
 
   return runFirestoreTransaction(accessToken, projectId, async (tx) => {
     const ctx = await authorizeMemberTx(tx, req.tripId, callerUid)
+    const onBehalf = req.toUid !== callerUid
+    if (onBehalf) {
+      // Only the owner, and only for a receiver who has actually departed
+      // (no member doc + recorded in formerMemberNames). An active
+      // receiver must confirm their own payment.
+      const isOwner = ctx.ownerId === callerUid
+      const receiverDeparted = ctx.formerMemberUids.includes(req.toUid)
+        && !(await tx.get(`trips/${req.tripId}/members/${req.toUid}`)).exists
+      if (!isOwner || !receiverDeparted) {
+        throw new SettlementValidationError(
+          'toUid',
+          'only the receiver may record a settlement (the trip owner may record for a receiver who has left the trip)',
+        )
+      }
+    }
 
     // ----- Idempotent-retry fast-path (read existing settlement first) -----
     //
@@ -496,10 +508,11 @@ async function doCreate(
     // they owed could never mark themselves repaid. The debt is real —
     // it came from expenses that are still there.
     //
-    // The mirror case needs no code. Recording that a DEPARTED member
-    // received money would be someone else asserting a payment they
-    // cannot witness, and it is already impossible: `toUid` must equal
-    // the caller, and the caller must be an active member.
+    // The mirror case (a DEPARTED member received money) used to be
+    // impossible — `toUid` had to equal an active caller — which left
+    // debts owed to someone who left un-clearable forever. It is now
+    // allowed for the trip owner only, explicitly marked with
+    // `recordedOnBehalfOf` (authz at the top of this tx).
     //
     // FOREIGN: resolve the FX rate HERE — AFTER the idempotency + auth
     // checks (so a retry of an already-recorded settlement never hits FX,
@@ -723,6 +736,10 @@ async function doCreate(
       currency:    { stringValue: ctx.currency },
       settledBy:   { stringValue: callerUid },
       deletedAt:   { nullValue: null },
+    }
+    if (onBehalf) {
+      // Owner-recorded receipt for a departed receiver (see authz above).
+      fields.recordedOnBehalfOf = { stringValue: req.toUid }
     }
     if (appliedSources.length > 0) {
       fields.appliedSources = encodeAppliedSources(appliedSources)

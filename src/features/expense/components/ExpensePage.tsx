@@ -406,6 +406,7 @@ export default function ExpensePage() {
         currency={currency}
         uid={uid ?? null}
         canDeleteAnySettlement={canOwnerWrite}
+        canRecordForDeparted={canOwnerWrite}
         onRecordSettlement={suggestion => {
           if (isDemo) { signIn.open(); return }
           if (!uid) { toast.error('正在準備登入，請稍候'); return }

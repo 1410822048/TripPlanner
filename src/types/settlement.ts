@@ -72,6 +72,9 @@ export interface SettlementRecord {
   amountMinor: number
   currency:    string      // ISO 4217 — always trip currency
   settledBy:   string      // uid that recorded the settlement
+  /** Set when the trip owner recorded the receipt for a receiver who had
+   *  left the trip (toUid). Absent on ordinary receiver-confirmed rows. */
+  recordedOnBehalfOf?: string
   note?:       string
   /** Worker-derived audit snapshot of which expense/item debt this
    *  settlement consumed. Never trusted from the client; used only for
@@ -161,6 +164,7 @@ export const SettlementDocSchema = z.object({
   amountMinor: z.number().int().positive(),
   currency:    CurrencyCodeSchema,
   settledBy:   z.string().min(1),
+  recordedOnBehalfOf: z.string().min(1).optional(),
   note:        z.string().max(200).optional(),
   appliedSources: z.array(SettlementAppliedSourceSchema).max(80).optional(),
   appliedExpenseIds: z.array(z.string().min(1).max(60)).max(500).optional(),

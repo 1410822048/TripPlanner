@@ -319,7 +319,8 @@ export default function MembersModal({ isOpen, onClose, trip, onLeave }: Props) 
         description={
           <>
             退出後，在再次收到邀請前將無法存取此旅程。<br />
-            即使有尚未結清的費用，紀錄仍會保留。
+            即使有尚未結清的費用，紀錄仍會保留。<br />
+            若還有成員欠你款項，建議先在「精算」記錄收款；退出後只能由旅程擁有者代為記錄。
           </>
         }
         icon={
