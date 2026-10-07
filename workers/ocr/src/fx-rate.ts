@@ -207,6 +207,10 @@ interface CacheRecord {
  *  the read leg while still being able to use `fetchImpl` for the
  *  Frankfurter leg — error-prone and asymmetric with `writeCache`
  *  below. */
+/** Firestore fxRates cache read/write ceiling (the provider fetch has its
+ *  own PROVIDER_TIMEOUT_MS). */
+const FX_CACHE_TIMEOUT_MS = 10_000
+
 async function readCache(
   accessToken: string,
   projectId:   string,
@@ -218,6 +222,8 @@ async function readCache(
   const res = await fetchImpl(`${FIRESTORE_BASE}/${docName}`, {
     cache:   'no-store',
     headers: { Authorization: `Bearer ${accessToken}` },
+    // Runs inside expense/settlement write flows: never hang them.
+    signal:  AbortSignal.timeout(FX_CACHE_TIMEOUT_MS),
   })
   if (res.status === 404) return null
   if (!res.ok) {
@@ -289,6 +295,7 @@ async function writeCache(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ fields }),
+    signal: AbortSignal.timeout(FX_CACHE_TIMEOUT_MS),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')

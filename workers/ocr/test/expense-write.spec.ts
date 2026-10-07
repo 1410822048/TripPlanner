@@ -1938,7 +1938,7 @@ describe('Phase 3b foreign-update endpoint', () => {
 		]))
 	})
 
-	it('money-group patch on foreign doc → FX re-fetched with new source amount + full mirror rewritten', async () => {
+	it('money-group patch on foreign doc (same date) → stored rate reused, full mirror rewritten', async () => {
 		seedForeignAlive()
 		// Swap to a larger lunch item.
 		await expenseUpdate(
@@ -1962,11 +1962,9 @@ describe('Phase 3b foreign-update endpoint', () => {
 			},
 			'{}', BUCKET,
 		)
-		// FX call sees the new sourceAmountMinor + original date.
-		expect(vi.mocked(fxRate.getFxSnapshot)).toHaveBeenCalledTimes(1)
-		const fxCall = vi.mocked(fxRate.getFxSnapshot).mock.calls[0][0]
-		expect(fxCall.sourceAmountMinor).toBe(2000)
-		expect(fxCall.requestedDate).toBe('2026-05-22')   // unchanged (no date patch)
+		// Same rate key (date + pair) as the stored snapshot → no FX call;
+		// the stored rate (150) converts the NEW source amount.
+		expect(vi.mocked(fxRate.getFxSnapshot)).not.toHaveBeenCalled()
 
 		const writes = capturedTxResult!.writes as Array<{
 			updateMask?: string[]
@@ -1980,6 +1978,17 @@ describe('Phase 3b foreign-update endpoint', () => {
 		expect(writes[0].fields.sourceAmountMinor?.integerValue).toBe('2000')
 		// 2000 cents USD * 150 / 100 = 3000 yen (JPY 0 frac).
 		expect(writes[0].fields.amountMinor?.integerValue).toBe('3000')
+	})
+
+	it('date patch on foreign doc → rate re-resolved for the new date', async () => {
+		seedForeignAlive()
+		await expenseUpdate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', date: '2026-05-23' } },
+			'{}', BUCKET,
+		)
+		expect(vi.mocked(fxRate.getFxSnapshot)).toHaveBeenCalledTimes(1)
+		expect(vi.mocked(fxRate.getFxSnapshot).mock.calls[0][0].requestedDate).toBe('2026-05-23')
 	})
 
 	it('rejects money-group patch with sourceCurrency === trip currency (use TRIP_CURRENCY mode)', async () => {

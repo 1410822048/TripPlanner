@@ -25,7 +25,7 @@ import {
   type TxUpdateWrite,
 }                                          from './firestore-tx'
 import { getFxSnapshot, type FxSnapshot }  from './fx-rate'
-import { currencyFractionDigits }          from '@tripmate/fx-core'
+import { convertMinorHalfEven, currencyFractionDigits, isCanonicalRateString } from '@tripmate/fx-core'
 import { pushUnique, decodeExpense, rostersForUpdate, type TripContext } from './expense-write-shared'
 import {
   encodeSourceItems,
@@ -309,17 +309,44 @@ export async function buildForeignUpdateWrite(args: {
     const sourceFractionDigits = currencyFractionDigits(effectiveSourceCurrency)
     const targetFractionDigits = currencyFractionDigits(args.ctx.currency)
 
-    const snapshot = await getFxSnapshot(
-      {
-        requestedDate:     effectiveDate,
-        sourceCurrency:    effectiveSourceCurrency,
-        tripCurrency:      args.ctx.currency,
-        sourceAmountMinor: effectiveSourceAmountMinor,
-        sourceFractionDigits,
-        targetFractionDigits,
-      },
-      args.serviceAccountJson,
-    )
+    // Reuse the stored rate when the rate key (date + currency pair) is
+    // unchanged. The client resends the full money group + date on EVERY
+    // edit (even a title fix), so without this each edit re-resolved the
+    // rate: a cache miss could silently change the converted amount (also
+    // on a settlement-locked expense the owner edits), and an FX outage
+    // blocked even renaming. A changed date or currency still re-fetches.
+    const stored = storedFxRate(args.currentFields)
+    const snapshot = stored
+      && stored.baseCurrency === effectiveSourceCurrency
+      && stored.quoteCurrency === args.ctx.currency
+      && stored.requestedDate === effectiveDate
+      ? {
+          provider:             'frankfurter-v2' as const,
+          baseCurrency:         stored.baseCurrency,
+          quoteCurrency:        stored.quoteCurrency,
+          requestedDate:        stored.requestedDate,
+          rateDate:             stored.rateDate,
+          rateDecimal:          stored.rateDecimal,
+          sourceAmountMinor:    effectiveSourceAmountMinor,
+          convertedAmountMinor: convertMinorHalfEven({
+            sourceMinor: effectiveSourceAmountMinor,
+            rateDecimal: stored.rateDecimal,
+            sourceFractionDigits,
+            targetFractionDigits,
+          }),
+          fetchedAtMs:          Date.now(),
+        } satisfies FxSnapshot
+      : await getFxSnapshot(
+          {
+            requestedDate:     effectiveDate,
+            sourceCurrency:    effectiveSourceCurrency,
+            tripCurrency:      args.ctx.currency,
+            sourceAmountMinor: effectiveSourceAmountMinor,
+            sourceFractionDigits,
+            targetFractionDigits,
+          },
+          args.serviceAccountJson,
+        )
     if (!snapshot) {
       throw new CascadeError(500, 'unexpected null FxSnapshot for foreign expense (source !== trip)')
     }
@@ -565,4 +592,21 @@ export async function buildForeignUpdateWrite(args: {
     currentDocument: { exists: true },
     updateTransforms,
   }
+}
+
+/** The rate key + rate of the expense's persisted fxSnapshot, or null when
+ *  absent / malformed (then the caller resolves a fresh rate). */
+function storedFxRate(fields: Record<string, FsValue>): {
+  baseCurrency: string; quoteCurrency: string; requestedDate: string; rateDate: string; rateDecimal: string
+} | null {
+  const snap = (fields.fxSnapshot as { mapValue?: { fields?: Record<string, FsValue> } } | undefined)?.mapValue?.fields
+  if (!snap) return null
+  const baseCurrency  = readString(snap, 'baseCurrency')
+  const quoteCurrency = readString(snap, 'quoteCurrency')
+  const requestedDate = readString(snap, 'requestedDate')
+  const rateDate      = readString(snap, 'rateDate')
+  const rateDecimal   = readString(snap, 'rateDecimal')
+  if (!baseCurrency || !quoteCurrency || !requestedDate || !rateDate || !rateDecimal) return null
+  if (!isCanonicalRateString(rateDecimal)) return null
+  return { baseCurrency, quoteCurrency, requestedDate, rateDate, rateDecimal }
 }
