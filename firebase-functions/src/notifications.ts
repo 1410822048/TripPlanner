@@ -50,11 +50,22 @@ function currencyFractionDigits(code: string): number {
   return FRACTION_DIGITS[code] ?? 2
 }
 
+// Same symbols as the app (src/utils/currency.ts), so a push reads exactly
+// like the settlement row it points to. Kept as a copy for the same Cloud
+// Build reason as FRACTION_DIGITS; tests/invariants/currencySymbols.test.ts
+// keeps the two tables in lock-step.
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  JPY: '¥', TWD: 'NT$', USD: '$', EUR: '€', KRW: '₩',
+  CNY: 'CN¥', HKD: 'HK$', THB: '฿', SGD: 'S$', GBP: '£',
+  AUD: 'A$', PHP: '₱', VND: '₫', MYR: 'RM', IDR: 'Rp',
+}
+
 function formatMoney(amountMinor: number, currency: string): string {
   const digits = currencyFractionDigits(currency)
   const amount = amountMinor / 10 ** digits
   const formatted = amount.toLocaleString('ja-JP', { minimumFractionDigits: digits, maximumFractionDigits: digits })
-  return currency === 'JPY' ? `¥${formatted}` : `${currency} ${formatted}`
+  // Unknown code: "{CODE} 1,234", the app's fallback too.
+  return `${CURRENCY_SYMBOLS[currency] ?? `${currency} `}${formatted}`
 }
 
 // Actor-based bodies: "○○ 新增了〜". Excludes settlement (custom

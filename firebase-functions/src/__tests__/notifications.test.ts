@@ -167,7 +167,7 @@ describe('writeNotificationDocs', () => {
     }), ['to-1'])
 
     const [, doc] = firestoreMock.txCreate.mock.calls[0]!
-    expect(doc.body).toContain('USD 50.00')
+    expect(doc.body).toContain('$50.00')
   })
 
   test('keeps app-specific zero-decimal currencies aligned with fx-core', async () => {
@@ -179,7 +179,7 @@ describe('writeNotificationDocs', () => {
     }), ['to-1'])
 
     const [, doc] = firestoreMock.txCreate.mock.calls[0]!
-    expect(doc.body).toContain('TWD 5,000')
+    expect(doc.body).toContain('NT$5,000')
   })
 
   test('role change writes a subject-based body + trip scope, tolerating a null actor', async () => {
