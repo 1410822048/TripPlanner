@@ -6,6 +6,8 @@ import {
   preflightIdToken,
   requireWorkerWriteBase,
   workerFetch,
+  workerRead,
+  type WorkerReadFailure,
 } from '@/services/workerBase'
 import { PlaceRefSchema, type PlaceRef } from '@/types/schedule'
 import { assertClientWriteCompatible, isUpdateRequiredError } from '@/services/clientCompatibility'
@@ -236,6 +238,19 @@ export function clearRoutePlaceSearchCache(): void {
   inFlightPlaceRequests.clear()
 }
 
+/** Place search / link resolution errors: one line of copy plus the status,
+ *  as before; the network and signed-out cases now say what happened. */
+function placeSearchError(prefix: string) {
+  return (failure: WorkerReadFailure): Error => {
+    switch (failure.kind) {
+      case 'signed-out':   return new Error(`${prefix}：請先登入`)
+      case 'network':      return new Error(failure.timedOut ? `${prefix}：連線逾時` : `${prefix}：網路錯誤`)
+      case 'bad-response': return new Error(`${prefix}：回應格式錯誤`)
+      case 'status':       return new Error(`${prefix} (${failure.status})`)
+    }
+  }
+}
+
 export function requestRouteAutocomplete(
   tripId: string,
   query: string,
@@ -244,16 +259,12 @@ export function requestRouteAutocomplete(
 ): Promise<PlaceCandidate[]> {
   const key = placeRequestKey('autocomplete', tripId, query, context)
   const request = cachedPlaceRequest(key, async () => {
-    const token = await preflightIdToken()
     const bias = placeBias(context)
-    const response = await fetch(`${WORKER_BASE_URL}/route-autocomplete`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tripId, query, ...(bias ? { bias } : {}) }),
-      signal: AbortSignal.timeout(PLACE_REQUEST_TIMEOUT_MS),
+    const body = await workerRead<unknown>('/route-autocomplete', { tripId, query, ...(bias ? { bias } : {}) }, {
+      base:      WORKER_BASE_URL,
+      timeoutMs: PLACE_REQUEST_TIMEOUT_MS,
+      toError:   placeSearchError('地點搜尋失敗'),
     })
-    if (!response.ok) throw new Error(`地點搜尋失敗 (${response.status})`)
-    const body: unknown = await response.json()
     return parseResponse(z.array(PlaceRefSchema), body)
   })
   return observeCallerAbort(request, signal)
@@ -267,16 +278,12 @@ export async function requestRoutePlaceResolution(
 ): Promise<PlaceCandidate[]> {
   const key = placeRequestKey('google-maps', tripId, googleMapsUrl, context)
   const request = cachedPlaceRequest(key, async () => {
-    const token = await preflightIdToken()
     const bias = placeBias(context)
-    const response = await fetch(`${WORKER_BASE_URL}/route-resolve-place`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tripId, googleMapsUrl, ...(bias ? { bias } : {}) }),
-      signal: AbortSignal.timeout(PLACE_REQUEST_TIMEOUT_MS),
+    const body = await workerRead<unknown>('/route-resolve-place', { tripId, googleMapsUrl, ...(bias ? { bias } : {}) }, {
+      base:      WORKER_BASE_URL,
+      timeoutMs: PLACE_REQUEST_TIMEOUT_MS,
+      toError:   placeSearchError('Google Maps 連結解析失敗'),
     })
-    if (!response.ok) throw new Error(`Google Maps 連結解析失敗 (${response.status})`)
-    const body: unknown = await response.json()
     return parseResponse(RoutePlaceResolutionSchema, body).candidates
   })
   return observeCallerAbort(request, signal)

@@ -30,7 +30,12 @@ const { workerFetch, preflightIdToken, WorkerAmbiguous, WorkerRejected } = vi.ho
   }
 })
 
-vi.mock('@/services/workerBase', () => ({
+vi.mock('@/services/firebase', () => ({
+  getFirebaseAuth: vi.fn(async () => ({ auth: { currentUser: { getIdToken: async () => 'id-token' } } })),
+}))
+
+vi.mock('@/services/workerBase', async importOriginal => ({
+  workerRead: (await importOriginal<typeof import('@/services/workerBase')>()).workerRead,
   WORKER_BASE_URL: 'https://worker.example.test',
   preflightIdToken,
   requireWorkerWriteBase: vi.fn(() => 'https://worker.example.test'),
@@ -154,7 +159,6 @@ describe('route place search cache', () => {
     await requestRouteAutocomplete('trip-1', '長谷站', new AbortController().signal, context)
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(preflightIdToken).toHaveBeenCalledTimes(1)
   })
 
   it('keeps country context in the cache identity', async () => {

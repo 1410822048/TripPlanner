@@ -16,7 +16,8 @@ vi.mock('@/services/firebase', () => ({
 const { requireWorkerWriteBaseMock } = vi.hoisted(() => ({
   requireWorkerWriteBaseMock: vi.fn(() => 'https://worker.example.dev'),
 }))
-vi.mock('@/services/workerBase', () => ({
+vi.mock('@/services/workerBase', async importOriginal => ({
+  ...await importOriginal<typeof import('@/services/workerBase')>(),
   WORKER_BASE_URL: 'https://worker.example.dev',
   requireWorkerWriteBase: requireWorkerWriteBaseMock,
 }))

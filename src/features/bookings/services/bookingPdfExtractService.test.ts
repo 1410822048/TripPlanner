@@ -6,7 +6,10 @@ const captureError = vi.fn()
 vi.mock('@/services/firebase', () => ({
   getFirebaseAuth: async () => ({ auth: { currentUser: { getIdToken: async () => 'token' } } }),
 }))
-vi.mock('@/services/workerBase', () => ({ WORKER_BASE_URL: 'https://worker.test' }))
+vi.mock('@/services/workerBase', async importOriginal => ({
+  ...await importOriginal<typeof import('@/services/workerBase')>(),
+  WORKER_BASE_URL: 'https://worker.test',
+}))
 vi.mock('./bookingPdfText', () => ({ extractBookingPdfText: async () => ({ lines: [] }) }))
 vi.mock('@/services/sentry', () => ({ captureError: (...args: unknown[]) => captureError(...args) }))
 

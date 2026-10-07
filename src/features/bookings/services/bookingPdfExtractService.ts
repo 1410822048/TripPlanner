@@ -8,7 +8,7 @@ import {
 } from '@tripmate/pdf-page-limit'
 import { isHttpUrl } from '@/types/_shared'
 import { getFirebaseAuth } from '@/services/firebase'
-import { WORKER_BASE_URL } from '@/services/workerBase'
+import { WORKER_BASE_URL, workerRead, type WorkerReadFailure } from '@/services/workerBase'
 import { extractBookingPdfText } from './bookingPdfText'
 
 export type BookingPdfExtractErrorKind =
@@ -91,11 +91,6 @@ const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/
 const IATA_CODE_RE = /^[A-Z]{3}$/
 const TRANSPORT_TYPES = new Set<BookingPdfExtractBookingType>(['flight', 'train', 'bus'])
 
-function bookingPdfFetchSignal(external?: AbortSignal): AbortSignal {
-  const timeout = AbortSignal.timeout(60_000)
-  if (!external) return timeout
-  return AbortSignal.any([timeout, external])
-}
 
 function shouldApply(field: BookingPdfExtractedField, threshold: number): boolean {
   return field.value.trim().length > 0 && field.confidence >= threshold
@@ -222,15 +217,43 @@ function pdfExtractErrorMessage(status: number, detail: string): string {
   return `PDF extract failed (${status})`
 }
 
+function bookingPdfError(failure: WorkerReadFailure): BookingPdfExtractError {
+  switch (failure.kind) {
+    case 'signed-out':   return new BookingPdfExtractError('Not signed in', 'auth')
+    case 'network':      return failure.timedOut
+      ? new BookingPdfExtractError('PDF extract timed out', 'network')
+      : new BookingPdfExtractError(`Network error: ${failure.message}`, 'network')
+    case 'bad-response': return new BookingPdfExtractError('無法讀取 PDF，請手動輸入', 'parse')
+    case 'status': {
+      const { status } = failure
+      if (status === 401) return new BookingPdfExtractError('Session expired', 'auth')
+      if (status === 429) return new BookingPdfExtractError('Rate limit reached', 'rate-limit')
+      // 403/404/410: not an owner/editor of the trip (or it is gone) — the
+      // Worker's role gate.
+      if (status === 403 || status === 404 || status === 410) {
+        return new BookingPdfExtractError('Forbidden: not an editor of this trip', 'forbidden')
+      }
+      if (status === 400 || status === 413 || status === 422) {
+        return new BookingPdfExtractError('無法讀取 PDF，請手動輸入', 'parse')
+      }
+      if (status === 502 || status === 503 || status === 504) {
+        return new BookingPdfExtractError('Booking PDF extract service is temporarily unavailable', 'unavailable')
+      }
+      return new BookingPdfExtractError(pdfExtractErrorMessage(status, failure.detail), 'unknown')
+    }
+  }
+}
+
 export async function extractBookingPdfAutofill(
   file:   File,
   signal?: AbortSignal,
   /** The Worker only runs paid extraction for this trip's owner/editors. */
   tripId?: string | null,
 ): Promise<BookingPdfExtractResult> {
+  // Checked before the (expensive) text extraction; workerRead re-reads the
+  // token when it actually sends.
   const { auth } = await getFirebaseAuth()
-  const user = auth.currentUser
-  if (!user) throw new BookingPdfExtractError('Not signed in', 'auth')
+  if (!auth.currentUser) throw new BookingPdfExtractError('Not signed in', 'auth')
 
   let digest: Awaited<ReturnType<typeof extractBookingPdfText>>
   try {
@@ -241,51 +264,11 @@ export async function extractBookingPdfAutofill(
     }
     throw e
   }
-  const token = await user.getIdToken()
-
-  let res: Response
-  try {
-    res = await fetch(`${WORKER_BASE_URL}/booking-pdf-extract`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type':  'application/json',
-      },
-      body: JSON.stringify(tripId ? { ...digest, tripId } : digest),
-      signal: bookingPdfFetchSignal(signal),
-    })
-  } catch (e) {
-    const err = e as Error
-    if (err.name === 'TimeoutError' || err.name === 'AbortError') {
-      throw new BookingPdfExtractError('PDF extract timed out', 'network')
-    }
-    throw new BookingPdfExtractError(`Network error: ${err.message}`, 'network')
-  }
-
-  if (res.status === 401) throw new BookingPdfExtractError('Session expired', 'auth')
-  if (res.status === 429) throw new BookingPdfExtractError('Rate limit reached', 'rate-limit')
-  // 403/404/410: not an owner/editor of the trip (or it is gone) — the
-  // Worker's role gate. Same copy as the form's own permission errors.
-  if (res.status === 403 || res.status === 404 || res.status === 410) {
-    throw new BookingPdfExtractError('Forbidden: not an editor of this trip', 'forbidden')
-  }
-  if (res.status === 400 || res.status === 413 || res.status === 422) {
-    throw new BookingPdfExtractError('無法讀取 PDF，請手動輸入', 'parse')
-  }
-  if (res.status === 502 || res.status === 503 || res.status === 504) {
-    throw new BookingPdfExtractError('Booking PDF extract service is temporarily unavailable', 'unavailable')
-  }
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    throw new BookingPdfExtractError(pdfExtractErrorMessage(res.status, detail), 'unknown')
-  }
-
-  let payload: unknown
-  try {
-    payload = await res.json()
-  } catch {
-    throw new BookingPdfExtractError('無法讀取 PDF，請手動輸入', 'parse')
-  }
+  const payload = await workerRead<unknown>(
+    '/booking-pdf-extract',
+    tripId ? { ...digest, tripId } : digest,
+    { base: WORKER_BASE_URL, timeoutMs: 60_000, signal, toError: bookingPdfError },
+  )
 
   const parsed = BookingPdfExtractResultSchema.safeParse(payload)
   if (!parsed.success) {

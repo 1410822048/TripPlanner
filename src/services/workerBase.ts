@@ -341,3 +341,83 @@ export async function preflightIdToken(): Promise<string> {
   }
   return idToken
 }
+
+// ─── Read-style Worker calls (OCR, PDF extract, route search, FX) ───
+
+/** Why a read-style Worker call failed, before a feature turns it into
+ *  its own error type and copy. */
+export type WorkerReadFailure =
+  | { kind: 'signed-out' }
+  | { kind: 'network'; timedOut: boolean; message: string }
+  | { kind: 'status'; status: number; detail: string; code?: string }
+  | { kind: 'bad-response' }
+
+export interface WorkerReadOptions {
+  /** Defaults to WORKER_BASE_URL (read-only base, prod fallback allowed).
+   *  Privileged reads pass requireWorkerWriteBase(). */
+  base?:      string
+  /** Wall-clock cap; combined with `signal`. Default 30s. */
+  timeoutMs?: number
+  /** Caller cancellation (unmount, superseded request). */
+  signal?:    AbortSignal
+  /** Feature mapping: every failure goes through here exactly once, so each
+   *  service keeps only its own status → error table. */
+  toError:    (failure: WorkerReadFailure) => Error
+}
+
+/**
+ * POST a JSON body to a non-mutating Worker endpoint and return the parsed
+ * JSON. Owns what every read caller used to hand-roll: resolving the ID
+ * token, the timeout + caller-abort signal, telling network/timeout apart
+ * from HTTP rejections, and reading the error body's `code`.
+ *
+ * Writes keep using workerFetch, whose rejected/ambiguous split decides
+ * rollbacks; a read has nothing to roll back.
+ */
+export async function workerRead<T = unknown>(
+  endpoint: string,
+  body:     unknown,
+  opts:     WorkerReadOptions,
+): Promise<T> {
+  const { getFirebaseAuth } = await import('./firebase')
+  const { auth } = await getFirebaseAuth()
+  const user = auth.currentUser
+  if (!user) throw opts.toError({ kind: 'signed-out' })
+  const token = await user.getIdToken()
+
+  const timeout = AbortSignal.timeout(opts.timeoutMs ?? WORKER_FETCH_TIMEOUT_MS)
+  const signal  = opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout
+
+  let res: Response
+  try {
+    res = await fetch(`${opts.base ?? WORKER_BASE_URL}${endpoint}`, {
+      method:  'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+      signal,
+    })
+  } catch (e) {
+    const err = e as Error
+    throw opts.toError({
+      kind:     'network',
+      timedOut: err?.name === 'TimeoutError' || err?.name === 'AbortError',
+      message:  err?.message ?? 'unknown',
+    })
+  }
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    const parsed = parseWorkerErrorBody(detail)
+    throw opts.toError({
+      kind:   'status',
+      status: res.status,
+      detail,
+      ...(typeof parsed?.code === 'string' ? { code: parsed.code } : {}),
+    })
+  }
+  try {
+    return await res.json() as T
+  } catch {
+    throw opts.toError({ kind: 'bad-response' })
+  }
+}
