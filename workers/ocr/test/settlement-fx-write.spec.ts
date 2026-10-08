@@ -50,6 +50,8 @@ function foreignReq(over: { sourceCurrency: string; settledOn: string }): Settle
     expectedRemainingMinor: 15000,
     sourceCurrency:         over.sourceCurrency,
     settledOn:              over.settledOn,
+    // The default mocked rate (150, dated settledOn).
+    expectedFxRate:         { rateDecimal: '150', rateDate: over.settledOn },
   }
 }
 

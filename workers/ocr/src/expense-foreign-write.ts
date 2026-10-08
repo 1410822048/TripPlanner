@@ -56,6 +56,15 @@ export interface ForeignArtifacts {
   fxSnapshot:        FxSnapshot
 }
 
+/** A write that converts must say which rate the user confirmed —
+ *  otherwise the saved amount is not tied to the one on screen. */
+export function requireExpectedFxRate(expected: FxRateQuote | undefined): FxRateQuote {
+  if (expected === undefined) {
+    throw new ExpenseValidationError('expectedFxRate', 'expectedFxRate is required when a foreign-currency write converts')
+  }
+  return expected
+}
+
 /** Resolve a foreign-currency create payload into the shape the shared
  *  encode/write tail expects: a trip-currency `parsed` (matching
  *  `ExpenseCreateInput`) plus the source-domain artifacts that get
@@ -78,7 +87,7 @@ export async function prepareForeignCreate(
   body:               unknown,
   ctx:                TripContext,
   serviceAccountJson: string,
-  expectedFxRate?:    FxRateQuote,
+  expectedFxRate:     FxRateQuote,
 ): Promise<{
   parsedTrip:       ReturnType<ReturnType<typeof makeExpenseCreateSchema>['parse']>
   foreignArtifacts: ForeignArtifacts
@@ -234,7 +243,8 @@ export async function buildForeignUpdateWrite(args: {
   expenseId:             string
   callerUid:             string
   serviceAccountJson:    string
-  /** The rate the user last confirmed; see assertExpectedFxRate. */
+  /** The rate the user last confirmed; see assertExpectedFxRate. Required
+   *  when this update converts (re-rates); optional on a text-only update. */
   expectedFxRate?:       FxRateQuote
 }): Promise<TxWrite> {
   const fParseResult = makeForeignExpenseUpdateSchema().safeParse(args.patchForSchema)
@@ -301,6 +311,9 @@ export async function buildForeignUpdateWrite(args: {
       throw new CascadeError(500, 'current foreign expense doc missing date')
     }
     const effectiveDate = fp.date ?? currentDate
+    // This write converts, so it must carry the rate the user confirmed —
+    // checked before any FX lookup.
+    const expectedFxRate = requireExpectedFxRate(args.expectedFxRate)
 
     const currentSourceAmountMinor = readIntegerField(args.currentFields, 'sourceAmountMinor')
     const currentSourceItems       = decodeSourceItemsField(args.currentFields)
@@ -359,7 +372,7 @@ export async function buildForeignUpdateWrite(args: {
     // FX CAS against the rate this write will convert with: the stored rate
     // when it is reused (an edit must not fail because today's market moved),
     // a freshly resolved one when the date / currency changed.
-    assertExpectedFxRate(args.expectedFxRate, snapshot)
+    assertExpectedFxRate(expectedFxRate, snapshot)
 
     const useSplitDomain =
       hasSplitDomainPatch ||
@@ -536,10 +549,10 @@ export async function buildForeignUpdateWrite(args: {
     pushUnique(updateMask, 'sourceSplits')
     pushUnique(updateMask, 'fxSnapshot')
   } else {
-    // No conversion happens, so the only rate in play is the stored one —
-    // never the current market rate.
+    // No conversion happens, so nothing requires a rate; if one was sent,
+    // the only rate it can mean is the stored one — never today's market.
     const stored = storedFxRate(args.currentFields)
-    if (stored) assertExpectedFxRate(args.expectedFxRate, stored)
+    if (stored && args.expectedFxRate) assertExpectedFxRate(args.expectedFxRate, stored)
     // Text-only on a foreign doc preserves the canonical trip-currency
     // money fields, so it must not re-fetch FX. A paidBy change still
     // affects settlement debt edges, though, so re-run the same

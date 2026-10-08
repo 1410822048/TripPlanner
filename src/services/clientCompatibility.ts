@@ -11,8 +11,11 @@
  *  shipping Pages does not evict a Service Worker already on a device.
  *
  *  Epoch 2: `/expense-update` requires `expectedCurrentReceiptPath` on
- *  receipt-touching writes, which epoch-1 bundles never send. */
-export const CLIENT_SCHEMA_EPOCH = 2 as const
+ *  receipt-touching writes, which epoch-1 bundles never send.
+ *  Epoch 3: foreign-currency writes that convert (expense create / re-rating
+ *  update, settlement create) require `expectedFxRate`, which epoch-2
+ *  bundles never send. */
+export const CLIENT_SCHEMA_EPOCH = 3 as const
 export const CLIENT_COMPATIBILITY_STORAGE_KEY = 'tripmate:client-compatibility:v1'
 
 const MANIFEST_URL = '/compatibility.json'

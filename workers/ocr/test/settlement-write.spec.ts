@@ -429,6 +429,8 @@ const baseForeignCreatePayload = (expectedRemainingMinor = 9750) => ({
 	sourceCurrency: 'USD',
 	settledOn:      '2026-06-01',
 	expectedRemainingMinor,
+	// The mocked rate (150, dated settledOn) — the receiver confirmed it.
+	expectedFxRate: { rateDecimal: '150', rateDate: '2026-06-01' },
 })
 
 beforeEach(() => {
@@ -1937,6 +1939,7 @@ describe('SettlementCreateRequestSchema (.strict() per-branch + discriminator)',
 		expectedRemainingMinor: 9750,
 		sourceCurrency:         'USD',
 		settledOn:              '2026-06-01',
+		expectedFxRate:         { rateDecimal: '150', rateDate: '2026-06-01' },
 	}
 
 	it('accepts a minimal TRIP_CURRENCY body', () => {
@@ -1989,10 +1992,9 @@ describe('SettlementCreateRequestSchema (.strict() per-branch + discriminator)',
 		}
 	})
 
-	it('FOREIGN_CURRENCY accepts an optional canonical expectedFxRate and nothing looser', () => {
-		expect(SettlementCreateRequestSchema.safeParse({
-			...FOREIGN_BODY, expectedFxRate: { rateDecimal: '150', rateDate: '2026-06-01' },
-		}).success).toBe(true)
+	it('FOREIGN_CURRENCY requires a canonical expectedFxRate and nothing looser', () => {
+		const { expectedFxRate: _omitted, ...withoutRate } = FOREIGN_BODY
+		expect(SettlementCreateRequestSchema.safeParse(withoutRate).success).toBe(false)
 		for (const rateDecimal of ['150.0', '1.5e2', 150]) {
 			expect(SettlementCreateRequestSchema.safeParse({
 				...FOREIGN_BODY, expectedFxRate: { rateDecimal, rateDate: '2026-06-01' },
