@@ -53,6 +53,20 @@ describe('fxErrorCatcher', () => {
 		})
 	})
 
+	it('FX_RATE_CHANGED carries the authoritative current rate in the body', () => {
+		const c = fxErrorCatcher()
+		const changed = c(new FxError('FX_RATE_CHANGED', 409, 'rate changed', { rateDecimal: '150', rateDate: '2026-10-07' }))
+		expect(changed).toEqual({
+			log:    expect.stringContaining('FX_RATE_CHANGED'),
+			body:   {
+				error: 'rate changed', code: 'FX_RATE_CHANGED',
+				currentFxRate: { rateDecimal: '150', rateDate: '2026-10-07' },
+			},
+			status: 409,
+			precommit: true,
+		})
+	})
+
 	it('returns null for non-FxError throwables (falls through to other catchers / 500)', () => {
 		const c = fxErrorCatcher()
 		expect(c(new Error('something else'))).toBeNull()

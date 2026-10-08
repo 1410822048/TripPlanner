@@ -54,6 +54,7 @@ import {
   type PdfValidationCache,
 }                                                                   from './upload-intent'
 import { TripIdRe }                                                  from './field-validation'
+import { ExpectedFxRateSchema }                                      from './fx-rate'
 
 // ─── Request body schemas ─────────────────────────────────────────
 
@@ -68,6 +69,10 @@ export const ExpenseCreateRequestSchema = z.object({
    *  is the ONLY way to set a receipt -- client-supplied `expense.
    *  receipt` is rejected outright (was a legacy Phase 1-2 path). */
   intentIds: z.array(z.string().min(1).max(60)).max(2).optional(),
+  /** FOREIGN_CURRENCY only: the rate the user last confirmed (FX CAS, see
+   *  fx-rate.ts assertExpectedFxRate). Top-level rather than inside
+   *  `expense` so the strict foreign payload schema stays the entity shape. */
+  expectedFxRate: ExpectedFxRateSchema.optional(),
 })
 export type ExpenseCreateRequest = z.infer<typeof ExpenseCreateRequestSchema>
 
@@ -93,6 +98,8 @@ export const ExpenseUpdateRequestSchema = z.object({
    *  unconditionally required would reject them for nothing.
    *  Mirrors /wish-file-update's `expectedCurrentPath`. */
   expectedCurrentReceiptPath: z.union([z.string(), z.null()]).optional(),
+  /** FOREIGN_CURRENCY only: same FX CAS as ExpenseCreateRequest. */
+  expectedFxRate: ExpectedFxRateSchema.optional(),
 })
 export type ExpenseUpdateRequest = z.infer<typeof ExpenseUpdateRequestSchema>
 
@@ -315,12 +322,13 @@ async function doCreate(
 
     if (expenseMode === 'FOREIGN_CURRENCY') {
       const { parsedTrip, foreignArtifacts } = await prepareForeignCreate(
-        expenseForSchema, ctx, serviceAccountJson,
+        expenseForSchema, ctx, serviceAccountJson, req.expectedFxRate,
       )
       parsed  = parsedTrip
       foreign = foreignArtifacts
     } else {
       assertNoSourceExpenseKeys(expenseForSchema, 'expense')
+      assertNoExpectedFxRate(req.expectedFxRate)
       const parseResult = makeExpenseCreateSchema().safeParse(expenseForSchema)
       if (!parseResult.success) {
         const issue = parseResult.error.issues[0]
@@ -435,6 +443,14 @@ const PATCH_FOREIGN_KEYS_REJECTED_ON_TRIP_DOC = [
   'fxSnapshot',
 ] as const
 
+/** A trip-currency write converts nothing, so a rate to compare against is
+ *  a caller bug — reject it rather than let the caller believe it is guarded. */
+function assertNoExpectedFxRate(expected: unknown): void {
+  if (expected !== undefined) {
+    throw new ExpenseValidationError('expectedFxRate', 'expectedFxRate is only allowed in FOREIGN_CURRENCY mode')
+  }
+}
+
 function assertNoForeignFieldsOnTripPatch(patch: Record<string, unknown>): void {
   for (const key of PATCH_FOREIGN_KEYS_REJECTED_ON_TRIP_DOC) {
     if (key in patch) {
@@ -526,6 +542,7 @@ async function doUpdate(
   delete patchForSchema.mode
   if (patchMode === 'TRIP_CURRENCY') {
     assertNoSourceExpenseKeys(patchForSchema, 'patch')
+    assertNoExpectedFxRate(req.expectedFxRate)
   }
 
   await runFirestoreTransaction(accessToken, projectId, async (tx) => {
@@ -605,6 +622,7 @@ async function doUpdate(
         expenseId:             req.expenseId,
         callerUid,
         serviceAccountJson,
+        expectedFxRate:        req.expectedFxRate,
       })
     } else {
       write = buildTripUpdateWrite({

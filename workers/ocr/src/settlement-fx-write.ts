@@ -18,7 +18,7 @@
 // load-bearing — the orchestrator calls resolveForeignRate before reading
 // any pair doc so a slow FX provider can't lengthen the tx conflict window.
 import { CascadeError }                    from './cascade'
-import { resolveFxRate, type FxSnapshot }  from './fx-rate'
+import { assertExpectedFxRate, resolveFxRate, type FxSnapshot } from './fx-rate'
 import {
   currencyFractionDigits,
   convertMinorHalfEven,
@@ -85,6 +85,9 @@ export async function resolveForeignRate(
     // drift; fail closed rather than persist a partial doc.
     throw new CascadeError(500, 'unexpected null rate for foreign settlement (source !== trip)')
   }
+  // FX CAS against the rate deriveForeignArtifacts will convert with —
+  // it receives this same object, nothing resolves a rate again.
+  assertExpectedFxRate(req.expectedFxRate, rate)
 
   return {
     rate,

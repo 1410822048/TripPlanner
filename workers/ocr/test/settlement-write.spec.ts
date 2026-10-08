@@ -1965,6 +1965,10 @@ describe('SettlementCreateRequestSchema (.strict() per-branch + discriminator)',
 			const r = SettlementCreateRequestSchema.safeParse(body)
 			expect(r.success, `TRIP body must reject smuggled ${key}`).toBe(false)
 		}
+		// A trip-currency settlement converts nothing: no rate to confirm.
+		expect(SettlementCreateRequestSchema.safeParse({
+			...TRIP_BODY, expectedFxRate: { rateDecimal: '150', rateDate: '2026-06-01' },
+		}).success).toBe(false)
 	})
 
 	it('rejects FOREIGN_CURRENCY body that smuggles money keys or sourceAmountMinor (.strict() on FOREIGN branch)', () => {
@@ -1982,6 +1986,17 @@ describe('SettlementCreateRequestSchema (.strict() per-branch + discriminator)',
 			const body = { ...FOREIGN_BODY, [key]: value }
 			const r = SettlementCreateRequestSchema.safeParse(body)
 			expect(r.success, `FOREIGN body must reject smuggled ${key}`).toBe(false)
+		}
+	})
+
+	it('FOREIGN_CURRENCY accepts an optional canonical expectedFxRate and nothing looser', () => {
+		expect(SettlementCreateRequestSchema.safeParse({
+			...FOREIGN_BODY, expectedFxRate: { rateDecimal: '150', rateDate: '2026-06-01' },
+		}).success).toBe(true)
+		for (const rateDecimal of ['150.0', '1.5e2', 150]) {
+			expect(SettlementCreateRequestSchema.safeParse({
+				...FOREIGN_BODY, expectedFxRate: { rateDecimal, rateDate: '2026-06-01' },
+			}).success).toBe(false)
 		}
 	})
 

@@ -86,6 +86,29 @@ describe('resolveForeignRate', () => {
     )
   })
 
+  // FX CAS: the rate the receiver confirmed vs the rate this settlement will
+  // convert with (the same object deriveForeignArtifacts then receives).
+  it('accepts a matching expectedFxRate and returns that same resolved rate', async () => {
+    const fr = await resolveForeignRate(
+      { ...foreignReq({ sourceCurrency: 'USD', settledOn: '2026-06-01' }), expectedFxRate: { rateDecimal: '150', rateDate: '2026-06-01' } },
+      { currency: 'JPY' },
+      SA_JSON,
+    )
+    expect(fr.rate.rateDecimal).toBe('150')
+    expect(fxRate.resolveFxRate).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses a changed rate with 409 FX_RATE_CHANGED carrying the current rate', async () => {
+    await expect(resolveForeignRate(
+      { ...foreignReq({ sourceCurrency: 'USD', settledOn: '2026-06-01' }), expectedFxRate: { rateDecimal: '149', rateDate: '2026-05-29' } },
+      { currency: 'JPY' },
+      SA_JSON,
+    )).rejects.toMatchObject({
+      code: 'FX_RATE_CHANGED', status: 409,
+      currentFxRate: { rateDecimal: '150', rateDate: '2026-06-01' },
+    })
+  })
+
   it('fails closed with CascadeError 500 when resolveFxRate returns null for a cross-currency pair', async () => {
     vi.mocked(fxRate.resolveFxRate).mockResolvedValueOnce(null)
     await expect(

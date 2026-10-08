@@ -18,7 +18,7 @@
 // maps. This trades wire-protocol coverage (already done in
 // firestore-tx.spec) for sharper assertions on the TxResult shape
 // that expense-write builds.
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createFirestoreTxMock, type MockReadDoc } from './helpers/tx-mock'
 
 vi.mock('../src/admin', () => ({
@@ -2059,6 +2059,233 @@ describe('Phase 3b foreign-update endpoint', () => {
 		await expect(expenseUpdate(
 			CALLER_UID,
 			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', currency: 'EUR' } },
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(ExpenseValidationError)
+	})
+})
+
+// ─── FX CAS (expectedFxRate) ───────────────────────────────────────
+//
+// expectedFxRate is the rate the user last confirmed, not a rate the
+// Worker uses. The Worker still resolves the authoritative rate; when it
+// differs the write is refused (409 FX_RATE_CHANGED + the current rate)
+// instead of being saved with a number nobody saw. The rate compared is
+// always the one the write converts with: freshly resolved on create /
+// date change, the STORED one when the update reuses it or converts
+// nothing — never "today's market" for an edit that does not re-rate.
+describe('FX CAS (expectedFxRate)', () => {
+	// Some tests queue a "market moved" answer that must NOT be consumed;
+	// drop it so it can't leak into the next test. (Vitest 4 mockReset
+	// restores the factory implementation.)
+	afterEach(() => { vi.mocked(fxRate.getFxSnapshot).mockReset() })
+
+	const moved =(input: import('../src/fx-rate').GetFxSnapshotInput) => ({
+		provider:             'frankfurter-v2' as const,
+		baseCurrency:         input.sourceCurrency,
+		quoteCurrency:        input.tripCurrency,
+		requestedDate:        input.requestedDate,
+		rateDate:             input.requestedDate,
+		rateDecimal:          '151',
+		sourceAmountMinor:    input.sourceAmountMinor,
+		convertedAmountMinor: Math.round(input.sourceAmountMinor * 151 / 100),
+		fetchedAtMs:          1_700_000_000_000,
+	})
+
+	function seedCreate() {
+		txGetResponses.set(`trips/${TRIP_ID}`,                        tripReadDoc({ currency: 'JPY' }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`,  memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, notFoundReadDoc(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`))
+	}
+	function seedForeignAlive() {
+		txGetResponses.set(`trips/${TRIP_ID}`,                        tripReadDoc({ currency: 'JPY' }))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`,  memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, foreignExpenseReadDoc())
+	}
+	function writtenRate(): string | undefined {
+		const writes = capturedTxResult!.writes as Array<{
+			fields: Record<string, { mapValue?: { fields: Record<string, { stringValue?: string }> } }>
+		}>
+		return writes[0].fields.fxSnapshot?.mapValue?.fields.rateDecimal?.stringValue
+	}
+
+	it('create: a matching rate saves, converting with the one rate it resolved', async () => {
+		seedCreate()
+		await expenseCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validForeignExpensePayload(),
+				expectedFxRate: { rateDecimal: '150', rateDate: '2026-05-22' },
+			},
+			'{}', BUCKET,
+		)
+		expect(vi.mocked(fxRate.getFxSnapshot)).toHaveBeenCalledTimes(1)
+		expect(writtenRate()).toBe('150')
+	})
+
+	it('create: a changed rate is refused with the current rate, nothing written', async () => {
+		seedCreate()
+		const err = await expenseCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validForeignExpensePayload(),
+				expectedFxRate: { rateDecimal: '149', rateDate: '2026-05-21' },
+			},
+			'{}', BUCKET,
+		).catch((e: unknown) => e)
+		expect(err).toBeInstanceOf(fxRate.FxError)
+		expect(err).toMatchObject({
+			code: 'FX_RATE_CHANGED', status: 409,
+			currentFxRate: { rateDecimal: '150', rateDate: '2026-05-22' },
+		})
+		expect(capturedTxResult).toBeNull()
+	})
+
+	it('create: same value but a different rateDate is still a different rate', async () => {
+		seedCreate()
+		await expect(expenseCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validForeignExpensePayload(),
+				expectedFxRate: { rateDecimal: '150', rateDate: '2026-05-21' },
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ code: 'FX_RATE_CHANGED' })
+	})
+
+	it('create: omitted expectedFxRate keeps the old behaviour (rollout window)', async () => {
+		seedCreate()
+		await expenseCreate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validForeignExpensePayload() },
+			'{}', BUCKET,
+		)
+		expect(writtenRate()).toBe('150')
+	})
+
+	it('create: a trip-currency write carrying expectedFxRate is a caller bug', async () => {
+		seedCreate()
+		await expect(expenseCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validExpensePayload(),
+				expectedFxRate: { rateDecimal: '150', rateDate: '2026-05-22' },
+			},
+			'{}', BUCKET,
+		)).rejects.toBeInstanceOf(ExpenseValidationError)
+	})
+
+	it('request schema: only a canonical decimal string is accepted', async () => {
+		const { ExpenseCreateRequestSchema } = await import('../src/expense-write')
+		const base = { tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: {} }
+		for (const rateDecimal of ['150.0', '1.5e2', '0150', '']) {
+			expect(ExpenseCreateRequestSchema.safeParse({ ...base, expectedFxRate: { rateDecimal, rateDate: '2026-05-22' } }).success).toBe(false)
+		}
+		expect(ExpenseCreateRequestSchema.safeParse({ ...base, expectedFxRate: { rateDecimal: 150, rateDate: '2026-05-22' } }).success).toBe(false)
+		expect(ExpenseCreateRequestSchema.safeParse({ ...base, expectedFxRate: { rateDecimal: '150', rateDate: '2026-05-22' } }).success).toBe(true)
+	})
+
+	const moneyPatch = {
+		mode:              'FOREIGN_CURRENCY',
+		sourceCurrency:    'USD',
+		sourceAmountMinor: 2000,
+		sourceItems: [{
+			id: 'item-1', name: 'Big Lunch', sourceAmountMinor: 2000,
+			allocations: [{ memberId: 'editor-uid', shares: 1 }],
+		}],
+		sourceAdjustments: [],
+	}
+
+	it('update reusing the stored rate compares with the stored rate, not the market', async () => {
+		seedForeignAlive()
+		vi.mocked(fxRate.getFxSnapshot).mockImplementationOnce(async input => moved(input))
+		await expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: moneyPatch,
+				expectedFxRate: { rateDecimal: '150', rateDate: '2026-05-22' },
+			},
+			'{}', BUCKET,
+		)
+		expect(vi.mocked(fxRate.getFxSnapshot)).not.toHaveBeenCalled()
+		expect(writtenRate()).toBe('150')
+	})
+
+	it('update reusing the stored rate refuses an expectation that differs from it', async () => {
+		seedForeignAlive()
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: moneyPatch,
+				expectedFxRate: { rateDecimal: '151', rateDate: '2026-05-22' },
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({
+			code: 'FX_RATE_CHANGED',
+			currentFxRate: { rateDecimal: '150', rateDate: '2026-05-22' },
+		})
+		expect(capturedTxResult).toBeNull()
+	})
+
+	it('text-only update compares with the stored rate and never resolves one', async () => {
+		seedForeignAlive()
+		await expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', title: 'Renamed' },
+				expectedFxRate: { rateDecimal: '150', rateDate: '2026-05-22' },
+			},
+			'{}', BUCKET,
+		)
+		expect(vi.mocked(fxRate.getFxSnapshot)).not.toHaveBeenCalled()
+		seedForeignAlive()
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', title: 'Renamed' },
+				expectedFxRate: { rateDecimal: '151', rateDate: '2026-05-22' },
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ code: 'FX_RATE_CHANGED' })
+	})
+
+	it('update that re-rates (date change) compares with the freshly resolved rate', async () => {
+		seedForeignAlive()
+		vi.mocked(fxRate.getFxSnapshot).mockImplementationOnce(async input => moved(input))
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', date: '2026-05-23' },
+				expectedFxRate: { rateDecimal: '150', rateDate: '2026-05-23' },
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({
+			code: 'FX_RATE_CHANGED',
+			currentFxRate: { rateDecimal: '151', rateDate: '2026-05-23' },
+		})
+
+		seedForeignAlive()
+		vi.mocked(fxRate.getFxSnapshot).mockImplementationOnce(async input => moved(input))
+		await expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', date: '2026-05-23' },
+				expectedFxRate: { rateDecimal: '151', rateDate: '2026-05-23' },
+			},
+			'{}', BUCKET,
+		)
+		expect(writtenRate()).toBe('151')
+	})
+
+	it('a trip-currency update carrying expectedFxRate is a caller bug', async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`,                        tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`,  memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, aliveExpenseReadDoc())
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'TRIP_CURRENCY', title: 'x' },
+				expectedFxRate: { rateDecimal: '150', rateDate: '2026-05-22' },
+			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(ExpenseValidationError)
 	})

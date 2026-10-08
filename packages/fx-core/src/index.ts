@@ -88,6 +88,31 @@ export function currencyFractionDigits(code: string): number {
   return FRACTION_DIGITS[code] ?? 2
 }
 
+// ─── Rate finality ────────────────────────────────────────────────
+
+/** Whether a provider answer for `requestedDate` can never change. A date
+ *  before today (UTC) is final: its rate was published that day, or never
+ *  will be (weekend / holiday → the earlier rateDate is the answer for
+ *  good). For today or later, an earlier rateDate means "not published
+ *  yet" — the same request may return a different rate later today.
+ *
+ *  Shared so the Worker's fxRates cache and the client preview cache pin
+ *  exactly the same answers; when they disagreed, the preview kept showing
+ *  a provisional rate the save no longer used. */
+export function isFinalRate(args: { rateDate: string; requestedDate: string; todayUtc: string }): boolean {
+  return args.rateDate === args.requestedDate || args.requestedDate < args.todayUtc
+}
+
+/** Decimal equality of two rates, by value rather than spelling. Both must
+ *  be canonical (throws otherwise — a non-canonical rate reaching a
+ *  comparison is a boundary bug, not a mismatch). Never compare rates as
+ *  JS numbers: "149.1" and a float that prints as 149.1 need not agree. */
+export function ratesEqual(a: string, b: string): boolean {
+  const pa = parseDecimalRate(a)
+  const pb = parseDecimalRate(b)
+  return pa.mantissa === pb.mantissa && pa.scale === pb.scale
+}
+
 // ─── Canonical-form helpers ───────────────────────────────────────
 
 /** Validate a string is in canonical decimal form for a STRICTLY

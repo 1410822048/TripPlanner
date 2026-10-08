@@ -29,9 +29,9 @@
 //     same string straight into convertMinorHalfEven, so the math is
 //     byte-stable across replay.
 //   - No TTL. Frankfurter's historical rates don't change once
-//     published; once cached, that's the authoritative record. Same-day
-//     pre-publish requests get yesterday's rate locked in -- intentional
-//     per design decision #3 (no second look once cached).
+//     published; once cached, that's the authoritative record. Only
+//     final answers are cached (isFinalRate): a same-day pre-publish
+//     answer is used but not stored, so the published rate replaces it.
 //
 // Provider:
 //   Frankfurter v2 — `GET https://api.frankfurter.dev/v2/rates?
@@ -57,7 +57,10 @@
 //   - Rate-decimal canonicalization across providers -- single provider
 //     for now; if a fallback provider is added we'd canonicalize at
 //     each provider boundary, but cache key stays provider-agnostic.
-import { canonicalizeRate, convertMinorHalfEven } from '@tripmate/fx-core'
+import { z } from 'zod'
+import {
+  canonicalizeRate, convertMinorHalfEven, isCanonicalRateString, isFinalRate, ratesEqual,
+} from '@tripmate/fx-core'
 import { getAdminToken, getProjectId }            from './admin'
 import type { FsValue } from './firestore'
 
@@ -73,16 +76,57 @@ export type FxErrorCode =
   | 'FX_INVALID_DATE'
   | 'FX_PROVIDER_REJECTED'
   | 'FX_PROVIDER_UNAVAILABLE'
+  | 'FX_RATE_CHANGED'
+
+/** A rate as the user saw it / as the Worker resolved it. */
+export interface FxRateQuote {
+  rateDecimal: string
+  rateDate:    string
+}
 
 export class FxError extends Error {
   readonly code:   FxErrorCode
   readonly status: number
-  constructor(code: FxErrorCode, status: number, message: string) {
+  /** FX_RATE_CHANGED only: the rate this request was refused against, so
+   *  the client can show it without asking again. */
+  readonly currentFxRate: FxRateQuote | undefined
+  constructor(code: FxErrorCode, status: number, message: string, currentFxRate?: FxRateQuote) {
     super(message)
     this.code   = code
     this.status = status
     this.name   = 'FxError'
+    this.currentFxRate = currentFxRate
   }
+}
+
+/** Wire shape of `expectedFxRate`: the rate the user last confirmed. The
+ *  decimal must be canonical so equality is by value (see fx-core
+ *  ratesEqual), never by float. */
+export const ExpectedFxRateSchema = z.object({
+  rateDecimal: z.string().max(40).refine(isCanonicalRateString, 'rateDecimal must be a canonical decimal'),
+  // Literal, not ISO_DATE_RE: that const is declared further down and this
+  // schema is built at module load.
+  rateDate:    z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'rateDate must be YYYY-MM-DD'),
+}).strict()
+
+/** Compare-and-swap on the FX rate. `expectedFxRate` is NOT a rate the
+ *  Worker will use — the Worker still decides the authoritative rate. It is
+ *  the rate the user last confirmed, and a write whose authoritative rate
+ *  differs is refused (409 FX_RATE_CHANGED, carrying the current rate)
+ *  rather than silently saved with a number nobody saw.
+ *
+ *  `actual` must be the very rate object the caller then converts with and
+ *  persists; resolving again after this check would reopen the window.
+ *  Absent `expected` (an older client) skips the check — optional during
+ *  rollout, see the deploy notes. */
+export function assertExpectedFxRate(expected: FxRateQuote | undefined, actual: FxRateQuote): void {
+  if (!expected) return
+  if (expected.rateDate === actual.rateDate && ratesEqual(expected.rateDecimal, actual.rateDecimal)) return
+  throw new FxError(
+    'FX_RATE_CHANGED', 409,
+    `rate changed: expected ${expected.rateDecimal} (${expected.rateDate}), current ${actual.rateDecimal} (${actual.rateDate})`,
+    { rateDecimal: actual.rateDecimal, rateDate: actual.rateDate },
+  )
 }
 
 /** Snapshot persisted alongside a money amount (expense or settlement).
@@ -578,15 +622,12 @@ export async function resolveFxRate(
     fetchImpl,
     todayUtc,
   )
-  // Pin only a FINAL answer. A date before today (UTC) is final: its rate
-  // was published that day, or never will be (weekend / holiday → the
-  // earlier rateDate is the answer for good). For today or later, an
-  // earlier rateDate means "not published yet" — caching it froze the
-  // previous day's rate onto every later save for that date, and the
-  // preview endpoint (any member may call it) would trigger that freeze
-  // just by opening a form. Unpinned answers are refetched next time.
-  const isFinal = provider.rateDate === input.requestedDate || input.requestedDate < todayUtc
-  if (isFinal) {
+  // Pin only a FINAL answer (see isFinalRate). Caching a pre-publication
+  // answer froze the previous day's rate onto every later save for that
+  // date, and the preview endpoint (any member may call it) would trigger
+  // that freeze just by opening a form. Unpinned answers are refetched
+  // next time. The client preview cache uses the same predicate.
+  if (isFinalRate({ rateDate: provider.rateDate, requestedDate: input.requestedDate, todayUtc })) {
     try {
       await writeCache(accessToken, projectId, cacheKey, {
         base:          input.sourceCurrency,

@@ -10,6 +10,8 @@ import {
   convertMinorHalfEven,
   currencyFractionDigits,
   estimateSourceMinorAtMostTargetHalfEven,
+  isFinalRate,
+  ratesEqual,
   isCanonicalRateString,
   parseDecimalRate,
 } from './index'
@@ -531,5 +533,34 @@ describe('integration: itemised conversion + residual reconciliation', () => {
     })
     // sum(lines) = 1462 - 219 = 1243; residual 1243 - 1243 = 0 → unchanged
     expect(reconciled).toEqual([1462, -219])
+  })
+})
+
+describe('isFinalRate', () => {
+  const today = '2026-10-07'
+  test('an answer dated the requested day is final', () => {
+    expect(isFinalRate({ rateDate: today, requestedDate: today, todayUtc: today })).toBe(true)
+  })
+  test('an earlier answer for a past day is final (weekend / holiday)', () => {
+    expect(isFinalRate({ rateDate: '2026-10-02', requestedDate: '2026-10-04', todayUtc: today })).toBe(true)
+  })
+  test('an earlier answer for today is provisional (not published yet)', () => {
+    expect(isFinalRate({ rateDate: '2026-10-06', requestedDate: today, todayUtc: today })).toBe(false)
+  })
+  test("an answer for the user's tomorrow (east of UTC) is provisional", () => {
+    expect(isFinalRate({ rateDate: today, requestedDate: '2026-10-08', todayUtc: today })).toBe(false)
+  })
+})
+
+describe('ratesEqual', () => {
+  test('compares by decimal value', () => {
+    expect(ratesEqual('149.1', '149.1')).toBe(true)
+    expect(ratesEqual('149.1', '149.11')).toBe(false)
+    expect(ratesEqual('0.00684', '0.0684')).toBe(false)
+    expect(ratesEqual('150', '15')).toBe(false)
+  })
+  test('refuses a non-canonical spelling instead of guessing', () => {
+    expect(() => ratesEqual('149.100', '149.1')).toThrow()
+    expect(() => ratesEqual('149.1', '1.491e2')).toThrow()
   })
 })

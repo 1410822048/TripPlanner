@@ -116,7 +116,14 @@ export function fxErrorCatcher(): (e: unknown) => DomainErrorMapped | null {
   return e => e instanceof FxError
     ? {
         log:    `fx-error: ${e.code} ${e.message}`,
-        body:   { error: e.message, code: e.code },
+        body:   {
+          error: e.message,
+          code:  e.code,
+          // FX_RATE_CHANGED: the rate this request was refused against is
+          // the authoritative answer; the client shows it instead of asking
+          // /fx-rate again (which could already say something newer).
+          ...(e.currentFxRate ? { currentFxRate: e.currentFxRate } : {}),
+        },
         status: e.status,
         // FX is resolved BEFORE any settlement/expense write, so an FxError
         // (provider 502, future-date 400) is always definitively pre-commit

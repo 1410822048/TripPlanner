@@ -15,6 +15,7 @@
 import { z } from 'zod'
 import { SETTLEMENT_LIMITS, UID_MAX } from '@tripmate/entity-contracts'
 import { FieldValidationError, TripIdRe } from './field-validation'
+import { ExpectedFxRateSchema } from './fx-rate'
 
 // ─── Request body schemas ─────────────────────────────────────────
 
@@ -65,6 +66,9 @@ const SettlementCreateForeignSchema = SettlementCreateBaseSchema.extend({
   mode:           z.literal('FOREIGN_CURRENCY'),
   sourceCurrency: z.string().regex(CurrencyRe, 'sourceCurrency must be ISO 4217 alpha-3 uppercase'),
   settledOn:      z.string().regex(IsoDateRe, 'settledOn must be YYYY-MM-DD'),
+  /** The rate the receiver last confirmed (FX CAS, fx-rate.ts
+   *  assertExpectedFxRate). Optional while older clients drain. */
+  expectedFxRate: ExpectedFxRateSchema.optional(),
 }).strict()
 
 export const SettlementCreateRequestSchema = z.discriminatedUnion('mode', [

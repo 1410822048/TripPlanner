@@ -24,7 +24,7 @@ import {
   type TxWrite,
   type TxUpdateWrite,
 }                                          from './firestore-tx'
-import { getFxSnapshot, type FxSnapshot }  from './fx-rate'
+import { assertExpectedFxRate, getFxSnapshot, type FxRateQuote, type FxSnapshot } from './fx-rate'
 import { convertMinorHalfEven, currencyFractionDigits, isCanonicalRateString } from '@tripmate/fx-core'
 import { pushUnique, decodeExpense, rostersForUpdate, type TripContext } from './expense-write-shared'
 import {
@@ -78,6 +78,7 @@ export async function prepareForeignCreate(
   body:               unknown,
   ctx:                TripContext,
   serviceAccountJson: string,
+  expectedFxRate?:    FxRateQuote,
 ): Promise<{
   parsedTrip:       ReturnType<ReturnType<typeof makeExpenseCreateSchema>['parse']>
   foreignArtifacts: ForeignArtifacts
@@ -120,6 +121,9 @@ export async function prepareForeignCreate(
     // drift; fail closed rather than persist a partial doc.
     throw new CascadeError(500, 'unexpected null FxSnapshot for foreign expense (source !== trip)')
   }
+  // FX CAS against THIS snapshot — the one converted with and persisted
+  // below. Nothing after this point resolves a rate again.
+  assertExpectedFxRate(expectedFxRate, snapshot)
 
   if (fp.sourceSplits !== undefined) {
     const converted = materializeForeignSplitDomain({
@@ -230,6 +234,8 @@ export async function buildForeignUpdateWrite(args: {
   expenseId:             string
   callerUid:             string
   serviceAccountJson:    string
+  /** The rate the user last confirmed; see assertExpectedFxRate. */
+  expectedFxRate?:       FxRateQuote
 }): Promise<TxWrite> {
   const fParseResult = makeForeignExpenseUpdateSchema().safeParse(args.patchForSchema)
   if (!fParseResult.success) {
@@ -350,6 +356,10 @@ export async function buildForeignUpdateWrite(args: {
     if (!snapshot) {
       throw new CascadeError(500, 'unexpected null FxSnapshot for foreign expense (source !== trip)')
     }
+    // FX CAS against the rate this write will convert with: the stored rate
+    // when it is reused (an edit must not fail because today's market moved),
+    // a freshly resolved one when the date / currency changed.
+    assertExpectedFxRate(args.expectedFxRate, snapshot)
 
     const useSplitDomain =
       hasSplitDomainPatch ||
@@ -526,6 +536,10 @@ export async function buildForeignUpdateWrite(args: {
     pushUnique(updateMask, 'sourceSplits')
     pushUnique(updateMask, 'fxSnapshot')
   } else {
+    // No conversion happens, so the only rate in play is the stored one —
+    // never the current market rate.
+    const stored = storedFxRate(args.currentFields)
+    if (stored) assertExpectedFxRate(args.expectedFxRate, stored)
     // Text-only on a foreign doc preserves the canonical trip-currency
     // money fields, so it must not re-fetch FX. A paidBy change still
     // affects settlement debt edges, though, so re-run the same
