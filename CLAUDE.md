@@ -424,6 +424,25 @@ client 對 Worker 失敗只有兩種處置:**definitive → 回滾樂觀列**,**
 
 booking 的覆蓋率收緊不需要 epoch —— client 一直就送精確的 touched set,舊 bundle 本來就合規;需要 epoch 的是 expense 的新必填欄位。
 
+### FX 匯率 CAS(`expectedFxRate`)
+
+外幣費用 create / update 與外幣清算 create 都帶可選的 `expectedFxRate: { rateDecimal, rateDate }`。**它不是「請 Worker 用這個匯率」,而是「使用者最後確認的匯率是這個」**:Worker 仍自行決定權威匯率,兩者不同就 `409 FX_RATE_CHANGED` 拒絕,並在 body 帶 `currentFxRate`。金額仍由 Worker 決定,只是從「可以靜默覆寫」升級為「權威值必須等於使用者確認值」。
+
+- **比對用 canonical decimal string**(`ExpectedFxRateSchema` 只收 canonical;`fx-core ratesEqual` 以 BigInt mantissa/scale 比),從不轉 JS number。`rateDate` 也要相同
+- **比對的是這次寫入實際換算、寫進 `fxSnapshot` 的那一份 rate 物件**,之後不得再解析匯率(`assertExpectedFxRate` 放在 `getFxSnapshot` / `resolveFxRate` 之後、換算之前)
+- **不重算的更新比 DB 已存匯率,不比市場**:沿用已存匯率(日期與幣別未變)或純文字更新時,比的是 `fxSnapshot` 現值;只有改日期 / 幣別時才比新解析的匯率。否則市場一動,改備註也會被擋
+- 前端收到 409 **直接用 `currentFxRate`**(`useFxPreview.adoptRate`),不再打 `/fx-rate`;重新查詢可能已是更新的值,等於重開窗口。之後的預覽 fetch 較新才取代它
+- `expectedFxRate` 放在 request **最外層**(與 `expectedCurrentReceiptPath` 同層),不放進 `expense` / `patch`:`expenseUpdateApplied` 會逐欄比對 patch 與已存 doc
+- **UX 分流只是體驗**:預覽匯率仍是暫定(`isFinalRate` 為 false:當天、尚未公布)時,表單 / 清算 sheet 等 Worker 結果(modal-wait,`reportInForm` 跳過全域 toast),409 在原表單顯示新匯率讓使用者確認再存;最終匯率維持 optimistic close。**「最終匯率不會不一致」不是正確性假設** —— CAS 每次都跑,那條路徑不一致時走一般錯誤 toast。等結果時若是 ambiguous,照 optimistic 路徑關表單,避免同一份草稿以新 id 再存一次
+- **等待中的儲存屬於表單實例,不屬於頁面**(`useAwaitedSave`):每次開啟都是新掛載,實例本身就是「這次開啟」(同一筆費用重開也是新實例),busy / 錯誤 banner 是實例自己的 state,關閉即隨之消失。結果在**落地當下**才分流:仍開著 → 成功關閉、明確失敗顯示在原表單;等待中被關掉 → mutation 的 `reportInForm()` 回 false,由全域 handler 照 optimistic-close 路徑回報(不可吞掉);ambiguous 一律走全域「正在確認」並關閉表單。頁面只回傳 mutation promise,不碰關閉 / banner —— 由頁面層「目前開著的那個 modal」去承接晚到結果,就會關掉 / 污染使用者後來開的另一份草稿
+- `FX_RATE_CHANGED` 是 CAS 的預期結果,不送 Sentry
+
+Rollout(expand → migrate → contract),**目前在第 2 階段之前**:
+1. 部署 Worker(接受可選 `expectedFxRate`;外幣清算 schema 是 `.strict()`,新 Pages 先上線會讓舊 Worker 回 400,所以 **Worker 必須先部署**;費用的 top-level schema 會 strip,不會 400 但也不會檢查)
+2. 部署 Pages(開始送)
+3. 等舊 bundle 淘汰,必要時提高 `minimumWriteEpoch`
+4. 把 `expectedFxRate` 改成外幣寫入必填。**在這之前「畫面匯率 = 存檔匯率」只對新 bundle 成立**,舊 bundle 不送就照舊放行 —— 這是 rollout 取捨,不是 bug
+
 ### 成員 ACL cascade(add 側的 roster guard)
 
 `cascadeMemberAdd`(`workers/ocr/src/cascade.ts`)把 uid arrayUnion 到 trip doc 與每個子集合 doc 的 `memberIds[]`。**每個 ≤500 writes 的 chunk 都跑在自己的 transaction 內,並在 tx 中重讀 trip roster**;plain-GET 的前置檢查只是 fail-fast,單靠它是 TOCTOU:
