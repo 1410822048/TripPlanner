@@ -31,6 +31,7 @@ import { formatMinorForInput, parseMoneyToMinor, MoneyParseError } from '@/utils
 import { CATEGORY_ICON, SCHEDULE_CATEGORIES } from '@/shared/categoryMeta'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
+import { useAwaitedSave, describeSaveFailure } from '@/hooks/useAwaitedSave'
 import { isGoogleMapsUrl } from '@/utils/maps'
 import { deriveScheduleSearchContext } from '@/features/trips/countryContext'
 
@@ -108,18 +109,23 @@ interface Props {
   defaultCountryCode: string
   locationSearchEnabled?: boolean
   isOpen:      boolean
-  isSaving:    boolean
+  /** Banner for a refusal the page decides synchronously (scope / epoch).
+   *  A failed write is this form's own banner (useAwaitedSave). */
   saveError?:  string | null
   onClose:     () => void
-  onSave:      (data: CreateScheduleInput) => void
-  onDelete?:   () => void
+  /** Returns the write's promise when one is issued; this form tracks it —
+   *  busy state, banner and closing belong to this open, not the page.
+   *  `reportInForm` goes into the mutation variables. */
+  onSave:      (data: CreateScheduleInput, reportInForm: () => boolean) => void | Promise<unknown>
+  onDelete?:   () => void | Promise<unknown>
 }
 
 export default function ScheduleFormModal({
   tripId, editTarget, defaultDate, tripStartDate, tripEndDate,
   schedules, defaultCountryCode, locationSearchEnabled = true,
-  isOpen, isSaving, saveError, onClose, onSave, onDelete,
+  isOpen, saveError, onClose, onSave, onDelete,
 }: Props) {
+  const awaited = useAwaitedSave(onClose)
   const currency = useTripCurrency()
   const symbol   = currencySymbol(currency)
   const { state, setField } = useFormReducer<FormState>(
@@ -302,7 +308,7 @@ export default function ScheduleFormModal({
       durationMinutes: duration.value,
       timeMode: state.locked ? 'fixed' : (state.startTime ? 'preferred' : 'flexible'),
     })
-    onSave({
+    const data = {
       title: state.title.trim(),
       date:  state.date,
       startTime:          timing.startTime,
@@ -312,16 +318,23 @@ export default function ScheduleFormModal({
       description:        state.desc      || undefined,
       estimatedCostMinor: parsed.value,
       location:           state.locationRef ?? (loc ? { status: 'unresolved', query: loc } : undefined),
-    } satisfies CreateScheduleInput)
+    } satisfies CreateScheduleInput
+    awaited.submit(() => onSave(data, awaited.stillOpen), describeSaveFailure)
+  }
+
+  // Delete failures are toasted globally; this form only closes itself, and
+  // only if it is still the open one.
+  function handleDelete() {
+    awaited.submit(() => onDelete?.())
   }
 
   return (
     <FormModalShell
       isOpen={isOpen}
-      isSaving={isSaving}
+      isSaving={awaited.saving}
       title={editTarget ? '編輯行程' : '新增行程'}
       saveLabel={editTarget ? '儲存變更' : '新增行程'}
-      saveError={saveError}
+      saveError={awaited.error ?? saveError}
       onClose={onClose}
       onSave={handleSave}
     >
@@ -563,7 +576,7 @@ export default function ScheduleFormModal({
         />
       </FormField>
 
-      {editTarget && onDelete && <DeleteConfirm noun="行程" onDelete={onDelete} />}
+      {editTarget && onDelete && <DeleteConfirm noun="行程" onDelete={handleDelete} disabled={awaited.saving} />}
     </FormModalShell>
   )
 }

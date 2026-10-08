@@ -17,7 +17,7 @@ import { createListOverlay } from '@/hooks/listOverlay'
 import { useTripListMutation } from '@/hooks/useTripListMutation'
 import { auditCreateMock } from '@/utils/audit'
 import type { CreateScheduleInput, Schedule } from '@/types'
-import { MUTATION_ACTION, type MutationOptions } from '@/services/queryClient'
+import { MUTATION_ACTION } from '@/services/queryClient'
 
 const scheduleKeys = {
   all: (tripId: string, uid?: string) => ['schedules', tripId, uid ?? ''] as const,
@@ -60,7 +60,7 @@ export function nextScheduleOrder(schedules: Schedule[], date: string): number {
 const serverRead = (tripId: string, uid: string | undefined) =>
   () => getSchedulesByTripFromServer(tripId, uid ?? '')
 
-export function useCreateSchedule(tripId: string, options?: MutationOptions) {
+export function useCreateSchedule(tripId: string) {
   return useTripListMutation<Schedule, {
     scheduleId: string
     input:      CreateScheduleInput
@@ -84,11 +84,10 @@ export function useCreateSchedule(tripId: string, options?: MutationOptions) {
       }),
     },
     action:     MUTATION_ACTION.CREATE_SCHEDULE,
-    silent:     options?.silent,
   })
 }
 
-export function useUpdateSchedule(tripId: string, options?: MutationOptions) {
+export function useUpdateSchedule(tripId: string) {
   return useTripListMutation<Schedule, {
     scheduleId: string
     updates:    Partial<CreateScheduleInput>
@@ -121,7 +120,6 @@ export function useUpdateSchedule(tripId: string, options?: MutationOptions) {
       }),
     },
     action:     MUTATION_ACTION.UPDATE,
-    silent:     options?.silent,
   })
 }
 

@@ -6,7 +6,7 @@
 import { useMutation } from '@tanstack/react-query'
 import { useUid } from '@/hooks/useAuth'
 import type { ListOverlayController, OverlayHandle, OverlayOpInput } from '@/hooks/listOverlay'
-import type { MutationActionLabel, MutationMeta } from '@/services/queryClient'
+import type { MutationActionLabel, MutationMeta, ReportInForm } from '@/services/queryClient'
 
 export function isWorkerAmbiguousError(err: unknown): boolean {
   return (err as { name?: string } | null)?.name === 'WorkerAmbiguous'
@@ -34,8 +34,6 @@ export interface UseTripListMutationOpts<T extends { id: string }, Vars> {
   overlay?:   OverlayMutationConfig<T, Vars>
   /** Sentry tag + global-toast prefix when the mutation fails. */
   action:     MutationActionLabel
-  /** When true, the global MutationCache.onError skips its toast. */
-  silent?:    boolean
   /** Optional callback that runs after the factory's overlay decision. */
   onError?:   (err: unknown) => void
 }
@@ -51,14 +49,16 @@ export function useTripListMutation<T extends { id: string }, Vars>(
   const key     = opts.keyFactory(opts.tripId, uid)
   const overlay = opts.overlay
 
+  // Every list mutation may carry `reportInForm` (read by the global
+  // MutationCache.onError); the feature's own `mutate` never sees a need for it.
   return useMutation({
-    mutationFn: (vars: Vars) => {
+    mutationFn: (vars: Vars & ReportInForm) => {
       if (!uid) {
         throw new Error(`useTripListMutation[${opts.action}]: uid is undefined`)
       }
       return opts.mutate(vars, { uid })
     },
-    meta: { action: opts.action, silent: opts.silent } satisfies MutationMeta,
+    meta: { action: opts.action } satisfies MutationMeta,
     onMutate: overlay
       ? (vars): MutateContext => ({ handle: overlay.controller.add(key, overlay.op(vars, { uid })) })
       : undefined,

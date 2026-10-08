@@ -117,10 +117,9 @@ export const ExpectedFxRateSchema = z.object({
  *
  *  `actual` must be the very rate object the caller then converts with and
  *  persists; resolving again after this check would reopen the window.
- *  Absent `expected` (an older client) skips the check — optional during
- *  rollout, see the deploy notes. */
-export function assertExpectedFxRate(expected: FxRateQuote | undefined, actual: FxRateQuote): void {
-  if (!expected) return
+ *  Required on every foreign-currency write: without it nothing ties the
+ *  saved amount to the one the user saw. */
+export function assertExpectedFxRate(expected: FxRateQuote, actual: FxRateQuote): void {
   if (expected.rateDate === actual.rateDate && ratesEqual(expected.rateDecimal, actual.rateDecimal)) return
   throw new FxError(
     'FX_RATE_CHANGED', 409,

@@ -10,6 +10,7 @@ import { inputClass } from '@/components/ui/inputStyle'
 import CategoryChipRow from '@/components/ui/CategoryChipRow'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
+import { useAwaitedSave, describeSaveFailure } from '@/hooks/useAwaitedSave'
 import { PLAN_CATEGORY_ICON } from '../categories'
 
 const CATEGORIES: { value: PlanCategory; label: string }[] = [
@@ -41,17 +42,22 @@ interface Props {
   editTarget:      PlanItem | null
   defaultCategory: PlanCategory
   isOpen:          boolean
-  isSaving:        boolean
+  /** Banner for a refusal the page decides synchronously (scope / epoch).
+   *  A failed write is this form's own banner (useAwaitedSave). */
   saveError?:      string | null
   onClose:         () => void
-  onSave:          (data: CreatePlanItemInput) => void
+  /** Returns the write's promise when one is issued; this form tracks it —
+   *  busy state, banner and closing belong to this open, not the page.
+   *  `reportInForm` goes into the mutation variables. */
+  onSave:          (data: CreatePlanItemInput, reportInForm: () => boolean) => void | Promise<unknown>
   /** Visible only in edit mode. */
-  onDelete?:       () => void
+  onDelete?:       () => void | Promise<unknown>
 }
 
 export default function PlanningFormModal({
-  editTarget, defaultCategory, isOpen, isSaving, saveError, onClose, onSave, onDelete,
+  editTarget, defaultCategory, isOpen, saveError, onClose, onSave, onDelete,
 }: Props) {
+  const awaited = useAwaitedSave(onClose)
   const { state, setField } = useFormReducer<FormState>(
     () => initFromTarget(editTarget, defaultCategory),
   )
@@ -65,20 +71,27 @@ export default function PlanningFormModal({
     if (!state.title.trim()) e.title = '請輸入標題'
     setErrors(e)
     if (Object.keys(e).length > 0) return
-    onSave({
+    const data: CreatePlanItemInput = {
       category: state.category,
       title:    state.title.trim(),
       note:     state.note.trim() || undefined,
-    })
+    }
+    awaited.submit(() => onSave(data, awaited.stillOpen), describeSaveFailure)
+  }
+
+  // Delete failures are toasted globally; this form only closes itself, and
+  // only if it is still the open one.
+  function handleDelete() {
+    awaited.submit(() => onDelete?.())
   }
 
   return (
     <FormModalShell
       isOpen={isOpen}
-      isSaving={isSaving}
+      isSaving={awaited.saving}
       title={editTarget ? '編輯項目' : '新增項目'}
       saveLabel={editTarget ? '儲存變更' : '新增'}
-      saveError={saveError}
+      saveError={awaited.error ?? saveError}
       onClose={onClose}
       onSave={handleSave}
     >
@@ -113,7 +126,7 @@ export default function PlanningFormModal({
         />
       </FormField>
 
-      {editTarget && onDelete && <DeleteConfirm noun="項目" onDelete={onDelete} />}
+      {editTarget && onDelete && <DeleteConfirm noun="項目" onDelete={handleDelete} disabled={awaited.saving} />}
     </FormModalShell>
   )
 }

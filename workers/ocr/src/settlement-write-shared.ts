@@ -67,8 +67,8 @@ const SettlementCreateForeignSchema = SettlementCreateBaseSchema.extend({
   sourceCurrency: z.string().regex(CurrencyRe, 'sourceCurrency must be ISO 4217 alpha-3 uppercase'),
   settledOn:      z.string().regex(IsoDateRe, 'settledOn must be YYYY-MM-DD'),
   /** The rate the receiver last confirmed (FX CAS, fx-rate.ts
-   *  assertExpectedFxRate). Optional while older clients drain. */
-  expectedFxRate: ExpectedFxRateSchema.optional(),
+   *  assertExpectedFxRate). */
+  expectedFxRate: ExpectedFxRateSchema,
 }).strict()
 
 export const SettlementCreateRequestSchema = z.discriminatedUnion('mode', [

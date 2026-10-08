@@ -34,7 +34,7 @@ interface Props {
 export default function TripModalsHost({ state }: Props) {
   const {
     isDemo, canWrite, selectedTrip, schedules, currentTrip, display,
-    scheduleModal, scheduleDetailTarget, closeScheduleDetail, editScheduleFromDetail, scheduleIsSaving,
+    scheduleModal, scheduleDetailTarget, closeScheduleDetail, editScheduleFromDetail,
     onScheduleSave, onScheduleDelete,
     editTripOpen,    setEditTripOpen,
     createTripOpen,  setCreateTripOpen,
@@ -66,7 +66,6 @@ export default function TripModalsHost({ state }: Props) {
           schedules={schedules}
           defaultCountryCode={selectedTrip.defaultCountryCode}
           locationSearchEnabled={!isDemo}
-          isSaving={scheduleIsSaving}
           saveError={scheduleModal.saveError}
           onClose={scheduleModal.close}
           onSave={onScheduleSave}

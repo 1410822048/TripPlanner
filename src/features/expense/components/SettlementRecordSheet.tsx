@@ -37,10 +37,9 @@ import FormField from '@/components/ui/FormField'
 import CurrencyPicker from '@/components/ui/CurrencyPicker'
 import DatePicker from '@/components/ui/pickers/DatePicker'
 import MemberAvatar from '@/components/ui/MemberAvatar'
-import { useFxPreview } from '@/hooks/useFxPreview'
+import { useFxPreview, type FxRateQuote } from '@/hooks/useFxPreview'
 import { fxRateChanged } from '@/services/workerBase'
-import { userErrorMessage } from '@/utils/errorMessage'
-import { useAwaitedSave } from '../hooks/useAwaitedSave'
+import { useAwaitedSave, describeSaveFailure } from '@/hooks/useAwaitedSave'
 import { fxRateChangedMessage } from '../utils'
 import { toLocalDateString } from '@/utils/dates'
 import {
@@ -68,7 +67,7 @@ interface Suggestion {
  *  ExpensePage just spreads + adds settlementId; no nested narrowing needed. */
 export type SettlementRecordSubmit = (
   | Omit<CreateTripSettlementVariables,    'settlementId'>
-  | Omit<CreateForeignSettlementVariables, 'settlementId' | 'reportInForm'>
+  | Omit<CreateForeignSettlementVariables, 'settlementId'>
 ) & {
   /** Present when the FX rate shown is still provisional: the page returns
    *  the mutation promise and passes this as `reportInForm`; the sheet
@@ -189,6 +188,10 @@ export default function SettlementRecordSheet({
   function handleSubmit() {
     if (submittedRef.current) return   // already submitted this open — no-op the 2nd tap
     const next: Record<string, string> = {}
+    // What a foreign submit sends, settled DURING validation: anything that
+    // could stop it is a validation error, never an early return after the
+    // latch below (which would leave the sheet silently stuck).
+    let foreignPayload: { expectedFxRate: FxRateQuote; sourceMinor: number } | null = null
 
     if (isForeignMode) {
       if (settledOn > todayLocal()) {
@@ -203,8 +206,12 @@ export default function SettlementRecordSheet({
       if (fxPreview.isLoading) {
         next.fx = '正在取得匯率'
       }
-      if (!fxPreview.rateDecimal) {
+      // The quote is what the Worker checks the save against; the derived
+      // source amount is computed from that same quote.
+      if (!fxPreview.rateQuote || !foreignDerived) {
         next.fx = next.fx ?? '請確認匯率後再儲存'
+      } else {
+        foreignPayload = { expectedFxRate: fxPreview.rateQuote, sourceMinor: foreignDerived.sourceMinor }
       }
       // Tiny remaining + weak rate can inverse to 0 source minor (no
       // source ≥ 1 fits at-most-remaining). Worker rejects this exact
@@ -228,7 +235,11 @@ export default function SettlementRecordSheet({
 
     submittedRef.current = true         // latch BEFORE onSave so a same-tick 2nd tap no-ops
 
-    if (isForeignMode) {
+    // By mode, never by payload presence: a foreign sheet must not fall
+    // through to a trip-currency write. (Validation above guarantees the
+    // payload whenever foreign mode reaches here.)
+    if (isForeignMode && foreignPayload) {
+      const { expectedFxRate, sourceMinor } = foreignPayload
       // FOREIGN: wire payload is intent only (mode + uids + sourceCurrency
       // + settledOn + note). Optimistic patch mirrors what the Worker
       // will write under Phase 4.1 ledger semantics:
@@ -239,8 +250,7 @@ export default function SettlementRecordSheet({
       // jump when the listener swap lands.
       // expectedFxRate is the rate this render derived sourceMinor from —
       // after adopting a refusal's rate, the next submit sends that rate.
-      const expectedFxRate = fxPreview.rateQuote ?? undefined
-      const pending = onSave({
+      awaited.submit(() => onSave({
         mode:                   'FOREIGN_CURRENCY',
         fromUid:                suggested.fromUid,
         toUid:                  suggested.toUid,
@@ -251,23 +261,20 @@ export default function SettlementRecordSheet({
         optimistic: {
           amountMinor:       suggested.amountMinor,
           currency:          tripCurrency,
-          sourceAmountMinor: foreignDerived!.sourceMinor,
+          sourceAmountMinor: sourceMinor,
         },
-        ...(expectedFxRate ? { expectedFxRate } : {}),
+        expectedFxRate,
         ...(!fxPreview.isFinal ? { reportInForm: awaited.stillOpen } : {}),
+      }), err => {
+        // Refused (definitively): unlatch so the user can confirm and
+        // resubmit; on FX_RATE_CHANGED show the refusal's rate as-is.
+        submittedRef.current = false
+        const current = fxRateChanged(err)
+        if (!current) return describeSaveFailure(err)
+        fxPreview.adoptRate(current)
+        return fxRateChangedMessage(expectedFxRate, current)
       })
-      if (pending) {
-        void awaited.track(pending, err => {
-          // Refused (definitively): unlatch so the user can confirm and
-          // resubmit; on FX_RATE_CHANGED show the refusal's rate as-is.
-          submittedRef.current = false
-          const current = fxRateChanged(err)
-          if (!current) return userErrorMessage(err, '儲存失敗')
-          fxPreview.adoptRate(current)
-          return fxRateChangedMessage(expectedFxRate, current)
-        })
-      }
-    } else {
+    } else if (!isForeignMode) {
       // TRIP: wire payload is intent only. Optimistic patch uses the
       // suggestion's amount directly — Worker will compute the exact
       // remaining at tx time (typically the same modulo any concurrent

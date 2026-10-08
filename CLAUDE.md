@@ -152,7 +152,8 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 | `createListOverlay` / `applyOverlays` | **樂觀狀態的唯一機制**:query cache 只放 server truth,op(create/patch/remove)在讀取時重播。`confirms` 決定何時撤下,`authoritativeFetch` 走 `getDocsFromServer` 定奪 ambiguous 寫入 |
 | `useOverlayPendingRowIds` | 從 overlay 推導「寫入仍在飛行中」的 row id,驅動 pending 視覺與 tap/swipe 鎖定 |
 | `haptic('light'/'medium'/'success')` | `navigator.vibrate` 包裝,iOS Safari noop 降級 |
-| `MutationCache.onError`(`src/services/queryClient.ts`)| **全 mutation 失敗的 single source**,讀 `meta: { action, silent }` 自動 Sentry capture + toast。Hook 不再各自 toast |
+| `MutationCache.onError`(`src/services/queryClient.ts`)| **全 mutation 失敗的 single source**,讀 `meta: { action }` 自動 Sentry capture + toast;variables 帶 `reportInForm()` 且回 true(表單仍開著)時把明確失敗交給表單。Hook 不再各自 toast |
+| `useAwaitedSave` | 等待型寫入的**表單端**擁有者:busy / 錯誤 banner / 關閉都屬於這個表單實例(見「Save error 處理」)|
 
 ### 共用 UI primitives
 
@@ -185,7 +186,8 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 - **bottom sheet**: `BottomSheet` 元件 + `FormModalShell` 包一層 SaveButton,所有 form modal(Schedule/Booking/Expense/Wish/Planning/EditTrip)共用
 
 ### Save error 處理(modal-driven flow)
-- **Schedule / Planning**:modal-wait flow。Hook 配 `{ silent: true }`,Page 在 `await mutateAsync` 失敗時用 `modal.setError(err.message)` 顯示 inline banner；modal 不關,避免與全域 toast 雙通知。
+- **Schedule / Planning**(以及匯率仍暫定的外幣 Expense / 清算):modal-wait flow,**由表單實例擁有這次寫入**(`useAwaitedSave`)。頁面只做同步檢查(scope / epoch 等,用 `modal.setError`),發出寫入後把 mutation promise 交回表單,**之後不碰 `modal.close()` / `setError`**。表單:busy 與錯誤 banner 是自己的 state;成功才關閉自己;明確失敗顯示在自己的 banner。結果在**落地當下**才分流:表單仍開著 → 表單回報(`reportInForm()` 為 true,全域不 toast);等待中被關掉 → `reportInForm()` 回 false,全域 toast 照 optimistic-close 路徑回報,**不可吞掉**;ambiguous 一律全域「正在確認」並關閉表單(留著草稿會誘發以新 id 重存)。每次嘗試都走 `awaited.submit(run, describe?)`:**先清掉上一次的失敗 banner**(否則被頁面同步拒絕的重試 —— 根本沒發出寫入 —— 會讓舊的「儲存失敗」蓋住頁面的新理由,如 scope 切換);**寫入進行中再 submit 一律忽略**(ref 閘門,同 tick 連點也擋),儲存與表單內刪除共用這道閘門,`DeleteConfirm` 另以 `disabled` 呈現。表單內刪除不帶 `describe`:失敗交全域 toast,表單只在仍開著時關閉自己。`stillOpen` 由模組層級的 `createLiveness` 產生、只捕捉一個 boolean(以 `useState` 初始器建立、mount effect 開關;不用 ref,因為 render 期間把 ref 傳進函式會被 React Compiler 規則擋下)—— 它會隨 mutation variables 留在 MutationCache,不可連帶留住表單的整個 render scope
+- **為什麼不放頁面**:每次開啟都是新掛載(條件渲染 + key),表單實例本身就是「這次開啟」,同一筆重開也是新實例。由頁面層「目前開著的那個 modal」承接晚到結果,會關掉 / 污染使用者在等待期間改開的另一份草稿;頁面層 `isPending` 也會把 busy 漏到新開的表單
 - **Expense / Booking / Wish**:optimistic-close flow。一般情況在 `mutate` 前關閉 modal；明確失敗由 overlay 撤回該 operation,並由全域 `MutationCache.onError` 顯示 toast。Schema Epoch preflight 是例外：不相容時在關閉前同步擋下,保留表單並顯示 inline banner。
 
 ### Hybrid shell loading
@@ -230,17 +232,17 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 | 觸發行為 | 所在 page | List 是否 optimistic | Modal 行為 | Pending UI |
 |---|---|---|---|---|
 | 新增 / 編輯 expense | `/expense` | ✅ Overlay + **optimistic close** | 按存後立即關閉 | ✅ row 半透明 + 「儲存中…」,block tap/swipe |
-| 新增 / 編輯 schedule | `/schedule` | ✅ Overlay(modal-wait) | `await mutateAsync`;成功才關,失敗留在 modal 顯示 banner | Modal 儲存中狀態 |
+| 新增 / 編輯 schedule | `/schedule` | ✅ Overlay(modal-wait) | 表單追蹤 mutation promise(`useAwaitedSave`);成功才關,失敗留在表單 banner | 表單自己的儲存中狀態 |
 | 新增 / 編輯 booking(含批次 PDF) | `/bookings` | ✅ Overlay + **optimistic close** | 按存後立即關閉 | ✅ row 半透明 + 「儲存中…」,block tap/swipe |
 | 新增 / 編輯 wish | `/wish` | ✅ Overlay + **optimistic close** | 按存後立即關閉 | ✅ card 半透明 + pending pill,block edit/vote |
-| 新增 / 編輯 planning | `/planning` | ✅ Overlay(modal-wait) | `await mutateAsync`;成功才關,失敗留在 modal 顯示 banner | Modal 儲存中狀態 |
+| 新增 / 編輯 planning | `/planning` | ✅ Overlay(modal-wait) | 表單追蹤 mutation promise(`useAwaitedSave`);成功才關,失敗留在表單 banner | 表單自己的儲存中狀態 |
 | Toggle planning row done | `/planning` | ✅ Optimistic | 沒 modal | 無(checkbox 立即翻) |
 | Wish vote toggle | `/wish` | ✅ Optimistic | 沒 modal | 無 |
 | Swipe delete(支援滑刪的 list row) | 各 list page | ✅ Optimistic | 沒 modal | row 立刻消失 |
 
 **Optimistic-close 的選擇**:
 - Expense receipt、Booking 附件 / 批次 PDF、Wish 圖片都可能包含較慢的 Worker / R2 路徑,因此三者按存後立即收 modal,由 list overlay 顯示進度。
-- Schedule / Planning 同樣使用 operation-scoped overlay 保護並行寫入,但保留 `await mutateAsync` 的 modal-wait UX；失敗時使用者仍在原表單內,可直接修正或重試。
+- Schedule / Planning 同樣使用 operation-scoped overlay 保護並行寫入,但保留 modal-wait UX(`useAwaitedSave`);失敗時使用者仍在原表單內,可直接修正或重試。
 
 ## Pending state 規範
 
@@ -248,9 +250,10 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 Expense / Booking / Wish:
 按存 → validate() pass → modal.close() → mutate(...) 背景跑
 
-Schedule / Planning:
-按存 → validate() pass → await mutateAsync(...) → 成功才 modal.close()
-                                           └→ 失敗保留 modal + inline banner
+Schedule / Planning(與匯率暫定的外幣 Expense / 清算):
+按存 → validate() pass → 頁面回傳 mutateAsync(...) → 表單 useAwaitedSave 追蹤
+                                    ├→ 成功:表單仍開著才關閉自己
+                                    └→ 失敗:表單仍開著 → 自己的 banner;已關 → 全域 toast
 
 兩條路徑共用 list mutation pipeline:
 global MutationCache.onMutate:同步檢查 Schema Epoch(只讀 memory snapshot,不碰網路)
@@ -426,22 +429,17 @@ booking 的覆蓋率收緊不需要 epoch —— client 一直就送精確的 to
 
 ### FX 匯率 CAS(`expectedFxRate`)
 
-外幣費用 create / update 與外幣清算 create 都帶可選的 `expectedFxRate: { rateDecimal, rateDate }`。**它不是「請 Worker 用這個匯率」,而是「使用者最後確認的匯率是這個」**:Worker 仍自行決定權威匯率,兩者不同就 `409 FX_RATE_CHANGED` 拒絕,並在 body 帶 `currentFxRate`。金額仍由 Worker 決定,只是從「可以靜默覆寫」升級為「權威值必須等於使用者確認值」。
+**會換算的外幣寫入必帶** `expectedFxRate: { rateDecimal, rateDate }`:外幣費用 create、會重算匯率的外幣更新(金額組 / 日期)、外幣清算 create,缺少即 400;純文字的外幣更新不換算,可不帶(帶了就比對 DB 已存匯率);台幣模式帶了也 400。**它不是「請 Worker 用這個匯率」,而是「使用者最後確認的匯率是這個」**:Worker 仍自行決定權威匯率,兩者不同就 `409 FX_RATE_CHANGED` 拒絕,並在 body 帶 `currentFxRate`。金額仍由 Worker 決定,只是從「可以靜默覆寫」升級為「權威值必須等於使用者確認值」。
 
 - **比對用 canonical decimal string**(`ExpectedFxRateSchema` 只收 canonical;`fx-core ratesEqual` 以 BigInt mantissa/scale 比),從不轉 JS number。`rateDate` 也要相同
 - **比對的是這次寫入實際換算、寫進 `fxSnapshot` 的那一份 rate 物件**,之後不得再解析匯率(`assertExpectedFxRate` 放在 `getFxSnapshot` / `resolveFxRate` 之後、換算之前)
 - **不重算的更新比 DB 已存匯率,不比市場**:沿用已存匯率(日期與幣別未變)或純文字更新時,比的是 `fxSnapshot` 現值;只有改日期 / 幣別時才比新解析的匯率。否則市場一動,改備註也會被擋
 - 前端收到 409 **直接用 `currentFxRate`**(`useFxPreview.adoptRate`),不再打 `/fx-rate`;重新查詢可能已是更新的值,等於重開窗口。之後的預覽 fetch 較新才取代它
 - `expectedFxRate` 放在 request **最外層**(與 `expectedCurrentReceiptPath` 同層),不放進 `expense` / `patch`:`expenseUpdateApplied` 會逐欄比對 patch 與已存 doc
-- **UX 分流只是體驗**:預覽匯率仍是暫定(`isFinalRate` 為 false:當天、尚未公布)時,表單 / 清算 sheet 等 Worker 結果(modal-wait,`reportInForm` 跳過全域 toast),409 在原表單顯示新匯率讓使用者確認再存;最終匯率維持 optimistic close。**「最終匯率不會不一致」不是正確性假設** —— CAS 每次都跑,那條路徑不一致時走一般錯誤 toast。等結果時若是 ambiguous,照 optimistic 路徑關表單,避免同一份草稿以新 id 再存一次
-- **等待中的儲存屬於表單實例,不屬於頁面**(`useAwaitedSave`):每次開啟都是新掛載,實例本身就是「這次開啟」(同一筆費用重開也是新實例),busy / 錯誤 banner 是實例自己的 state,關閉即隨之消失。結果在**落地當下**才分流:仍開著 → 成功關閉、明確失敗顯示在原表單;等待中被關掉 → mutation 的 `reportInForm()` 回 false,由全域 handler 照 optimistic-close 路徑回報(不可吞掉);ambiguous 一律走全域「正在確認」並關閉表單。頁面只回傳 mutation promise,不碰關閉 / banner —— 由頁面層「目前開著的那個 modal」去承接晚到結果,就會關掉 / 污染使用者後來開的另一份草稿
+- **UX 分流只是體驗**:預覽匯率仍是暫定(`isFinalRate` 為 false:當天、尚未公布)時,表單 / 清算 sheet 走 modal-wait(`useAwaitedSave`,見「Save error 處理」),409 在原表單顯示新匯率讓使用者確認再存;最終匯率維持 optimistic close。**「最終匯率不會不一致」不是正確性假設** —— CAS 每次都跑,那條路徑不一致時走一般錯誤 toast。等結果時若是 ambiguous,照 optimistic 路徑關表單,避免同一份草稿以新 id 再存一次
 - `FX_RATE_CHANGED` 是 CAS 的預期結果,不送 Sentry
 
-Rollout(expand → migrate → contract),**目前在第 2 階段之前**:
-1. 部署 Worker(接受可選 `expectedFxRate`;外幣清算 schema 是 `.strict()`,新 Pages 先上線會讓舊 Worker 回 400,所以 **Worker 必須先部署**;費用的 top-level schema 會 strip,不會 400 但也不會檢查)
-2. 部署 Pages(開始送)
-3. 等舊 bundle 淘汰,必要時提高 `minimumWriteEpoch`
-4. 把 `expectedFxRate` 改成外幣寫入必填。**在這之前「畫面匯率 = 存檔匯率」只對新 bundle 成立**,舊 bundle 不送就照舊放行 —— 這是 rollout 取捨,不是 bug
+部署:不分階段(目前只有單一使用者)。同批部署 Worker 與 Pages;順序上 Worker 先,因為外幣清算 request schema 是 `.strict()`,新 Pages 打到舊 Worker 會被當成未知欄位回 400。這是新必填欄位,所以**同一批**把 `CLIENT_SCHEMA_EPOCH` 提到 3、`public/compatibility.json` 提到 `{ revision: 2, minimumWriteEpoch: 3 }`:裝置上已安裝的舊 bundle(epoch 2)取得新 manifest 後由 `AppCompatibilityGate` 顯示更新提示,而不是吃 400。單一使用者不需要等更新窗口,但 epoch 仍要提 —— 那是保護自己手機上的舊 PWA,不是保護其他使用者
 
 ### 成員 ACL cascade(add 側的 roster guard)
 
@@ -519,8 +517,8 @@ cd workers/ocr && npx wrangler tail        # Worker 即時 log
 - **型別 vs interface**: 表單 state 用 `type`(才能塞進 `Record<string, unknown>` 約束);entity / props 用 `interface`
 - **錯誤處理**:
   - 服務層 throws → mutation hook `onError` 做 rollback / cache patch(**不再各自 toast**)
-  - 全 mutation 失敗統一走 `src/services/queryClient.ts` 的 `MutationCache.onError`:讀 `meta: { action, silent }` → Sentry capture + 全域 toast
-  - Modal-driven hook(useCreateXxx / useUpdateXxx for wish/booking/planning/schedule)配 `{ silent: true }` → 跳過全域 toast,改在 modal 內 banner(`useFormModal.saveError` + FormModalShell)
+  - 全 mutation 失敗統一走 `src/services/queryClient.ts` 的 `MutationCache.onError`:讀 `meta: { action }` → Sentry capture + 全域 toast
+  - 等待型表單(schedule / planning / 匯率暫定的外幣 expense 與清算)由表單擁有結果(`useAwaitedSave`),每次寫入在 variables 帶 `reportInForm`:表單仍開著時明確失敗顯示在表單 banner、全域不 toast;已關則照常 toast。**沒有 `silent` 這種靜態開關** —— 它會讓等待中被關掉的表單的失敗無人回報
   - 不要靜默 swallow
 - **PWA**: vite-plugin-pwa,`registerType: 'prompt'` 不自動更新,PwaUpdatePrompt 由使用者觸發
 - **iOS input zoom**: 所有 input 強制 `text-[16px]`(`inputClass` helper),否則 iOS Safari focus 會 zoom

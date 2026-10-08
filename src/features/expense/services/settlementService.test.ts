@@ -210,6 +210,7 @@ describe('createSettlement', () => {
       expectedRemainingMinor: FOREIGN_OPTIMISTIC.amountMinor,
       sourceCurrency: 'USD',
       settledOn:      '2026-05-30',
+      expectedFxRate: { rateDecimal: '150', rateDate: '2026-05-30' },
       optimistic:     FOREIGN_OPTIMISTIC,
     })
 
@@ -223,6 +224,8 @@ describe('createSettlement', () => {
       expectedRemainingMinor: FOREIGN_OPTIMISTIC.amountMinor,
       sourceCurrency: 'USD',
       settledOn:      '2026-05-30',
+      // The confirmed rate travels — the Worker refuses the write if its own differs.
+      expectedFxRate: { rateDecimal: '150', rateDate: '2026-05-30' },
     })
     // Worker is authoritative on every amount field — none cross the wire.
     expect(sentBody).not.toHaveProperty('amountMinor')
@@ -243,6 +246,7 @@ describe('createSettlement', () => {
       expectedRemainingMinor: FOREIGN_OPTIMISTIC.amountMinor,
       sourceCurrency: 'USD',
       settledOn:      '2026-05-30',
+      expectedFxRate: { rateDecimal: '150', rateDate: '2026-05-30' },
       note:           'NYで受取',
       optimistic:     FOREIGN_OPTIMISTIC,
     })
@@ -262,6 +266,7 @@ describe('createSettlement', () => {
       expectedRemainingMinor: FOREIGN_OPTIMISTIC.amountMinor,
       sourceCurrency: 'USD',
       settledOn:      '2026-05-30',
+      expectedFxRate: { rateDecimal: '150', rateDate: '2026-05-30' },
       note:           '',
       optimistic:     FOREIGN_OPTIMISTIC,
     })

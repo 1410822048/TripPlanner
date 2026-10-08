@@ -1,7 +1,9 @@
 // src/features/schedule/hooks/useScheduleActions.ts
 // Save / delete for a single schedule, plus the mutations behind them.
-// Errors surface in the modal's inline banner rather than a toast, which
-// is why the mutations are created `silent`.
+// Synchronous refusals (scope / epoch) go to the modal banner here; once a
+// write is issued its promise is handed back and the FORM owns the outcome
+// (useAwaitedSave): busy state, banner and closing belong to that open, so a
+// late result can never close or mark another form opened since.
 import { useCreateSchedule, useDeleteSchedule, useUpdateSchedule, nextScheduleOrder } from './useSchedules'
 import { FORM_SCOPE_CHANGED_MESSAGE, type UseFormModalResult } from '@/hooks/useFormModal'
 import type { CreateScheduleInput, Schedule } from '@/types'
@@ -9,12 +11,10 @@ import { buildScheduleUpdate } from '../services/scheduleService'
 import { getClientWriteBlockReason } from '@/services/clientCompatibility'
 import { toast } from '@/shared/toast'
 import { simulateFailureMaybe } from '@/utils/devFailures'
-import { userErrorMessage } from '@/utils/errorMessage'
 
 export interface ScheduleActions {
-  isSaving: boolean
-  onScheduleSave:   (data: CreateScheduleInput) => Promise<void>
-  onScheduleDelete: () => Promise<void>
+  onScheduleSave:   (data: CreateScheduleInput, reportInForm: () => boolean) => void | Promise<unknown>
+  onScheduleDelete: () => void | Promise<unknown>
 }
 
 export function useScheduleActions(opts: {
@@ -29,49 +29,45 @@ export function useScheduleActions(opts: {
 }): ScheduleActions {
   const { isDemo, uid, tripId, schedules, scheduleModal, openSignIn } = opts
 
-  // silent — the modal surfaces errors via its inline banner, so a global
-  // toast would double-notify.
-  const createMut = useCreateSchedule(tripId ?? '', { silent: true })
-  const updateMut = useUpdateSchedule(tripId ?? '', { silent: true })
+  // Not silent: `reportInForm` decides per write — the form reports while it
+  // is still open, the global toast once it was dismissed.
+  const createMut = useCreateSchedule(tripId ?? '')
+  const updateMut = useUpdateSchedule(tripId ?? '')
   const deleteMut = useDeleteSchedule(tripId ?? '')
 
   // Demo save → close the form, pop the sign-in prompt. Cloud save →
   // Firestore write with an optimistic overlay.
-  async function onScheduleSave(data: CreateScheduleInput) {
+  function onScheduleSave(data: CreateScheduleInput, reportInForm: () => boolean): void | Promise<unknown> {
     if (isDemo) { scheduleModal.close(); openSignIn(); return }
     if (!uid) { toast.error('正在準備登入，請稍候'); return }
     // The mutations bind to the LIVE trip id — a form opened on another trip
     // (background reselect after kick / remote delete) must not write here.
     if (scheduleModal.scopeChanged) { scheduleModal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
     scheduleModal.clearError()
-    try {
-      if (scheduleModal.editTarget) {
-        const updates = buildScheduleUpdate(scheduleModal.editTarget, data)
-        if (Object.keys(updates).length === 0) {
-          scheduleModal.close()
-          return
-        }
-        await simulateFailureMaybe()
-        await updateMut.mutateAsync({ scheduleId: scheduleModal.editTarget.id, updates, uid })
-      } else {
-        await simulateFailureMaybe()
-        // Both minted here: the id so the optimistic row and the stored doc
-        // match, and the order so it is computed once from the list the
-        // user is looking at (pending rows included) instead of twice.
-        await createMut.mutateAsync({
-          scheduleId: crypto.randomUUID(),
-          input:      data,
-          createdBy:  uid,
-          order:      nextScheduleOrder(schedules, data.date),
-        })
+    const editTarget = scheduleModal.editTarget
+    if (editTarget) {
+      const updates = buildScheduleUpdate(editTarget, data)
+      if (Object.keys(updates).length === 0) {
+        scheduleModal.close()
+        return
       }
-      scheduleModal.close()
-    } catch (err) {
-      scheduleModal.setError(userErrorMessage(err, '儲存失敗'))
+      return simulateFailureMaybe().then(() =>
+        updateMut.mutateAsync({ scheduleId: editTarget.id, updates, uid, reportInForm }))
     }
+    // Both minted here: the id so the optimistic row and the stored doc
+    // match, and the order so it is computed once from the list the user
+    // is looking at (pending rows included) instead of twice.
+    const create = {
+      scheduleId: crypto.randomUUID(),
+      input:      data,
+      createdBy:  uid,
+      order:      nextScheduleOrder(schedules, data.date),
+      reportInForm,
+    }
+    return simulateFailureMaybe().then(() => createMut.mutateAsync(create))
   }
 
-  async function onScheduleDelete() {
+  function onScheduleDelete(): void | Promise<unknown> {
     if (!scheduleModal.editTarget) { scheduleModal.close(); return }
     if (isDemo) { scheduleModal.close(); openSignIn(); return }
     if (scheduleModal.scopeChanged) { scheduleModal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
@@ -80,14 +76,12 @@ export function useScheduleActions(opts: {
     // modal banner the same way save does.
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) { scheduleModal.setError(writeBlockReason); return }
-    try {
-      await deleteMut.mutateAsync(scheduleModal.editTarget.id)
-      scheduleModal.close()
-    } catch { /* non-silent hook — the global toast covers non-epoch errors */ }
+    // Non-silent: the global toast reports a failure; the form closes itself
+    // on success only if it is still the open one.
+    return deleteMut.mutateAsync(scheduleModal.editTarget.id)
   }
 
   return {
-    isSaving: createMut.isPending || updateMut.isPending,
     onScheduleSave,
     onScheduleDelete,
   }

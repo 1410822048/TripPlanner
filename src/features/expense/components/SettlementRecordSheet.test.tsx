@@ -111,7 +111,7 @@ describe('SettlementRecordSheet — the date bound is the user\'s day', () => {
   })
 
   it('accepts local today on submit', () => {
-    fx.value = { ...fx.value, rateDecimal: '0.218', rateDate: '2026-06-03', isLoading: false, isError: false, disabledReason: undefined }
+    fx.value = { ...fx.value, rateDecimal: '0.218', rateDate: '2026-06-03', rateQuote: { rateDecimal: '0.218', rateDate: '2026-06-03' }, isLoading: false, isError: false, disabledReason: undefined }
     const onSave = renderSheet()
     fireEvent.click(screen.getByRole('button', { name: 'pick-foreign' }))
     fireEvent.click(screen.getByRole('button', { name: '儲存紀錄' }))
@@ -139,7 +139,7 @@ describe('SettlementRecordSheet — foreign-mode submit gate', () => {
     expect(onSave).not.toHaveBeenCalled()
 
     // Rate arrives; the SAME open retries and now goes through.
-    fx.value = { ...fx.value, rateDecimal: '0.218', rateDate: '2026-06-03', isLoading: false, isError: false, disabledReason: undefined }
+    fx.value = { ...fx.value, rateDecimal: '0.218', rateDate: '2026-06-03', rateQuote: { rateDecimal: '0.218', rateDate: '2026-06-03' }, isLoading: false, isError: false, disabledReason: undefined }
     fireEvent.click(screen.getByRole('button', { name: 'pick-foreign' })) // re-render with the new fx value
     fireEvent.click(screen.getByRole('button', { name: '儲存紀錄' }))
     expect(onSave).toHaveBeenCalledTimes(1)
@@ -188,5 +188,42 @@ describe('SettlementRecordSheet — FX rate confirmation', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '儲存紀錄' })) })
     expect(onSave).toHaveBeenCalledTimes(2)
     expect(onClose).toHaveBeenCalledOnce()
+  })
+})
+
+// Whatever stops a foreign submit must be a validation error decided BEFORE
+// the double-submit latch — an early return after it would leave the sheet
+// silently stuck for the rest of this open.
+describe('SettlementRecordSheet — foreign submit never latches without sending', () => {
+  it('no confirmed rate yet: shows why, stays usable, and sends once the rate is there', () => {
+    fx.value = {
+      ...fx.value, rateDecimal: '0.218', rateDate: '2026-06-03', isLoading: false, isError: false,
+      disabledReason: undefined, rateQuote: undefined, isFinal: true,
+    }
+    const onSave = vi.fn<(p: SettlementRecordSubmit) => void>()
+    const view = render(
+      <SettlementRecordSheet
+        isOpen onClose={() => {}} onSave={onSave}
+        suggested={suggested} tripCurrency="JPY" members={members} isSaving={false}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'pick-foreign' }))
+    fireEvent.click(screen.getByRole('button', { name: '儲存紀錄' }))
+    expect(onSave).not.toHaveBeenCalled()
+    expect(screen.getByText('請確認匯率後再儲存')).toBeTruthy()
+
+    fx.value = { ...fx.value, rateQuote: { rateDecimal: '0.218', rateDate: '2026-06-03' } }
+    view.rerender(
+      <SettlementRecordSheet
+        isOpen onClose={() => {}} onSave={onSave}
+        suggested={suggested} tripCurrency="JPY" members={members} isSaving={false}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '儲存紀錄' }))
+    expect(onSave).toHaveBeenCalledOnce()
+    expect(onSave.mock.calls[0]![0]).toMatchObject({
+      mode: 'FOREIGN_CURRENCY',
+      expectedFxRate: { rateDecimal: '0.218', rateDate: '2026-06-03' },
+    })
   })
 })

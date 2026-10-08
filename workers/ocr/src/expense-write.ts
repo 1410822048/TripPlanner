@@ -36,7 +36,7 @@ import {
 import { buildReceiptFromIntents, validateBuiltReceipt }         from './expense-receipt-write'
 import { pushUnique, rostersForUpdate, type TripContext }           from './expense-write-shared'
 import {
-  prepareForeignCreate, buildForeignUpdateWrite,
+  prepareForeignCreate, buildForeignUpdateWrite, requireExpectedFxRate,
   type ForeignArtifacts,
 }                                                                   from './expense-foreign-write'
 import { encodeExpense, encodePatch, mergeExpense }                 from './expense-codec'
@@ -69,9 +69,13 @@ export const ExpenseCreateRequestSchema = z.object({
    *  is the ONLY way to set a receipt -- client-supplied `expense.
    *  receipt` is rejected outright (was a legacy Phase 1-2 path). */
   intentIds: z.array(z.string().min(1).max(60)).max(2).optional(),
-  /** FOREIGN_CURRENCY only: the rate the user last confirmed (FX CAS, see
-   *  fx-rate.ts assertExpectedFxRate). Top-level rather than inside
-   *  `expense` so the strict foreign payload schema stays the entity shape. */
+  /** The rate the user last confirmed (FX CAS, see fx-rate.ts
+   *  assertExpectedFxRate). Required whenever the write converts — every
+   *  foreign create, and a foreign update that re-rates (money / date) —
+   *  optional on a text-only foreign update (then checked against the
+   *  stored rate), forbidden in TRIP_CURRENCY mode. Top-level rather than
+   *  inside `expense` so the strict foreign payload schema stays the
+   *  entity shape. Enforced in doCreate / buildForeignUpdateWrite. */
   expectedFxRate: ExpectedFxRateSchema.optional(),
 })
 export type ExpenseCreateRequest = z.infer<typeof ExpenseCreateRequestSchema>
@@ -98,7 +102,7 @@ export const ExpenseUpdateRequestSchema = z.object({
    *  unconditionally required would reject them for nothing.
    *  Mirrors /wish-file-update's `expectedCurrentPath`. */
   expectedCurrentReceiptPath: z.union([z.string(), z.null()]).optional(),
-  /** FOREIGN_CURRENCY only: same FX CAS as ExpenseCreateRequest. */
+  /** Same contract as ExpenseCreateRequest.expectedFxRate. */
   expectedFxRate: ExpectedFxRateSchema.optional(),
 })
 export type ExpenseUpdateRequest = z.infer<typeof ExpenseUpdateRequestSchema>
@@ -322,7 +326,7 @@ async function doCreate(
 
     if (expenseMode === 'FOREIGN_CURRENCY') {
       const { parsedTrip, foreignArtifacts } = await prepareForeignCreate(
-        expenseForSchema, ctx, serviceAccountJson, req.expectedFxRate,
+        expenseForSchema, ctx, serviceAccountJson, requireExpectedFxRate(req.expectedFxRate),
       )
       parsed  = parsedTrip
       foreign = foreignArtifacts

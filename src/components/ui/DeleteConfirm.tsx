@@ -26,9 +26,11 @@ interface Props {
   /** Fired after the user taps the second-step 削除 button. Caller
    *  performs the actual mutation + closes the modal. */
   onDelete: () => void
+  /** While the form's own write is in flight: a delete must not race it. */
+  disabled?: boolean
 }
 
-export default function DeleteConfirm({ noun, onDelete }: Props) {
+export default function DeleteConfirm({ noun, onDelete, disabled = false }: Props) {
   const [confirming, setConfirming] = useState(false)
 
   if (confirming) {
@@ -47,7 +49,8 @@ export default function DeleteConfirm({ noun, onDelete }: Props) {
         <button
           type="button"
           onClick={onDelete}
-          className="px-3 py-1.5 rounded-lg border border-danger-soft bg-transparent text-danger text-[12px] font-medium cursor-pointer whitespace-nowrap hover:bg-danger-pale transition-colors"
+          disabled={disabled}
+          className="px-3 py-1.5 rounded-lg border border-danger-soft bg-transparent text-danger text-[12px] font-medium cursor-pointer whitespace-nowrap hover:bg-danger-pale transition-colors disabled:opacity-50 disabled:cursor-default disabled:hover:bg-transparent"
         >
           刪除
         </button>
@@ -59,7 +62,8 @@ export default function DeleteConfirm({ noun, onDelete }: Props) {
     <button
       type="button"
       onClick={() => setConfirming(true)}
-      className="w-full p-[11px] rounded-xl border border-danger-soft bg-transparent text-danger text-[13px] font-medium cursor-pointer tracking-[0.04em] hover:bg-danger-pale transition-colors"
+      disabled={disabled}
+      className="w-full p-[11px] rounded-xl border border-danger-soft bg-transparent text-danger text-[13px] font-medium cursor-pointer tracking-[0.04em] hover:bg-danger-pale transition-colors disabled:opacity-50 disabled:cursor-default disabled:hover:bg-transparent"
     >
       刪除{noun}
     </button>

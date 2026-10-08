@@ -1446,6 +1446,12 @@ function validForeignExpensePayload(overrides: Record<string, unknown> = {}) {
 	}
 }
 
+/** The rate the mocked getFxSnapshot answers with (150, dated the requested
+ *  day) — what a foreign write must confirm via expectedFxRate. */
+function fx150(rateDate = '2026-05-22') {
+	return { rateDecimal: '150', rateDate }
+}
+
 /** Pre-existing foreign-currency expense doc. Trip-currency canonical
  *  fields (amountMinor=1500 = $10 * rate 150 / 100) match what the
  *  Worker would have written at create time. Used by foreign-update
@@ -1519,7 +1525,7 @@ describe('Phase 3b foreign-create endpoint', () => {
 
 		const result = await expenseCreate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validForeignExpensePayload() },
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validForeignExpensePayload(), expectedFxRate: fx150('2026-05-22') },
 			'{}', BUCKET,
 		)
 		expect(result.expenseId).toBe(EXPENSE_ID)
@@ -1572,7 +1578,7 @@ describe('Phase 3b foreign-create endpoint', () => {
 		await expenseCreate(
 			CALLER_UID,
 			{
-				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				tripId: TRIP_ID, expenseId: EXPENSE_ID, expectedFxRate: fx150('2026-05-22'),
 				expense: validForeignExpensePayload({
 					sourceItems:       undefined,
 					sourceAdjustments: undefined,
@@ -1609,7 +1615,7 @@ describe('Phase 3b foreign-create endpoint', () => {
 
 		await expect(expenseCreate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validForeignExpensePayload({ sourceCurrency: 'JPY' }) },
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validForeignExpensePayload({ sourceCurrency: 'JPY' }), expectedFxRate: fx150('2026-05-22') },
 			'{}', BUCKET,
 		)).rejects.toThrowError(/equals trip currency/)
 		// FX resolver should NOT have been called -- same-currency reject
@@ -1631,7 +1637,7 @@ describe('Phase 3b foreign-create endpoint', () => {
 		await expect(expenseCreate(
 			CALLER_UID,
 			{
-				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				tripId: TRIP_ID, expenseId: EXPENSE_ID, expectedFxRate: fx150('2026-05-22'),
 				expense: validForeignExpensePayload({ currency: 'JPY' }),
 			},
 			'{}', BUCKET,
@@ -1737,7 +1743,7 @@ describe('Phase 3c explicit update mode switching', () => {
 		await expenseUpdate(
 			CALLER_UID,
 			{
-				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				tripId: TRIP_ID, expenseId: EXPENSE_ID, expectedFxRate: fx150('2026-05-22'),
 				patch: {
 					mode:              'FOREIGN_CURRENCY',
 					title:             'USD Coffee',
@@ -1793,7 +1799,7 @@ describe('Phase 3c explicit update mode switching', () => {
 		await expect(expenseUpdate(
 			CALLER_UID,
 			{
-				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				tripId: TRIP_ID, expenseId: EXPENSE_ID, expectedFxRate: fx150('2026-05-22'),
 				patch: { mode: 'FOREIGN_CURRENCY', title: 'Still no source' },
 			},
 			'{}', BUCKET,
@@ -1855,7 +1861,7 @@ describe('Phase 3b foreign-update endpoint', () => {
 			seedForeignAlive()
 		await expenseUpdate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', title: 'Renamed Coffee' } },
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', title: 'Renamed Coffee' }, expectedFxRate: fx150('2026-05-22') },
 			'{}', BUCKET,
 		)
 		// FX resolver MUST stay untouched on text-only -- a foreign-update
@@ -1890,7 +1896,7 @@ describe('Phase 3b foreign-update endpoint', () => {
 			seedForeignAlive()
 			await expect(expenseUpdate(
 				CALLER_UID,
-				{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', paidBy: 'stranger-uid' } },
+				{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', paidBy: 'stranger-uid' }, expectedFxRate: fx150('2026-05-22') },
 				'{}', BUCKET,
 			)).rejects.toBeInstanceOf(ExpenseValidationError)
 			expect(vi.mocked(fxRate.getFxSnapshot)).not.toHaveBeenCalled()
@@ -1908,7 +1914,7 @@ describe('Phase 3b foreign-update endpoint', () => {
 		seedForeignAlive()
 		await expenseUpdate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', date: '2026-05-23' } },
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', date: '2026-05-23' }, expectedFxRate: fx150('2026-05-23') },
 			'{}', BUCKET,
 		)
 		expect(vi.mocked(fxRate.getFxSnapshot)).toHaveBeenCalledTimes(1)
@@ -1956,7 +1962,7 @@ describe('Phase 3b foreign-update endpoint', () => {
 		await expenseUpdate(
 			CALLER_UID,
 			{
-				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				tripId: TRIP_ID, expenseId: EXPENSE_ID, expectedFxRate: fx150('2026-05-22'),
 				patch: {
 					mode:              'FOREIGN_CURRENCY',
 					sourceCurrency:    'USD',
@@ -1996,7 +2002,7 @@ describe('Phase 3b foreign-update endpoint', () => {
 		seedForeignAlive()
 		await expenseUpdate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', date: '2026-05-23' } },
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', date: '2026-05-23' }, expectedFxRate: fx150('2026-05-23') },
 			'{}', BUCKET,
 		)
 		expect(vi.mocked(fxRate.getFxSnapshot)).toHaveBeenCalledTimes(1)
@@ -2012,7 +2018,7 @@ describe('Phase 3b foreign-update endpoint', () => {
 		await expect(expenseUpdate(
 			CALLER_UID,
 			{
-				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				tripId: TRIP_ID, expenseId: EXPENSE_ID, expectedFxRate: fx150('2026-05-22'),
 				patch: {
 					mode:              'FOREIGN_CURRENCY',
 					sourceCurrency:    'JPY',
@@ -2043,7 +2049,7 @@ describe('Phase 3b foreign-update endpoint', () => {
 		await expect(expenseUpdate(
 			CALLER_UID,
 			{
-				tripId: TRIP_ID, expenseId: EXPENSE_ID,
+				tripId: TRIP_ID, expenseId: EXPENSE_ID, expectedFxRate: fx150('2026-05-22'),
 				patch: { mode: 'FOREIGN_CURRENCY', sourceAmountMinor: 2000 },   // missing the other three
 			},
 			'{}', BUCKET,
@@ -2058,7 +2064,7 @@ describe('Phase 3b foreign-update endpoint', () => {
 		seedForeignAlive()
 		await expect(expenseUpdate(
 			CALLER_UID,
-			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', currency: 'EUR' } },
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', currency: 'EUR' }, expectedFxRate: fx150('2026-05-22') },
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(ExpenseValidationError)
 	})
@@ -2152,14 +2158,35 @@ describe('FX CAS (expectedFxRate)', () => {
 		)).rejects.toMatchObject({ code: 'FX_RATE_CHANGED' })
 	})
 
-	it('create: omitted expectedFxRate keeps the old behaviour (rollout window)', async () => {
+	it('a converting foreign write without expectedFxRate is refused before any FX or write', async () => {
 		seedCreate()
-		await expenseCreate(
+		await expect(expenseCreate(
 			CALLER_UID,
 			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, expense: validForeignExpensePayload() },
 			'{}', BUCKET,
+		)).rejects.toMatchObject({ field: 'expectedFxRate' })
+		// A date change re-rates: it converts, so it needs the confirmed rate.
+		seedForeignAlive()
+		await expect(expenseUpdate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', date: '2026-05-23' } },
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ field: 'expectedFxRate' })
+		expect(vi.mocked(fxRate.getFxSnapshot)).not.toHaveBeenCalled()
+		expect(capturedTxResult).toBeNull()
+	})
+
+	it('a text-only foreign update converts nothing, so it needs no rate', async () => {
+		seedForeignAlive()
+		await expenseUpdate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', note: '改備註' } },
+			'{}', BUCKET,
 		)
-		expect(writtenRate()).toBe('150')
+		expect(vi.mocked(fxRate.getFxSnapshot)).not.toHaveBeenCalled()
+		const writes = capturedTxResult!.writes as Array<{ updateMask?: string[] }>
+		expect(writes[0].updateMask).toContain('note')
+		expect(writes[0].updateMask).not.toContain('fxSnapshot')
 	})
 
 	it('create: a trip-currency write carrying expectedFxRate is a caller bug', async () => {
