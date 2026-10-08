@@ -4,7 +4,7 @@
 // the input widgets (CurrencyPicker/DatePicker) are stubbed to minimal
 // pass-throughs so the test exercises THIS component's logic, not theirs.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { act, render, screen, fireEvent } from '@testing-library/react'
 import type { ReactNode } from 'react'
 
 // FormModalShell does exactly this in production: render children + a footer
@@ -12,9 +12,14 @@ import type { ReactNode } from 'react'
 // in SettlementRecordSheet.handleSubmit, NOT the shell, so a faithful stub
 // keeps the test focused.
 vi.mock('@/components/ui/FormModalShell', () => ({
-  default: ({ isOpen, saveLabel, onSave, children }: {
-    isOpen: boolean; saveLabel: string; onSave: () => void; children: ReactNode
-  }) => (isOpen ? <div>{children}<button type="button" onClick={onSave}>{saveLabel}</button></div> : null),
+  default: ({ isOpen, saveLabel, onSave, children, saveError }: {
+    isOpen: boolean; saveLabel: string; onSave: () => void; children: ReactNode; saveError?: string | null
+  }) => (isOpen ? (
+    <div>
+      {saveError && <p role="alert">{saveError}</p>}
+      {children}<button type="button" onClick={onSave}>{saveLabel}</button>
+    </div>
+  ) : null),
 }))
 // CurrencyPicker stub exposes a button that flips to a foreign code so a test
 // can drive FOREIGN_CURRENCY mode without the real dropdown.
@@ -38,12 +43,16 @@ const fx = vi.hoisted(() => ({
     isLoading:      false,
     isError:        false,
     disabledReason: undefined as string | undefined,
+    rateQuote:      undefined as { rateDecimal: string; rateDate: string } | undefined,
+    isFinal:        undefined as boolean | undefined,
+    adoptRate:      undefined as ((q: { rateDecimal: string; rateDate: string }) => void) | undefined,
   },
 }))
 vi.mock('@/hooks/useFxPreview', () => ({ useFxPreview: () => fx.value }))
 
 import SettlementRecordSheet, { type SettlementRecordSubmit } from './SettlementRecordSheet'
 import type { TripMember } from '@/features/trips/types'
+import { WorkerRejected } from '@/services/workerBase'
 // Stubbed to a value that is deliberately NOT the UTC date: the CI box
 // runs in UTC, so asserting against a real toLocalDateString would pass
 // just as happily against `new Date().toISOString()` and prove nothing.
@@ -68,7 +77,10 @@ function renderSheet() {
 }
 
 beforeEach(() => {
-  fx.value = { rateDecimal: null, rateDate: undefined, isLoading: false, isError: false, disabledReason: undefined }
+  fx.value = {
+    rateDecimal: null, rateDate: undefined, isLoading: false, isError: false, disabledReason: undefined,
+    rateQuote: undefined, isFinal: undefined, adoptRate: undefined,
+  }
 })
 
 describe('SettlementRecordSheet — double-submit latch', () => {
@@ -99,7 +111,7 @@ describe('SettlementRecordSheet — the date bound is the user\'s day', () => {
   })
 
   it('accepts local today on submit', () => {
-    fx.value = { rateDecimal: '0.218', rateDate: '2026-06-03', isLoading: false, isError: false, disabledReason: undefined }
+    fx.value = { ...fx.value, rateDecimal: '0.218', rateDate: '2026-06-03', isLoading: false, isError: false, disabledReason: undefined }
     const onSave = renderSheet()
     fireEvent.click(screen.getByRole('button', { name: 'pick-foreign' }))
     fireEvent.click(screen.getByRole('button', { name: '儲存紀錄' }))
@@ -127,12 +139,54 @@ describe('SettlementRecordSheet — foreign-mode submit gate', () => {
     expect(onSave).not.toHaveBeenCalled()
 
     // Rate arrives; the SAME open retries and now goes through.
-    fx.value = { rateDecimal: '0.218', rateDate: '2026-06-03', isLoading: false, isError: false, disabledReason: undefined }
+    fx.value = { ...fx.value, rateDecimal: '0.218', rateDate: '2026-06-03', isLoading: false, isError: false, disabledReason: undefined }
     fireEvent.click(screen.getByRole('button', { name: 'pick-foreign' })) // re-render with the new fx value
     fireEvent.click(screen.getByRole('button', { name: '儲存紀錄' }))
     expect(onSave).toHaveBeenCalledTimes(1)
     const payload = onSave.mock.calls[0]![0]
     expect(payload).toMatchObject({ mode: 'FOREIGN_CURRENCY', sourceCurrency: 'TWD' })
     expect(payload.optimistic).toHaveProperty('sourceAmountMinor')
+  })
+})
+
+// FX CAS: the sheet sends the rate it derived the source amount from; a
+// refused provisional save unlatches and shows the refusal's rate as-is.
+describe('SettlementRecordSheet — FX rate confirmation', () => {
+  it('sends the shown rate, and on FX_RATE_CHANGED adopts the refusal rate and allows a resubmit', async () => {
+    const adoptRate = vi.fn()
+    fx.value = {
+      rateDecimal: '4.6', rateDate: '2099-12-30', isLoading: false, isError: false, disabledReason: undefined,
+      rateQuote: { rateDecimal: '4.6', rateDate: '2099-12-30' }, isFinal: false, adoptRate,
+    }
+    const refusal = new WorkerRejected(409, 'rate changed', 'FX_RATE_CHANGED', undefined, {
+      rateDecimal: '4.7', rateDate: '2099-12-31',
+    })
+    const onSave = vi.fn<(p: SettlementRecordSubmit) => void | Promise<unknown>>()
+      .mockRejectedValueOnce(refusal)
+      .mockResolvedValueOnce(undefined)
+    const onClose = vi.fn()
+    render(
+      <SettlementRecordSheet
+        isOpen onClose={onClose} onSave={onSave}
+        suggested={suggested} tripCurrency="JPY" members={members} isSaving={false}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'pick-foreign' }))
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '儲存紀錄' })) })
+
+    expect(onSave.mock.calls[0]![0]).toMatchObject({
+      mode: 'FOREIGN_CURRENCY',
+      expectedFxRate: { rateDecimal: '4.6', rateDate: '2099-12-30' },
+    })
+    expect(typeof onSave.mock.calls[0]![0].reportInForm).toBe('function')
+    expect(adoptRate).toHaveBeenCalledWith({ rateDecimal: '4.7', rateDate: '2099-12-31' })
+    // The refusal is this sheet's own banner, and the sheet stays open.
+    expect(screen.getByRole('alert').textContent).toMatch(/4.6（2099-12-30）→ 4.7（2099-12-31）/)
+    expect(onClose).not.toHaveBeenCalled()
+
+    // Unlatched: the user can confirm and save again; success closes it.
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '儲存紀錄' })) })
+    expect(onSave).toHaveBeenCalledTimes(2)
+    expect(onClose).toHaveBeenCalledOnce()
   })
 })

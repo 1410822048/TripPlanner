@@ -4,7 +4,7 @@
 import type { ReactNode } from 'react'
 import { createElement } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/utils/dates', () => ({ toLocalDateString: () => '2026-10-07' }))
@@ -77,5 +77,150 @@ describe('useFxPreview rate source', () => {
     const { result } = render({ tripId: 'trip-1' })
     await waitFor(() => expect(result.current.rateDecimal).toBe('148'))
     expect(String((fetchMock.mock.calls[0] as unknown[])[0])).toContain('frankfurter')
+  })
+})
+
+// The Worker caches only final answers (fx-core isFinalRate); the preview
+// cache must follow the same rule or it keeps showing a provisional rate
+// the save no longer uses. One QueryClient spans "close and reopen the form".
+describe('useFxPreview cache follows rate finality', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  function workerAnswer(rateDecimal: string, rateDate: string) {
+    return new Response(JSON.stringify({ degenerate: false, tripCurrency: 'JPY', rateDecimal, rateDate }), { status: 200 })
+  }
+  function renderShared(client: QueryClient, requestedDate: string) {
+    return renderHook(
+      () => useFxPreview({ requestedDate, sourceCurrency: 'USD', tripCurrency: 'JPY', tripId: 'trip-1' }),
+      { wrapper: ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children) },
+    )
+  }
+  const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+  it('re-asks on reopen while today is unpublished, and shows the published rate', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-07T12:00:00Z'))
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(workerAnswer('149', '2026-10-06'))
+      .mockResolvedValueOnce(workerAnswer('150', '2026-10-07'))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = newClient()
+
+    const first = renderShared(client, '2026-10-07')
+    await waitFor(() => expect(first.result.current.rateDecimal).toBe('149'))
+    first.unmount()
+
+    const second = renderShared(client, '2026-10-07')
+    await waitFor(() => expect(second.result.current.rateDecimal).toBe('150'))
+    expect(second.result.current.rateDate).toBe('2026-10-07')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps a published answer for good', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-07T12:00:00Z'))
+    const fetchMock = vi.fn().mockResolvedValue(workerAnswer('150', '2026-10-07'))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = newClient()
+
+    const first = renderShared(client, '2026-10-07')
+    await waitFor(() => expect(first.result.current.rateDecimal).toBe('150'))
+    first.unmount()
+    const second = renderShared(client, '2026-10-07')
+    expect(second.result.current.rateDecimal).toBe('150')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps an earlier-dated answer for a past day (weekend) for good', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-07T12:00:00Z'))
+    const fetchMock = vi.fn().mockResolvedValue(workerAnswer('148', '2026-10-02'))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = newClient()
+
+    const first = renderShared(client, '2026-10-04')
+    await waitFor(() => expect(first.result.current.rateDecimal).toBe('148'))
+    first.unmount()
+    const second = renderShared(client, '2026-10-04')
+    expect(second.result.current.rateDecimal).toBe('148')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('an open form picks up publication without being reopened', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date('2026-10-07T12:00:00Z'))
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(workerAnswer('149', '2026-10-06'))
+      .mockResolvedValue(workerAnswer('150', '2026-10-07'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderShared(newClient(), '2026-10-07')
+    await waitFor(() => expect(result.current.rateDecimal).toBe('149'))
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    await waitFor(() => expect(result.current.rateDecimal).toBe('150'))
+    // Final now: the interval stops.
+    await vi.advanceTimersByTimeAsync(15 * 60_000)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+})
+
+// A FX_RATE_CHANGED refusal carries the Worker's rate; the hook shows it as-is
+// (no refetch, which could already say something newer) until a later
+// preview fetch supersedes it. `isFinal` tells the form whether a save may
+// close optimistically.
+describe('useFxPreview adoptRate / isFinal', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  function workerAnswer(rateDecimal: string, rateDate: string) {
+    return new Response(JSON.stringify({ degenerate: false, tripCurrency: 'JPY', rateDecimal, rateDate }), { status: 200 })
+  }
+
+  it('shows an adopted rate without asking again, and a later fetch supersedes it', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date('2026-10-07T12:00:00Z'))
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(workerAnswer('149', '2026-10-06'))
+      .mockResolvedValue(workerAnswer('151', '2026-10-07'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = render({ tripId: 'trip-1', requestedDate: '2026-10-07' })
+    await waitFor(() => expect(result.current.rateDecimal).toBe('149'))
+    expect(result.current.isFinal).toBe(false)
+
+    act(() => { result.current.adoptRate({ rateDecimal: '150', rateDate: '2026-10-07' }) })
+    expect(result.current.rateQuote).toEqual({ rateDecimal: '150', rateDate: '2026-10-07' })
+    expect(result.current.isFinal).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    // Was provisional when fetched, so the interval is still armed; its
+    // answer is newer than the adopted one and wins.
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    await waitFor(() => expect(result.current.rateDecimal).toBe('151'))
+  })
+
+  it('an adopted rate is dropped when the date changes', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => workerAnswer('149.5', '2026-10-03')))
+    const { result, rerender } = renderHook(
+      ({ date }: { date: string }) => useFxPreview({ requestedDate: date, sourceCurrency: 'USD', tripCurrency: 'JPY', tripId: 'trip-1' }),
+      {
+        initialProps: { date: '2026-10-05' },
+        wrapper: ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, {
+          client: new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+        }, children),
+      },
+    )
+    await waitFor(() => expect(result.current.rateDecimal).toBe('149.5'))
+    act(() => { result.current.adoptRate({ rateDecimal: '150', rateDate: '2026-10-05' }) })
+    expect(result.current.rateDecimal).toBe('150')
+    rerender({ date: '2026-10-06' })
+    await waitFor(() => expect(result.current.rateDecimal).toBe('149.5'))
+  })
+
+  it('a pinned stored rate is final (the Worker reuses it), and an adopted rate overrides it', () => {
+    vi.stubGlobal('fetch', vi.fn())
+    const { result } = render({ tripId: 'trip-1', pinned: { rateDecimal: '150', rateDate: '2026-10-05' } })
+    expect(result.current.isFinal).toBe(true)
+    act(() => { result.current.adoptRate({ rateDecimal: '151', rateDate: '2026-10-06' }) })
+    expect(result.current.rateQuote).toEqual({ rateDecimal: '151', rateDate: '2026-10-06' })
   })
 })

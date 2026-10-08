@@ -34,6 +34,8 @@
 // `//expense-create` and 404. Strip both the env value and the
 // hardcoded fallback so `'/' + endpoint` always lands cleanly.
 
+import { isCanonicalRateString } from '@tripmate/fx-core'
+
 function stripTrailingSlash(s: string): string {
   return s.endsWith('/') ? s.slice(0, -1) : s
 }
@@ -107,13 +109,30 @@ export class WorkerRejected extends Error {
   readonly status: number
   readonly code: string | undefined
   readonly field: string | undefined
-  constructor(status: number, message: string, code?: string, field?: string) {
+  /** FX_RATE_CHANGED only: the authoritative rate the write was refused
+   *  against (see fxRateChanged below). */
+  readonly currentFxRate: { rateDecimal: string; rateDate: string } | undefined
+  constructor(
+    status: number, message: string, code?: string, field?: string,
+    currentFxRate?: { rateDecimal: string; rateDate: string },
+  ) {
     super(message)
     this.name = 'WorkerRejected'
     this.status = status
     this.code = code
     this.field = field
+    this.currentFxRate = currentFxRate
   }
+}
+
+/** The current rate carried by a FX_RATE_CHANGED refusal, or null for any
+ *  other error. The Worker refused the write because the rate the user
+ *  confirmed is no longer the rate it would convert with; this is that
+ *  rate, to show for re-confirmation without asking again. */
+export function fxRateChanged(err: unknown): { rateDecimal: string; rateDate: string } | null {
+  return err instanceof WorkerRejected && err.code === 'FX_RATE_CHANGED' && err.currentFxRate
+    ? err.currentFxRate
+    : null
 }
 
 /**
@@ -235,8 +254,9 @@ async function readWorkerResponse(res: Response, endpoint: string): Promise<unkn
   const message = workerErrorMessage(endpoint, res.status, detail, parsedError)
   const code = typeof parsedError?.code === 'string' ? parsedError.code : undefined
   const field = typeof parsedError?.field === 'string' ? parsedError.field : undefined
+  const currentFxRate = readFxRate(parsedError?.currentFxRate)
   if (DEFINITIVE_REJECT_STATUSES.has(res.status)) {
-    throw new WorkerRejected(res.status, message, code, field)
+    throw new WorkerRejected(res.status, message, code, field, currentFxRate)
   }
   // 5xx / unknown -- ambiguous BY DEFAULT (the Worker may have committed
   // before the response was lost). EXCEPTION: a JSON body with
@@ -246,7 +266,7 @@ async function readWorkerResponse(res: Response, endpoint: string): Promise<unkn
   // it as WorkerRejected instead of leaving a phantom optimistic row +
   // misleading "still confirming" toast.
   if (parsedError?.precommit === true) {
-    throw new WorkerRejected(res.status, message, code, field)
+    throw new WorkerRejected(res.status, message, code, field, currentFxRate)
   }
   throw new WorkerAmbiguous(message, undefined)
 }
@@ -297,6 +317,17 @@ type WorkerErrorBody = {
   code?: unknown
   field?: unknown
   precommit?: unknown
+  currentFxRate?: unknown
+}
+
+/** Accept only a well-formed rate: it is about to be shown as the rate the
+ *  next save will be checked against, so a malformed one is dropped. */
+function readFxRate(raw: unknown): { rateDecimal: string; rateDate: string } | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const { rateDecimal, rateDate } = raw as { rateDecimal?: unknown; rateDate?: unknown }
+  if (typeof rateDecimal !== 'string' || !isCanonicalRateString(rateDecimal)) return undefined
+  if (typeof rateDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(rateDate)) return undefined
+  return { rateDecimal, rateDate }
 }
 
 function workerErrorMessage(

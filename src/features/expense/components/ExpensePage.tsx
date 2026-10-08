@@ -124,6 +124,8 @@ export default function ExpensePage() {
   // save button never enters a busy state. Without forcing this to false
   // an in-flight previous mutation would leak its `isPending` into a
   // newly-opened modal, showing "保存中" before the user even taps save.
+  // The one save that waits (provisional FX rate) keeps its busy state in
+  // the form instance itself (useAwaitedSave).
 
   // Single pass: active list + total + category bucket together.
   // Compiler memoises; collapses what used to be filter → reduce → for-of.
@@ -211,7 +213,7 @@ export default function ExpensePage() {
     modal.openEdit(expense)
   }
 
-  function handleSave({ input, attachment }: ExpenseFormResult) {
+  function handleSave({ input, attachment, expectedFxRate, reportInForm }: ExpenseFormResult): void | Promise<unknown> {
     if (isDemo) { modal.close(); signIn.open(); return }
     if (!uid) { toast.error('正在準備登入，請稍候'); return }
     // The mutations bind to the LIVE trip id — a form opened on another trip
@@ -248,28 +250,40 @@ export default function ExpensePage() {
       modal.setError(EXPENSE_CAP_MESSAGE)
       return
     }
-    modal.close()
-    if (editing) {
-      updateMut.mutate({
-        expenseId: editing.id,
-        updates:   input,
-        uid,
-        attachment,
-        existing:  {
-          path:      editing.receipt?.path,
-          thumbPath: editing.receipt?.thumbPath,
-        },
-      })
-    } else {
-      createMut.mutate({
-        expenseId:  crypto.randomUUID(),
-        input,
-        createdBy:  uid,
-        attachment: attachment instanceof File ? attachment : null,
-      })
+    const update = editing && {
+      expenseId: editing.id,
+      updates:   input,
+      uid,
+      attachment,
+      existing:  {
+        path:      editing.receipt?.path,
+        thumbPath: editing.receipt?.thumbPath,
+      },
+      expectedFxRate,
     }
+    const create = {
+      expenseId:  crypto.randomUUID(),
+      input,
+      createdBy:  uid,
+      attachment: attachment instanceof File ? attachment : null,
+      expectedFxRate,
+    }
+    if (reportInForm) {
+      // Provisional rate: the Worker may refuse it (FX_RATE_CHANGED). The
+      // form stays open and tracks this promise itself — close, banner and
+      // busy state belong to that form instance (useAwaitedSave). The
+      // overlay row still shows the write in the list meanwhile.
+      modal.clearError()
+      return update
+        ? updateMut.mutateAsync({ ...update, reportInForm })
+        : createMut.mutateAsync({ ...create, reportInForm })
+    }
+    modal.close()
+    if (update) updateMut.mutate(update)
+    else createMut.mutate(create)
   }
-  function handleRecordSettlement(submit: SettlementRecordSubmit) {
+
+  function handleRecordSettlement({ reportInForm, ...submit }: SettlementRecordSubmit): void | Promise<unknown> {
     // Scope BEFORE the demo branch: a sheet opened on a cloud trip whose
     // session then signed out into demo would otherwise have its draft
     // (date / note / currency) wiped by setRecordTarget(null) below. The
@@ -316,7 +330,13 @@ export default function ExpensePage() {
     // `pendingAppliedExpenseIds` is a top-level variables field (NOT nested
     // in the discriminated `optimistic`), so this is a pure spread — no
     // mutation of `submit`, no per-mode narrowing needed.
-    createSettlementMut.mutate({ ...submit, settlementId: crypto.randomUUID(), pendingAppliedExpenseIds })
+    const vars = { ...submit, settlementId: crypto.randomUUID(), pendingAppliedExpenseIds }
+    if (reportInForm && vars.mode === 'FOREIGN_CURRENCY') {
+      // Provisional FX rate: the sheet stays open and tracks this promise
+      // itself (useAwaitedSave), same as the expense form.
+      return createSettlementMut.mutateAsync({ ...vars, reportInForm })
+    }
+    createSettlementMut.mutate(vars)
     // Close the sheet optimistically — the optimistic patch already
     // inserts the row; the realtime listener will replace it once the
     // Worker commits. Errors surface through the global

@@ -142,3 +142,14 @@ export function splitSummary(e: Expense, totalMembers: number): string {
   }
   return '自訂分攤'
 }
+
+/** Banner copy for a save the Worker refused because the FX rate moved
+ *  between preview and save (409 FX_RATE_CHANGED). Shared by the expense
+ *  form and the settlement sheet. */
+export function fxRateChangedMessage(
+  expected: { rateDecimal: string; rateDate: string } | undefined,
+  current:  { rateDecimal: string; rateDate: string },
+): string {
+  const from = expected ? `${expected.rateDecimal}（${expected.rateDate}）→ ` : ''
+  return `匯率已更新：${from}${current.rateDecimal}（${current.rateDate}）。尚未儲存，換算金額已依新匯率重新計算，請確認後再儲存。`
+}

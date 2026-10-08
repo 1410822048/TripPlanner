@@ -91,11 +91,21 @@ export const queryClient = new QueryClient({
     onMutate: () => {
       assertClientWriteCompatible()
     },
-    onError: (err, _vars, _ctx, mutation) => {
+    onError: (err, vars, _ctx, mutation) => {
       // The mandatory root gate already explains this state and owns the
       // update CTA. Reporting or toasting it would create Sentry noise and a
       // duplicate notification for an intentional client-side refusal.
       if (isUpdateRequiredError(err)) return
+      // FX CAS refusal: the rate moved between preview and save. An expected
+      // outcome of the check, not a fault — no Sentry. The toast still runs
+      // unless the form stayed open to show the new rate (below).
+      const isFxRateChanged = (err as { code?: unknown } | null)?.code === 'FX_RATE_CHANGED'
+      // Per-call opt-out for a form that waited for this save and reports a
+      // definitive failure itself (useAwaitedSave). A predicate, evaluated
+      // now: a form dismissed while waiting returns false, and the failure
+      // is reported here like any optimistic-close save.
+      const reportInForm = (vars as { reportInForm?: unknown } | undefined)?.reportInForm
+      const formReports = typeof reportInForm === 'function' && reportInForm() === true
 
       const meta = mutation.meta
       // WorkerAmbiguous = the write request reached the network but the
@@ -108,12 +118,17 @@ export const queryClient = new QueryClient({
       // Always capture — silent only suppresses the user-facing toast,
       // not the debugging signal. Tag ambiguity so contention spikes are
       // greppable separately from definitive failures in Sentry.
-      captureError(err as Error, {
-        source:    'mutationCache',
-        action:    meta?.action ?? 'unknown',
-        ambiguous: isAmbiguous,
-      })
+      if (!isFxRateChanged) {
+        captureError(err as Error, {
+          source:    'mutationCache',
+          action:    meta?.action ?? 'unknown',
+          ambiguous: isAmbiguous,
+        })
+      }
       if (meta?.silent) return
+      // Ambiguous is never the form's to report: it closes, and this toast
+      // says the outcome is still being confirmed.
+      if (formReports && !isAmbiguous) return
       if (isAmbiguous) {
         toast.info('網路不穩定，正在確認是否已完成更新')
         return

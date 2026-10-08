@@ -80,6 +80,12 @@ export type CreateTripSettlementVariables = CreateTripSettlementInput & WithPend
 export type CreateForeignSettlementVariables = CreateForeignSettlementInput & WithPendingLock & {
   settlementId: string
   optimistic:   OptimisticForeignPatch
+  /** The rate the receiver confirmed. The Worker still decides the rate
+   *  and refuses (409 FX_RATE_CHANGED) when it differs. */
+  expectedFxRate?: { rateDecimal: string; rateDate: string }
+  /** While true, the waiting sheet reports a definitive failure itself
+   *  (useAwaitedSave; queryClient onError evaluates it at settle time). */
+  reportInForm?:   () => boolean
 }
 
 export type CreateSettlementVariables =
@@ -247,6 +253,7 @@ export async function createSettlement(
     sourceCurrency:         vars.sourceCurrency,
     settledOn:              vars.settledOn,
     ...(vars.note ? { note: vars.note } : {}),
+    ...(vars.expectedFxRate ? { expectedFxRate: vars.expectedFxRate } : {}),
   })
 }
 

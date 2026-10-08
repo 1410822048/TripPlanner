@@ -22,13 +22,19 @@
 // Cache contract (TanStack Query):
 //   - key:        ['fxPreview', tripId | 'direct', requestedDate, source, trip]
 //   - enabled:    sourceCurrency !== tripCurrency, valid, not future, not pinned
-//   - staleTime:  Infinity — a (date, pair) rate never changes once pinned
+//   - staleTime:  Infinity for a final answer (fx-core isFinalRate, the
+//                 same rule the Worker caches by); 0 for a provisional one
+//                 (today, not yet published), so a reopened form re-asks
+//   - refetchInterval: 5min while provisional, so an open form follows
+//                 publication; a save that still lands between refetches
+//                 uses the Worker's rate (by design, no drift reject)
 //   - retry:      1
 //   - gcTime:     30min (queryClient default)
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { z } from 'zod'
 import { requireWorkerWriteBase, workerRead } from '@/services/workerBase'
-import { canonicalizeRate } from '@tripmate/fx-core'
+import { canonicalizeRate, isFinalRate } from '@tripmate/fx-core'
 import { toLocalDateString } from '@/utils/dates'
 
 /** Why the hook isn't running its query. Mutually exclusive with
@@ -52,10 +58,30 @@ export type FxPreviewDisabledReason =
 export interface FxPreviewResult {
   rateDecimal: string | null
   rateDate:    string | null
+  /** rateDecimal + rateDate together, or null — what a save sends as its
+   *  `expectedFxRate` (the rate the user is looking at). */
+  rateQuote:   FxRateQuote | null
+  /** The shown rate can no longer change (fx-core isFinalRate), or is the
+   *  stored rate the Worker reuses. A save may then close optimistically;
+   *  a provisional rate keeps the form open so a FX_RATE_CHANGED refusal
+   *  can be confirmed in place. Not a correctness claim — the Worker CAS
+   *  runs either way. */
+  isFinal:     boolean
   isLoading:   boolean
   isError:     boolean
   isDegenerate: boolean
   disabledReason: FxPreviewDisabledReason | null
+  /** Show the rate a 409 FX_RATE_CHANGED carried. That rate IS the
+   *  Worker's answer for this request, so it is shown as-is — asking
+   *  /fx-rate again could already return something newer and reopen the
+   *  window the CAS just closed. Superseded only by a later preview fetch. */
+  adoptRate:   (quote: FxRateQuote) => void
+}
+
+/** A rate as shown to the user / as the Worker answered it. */
+export interface FxRateQuote {
+  rateDecimal: string
+  rateDate:    string
 }
 
 export interface UseFxPreviewInput {
@@ -88,6 +114,14 @@ const CCY_RE = /^[A-Z]{3}$/
  *  typed; see the local-today gate below. */
 function todayUtc(): string {
   return new Date().toISOString().slice(0, 10)
+}
+
+/** How often an open form re-asks while the rate is still provisional. */
+const PROVISIONAL_REFETCH_MS = 5 * 60_000
+
+/** Same finality rule as the Worker's fxRates cache (fx-core isFinalRate). */
+function isFinalAnswer(data: { rateDate: string } | undefined, requestedDate: string): boolean {
+  return !!data && isFinalRate({ rateDate: data.rateDate, requestedDate, todayUtc: todayUtc() })
 }
 
 /** Today where the USER is. The date they pick is a calendar date in
@@ -228,6 +262,14 @@ export function useFxPreview(input: UseFxPreviewInput): FxPreviewResult {
   const workerBase = input.tripId ? workerBaseOrNull() : null
   const tripId     = workerBase ? input.tripId! : null
 
+  // Rate adopted from a FX_RATE_CHANGED refusal, scoped to the exact rate
+  // key it answered so a date / currency change drops it.
+  const rateKey = `${tripId ?? 'direct'}|${input.requestedDate}|${input.sourceCurrency}|${input.tripCurrency}`
+  const [adopted, setAdopted] = useState<{ key: string; quote: FxRateQuote; at: number } | null>(null)
+  function adoptRate(quote: FxRateQuote) {
+    setAdopted({ key: rateKey, quote, at: Date.now() })
+  }
+
   const query = useQuery({
     // Source is part of the key: a Worker answer and a direct provider
     // answer are different claims and must not satisfy each other.
@@ -236,31 +278,57 @@ export function useFxPreview(input: UseFxPreviewInput): FxPreviewResult {
       ? fetchWorkerFxRate({ ...input, tripId }, workerBase)
       : fetchFxRate(input)),
     enabled,
-    // Historical rates immutable once published — see file header.
-    staleTime: Infinity,
+    // A final answer never changes; a provisional one (today's rate before
+    // publication) must not be reused, or the preview keeps showing it
+    // after the Worker — which caches only final answers — has moved on.
+    staleTime: q => isFinalAnswer(q.state.data, input.requestedDate) ? Infinity : 0,
+    // While a form stays open across publication, pick the new rate up.
+    refetchInterval: q => (q.state.data && !isFinalAnswer(q.state.data, input.requestedDate)
+      ? PROVISIONAL_REFETCH_MS
+      : false),
     retry:     1,
   })
 
   if (isDegenerate) {
     return {
-      rateDecimal: null, rateDate: null,
+      rateDecimal: null, rateDate: null, rateQuote: null, isFinal: true,
       isLoading: false, isError: false,
-      isDegenerate: true, disabledReason: null,
+      isDegenerate: true, disabledReason: null, adoptRate,
+    }
+  }
+  // The newest authoritative observation wins: an adopted 409 rate until a
+  // preview fetch lands after it (a pinned rate never refetches).
+  const adoptedQuote = adopted && adopted.key === rateKey && !disabledReason
+    && (pinned || query.dataUpdatedAt <= adopted.at)
+    ? adopted.quote
+    : null
+  if (adoptedQuote) {
+    return {
+      rateDecimal: adoptedQuote.rateDecimal, rateDate: adoptedQuote.rateDate, rateQuote: adoptedQuote,
+      isFinal: isFinalAnswer(adoptedQuote, input.requestedDate),
+      isLoading: false, isError: false,
+      isDegenerate: false, disabledReason: null, adoptRate,
     }
   }
   if (pinned && !disabledReason) {
     return {
-      rateDecimal: pinned.rateDecimal, rateDate: pinned.rateDate,
+      rateDecimal: pinned.rateDecimal, rateDate: pinned.rateDate, rateQuote: pinned,
+      // The Worker reuses the stored rate for this key; it cannot move.
+      isFinal: true,
       isLoading: false, isError: false,
-      isDegenerate: false, disabledReason: null,
+      isDegenerate: false, disabledReason: null, adoptRate,
     }
   }
+  const data = query.data ?? null
   return {
-    rateDecimal:    query.data?.rateDecimal ?? null,
-    rateDate:       query.data?.rateDate    ?? null,
+    rateDecimal:    data?.rateDecimal ?? null,
+    rateDate:       data?.rateDate    ?? null,
+    rateQuote:      data,
+    isFinal:        isFinalAnswer(data ?? undefined, input.requestedDate),
     isLoading:      enabled && query.isLoading,
     isError:        query.isError,
     isDegenerate:   false,
     disabledReason,
+    adoptRate,
   }
 }

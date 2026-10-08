@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import type { Timestamp } from 'firebase/firestore'
 import type { Expense } from '@/types'
@@ -28,9 +28,17 @@ const harness = vi.hoisted(() => ({
   openSignIn: vi.fn(),
   closeSignIn: vi.fn(),
   createExpense: vi.fn(),
+  createExpenseAsync: vi.fn(),
   updateExpense: vi.fn(),
+  clearModalError: vi.fn(),
+  /** What the mocked form / sheet submits; null = the old minimal payload. */
+  formResult: null as Record<string, unknown> | null,
+  settleSubmit: null as Record<string, unknown> | null,
+  /** Last promise the page returned from onSave (waited saves only). */
+  lastSavePromise: null as Promise<unknown> | null,
   deleteExpense: vi.fn(),
   createSettlement: vi.fn(),
+  createSettlementAsync: vi.fn(),
   deleteSettlement: vi.fn(),
   modalIsOpen: false,
   modalEditTarget: null as Expense | null,
@@ -95,6 +103,7 @@ vi.mock('@/hooks/useFeatureListPage', () => ({
       close: harness.closeModal,
       saveError: null,
       setError: harness.setModalError,
+      clearError: harness.clearModalError,
     },
     signIn: {
       isOpen: false,
@@ -117,7 +126,7 @@ vi.mock('../hooks/useExpenses', async () => {
       dataUpdatedAt: harness.unconfirmed ? 0 : 1,
       isLoading: harness.expensePending, isPending: harness.expensePending,
       isError: !!harness.expenseError, error: harness.expenseError, refetch: harness.refetch }),
-    useCreateExpense: () => ({ mutate: harness.createExpense }),
+    useCreateExpense: () => ({ mutate: harness.createExpense, mutateAsync: harness.createExpenseAsync }),
     useUpdateExpense: () => ({ mutate: harness.updateExpense }),
     useDeleteExpense: () => ({ mutateAsync: harness.deleteExpense }),
   }
@@ -128,7 +137,7 @@ vi.mock('../hooks/useSettlements', () => ({
     dataUpdatedAt: harness.unconfirmed ? 0 : 1,
     isPending: harness.settlementPending, isError: !!harness.settlementError,
     error: harness.settlementError, refetch: harness.refetch }),
-  useCreateSettlement: () => ({ mutate: harness.createSettlement }),
+  useCreateSettlement: () => ({ mutate: harness.createSettlement, mutateAsync: harness.createSettlementAsync }),
   useDeleteSettlement: () => ({ mutate: harness.deleteSettlement }),
 }))
 
@@ -189,12 +198,15 @@ vi.mock('./SettlementRecordSheet', () => ({
   // own fields are covered by its dedicated spec.
   default: ({ members, onSave }: {
     members: TripMember[]
-    onSave: (submit: Record<string, unknown>) => void
+    onSave: (submit: Record<string, unknown>) => void | Promise<unknown>
   }) => (
     <div role="dialog" aria-label="settle-sheet" data-members={members.map(m => m.id).join(',')}>
       <button
         type="button"
-        onClick={() => onSave({ fromUid: 'u2', toUid: 'u1', amountMinor: 600 })}
+        onClick={() => {
+          const r = onSave(harness.settleSubmit ?? { fromUid: 'u2', toUid: 'u1', amountMinor: 600 })
+          if (r) { harness.lastSavePromise = r; r.catch(() => {}) }
+        }}
       >
         mock settle submit
       </button>
@@ -206,7 +218,7 @@ vi.mock('./ExpenseFormModal', () => ({
     editTarget: Expense | null
     members: TripMember[]
     saveError?: string | null
-    onSave: (result: { input: Record<string, unknown>; attachment: null }) => void
+    onSave: (result: Record<string, unknown>) => void | Promise<unknown>
   }) => (
     <div
       role="dialog"
@@ -214,7 +226,13 @@ vi.mock('./ExpenseFormModal', () => ({
       data-members={members.map(m => m.id).join(',')}
       data-save-error={saveError ?? ''}
     >
-      <button type="button" onClick={() => onSave({ input: {}, attachment: null })}>
+      <button
+        type="button"
+        onClick={() => {
+          const r = onSave(harness.formResult ?? { input: {}, attachment: null })
+          if (r) { harness.lastSavePromise = r; r.catch(() => {}) }
+        }}
+      >
         mock expense save
       </button>
     </div>
@@ -293,10 +311,16 @@ beforeEach(() => {
   harness.openSignIn.mockReset()
   harness.closeSignIn.mockReset()
   harness.createExpense.mockReset()
+  harness.createExpenseAsync.mockReset()
   harness.updateExpense.mockReset()
+  harness.clearModalError.mockReset()
+  harness.formResult = null
+  harness.settleSubmit = null
+  harness.lastSavePromise = null
   harness.deleteExpense.mockReset()
   harness.deleteExpense.mockResolvedValue(undefined)
   harness.createSettlement.mockReset()
+  harness.createSettlementAsync.mockReset()
   harness.deleteSettlement.mockReset()
   harness.modalIsOpen = false
   harness.modalEditTarget = null
@@ -306,6 +330,7 @@ beforeEach(() => {
   harness.isDemo = false
   toastMocks.error.mockReset()
   toastMocks.success.mockReset()
+  toastMocks.info.mockReset()
 })
 
 describe('ExpensePage read-first expense flow', () => {
@@ -573,5 +598,58 @@ describe('ExpensePage read-first expense flow', () => {
 
     expect(screen.queryByRole('dialog', { name: 'expense-edit' })).not.toBeNull()
     expect(screen.queryByRole('dialog', { name: '費用詳情' })).toBeNull()
+  })
+})
+
+// FX CAS routing. The page does not wait itself: a provisional-rate save
+// (the form sent `reportInForm`) gets the mutation promise back with
+// reportInForm passed through, and the FORM owns close / banner / busy state
+// (useAwaitedSave, covered by ExpenseFormModal.fxConfirm + its own test).
+describe('ExpensePage FX rate routing', () => {
+  const quote149 = { rateDecimal: '149', rateDate: '2026-05-31' }
+
+  it('final rate: closes first and fires the mutation with the expected rate', () => {
+    harness.modalIsOpen = true
+    harness.formResult = { input: { mode: 'FOREIGN_CURRENCY' }, attachment: null, expectedFxRate: quote149 }
+    render(<ExpensePage />)
+    fireEvent.click(screen.getByRole('button', { name: 'mock expense save' }))
+
+    expect(harness.closeModal).toHaveBeenCalledOnce()
+    expect(harness.createExpense).toHaveBeenCalledWith(expect.objectContaining({ expectedFxRate: quote149 }))
+    expect(harness.createExpenseAsync).not.toHaveBeenCalled()
+  })
+
+  it('provisional rate: hands the mutation promise back to the form and does not close', async () => {
+    const reportInForm = () => true
+    harness.modalIsOpen = true
+    harness.formResult = { input: { mode: 'FOREIGN_CURRENCY' }, attachment: null, expectedFxRate: quote149, reportInForm }
+    harness.createExpenseAsync.mockResolvedValue('e1')
+    render(<ExpensePage />)
+    fireEvent.click(screen.getByRole('button', { name: 'mock expense save' }))
+
+    expect(harness.createExpenseAsync).toHaveBeenCalledWith(expect.objectContaining({ expectedFxRate: quote149, reportInForm }))
+    expect(harness.lastSavePromise).not.toBeNull()
+    await act(async () => { await harness.lastSavePromise })
+    // Closing is the form's call (it knows whether it is still the open one).
+    expect(harness.closeModal).not.toHaveBeenCalled()
+  })
+
+  it('provisional settlement: hands the promise to the sheet with reportInForm, no page-side close', async () => {
+    const reportInForm = () => true
+    harness.createSettlementAsync.mockResolvedValue(undefined)
+    harness.settleSubmit = {
+      mode: 'FOREIGN_CURRENCY', fromUid: 'u2', toUid: 'u1', expectedRemainingMinor: 600,
+      sourceCurrency: 'USD', settledOn: '2026-06-01',
+      optimistic: { amountMinor: 600, currency: 'JPY', sourceAmountMinor: 402 },
+      expectedFxRate: quote149, reportInForm,
+    }
+    render(<ExpensePage />)
+    fireEvent.click(screen.getByRole('button', { name: 'record-settlement' }))
+    fireEvent.click(screen.getByRole('button', { name: 'mock settle submit' }))
+
+    expect(harness.createSettlement).not.toHaveBeenCalled()
+    expect(harness.createSettlementAsync).toHaveBeenCalledWith(expect.objectContaining({ expectedFxRate: quote149, reportInForm }))
+    await act(async () => { await harness.lastSavePromise })
+    expect(screen.getByRole('dialog', { name: 'settle-sheet' })).toBeTruthy()
   })
 })

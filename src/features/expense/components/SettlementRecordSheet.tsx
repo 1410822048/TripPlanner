@@ -38,6 +38,10 @@ import CurrencyPicker from '@/components/ui/CurrencyPicker'
 import DatePicker from '@/components/ui/pickers/DatePicker'
 import MemberAvatar from '@/components/ui/MemberAvatar'
 import { useFxPreview } from '@/hooks/useFxPreview'
+import { fxRateChanged } from '@/services/workerBase'
+import { userErrorMessage } from '@/utils/errorMessage'
+import { useAwaitedSave } from '../hooks/useAwaitedSave'
+import { fxRateChangedMessage } from '../utils'
 import { toLocalDateString } from '@/utils/dates'
 import {
   formatMinorAmount,
@@ -62,14 +66,22 @@ interface Suggestion {
  *  by `mode` at the top level so the optimistic shape stays correlated:
  *  TRIP_CURRENCY MUST NOT carry `sourceAmountMinor`, FOREIGN_CURRENCY MUST.
  *  ExpensePage just spreads + adds settlementId; no nested narrowing needed. */
-export type SettlementRecordSubmit =
+export type SettlementRecordSubmit = (
   | Omit<CreateTripSettlementVariables,    'settlementId'>
-  | Omit<CreateForeignSettlementVariables, 'settlementId'>
+  | Omit<CreateForeignSettlementVariables, 'settlementId' | 'reportInForm'>
+) & {
+  /** Present when the FX rate shown is still provisional: the page returns
+   *  the mutation promise and passes this as `reportInForm`; the sheet
+   *  stays open until it settles (useAwaitedSave). */
+  reportInForm?: () => boolean
+}
 
 interface Props {
   isOpen:       boolean
   onClose:      () => void
-  onSave:       (payload: SettlementRecordSubmit) => void
+  /** Returns the mutation promise when the payload carries `reportInForm`;
+   *  the sheet tracks it (rejects with the Worker's error). */
+  onSave:       (payload: SettlementRecordSubmit) => void | Promise<unknown>
   /** The pairwise suggestion the receiver tapped 「済み」on. Drives the
    *  read-only amount display + the from/to avatar row. */
   suggested:    Suggestion
@@ -80,15 +92,10 @@ interface Props {
    *  rate. Null in demo. */
   tripId?:      string | null
   members:      TripMember[]
-  /** Threaded through to FormModalShell for the shared save-button
-   *  contract. Always `false` from ExpensePage: this is an optimistic-
-   *  close sheet (the parent nulls recordTarget the instant onSave
-   *  fires), so there's no in-place saving state to render — double-
-   *  submit is guarded by the synchronous `submittedRef` latch instead.
-   *  Kept (rather than hardcoded internally) for symmetry with the sibling
-   *  optimistic-close modal ExpenseFormModal, which also takes it; the
-   *  pair should lose it together if/when the FormModalShell save-state
-   *  contract is revisited (see [[expense-form-modal-extract]]). */
+  /** Threaded through to FormModalShell. Always `false` from ExpensePage:
+   *  a normal save closes the sheet optimistically, and a provisional-rate
+   *  save's busy state is the sheet's own (useAwaitedSave). Double-submit is
+   *  guarded by the synchronous `submittedRef` latch either way. */
   isSaving:     boolean
 }
 
@@ -137,6 +144,8 @@ export default function SettlementRecordSheet({
     tripCurrency,
     tripId,
   })
+  // A provisional-rate save waits here, owned by this sheet instance.
+  const awaited = useAwaitedSave(onClose)
 
   // Foreign-mode derivation: from the suggested trip-currency remaining,
   // inverse-derive the largest source amount whose forward conversion
@@ -228,7 +237,10 @@ export default function SettlementRecordSheet({
       // may be ≤ that by a few minor units. Using the suggestion's amount
       // matches the authoritative server write and avoids a visible
       // jump when the listener swap lands.
-      onSave({
+      // expectedFxRate is the rate this render derived sourceMinor from —
+      // after adopting a refusal's rate, the next submit sends that rate.
+      const expectedFxRate = fxPreview.rateQuote ?? undefined
+      const pending = onSave({
         mode:                   'FOREIGN_CURRENCY',
         fromUid:                suggested.fromUid,
         toUid:                  suggested.toUid,
@@ -241,7 +253,20 @@ export default function SettlementRecordSheet({
           currency:          tripCurrency,
           sourceAmountMinor: foreignDerived!.sourceMinor,
         },
+        ...(expectedFxRate ? { expectedFxRate } : {}),
+        ...(!fxPreview.isFinal ? { reportInForm: awaited.stillOpen } : {}),
       })
+      if (pending) {
+        void awaited.track(pending, err => {
+          // Refused (definitively): unlatch so the user can confirm and
+          // resubmit; on FX_RATE_CHANGED show the refusal's rate as-is.
+          submittedRef.current = false
+          const current = fxRateChanged(err)
+          if (!current) return userErrorMessage(err, '儲存失敗')
+          fxPreview.adoptRate(current)
+          return fxRateChangedMessage(expectedFxRate, current)
+        })
+      }
     } else {
       // TRIP: wire payload is intent only. Optimistic patch uses the
       // suggestion's amount directly — Worker will compute the exact
@@ -264,9 +289,10 @@ export default function SettlementRecordSheet({
   return (
     <FormModalShell
       isOpen={isOpen}
-      isSaving={isSaving}
+      isSaving={isSaving || awaited.saving}
       title="記錄清算"
       saveLabel="儲存紀錄"
+      saveError={awaited.error}
       onClose={onClose}
       onSave={handleSubmit}
     >

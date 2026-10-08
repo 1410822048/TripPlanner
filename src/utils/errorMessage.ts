@@ -55,6 +55,7 @@ const WORKER_CODES: Record<string, string> = {
   FX_FUTURE_DATE_UNSUPPORTED: '無法取得未來日期的匯率',
   FX_INVALID_CURRENCY:        '不支援這個幣別的匯率換算',
   FX_INVALID_DATE:            '日期格式不正確',
+  FX_RATE_CHANGED:            '匯率已更新，未儲存。請重新開啟表單確認換算金額後再儲存',
   ROUTE_PROVIDER_ERROR:       '路線服務暫時無法使用，請稍後再試',
 }
 

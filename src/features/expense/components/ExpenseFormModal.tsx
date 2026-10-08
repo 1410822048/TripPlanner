@@ -46,7 +46,11 @@ import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { useSplitsState, type SplitMode } from '../hooks/useSplitsState'
 import { useExpenseItems } from '../hooks/useExpenseItems'
 import { useExpenseMoneyDraft } from '../hooks/useExpenseMoneyDraft'
-import { useFxPreview } from '@/hooks/useFxPreview'
+import { useFxPreview, type FxRateQuote } from '@/hooks/useFxPreview'
+import { fxRateChanged } from '@/services/workerBase'
+import { userErrorMessage } from '@/utils/errorMessage'
+import { useAwaitedSave } from '../hooks/useAwaitedSave'
+import { fxRateChangedMessage } from '../utils'
 import { type OcrResult } from '../services/ocrService'
 import { useReceiptOcr } from '../hooks/useReceiptOcr'
 import { buildExpenseFormResult } from '../services/buildExpenseFormResult'
@@ -91,6 +95,14 @@ type FormState = {
 export interface ExpenseFormResult {
   input:      CreateExpenseInput
   attachment: AttachmentChange
+  /** Foreign-currency only: the rate this save was converted (and shown)
+   *  with — the Worker refuses the write if its rate differs. */
+  expectedFxRate?: FxRateQuote
+  /** Present when the shown rate is still provisional, so the Worker may
+   *  refuse it: the page must return the mutation promise and pass this as
+   *  the mutation's `reportInForm` — the form stays open until the save
+   *  settles and confirms a new rate in place (useAwaitedSave). */
+  reportInForm?: () => boolean
 }
 
 interface Props {
@@ -101,7 +113,9 @@ interface Props {
   isSaving:    boolean
   saveError?:  string | null
   onClose:     () => void
-  onSave:      (result: ExpenseFormResult) => void
+  /** Returns the mutation promise when the result carries `reportInForm`;
+   *  the form tracks it (rejects with the Worker's error). */
+  onSave:      (result: ExpenseFormResult) => void | Promise<unknown>
 }
 
 function initFormState(
@@ -191,6 +205,8 @@ export default function ExpenseFormModal({
     tripId,
     pinned:         pinnedFx,
   })
+  // A provisional-rate save waits here, owned by this form instance.
+  const awaited = useAwaitedSave(onClose)
 
   // Receipt attachment — owns the visual preview + file upload state.
   const att = useAttachment({
@@ -447,7 +463,25 @@ export default function ExpenseFormModal({
       return
     }
     setErrors({})
-    onSave({ input: result.input, attachment: att.pickAttachmentChange() })
+    // The quote is read from this render — the same one the conversion
+    // above used — so a re-save after adopting a new rate sends that rate.
+    const expectedFxRate = isForeignOpen ? fxPreview.rateQuote ?? undefined : undefined
+    const pending = onSave({
+      input:      result.input,
+      attachment: att.pickAttachmentChange(),
+      expectedFxRate,
+      ...(isForeignOpen && !fxPreview.isFinal ? { reportInForm: awaited.stillOpen } : {}),
+    })
+    if (pending) {
+      void awaited.track(pending, err => {
+        // FX_RATE_CHANGED: show the Worker's rate (from the refusal itself,
+        // no refetch); the form recomputes and the next save confirms it.
+        const current = fxRateChanged(err)
+        if (!current) return userErrorMessage(err, '儲存失敗')
+        fxPreview.adoptRate(current)
+        return fxRateChangedMessage(expectedFxRate, current)
+      })
+    }
   }
 
   // ─── Receipt section helpers ────────────────────────────────────────
@@ -456,10 +490,10 @@ export default function ExpenseFormModal({
   return (
     <FormModalShell
       isOpen={isOpen}
-      isSaving={isSaving}
+      isSaving={isSaving || awaited.saving}
       title={editTarget ? '編輯費用' : '新增費用'}
       saveLabel={editTarget ? '儲存變更' : '新增費用'}
-      saveError={saveError}
+      saveError={awaited.error ?? saveError}
       onClose={onClose}
       onSave={handleSave}
     >

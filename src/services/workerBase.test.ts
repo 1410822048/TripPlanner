@@ -190,4 +190,34 @@ describe('workerFetch — HTTP error classification', () => {
       workerFetch('https://w.example.dev', 'tok', '/cascade-trip-delete', {}),
     ).rejects.toBeInstanceOf(WorkerAmbiguous)
   })
+
+  it('409 FX_RATE_CHANGED → WorkerRejected carrying the current rate (rolls back, no refetch needed)', async () => {
+    stubFetchStatus(409, JSON.stringify({
+      error: 'rate changed', code: 'FX_RATE_CHANGED', precommit: true,
+      currentFxRate: { rateDecimal: '150', rateDate: '2026-10-07' },
+    }))
+    const { workerFetch, WorkerRejected, fxRateChanged } = await import('./workerBase')
+    const err = await workerFetch('https://w.example.dev', 'tok', '/expense-create', {}).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(WorkerRejected)
+    expect(fxRateChanged(err)).toEqual({ rateDecimal: '150', rateDate: '2026-10-07' })
+  })
+
+  it('drops a malformed currentFxRate rather than show it as the rate to confirm', async () => {
+    for (const currentFxRate of [
+      { rateDecimal: '150.0', rateDate: '2026-10-07' },
+      { rateDecimal: 150, rateDate: '2026-10-07' },
+      { rateDecimal: '150', rateDate: '7/10/2026' },
+    ]) {
+      stubFetchStatus(409, JSON.stringify({ error: 'x', code: 'FX_RATE_CHANGED', currentFxRate }))
+      const { workerFetch, fxRateChanged } = await import('./workerBase')
+      const err = await workerFetch('https://w.example.dev', 'tok', '/expense-create', {}).catch((e: unknown) => e)
+      expect(fxRateChanged(err)).toBeNull()
+    }
+  })
+
+  it('fxRateChanged ignores other rejections', async () => {
+    const { WorkerRejected, fxRateChanged } = await import('./workerBase')
+    expect(fxRateChanged(new WorkerRejected(409, 'stale', 'SETTLEMENT_STALE'))).toBeNull()
+    expect(fxRateChanged(new Error('x'))).toBeNull()
+  })
 })

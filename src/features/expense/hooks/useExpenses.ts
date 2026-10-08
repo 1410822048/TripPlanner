@@ -14,6 +14,7 @@ import {
   createExpense,
   updateExpense,
   deleteExpense,
+  type ExpectedFxRate,
 } from '../services/expenseService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
 import { createListOverlay } from '@/hooks/listOverlay'
@@ -53,11 +54,15 @@ export function useCreateExpense(tripId: string) {
     input:       CreateExpenseInput
     createdBy:   string
     attachment?: File | null
+    expectedFxRate?: ExpectedFxRate
+    /** While true, the waiting form reports a definitive failure itself
+     *  (useAwaitedSave; queryClient onError evaluates it at settle time). */
+    reportInForm?: () => boolean
   }>({
     tripId,
     keyFactory: expenseKeys.all,
-    mutate:     ({ expenseId, input, createdBy, attachment }) =>
-      createExpense(tripId, input, createdBy, attachment, expenseId),
+    mutate:     ({ expenseId, input, createdBy, attachment, expectedFxRate }) =>
+      createExpense(tripId, input, createdBy, attachment, expenseId, expectedFxRate),
     overlay: {
       controller: expenseOverlay,
       op: ({ expenseId, input, createdBy }, { uid }) => {
@@ -90,11 +95,13 @@ export function useUpdateExpense(tripId: string) {
     uid:        string
     attachment?: File | null
     existing?:  { path?: string; thumbPath?: string }
+    expectedFxRate?: ExpectedFxRate
+    reportInForm?: () => boolean
   }>({
     tripId,
     keyFactory:  expenseKeys.all,
-    mutate:      ({ expenseId, updates, uid, attachment, existing }) =>
-      updateExpense(tripId, expenseId, updates, { uid, attachment, existingPaths: existing }),
+    mutate:      ({ expenseId, updates, uid, attachment, existing, expectedFxRate }) =>
+      updateExpense(tripId, expenseId, updates, { uid, attachment, existingPaths: existing, expectedFxRate }),
     overlay: {
       controller: expenseOverlay,
       op: ({ expenseId, updates }, { uid }) => {

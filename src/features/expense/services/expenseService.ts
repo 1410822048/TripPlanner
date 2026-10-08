@@ -172,6 +172,13 @@ function withWorkerExpenseMode(
   return { ...payload, mode }
 }
 
+/** The rate a foreign-currency save was confirmed at. Sent beside the
+ *  entity (not inside it): it is a precondition, not a field to store. */
+export interface ExpectedFxRate {
+  rateDecimal: string
+  rateDate:    string
+}
+
 // ─── Read ─────────────────────────────────────────────────────────
 const listServices = createTripScopedListServices<Expense>({
   path:    P.expenses,
@@ -249,6 +256,9 @@ export async function createExpense(
   _createdBy: string,
   attachment: File | null | undefined,
   expenseId: string,
+  /** Foreign-currency only: the rate the user confirmed. The Worker still
+   *  decides the rate and refuses (409 FX_RATE_CHANGED) if it differs. */
+  expectedFxRate?: ExpectedFxRate,
 ): Promise<string> {
   // Two preflight gates BEFORE any Storage side effect:
   //   1. workerBase: env config check (sync requireWorkerWriteBase)
@@ -296,6 +306,7 @@ export async function createExpense(
       // intentIds (verify intent + storage object + mark used in
       // same Firestore transaction as the expense doc create).
       ...(uploaded ? { intentIds: uploaded.intentIds } : {}),
+      ...(expectedFxRate ? { expectedFxRate } : {}),
     }, uploaded ? { traceId: uploaded.traceId } : undefined)
   } catch (e) {
     // Discriminate Worker rejection from commit-ambiguity:
@@ -368,13 +379,15 @@ export async function updateExpense(
     uid:           string
     attachment?:   File | null
     existingPaths?: { path?: string; thumbPath?: string }
+    /** Same FX CAS as createExpense. */
+    expectedFxRate?: ExpectedFxRate
   },
 ): Promise<void> {
   // Same two preflight gates as createExpense: workerBase env + auth
   // idToken, both BEFORE the new-receipt upload below.
   const workerBase = requireWorkerWriteBase()
   const idToken    = await preflightIdToken()
-  const { uid, attachment, existingPaths } = options
+  const { uid, attachment, existingPaths, expectedFxRate } = options
   const validated = validateUpdateOrThrow(UpdateExpenseSchema, updates, {
     source: 'updateExpense', tripId, expenseId,
   })
@@ -434,6 +447,7 @@ export async function updateExpense(
       patch,
       ...(uploadedNew ? { intentIds: uploadedNew.intentIds } : {}),
       ...(receiptTouched ? { expectedCurrentReceiptPath: existingPaths?.path ?? null } : {}),
+      ...(expectedFxRate ? { expectedFxRate } : {}),
     }, uploadedNew ? { traceId: uploadedNew.traceId } : undefined)
   } catch (e) {
     // Two blobs may need cleanup after a failed update:
