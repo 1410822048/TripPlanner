@@ -67,6 +67,9 @@ function render(opts: {
   return { hook, modal, openSignIn }
 }
 
+/** The form's routing predicate (useAwaitedSave.stillOpen). */
+const stillOpen = () => true
+
 beforeEach(() => {
   vi.clearAllMocks()
   compatibility.writeBlockReason = null
@@ -76,7 +79,7 @@ describe('useScheduleActions save', () => {
   it('creates with an id and a per-day order derived from the visible list', async () => {
     const { hook } = render({ schedules: [schedule({ id: 'a', date: '2026-09-18', order: 3 })] })
 
-    await act(async () => { await hook.result.current.onScheduleSave(input()) })
+    await act(async () => { await hook.result.current.onScheduleSave(input(), stillOpen) })
 
     expect(mutationMocks.create).toHaveBeenCalledWith(expect.objectContaining({
       createdBy: 'uid-1',
@@ -89,7 +92,7 @@ describe('useScheduleActions save', () => {
     const target = schedule({ id: 'a' })
     const { hook, modal } = render({ modal: makeModal(target) })
 
-    await act(async () => { await hook.result.current.onScheduleSave(input()) })
+    await act(async () => { await hook.result.current.onScheduleSave(input(), stillOpen) })
 
     expect(mutationMocks.update).not.toHaveBeenCalled()
     expect(modal.close).toHaveBeenCalled()
@@ -99,27 +102,33 @@ describe('useScheduleActions save', () => {
     const target = schedule({ id: 'a', title: 'Old' })
     const { hook } = render({ modal: makeModal(target) })
 
-    await act(async () => { await hook.result.current.onScheduleSave(input({ title: 'New' })) })
+    await act(async () => { await hook.result.current.onScheduleSave(input({ title: 'New' }), stillOpen) })
 
     expect(mutationMocks.update).toHaveBeenCalledWith({
-      scheduleId: 'a', uid: 'uid-1', updates: { title: 'New' },
+      scheduleId: 'a', uid: 'uid-1', updates: { title: 'New' }, reportInForm: stillOpen,
     })
   })
 
-  it('surfaces a failure in the modal banner rather than closing it', async () => {
+  it('hands an issued write back to the form, with its routing predicate, and touches nothing after', async () => {
+    // The form owns the outcome (useAwaitedSave): by the time the write
+    // settles the user may have closed it and opened another, so the hook
+    // must not close or mark "the current modal".
     mutationMocks.create.mockRejectedValueOnce(new Error('boom'))
     const { hook, modal } = render()
 
-    await act(async () => { await hook.result.current.onScheduleSave(input()) })
+    let pending: unknown
+    act(() => { pending = hook.result.current.onScheduleSave(input(), stillOpen) })
+    await act(async () => { await expect(pending).rejects.toThrow('boom') })
 
-    expect(modal.setError).toHaveBeenCalledWith('boom')
+    expect(mutationMocks.create).toHaveBeenCalledWith(expect.objectContaining({ reportInForm: stillOpen }))
+    expect(modal.setError).not.toHaveBeenCalled()
     expect(modal.close).not.toHaveBeenCalled()
   })
 
   it('prompts sign-in instead of writing in demo mode', async () => {
     const { hook, modal, openSignIn } = render({ isDemo: true })
 
-    await act(async () => { await hook.result.current.onScheduleSave(input()) })
+    await act(async () => { await hook.result.current.onScheduleSave(input(), stillOpen) })
 
     expect(openSignIn).toHaveBeenCalled()
     expect(modal.close).toHaveBeenCalled()
@@ -129,7 +138,7 @@ describe('useScheduleActions save', () => {
   it('refuses to write while the uid is still resolving', async () => {
     const { hook } = render({ uid: undefined })
 
-    await act(async () => { await hook.result.current.onScheduleSave(input()) })
+    await act(async () => { await hook.result.current.onScheduleSave(input(), stillOpen) })
 
     expect(mutationMocks.create).not.toHaveBeenCalled()
     expect(toastMocks.error).toHaveBeenCalled()
@@ -138,7 +147,7 @@ describe('useScheduleActions save', () => {
   it('refuses to save a draft into a trip the form was not opened on', async () => {
     const { hook, modal } = render({ modal: makeModal(null, true) })
 
-    await act(async () => { await hook.result.current.onScheduleSave(input()) })
+    await act(async () => { await hook.result.current.onScheduleSave(input(), stillOpen) })
 
     expect(mutationMocks.create).not.toHaveBeenCalled()
     expect(modal.setError).toHaveBeenCalledWith('旅程或帳號已切換，請關閉表單後重新開啟')
@@ -147,23 +156,13 @@ describe('useScheduleActions save', () => {
 })
 
 describe('useScheduleActions delete', () => {
-  it('deletes the edit target and closes', async () => {
+  it('deletes the edit target and hands the promise to the form (which closes itself)', async () => {
+    mutationMocks.remove.mockResolvedValueOnce(undefined)
     const { hook, modal } = render({ modal: makeModal(schedule({ id: 'a' })) })
 
     await act(async () => { await hook.result.current.onScheduleDelete() })
 
     expect(mutationMocks.remove).toHaveBeenCalledWith('a')
-    expect(modal.close).toHaveBeenCalled()
-  })
-
-  it('keeps the modal open state consistent when the delete fails', async () => {
-    mutationMocks.remove.mockRejectedValueOnce(new Error('nope'))
-    const { hook, modal } = render({ modal: makeModal(schedule({ id: 'a' })) })
-
-    await act(async () => { await hook.result.current.onScheduleDelete() })
-
-    // The hook's onError already toasted; the modal must not be closed as
-    // if the delete had worked.
     expect(modal.close).not.toHaveBeenCalled()
   })
 

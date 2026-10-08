@@ -15,8 +15,11 @@ vi.mock('../services/routeOptimizationService', async importOriginal => ({
 vi.mock('@/hooks/useTripCurrency', () => ({ useTripCurrency: () => 'JPY' }))
 vi.mock('@/hooks/useAutoFocus', () => ({ useAutoFocus: () => undefined }))
 vi.mock('@/components/ui/FormModalShell', () => ({
-  default: ({ children, onSave, saveLabel }: { children: ReactNode; onSave: () => void; saveLabel: string }) => (
+  default: ({ children, onSave, saveLabel, saveError }: {
+    children: ReactNode; onSave: () => void; saveLabel: string; saveError?: string | null
+  }) => (
     <div>
+      {saveError && <p role="alert">{saveError}</p>}
       {children}
       <button type="button" onClick={onSave}>{saveLabel}</button>
     </div>
@@ -43,7 +46,6 @@ function renderCreateForm(onSave = vi.fn()) {
       schedules={[]}
       defaultCountryCode="JP"
       isOpen
-      isSaving={false}
       onClose={() => undefined}
       onSave={onSave}
     />,
@@ -70,7 +72,7 @@ describe('ScheduleFormModal duration', () => {
       startTime: undefined,
       timeMode: 'flexible',
       durationMinutes: 90,
-    }))
+    }), expect.any(Function))
   })
 
   test('groups timing fields and shows a read-only derived time range', () => {
@@ -121,7 +123,6 @@ describe('ScheduleFormModal location autocomplete', () => {
           defaultCountryCode="JP"
           locationSearchEnabled={false}
           isOpen
-          isSaving={false}
           onClose={() => undefined}
           onSave={() => undefined}
         />,
@@ -151,7 +152,6 @@ describe('ScheduleFormModal location autocomplete', () => {
           schedules={[]}
           defaultCountryCode="JP"
           isOpen
-          isSaving={false}
           onClose={() => undefined}
           onSave={() => undefined}
         />,
@@ -178,7 +178,6 @@ describe('ScheduleFormModal location autocomplete', () => {
           schedules={[]}
           defaultCountryCode="JP"
           isOpen
-          isSaving={false}
           onClose={() => undefined}
           onSave={() => undefined}
         />,
@@ -212,7 +211,6 @@ describe('ScheduleFormModal location autocomplete', () => {
           schedules={[]}
           defaultCountryCode="JP"
           isOpen
-          isSaving={false}
           onClose={() => undefined}
           onSave={() => undefined}
         />,
@@ -244,7 +242,6 @@ describe('ScheduleFormModal location autocomplete', () => {
           schedules={[]}
           defaultCountryCode="JP"
           isOpen
-          isSaving={false}
           onClose={() => undefined}
           onSave={() => undefined}
         />,
@@ -281,7 +278,6 @@ describe('ScheduleFormModal location autocomplete', () => {
           schedules={[]}
           defaultCountryCode="JP"
           isOpen
-          isSaving={false}
           onClose={() => undefined}
           onSave={() => undefined}
         />,
@@ -316,7 +312,6 @@ describe('ScheduleFormModal location autocomplete', () => {
           schedules={[]}
           defaultCountryCode="JP"
           isOpen
-          isSaving={false}
           onClose={() => undefined}
           onSave={() => undefined}
         />,
@@ -348,7 +343,6 @@ describe('ScheduleFormModal location autocomplete', () => {
           schedules={[]}
           defaultCountryCode="JP"
           isOpen
-          isSaving={false}
           onClose={() => undefined}
           onSave={() => undefined}
         />,
@@ -377,7 +371,6 @@ describe('ScheduleFormModal location autocomplete', () => {
           schedules={[]}
           defaultCountryCode="JP"
           isOpen
-          isSaving={false}
           onClose={() => undefined}
           onSave={onSave}
         />,
@@ -409,7 +402,6 @@ describe('ScheduleFormModal location autocomplete', () => {
           schedules={[]}
           defaultCountryCode="JP"
           isOpen
-          isSaving={false}
           onClose={() => undefined}
           onSave={onSave}
         />,
@@ -448,7 +440,6 @@ describe('ScheduleFormModal location autocomplete', () => {
           schedules={[]}
           defaultCountryCode="JP"
           isOpen
-          isSaving={false}
           onClose={() => undefined}
           onSave={onSave}
         />,
@@ -465,9 +456,41 @@ describe('ScheduleFormModal location autocomplete', () => {
           status: 'resolved',
           place: expect.objectContaining({ providerPlaceId: 'hase-station' }),
         }),
-      }))
+      }), expect.any(Function))
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+// The form owns its write (useAwaitedSave): a failure is its own banner, and
+// a write that settles after the form was dismissed closes nothing.
+describe('ScheduleFormModal awaited write', () => {
+  function renderWith(onSave: (...a: unknown[]) => unknown, onClose = vi.fn()) {
+    const view = render(
+      <ScheduleFormModal
+        tripId="trip-1" editTarget={null} defaultDate="2026-07-20" schedules={[]}
+        defaultCountryCode="JP" locationSearchEnabled={false} isOpen
+        onClose={onClose} onSave={onSave as never}
+      />,
+    )
+    fireEvent.change(screen.getByPlaceholderText('例如：參觀淺草雷門'), { target: { value: '散步' } })
+    return { ...view, onClose }
+  }
+
+  test('a failed save shows in this form and keeps it open', async () => {
+    const { onClose } = renderWith(() => Promise.reject(new Error('寫入失敗')))
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '新增行程' })) })
+    expect(screen.getByRole('alert').textContent).toBe('寫入失敗')
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  test('a save that succeeds after the form was dismissed closes nothing', async () => {
+    let resolve!: () => void
+    const { unmount, onClose } = renderWith(() => new Promise<void>(r => { resolve = r }))
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '新增行程' })) })
+    unmount()
+    await act(async () => { resolve() })
+    expect(onClose).not.toHaveBeenCalled()
   })
 })

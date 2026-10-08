@@ -20,7 +20,7 @@ import { useTripListMutation } from '@/hooks/useTripListMutation'
 import { auditCreateMock } from '@/utils/audit'
 import type { CreatePlanItemInput, PlanItem } from '@/types'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
-import { MUTATION_ACTION, type MutationOptions } from '@/services/queryClient'
+import { MUTATION_ACTION } from '@/services/queryClient'
 
 const planningKeys = {
   all: (tripId: string, uid?: string) => ['planning', tripId, uid ?? ''] as const,
@@ -59,7 +59,7 @@ function normalizePlanUpdates(updates: Partial<CreatePlanItemInput>): Partial<Pl
   return out as Partial<PlanItem>
 }
 
-export function useCreatePlanItem(tripId: string, options?: MutationOptions) {
+export function useCreatePlanItem(tripId: string) {
   return useTripListMutation<PlanItem, { itemId: string; input: CreatePlanItemInput; createdBy: string }>({
     tripId,
     keyFactory: planningKeys.all,
@@ -79,11 +79,10 @@ export function useCreatePlanItem(tripId: string, options?: MutationOptions) {
       }),
     },
     action:     MUTATION_ACTION.CREATE_PLAN,
-    silent:     options?.silent,
   })
 }
 
-export function useUpdatePlanItem(tripId: string, options?: MutationOptions) {
+export function useUpdatePlanItem(tripId: string) {
   return useTripListMutation<PlanItem, {
     itemId:  string
     updates: Partial<CreatePlanItemInput>
@@ -114,7 +113,6 @@ export function useUpdatePlanItem(tripId: string, options?: MutationOptions) {
       },
     },
     action:     MUTATION_ACTION.UPDATE,
-    silent:     options?.silent,
   })
 }
 

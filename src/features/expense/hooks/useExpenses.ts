@@ -55,9 +55,6 @@ export function useCreateExpense(tripId: string) {
     createdBy:   string
     attachment?: File | null
     expectedFxRate?: ExpectedFxRate
-    /** While true, the waiting form reports a definitive failure itself
-     *  (useAwaitedSave; queryClient onError evaluates it at settle time). */
-    reportInForm?: () => boolean
   }>({
     tripId,
     keyFactory: expenseKeys.all,
@@ -96,7 +93,6 @@ export function useUpdateExpense(tripId: string) {
     attachment?: File | null
     existing?:  { path?: string; thumbPath?: string }
     expectedFxRate?: ExpectedFxRate
-    reportInForm?: () => boolean
   }>({
     tripId,
     keyFactory:  expenseKeys.all,

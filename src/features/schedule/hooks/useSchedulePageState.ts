@@ -8,7 +8,7 @@
 // to the components would scatter it back across the tree.
 import { useState } from 'react'
 import { useSchedules } from './useSchedules'
-import { useScheduleActions } from './useScheduleActions'
+import { useScheduleActions, type ScheduleActions } from './useScheduleActions'
 import { useScheduleModals } from './useScheduleModals'
 import { useTripActions } from './useTripActions'
 import { useMyTrips } from '@/features/trips/hooks/useTrips'
@@ -22,7 +22,7 @@ import { membersToTripMembers } from '@/features/members/utils'
 import { useTripStore } from '@/store/tripStore'
 import { useAuth } from '@/hooks/useAuth'
 import type { UseFormModalResult } from '@/hooks/useFormModal'
-import type { CreateScheduleInput, Schedule, Trip } from '@/types'
+import type { Schedule, Trip } from '@/types'
 import type { MenuActionKey, TripItem } from '@/features/trips/types'
 import { MOCK_SCHEDULES } from '../mocks'
 import { buildDateRange, groupByDate } from '../utils'
@@ -103,9 +103,8 @@ export interface SchedulePageState {
   openScheduleDetail:   (schedule: Schedule) => void
   closeScheduleDetail:  () => void
   editScheduleFromDetail: () => void
-  scheduleIsSaving: boolean
-  onScheduleSave:   (data: CreateScheduleInput) => Promise<void>
-  onScheduleDelete: () => Promise<void>
+  onScheduleSave:   ScheduleActions['onScheduleSave']
+  onScheduleDelete: ScheduleActions['onScheduleDelete']
 
   editTripOpen:    boolean
   setEditTripOpen: (open: boolean) => void
@@ -315,7 +314,6 @@ export function useSchedulePageState(): SchedulePageState {
     openScheduleDetail:  modals.openScheduleDetail,
     closeScheduleDetail: modals.closeScheduleDetail,
     editScheduleFromDetail,
-    scheduleIsSaving: scheduleActions.isSaving,
     onScheduleSave:   scheduleActions.onScheduleSave,
     onScheduleDelete: scheduleActions.onScheduleDelete,
 

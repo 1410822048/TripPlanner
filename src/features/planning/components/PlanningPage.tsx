@@ -30,7 +30,6 @@ import PlanningFormModal from './PlanningFormModal'
 import PlanningRow from './PlanningRow'
 import { getClientWriteBlockReason } from '@/services/clientCompatibility'
 import { FORM_SCOPE_CHANGED_MESSAGE } from '@/hooks/useFormModal'
-import { userErrorMessage } from '@/utils/errorMessage'
 
 type PlanningMember = TripMember & { name: string }
 
@@ -84,13 +83,12 @@ export default function PlanningPage() {
   const totalCount = items.length
   const doneCount  = completedCount(items, currentUid)
 
-  // silent — modal surfaces errors via inline banner(useFormModal.saveError),
-  // global toast would double-notify.
-  const createMut = useCreatePlanItem(mutationTripId, { silent: true })
-  const updateMut = useUpdatePlanItem(mutationTripId, { silent: true })
+  // Not silent: `reportInForm` decides per write — the form reports while it
+  // is still open, the global toast once it was dismissed (useAwaitedSave).
+  const createMut = useCreatePlanItem(mutationTripId)
+  const updateMut = useUpdatePlanItem(mutationTripId)
   const toggleMut = useTogglePlanItem(mutationTripId)
   const deleteMut = useDeletePlanItem(mutationTripId)
-  const isSaving  = createMut.isPending || updateMut.isPending
 
   if (ctx.status === 'loading') return <PlanningPageSkeleton />
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={ListChecks} reason="管理行前準備清單" />
@@ -102,7 +100,10 @@ export default function PlanningPage() {
     modal.openAdd()
   }
 
-  async function handleSave(input: CreatePlanItemInput) {
+  // Synchronous refusals go to the modal banner here; an issued write's
+  // promise is handed back and the FORM owns the outcome (useAwaitedSave),
+  // so a late result never closes or marks a form opened since.
+  function handleSave(input: CreatePlanItemInput, reportInForm: () => boolean): void | Promise<unknown> {
     if (isDemo) { modal.close(); signIn.open(); return }
     // The mutations bind to the LIVE trip id — a form opened on another trip
     // (background reselect after kick / remote delete) must not write here.
@@ -114,32 +115,24 @@ export default function PlanningPage() {
     if (!canWrite) { toast.error('你沒有編輯權限'); return }
     if (!uid) { toast.error('正在準備登入，請稍候'); return }
     modal.clearError()
-    try {
-      await simulateFailureMaybe()
-      if (modal.editTarget) {
-        await updateMut.mutateAsync({ itemId: modal.editTarget.id, updates: input, uid })
-      } else {
-        // Minted here so the optimistic row and the stored doc share one
-        // id, the same hoist the settlement flow relies on.
-        await createMut.mutateAsync({ itemId: crypto.randomUUID(), input, createdBy: uid })
-      }
-      modal.close()
-    } catch (err) {
-      modal.setError(userErrorMessage(err, '儲存失敗'))
-    }
+    const editTarget = modal.editTarget
+    return simulateFailureMaybe().then(() => editTarget
+      ? updateMut.mutateAsync({ itemId: editTarget.id, updates: input, uid, reportInForm })
+      // Minted here so the optimistic row and the stored doc share one id,
+      // the same hoist the settlement flow relies on.
+      : createMut.mutateAsync({ itemId: crypto.randomUUID(), input, createdBy: uid, reportInForm }))
   }
 
-  async function handleDelete() {
+  function handleDelete(): void | Promise<unknown> {
     if (!modal.editTarget) return
     if (isDemo) { modal.close(); signIn.open(); return }
     if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) { modal.setError(writeBlockReason); return }
     if (!canWrite) { toast.error('你沒有刪除權限'); return }
-    try {
-      await deleteMut.mutateAsync(modal.editTarget.id)
-      modal.close()
-    } catch { /* hook onError already toasted */ }
+    // Non-silent: the global toast reports a failure; the form closes itself
+    // on success only if it is still the open one.
+    return deleteMut.mutateAsync(modal.editTarget.id)
   }
 
   function handleToggle(item: PlanItem) {
@@ -328,7 +321,6 @@ export default function PlanningPage() {
           isOpen
           editTarget={modal.editTarget}
           defaultCategory={defaultCategory}
-          isSaving={isSaving}
           saveError={modal.saveError}
           onClose={modal.close}
           onSave={handleSave}

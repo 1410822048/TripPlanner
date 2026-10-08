@@ -48,8 +48,7 @@ import { useExpenseItems } from '../hooks/useExpenseItems'
 import { useExpenseMoneyDraft } from '../hooks/useExpenseMoneyDraft'
 import { useFxPreview, type FxRateQuote } from '@/hooks/useFxPreview'
 import { fxRateChanged } from '@/services/workerBase'
-import { userErrorMessage } from '@/utils/errorMessage'
-import { useAwaitedSave } from '../hooks/useAwaitedSave'
+import { useAwaitedSave, describeSaveFailure } from '@/hooks/useAwaitedSave'
 import { fxRateChangedMessage } from '../utils'
 import { type OcrResult } from '../services/ocrService'
 import { useReceiptOcr } from '../hooks/useReceiptOcr'
@@ -466,22 +465,20 @@ export default function ExpenseFormModal({
     // The quote is read from this render — the same one the conversion
     // above used — so a re-save after adopting a new rate sends that rate.
     const expectedFxRate = isForeignOpen ? fxPreview.rateQuote ?? undefined : undefined
-    const pending = onSave({
+    const formResult: ExpenseFormResult = {
       input:      result.input,
       attachment: att.pickAttachmentChange(),
       expectedFxRate,
       ...(isForeignOpen && !fxPreview.isFinal ? { reportInForm: awaited.stillOpen } : {}),
-    })
-    if (pending) {
-      void awaited.track(pending, err => {
-        // FX_RATE_CHANGED: show the Worker's rate (from the refusal itself,
-        // no refetch); the form recomputes and the next save confirms it.
-        const current = fxRateChanged(err)
-        if (!current) return userErrorMessage(err, '儲存失敗')
-        fxPreview.adoptRate(current)
-        return fxRateChangedMessage(expectedFxRate, current)
-      })
     }
+    awaited.submit(() => onSave(formResult), err => {
+      // FX_RATE_CHANGED: show the Worker's rate (from the refusal itself,
+      // no refetch); the form recomputes and the next save confirms it.
+      const current = fxRateChanged(err)
+      if (!current) return describeSaveFailure(err)
+      fxPreview.adoptRate(current)
+      return fxRateChangedMessage(expectedFxRate, current)
+    })
   }
 
   // ─── Receipt section helpers ────────────────────────────────────────
