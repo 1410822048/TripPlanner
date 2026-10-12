@@ -30,6 +30,11 @@ import {
   type SettlementCreateForeignRequest,
 }                                          from './settlement-write-shared'
 
+/** What the FX half reads from a request: the received currency, the day it
+ *  was received and the rate the receiver confirmed. Both the pair endpoint
+ *  (/settlement-create FOREIGN) and the route endpoint carry exactly this. */
+export type ForeignIntent = Pick<SettlementCreateForeignRequest, 'sourceCurrency' | 'settledOn' | 'expectedFxRate'>
+
 /** Carries the source-domain artifacts that FOREIGN_CURRENCY persists
  *  alongside the trip-currency canonical fields. Mirrors expense-write's
  *  ForeignArtifacts pattern: snapshot.fetchedAt is encoded as null and
@@ -60,7 +65,7 @@ export { encodeFxSnapshot } from './expense-foreign-codec'
  *  before the pair fan-out, so an FX failure is definitively pre-commit
  *  (no pair doc has been read, nothing written). */
 export async function resolveForeignRate(
-  req:                SettlementCreateForeignRequest,
+  req:                ForeignIntent,
   ctx:                TripCurrencyContext,
   serviceAccountJson: string,
 ): Promise<ForeignRate> {
@@ -103,7 +108,7 @@ export async function resolveForeignRate(
  *  forward-converts to fill fxSnapshot.convertedAmountMinor (audit). No
  *  network — uses the rate resolved earlier by resolveForeignRate. */
 export function deriveForeignArtifacts(
-  req:       SettlementCreateForeignRequest,
+  req:       ForeignIntent,
   ctx:       TripCurrencyContext,
   remaining: number,
   fr:        ForeignRate,

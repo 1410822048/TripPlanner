@@ -318,6 +318,7 @@ describe('route descriptor table (rate-limit classification)', () => {
 		'/booking-file-update': { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'booking-write',    globalLimit: 60 },
 		'/fx-rate':             { limiter: 'FX_PREVIEW_RATE_LIMITER',     scope: 'fx-preview',       globalLimit: 60 },
 		'/settlement-create':   { limiter: 'SETTLEMENT_RATE_LIMITER',     scope: 'settlement-write', globalLimit: 10 },
+		'/settlement-route-create': { limiter: 'SETTLEMENT_RATE_LIMITER', scope: 'settlement-write', globalLimit: 10 },
 		'/settlement-delete':   { limiter: 'SETTLEMENT_RATE_LIMITER',     scope: 'settlement-write', globalLimit: 10 },
 		'/attachment-upload':   { limiter: 'ATTACHMENT_UPLOAD_RATE_LIMITER', scope: 'attachment-upload', globalLimit: 60 },
 		'/attachment-content':  { limiter: 'ATTACHMENT_CONTENT_RATE_LIMITER', scope: 'attachment-content', globalLimit: 900 },

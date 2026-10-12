@@ -85,6 +85,10 @@ import {
   SettlementValidationError,
 }                                                 from './settlement-write'
 import {
+  settlementRouteCreate,
+  SettlementRouteCreateRequestSchema,
+}                                                 from './settlement-route-write'
+import {
   inviteCreate,
   inviteRevoke,
   inviteRedeem,
@@ -530,6 +534,29 @@ export const ROUTES: RouteDescriptor[] = [
       // Whole body runs in one tx → every CascadeError (read-cap 409,
       // trip.currency 500) is pre-commit; stamp precommit so the client
       // rolls back instead of keeping a phantom settlement on a 5xx.
+      cascadePrecommit: true,
+    }),
+  },
+  {
+    // Routed settlement (multi-hop / cycle offset). The legs are ordinary
+    // settlements; see settlement-route-write.ts. Same rate class and error
+    // surface as /settlement-create.
+    path: '/settlement-route-create', rate: 'settlement-write',
+    dispatch: c => handleJsonRoute({
+      endpoint:       'settlement-route-create', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
+      schema:         SettlementRouteCreateRequestSchema,
+      handle:         data => settlementRouteCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog: (data, result) =>
+        `trip=${data.tripId} route=${result.routeId} kind=${data.kind} legs=${data.legs.length}`
+        + (data.kind === 'TRANSFER'
+          ? ` amountMinor=${data.amountMinor}${data.sourceCurrency ? ` sourceCurrency=${data.sourceCurrency} settledOn=${data.settledOn}` : ''}`
+          : ''),
+      formatResponse: result => ({ ok: true, ...result }),
+      catchDomain: chainCatchers(
+        validationErrorCatcher(SettlementValidationError),
+        fxErrorCatcher(),
+      ),
+      // Whole body runs in one tx: every CascadeError is pre-commit.
       cascadePrecommit: true,
     }),
   },
