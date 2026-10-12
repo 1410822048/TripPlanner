@@ -31,6 +31,7 @@ import { describe, it, expect } from 'vitest'
 import {
   materializeExpenseSplits,
   materializeExpenseSplitContributions,
+  memberItemContributions,
   canonicalizeSplits,
   adjustmentSign,
   reconcileReceipt,
@@ -1125,5 +1126,35 @@ describe('convertAndMaterializeFromSource — fully discounted largest line', ()
     const sum = result.splits.reduce((s, x) => s + x.amountMinor, 0)
     expect(sum).toBe(result.amountMinor)
     expect(result.splits.every(x => x.amountMinor >= 0)).toBe(true)
+  })
+})
+
+describe('memberItemContributions — one member\'s share of a stored expense', () => {
+  const expense = {
+    paidBy: 'p',
+    splits: [{ memberId: 'a' }, { memberId: 'b' }],
+    items: [
+      { id: 'ramen', amountMinor: 900, allocations: [{ memberId: 'a', shares: 1 }, { memberId: 'b', shares: 2 }] },
+      // allocated to someone with no split row (e.g. discounted to zero
+      // elsewhere) — still part of the roster, never a materializer error
+      { id: 'beer', amountMinor: 300, allocations: [{ memberId: 'c', shares: 1 }] },
+    ],
+    adjustments: [{ id: 'coupon', kind: 'DISCOUNT' as const, scope: 'ITEM' as const, amountMinor: 300, targetItemId: 'ramen' }],
+  }
+
+  it('returns only that member\'s per-item amounts, after adjustments', () => {
+    expect(memberItemContributions(expense, 'a')).toEqual([{ itemId: 'ramen', amountMinor: 200 }])
+    expect(memberItemContributions(expense, 'b')).toEqual([{ itemId: 'ramen', amountMinor: 400 }])
+    expect(memberItemContributions(expense, 'c')).toEqual([{ itemId: 'beer', amountMinor: 300 }])
+    expect(memberItemContributions(expense, 'p')).toEqual([])
+  })
+
+  it('an expense without items contributes nothing per item', () => {
+    expect(memberItemContributions({ ...expense, items: undefined, adjustments: [] }, 'a')).toEqual([])
+  })
+
+  it('throws when the stored items cannot materialize (caller falls back to expense-level)', () => {
+    expect(() => memberItemContributions({ ...expense, items: [{ id: 'bad', amountMinor: 0, allocations: [{ memberId: 'a', shares: 1 }] }], adjustments: [] }, 'a'))
+      .toThrow(MaterializeError)
   })
 })

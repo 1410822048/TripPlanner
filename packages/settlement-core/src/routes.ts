@@ -113,13 +113,6 @@ function subtract(g: Graph, from: string, to: string, amount: number): void {
   if (row.size === 0) g.delete(from)
 }
 
-function addEdge(g: Graph, from: string, to: string, amount: number): void {
-  if (!positive(amount)) return
-  if (!g.has(from)) g.set(from, new Map())
-  const row = g.get(from)!
-  row.set(to, (row.get(to) ?? 0) + amount)
-}
-
 function addFlow(flow: Flow, from: string, to: string, amount: number): void {
   const key = edgeKey(from, to)
   const next = (flow.get(key) ?? 0) + amount
@@ -236,6 +229,11 @@ function findCycle(g: Graph): string[] | null {
 }
 
 const cycleEdges = (cycle: string[]) => cycle.slice(0, -1).map((from, i) => [from, cycle[i + 1]!] as const)
+
+/** Exported for tests only: no public input is known to make Edmonds–Karp
+ *  return a flow with a cycle, but a transfer must never carry one (see
+ *  validateRouteShape), so the guard is tested directly. */
+export const __routeInternals = { cancelFlowCycles: (flow: Map<string, number>) => cancelFlowCycles(flow) }
 
 /** Remove every directed cycle from `flow` (mutated). Cancelling a cycle
  *  changes nobody's net, so the flow still moves the same amount from the
@@ -475,10 +473,8 @@ function enforceCaps(route: SettlementRoute, original: Graph): SettlementRoute[]
  * the largest one — amount = min(debtor net, creditor net, max-flow on real
  * edges). By flow decomposition a debtor always reaches some creditor, so
  * each round moves a positive amount and the loop ends with every net at
- * zero. Transfers between the same two people are then merged; any cycle a
- * transfer's legs contain (max-flow or merging can create one) goes back to
- * the ledger, which is left as a pure circulation. Each connected part of
- * it becomes one OFFSET.
+ * zero. Any cycle a transfer's flow contains stays on the ledger, which is
+ * left as a pure circulation; each connected part of it becomes one OFFSET.
  *
  * Doing transfers before cancelling cycles matters: cancelling first
  * destroys edges the transfers could have used, and leaves one offset per
@@ -522,7 +518,7 @@ export function planSettlementRoutes(
     if (!best) break   // unreachable by conservation; defensive
 
     // A cycle inside the flow is not part of this transfer: leave it on the
-    // ledger for the offsets.
+    // ledger for the offsets (it is simply not subtracted).
     cancelFlowCycles(best.flow)
     for (const [key, amount] of best.flow) {
       const [from, to] = splitKey(key)
@@ -531,31 +527,17 @@ export function planSettlementRoutes(
     picked.push({ payer: best.payer, receiver: best.receiver, flow: best.flow })
   }
 
-  // Same payer and receiver → one transfer. The sum of acyclic flows can
-  // close a cycle; that part returns to the ledger too.
-  const merged = new Map<string, { payer: string; receiver: string; flow: Flow }>()
-  for (const p of picked) {
-    const key = edgeKey(p.payer, p.receiver)
-    const prev = merged.get(key)
-    if (prev) prev.flow = mergeFlows(prev.flow, p.flow)
-    else merged.set(key, { ...p, flow: new Map(p.flow) })
-  }
-  const transfers: TransferRoute[] = []
-  for (const m of merged.values()) {
-    for (const [key, amount] of cancelFlowCycles(m.flow)) {
-      const [from, to] = splitKey(key)
-      addEdge(g, from, to, amount)
-    }
-    const legs = legsFrom(m.flow, original)
-    if (legs.length === 0) continue
-    transfers.push({
-      kind:        'TRANSFER',
-      payerUid:    m.payer,
-      receiverUid: m.receiver,
-      amountMinor: flowAmountFrom(m.flow, m.payer),
-      legs,
-    })
-  }
+  // No (payer, receiver) pair is ever picked twice: a pick that zeroes
+  // someone removes them from the candidates, and a pick that does not was
+  // a MAXIMUM flow for that pair, so their min cut is saturated and stays
+  // so (capacities only shrink). One pick is therefore one transfer.
+  const transfers = picked.map<TransferRoute>(p => ({
+    kind:        'TRANSFER',
+    payerUid:    p.payer,
+    receiverUid: p.receiver,
+    amountMinor: flowAmountFrom(p.flow, p.payer),
+    legs:        legsFrom(p.flow, original),
+  }))
 
   // Whatever is left once nobody owes on net is a pure circulation; each
   // connected part is one offset, so no one confirms a cycle they're not in.

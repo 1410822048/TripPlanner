@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  __routeInternals,
   canonicalRouteLegs,
   computePairwiseRemaining,
   isRouteCurrent,
@@ -514,5 +515,62 @@ describe('route ids', () => {
     expect(routeLegId('r1', 44)).toBe('r1-44')
     const legs = [{ fromUid: 'b', toUid: 'c' }, { fromUid: 'a', toUid: 'b' }]
     expect(canonicalRouteLegs(legs)).toEqual([{ fromUid: 'a', toUid: 'b' }, { fromUid: 'b', toUid: 'c' }])
+  })
+})
+
+describe('planner internals', () => {
+  it('never picks the same payer and receiver twice (so no transfer merging is needed)', () => {
+    for (let seed = 1; seed <= 200; seed++) {
+      const transfers = planSettlementRoutes(randomTrip(seed, 10, 40)).filter(r => r.kind === 'TRANSFER')
+      const pairs = transfers.map(r => r.kind === 'TRANSFER' && `${r.payerUid}>${r.receiverUid}`)
+      expect(new Set(pairs).size, `seed ${seed}`).toBe(pairs.length)
+    }
+  })
+
+  it('cancelFlowCycles strips cycles without changing anyone\'s net', () => {
+    // a→b 5, b→c 5 is the payment; b→d→b… can't exist on a normalized
+    // ledger, but c→e→f→c inside a flow would be foreign to a→c.
+    const flow = new Map([
+      ['a\u0000b', 5], ['b\u0000c', 5],
+      ['c\u0000e', 3], ['e\u0000f', 3], ['f\u0000c', 3],
+    ])
+    const removed = __routeInternals.cancelFlowCycles(flow)
+    expect([...flow.entries()]).toEqual([['a\u0000b', 5], ['b\u0000c', 5]])
+    expect([...removed.values()]).toEqual([3, 3, 3])
+  })
+
+  it('ignores self edges and non-positive amounts in the ledger', () => {
+    expect(planSettlementRoutes({ a: { a: 50, b: 0 }, c: { d: -5 } })).toEqual([])
+  })
+})
+
+describe('offsets past the per-route caps', () => {
+  it('cycles around one hub are packed into connected offsets that each fit', () => {
+    // 20 triangles hub → x_i → y_i → hub: one connected circulation over 41
+    // people, more than one route may span.
+    const pairwise: Record<string, Record<string, number>> = { hub: {} }
+    for (let i = 0; i < 20; i++) {
+      pairwise.hub![`x${i}`] = 7
+      pairwise[`x${i}`] = { [`y${i}`]: 7 }
+      pairwise[`y${i}`] = { hub: 7 }
+    }
+    const routes = planSettlementRoutes(pairwise)
+    expectValidPlan(pairwise, routes)
+    expect(routes.every(r => r.kind === 'OFFSET')).toBe(true)
+    expect(routes.length).toBeGreaterThan(1)
+    for (const r of routes) expect(routeParticipants(r.legs)).toContain('hub')
+  })
+
+  it('a single cycle through more people than a route allows falls back to direct transfers', () => {
+    const pairwise: Record<string, Record<string, number>> = {}
+    for (let i = 0; i < 35; i++) pairwise[person(i)] = { [person((i + 1) % 35)]: 10 }
+    const routes = planSettlementRoutes(pairwise)
+    expectValidPlan(pairwise, routes)
+    expect(routes.every(r => r.kind === 'TRANSFER' && r.legs.length === 1)).toBe(true)
+  })
+
+  it('validateRouteShape rejects a non-positive transfer amount', () => {
+    expect(validateRouteShape({ kind: 'TRANSFER', payerUid: 'a', receiverUid: 'b', amountMinor: 0, legs: [{ fromUid: 'a', toUid: 'b', amountMinor: 1 }] }))
+      .toBe('BAD_AMOUNT')
   })
 })

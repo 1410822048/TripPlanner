@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildSettlementLineage, type LineageExpense } from './index'
+import { buildSettlementLineage, collapseAppliedSources, type LineageExpense } from './index'
 
 // The Worker's spec (workers/ocr/test/settlement-lineage.spec.ts) covers the
 // materializer-bound behaviour in depth; these pin what the shared core
@@ -60,5 +60,54 @@ describe('buildSettlementLineage (shared core)', () => {
       { expenseId: 'e2', expenseTitle: 'e2', amountMinor: 150 },
     ])
     expect(lineage.lockExpenseIds.sort()).toEqual(['e1', 'e2'])
+  })
+})
+
+describe('buildSettlementLineage — lock set and edge cases', () => {
+  it('a net settlement locks the reverse-direction expense that offset it', () => {
+    // B paid 100 for A, A paid 80 for B: net A→B 20. Editing the 80 would
+    // change the settled 20, so it locks too.
+    const fwd = expense({ id: 'fwd', paidBy: 'B', splits: [{ memberId: 'A', amountMinor: 100 }], createdAtMs: 1 })
+    const rev = expense({ id: 'rev', paidBy: 'A', splits: [{ memberId: 'B', amountMinor: 80 }], createdAtMs: 2 })
+    const lineage = buildSettlementLineage([fwd, rev], [], 'A', 'B', 20, attribute)
+    expect(lineage.appliedSources).toEqual([{ expenseId: 'fwd', expenseTitle: 'fwd', amountMinor: 20 }])
+    expect(lineage.lockExpenseIds.sort()).toEqual(['fwd', 'rev'])
+  })
+
+  it('prior reverse settlements reduce the offset; malformed priors are ignored', () => {
+    const fwd = expense({ id: 'fwd', paidBy: 'B', splits: [{ memberId: 'A', amountMinor: 100 }] })
+    const rev = expense({ id: 'rev', paidBy: 'A', splits: [{ memberId: 'B', amountMinor: 80 }] })
+    const priors = [
+      { fromUid: 'B', toUid: 'A', amountMinor: 80, createdAtMs: 1 },   // reverse fully settled
+      { fromUid: 'A', toUid: 'A', amountMinor: 5, createdAtMs: 2 },    // self: ignored
+      { fromUid: 'A', toUid: 'B', amountMinor: Number.NaN, createdAtMs: 3 }, // malformed: ignored
+      { fromUid: 'X', toUid: 'Y', amountMinor: 9, createdAtMs: 4 },    // other pair: ignored
+    ]
+    const lineage = buildSettlementLineage([fwd, rev], priors, 'A', 'B', 100, attribute)
+    expect(lineage.appliedSources).toEqual([{ expenseId: 'fwd', expenseTitle: 'fwd', amountMinor: 100 }])
+    expect(lineage.lockExpenseIds).toEqual(['fwd'])
+  })
+
+  it('consumes nothing for a non-finite or non-positive amount, and merges repeat sources', () => {
+    const e = expense({ id: 'e', paidBy: 'B', splits: [{ memberId: 'A', amountMinor: 10 }, { memberId: 'A', amountMinor: 5 }] })
+    expect(buildSettlementLineage([e], [], 'A', 'B', Number.POSITIVE_INFINITY, attribute).appliedSources).toEqual([])
+    expect(buildSettlementLineage([e], [], 'A', 'B', 0, attribute).appliedSources).toEqual([])
+    expect(collapseAppliedSources([
+      { expenseId: 'e', expenseTitle: 'e', amountMinor: 3 },
+      { expenseId: 'e', expenseTitle: 'e', amountMinor: 4 },
+      { expenseId: 'e', expenseTitle: 'e', itemId: 'i', itemName: 'i', amountMinor: 1 },
+    ])).toEqual([
+      { expenseId: 'e', expenseTitle: 'e', amountMinor: 7 },
+      { expenseId: 'e', expenseTitle: 'e', itemId: 'i', itemName: 'i', amountMinor: 1 },
+    ])
+  })
+
+  it('names an item by id when the item record is gone', () => {
+    const e = expense({
+      id: 'e', paidBy: 'B', splits: [{ memberId: 'A', amountMinor: 50 }],
+      items: [{ id: 'other', name: 'x' }], byMember: { A: [{ itemId: 'ghost-item', amountMinor: 50 }] },
+    })
+    expect(buildSettlementLineage([e], [], 'A', 'B', 50, attribute).appliedSources)
+      .toEqual([{ expenseId: 'e', expenseTitle: 'e', itemId: 'ghost-item', itemName: 'ghost-item', amountMinor: 50 }])
   })
 })

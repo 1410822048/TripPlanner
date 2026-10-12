@@ -144,9 +144,11 @@ async function authorizeRoute(
   callerUid:    string,
   participants: string[],
 ): Promise<boolean> {
-  const departed = async (uid: string) =>
-    ctx.formerMemberUids.includes(uid)
-    && !(await tx.get(`trips/${req.tripId}/members/${uid}`)).exists
+  // Reads OTHER parties' member docs; the caller's own access already went
+  // through requireTripAccess (authorizeMemberTx).
+  const departed = async (memberUid: string) =>
+    ctx.formerMemberUids.includes(memberUid)
+    && !(await tx.get(`trips/${req.tripId}/members/${memberUid}`)).exists
   const isOwner = ctx.ownerId === callerUid
 
   if (req.kind === 'TRANSFER') {
