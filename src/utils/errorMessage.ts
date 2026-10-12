@@ -37,7 +37,7 @@ function firebaseCode(err: unknown): string | undefined {
   if (typeof err !== 'object' || err === null) return undefined
   const { code, name } = err as { code?: unknown; name?: unknown }
   if (typeof code !== 'string') return undefined
-  if (name === 'FirebaseError' || code.startsWith('auth/') || code in FIRESTORE_CODES) return code
+  if (name === 'FirebaseError' || code.startsWith('auth/') || Object.hasOwn(FIRESTORE_CODES, code)) return code
   return undefined
 }
 
@@ -93,7 +93,7 @@ function workerRejectionMessage(err: unknown): string | undefined {
     name?: unknown; status?: unknown; code?: unknown; message?: unknown
   }
   if (name !== 'WorkerRejected' || typeof status !== 'number') return undefined
-  if (typeof code === 'string' && WORKER_CODES[code]) return WORKER_CODES[code]
+  if (typeof code === 'string' && Object.hasOwn(WORKER_CODES, code)) return WORKER_CODES[code]
   const text = typeof message === 'string' ? message : ''
   if (text && HAS_CJK.test(text)) return text
   for (const [pattern, copy] of WORKER_MESSAGES) {
@@ -105,7 +105,8 @@ function workerRejectionMessage(err: unknown): string | undefined {
 export function userErrorMessage(err: unknown, fallback: string): string {
   const code = firebaseCode(err)
   if (code) {
-    const mapped = FIRESTORE_CODES[code] ?? AUTH_CODES[code]
+    const mapped = (Object.hasOwn(FIRESTORE_CODES, code) ? FIRESTORE_CODES[code] : undefined)
+      ?? (Object.hasOwn(AUTH_CODES, code) ? AUTH_CODES[code] : undefined)
     if (mapped) return mapped
   }
   const worker = workerRejectionMessage(err)

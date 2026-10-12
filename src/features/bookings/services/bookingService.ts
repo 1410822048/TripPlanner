@@ -59,9 +59,11 @@ const LIST_LIMIT = 100
  *      maps empty-string to an updateMask field-deletion).
  *  Keep this list in lockstep with `CLEARABLE_BOOKING_FIELDS` in
  *  workers/ocr/src/booking-write.ts -- drift on either side means
- *  cleared fields persist in the doc after a Worker-path edit. */
+ *  cleared fields persist in the doc after a Worker-path edit.
+ *  title / origin / destination are clearable too: switching type on edit
+ *  (flight ⇄ hotel) sends them as `undefined` and they must not linger. */
 const CLEARABLE_TEXT_FIELDS = [
-  'confirmationCode', 'provider', 'checkIn', 'checkOut', 'address', 'link', 'note',
+  'title', 'origin', 'destination', 'confirmationCode', 'provider', 'checkIn', 'checkOut', 'address', 'link', 'note',
 ] as const
 
 export interface BookingAttachmentChanges {

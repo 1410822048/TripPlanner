@@ -12,7 +12,7 @@
 // focus is the catch-block decision logic.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { CreateExpenseInput, UpdateExpenseInput } from '@/types'
+import type { CreateExpenseInput, Expense, UpdateExpenseInput } from '@/types'
 
 // ── Mocks ──────────────────────────────────────────────────────────
 
@@ -388,6 +388,25 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
     })
 
     expect('expectedCurrentReceiptPath' in sentBody()).toBe(false)
+  })
+
+  it("updateExpense sends note '' when the form cleared the note", async () => {
+    // `note: undefined` would vanish in JSON and the Worker would keep
+    // the old note; '' is the clear sentinel the Worker deletes.
+    fetchMock.mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }))
+
+    const { updateExpense } = await import('./expenseService')
+    await updateExpense('t1', 'exp-1', { title: 'Edit', note: undefined }, { uid: 'editor-uid' })
+
+    expect((sentBody().patch as Record<string, unknown>).note).toBe('')
+  })
+
+  it('expenseUpdateApplied treats a cleared note as applied only once the stored note is gone', async () => {
+    const { expenseUpdateApplied } = await import('./expenseService')
+    const stored = { ...mockExpenseInput(), id: 'exp-1' } as unknown as Expense
+    const update = { title: 'Lunch', note: undefined } as UpdateExpenseInput
+    expect(expenseUpdateApplied({ ...stored, note: '舊備註' }, update)).toBe(false)
+    expect(expenseUpdateApplied(stored, update)).toBe(true)
   })
 
   // ── Old-paths cleanup in ambiguous branch ─────────────────────

@@ -2,20 +2,30 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { User } from 'firebase/auth'
 import {
   createTrip,
-  getMyTrips, subscribeToMyTrips,
+  getMyTrips, getMyTripsFromServer, subscribeToMyTrips,
   updateTrip, setWishVotingDeadline,
 } from '../services/tripService'
 import { deleteTrip } from '../services/tripCascade'
 import { leaveMember } from '@/features/members/services/memberService'
 import { copyTrip, type CopyTripInput, type CopyTripResult } from '../services/tripCopy'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
+import { createListOverlay, type OverlayHandle } from '@/hooks/listOverlay'
+import { isWorkerAmbiguousError } from '@/hooks/useTripListMutation'
 import { getFirebase } from '@/services/firebase'
-import { MOCK_TIMESTAMP } from '@/mocks/utils'
 import { toTripDateTimestamp } from '@/utils/dates'
 import { MUTATION_ACTION, type MutationMeta } from '@/services/queryClient'
 import { useLastViewedStore } from '@/store/lastViewedStore'
 import { tripKeys } from '../queryKeys'
 import type { CreateTripInput, Trip } from '@/types'
+
+/** Removals (delete / leave) replayed over the membership list. A raw
+ *  cache patch would be overwritten by any listener push that still holds
+ *  the trip — the Worker strips memberIds only at the end of its cascade,
+ *  and a co-member's activity bump re-sends the doc in the meantime. */
+export const tripListOverlay = createListOverlay<Trip>({
+  insert: 'head',
+  source: 'trips',
+})
 
 /** One membership-filtered list shared by all consumers of this uid. */
 export const useMyTrips = createRealtimeListHook<Trip>({
@@ -23,7 +33,45 @@ export const useMyTrips = createRealtimeListHook<Trip>({
   initialFetch: getMyTrips,
   subscribe: (uid, _authUid, onData, onError) => subscribeToMyTrips(uid, onData, onError),
   source: 'useMyTrips',
+  overlay: tripListOverlay,
 })
+
+/** Optimistically drop a trip from MY list until server truth agrees. */
+function addTripRemoval(uid: string, tripId: string): OverlayHandle {
+  return tripListOverlay.add(tripKeys.mine(uid), {
+    kind: 'remove',
+    id:   tripId,
+    confirms: base => !base.some(t => t.id === tripId),
+    authoritativeFetch: () => getMyTripsFromServer(uid),
+  })
+}
+
+/** Optimistic trip-doc edit; `matches` must cover every field `apply` writes. */
+function addTripPatch(
+  uid:    string,
+  tripId: string,
+  op:     { apply: (trip: Trip) => Trip; matches: (trip: Trip) => boolean },
+): OverlayHandle {
+  return tripListOverlay.add(tripKeys.mine(uid), {
+    kind:  'patch',
+    id:    tripId,
+    apply: op.apply,
+    // A trip that left the list cannot confirm a patch; that is the
+    // remove's business, so treat it as settled.
+    confirms: base => {
+      const stored = base.find(t => t.id === tripId)
+      return !stored || op.matches(stored)
+    },
+    authoritativeFetch: () => getMyTripsFromServer(uid),
+  })
+}
+
+function settleTripOp(handle: OverlayHandle | undefined, err?: unknown): void {
+  if (!handle) return
+  if (err === undefined) tripListOverlay.markSucceeded(handle)
+  else if (isWorkerAmbiguousError(err)) tripListOverlay.markAmbiguous(handle)
+  else tripListOverlay.drop(handle)
+}
 
 export function useCreateTrip() {
   const qc = useQueryClient()
@@ -58,72 +106,59 @@ export function useCopyTrip() {
 }
 
 export function useUpdateTrip(uid: string | undefined) {
-  const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ tripId, updates }: { tripId: string; updates: Partial<CreateTripInput> }) =>
       updateTrip(tripId, updates),
     meta: { action: MUTATION_ACTION.UPDATE } satisfies MutationMeta,
     onMutate: async ({ tripId, updates }) => {
-      if (!uid) return { prev: undefined as Trip[] | undefined }
-      const key  = tripKeys.mine(uid)
-      const prev = qc.getQueryData<Trip[]>(key)
-      if (!prev) return { prev }
+      if (!uid) return { handle: undefined }
       const { Timestamp } = await getFirebase()
-      qc.setQueryData<Trip[]>(key, prev.map(t => {
-        if (t.id !== tripId) return t
-        const next: Trip = { ...t, updatedAt: MOCK_TIMESTAMP }
-        if (updates.title       !== undefined) next.title       = updates.title
-        if (updates.destination !== undefined) next.destination = updates.destination
-        if (updates.icon        !== undefined) next.icon        = updates.icon
-        if (updates.currency    !== undefined) next.currency    = updates.currency
-        if (updates.startDate) next.startDate = toTripDateTimestamp(updates.startDate, Timestamp)
-        if (updates.endDate)   next.endDate   = toTripDateTimestamp(updates.endDate,   Timestamp)
-        return next
-      }))
-      return { prev }
+      const startDate = updates.startDate ? toTripDateTimestamp(updates.startDate, Timestamp) : undefined
+      const endDate   = updates.endDate   ? toTripDateTimestamp(updates.endDate,   Timestamp) : undefined
+      const fields: Partial<Pick<Trip, 'title' | 'destination' | 'icon' | 'currency'>> = {}
+      if (updates.title       !== undefined) fields.title       = updates.title
+      if (updates.destination !== undefined) fields.destination = updates.destination
+      if (updates.icon        !== undefined) fields.icon        = updates.icon
+      if (updates.currency    !== undefined) fields.currency    = updates.currency
+      return { handle: addTripPatch(uid, tripId, {
+        apply: t => ({
+          ...t, ...fields,
+          ...(startDate ? { startDate } : {}),
+          ...(endDate   ? { endDate }   : {}),
+        }),
+        matches: t =>
+          Object.entries(fields).every(([k, v]) => t[k as keyof typeof fields] === v)
+          && (!startDate || t.startDate.toMillis() === startDate.toMillis())
+          && (!endDate   || t.endDate.toMillis()   === endDate.toMillis()),
+      }) }
     },
-    // Re-sync from the server instead of restoring the onMutate snapshot:
-    // `tripKeys.mine` is fed by a realtime listener, so writing `prev`
-    // back would clobber any snapshot pushed in the meantime (another
-    // member's edit, a newly joined trip) and the listener won't re-push
-    // an unchanged doc. Success needs no refetch: the optimistic patch
-    // covers every rendered field and the listener confirms it.
-    onError: () => {
-      if (uid) void qc.invalidateQueries({ queryKey: tripKeys.mine(uid) })
-    },
+    onSuccess: (_data, _vars, ctx) => settleTripOp(ctx?.handle),
+    onError:   (err, _vars, ctx)   => settleTripOp(ctx?.handle, err),
   })
 }
 
-/** Owner-only shared Wish voting deadline. Same optimistic-patch shape as
+/** Owner-only shared Wish voting deadline. Same overlay patch as
  *  useUpdateTrip, scoped to the one field it owns. */
 export function useSetWishVotingDeadline(uid: string | undefined) {
-  const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ tripId, deadlineAt }: { tripId: string; deadlineAt: Date | null }) =>
       setWishVotingDeadline(tripId, deadlineAt),
     meta: { action: MUTATION_ACTION.UPDATE } satisfies MutationMeta,
     onMutate: async ({ tripId, deadlineAt }) => {
-      if (!uid) return { prev: undefined as Trip[] | undefined }
-      const key  = tripKeys.mine(uid)
-      const prev = qc.getQueryData<Trip[]>(key)
-      if (!prev) return { prev }
+      if (!uid) return { handle: undefined }
       const { Timestamp } = await getFirebase()
-      qc.setQueryData<Trip[]>(key, prev.map(t => t.id !== tripId ? t : {
-        ...t,
-        wishVotingDeadlineAt: deadlineAt ? Timestamp.fromDate(deadlineAt) : null,
-        updatedAt: MOCK_TIMESTAMP,
-      }))
-      return { prev }
+      const next = deadlineAt ? Timestamp.fromDate(deadlineAt) : null
+      return { handle: addTripPatch(uid, tripId, {
+        apply:   t => ({ ...t, wishVotingDeadlineAt: next }),
+        matches: t => (t.wishVotingDeadlineAt?.toMillis() ?? null) === (next?.toMillis() ?? null),
+      }) }
     },
-    // Same reasoning as useUpdateTrip: re-sync, never restore a snapshot.
-    onError: () => {
-      if (uid) void qc.invalidateQueries({ queryKey: tripKeys.mine(uid) })
-    },
+    onSuccess: (_data, _vars, ctx) => settleTripOp(ctx?.handle),
+    onError:   (err, _vars, ctx)   => settleTripOp(ctx?.handle, err),
   })
 }
 
 export function useDeleteTrip(uid: string | undefined) {
-  const qc = useQueryClient()
   return useMutation({
     mutationFn: (tripId: string) => {
       // Pages gate on signed-in state before calling; throwing here
@@ -135,75 +170,41 @@ export function useDeleteTrip(uid: string | undefined) {
       return deleteTrip(tripId)
     },
     meta: { action: MUTATION_ACTION.DELETE } satisfies MutationMeta,
-    onMutate: (tripId) => {
-      if (!uid) return { prevTrips: undefined as Trip[] | undefined }
-      const tripsKey = tripKeys.mine(uid)
-      const prevTrips = qc.getQueryData<Trip[]>(tripsKey)
-      if (prevTrips) qc.setQueryData<Trip[]>(tripsKey, prevTrips.filter(t => t.id !== tripId))
-      return { prevTrips }
-    },
-    onSuccess: (_data, tripId) => {
+    onMutate: (tripId) => ({ handle: uid ? addTripRemoval(uid, tripId) : undefined }),
+    onSuccess: (_data, tripId, ctx) => {
+      settleTripOp(ctx?.handle)
       // Drop per-trip lastViewed entry so localStorage doesn't accumulate
       // stale records for deleted trips.
       useLastViewedStore.getState().clearTrip(tripId)
     },
-    // No snapshot restore on error: onSettled's invalidate below re-syncs
-    // with server truth, and writing `prevTrips` back would clobber
-    // listener pushes that landed while the request was in flight.
-    // Race: Worker cascade can complete server-side, but the HTTP
-    // response can be lost (network blip, Worker timeout, iOS
-    // background tab kill). The Firestore listener pushes the
-    // deletion to the cache, but then onError rolls back to the
-    // pre-mutation snapshot — reviving the already-deleted trip in
-    // the UI as a ghost row. Invalidating on settled forces a fresh
-    // query that re-syncs with server truth regardless of which path
-    // (success / error / lost response) the mutation took.
-    onSettled: () => {
-      if (!uid) return
-      qc.invalidateQueries({ queryKey: tripKeys.mine(uid) })
-    },
+    // A definitive failure drops only this removal (the trip reappears); an
+    // ambiguous one — cascade may have completed while the response was
+    // lost — is held until server truth settles it, so no ghost row.
+    onError: (err, _tripId, ctx) => settleTripOp(ctx?.handle, err),
   })
 }
 
 /**
  * Leave a trip (non-owner self-removal via the Worker /member-leave
  * endpoint). The twin of useDeleteTrip from the trip-LIST cache's point
- * of view: both make a trip disappear from MY world, so the optimistic
- * patch + rollback + lastViewed cleanup + lost-response reconcile are
- * identical. The only difference is which Worker endpoint runs and that
+ * of view: both make a trip disappear from MY world, so the overlay
+ * removal + lastViewed cleanup + lost-response reconcile are identical. The only difference is which Worker endpoint runs and that
  * the caller is the target (the Worker reads the uid from the token; the
  * owner is gated out server-side, and the UI hides the affordance for
  * owners anyway).
  */
 export function useLeaveTrip(uid: string | undefined) {
-  const qc = useQueryClient()
   return useMutation({
     mutationFn: (tripId: string) => {
       if (!uid) throw new Error('useLeaveTrip: uid is undefined')
       return leaveMember(tripId)
     },
     meta: { action: MUTATION_ACTION.DELETE } satisfies MutationMeta,
-    onMutate: (tripId) => {
-      if (!uid) return { prevTrips: undefined as Trip[] | undefined }
-      const tripsKey = tripKeys.mine(uid)
-      const prevTrips = qc.getQueryData<Trip[]>(tripsKey)
-      if (prevTrips) qc.setQueryData<Trip[]>(tripsKey, prevTrips.filter(t => t.id !== tripId))
-      return { prevTrips }
-    },
-    onSuccess: (_data, tripId) => {
+    onMutate: (tripId) => ({ handle: uid ? addTripRemoval(uid, tripId) : undefined }),
+    onSuccess: (_data, tripId, ctx) => {
+      settleTripOp(ctx?.handle)
       useLastViewedStore.getState().clearTrip(tripId)
     },
-    // No snapshot restore on error: onSettled's invalidate below re-syncs
-    // with server truth, and writing `prevTrips` back would clobber
-    // listener pushes that landed while the request was in flight.
-    // Same lost-response reconcile as useDeleteTrip: the trips
-    // listener pushes the leave to the cache, but a lost
-    // HTTP response would otherwise roll back to the pre-mutation snapshot
-    // and revive the trip as a ghost row. Invalidate forces a fresh query
-    // that re-syncs with server truth regardless of which path won.
-    onSettled: () => {
-      if (!uid) return
-      qc.invalidateQueries({ queryKey: tripKeys.mine(uid) })
-    },
+    onError: (err, _tripId, ctx) => settleTripOp(ctx?.handle, err),
   })
 }

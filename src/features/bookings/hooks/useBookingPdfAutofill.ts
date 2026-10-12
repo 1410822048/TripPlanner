@@ -162,6 +162,8 @@ export function useBookingPdfAutofill(opts: {
     clearCandidates()
 
     try {
+      // The Worker requires the trip; without one (demo) never send.
+      if (!tripId) throw new BookingPdfExtractError('No cloud trip for PDF extraction', 'auth')
       const result = await extractBookingPdfAutofill(file, controller.signal, tripId)
       if (controller.signal.aborted || seqRef.current !== seq) return
       setAnalyzedKey(key)

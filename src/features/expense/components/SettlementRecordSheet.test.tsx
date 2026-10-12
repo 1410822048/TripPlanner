@@ -84,7 +84,7 @@ beforeEach(() => {
 })
 
 describe('SettlementRecordSheet — double-submit latch', () => {
-  it('a rapid double-tap on 記録する fires onSave exactly once (TRIP_CURRENCY)', () => {
+  it('a rapid double-tap on 儲存紀錄 fires onSave exactly once (TRIP_CURRENCY)', () => {
     const onSave = renderSheet()
     const btn = screen.getByRole('button', { name: '儲存紀錄' })
     fireEvent.click(btn)
@@ -94,6 +94,23 @@ describe('SettlementRecordSheet — double-submit latch', () => {
     expect(payload).toMatchObject({ mode: 'TRIP_CURRENCY', fromUid: 'a', toUid: 'b', expectedRemainingMinor: 5000 })
     // TRIP_CURRENCY optimistic patch MUST NOT carry a source amount.
     expect(payload.optimistic).not.toHaveProperty('sourceAmountMinor')
+  })
+
+  it('a synchronous page refusal (returns false) releases the latch so the next tap retries', () => {
+    const onSave = vi.fn<(p: SettlementRecordSubmit) => false | void>()
+      .mockReturnValueOnce(false)   // e.g. ledger not ready yet: toast, sheet stays open
+    render(
+      <SettlementRecordSheet
+        isOpen onClose={() => {}} onSave={onSave}
+        suggested={suggested} tripCurrency="JPY" members={members} isSaving={false}
+      />,
+    )
+    const btn = screen.getByRole('button', { name: '儲存紀錄' })
+    fireEvent.click(btn)
+    fireEvent.click(btn)
+    expect(onSave).toHaveBeenCalledTimes(2)
+    fireEvent.click(btn)   // the second call was accepted: latched again
+    expect(onSave).toHaveBeenCalledTimes(2)
   })
 })
 

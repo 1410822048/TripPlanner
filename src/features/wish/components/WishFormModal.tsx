@@ -212,9 +212,9 @@ export default function WishFormModal({
       </FormField>
 
       <FormField label="地址 / Google Maps URL（選填）">
-        {/* 住所テキスト or Google Maps の URL。テキストは Google Maps の検索
-            クエリとして解決される(URL 整形は不要)、URL ならそのまま開く。
-            カードではサムネタップで地図が開く。 */}
+        {/* 地址文字 或 Google Maps 的 URL。文字會被當成 Google Maps 的搜尋
+            查詢解析(不需整理 URL),若是 URL 則直接開啟。
+            卡片上點縮圖會開啟地圖。 */}
         <input
           value={state.address}
           onChange={e => setField('address', e.target.value)}
@@ -225,8 +225,8 @@ export default function WishFormModal({
       </FormField>
 
       <FormField label="連結（官方網站、預約頁面等）" error={errors.link}>
-        {/* 地図ではなく、イベント/公式/予約などのページ URL。カードでは ⋮ 隣の
-            「網站」ボタンで開く。 */}
+        {/* 不是地圖,而是活動/官方/預約等頁面的 URL。卡片上由 ⋮ 旁的
+            「網站」按鈕開啟。 */}
         <input
           type="url"
           inputMode="url"

@@ -252,11 +252,23 @@ describe('extractBookingPdfAutofill response contract', () => {
   it('accepts a full Worker-shaped payload', async () => {
     respondWith({ bookings: [result()], warnings: ['ambiguous check-out'] })
 
-    const parsed = await extractBookingPdfAutofill(pdf())
+    const parsed = await extractBookingPdfAutofill(pdf(), undefined, 'trip-1')
 
     expect(parsed.bookings).toHaveLength(1)
     expect(parsed.bookings[0]?.title.value).toBe('Hotel Sakura')
     expect(parsed.warnings).toEqual(['ambiguous check-out'])
+  })
+
+  it('always sends the trip id the Worker requires', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ bookings: [result()], warnings: [] }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await extractBookingPdfAutofill(pdf(), undefined, 'trip-1')
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]!.body))).toMatchObject({ tripId: 'trip-1' })
   })
 
   it('tolerates fields a newer Worker adds', async () => {
@@ -266,7 +278,7 @@ describe('extractBookingPdfAutofill response contract', () => {
       extraTopLevel: 'ignored',
     })
 
-    const parsed = await extractBookingPdfAutofill(pdf())
+    const parsed = await extractBookingPdfAutofill(pdf(), undefined, 'trip-1')
 
     expect(parsed.bookings[0]).not.toHaveProperty('seatNumber')
     expect(parsed.bookings[0]?.confirmationCode.value).toBe('ABC123')
@@ -276,7 +288,7 @@ describe('extractBookingPdfAutofill response contract', () => {
     const { checkIn: _dropped, ...incomplete } = result()
     respondWith({ bookings: [incomplete], warnings: [] })
 
-    await expect(extractBookingPdfAutofill(pdf())).rejects.toMatchObject({
+    await expect(extractBookingPdfAutofill(pdf(), undefined, 'trip-1')).rejects.toMatchObject({
       name: 'BookingPdfExtractError',
       kind: 'parse',
     } satisfies Partial<BookingPdfExtractError>)
@@ -286,7 +298,7 @@ describe('extractBookingPdfAutofill response contract', () => {
   it('rejects a candidate-less response', async () => {
     respondWith({ bookings: [], warnings: [] })
 
-    await expect(extractBookingPdfAutofill(pdf())).rejects.toMatchObject({ kind: 'parse' })
+    await expect(extractBookingPdfAutofill(pdf(), undefined, 'trip-1')).rejects.toMatchObject({ kind: 'parse' })
     expect(captureError).toHaveBeenCalledTimes(1)
   })
 })

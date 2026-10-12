@@ -610,17 +610,21 @@ describe('updateBooking', () => {
       // Form: user cleared checkIn + note, left title alone, never
       // touched confirmationCode (key absent → must stay absent in patch
       // so Worker treats as no-op, not as field-deletion).
-      { title: 'Edit', checkIn: undefined, note: undefined, link: undefined } as unknown as Parameters<typeof updateBooking>[2],
+      // origin / destination: a flight → hotel type switch clears them.
+      { type: 'hotel', title: 'Edit', origin: undefined, destination: undefined, checkIn: undefined, note: undefined, link: undefined } as unknown as Parameters<typeof updateBooking>[2],
       { uid: 'u1', files: { coverImage: undefined, document: new File([], 'r.jpg', { type: 'image/jpeg' }) }, existing: existingDocument() },
     )
 
     const workerBody = mocks.workerFetchMock.mock.calls[0]![3] as { patch: Record<string, unknown> }
     expect(workerBody.patch).toEqual({
-      title:   'Edit',
-      checkIn: '',
-      note:    '',
+      type:        'hotel',
+      title:       'Edit',
+      origin:      '',
+      destination: '',
+      checkIn:     '',
+      note:        '',
       // link is CLEARABLE too — cleared `undefined` → '' empty-string sentinel.
-      link:    '',
+      link:        '',
     })
     // Worker contract: keys never sent by the form must stay absent so
     // Worker.encodeBookingUpdate treats them as no-op (not field-delete).

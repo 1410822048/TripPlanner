@@ -73,7 +73,7 @@ export default function ExpensePage() {
   const createSettlementMut = useCreateSettlement(mutationTripId)
   const deleteSettlementMut = useDeleteSettlement(mutationTripId)
   // Settlement record sheet state. Non-null when the receiver tapped
-  // 「済み」on a suggestion row — drives the sheet open + seeds it with
+  // 「已收款」on a suggestion row — drives the sheet open + seeds it with
   // the balance-engine's suggested (fromUid, toUid, amountMinor). Sheet
   // closes by setting back to null; the parent owns the mutation.
   // Carries the {tripId, uid} the sheet was opened under: the Worker's
@@ -214,11 +214,13 @@ export default function ExpensePage() {
   }
 
   function handleSave({ input, attachment, expectedFxRate, reportInForm }: ExpenseFormResult): void | Promise<unknown> {
-    if (isDemo) { modal.close(); signIn.open(); return }
-    if (!uid) { toast.error('正在準備登入，請稍候'); return }
     // The mutations bind to the LIVE trip id — a form opened on another trip
     // (background reselect after kick / remote delete) must not write here.
+    // Scope BEFORE demo: a cloud form whose session signed out into demo
+    // must keep its draft, not be closed by the demo branch.
     if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
+    if (isDemo) { modal.close(); signIn.open(); return }
+    if (!uid) { toast.error('正在準備登入，請稍候'); return }
     if (!ledgerReady) { modal.setError(LEDGER_UNAVAILABLE_MESSAGE); return }
 
     // Optimistic close: the modal goes away IMMEDIATELY and the overlay
@@ -283,7 +285,9 @@ export default function ExpensePage() {
     else createMut.mutate(create)
   }
 
-  function handleRecordSettlement({ reportInForm, ...submit }: SettlementRecordSubmit): void | Promise<unknown> {
+  // Sync refusals that leave the sheet open return `false` so the sheet
+  // releases its one-submit latch (see SettlementRecordSheet.onSave).
+  function handleRecordSettlement({ reportInForm, ...submit }: SettlementRecordSubmit): false | void | Promise<unknown> {
     // Scope BEFORE the demo branch: a sheet opened on a cloud trip whose
     // session then signed out into demo would otherwise have its draft
     // (date / note / currency) wiped by setRecordTarget(null) below. The
@@ -295,16 +299,16 @@ export default function ExpensePage() {
     // matches, so it falls through to the sign-in prompt as before.
     if (recordTarget && (recordTarget.tripId !== cloudTripId || recordTarget.uid !== uid)) {
       toast.error(FORM_SCOPE_CHANGED_MESSAGE)
-      return
+      return false
     }
     if (isDemo) { setRecordTarget(null); signIn.open(); return }
-    if (!uid) { toast.error('正在準備登入，請稍候'); return }
-    if (!ledgerReady) { toast.error(LEDGER_UNAVAILABLE_MESSAGE); return }
+    if (!uid) { toast.error('正在準備登入，請稍候'); return false }
+    if (!ledgerReady) { toast.error(LEDGER_UNAVAILABLE_MESSAGE); return false }
     const writeBlockReason = getClientWriteBlockReason()
-    if (writeBlockReason) { toast.error(writeBlockReason); return }
+    if (writeBlockReason) { toast.error(writeBlockReason); return false }
     // Same reasoning as the expense cap: an active settlement past the
     // listener's limit would make the ledger unreadable for everyone.
-    if (settlements.length >= SETTLEMENT_LIST_LIMIT) { toast.error(SETTLEMENT_CAP_MESSAGE); return }
+    if (settlements.length >= SETTLEMENT_LIST_LIMIT) { toast.error(SETTLEMENT_CAP_MESSAGE); return false }
     // Mint settlementId here (not inside the service) so the optimistic
     // cache row, the Worker request, and the Firestore doc all share
     // one id. Memory: [[settlement-id-hoist-load-bearing]] — any future
@@ -320,7 +324,7 @@ export default function ExpensePage() {
     // debt either direction within this pair. The Worker computes the exact
     // lock set (forward sources ∪ reverse offset), but until its commit +
     // the expense listener land, this is what ExpensePage's readonly union
-    // uses so a non-owner can't briefly edit a source expense post-済み.
+    // uses so a non-owner can't briefly edit a source expense post-已收款.
     // Over-approximation is safe — the listener swaps in the exact set.
     const pendingAppliedExpenseIds = expenses
       .filter(e =>
@@ -551,7 +555,7 @@ export default function ExpensePage() {
         />
       )}
 
-      {/* Settlement record sheet — opens when the receiver taps「済み」
+      {/* Settlement record sheet — opens when the receiver taps「已收款」
           on a suggestion row. Conditionally rendered + keyed so each
           open resets internal state from fresh props (same pattern as
           ExpenseFormModal above). */}

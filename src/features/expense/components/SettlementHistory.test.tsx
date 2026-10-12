@@ -1,4 +1,4 @@
-// Render + fireEvent tests for SettlementHistory — the「清算済み記録」section
+// Render + fireEvent tests for SettlementHistory — the「已清算紀錄」section
 // extracted from SettlementSummary. Covers the logic this component owns:
 // the recent-N fold/unfold, the aggregate orphan banner + reason copy, the
 // recorder-or-owner delete gate it derives per row, the per-row orphan
@@ -55,7 +55,8 @@ describe('SettlementHistory — fold', () => {
 
   it('shows no fold control at or below the visible threshold', () => {
     renderHistory({ settlements: [rec('s1'), rec('s2'), rec('s3')], canDeleteAnySettlement: true, uid: 'x' })
-    expect(screen.queryByRole('button', { name: /件を表示/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /顯示其他/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /收起/ })).toBeNull()
   })
 })
 

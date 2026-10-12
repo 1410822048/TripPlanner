@@ -200,14 +200,14 @@ describe('ocrFallbackReceipt', () => {
     )
     globalThis.fetch = fetchMock as unknown as typeof fetch
 
-    const out = await ocrFallbackReceipt(new File(['img'], 'receipt.webp', { type: 'image/webp' }), 'JPY')
+    const out = await ocrFallbackReceipt(new File(['img'], 'receipt.webp', { type: 'image/webp' }), 'JPY', undefined, 'trip-1')
 
     expect(out.totalText).toBe('100')
     const call = fetchMock.mock.calls[0]!
     expect(call[0]).toBe('https://worker.example.dev/ocr-fallback')
     const sent = JSON.parse(call[1]!.body as string)
     expect(sent).toMatchObject({ mimeType: 'image/webp', currency: 'JPY' })
-    expect(sent).not.toHaveProperty('tripId')
+    expect(sent).toMatchObject({ tripId: 'trip-1' })
   })
 
   it('sends the trip id so the Worker can apply its editor gate, and maps 403', async () => {

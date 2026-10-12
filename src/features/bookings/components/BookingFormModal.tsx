@@ -290,7 +290,7 @@ export default function BookingFormModal({
     if (showRange && state.checkIn && state.checkOut && state.checkOut < state.checkIn) {
       e.checkOut = '退房日期必須不早於入住日期'
     }
-    // link は href に出すので http(s) のみ。空欄は許可(任意項目)。
+    // link 會放進 href,所以只允許 http(s)。允許留空(選填欄位)。
     const linkTrimmed = state.link.trim()
     if (linkTrimmed && !isHttpUrl(linkTrimmed)) {
       e.link = '請輸入以 http:// 或 https:// 開頭的 URL'
@@ -307,7 +307,7 @@ export default function BookingFormModal({
       provider:         state.provider.trim() || undefined,
       checkIn:          state.checkIn || undefined,
       checkOut:         showRange ? (state.checkOut || undefined) : undefined,
-      // Address is most useful for hotel + その他 (the user wants a
+      // Address is most useful for hotel + 其他 (the user wants a
       // map deep-link). Transport types already convey location via
       // origin/destination so we don't show the input there.
       address:          isTransport ? undefined : state.address.trim() || undefined,
@@ -530,7 +530,7 @@ export default function BookingFormModal({
         </FormField>
       )}
 
-      {/* Address — only useful for hotel / その他 (transport types
+      {/* Address — only useful for hotel / 其他 (transport types
           already convey location via origin/destination). Free-text;
           Google Maps treats it as a search query so anything from a
           street address to a venue name resolves cleanly. */}
@@ -546,9 +546,9 @@ export default function BookingFormModal({
         </FormField>
       )}
 
-      {/* 予約 URL — OTA / 公式サイトの予約ページ。全 type 共通
-          (機票も飯店も予約 URL を持ち得る)。href に出すため http(s)
-          のみ(form validate + Zod + firestore.rules で三重 enforce)。 */}
+      {/* 訂單 URL — OTA / 官方網站的預約頁面。所有 type 共用
+          (機票和飯店都可能有訂單 URL)。因為會放進 href,所以只允許 http(s)
+          (由 form validate + Zod + firestore.rules 三重 enforce)。 */}
       <FormField label="訂單 URL（選填）" error={errors.link}>
         <input
           value={state.link}

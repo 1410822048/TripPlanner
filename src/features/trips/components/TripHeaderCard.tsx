@@ -6,9 +6,29 @@
 // props passed in — all derived values (dateRange length, schedule count,
 // total cost) are computed by the caller.
 import { Pencil } from 'lucide-react'
-import type { TripHeaderCardProps as Props } from './tripHeaderCardPropsAreEqual'
+import type { TripItem } from '@/features/trips/types'
 import { formatMinorAmount } from '@/utils/money'
 import MemberAvatar from '@/components/ui/MemberAvatar'
+
+interface Props {
+  selectedTrip:  TripItem
+  tripDays:      number
+  scheduleCount: number
+  /** Sum of schedule estimatedCostMinor in the active trip's currency
+   *  (integer minor units). Rendered via formatMinorAmount. */
+  tripTotal:     number
+  /** Owner-only: controls visibility of the invite "+" button. The Worker
+   *  refuses invite creation from non-owners, so we hide rather than
+   *  show-then-fail. */
+  canInvite:     boolean
+  /** Owner-only: controls whether the title block is tappable and shows
+   *  the Pencil affordance. firestore.rules gates trip update on
+   *  isTripOwner; without this gate, editors / viewers could open
+   *  EditTripModal and silently 403 on save. */
+  canEdit:       boolean
+  onEditTrip:    () => void
+  onInvite:      () => void
+}
 
 function TripHeaderCard({
   selectedTrip, tripDays, scheduleCount, tripTotal, canInvite, canEdit,

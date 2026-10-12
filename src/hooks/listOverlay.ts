@@ -418,8 +418,15 @@ export function createListOverlay<T extends { id: string }>(
 
     const current = entry.ops.find(o => o.opId === opId)!
     if (current.status === 'ambiguous') {
-      // Server truth settles it either way: confirmed means the write
-      // landed, unconfirmed means it never did and the row must go.
+      // Server truth settles it either way. Confirmed means the write
+      // landed — but this read never reaches the query cache, which may
+      // still be stale (listener in backoff), so hand over to the normal
+      // succeeded path: the op stays until a snapshot agrees or grace ends.
+      // Unconfirmed means it never landed and the row must go.
+      if (current.confirms(base)) {
+        markSucceeded(handle)
+        return
+      }
       if (!forceRetire(hash, entry, opId)) armConfirmTimer(handle, OVERLAY_GRACE_MS)
       return
     }

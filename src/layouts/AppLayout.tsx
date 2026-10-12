@@ -112,8 +112,10 @@ export default function AppLayout() {
   const activeActivity = activeFeature ? activity[activeFeature] : 0
   useEffect(() => {
     if (!tripId || !activeFeature) return
-    // +1 ensures lastViewed strictly exceeds the latest item ts.
-    const watermark = Math.max(activeActivity + 1, Date.now())
+    // +1 ensures lastViewed strictly exceeds the latest item ts. Server
+    // time only: mixing in Date.now() let a fast device clock swallow
+    // co-members' later activity (and markViewed never moves backwards).
+    const watermark = activeActivity + 1
     useLastViewedStore.getState().markViewed(tripId, activeFeature, watermark)
   }, [tripId, activeFeature, activeActivity])
 
@@ -144,7 +146,7 @@ export default function AppLayout() {
         style={{ bottom: 'var(--nav-h)' }}
       >
         {/* 接在 main 內最頂部 — 跟頁面一起捲動,進頁面必看到一次,
-            離線時持續存在不自動消失,回線後短暫顯示「同期しました」綠
+            離線時持續存在不自動消失,回線後短暫顯示「已同步」綠
             條 2 秒。 */}
         <OfflineBanner />
         <Suspense fallback={<PageLoadingSkeleton />}>

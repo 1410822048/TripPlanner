@@ -160,7 +160,7 @@ describe('useScheduleActions delete', () => {
     mutationMocks.remove.mockResolvedValueOnce(undefined)
     const { hook, modal } = render({ modal: makeModal(schedule({ id: 'a' })) })
 
-    await act(async () => { await hook.result.current.onScheduleDelete() })
+    await act(async () => { await hook.result.current.onScheduleDelete(() => true) })
 
     expect(mutationMocks.remove).toHaveBeenCalledWith('a')
     expect(modal.close).not.toHaveBeenCalled()
@@ -169,7 +169,7 @@ describe('useScheduleActions delete', () => {
   it('just closes when there is nothing to delete', async () => {
     const { hook, modal } = render()
 
-    await act(async () => { await hook.result.current.onScheduleDelete() })
+    await act(async () => { await hook.result.current.onScheduleDelete(() => true) })
 
     expect(mutationMocks.remove).not.toHaveBeenCalled()
     expect(modal.close).toHaveBeenCalled()
@@ -178,7 +178,7 @@ describe('useScheduleActions delete', () => {
   it('refuses to delete through a form opened on another trip', async () => {
     const { hook, modal } = render({ modal: makeModal(schedule({ id: 'a' }), true) })
 
-    await act(async () => { await hook.result.current.onScheduleDelete() })
+    await act(async () => { await hook.result.current.onScheduleDelete(() => true) })
 
     // The delete mutation is bound to the LIVE trip id — deleting 'a' there
     // would target a doc in the wrong trip.
@@ -194,7 +194,7 @@ describe('useScheduleActions delete', () => {
     compatibility.writeBlockReason = '請先更新 App 才能儲存'
     const { hook, modal } = render({ modal: makeModal(schedule({ id: 'a' })) })
 
-    await act(async () => { await hook.result.current.onScheduleDelete() })
+    await act(async () => { await hook.result.current.onScheduleDelete(() => true) })
 
     expect(mutationMocks.remove).not.toHaveBeenCalled()
     expect(modal.setError).toHaveBeenCalledWith('請先更新 App 才能儲存')

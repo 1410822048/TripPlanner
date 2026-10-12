@@ -127,10 +127,10 @@ export default function LineItemsSection({
           </div>
         )}
 
-        {/* 「行」と「調整」を同列に並べることで「OCRが拾えなかった
-            クーポン/税は手で足せる」というメンタルモデルを明示する。
-            Phase Bで負金額itemが封じられた今、ここがズレ補正の唯一の
-            正規ルート。 */}
+        {/* 把「列」與「調整」並排,明示「OCR 沒抓到的
+            折價券/稅可以手動補上」這個心智模型。
+            Phase B 封鎖負金額 item 之後,這裡是修正差額唯一的
+            正規途徑。 */}
         <div className="grid grid-cols-2 gap-2">
           <button
             type="button"

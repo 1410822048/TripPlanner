@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Clock3, Lock, MapPin, Unlock } from 'lucide-react'
 import type { Schedule, ScheduleCategory, CreateScheduleInput, ScheduleLocation } from '@/types'
 import { scheduleLocationName } from '@/types/schedule'
+import { SCHEDULE_LIMITS, isHttpUrl } from '@tripmate/entity-contracts'
 import {
   effectiveEndTime,
   ScheduleTimingError,
@@ -51,15 +52,6 @@ type FormState = {
 }
 
 const DEFAULT_SCHEDULE_CATEGORY: ScheduleCategory = SCHEDULE_CATEGORIES[0]?.value ?? 'transport'
-
-function isHttpUrl(value: string): boolean {
-  try {
-    const protocol = new URL(value).protocol
-    return protocol === 'http:' || protocol === 'https:'
-  } catch {
-    return false
-  }
-}
 
 function initFormState(t: Schedule | null, defaultDate: string, currency: string): FormState {
   return {
@@ -117,7 +109,8 @@ interface Props {
    *  busy state, banner and closing belong to this open, not the page.
    *  `reportInForm` goes into the mutation variables. */
   onSave:      (data: CreateScheduleInput, reportInForm: () => boolean) => void | Promise<unknown>
-  onDelete?:   () => void | Promise<unknown>
+  /** Receives this form's liveness, like onSave's reportInForm. */
+  onDelete?:   (stillOpen: () => boolean) => void | Promise<unknown>
 }
 
 export default function ScheduleFormModal({
@@ -325,7 +318,7 @@ export default function ScheduleFormModal({
   // Delete failures are toasted globally; this form only closes itself, and
   // only if it is still the open one.
   function handleDelete() {
-    awaited.submit(() => onDelete?.())
+    awaited.submit(() => onDelete?.(awaited.stillOpen))
   }
 
   return (
@@ -342,7 +335,7 @@ export default function ScheduleFormModal({
         <input
           ref={titleRef}
           value={state.title}
-          maxLength={200}
+          maxLength={SCHEDULE_LIMITS.title}
           onChange={e => setField('title', e.target.value)}
           placeholder="例如：參觀淺草雷門"
           className={inputClass(!!errors.title)}
@@ -568,7 +561,7 @@ export default function ScheduleFormModal({
       <FormField label="備註">
         <textarea
           value={state.desc}
-          maxLength={2000}
+          maxLength={SCHEDULE_LIMITS.description}
           onChange={e => setField('desc', e.target.value)}
           placeholder="備註或注意事項"
           rows={3}

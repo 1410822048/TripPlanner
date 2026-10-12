@@ -166,7 +166,11 @@ describe('useDeleteSettlement overlay flow', () => {
     })
 
     // Server truth no longer carries the row, so there is nothing left to
-    // hide: the op retires instead of lingering, and `x` never reappears.
+    // hide once the listener catches up. Until then `x` stays hidden even
+    // against a stale cache that still holds it, and the op retires as soon
+    // as a snapshot agrees.
+    expect(visibleIds(['x', 'other'])).toEqual(['other'])
+    settlementOverlay.reconcile(KEY_HASH, [row('other')])
     expect(visibleIds(['other'])).toEqual(['other'])
     expect(settlementOverlay.getSnapshot(KEY_HASH)).toHaveLength(0)
   })

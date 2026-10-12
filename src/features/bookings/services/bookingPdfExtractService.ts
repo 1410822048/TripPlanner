@@ -246,9 +246,9 @@ function bookingPdfError(failure: WorkerReadFailure): BookingPdfExtractError {
 
 export async function extractBookingPdfAutofill(
   file:   File,
-  signal?: AbortSignal,
-  /** The Worker only runs paid extraction for this trip's owner/editors. */
-  tripId?: string | null,
+  signal: AbortSignal | undefined,
+  /** The Worker only runs paid extraction for this trip's owner/editors (required). */
+  tripId:  string,
 ): Promise<BookingPdfExtractResult> {
   // Checked before the (expensive) text extraction; workerRead re-reads the
   // token when it actually sends.
@@ -266,7 +266,7 @@ export async function extractBookingPdfAutofill(
   }
   const payload = await workerRead<unknown>(
     '/booking-pdf-extract',
-    tripId ? { ...digest, tripId } : digest,
+    { ...digest, tripId },
     { base: WORKER_BASE_URL, timeoutMs: 60_000, signal, toError: bookingPdfError },
   )
 

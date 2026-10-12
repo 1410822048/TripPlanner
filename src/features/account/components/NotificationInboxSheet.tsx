@@ -1,7 +1,7 @@
 // src/features/account/components/NotificationInboxSheet.tsx
 // Inbox content for NotificationInboxButton's BottomSheet: filter controls,
 // row list, and empty states. Opening the sheet does NOT mark anything read
-// -- only tapping a row (that one) or "すべて既読" (all currently-unread) does,
+// -- only tapping a row (that one) or "全部標為已讀" (all currently-unread) does,
 // per the P2 spec.
 import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -38,7 +38,7 @@ const ENTITY_META: Record<NotificationEntityType, {
   trip:       { icon: Plane,         iconClass: 'text-warn',   iconBgClass: 'bg-warn-bg' },
 }
 
-const RELATIVE_TIME = new Intl.RelativeTimeFormat('ja', { numeric: 'auto' })
+const RELATIVE_TIME = new Intl.RelativeTimeFormat('zh-TW', { numeric: 'auto' })
 
 function relativeTime(date: Date): string {
   const diffSec = Math.round((date.getTime() - Date.now()) / 1000)

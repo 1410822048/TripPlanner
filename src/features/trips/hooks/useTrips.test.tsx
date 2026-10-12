@@ -8,13 +8,14 @@ import type { Trip } from '@/types/trip'
 
 const mocks = vi.hoisted(() => ({
   uid: 'u1' as string | undefined,
-  getMyTrips: vi.fn(), subscribeToMyTrips: vi.fn(), createTrip: vi.fn(), copyTrip: vi.fn(),
+  getMyTrips: vi.fn(), getMyTripsFromServer: vi.fn(), subscribeToMyTrips: vi.fn(), createTrip: vi.fn(), copyTrip: vi.fn(),
   deleteTrip: vi.fn(), leaveMember: vi.fn(), acceptInvite: vi.fn(), clearTrip: vi.fn(),
   getMembersByTrip: vi.fn(), subscribeToMembers: vi.fn(),
 }))
 vi.mock('@/hooks/useAuth', () => ({ useUid: () => mocks.uid }))
 vi.mock('../services/tripService', () => ({
-  getMyTrips: mocks.getMyTrips, subscribeToMyTrips: mocks.subscribeToMyTrips,
+  getMyTrips: mocks.getMyTrips, getMyTripsFromServer: mocks.getMyTripsFromServer,
+  subscribeToMyTrips: mocks.subscribeToMyTrips,
   createTrip: mocks.createTrip, updateTrip: vi.fn(), setWishVotingDeadline: vi.fn(),
 }))
 vi.mock('../services/tripCopy', () => ({ copyTrip: mocks.copyTrip }))
@@ -125,7 +126,21 @@ describe('useMyTrips integration', () => {
       const deletion = useDeleteTrip('u1'), leave = useLeaveTrip('u1')
       return kind === 'delete' ? deletion : leave
     }
-    it('removes optimistically, rolls back a real failure, and reconciles a lost success response', async () => {
+    it('removes optimistically and reverts only on a definitive failure', async () => {
+      const { wrapper } = setup()
+      const pending = deferred<void>()
+      const mutate = kind === 'delete' ? mocks.deleteTrip : mocks.leaveMember
+      mutate.mockReturnValue(pending.promise)
+      const view = renderHook(() => ({ trips: useMyTrips('u1'), mutation: useRemoval() }), { wrapper })
+      await waitFor(() => expect(view.result.current.trips.data).toHaveLength(2))
+      let finished!: Promise<unknown>
+      act(() => { finished = view.result.current.mutation.mutateAsync('a').catch(e => e) })
+      await waitFor(() => expect(view.result.current.trips.data?.map(t => t.id)).toEqual(['b']))
+      await act(async () => { pending.reject(new Error('actual failure')); await finished })
+      await waitFor(() => expect(view.result.current.trips.data).toHaveLength(2))
+    })
+
+    it('a listener push that still carries the trip (cascade in flight) does not revive it', async () => {
       const { qc, wrapper } = setup()
       const pending = deferred<void>()
       const mutate = kind === 'delete' ? mocks.deleteTrip : mocks.leaveMember
@@ -134,29 +149,27 @@ describe('useMyTrips integration', () => {
       await waitFor(() => expect(view.result.current.trips.data).toHaveLength(2))
       let finished!: Promise<unknown>
       act(() => { finished = view.result.current.mutation.mutateAsync('a').catch(e => e) })
-      await waitFor(() => expect(qc.getQueryData<Trip[]>(tripKeys.mine('u1'))?.map(t => t.id)).toEqual(['b']))
-      await act(async () => { pending.reject(new Error('actual failure')); await finished })
-      await waitFor(() => expect(view.result.current.trips.data).toHaveLength(2))
-      const lost = deferred<void>()
-      mutate.mockReturnValue(lost.promise)
-      act(() => { finished = view.result.current.mutation.mutateAsync('a').catch(e => e) })
-      await waitFor(() => expect(qc.getQueryData<Trip[]>(tripKeys.mine('u1'))?.map(t => t.id)).toEqual(['b']))
-      const push = mocks.subscribeToMyTrips.mock.calls[0]![1] as (rows: Trip[]) => void
-      mocks.getMyTrips.mockResolvedValue([trip('b')])
-      act(() => push([trip('b')]))
-      await act(async () => { lost.reject(new Error('response lost')); await finished })
       await waitFor(() => expect(view.result.current.trips.data?.map(t => t.id)).toEqual(['b']))
-      expect(mocks.getMyTrips).toHaveBeenCalledTimes(3)
+      const push = mocks.subscribeToMyTrips.mock.calls[0]![1] as (rows: Trip[]) => void
+      // e.g. a co-member's activity bump on trip a re-sends it mid-cascade.
+      act(() => push([{ ...trip('a'), title: 'bumped' }, trip('b')]))
+      expect(qc.getQueryData<Trip[]>(tripKeys.mine('u1'))).toHaveLength(2)   // server truth
+      expect(view.result.current.trips.data?.map(t => t.id)).toEqual(['b'])  // what the user sees
+      await act(async () => { pending.resolve(); await finished })
+      act(() => push([trip('b')]))
+      await waitFor(() => expect(view.result.current.trips.data?.map(t => t.id)).toEqual(['b']))
     })
 
-    it('cleans lastViewed and reconciles after success', async () => {
+    it('cleans lastViewed after success', async () => {
       const { wrapper } = setup()
       const mutate = kind === 'delete' ? mocks.deleteTrip : mocks.leaveMember
       mutate.mockResolvedValue(undefined)
       const view = renderHook(() => ({ trips: useMyTrips('u1'), mutation: useRemoval() }), { wrapper })
       await waitFor(() => expect(view.result.current.trips.data).toHaveLength(2))
-      mocks.getMyTrips.mockResolvedValue([trip('b')])
       await act(async () => { await view.result.current.mutation.mutateAsync('a') })
+      expect(view.result.current.trips.data?.map(t => t.id)).toEqual(['b'])
+      const push = mocks.subscribeToMyTrips.mock.calls[0]![1] as (rows: Trip[]) => void
+      act(() => push([trip('b')]))
       await waitFor(() => expect(view.result.current.trips.data?.map(t => t.id)).toEqual(['b']))
       expect(mocks.clearTrip).toHaveBeenCalledWith('a')
     })

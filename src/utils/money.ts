@@ -138,12 +138,12 @@ export function formatMinorNumber(minor: number, code: string | undefined): stri
   const digits = currencyFractionDigits(code)
   const sign   = minor < 0 ? '-' : ''
   const abs    = Math.abs(minor)
-  if (digits === 0) return `${sign}${abs.toLocaleString()}`
+  if (digits === 0) return `${sign}${abs.toLocaleString('zh-TW')}`
   const divisor   = Math.pow(10, digits)
   const wholePart = Math.floor(abs / divisor)
   const fracPart  = abs % divisor
   const fracStr   = String(fracPart).padStart(digits, '0')
-  return `${sign}${wholePart.toLocaleString()}.${fracStr}`
+  return `${sign}${wholePart.toLocaleString('zh-TW')}.${fracStr}`
 }
 
 /** Format integer minor units as a raw decimal string suitable for

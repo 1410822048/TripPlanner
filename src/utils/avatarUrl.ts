@@ -1,7 +1,7 @@
 // src/utils/avatarUrl.ts
-// Google プロフィール写真(lh3.googleusercontent.com)の解像度を表示サイズに
-// 合わせて crisp 化する純関数。MemberAvatar 専用ロジックだが、Fast Refresh の
-// 制約(component 檔は component のみ export)を避けるため util に切り出す。
+// 把 Google 個人照片(lh3.googleusercontent.com)的解析度配合顯示尺寸
+// 調成 crisp 的純函式。雖然是 MemberAvatar 專用邏輯,但為了避開 Fast Refresh 的
+// 限制(component 檔只能 export component)而抽成 util。
 
 /** Google profile photos(lh3.googleusercontent.com)carry a size directive
  *  appended to the PATH after `=`(e.g. `…/ACg8=s96-c` → 96px cropped square).
@@ -15,12 +15,12 @@ export function crispAvatarUrl(url: string | undefined, displayPx: number): stri
   try {
     u = new URL(url)
   } catch {
-    return url // 相対 URL など parse 不能はそのまま
+    return url // 相對 URL 等無法 parse 的原樣回傳
   }
   // Gate on the parsed hostname — a substring check would wrongly match
-  // lookalikes(not-googleusercontent.com)や query にその文字列を持つ別 host
-  // (…?src=googleusercontent.com)まで改写してしまう。実 host は
-  // lh3.googleusercontent.com など。
+  // lookalikes(not-googleusercontent.com)或 query 中帶該字串的其他 host
+  // (…?src=googleusercontent.com)也一併改寫。實際 host 是
+  // lh3.googleusercontent.com 等。
   const host = u.hostname
   if (host !== 'googleusercontent.com' && !host.endsWith('.googleusercontent.com')) {
     return url

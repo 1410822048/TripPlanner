@@ -39,6 +39,14 @@ export async function getMyTrips(uid: string): Promise<Trip[]> {
   return sortTrips(parseListSnapshot(snap, d => firestoreDocFromSchema(TripDocSchema, d, 'getMyTrips')))
 }
 
+/** Server-only twin of getMyTrips — the trip-list overlay's authoritative
+ *  read, which must not be answered from the local cache. */
+export async function getMyTripsFromServer(uid: string): Promise<Trip[]> {
+  const bundle = await getFirebase()
+  const snap = await bundle.getDocsFromServer(myTripsQuery(bundle, uid))
+  return sortTrips(parseListSnapshot(snap, d => firestoreDocFromSchema(TripDocSchema, d, 'getMyTripsFromServer')))
+}
+
 export function subscribeToMyTrips(
   uid: string,
   onData: (trips: Trip[]) => void,
@@ -206,7 +214,7 @@ export async function updateTrip(
   const parsed = UpdateTripSchema.safeParse(updates)
   if (!parsed.success) {
     captureError(parsed.error, { source: 'updateTrip', tripId })
-    throw new Error('Update payload failed validation')
+    throw new Error('資料格式不正確，請檢查欄位後再試')
   }
   const validated = parsed.data
   const { db, doc, updateDoc, serverTimestamp, Timestamp } = await getFirebase()

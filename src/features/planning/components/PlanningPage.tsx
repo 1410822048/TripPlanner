@@ -9,6 +9,7 @@ import { useFeatureListPage } from '@/hooks/useFeatureListPage'
 import { useSwipeOpen } from '@/hooks/useSwipeOpen'
 import { toast } from '@/shared/toast'
 import { simulateFailureMaybe } from '@/utils/devFailures'
+import { trackUnlessOffline } from '@/utils/offlineHandOff'
 import PlanningListSkeleton from './PlanningListSkeleton'
 import PlanningPageSkeleton from './PlanningPageSkeleton'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
@@ -104,10 +105,12 @@ export default function PlanningPage() {
   // promise is handed back and the FORM owns the outcome (useAwaitedSave),
   // so a late result never closes or marks a form opened since.
   function handleSave(input: CreatePlanItemInput, reportInForm: () => boolean): void | Promise<unknown> {
-    if (isDemo) { modal.close(); signIn.open(); return }
     // The mutations bind to the LIVE trip id — a form opened on another trip
     // (background reselect after kick / remote delete) must not write here.
+    // Scope BEFORE demo: a cloud form whose session signed out into demo
+    // must keep its draft, not be closed by the demo branch.
     if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
+    if (isDemo) { modal.close(); signIn.open(); return }
     // Before the role check: canWrite folds in compatibility, so an
     // out-of-date editor would otherwise be told they lack permission.
     const writeBlockReason = getClientWriteBlockReason()
@@ -116,23 +119,26 @@ export default function PlanningPage() {
     if (!uid) { toast.error('正在準備登入，請稍候'); return }
     modal.clearError()
     const editTarget = modal.editTarget
-    return simulateFailureMaybe().then(() => editTarget
-      ? updateMut.mutateAsync({ itemId: editTarget.id, updates: input, uid, reportInForm })
-      // Minted here so the optimistic row and the stored doc share one id,
-      // the same hoist the settlement flow relies on.
-      : createMut.mutateAsync({ itemId: crypto.randomUUID(), input, createdBy: uid, reportInForm }))
+    // Minted here so the optimistic row and the stored doc share one id,
+    // the same hoist the settlement flow relies on.
+    const itemId = editTarget?.id ?? crypto.randomUUID()
+    return trackUnlessOffline(report => simulateFailureMaybe().then(() => editTarget
+      ? updateMut.mutateAsync({ itemId, updates: input, uid, reportInForm: report })
+      : createMut.mutateAsync({ itemId, input, createdBy: uid, reportInForm: report })),
+    reportInForm, modal.close)
   }
 
-  function handleDelete(): void | Promise<unknown> {
+  function handleDelete(stillOpen: () => boolean): void | Promise<unknown> {
     if (!modal.editTarget) return
-    if (isDemo) { modal.close(); signIn.open(); return }
     if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
+    if (isDemo) { modal.close(); signIn.open(); return }
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) { modal.setError(writeBlockReason); return }
     if (!canWrite) { toast.error('你沒有刪除權限'); return }
     // Non-silent: the global toast reports a failure; the form closes itself
     // on success only if it is still the open one.
-    return deleteMut.mutateAsync(modal.editTarget.id)
+    const itemId = modal.editTarget.id
+    return trackUnlessOffline(() => deleteMut.mutateAsync(itemId), stillOpen, modal.close)
   }
 
   function handleToggle(item: PlanItem) {

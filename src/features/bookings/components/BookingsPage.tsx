@@ -144,12 +144,13 @@ export default function BookingsPage() {
   const typeOrder = BOOKING_TYPE_ORDER
 
   function handleSave({ input, coverImage, document }: BookingFormResult) {
+    // Before setSharedDraft(null) and the demo close: a refused save must
+    // keep the draft. The mutations bind to the LIVE trip id — a form opened
+    // on another trip (background reselect after kick / remote delete, or a
+    // cloud→demo sign-out) must not write here.
+    if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
     if (isDemo) { setSharedDraft(null); modal.close(); signIn.open(); return }
     if (!uid) { setSharedDraft(null); toast.error('正在準備登入，請稍候'); return }
-    // Before setSharedDraft(null): a refused save must keep the draft. The
-    // mutations bind to the LIVE trip id — a form opened on another trip
-    // (background reselect after kick / remote delete) must not write here.
-    if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) {
       modal.setError(writeBlockReason)

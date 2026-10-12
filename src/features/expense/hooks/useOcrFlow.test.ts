@@ -38,11 +38,23 @@ const file = (name: string) => new File(['x'], name, { type: 'image/jpeg' })
 
 function setup() {
   const onSuccess = vi.fn()
-  const view = renderHook(() => useOcrFlow({ currency: 'JPY', onSuccess }))
+  const view = renderHook(() => useOcrFlow({ currency: 'JPY', tripId: 'trip-1', onSuccess }))
   return { onSuccess, view }
 }
 
 beforeEach(() => { vi.resetAllMocks() })
+
+describe('useOcrFlow — no cloud trip', () => {
+  it('refuses before any request when there is no trip (demo), with readable copy', async () => {
+    const view = renderHook(() => useOcrFlow({ currency: 'JPY', tripId: null, onSuccess: vi.fn() }))
+
+    await act(async () => { await view.result.current.run(file('a.jpg')) })
+
+    expect(ocrReceipt).not.toHaveBeenCalled()
+    expect(view.result.current.error).toBe('請先登入並選擇旅程，再讀取收據')
+    expect(view.result.current.loading).toBe(false)
+  })
+})
 
 describe('useOcrFlow — single request lifecycle', () => {
   it('run() → loading true → onSuccess(result) → loading false', async () => {

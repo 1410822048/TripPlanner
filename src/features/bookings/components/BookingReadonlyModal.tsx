@@ -196,8 +196,8 @@ export default function BookingReadonlyModal({
                 fullWidth={!booking.link}
               />
             )}
-            {/* link は書き込み時に http(s) のみ検証済み(Zod / Worker /
-                rules)なので href に出して安全。ActionLink は
+            {/* link 在寫入時已驗證只允許 http(s)(Zod / Worker /
+                rules),所以放進 href 是安全的。ActionLink 帶
                 rel="noopener noreferrer"。 */}
             {booking.link && (
               <ActionLink

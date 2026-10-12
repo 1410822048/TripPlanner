@@ -1,26 +1,27 @@
 // src/features/wish/components/WishCard.tsx
-// 投票ボード(consensus leaderboard)の候補カード。Wish は「みんなで行き先を
-// 決める」投票システムなので、レイアウトは順位・賛成度・投票アクションを主役に
-// する(以前の Pinterest 風 image grid からの転換)。
+// 投票看板(consensus leaderboard)的候選卡片。Wish 是「大家一起決定目的地」
+// 的投票系統,因此版面以排名、贊成度、投票動作為主角
+// (由以前的 Pinterest 風 image grid 轉換而來)。
 //
-// 単一の row レイアウト。サイズは全順位で統一(サムネ 56 / 賛成度バー / pill
-// 投票ボタン)。順位は寸法ではなく「左の順位インジケータ(本命 = 金の王冠、
-// 2・3 位 = 銀/銅の数字サークル、4 位以下 = 中立の数字)+ 本命のみカードに金
-// グロー」で示す。縦の並び順がそのまま順位。WishPage が 3 位と 4 位の間に候補
-// ラインを挿す。
+// 單一 row 版面。尺寸在所有名次統一(縮圖 56 / 贊成度條 / pill
+// 投票按鈕)。名次不靠尺寸,而是以「左側名次指示器(第一名 = 金色王冠、
+// 第 2、3 名 = 銀/銅數字圓圈、第 4 名以後 = 中性數字)+ 僅第一名卡片帶金色
+// 光暈」表示。縱向排列順序即名次。WishPage 在第 3 名與第 4 名之間插入候選
+// 分隔線。
 //
-// 賛成度 = votes.length / memberCount。approval voting(各自が複数に賛成できる)
-// なので「絶対票数」より「メンバーの何人が行きたいか」が意味のある指標。
+// 贊成度 = votes.length / memberCount。approval voting(每人可贊成多個)
+// 所以「成員中有幾人想去」比「絕對票數」更有意義。
 //
-// インタラクション規約:
-//   - tap-to-detail は「カード全体」。カード全面を覆う透明 button を子要素の
-//     「下」(z-0)に敷き、操作要素(投票 / ⋮)だけ
-//     z-10 で上に出す stretched-overlay パターン(ネスト button 回避)。
-//   - 地図/網站などの外部アクションは detail sheet に集約。カードは比較・投票・
-//     詳細への入口だけを持ち、誤タップで外部遷移しない。
-//   - ⋮ メニューが edit/delete の唯一の入口、pending(temp- / isUpdating)中は
-//     tap・投票・swipe を無効化して 保存中… を出す。
+// 互動規範:
+//   - tap-to-detail 是「整張卡片」。把覆蓋全卡的透明 button 鋪在子元素的
+//     「下方」(z-0),只有操作元素(投票 / ⋮)
+//     以 z-10 浮到上層的 stretched-overlay 模式(避免巢狀 button)。
+//   - 地圖/網站等外部動作集中在 detail sheet。卡片只負責比較、投票、
+//     進入詳細,避免誤觸跳到外部。
+//   - ⋮ 選單是 edit/delete 的唯一入口,pending(temp- / isUpdating)期間
+//     停用 tap、投票、swipe 並顯示 儲存中…。
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { MoreVertical, Loader2, Crown } from 'lucide-react'
 import type { Wish } from '@/types'
 import type { TripMember } from '@/features/trips/types'
@@ -48,21 +49,21 @@ const CATEGORY_GRADIENT: Record<Wish['category'], string> = {
   food:  'linear-gradient(135deg, #fde2cc 0%, #f0a87a 100%)',
 }
 
-/** グラデーション上のアイコン色 — 各分類の深いトーンでコントラストを確保。 */
+/** 漸層上的圖示顏色 — 用各分類的深色調確保對比。 */
 const CATEGORY_ICON_COLOR: Record<Wish['category'], string> = {
   place: '#33617f',
   food:  '#b5652e',
 }
 
-/** 順位インジケータはカード左の gutter に出す(サムネ角の番号バッジではない):
- *  本命(rank 1)= 金の王冠 + カードに金グロー、それ以外 = 中立の番号サークル +
- *  プレーンなヘアライン。サイズは全順位で揃え、順位は左の指標(王冠/銀銅/数字)
- *  と本命の金グローだけで示す。 */
-const GOLD = '#C29A3D'   // 金 — 王冠で使用
-const LEAD_RING = 'rgba(201,161,74,0.55)'  // 本命カードの金グロー(縁)
-const LEAD_GLOW = 'rgba(201,161,74,0.20)'  // 本命カードの金グロー(ぼかし)
+/** 名次指示器放在卡片左側 gutter(不是縮圖角落的號碼徽章):
+ *  第一名(rank 1)= 金色王冠 + 卡片金色光暈,其他 = 中性號碼圓圈 +
+ *  樸素細框線。尺寸在所有名次一致,名次只靠左側指標(王冠/銀銅/數字)
+ *  與第一名的金色光暈表示。 */
+const GOLD = '#C29A3D'   // 金 — 王冠使用
+const LEAD_RING = 'rgba(201,161,74,0.55)'  // 第一名卡片的金色光暈(邊框)
+const LEAD_GLOW = 'rgba(201,161,74,0.20)'  // 第一名卡片的金色光暈(模糊)
 
-/** 2・3 位の番号サークル色 = 銀 / 銅。4 位以下は色を付けず中立(pale)に落とす。 */
+/** 第 2、3 名號碼圓圈色 = 銀 / 銅。第 4 名以後不上色,退為中性(pale)。 */
 const RANK_COLOR: Record<number, string> = {
   2: '#98A2AC',  // 銀
   3: '#B87C4E',  // 銅
@@ -86,9 +87,9 @@ interface Props {
   eager?:        boolean
   /** This wish's write is in flight (page derives it from the overlay). */
   isUpdating?:   boolean
-  /** 1-based 順位(投票数の降順)。1 = 本命 lead(強調)、2 以上 = 通常行。 */
+  /** 1-based 名次(依票數降冪)。1 = 第一名 lead(強調),2 以上 = 一般列。 */
   rank:          number
-  /** 賛成度の表示状態(票数 + メンバー数 + ready)。WishPage が確定して渡す。 */
+  /** 贊成度的顯示狀態(票數 + 成員數 + ready)。由 WishPage 決定後傳入。 */
   consensus:     Consensus
 }
 
@@ -101,14 +102,14 @@ function WishCard({
   const hasMenu = !isPending && (canEdit || canDelete)
   const tap = !isPending ? onOpenDetails : undefined
   const isLead = rank === 1
-  // 順位差はサイズではなく左の順位インジケータ(王冠/銀銅/数字)+ 本命の金光で
-  // 示す。サムネ/フォント/バー/ボタンは全順位で揃える(4 位以下も同寸)。
-  // 本命の王冠 + 金グローは「実際にリードしている」時だけ(誰も投票してなければ
-  // 単なる先頭)。pending 中は順位が確定とは限らないので出さない。
+  // 名次差異不靠尺寸,而以左側名次指示器(王冠/銀銅/數字)+ 第一名的金光
+  // 表示。縮圖/字體/條/按鈕在所有名次一致(第 4 名以後也同尺寸)。
+  // 第一名的王冠 + 金色光暈只在「真的領先」時顯示(沒人投票時
+  // 只是排在最前)。pending 期間名次不一定確定,所以不顯示。
   const showCrown = isLead && !isPending && wish.votes.length > 0
-  // 載入時の staggered reveal:rank が下がるほど少し遅らせる(上限 350ms)。
+  // 載入時的 staggered reveal:rank 越後面延遲越多(上限 350ms)。
   const revealDelay = Math.min((rank - 1) * 50, 350)
-  // サムネ寸法は全順位で同寸(56)。
+  // 縮圖尺寸在所有名次相同(56)。
   const thumbSizeCls  = 'w-14 h-14'
   const thumbIconSize = 22
 
@@ -116,7 +117,7 @@ function WishCard({
     <article
       className={[
         'relative bg-surface overflow-hidden animate-wish-reveal rounded-[18px]',
-        // 本命のみ金グロー(下の boxShadow が ring を兼ねる);他は無色ヘアライン。
+        // 只有第一名有金色光暈(下方 boxShadow 兼作 ring);其他為無色細框線。
         showCrown ? '' : 'ring-1 ring-black/[0.06]',
       ].join(' ')}
       style={{
@@ -124,12 +125,12 @@ function WishCard({
         ...(showCrown ? { boxShadow: `0 0 0 1.5px ${LEAD_RING}, 0 3px 16px ${LEAD_GLOW}` } : {}),
       }}
     >
-      {/* 整卡 tap-to-detail。stretched overlay button:カード全体を
-          覆う透明ボタンを子要素の「下」(z-0)に敷く。z-0 の絶対配置は通常フローの
-          中身より上に描画される(= テキスト/サムネのタップを拾う)が、操作要素は
-          relative z-10 でさらに上に出すので投票/⋮ は素通りしない。これで
-          ネスト button を避けつつ「カードのどこを押しても詳細」を実現する。
-          pending 中は tap=undefined なので button は出ない。 */}
+      {/* 整卡 tap-to-detail。stretched overlay button:把覆蓋整張卡片的
+          透明按鈕鋪在子元素「下方」(z-0)。z-0 的絕對定位會畫在一般流的
+          內容之上(= 接住文字/縮圖的點擊),但操作元素以
+          relative z-10 再浮到更上層,所以投票/⋮ 不會被穿透。藉此
+          避免巢狀 button,同時做到「點卡片任何地方都進詳細」。
+          pending 期間 tap=undefined,所以不會出現 button。 */}
       {tap && (
         <button
           type="button"
@@ -150,10 +151,10 @@ function WishCard({
       )}
 
       <div className={['grid grid-cols-[20px_56px_minmax(0,1fr)] items-center gap-2.5 p-2.5 pr-2 transition-opacity', isPending ? 'opacity-55' : ''].join(' ')}>
-        {/* 順位インジケータ — pending 中は順位が確定とは限らないので中身だけ隠す
-            (同幅の placeholder は残し、temp→正式 row で横方向にジャンプさせない)。 */}
+        {/* 名次指示器 — pending 期間名次不一定確定,所以只隱藏內容
+            (保留同寬 placeholder,temp→正式 row 時不會橫向跳動)。 */}
         <RankIndicator rank={rank} showCrown={showCrown} pending={isPending} />
-        {/* サムネ。外部リンクにはせず、カード全体の詳細タップに通す。 */}
+        {/* 縮圖。不做成外部連結,交給整張卡片的詳細點擊。 */}
         <div className="relative w-14 h-14 shrink-0">
           <WishThumb
             wish={wish}
@@ -165,7 +166,7 @@ function WishCard({
         </div>
 
         <div className="min-w-0 flex flex-col gap-2">
-          {/* タイトル行。カードは詳細、右上は管理、下段は投票に役割を分ける。 */}
+          {/* 標題列。卡片負責詳細,右上負責管理,下段負責投票,分工明確。 */}
           <div className={['truncate text-ink -tracking-[0.2px] text-[13.5px] font-black leading-[1.15]', hasMenu ? 'pr-8' : ''].join(' ')}>
             {wish.title}
           </div>
@@ -188,7 +189,10 @@ function WishCard({
       </div>
 
       {isPending && <PendingPill />}
-      {menuOpen && (
+      {/* Portaled: the article is transformed (reveal animation) and
+          overflow-hidden, which would make it the fixed sheet's containing
+          block and clip it while the animation runs. */}
+      {menuOpen && createPortal(
         <WishActionMenu
           isOpen
           wish={wish}
@@ -197,20 +201,21 @@ function WishCard({
           onEdit={onEdit}
           onDelete={onDelete}
           onClose={() => setMenuOpen(false)}
-        />
+        />,
+        document.body,
       )}
     </article>
   )
 }
 
-// ─── 共有サブコンポーネント ────────────────────────────────────────
+// ─── 共用子元件 ────────────────────────────────────────
 
-/** カード左の順位インジケータ。本命(showCrown)= 金の王冠、2・3 位 = 銀/銅の
- *  ソリッド番号サークル(白数字)、4 位以下 = 中立の pale サークル(muted 数字)。
- *  サイズは順位に依らず一定(順位差は色/王冠で示し、寸法では示さない)。 */
+/** 卡片左側的名次指示器。第一名(showCrown)= 金色王冠,第 2、3 名 = 銀/銅
+ *  實心號碼圓圈(白色數字),第 4 名以後 = 中性 pale 圓圈(muted 數字)。
+ *  尺寸不隨名次變化(名次差異以顏色/王冠表示,不以尺寸表示)。 */
 function RankIndicator({ rank, showCrown, pending }: { rank: number; showCrown: boolean; pending?: boolean }) {
   const medalColor = RANK_COLOR[rank]
-  // pending 中は順位未確定。同幅の枠だけ残して中身を空にする(レイアウト維持)。
+  // pending 期間名次未確定。只保留同寬的框、內容留空(維持版面)。
   if (pending) return <div className="shrink-0 w-5" aria-hidden />
   return (
     <div className="shrink-0 w-5 flex items-center justify-center" aria-label={`第 ${rank} 名`}>
@@ -231,7 +236,7 @@ function RankIndicator({ rank, showCrown, pending }: { rank: number; showCrown: 
   )
 }
 
-/** 行のサムネ(正方形)。外部リンク化せず、タップはカード詳細に吸収させる。 */
+/** 列的縮圖(正方形)。不做成外部連結,點擊由卡片詳細吸收。 */
 function WishThumb({
   wish, sizeCls, iconSize, eager,
 }: {
@@ -274,8 +279,8 @@ function PendingPill() {
   )
 }
 
-/** 提案者頭像。リストの avatar は「投票者」ではなく「誰が提案したか」を示す。
- *  投票者一覧は detail sheet に集約する。 */
+/** 提案者頭像。列表的 avatar 表示「誰提案的」而不是「投票者」。
+ *  投票者名單集中在 detail sheet。 */
 function ProposerAvatar({ proposer }: { proposer?: TripMember }) {
   if (!proposer) return null
   return (

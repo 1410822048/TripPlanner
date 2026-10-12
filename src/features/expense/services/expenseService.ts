@@ -142,6 +142,11 @@ function workerExpensePayload(
   source: 'createExpense' | 'updateExpense',
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = { ...input }
+  // 表單以 `note: undefined`(key 存在)表達「清空備註」,但 JSON 會丟掉
+  // undefined,Worker 看不到。改成 '' sentinel:Worker 以 updateMask-only 刪欄位。
+  if (source === 'updateExpense' && 'note' in payload && payload.note === undefined) {
+    payload.note = ''
+  }
   // Read the RAW runtime mode (untyped) before stripping it — the DTO type
   // claims a valid enum, but only resolveWorkerExpenseMode's runtime gate
   // actually enforces that.
@@ -229,6 +234,8 @@ export function expenseUpdateApplied(stored: Expense, updates: UpdateExpenseInpu
   }
   return Object.entries(wire).every(([field, value]) => {
     if (field === 'mode') return true   // wire-only discriminator
+    // '' is the clear sentinel: applied once the stored note is gone.
+    if (field === 'note' && value === '') return !stored.note
     return sameValue(stored[field as keyof Expense], value)
   })
 }

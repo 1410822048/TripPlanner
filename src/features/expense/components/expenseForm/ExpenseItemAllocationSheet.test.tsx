@@ -46,7 +46,7 @@ describe('ExpenseItemAllocationSheet', () => {
     expect(onToggleAllocation.mock.calls).toEqual([[0, 'c']])
   })
 
-  it('クリア: removes every current allocation, touches nothing else', () => {
+  it('清除: removes every current allocation, touches nothing else', () => {
     const { onToggleAllocation, onSetAllocationShares } = renderSheet()
     fireEvent.click(screen.getByText('清除'))
     expect(onToggleAllocation.mock.calls).toEqual([[0, 'a'], [0, 'b']])

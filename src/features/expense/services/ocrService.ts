@@ -103,6 +103,8 @@ export type OcrErrorKind =
   | 'stale'
   | 'forbidden'
   | 'trip-forbidden'
+  /** No cloud trip to scan for (demo / signed out) — refused before any request. */
+  | 'no-trip'
   | 'unknown'
 
 // Field declared explicitly (not via constructor-param syntax) because the
@@ -180,7 +182,7 @@ async function postOcrImage<T>(
   currency: string | undefined,
   signal:   AbortSignal | undefined,
   copy:     { timeout: string; failed: string },
-  tripId?:  string | null,
+  tripId:   string,
 ): Promise<T> {
   if (!isOcrSupportedImageFile(file)) {
     throw new OcrError('OCR supports JPEG, PNG, or WebP receipt images', 'parse')
@@ -191,8 +193,8 @@ async function postOcrImage<T>(
     image,
     mimeType: file.type || 'image/jpeg',
     currency,
-    // The Worker gates paid OCR on owner/editor of this trip.
-    ...(tripId ? { tripId } : {}),
+    // The Worker gates paid OCR on owner/editor of this trip (required).
+    tripId,
   }, {
     base:      WORKER_BASE_URL,
     timeoutMs: OCR_TIMEOUT_MS,
@@ -219,7 +221,7 @@ async function postOcrImage<T>(
  * from receipt symbols. Pass the trip currency for better accuracy on
  * ambiguous receipts (e.g. a "$" that could be USD/TWD/CAD).
  */
-export async function ocrReceipt(file: File, currency?: string, signal?: AbortSignal, tripId?: string | null): Promise<OcrResult> {
+export async function ocrReceipt(file: File, currency: string | undefined, signal: AbortSignal | undefined, tripId: string): Promise<OcrResult> {
   return postOcrImage<OcrResult>('/ocr', file, currency, signal, {
     timeout: 'OCR request timed out',
     failed:  'OCR failed',
@@ -228,7 +230,7 @@ export async function ocrReceipt(file: File, currency?: string, signal?: AbortSi
 
 /** Explicit backup path. This is user-triggered; the product path does not
  *  silently double-run models and hide the latency/cost from the user. */
-export async function ocrFallbackReceipt(file: File, currency?: string, signal?: AbortSignal, tripId?: string | null): Promise<OcrResult> {
+export async function ocrFallbackReceipt(file: File, currency: string | undefined, signal: AbortSignal | undefined, tripId: string): Promise<OcrResult> {
   return postOcrImage<OcrResult>('/ocr-fallback', file, currency, signal, {
     timeout: 'OCR fallback timed out',
     failed:  'OCR fallback failed',
@@ -251,7 +253,7 @@ export interface ExpenseReceiptOcrResponse {
  * previous OCR result. The client never
  * names the object — the Worker reads receipt.path from the Firestore doc
  * (BOLA-safe) and enforces /expense-update permissions (owner/editor;
- * settlement-locked ⇒ owner). Used by the edit-modal "再読み取り" button
+ * settlement-locked ⇒ owner). Used by the edit-modal "再次讀取" button
  * when there's no freshly-picked File (the old receipt is only a URL).
  *
  * Returns the OCR result + race metadata; the CALLER must verify the result
@@ -286,7 +288,7 @@ async function ocrExistingExpenseReceiptEndpoint(
         if (failure.kind === 'status') {
           // 403 = permission lost since the modal opened: the caller is no
           // longer owner/editor, OR the expense became settlement-locked
-          // (someone recorded 済み mid-OCR) and the caller isn't the owner.
+          // (someone recorded 已收款 mid-OCR) and the caller isn't the owner.
           if (failure.status === 403) return new OcrError('Forbidden: cannot edit this expense', 'forbidden')
           // 409 = the Worker's post-OCR revalidation found the receipt or
           // expense changed while OCR ran → the result is for a stale image.

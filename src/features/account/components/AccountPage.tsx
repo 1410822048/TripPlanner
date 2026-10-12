@@ -14,8 +14,8 @@
 //   │ [stacked    ]│  │ [stacked    ]│
 //   │ [lodging ]   │  │ [avatars   ] │
 //   │              │  │              │
-//   │ 過往の旅程   │  │ 共同編集の仲間│
-//   │ 住宿の記録   │  │ N 人         │
+//   │ 過往旅程     │  │ 共同規劃的旅伴│
+//   │ 住宿紀錄     │  │ N 人         │
 //   └─────────────┘  └─────────────┘
 //   [Planner promo card]
 //   [logout]
@@ -51,7 +51,7 @@ import { writePushOwnerUid } from '../services/pushOwnerStore'
 import type { Trip } from '@/types'
 import { userErrorMessage } from '@/utils/errorMessage'
 
-// Fallback thumbnail deck for the "過往の旅程" card when the user has
+// Fallback thumbnail deck for the "過往旅程" card when the user has
 // no hotel bookings (yet) or none of them carry an attachment image.
 // When at least one booking carries an attachment (thumbPath / filePath)
 // we replace this deck with the real photos via StackedImagePreview below.
@@ -94,7 +94,7 @@ function tripDays(trip: Trip): number {
 
 /**
  * Human-readable "member since" label derived from Firebase Auth's
- * `user.metadata.creationTime`. Grows units (日 → か月 → 年) so a 2-day-old
+ * `user.metadata.creationTime`. Grows units (天 → 個月 → 年) so a 2-day-old
  * account doesn't read as "0 年". Returns null if the metadata is missing
  * (very old sign-ins in some SDK versions).
  */
@@ -146,7 +146,7 @@ export default function AccountPage() {
   }
 
   // Confirm flow happens inside LogoutConfirmSheet; this is the commit step
-  // called from the sheet's 「ログアウト」 button.
+  // called from the sheet's 「登出」 button.
   async function handleSignOut() {
     setSigningOut(true)
     let pushRevokeResult: LogoutPushRevokeResult = 'completed'
@@ -279,8 +279,8 @@ export default function AccountPage() {
               X profile metric rows). */}
           <div className="mt-5 pt-4 border-t border-border flex divide-x divide-border">
             <StatCell label="旅程"  value={tripCount} unit="趟" />
-            <StatCell label="日数"  value={totalDays} unit="日" />
-            {ageLabel && <StatCell label="利用" rawValue={ageLabel} />}
+            <StatCell label="天數"  value={totalDays} unit="天" />
+            {ageLabel && <StatCell label="使用期間" rawValue={ageLabel} />}
           </div>
         </div>
       </div>

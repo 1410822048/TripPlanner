@@ -1,5 +1,5 @@
 // src/features/expense/components/SettlementRecordSheet.tsx
-// Phase 4.1 rearchitecture (2026-06-02) — 「済み」 is NOT an amount-entry
+// Phase 4.1 rearchitecture (2026-06-02) — 「已收款」 is NOT an amount-entry
 // form. The whole sheet is "confirm clear this suggestion":
 //   - The amount shown is the suggestion's remaining (read-only). The
 //     ledger amountMinor is always this value, for BOTH modes — the
@@ -79,9 +79,11 @@ interface Props {
   isOpen:       boolean
   onClose:      () => void
   /** Returns the mutation promise when the payload carries `reportInForm`;
-   *  the sheet tracks it (rejects with the Worker's error). */
-  onSave:       (payload: SettlementRecordSubmit) => void | Promise<unknown>
-  /** The pairwise suggestion the receiver tapped 「済み」on. Drives the
+   *  the sheet tracks it (rejects with the Worker's error). Returns `false`
+   *  when the page refused the save synchronously (toast shown, sheet left
+   *  open, nothing written) — the sheet then releases its submit latch. */
+  onSave:       (payload: SettlementRecordSubmit) => false | void | Promise<unknown>
+  /** The pairwise suggestion the receiver tapped 「已收款」on. Drives the
    *  read-only amount display + the from/to avatar row. */
   suggested:    Suggestion
   /** Trip currency — the currency picker defaults to this; the FX preview
@@ -217,7 +219,7 @@ export default function SettlementRecordSheet({
       // source ≥ 1 fits at-most-remaining). Worker rejects this exact
       // shape with SettlementValidationError('sourceCurrency') via the
       // `foreign.sourceAmountMinor <= 0` guard; mirror it here on the
-      // SAME field so the user sees "金額が小さすぎます" instead of a
+      // SAME field so the user sees "換算後的金額過小" instead of a
       // round-trip 400. Note: Phase 4.1 amountMinor=remaining is
       // perfectly writeable when sourceMinor=0 (1 JPY for instance),
       // but a 0 source is meaningless for the receipt — reject so the
@@ -250,7 +252,7 @@ export default function SettlementRecordSheet({
       // jump when the listener swap lands.
       // expectedFxRate is the rate this render derived sourceMinor from —
       // after adopting a refusal's rate, the next submit sends that rate.
-      awaited.submit(() => onSave({
+      awaited.submit(() => refusedUnlatch(onSave({
         mode:                   'FOREIGN_CURRENCY',
         fromUid:                suggested.fromUid,
         toUid:                  suggested.toUid,
@@ -265,7 +267,7 @@ export default function SettlementRecordSheet({
         },
         expectedFxRate,
         ...(!fxPreview.isFinal ? { reportInForm: awaited.stillOpen } : {}),
-      }), err => {
+      })), err => {
         // Refused (definitively): unlatch so the user can confirm and
         // resubmit; on FX_RATE_CHANGED show the refusal's rate as-is.
         submittedRef.current = false
@@ -279,7 +281,7 @@ export default function SettlementRecordSheet({
       // suggestion's amount directly — Worker will compute the exact
       // remaining at tx time (typically the same modulo any concurrent
       // expense edit).
-      onSave({
+      refusedUnlatch(onSave({
         mode:                   'TRIP_CURRENCY',
         fromUid:                suggested.fromUid,
         toUid:                  suggested.toUid,
@@ -289,8 +291,19 @@ export default function SettlementRecordSheet({
           amountMinor: suggested.amountMinor,
           currency:    tripCurrency,
         },
-      })
+      }))
     }
+  }
+
+  // The page can refuse synchronously (scope change, ledger not ready,
+  // update required, cap) without closing the sheet: release the latch so
+  // the next tap retries instead of being a silent dead button.
+  function refusedUnlatch(outcome: false | void | Promise<unknown>): void | Promise<unknown> {
+    if (outcome === false) {
+      submittedRef.current = false
+      return
+    }
+    return outcome
   }
 
   return (
@@ -321,7 +334,7 @@ export default function SettlementRecordSheet({
           </div>
         )}
 
-        {/* Amount display — READ ONLY. 「済み」 clears the entire
+        {/* Amount display — READ ONLY. 「已收款」 clears the entire
             remaining debt; Worker writes amountMinor = remaining
             regardless of mode (Phase 4.1 ledger truth). Trip mode
             shows ¥550 directly. Foreign mode shows "¥550 (≈ TWD 119)" —

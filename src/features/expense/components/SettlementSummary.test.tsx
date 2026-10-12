@@ -1,6 +1,6 @@
 // Render tests for SettlementSummary — the orchestration the math tests in
 // settlement.test.ts don't reach: the empty-state guard, the receiver-only
-// 「済み」record gate (payee sees a button, everyone else a 受取待ち status),
+// 「已收款」record gate (payee sees a button, everyone else a 等待收款 status),
 // the signed net balance lines, and the all-settled chip. computeBalancesFull
 // / computeSettlementSuggestions run for real (they're pure) — the only
 // fixtures are expenses / members / settlements, exactly like the page.
@@ -50,13 +50,13 @@ describe('SettlementSummary — empty state', () => {
 })
 
 describe('SettlementSummary — receiver-only record gate', () => {
-  it('shows the 済み record button to the payee (receiver)', () => {
+  it('shows the 已收款 record button to the payee (receiver)', () => {
     render(<SettlementSummary {...base({ uid: 'u1' })} />) // u1 = payee
     expect(screen.getByRole('button', RECORD_BTN)).toBeTruthy()
     expect(screen.queryByText('等待收款')).toBeNull()
   })
 
-  it('shows a 受取待ち status to the payer, not a button', () => {
+  it('shows a 等待收款 status to the payer, not a button', () => {
     render(<SettlementSummary {...base({ uid: 'u2' })} />) // u2 = payer
     expect(screen.getByText('等待收款')).toBeTruthy()
     expect(screen.queryByRole('button', RECORD_BTN)).toBeNull()

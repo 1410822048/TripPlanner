@@ -95,6 +95,11 @@ export function useCreateSettlement(tripId: string) {
  *  hands over to the ambiguous path rather than restoring the row. */
 function scheduleDeleteRetry(handle: OverlayHandle, tripId: string, settlementId: string): void {
   const timer = setTimeout(() => {
+    // The op is gone when overlays were cleared (sign-out / account switch)
+    // or it already settled: don't send the old account's delete under
+    // whoever is signed in now.
+    const live = settlementOverlay.getSnapshot(handle.queryKeyHash).some(op => op.opId === handle.opId)
+    if (!live) return
     void deleteSettlement(tripId, settlementId)
       .then(() => settlementOverlay.markSucceeded(handle))
       .catch(() => settlementOverlay.markAmbiguous(handle))

@@ -95,6 +95,7 @@ describe('BookingFormModal link defaults', () => {
   test('shows provider placeholders for every booking type', () => {
     render(
       <BookingFormModal
+        tripId="trip-1"
         editTarget={null}
         isOpen
         isSaving={false}
@@ -122,6 +123,7 @@ describe('BookingFormModal link defaults', () => {
     const onSave = vi.fn()
     render(
       <BookingFormModal
+        tripId="trip-1"
         editTarget={null}
         isOpen
         isSaving={false}
@@ -152,6 +154,7 @@ describe('BookingFormModal link defaults', () => {
     const onSave = vi.fn()
     render(
       <BookingFormModal
+        tripId="trip-1"
         editTarget={null}
         isOpen
         isSaving={false}
@@ -178,6 +181,7 @@ describe('BookingFormModal link defaults', () => {
     const onSave = vi.fn()
     render(
       <BookingFormModal
+        tripId="trip-1"
         editTarget={null}
         initialDraft={{
           type:     'other',
@@ -215,6 +219,7 @@ describe('BookingFormModal PDF autofill intent', () => {
   test('does not run PDF autofill when the user only attaches a confirmation file', () => {
     const { container } = render(
       <BookingFormModal
+        tripId="trip-1"
         editTarget={null}
         isOpen
         isSaving={false}
@@ -232,6 +237,7 @@ describe('BookingFormModal PDF autofill intent', () => {
   test('runs PDF autofill only from the explicit PDF autofill action', () => {
     const { container } = render(
       <BookingFormModal
+        tripId="trip-1"
         editTarget={null}
         isOpen
         isSaving={false}
@@ -246,12 +252,13 @@ describe('BookingFormModal PDF autofill intent', () => {
     fireEvent.change(fileInput(container, 'application/pdf,.pdf'), { target: { files: [file] } })
 
     expect(bookingPdfExtractMocks.extractBookingPdfAutofill)
-      .toHaveBeenCalledWith(file, expect.any(AbortSignal), undefined)
+      .toHaveBeenCalledWith(file, expect.any(AbortSignal), 'trip-1')
   })
 
   test('can read and re-read the current attached PDF', async () => {
     const { container } = render(
       <BookingFormModal
+        tripId="trip-1"
         editTarget={null}
         isOpen
         isSaving={false}
@@ -268,7 +275,7 @@ describe('BookingFormModal PDF autofill intent', () => {
     fireEvent.click(screen.getByRole('button', { name: /讀取 PDF/ }))
 
     expect(bookingPdfExtractMocks.extractBookingPdfAutofill)
-      .toHaveBeenCalledWith(file, expect.any(AbortSignal), undefined)
+      .toHaveBeenCalledWith(file, expect.any(AbortSignal), 'trip-1')
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /重新讀取/ })).toBeTruthy()
@@ -283,6 +290,7 @@ describe('BookingFormModal PDF autofill intent', () => {
   test('treats each successful PDF pick as a fresh autofill source', async () => {
     const { container } = render(
       <BookingFormModal
+        tripId="trip-1"
         editTarget={null}
         isOpen
         isSaving={false}
@@ -308,6 +316,7 @@ describe('BookingFormModal PDF autofill intent', () => {
   test('shows oversize PDF autofill errors near the PDF autofill action', () => {
     const { container } = render(
       <BookingFormModal
+        tripId="trip-1"
         editTarget={null}
         isOpen
         isSaving={false}
@@ -348,6 +357,7 @@ describe('BookingFormModal PDF autofill intent', () => {
 
     const { container } = render(
       <BookingFormModal
+        tripId="trip-1"
         editTarget={null}
         isOpen
         isSaving={false}
@@ -412,6 +422,7 @@ describe('BookingFormModal PDF autofill intent', () => {
 
     const { container } = render(
       <BookingFormModal
+        tripId="trip-1"
         editTarget={null}
         isOpen
         isSaving={false}
@@ -447,6 +458,7 @@ describe('BookingFormModal PDF autofill intent', () => {
 
     const { container } = render(
       <BookingFormModal
+        tripId="trip-1"
         editTarget={null}
         isOpen
         isSaving={false}
@@ -482,6 +494,7 @@ describe('BookingFormModal PDF autofill intent', () => {
 
     const { container } = render(
       <BookingFormModal
+        tripId="trip-1"
         editTarget={null}
         isOpen
         isSaving={false}
@@ -530,6 +543,7 @@ describe('BookingFormModal PDF autofill intent', () => {
 
     const { container } = render(
       <BookingFormModal
+        tripId="trip-1"
         editTarget={null}
         isOpen
         isSaving={false}

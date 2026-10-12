@@ -265,9 +265,14 @@ describe('ListOverlayController', () => {
       controller.markAmbiguous(remove)
 
       await vi.advanceTimersByTimeAsync(OVERLAY_AMBIGUOUS_SETTLE_MS)
+      // Server truth says it landed: the remove becomes a plain succeeded
+      // op (the read never reached the query cache, so it waits for a
+      // snapshot that agrees rather than retiring on its own).
+      expect(controller.getSnapshot(remove.queryKeyHash).find(o => o.kind === 'remove')?.status).toBe('succeeded')
 
-      // The ambiguous remove settles, and takes the create with it rather
+      // ...and once the snapshot agrees it takes the create with it rather
       // than leaving it to replay alone.
+      controller.reconcile(remove.queryKeyHash, [])
       expect(controller.getSnapshot(create.queryKeyHash)).toHaveLength(0)
     })
 
@@ -368,6 +373,11 @@ describe('ListOverlayController', () => {
     const landed = addRemove(KEY_A, 'a', async () => [row('b')])          // row gone → write landed
     controller.markAmbiguous(landed)
     await vi.advanceTimersByTimeAsync(OVERLAY_AMBIGUOUS_SETTLE_MS)
+    // Landed: held as succeeded until the listener's snapshot agrees, so a
+    // stale cache can't briefly show the row again.
+    expect(controller.getSnapshot(landed.queryKeyHash)[0]?.status).toBe('succeeded')
+    expect(view(controller, [row('a'), row('b')])).toEqual([row('b')])
+    controller.reconcile(landed.queryKeyHash, [row('b')])
     expect(controller.getSnapshot(landed.queryKeyHash)).toHaveLength(0)
 
     const phantom = addRemove(KEY_B, 'b', async () => [row('b')])         // row still there → never landed
@@ -472,6 +482,8 @@ describe('ListOverlayController', () => {
 
     fail = false
     await vi.advanceTimersByTimeAsync(OVERLAY_GRACE_MS)
+    expect(controller.getSnapshot(handle.queryKeyHash)[0]?.status).toBe('succeeded')
+    controller.reconcile(handle.queryKeyHash, [])
     expect(controller.getSnapshot(handle.queryKeyHash)).toHaveLength(0)
   })
 
@@ -493,6 +505,8 @@ describe('ListOverlayController', () => {
     release([])
     await vi.advanceTimersByTimeAsync(0)
 
+    expect(controller.getSnapshot(a.queryKeyHash).map(o => o.status)).toEqual(['succeeded', 'succeeded'])
+    controller.reconcile(a.queryKeyHash, [])
     expect(controller.getSnapshot(a.queryKeyHash)).toHaveLength(0)
     expect(fetchSpy).toHaveBeenCalledTimes(1)
   })

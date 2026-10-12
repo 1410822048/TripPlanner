@@ -16,7 +16,7 @@ import type { ReactNode } from 'react'
 import type { Timestamp } from 'firebase/firestore'
 
 // ── Leaf widget stubs ────────────────────────────────────────────────
-// FormModalShell MUST render children (the 明細を読み取る button lives there).
+// FormModalShell MUST render children (the 讀取明細 button lives there).
 vi.mock('@/components/ui/FormModalShell', () => ({
   default: ({ isOpen, children }: { isOpen: boolean; children: ReactNode }) => (isOpen ? <div>{children}</div> : null),
 }))
@@ -338,7 +338,7 @@ describe('ExpenseFormModal — re-OCR dispatch', () => {
     expect(ocrApi.runExisting).not.toHaveBeenCalled()
   })
 
-  it('flips the CTA 明細を読み取る → もう一度読み取る after a successful OCR apply', async () => {
+  it('flips the CTA 讀取明細 → 再次讀取 after a successful OCR apply', async () => {
     // Closes the gap the capability UNIT test can't reach: it verifies the
     // derive logic in isolation, but not that onSuccess actually fires
     // markAnalyzed(sourceKey) → caps recompute → the rendered CTA flips. A

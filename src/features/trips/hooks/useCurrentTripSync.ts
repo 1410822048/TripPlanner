@@ -69,7 +69,11 @@ export function useCurrentTripSync(): void {
       const recent = recentTripIds.find(id => tripIds.has(id))
       setSelectedTripId(recent ?? myTrips[0]?.id ?? null)
     }
-    const remaining = selectedTripId ? SELECTION_GRACE_MS - (Date.now() - selectedTripAt) : 0
+    // Clamped: a wall clock set back would otherwise stretch the grace by
+    // the same amount and strand a kicked user on the skeleton.
+    const remaining = selectedTripId
+      ? Math.min(SELECTION_GRACE_MS, SELECTION_GRACE_MS - (Date.now() - selectedTripAt))
+      : 0
     if (remaining <= 0) {
       reconcile()
       return

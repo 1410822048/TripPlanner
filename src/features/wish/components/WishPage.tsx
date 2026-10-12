@@ -87,8 +87,8 @@ export default function WishPage() {
     ctx.status === 'cloud' ? membersToTripMembers(fbMembers ?? []) :
     []
   const memberById = new Map(members.map(m => [m.id, m]))
-  // members query は wishes より遅れて解決し得る(cloud は wishes が先)。確定
-  // 前は consensus の分母を出さないための ready フラグ。demo は同期的に揃う。
+  // members query 可能比 wishes 晚解析(cloud 是 wishes 先到)。這是確定前
+  // 不顯示 consensus 分母用的 ready 旗標。demo 會同步備齊。
   const membersReady = ctx.status === 'demo' || fbMembers !== undefined
 
   let placeCount = 0, foodCount = 0
@@ -100,18 +100,18 @@ export default function WishPage() {
   const hasAnyWishes = wishes.length > 0
   const showBoardChrome = (isLoading && !isDemo) || hasAnyWishes
 
-  // ─ Wish board の派生データを 1 か所で生成 ───────────────────────────
-  // 順位(rank)/ 提案者(proposer)/ 投票者(voters)/ 賛成度の表示状態(consensus)を
-  // ここで確定し、WishCard は整形済み props を描画するだけにする(順位も分母も
-  // card 側で推導しない)。rankWishes は demo の MOCK もソートする。投票直後も
-  // 同じ rankWishes を通ったキャッシュなので、ここは並べ替え済みを map するだけ。
+  // ─ 在同一處產生 Wish board 的衍生資料 ───────────────────────────
+  // 名次(rank)/ 提案者(proposer)/ 投票者(voters)/ 贊成度顯示狀態(consensus)
+  // 都在這裡決定,WishCard 只負責渲染整理好的 props(名次與分母都
+  // 不在 card 端推導)。rankWishes 也會排序 demo 的 MOCK。投票後也是
+  // 經過同一個 rankWishes 的快取,所以這裡只需 map 已排序的結果。
   const boardRows = rankWishes(wishes.filter(w => w.category === activeTab))
     .map((wish, index) => ({
       wish,
       rank:      index + 1,
       proposer:  memberById.get(wish.proposedBy),
-      // votes[] 順(= arrayUnion 追加順)で uid → TripMember 解決。退会者など
-      // 未知の uid は落とす(+N は totalVotes=votes.length が担保)。
+      // 依 votes[] 順序(= arrayUnion 加入順序)把 uid 解析成 TripMember。已退出者等
+      // 未知 uid 直接略過(+N 由 totalVotes=votes.length 保證)。
       voters:    wish.votes.flatMap(uid => {
         const m = memberById.get(uid)
         return m ? [m] : []
@@ -121,7 +121,7 @@ export default function WishPage() {
   const detailRow = detailWishId
     ? boardRows.find(row => row.wish.id === detailWishId) ?? null
     : null
-  // ラベルは WISH_CATEGORIES を single source に(分類追加/改名時の二重管理を避ける)。
+  // 標籤以 WISH_CATEGORIES 為 single source(避免新增/改名分類時雙重維護)。
   const activeTabLabel = WISH_CATEGORIES.find(t => t.value === activeTab)?.label ?? ''
 
   // Optimistic close — modal closes immediately on save; a failure drops
@@ -141,11 +141,12 @@ export default function WishPage() {
   const title = ctx.trip.title
 
   function handleSave({ input, attachment }: WishFormResult) {
-    if (isDemo) { modal.close(); signIn.open(); return }
-    // Scope BEFORE votingClosed: the deadline belongs to the LIVE trip, so a
-    // form dragged onto an already-closed trip B would otherwise be closed
-    // (draft eaten) by B's deadline instead of refused with the draft kept.
+    // Scope BEFORE demo / votingClosed: both close the form. The deadline
+    // belongs to the LIVE trip, so a form dragged onto an already-closed trip
+    // B (or a cloud form signed out into demo) would otherwise lose its draft
+    // instead of being refused with the draft kept.
     if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
+    if (isDemo) { modal.close(); signIn.open(); return }
     if (votingClosed) { modal.close(); toast.error('投票已截止'); return }
     if (!uid) { toast.error('正在準備登入，請稍候'); return }
 
@@ -270,7 +271,7 @@ export default function WishPage() {
     <div className="bg-app h-full flex flex-col overflow-hidden">
       {isDemo && <DemoBanner reason="儲存投票" onSignIn={signIn.open} />}
 
-      {/* 右側クラスタ:投票中の人数ピル。追加入口は分類タブ直下に固定し、
+      {/* 右側群組:投票中人數 pill。新增入口固定在分類 tab 正下方,
           header 的圓形加號與列表 CTA 不再重複。 */}
       <PageHeader
         eyebrow="心願"
@@ -304,7 +305,7 @@ export default function WishPage() {
 
       {showBoardChrome && (
         <>
-          {/* 固定上方フレーム ── 分類タブ。追加 CTA は次の固定ブロックに置く。 */}
+          {/* 固定上方框架 ── 分類 tab。新增 CTA 放在下一個固定區塊。 */}
           <div className="shrink-0 px-4 pt-1 pb-2">
             <div className="flex gap-1 p-1 rounded-card bg-app border border-border">
               {WISH_CATEGORIES.map(t => {
@@ -315,9 +316,9 @@ export default function WishPage() {
                     type="button"
                     onClick={() => setActiveTab(t.value)}
                     className={[
-                      // 内側 pill の角丸は外枠(rounded-card=20px)− p-1(4px)= 16px に
-                      // 合わせ、白い active 背景が外枠と同心になるようにする(角が四角く
-                      // 見える違和感を解消)。
+                      // 內側 pill 的圓角對齊 外框(rounded-card=20px)− p-1(4px)= 16px,
+                      // 讓白色 active 背景與外框同心(消除角看起來
+                      // 太方的違和感)。
                       'flex-1 h-9 rounded-[16px] text-[12.5px] font-semibold cursor-pointer transition-all flex items-center justify-center gap-1.5',
                       active ? 'bg-surface text-ink shadow-[0_1px_3px_rgba(0,0,0,0.08)]' : 'bg-transparent text-muted',
                     ].join(' ')}
@@ -336,9 +337,9 @@ export default function WishPage() {
             </div>
           </div>
 
-          {/* 分類に紐づく追加入口。固定フレーム内に置くことで、リストの Y 軸は
-              このボタンの下から始まる。空タブでも高さが変わらずジャンプしない。
-              投票締切後は非表示(wishVotingOpen(tripId) が create を拒否する)。 */}
+          {/* 綁定分類的新增入口。放在固定框架內,列表的 Y 軸
+              就從這顆按鈕下方開始。空 tab 時高度也不變、不會跳動。
+              投票截止後隱藏(wishVotingOpen(tripId) 會拒絕 create)。 */}
           {!votingClosed && (
             <div className="shrink-0 px-4 pb-2">
               <button
@@ -355,17 +356,16 @@ export default function WishPage() {
         </>
       )}
 
-      {/* 選項リスト ── 唯一スクロールする領域(独自 Y 軸)。relative ラッパーに
-          上下のフェード overlay を重ね、固定フレームとの境界の「鋭い切れ」を
-          和らげる。
-          ⚠ 以前は scroll 要素に mask-image を掛けていたが、mask は position:fixed
-          子孫の containing block を作るため、カードの ⋮ から開く BottomSheet
-          (fixed)が scroll 領域内にクリップされ「削除が押せない」不具合になった。
-          overlay 方式は fixed を閉じ込めないので解消する(relative は fixed の
-          containing block を作らない)。 */}
+      {/* 選項列表 ── 唯一會捲動的區域(獨立 Y 軸)。在 relative 外層上
+          疊上下淡出 overlay,緩和與固定框架交界處的「生硬切邊」。
+          ⚠ 以前是在 scroll 元素上套 mask-image,但 mask 會為 position:fixed
+          子孫建立 containing block,導致從卡片 ⋮ 開啟的 BottomSheet
+          (fixed)被裁切在 scroll 區域內,出現「刪除按不到」的 bug。
+          overlay 方式不會困住 fixed,因此解決(relative 不會為 fixed
+          建立 containing block)。 */}
       <div className="relative flex-1 min-h-0">
-        {/* overscroll-contain ── 端まで滑っても外側 main へスクロールチェーンを
-            伝播させない(整頁が連られて動く iOS の挙動を断つ)。 */}
+        {/* overscroll-contain ── 滑到底也不把捲動鏈傳到外層 main
+            (阻斷 iOS 整頁被連帶拖動的行為)。 */}
         <div className="h-full overflow-y-auto overscroll-contain px-4 pt-2 pb-6">
         {isLoading && !isDemo ? (
           <WishListSkeleton />
@@ -404,8 +404,8 @@ export default function WishPage() {
           <div className="flex flex-col gap-3">
             {boardRows.map(({ wish: w, rank, proposer, consensus }) => (
               <Fragment key={w.id}>
-                {/* 上位3件 = 行程候補。3 位と 4 位の間に候補ラインを引いて
-                    「ここまでが採用候補」を明示する(4 件以上ある時だけ)。 */}
+                {/* 前 3 名 = 行程候選。在第 3 名與第 4 名之間畫候選分隔線,
+                    明示「到這裡為止是採用候選」(只在 4 筆以上時)。 */}
                 {rank === 4 && (
                   <div className="flex items-center gap-3 px-1 pt-1" aria-hidden>
                     <div className="flex-1 h-px bg-border" />
@@ -426,7 +426,7 @@ export default function WishPage() {
                   onDelete={() => handleDeleteFromMenu(w)}
                   onOpenDetails={() => setDetailWishId(w.id)}
                   onToggleVote={() => handleToggleVote(w)}
-                  // 単一カラムの順位リスト → 先頭(rank 1, 本命 lead)が LCP 候補。
+                  // 單欄名次列表 → 第一筆(rank 1, 第一名 lead)是 LCP 候選。
                   eager={rank === 1}
                   isUpdating={pendingUpdateIds.has(w.id)}
                   rank={rank}
@@ -437,8 +437,8 @@ export default function WishPage() {
           </div>
         )}
         </div>
-        {/* 上下フェード ── scroll を遮らない overlay(pointer-events-none)。
-            mask と違い fixed 子孫を閉じ込めないので ⋮ メニューは正常に開く。 */}
+        {/* 上下淡出 ── 不擋 scroll 的 overlay(pointer-events-none)。
+            與 mask 不同,不會困住 fixed 子孫,所以 ⋮ 選單能正常開啟。 */}
         {showBoardChrome && (
           <>
             <div className="pointer-events-none absolute inset-x-0 top-0 h-4 bg-gradient-to-b from-app to-transparent" />

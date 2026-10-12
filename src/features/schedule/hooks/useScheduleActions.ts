@@ -11,10 +11,11 @@ import { buildScheduleUpdate } from '../services/scheduleService'
 import { getClientWriteBlockReason } from '@/services/clientCompatibility'
 import { toast } from '@/shared/toast'
 import { simulateFailureMaybe } from '@/utils/devFailures'
+import { trackUnlessOffline } from '@/utils/offlineHandOff'
 
 export interface ScheduleActions {
   onScheduleSave:   (data: CreateScheduleInput, reportInForm: () => boolean) => void | Promise<unknown>
-  onScheduleDelete: () => void | Promise<unknown>
+  onScheduleDelete: (stillOpen: () => boolean) => void | Promise<unknown>
 }
 
 export function useScheduleActions(opts: {
@@ -38,11 +39,13 @@ export function useScheduleActions(opts: {
   // Demo save → close the form, pop the sign-in prompt. Cloud save →
   // Firestore write with an optimistic overlay.
   function onScheduleSave(data: CreateScheduleInput, reportInForm: () => boolean): void | Promise<unknown> {
-    if (isDemo) { scheduleModal.close(); openSignIn(); return }
-    if (!uid) { toast.error('正在準備登入，請稍候'); return }
     // The mutations bind to the LIVE trip id — a form opened on another trip
     // (background reselect after kick / remote delete) must not write here.
+    // Scope BEFORE demo: a cloud form whose session signed out into demo
+    // must keep its draft, not be closed by the demo branch.
     if (scheduleModal.scopeChanged) { scheduleModal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
+    if (isDemo) { scheduleModal.close(); openSignIn(); return }
+    if (!uid) { toast.error('正在準備登入，請稍候'); return }
     scheduleModal.clearError()
     const editTarget = scheduleModal.editTarget
     if (editTarget) {
@@ -51,8 +54,9 @@ export function useScheduleActions(opts: {
         scheduleModal.close()
         return
       }
-      return simulateFailureMaybe().then(() =>
-        updateMut.mutateAsync({ scheduleId: editTarget.id, updates, uid, reportInForm }))
+      return trackUnlessOffline(report => simulateFailureMaybe().then(() =>
+        updateMut.mutateAsync({ scheduleId: editTarget.id, updates, uid, reportInForm: report })),
+      reportInForm, scheduleModal.close)
     }
     // Both minted here: the id so the optimistic row and the stored doc
     // match, and the order so it is computed once from the list the user
@@ -62,15 +66,16 @@ export function useScheduleActions(opts: {
       input:      data,
       createdBy:  uid,
       order:      nextScheduleOrder(schedules, data.date),
-      reportInForm,
     }
-    return simulateFailureMaybe().then(() => createMut.mutateAsync(create))
+    return trackUnlessOffline(report => simulateFailureMaybe().then(() =>
+      createMut.mutateAsync({ ...create, reportInForm: report })),
+    reportInForm, scheduleModal.close)
   }
 
-  function onScheduleDelete(): void | Promise<unknown> {
+  function onScheduleDelete(stillOpen: () => boolean): void | Promise<unknown> {
     if (!scheduleModal.editTarget) { scheduleModal.close(); return }
-    if (isDemo) { scheduleModal.close(); openSignIn(); return }
     if (scheduleModal.scopeChanged) { scheduleModal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
+    if (isDemo) { scheduleModal.close(); openSignIn(); return }
     // A sheet that was open when the epoch flipped still fires this, and the
     // global toast deliberately skips UpdateRequiredError — surface it in the
     // modal banner the same way save does.
@@ -78,7 +83,8 @@ export function useScheduleActions(opts: {
     if (writeBlockReason) { scheduleModal.setError(writeBlockReason); return }
     // Non-silent: the global toast reports a failure; the form closes itself
     // on success only if it is still the open one.
-    return deleteMut.mutateAsync(scheduleModal.editTarget.id)
+    const scheduleId = scheduleModal.editTarget.id
+    return trackUnlessOffline(() => deleteMut.mutateAsync(scheduleId), stillOpen, scheduleModal.close)
   }
 
   return {

@@ -151,10 +151,21 @@ export function useSwipeRow({
       drag.current.mode = 'swipe'
       drag.current.didDrag = true
     } else {
+      // Vertical scroll wins: hand the gesture back. onPointerUp will bail
+      // (dragging is false), so undo onPointerDown's inline styles here —
+      // otherwise transition:none sticks (the next closeAll jumps instead of
+      // animating) and will-change pins a compositor layer per row.
       drag.current.dragging = false
       try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) }
       catch { /* no-op */ }
+      restoreIdleStyles()
     }
+  }
+
+  function restoreIdleStyles() {
+    const fg = fgRef.current, bg = bgRef.current
+    if (fg) { fg.style.transition = FG_TRANSITION; fg.style.willChange = '' }
+    if (bg) { bg.style.transition = BG_TRANSITION; bg.style.willChange = '' }
   }
 
   function onPointerUp(e: React.PointerEvent) {

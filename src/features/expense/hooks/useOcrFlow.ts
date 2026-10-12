@@ -95,6 +95,7 @@ function ocrErrorCopy(e: OcrError): string {
     case 'stale':      return '費用已更新，請再次讀取'
     case 'forbidden':  return '你沒有編輯此費用的權限。它可能已清算或權限已變更'
     case 'trip-forbidden': return '你沒有這趟旅程的編輯權限，無法讀取收據'
+    case 'no-trip':    return '請先登入並選擇旅程，再讀取收據'
     default:           return e.message || '讀取失敗'
   }
 }
@@ -155,7 +156,7 @@ export function useOcrFlow({ currency, tripId, onSuccess }: UseOcrFlowOptions): 
 
   const runWithFile = async (
     file: File,
-    request: (file: File, currency?: string, signal?: AbortSignal, tripId?: string | null) => Promise<OcrResult>,
+    request: (file: File, currency: string | undefined, signal: AbortSignal | undefined, tripId: string) => Promise<OcrResult>,
   ): Promise<void> => {
     const seq = ++requestSeqRef.current
     abortRef.current?.abort()           // cancel any prior in-flight OCR
@@ -167,6 +168,8 @@ export function useOcrFlow({ currency, tripId, onSuccess }: UseOcrFlowOptions): 
     setLoading(true)
     setError(null)
     try {
+      // The Worker requires the trip; without one (demo) never send.
+      if (!tripId) throw new OcrError('No cloud trip for OCR', 'no-trip')
       const result = await request(file, currency, ac.signal, tripId)
       // Superseded by a newer run / setFile / reset → drop silently; the
       // current owner of `loading` will release it.
@@ -236,7 +239,7 @@ export function useOcrFlow({ currency, tripId, onSuccess }: UseOcrFlowOptions): 
   // Stash a file WITHOUT running OCR (upload path). Bumps the seq so an
   // in-flight OCR for the OLD image is dropped + aborts it so the stale
   // Worker call is cancelled, and clears loading since no new run
-  // auto-starts here (the user clicks 明細を読み取る to run).
+  // auto-starts here (the user clicks 讀取明細 to run).
   const setFile = (file: File | null): void => {
     requestSeqRef.current++
     abortRef.current?.abort()
