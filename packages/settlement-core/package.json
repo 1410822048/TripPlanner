@@ -10,7 +10,7 @@
     }
   },
   "scripts": {
-    "test": "vitest run src/index.test.ts",
+    "test": "vitest run src",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   }
 }

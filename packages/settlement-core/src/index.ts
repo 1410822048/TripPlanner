@@ -234,3 +234,6 @@ export function pairRemaining(
 ): number {
   return pairwise[fromUid]?.[toUid] ?? 0
 }
+
+// Routed (multi-hop) settlement planning — see ./routes.ts.
+export * from './routes'

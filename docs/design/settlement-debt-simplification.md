@@ -60,19 +60,32 @@ Route 是一組 leg，每段是 `(fromUid, toUid, amountMinor)`，同一條邊�
    - 所有 leg 與 route 的 `settledBy` = caller。
 4. **原子性**：建立、刪除都以 route 為單位全部成功或全部失敗。**不能單獨刪除帶 `routeId` 的 leg**（否則中間人淨額會被打破）；舊的 `/settlement-delete` 收到 leg id 時，改為刪除整個 route。
 
-## 4. 簡化演算法（`@tripmate/settlement-core` 新增純函式）
+## 4. 簡化演算法（`@tripmate/settlement-core` 的 `routes.ts`）
 
 `planSettlementRoutes(pairwise)`：
 
-1. **輸入**：現在的 normalized pairwise remaining（已含兩人互抵）。
-2. **消去循環**：反覆找出有向循環，沿循環扣掉最小邊，每個被消去的循環累積成 OFFSET route（同一組參與者的循環合併）。
-3. **路徑分解**：剩下的無循環圖中，從淨欠款人沿邊走到淨收款人，每次取「瓶頸最大」的路徑（減少筆數），扣除後重複，直到圖清空。
-4. **合併**：起點、終點相同的路徑合併成一筆 TRANSFER；共用的邊合併金額。
-5. **輸出**：`{ kind, payerUid?, receiverUid?, amountMinor, legs: { fromUid, toUid, amountMinor, expectedRemainingMinor }[] }[]`，排序穩定。
+1. **輸入**：normalized pairwise remaining（已含兩人互抵）。
+2. **先轉帳**：每一輪在所有（欠款人, 收款人）組合中，用 max-flow 算出沿真實債務邊最多能轉多少，優先選「能讓某人完全結清」的組合，其次選金額最大的；扣掉後重複，直到每個人淨額為 0。由流量分解定理，欠款人一定連得到某個收款人，所以一定會結束。
+3. **再抵銷**：剩下的只會是純循環，**全部合併成一筆 OFFSET**，只需一次確認。
+4. **合併**：同一組付款人與收款人的轉帳合併成一筆。
 
-**Worker 不信任演算法**，只驗證第 3 節的不變式；之後換更好的演算法不影響伺服器契約。
+先轉帳、後抵銷的順序很重要：先消循環會毀掉轉帳可用的邊，並留下一個循環一筆抵銷。
 
-預期效果：理論最少筆數一般情況下是 NP-hard，本法不保證最少，但**保證不比逐對多**且消掉所有循環；10 人常見情況約從 15～30 筆降到 10 筆左右。
+**實測**（隨機 10 人旅程各 200 組，2026-10-13）：
+
+| 情境 | 逐對列出 | 簡化後轉帳 | 抵銷確認 |
+|---|---|---|---|
+| 10 筆費用 | 32.2 | 12.4 | 0.4 |
+| 40 筆費用 | 44.7 | 10.8 | 0.6 |
+| 40 筆、每筆全員分攤 | 45.0 | 15.1 | 0 |
+| 80 筆、小群分攤 | 44.9 | 9.7 | 0.9 |
+
+不受「要對到真實費用」限制的理論值是 9 筆（人數 − 1）。差距來自可追溯性的代價：轉帳只能沿著真實存在的債務走。
+
+**Worker 不信任演算法**，只驗證第 3 節的不變式（`validateRouteShape` 與 client 共用，Worker 另外檢查每條邊的剩餘量）。
+
+### 建議會隨帳變動 → 「記錄收款」
+逐對列出時，某一對結清不影響其他對；簡化後任何一筆記錄都可能讓其他建議重算。若 A 照舊建議付給 C，C 確認前建議已改變，C 會找不到對應的建議。因此收款人另有「記錄某人付給我 X」：`routeForPayment(pairwise, 付款人, 收款人, X)` 以 max-flow 即時找出合法的 legs，`maxPayable` 給出上限。只要債務鏈上 A 確實欠 C 這麼多，就一定能記錄。
 
 ## 5. Worker：`/settlement-route-create`
 
@@ -113,7 +126,7 @@ Transaction 內流程（沿用 `doCreate` 的骨架）：
 
 ## 8. 畫面
 
-- **付款建議**：只顯示簡化結果。每張卡「A → C　¥10　經 B」，展開可看每段對應的費用。
+- **付款建議**：只顯示簡化結果；另有「記錄收款」入口（見第 4 節）。每張卡「A → C　¥10　經 B」，展開可看每段對應的費用。
 - **中間人視角**：B 看到「A 已代你付給 C ¥10，你對 A 的應收與對 C 的應付各減少 ¥10」。
 - **循環抵銷卡**：「A、B、C 互相抵銷 ¥10（不需付款）」，參與者看得到「記錄抵銷」按鈕。
 - **清算紀錄**：以 route doc 為單位一列，可展開看 legs；舊的單筆清算照舊顯示。
@@ -132,7 +145,7 @@ Transaction 內流程（沿用 `doCreate` 的骨架）：
 
 ## 10. 實作順序（每步一個 commit）
 
-1. `settlement-core`：`planSettlementRoutes`（循環消去、路徑分解、合併）＋測試。
+1. `settlement-core`：`planSettlementRoutes`、`routeForPayment`、`maxPayable`、`validateRouteShape`＋測試。
 2. Worker：route 驗證純函式＋`/settlement-route-create`＋`/settlement-route-delete`（含外幣、代記）＋測試；`/settlement-delete` 遇到 leg 改刪整個 route。
 3. Rules／cascade／索引：`settlementRoutes` 規則與測試、cascade 清單。
 4. Client：型別與 schema、service、hooks（overlay 以 route 為單位）、上限調整。
