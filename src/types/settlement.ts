@@ -37,6 +37,7 @@
 import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
 import { SETTLEMENT_LIMITS } from '@tripmate/entity-contracts'
+import { MAX_ROUTE_PARTICIPANTS, ROUTE_ID_MAX } from '@tripmate/settlement-core'
 import {
   CurrencyCodeSchema,
   type FxSnapshot,
@@ -76,6 +77,11 @@ export interface SettlementRecord {
   /** Set when the trip owner recorded the receipt for a receiver who had
    *  left the trip (toUid). Absent on ordinary receiver-confirmed rows. */
   recordedOnBehalfOf?: string
+  /** Present iff this settlement is one leg of a routed settlement (a
+   *  multi-hop transfer or a debt-cycle offset). Every leg of a route
+   *  carries the same header; the route is cancelled as a whole. Leg docs
+   *  never carry the top-level note / FX group — those live here. */
+  route?:      SettlementRouteHeader
   note?:       string
   /** Worker-derived audit snapshot of which expense/item debt this
    *  settlement consumed. Never trusted from the client; used only for
@@ -158,6 +164,104 @@ const SettlementAppliedSourceSchema = z.object({
   }
 })
 
+/** The `route` map on a routed-settlement leg (Worker
+ *  settlement-route-write.ts). */
+export interface SettlementRouteHeader {
+  id:              string
+  legIndex:        number
+  legCount:        number
+  kind:            'TRANSFER' | 'OFFSET'
+  /** Sorted uids of everyone the route's legs touch. */
+  participantUids: string[]
+  /** TRANSFER only: who paid whom how much (trip currency). */
+  payerUid?:       string
+  receiverUid?:    string
+  amountMinor?:    number
+  /** The trip owner recorded it for departed members. */
+  ownerRecorded?:  true
+  note?:           string
+  /** TRANSFER only, all-or-none: the currency the receiver actually got.
+   *  Same group invariant as the settlement-level FX fields. */
+  sourceCurrency?:    string
+  sourceAmountMinor?: number
+  settledOn?:         string
+  fxSnapshot?:        FxSnapshot
+}
+
+// Bounds stay looser than the Worker's write caps (45 legs) on purpose: a
+// parser that is stricter than what might be stored would drop the whole
+// settlements listener for everyone.
+const SettlementRouteHeaderSchema = z.object({
+  id:              z.string().min(1).max(ROUTE_ID_MAX),
+  legIndex:        z.number().int().nonnegative(),
+  legCount:        z.number().int().min(1).max(99),
+  kind:            z.enum(['TRANSFER', 'OFFSET']),
+  participantUids: z.array(z.string().min(1)).min(2).max(MAX_ROUTE_PARTICIPANTS * 2),
+  payerUid:        z.string().min(1).optional(),
+  receiverUid:     z.string().min(1).optional(),
+  amountMinor:     z.number().int().positive().optional(),
+  ownerRecorded:   z.literal(true).optional(),
+  note:            z.string().max(SETTLEMENT_LIMITS.note).optional(),
+  sourceCurrency:    CurrencyCodeSchema.optional(),
+  sourceAmountMinor: z.number().int().positive().optional(),
+  settledOn:         IsoDateSchema.optional(),
+  fxSnapshot:        FxSnapshotSchema.optional(),
+}).superRefine((data, ctx) => {
+  if (data.legIndex >= data.legCount) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'legIndex must be < legCount', path: ['legIndex'] })
+  }
+  const transferFields = [data.payerUid, data.receiverUid, data.amountMinor].filter(v => v !== undefined).length
+  if (data.kind === 'TRANSFER' ? transferFields !== 3 : transferFields !== 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'payerUid / receiverUid / amountMinor belong to TRANSFER routes, all together', path: ['kind'] })
+  }
+  checkFxGroup(data, ctx)
+  if (data.kind === 'OFFSET' && data.sourceCurrency !== undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'an offset moves no money and has no source currency', path: ['sourceCurrency'] })
+  }
+})
+
+/** FX source group: all-or-none, and the parts must agree with the
+ *  snapshot. Shared by the settlement doc and the route header. */
+function checkFxGroup(
+  data: { sourceCurrency?: string; sourceAmountMinor?: number; fxSnapshot?: FxSnapshot; settledOn?: string },
+  ctx:  z.RefinementCtx,
+): FxSnapshot | null {
+  const present = [data.sourceCurrency, data.sourceAmountMinor, data.fxSnapshot, data.settledOn]
+    .filter(v => v !== undefined).length
+  if (present === 0) return null
+  if (present !== 4) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'FX group must be all-or-none: sourceCurrency, sourceAmountMinor, fxSnapshot, and settledOn must all be present together (or all absent)',
+      path: ['fxSnapshot'],
+    })
+    return null
+  }
+  const fx = data.fxSnapshot!
+  if (data.sourceCurrency !== fx.baseCurrency) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `sourceCurrency (${data.sourceCurrency}) must equal fxSnapshot.baseCurrency (${fx.baseCurrency})`,
+      path: ['fxSnapshot', 'baseCurrency'],
+    })
+  }
+  if (data.sourceAmountMinor !== fx.sourceAmountMinor) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `sourceAmountMinor (${data.sourceAmountMinor}) must equal fxSnapshot.sourceAmountMinor (${fx.sourceAmountMinor})`,
+      path: ['fxSnapshot', 'sourceAmountMinor'],
+    })
+  }
+  if (data.settledOn !== fx.requestedDate) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `settledOn (${data.settledOn}) must equal fxSnapshot.requestedDate (${fx.requestedDate})`,
+      path: ['fxSnapshot', 'requestedDate'],
+    })
+  }
+  return fx
+}
+
 export const SettlementDocSchema = z.object({
   tripId:      z.string().min(1),
   fromUid:     z.string().min(1),
@@ -166,6 +270,7 @@ export const SettlementDocSchema = z.object({
   currency:    CurrencyCodeSchema,
   settledBy:   z.string().min(1),
   recordedOnBehalfOf: z.string().min(1).optional(),
+  route:       SettlementRouteHeaderSchema.optional(),
   note:        z.string().max(SETTLEMENT_LIMITS.note).optional(),
   appliedSources: z.array(SettlementAppliedSourceSchema).max(80).optional(),
   appliedExpenseIds: z.array(z.string().min(1).max(60)).max(500).optional(),
@@ -213,120 +318,20 @@ export const SettlementDocSchema = z.object({
   // Phase 4.1 explicitly OMITS `amountMinor === fx.convertedAmountMinor`
   // — the ledger amount is decoupled from the FX forward result
   // (amountMinor = remaining; convertedAmountMinor = forward(source)).
-  const hasSourceCurrency = data.sourceCurrency    !== undefined
-  const hasSourceAmount   = data.sourceAmountMinor !== undefined
-  const hasFx             = data.fxSnapshot        !== undefined
-  const hasSettledOn      = data.settledOn         !== undefined
-  const groupPresent      = [hasSourceCurrency, hasSourceAmount, hasFx, hasSettledOn].filter(Boolean).length
-
-  // Case 1: TRIP_CURRENCY degenerate path — all four must be absent.
-  if (groupPresent === 0) return
-
-  // Case 2: partial population — reject loudly. Skip cross-field
-  // checks so the user sees the root-cause shape error, not derivative
-  // noise.
-  if (groupPresent !== 4) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'FX group must be all-or-none: sourceCurrency, sourceAmountMinor, fxSnapshot, and settledOn must all be present together (or all absent)',
-      path: ['fxSnapshot'],
-    })
-    return
-  }
-
-  // Case 3: full FOREIGN_CURRENCY mode — cross-field equality. The
-  // non-null assertions are safe because groupPresent===4 guarantees
-  // every field is defined.
-  const fx = data.fxSnapshot!
-  if (data.sourceCurrency !== fx.baseCurrency) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: `sourceCurrency (${data.sourceCurrency}) must equal fxSnapshot.baseCurrency (${fx.baseCurrency})`,
-      path: ['fxSnapshot', 'baseCurrency'],
-    })
-  }
-  if (data.currency !== fx.quoteCurrency) {
+  const fx = checkFxGroup(data, ctx)
+  if (fx && data.currency !== fx.quoteCurrency) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: `currency (${data.currency}) must equal fxSnapshot.quoteCurrency (${fx.quoteCurrency})`,
       path: ['fxSnapshot', 'quoteCurrency'],
     })
   }
-  if (data.sourceAmountMinor !== fx.sourceAmountMinor) {
+  const routeFx = data.route?.fxSnapshot
+  if (routeFx && data.currency !== routeFx.quoteCurrency) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: `sourceAmountMinor (${data.sourceAmountMinor}) must equal fxSnapshot.sourceAmountMinor (${fx.sourceAmountMinor})`,
-      path: ['fxSnapshot', 'sourceAmountMinor'],
-    })
-  }
-  if (data.settledOn !== fx.requestedDate) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: `settledOn (${data.settledOn}) must equal fxSnapshot.requestedDate (${fx.requestedDate})`,
-      path: ['fxSnapshot', 'requestedDate'],
+      message: `currency (${data.currency}) must equal route.fxSnapshot.quoteCurrency (${routeFx.quoteCurrency})`,
+      path: ['route', 'fxSnapshot', 'quoteCurrency'],
     })
   }
 })
-
-/**
- * Client-side settlement create input. Discriminated by `mode` —
- * exactly mirrors the Worker's `SettlementCreateRequestSchema` shape so
- * the wire body is a thin translation in `settlementService.ts`.
- *
- * Phase 4.1 rearchitecture (2026-06-02): the payload is now INTENT
- * ONLY. 「已收款」 is "clear the suggested debt", not "post an arbitrary
- * amount". The ledger ALWAYS clears the entire pair-remaining for
- * BOTH modes — there is no partial-clear path:
- *   - TRIP_CURRENCY:    payee received money in the trip currency.
- *                       Worker writes `amountMinor = pair-remaining`
- *                       (full clear).
- *   - FOREIGN_CURRENCY: payee received money in a non-trip currency.
- *                       Worker STILL writes `amountMinor = pair-remaining`
- *                       (the ledger truth). FX is decoupled and only
- *                       populates display/audit fields: Worker fetches
- *                       the rate, inverse-derives `sourceAmountMinor`
- *                       from pair-remaining via at-most policy (largest
- *                       source whose forward conversion ≤ remaining),
- *                       and records the forward result in
- *                       `fxSnapshot.convertedAmountMinor` — which may
- *                       be ≤ `amountMinor` by a few minor units due to
- *                       half-even rounding plateaus, and that's expected.
- *                       `sourceAmountMinor` / `fxSnapshot` are display
- *                       and audit data only, NEVER ledger inputs.
- *
- * Eliminates two whole classes of bug by construction:
- *   - OVERPAY: client can't ship a too-large amount because client
- *     doesn't ship an amount at all.
- *   - PARTIAL CLEAR: the ledger always consumes remaining, so FX
- *     rounding can't leave a few-yen orphan tail on the pair balance.
- *
- * Optimistic-cache rows: the page-level mutation uses
- * `suggestion.amountMinor` (= pair-remaining) as the optimistic
- * `amountMinor` for BOTH modes, exactly matching what the Worker will
- * write. Foreign mode additionally derives `sourceAmountMinor` via
- * `useFxPreview` for the optimistic source-side display — that field
- * doesn't cross the wire (Worker re-derives authoritatively from its
- * own fresh rate).
- */
-export interface CreateTripSettlementInput {
-  mode:                   'TRIP_CURRENCY'
-  fromUid:                string
-  toUid:                  string
-  /** Pair remaining shown to the user when they confirmed the sheet.
-   *  Worker still computes the canonical amount from the transaction
-   *  snapshot; this value is only a stale-confirmation guard. */
-  expectedRemainingMinor: number
-  note?:                  string
-}
-
-export interface CreateForeignSettlementInput {
-  mode:                   'FOREIGN_CURRENCY'
-  fromUid:                string
-  toUid:                  string
-  expectedRemainingMinor: number
-  sourceCurrency:         string
-  /** UTC YYYY-MM-DD the payee received the foreign money. Worker pins
-   *  the FX rate to this date. */
-  settledOn:              string
-  note?:                  string
-}

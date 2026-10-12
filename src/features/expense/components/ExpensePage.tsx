@@ -5,8 +5,10 @@ import {
   expenseKeys, expenseOverlay as expenseListOverlay,
 } from '../hooks/useExpenses'
 import { useOverlayPendingRowIds } from '@/hooks/listOverlay'
-import { useSettlements, useCreateSettlement, useDeleteSettlement } from '../hooks/useSettlements'
-import { expandWithGhosts, orderMembersLikeExpense } from '../services/settlement'
+import { canonicalRouteLegs, routeParticipants } from '@tripmate/settlement-core'
+import { useSettlements, useCreateSettlementRoute, useDeleteSettlement } from '../hooks/useSettlements'
+import { computeBalancesFull, expandWithGhosts, orderMembersLikeExpense } from '../services/settlement'
+import { pendingLegLocks } from '../services/settlementRoutes'
 import { EXPENSE_LIST_LIMIT } from '../services/expenseService'
 import { SETTLEMENT_LIST_LIMIT } from '../services/settlementService'
 import { useMembers } from '@/features/members/hooks/useMembers'
@@ -21,7 +23,7 @@ import ExpenseFormModal, { type ExpenseFormResult } from './ExpenseFormModal'
 import ExpenseReadonlyModal from './ExpenseReadonlyModal'
 import AttachmentPreviewModal from '@/features/attachments/components/AttachmentPreviewModal'
 import SettlementSummary from './SettlementSummary'
-import SettlementRecordSheet, { type SettlementRecordSubmit } from './SettlementRecordSheet'
+import SettlementRecordSheet, { type RecordIntent, type RouteRecordSubmit } from './SettlementRecordSheet'
 import { useState } from 'react'
 import ExpenseListSkeleton from './ExpenseListSkeleton'
 import ExpensePageSkeleton from './ExpensePageSkeleton'
@@ -70,21 +72,21 @@ export default function ExpensePage() {
     (fbSettlements !== undefined && !settlementQuery.isError && !settlementQuery.isPending && settlementQuery.dataUpdatedAt > 0))
   const ledgerError = expenseQuery.error ?? memberQuery.error ?? settlementQuery.error
   const settlements = ctx.status === 'cloud' ? (fbSettlements ?? []) : []
-  const createSettlementMut = useCreateSettlement(mutationTripId)
+  const createSettlementMut = useCreateSettlementRoute(mutationTripId)
   const deleteSettlementMut = useDeleteSettlement(mutationTripId)
-  // Settlement record sheet state. Non-null when the receiver tapped
-  // 「已收款」on a suggestion row — drives the sheet open + seeds it with
-  // the balance-engine's suggested (fromUid, toUid, amountMinor). Sheet
-  // closes by setting back to null; the parent owns the mutation.
-  // Carries the {tripId, uid} the sheet was opened under: the Worker's
-  // expectedRemainingMinor check is only a numeric CAS — two trips with
-  // the same pair and the same remaining would pass it, so a background
-  // trip switch must be refused client-side.
+  // Settlement record sheet state: what is being recorded (a suggestion,
+  // 「記錄收款」, or an offset). The parent owns the mutation. Carries the
+  // {tripId, uid} the sheet was opened under: the Worker's per-leg
+  // expectedRemainingMinor check is only a numeric CAS — two trips with the
+  // same edges and remainings would pass it, so a background trip switch
+  // must be refused client-side. `openId` keys the sheet so every open
+  // starts from fresh state.
   const [recordTarget, setRecordTarget] = useState<
     {
-      suggestion: { fromUid: string; toUid: string; amountMinor: number }
-      tripId:     string | undefined
-      uid:        string | undefined
+      intent: RecordIntent
+      openId: string
+      tripId: string | undefined
+      uid:    string | undefined
     } | null
   >(null)
   const [expenseOverlay, setExpenseOverlay] = useState<ExpenseOverlay>(null)
@@ -287,16 +289,14 @@ export default function ExpensePage() {
 
   // Sync refusals that leave the sheet open return `false` so the sheet
   // releases its one-submit latch (see SettlementRecordSheet.onSave).
-  function handleRecordSettlement({ reportInForm, ...submit }: SettlementRecordSubmit): false | void | Promise<unknown> {
+  function handleRecordSettlement({ reportInForm, route, note, foreign, sourceAmountMinor }: RouteRecordSubmit): false | void | Promise<unknown> {
     // Scope BEFORE the demo branch: a sheet opened on a cloud trip whose
     // session then signed out into demo would otherwise have its draft
-    // (date / note / currency) wiped by setRecordTarget(null) below. The
-    // mutation binds to the LIVE trip id, and the Worker's
-    // expectedRemainingMinor is only a numeric CAS — a same-pair,
-    // same-remaining trip B would accept trip A's record. Keep the sheet
-    // open so the receiver can close and redo it deliberately. A sheet
+    // wiped by setRecordTarget(null) below. The mutation binds to the LIVE
+    // trip id, and the Worker's per-leg CAS is only numeric — a trip B with
+    // the same edges and remainings would accept trip A's record. A sheet
     // genuinely opened in demo captured {undefined, undefined} and still
-    // matches, so it falls through to the sign-in prompt as before.
+    // matches, so it falls through to the sign-in prompt.
     if (recordTarget && (recordTarget.tripId !== cloudTripId || recordTarget.uid !== uid)) {
       toast.error(FORM_SCOPE_CHANGED_MESSAGE)
       return false
@@ -306,46 +306,39 @@ export default function ExpensePage() {
     if (!ledgerReady) { toast.error(LEDGER_UNAVAILABLE_MESSAGE); return false }
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) { toast.error(writeBlockReason); return false }
-    // Same reasoning as the expense cap: an active settlement past the
-    // listener's limit would make the ledger unreadable for everyone.
-    if (settlements.length >= SETTLEMENT_LIST_LIMIT) { toast.error(SETTLEMENT_CAP_MESSAGE); return false }
-    // Mint settlementId here (not inside the service) so the optimistic
-    // cache row, the Worker request, and the Firestore doc all share
-    // one id. Memory: [[settlement-id-hoist-load-bearing]] — any future
-    // refactor that moves id-minting back into the service breaks the
-    // realtime listener's atomic row replacement.
-    //
-    // `submit` is already a discriminated `CreateSettlementVariables`
-    // minus settlementId, so a single spread preserves the mode → shape
-    // correlation (FOREIGN keeps sourceAmountMinor on optimistic, TRIP
-    // doesn't carry it). No nested narrowing needed.
-    //
-    // Conservative pending lock lineage: every active expense that creates
-    // debt either direction within this pair. The Worker computes the exact
-    // lock set (forward sources ∪ reverse offset), but until its commit +
-    // the expense listener land, this is what ExpensePage's readonly union
-    // uses so a non-owner can't briefly edit a source expense post-已收款.
-    // Over-approximation is safe — the listener swaps in the exact set.
-    const pendingAppliedExpenseIds = expenses
-      .filter(e =>
-        (e.paidBy === submit.toUid   && e.splits.some(s => s.memberId === submit.fromUid)) ||
-        (e.paidBy === submit.fromUid && e.splits.some(s => s.memberId === submit.toUid)))
-      .map(e => e.id)
-    // `pendingAppliedExpenseIds` is a top-level variables field (NOT nested
-    // in the discriminated `optimistic`), so this is a pure spread — no
-    // mutation of `submit`, no per-mode narrowing needed.
-    const vars = { ...submit, settlementId: crypto.randomUUID(), pendingAppliedExpenseIds }
-    if (reportInForm && vars.mode === 'FOREIGN_CURRENCY') {
+    // Every leg is an active settlement doc; past the listener's limit the
+    // ledger would become unreadable for everyone.
+    if (settlements.length + route.legs.length > SETTLEMENT_LIST_LIMIT) { toast.error(SETTLEMENT_CAP_MESSAGE); return false }
+    const legs = canonicalRouteLegs(route.legs)
+    // Mint the route id here (not in the service) so the optimistic leg
+    // rows, the Worker request and the Firestore docs share ids. Memory:
+    // [[settlement-id-hoist-load-bearing]].
+    const vars = {
+      routeId: crypto.randomUUID(),
+      route,
+      ...(note ? { note } : {}),
+      ...(foreign ? { foreign } : {}),
+      optimistic: {
+        currency,
+        settledBy: uid,
+        ownerRecorded: route.kind === 'TRANSFER'
+          ? route.receiverUid !== uid
+          : !routeParticipants(legs).includes(uid),
+        ...(sourceAmountMinor !== undefined ? { sourceAmountMinor } : {}),
+        // Conservative per-leg lock superset until the Worker's exact set
+        // and the expense listener land: a non-owner must not briefly edit
+        // a source expense post-record (it would 403 on save).
+        pendingAppliedExpenseIds: legs.map(leg => pendingLegLocks(expenses, leg)),
+      },
+    }
+    if (reportInForm && foreign) {
       // Provisional FX rate: the sheet stays open and tracks this promise
       // itself (useAwaitedSave), same as the expense form.
       return createSettlementMut.mutateAsync({ ...vars, reportInForm })
     }
     createSettlementMut.mutate(vars)
-    // Close the sheet optimistically — the optimistic patch already
-    // inserts the row; the realtime listener will replace it once the
-    // Worker commits. Errors surface through the global
-    // MutationCache.onError toast (no banner inside the sheet) since
-    // the sheet is gone by the time the rejection lands.
+    // Close optimistically — the overlay already shows the legs; errors
+    // surface through the global MutationCache.onError toast.
     setRecordTarget(null)
   }
 
@@ -446,27 +439,20 @@ export default function ExpensePage() {
         uid={uid ?? null}
         canDeleteAnySettlement={canOwnerWrite}
         canRecordForDeparted={canOwnerWrite}
-        onRecordSettlement={suggestion => {
+        onRecord={intent => {
           if (isDemo) { signIn.open(); return }
           if (!uid) { toast.error('正在準備登入，請稍候'); return }
-          // Open the sheet preseeded with the suggestion. The mutate
-          // happens inside handleRecordSettlement below; this just opens
-          // the UI. Settlement FX Commit 3/4 + Phase 4.1: previously this
-          // branch mutated directly with the trip-currency suggestion —
-          // now we hand over to the sheet so the receiver can pick the
-          // currency they actually received in (for display + audit). The
-          // cleared amount itself is fixed at pair-remaining (full clear);
-          // the sheet only exposes currency + date + note.
-          setRecordTarget({ suggestion, tripId: cloudTripId, uid })
+          // Only opens the sheet; handleRecordSettlement mutates.
+          setRecordTarget({ intent, openId: crypto.randomUUID(), tripId: cloudTripId, uid })
         }}
-        onDeleteSettlement={id => {
+        onDeleteSettlement={(id, hideIds) => {
           if (isDemo) { signIn.open(); return }
           if (!uid) { toast.error('正在準備登入，請稍候'); return }
           // Visible to whoever recorded the settlement, so no owner gate hides
           // it — without this the tap would silently do nothing.
           const writeBlockReason = getClientWriteBlockReason()
           if (writeBlockReason) { toast.error(writeBlockReason); return }
-          deleteSettlementMut.mutate({ settlementId: id })
+          deleteSettlementMut.mutate({ settlementId: id, ...(hideIds ? { hideIds } : {}) })
         }}
       /> : <div className="mx-4 mt-4 rounded-xl border border-border bg-surface p-4 text-sm" role={ledgerError ? 'alert' : 'status'}>
         <p>{ledgerError ? `帳務資料無法完整載入：${ledgerError.message}` : '正在載入完整帳務資料…'}</p>
@@ -561,11 +547,16 @@ export default function ExpensePage() {
           ExpenseFormModal above). */}
       {recordTarget && (
         <SettlementRecordSheet
-          key={`${recordTarget.suggestion.fromUid}-${recordTarget.suggestion.toUid}-${recordTarget.suggestion.amountMinor}`}
+          key={recordTarget.openId}
           isOpen
           onClose={() => setRecordTarget(null)}
           onSave={handleRecordSettlement}
-          suggested={recordTarget.suggestion}
+          intent={recordTarget.intent}
+          // The LIVE ledger: the sheet re-routes a payment whose planned
+          // legs went stale instead of sending them to a certain 409. Empty
+          // while the ledger is incomplete (handleRecordSettlement refuses
+          // anyway; the draft stays).
+          pairwise={ledgerReady ? computeBalancesFull(allExpenses, members, settlements, formerMemberNames).pairwise : {}}
           tripCurrency={currency}
           tripId={cloudTripId}
           // Ghosts included: a departed member can still be the PAYER of a

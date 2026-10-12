@@ -1,18 +1,21 @@
 // src/features/expense/components/SettlementHistory.tsx
 // The「已清算紀錄」section of the settlement card: an optional aggregate
-// orphan warning banner, the most-recent-N settlement rows (fold/unfold for
-// the rest), each delegated to SettlementRow. The orphan classification +
+// orphan warning banner, the most-recent-N entries (fold/unfold for the
+// rest). A routed settlement is ONE entry (SettlementRouteRow) however many
+// legs it has; a plain pair settlement is a SettlementRow. The orphan classification +
 // balances are computed by the parent (SettlementSummary) and passed in;
 // this component only owns the fold state.
 import { useState } from 'react'
 import { AlertCircle, ChevronDown } from 'lucide-react'
 import type { Expense } from '@/types'
-import type { SettlementRecord } from '@/types/settlement'
 import type { TripMember } from '@/features/trips/types'
 import type { OrphanReason, OrphanSettlement } from '../services/settlement'
 import { formatMinorAmount } from '@/utils/money'
 import { orphanReasonExplain } from './settlementOrphanCopy'
 import SettlementRow from './SettlementRow'
+import SettlementRouteRow from './SettlementRouteRow'
+import { groupSettlementHistory, routeLegIds } from '../services/settlementRoutes'
+import type { SettlementRecord } from '@/types/settlement'
 
 interface HistoryProps {
   expenses:    Expense[]
@@ -34,7 +37,9 @@ interface HistoryProps {
    *  render its own reason chip; rows whose id is absent are matched
    *  (no chip). */
   orphanById:  Map<string, OrphanSettlement>
-  onDelete:    (id: string) => void
+  /** Cancel a settlement. `hideIds` lists every row the cancel removes —
+   *  all legs of a route (the Worker cancels the route as a whole). */
+  onDelete:    (id: string, hideIds?: string[]) => void
 }
 
 /**
@@ -50,16 +55,17 @@ export default function SettlementHistory({
   expenses, settlements, memberById, currency, uid, canDeleteAnySettlement, totalOrphanMinor, orphanByReason, orphanById, onDelete,
 }: HistoryProps) {
   const [expanded, setExpanded] = useState(false)
-  const visible    = expanded ? settlements : settlements.slice(0, DEFAULT_VISIBLE)
-  const hiddenCount = settlements.length - visible.length
-  const canFold    = settlements.length > DEFAULT_VISIBLE
+  const entries    = groupSettlementHistory(settlements)
+  const visible    = expanded ? entries : entries.slice(0, DEFAULT_VISIBLE)
+  const hiddenCount = entries.length - visible.length
+  const canFold    = entries.length > DEFAULT_VISIBLE
 
   return (
     <>
       <div className="my-3 border-t border-dashed border-border" />
       <div className="flex items-center justify-between mb-2">
         <div className="text-[10.5px] font-semibold text-muted tracking-[0.08em] uppercase">
-          已清算紀錄（{settlements.length} 筆）
+          已清算紀錄（{entries.length} 筆）
         </div>
       </div>
 
@@ -80,14 +86,30 @@ export default function SettlementHistory({
       )}
 
       <div className="flex flex-col gap-1">
-        {visible.map(s => {
-          const from = memberById.get(s.fromUid)
-          const to   = memberById.get(s.toUid)
-          if (!from || !to) return null
+        {visible.map(entry => {
           // Worker (settlement-delete) allows the recorder OR the trip
           // owner. Mirror BOTH client-side so the owner's correction path
           // (deleting a settlement another member mis-recorded) is reachable
           // from the UI — not just the recorder deleting their own.
+          if (entry.kind === 'route') {
+            const canDelete = canDeleteAnySettlement || (uid != null && uid === entry.settledBy)
+            return (
+              <SettlementRouteRow
+                key={entry.id}
+                header={entry.header}
+                legs={entry.legs}
+                memberById={memberById}
+                currency={currency}
+                canDelete={canDelete}
+                orphans={entry.legs.flatMap(l => orphanById.get(l.id) ?? [])}
+                onDelete={() => onDelete(entry.legs[0]!.id, routeLegIds(entry.header))}
+              />
+            )
+          }
+          const s = entry.record
+          const from = memberById.get(s.fromUid)
+          const to   = memberById.get(s.toUid)
+          if (!from || !to) return null
           const canDelete = canDeleteAnySettlement || (uid != null && uid === s.settledBy)
           return (
             <SettlementRow

@@ -11,7 +11,7 @@ const serviceMocks = vi.hoisted(() => ({
   getSettlementsByTrip:           vi.fn(),
   getSettlementsByTripFromServer: vi.fn(),
   subscribeToSettlements:         vi.fn(),
-  createSettlement:               vi.fn(),
+  createSettlementRoute:          vi.fn(),
   deleteSettlement:               vi.fn(),
 }))
 
@@ -25,7 +25,9 @@ vi.mock('../services/settlementService', () => ({
 import { OVERLAY_AMBIGUOUS_SETTLE_MS } from '@/hooks/listOverlay'
 import {
   SETTLEMENT_DELETE_RETRY_DELAY_MS,
+  optimisticRouteRows,
   settlementOverlay,
+  useCreateSettlementRoute,
   useDeleteSettlement,
   useSettlements,
 } from './useSettlements'
@@ -193,5 +195,74 @@ describe('useDeleteSettlement overlay flow', () => {
     // Hiding a settlement that may still exist would invite recording the
     // payment twice, so an unreachable server reveals rather than hides.
     expect(visibleIds(['x'])).toEqual(['x'])
+  })
+})
+
+describe('routed settlements: every leg moves together', () => {
+  const ROUTE = {
+    kind: 'TRANSFER' as const, payerUid: 'a', receiverUid: 'c', amountMinor: 300,
+    // Out of canonical order on purpose: leg ids follow canonical order.
+    legs: [
+      { fromUid: 'b', toUid: 'c', amountMinor: 300, expectedRemainingMinor: 300 },
+      { fromUid: 'a', toUid: 'b', amountMinor: 300, expectedRemainingMinor: 500 },
+    ],
+  }
+  const VARS = {
+    routeId: 'r1', route: ROUTE, note: '晚餐',
+    optimistic: { currency: 'JPY', settledBy: 'c', pendingAppliedExpenseIds: [['e1'], ['e2']] },
+  }
+
+  function renderCreate(qc = makeQueryClient()) {
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: qc }, children)
+    return renderHook(() => useCreateSettlementRoute(TRIP), { wrapper })
+  }
+
+  it('optimistic rows carry the Worker\'s leg ids, header and pending locks', () => {
+    const rows = optimisticRouteRows(TRIP, VARS)
+    expect(rows.map(r => [r.id, r.fromUid, r.toUid, r.appliedExpenseIds])).toEqual([
+      ['r1-00', 'a', 'b', ['e1']],
+      ['r1-01', 'b', 'c', ['e2']],
+    ])
+    expect(rows[1]!.route).toMatchObject({
+      id: 'r1', legIndex: 1, legCount: 2, kind: 'TRANSFER', payerUid: 'a', receiverUid: 'c',
+      amountMinor: 300, participantUids: ['a', 'b', 'c'], note: '晚餐',
+    })
+    expect(rows.every(r => r.settledBy === 'c' && r.deletedAt === null)).toBe(true)
+  })
+
+  it('shows every leg while in flight and drops them all on a definitive failure', async () => {
+    let reject!: (e: unknown) => void
+    serviceMocks.createSettlementRoute.mockReturnValueOnce(new Promise((_, r) => { reject = r }))
+    const hook = renderCreate()
+    act(() => { hook.result.current.mutate(VARS) })
+    await waitFor(() => expect(visibleIds([])).toEqual(['r1-01', 'r1-00']))
+    await act(async () => { reject(rejectedErr()); await Promise.resolve() })
+    await waitFor(() => expect(visibleIds([])).toEqual([]))
+  })
+
+  it('an ambiguous failure keeps every leg until server truth decides', async () => {
+    vi.useFakeTimers()
+    serviceMocks.createSettlementRoute.mockRejectedValueOnce(ambiguousErr())
+    serviceMocks.getSettlementsByTripFromServer.mockResolvedValue([row('r1-00'), row('r1-01')])
+    const hook = renderCreate()
+    await act(async () => { await hook.result.current.mutateAsync(VARS).catch(() => {}) })
+    expect(visibleIds([])).toEqual(['r1-01', 'r1-00'])
+    await act(async () => { await vi.advanceTimersByTimeAsync(OVERLAY_AMBIGUOUS_SETTLE_MS + 50) })
+    // The commit did land: the real rows take over, nothing duplicated.
+    expect(visibleIds(['r1-00', 'r1-01'])).toEqual(['r1-00', 'r1-01'])
+  })
+
+  it('cancelling a route hides all of its legs at once and restores them all on refusal', async () => {
+    serviceMocks.deleteSettlement.mockRejectedValueOnce(rejectedErr())
+    const hook = renderDeleteMutation()
+    let pending!: Promise<unknown>
+    act(() => { pending = hook.result.current.mutateAsync({ settlementId: 'r1-00', hideIds: ['r1-00', 'r1-01'] }).catch(() => {}) })
+    expect(visibleIds(['r1-00', 'r1-01', 'other'])).toEqual(['other'])
+    await act(async () => { await pending })
+    expect(visibleIds(['r1-00', 'r1-01', 'other'])).toEqual(['r1-00', 'r1-01', 'other'])
+    // Only one request: the Worker cancels the route from any one leg.
+    expect(serviceMocks.deleteSettlement).toHaveBeenCalledTimes(1)
+    expect(serviceMocks.deleteSettlement).toHaveBeenCalledWith(TRIP, 'r1-00')
   })
 })

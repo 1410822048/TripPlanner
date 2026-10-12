@@ -6,14 +6,20 @@ import {
   orderMembersLikeExpense,
 } from './settlement'
 import { splitEqually } from '../utils'
-import {
-  computeSettlements,
-  computeSettlementSuggestions,
-} from './settlementSuggestions'
 import { MOCK_TIMESTAMP as TS } from '@/mocks/utils'
 import type { Expense } from '@/types'
 import type { SettlementRecord } from '@/types/settlement'
 import type { TripMember } from '@/features/trips/types'
+
+/** The normalized debt edges as a flat list (the pairwise ledger every
+ *  suggestion and the Worker's CAS are built from). */
+function computeSettlements(pairwise: Record<string, Record<string, number>>) {
+  const out: Array<{ fromId: string; toId: string; amountMinor: number }> = []
+  for (const from of Object.keys(pairwise).sort()) {
+    for (const to of Object.keys(pairwise[from]!).sort()) out.push({ fromId: from, toId: to, amountMinor: pairwise[from]![to]! })
+  }
+  return out
+}
 
 /** Balances only — the old production wrapper, now test-local. */
 function computeBalances(expenses: Expense[], members: TripMember[], settlements: SettlementRecord[] = []) {
@@ -265,46 +271,6 @@ describe('cross-debt normalization', () => {
     expect(orphans).toEqual([])
     expect(balances.find(b => b.memberId === 'm1')!.net).toBe(-40)
     expect(balances.find(b => b.memberId === 'm2')!.net).toBe(40)
-  })
-})
-
-// ─── Enriched suggestions: settled-vs-owed context ────────────────
-
-describe('computeSettlementSuggestions', () => {
-  it('adds settledContext to a partially-settled pair (應清算 / 已清算 / 還差)', () => {
-    // m2 owes m1 1200 (e.g. owner bumped the expense after a settlement);
-    // 1000 already settled → 200 remaining.
-    const expenses    = [mkExpense('m1', 1200, [['m2', 1200]])]
-    const settlements = [mkSettlement('m2', 'm1', 1000)]
-    const { pairwise, gross, applied } = computeBalancesFull(expenses, MEMBERS, settlements)
-    expect(computeSettlementSuggestions({ pairwise, gross, applied })).toEqual([{
-      fromId: 'm2', toId: 'm1', amountMinor: 200,
-      settledContext: { grossMinor: 1200, appliedMinor: 1000, remainingMinor: 200 },
-    }])
-  })
-
-  it('omits settledContext for an unsettled pair (nothing cleared yet)', () => {
-    const expenses = [mkExpense('m1', 1200, [['m2', 1200]])]
-    const { pairwise, gross, applied } = computeBalancesFull(expenses, MEMBERS, [])
-    expect(computeSettlementSuggestions({ pairwise, gross, applied })).toEqual([
-      { fromId: 'm2', toId: 'm1', amountMinor: 1200 },
-    ])
-  })
-
-  it('omits settledContext when opposite-direction debt makes gross − applied not reconcile', () => {
-    // m2 owes m1 1200 (settled 1000 → directional remaining 200) AND m1 owes
-    // m2 50. Normalize nets m2→m1 to 150 ≠ gross − applied (200), so the
-    // breakdown can't be shown coherently → omitted (domain decides this,
-    // not the UI).
-    const expenses = [
-      mkExpense('m1', 1200, [['m2', 1200]], '_a'),  // m2 owes m1 1200
-      mkExpense('m2', 50,   [['m1', 50]],   '_b'),  // m1 owes m2 50
-    ]
-    const settlements = [mkSettlement('m2', 'm1', 1000)]
-    const { pairwise, gross, applied } = computeBalancesFull(expenses, MEMBERS, settlements)
-    expect(computeSettlementSuggestions({ pairwise, gross, applied })).toEqual([
-      { fromId: 'm2', toId: 'm1', amountMinor: 150 },
-    ])
   })
 })
 
@@ -788,7 +754,7 @@ describe('computeBalancesFull ghost naming', () => {
   })
 })
 
-describe('computeSettlements', () => {
+describe('normalized pair edges', () => {
   it('produces one transfer per non-zero pair edge (here all debtors point at m1)', () => {
     const expenses = [mkExpense('m1', 3000, [['m1', 1000], ['m2', 1000], ['m3', 1000]])]
     const { pairwise } = computeBalancesFull(expenses, MEMBERS)

@@ -309,3 +309,57 @@ describe('SettlementDocSchema — FX field-level validation', () => {
     expect(result.success).toBe(false)
   })
 })
+
+describe('SettlementDocSchema — routed settlement leg header', () => {
+  const transferHeader = (over: Record<string, unknown> = {}) => ({
+    id: 'route-1', legIndex: 0, legCount: 2, kind: 'TRANSFER',
+    participantUids: ['alice-uid', 'bob-uid', 'carol-uid'],
+    payerUid: 'alice-uid', receiverUid: 'carol-uid', amountMinor: 9750,
+    ...over,
+  })
+  const offsetHeader = (over: Record<string, unknown> = {}) => ({
+    id: 'route-2', legIndex: 1, legCount: 3, kind: 'OFFSET',
+    participantUids: ['alice-uid', 'bob-uid', 'carol-uid'],
+    ...over,
+  })
+  const parse = (route: unknown, over: Record<string, unknown> = {}) =>
+    SettlementDocSchema.safeParse(baseDoc({ route, ...over }))
+
+  it('accepts a transfer leg and an offset leg', () => {
+    expect(parse(transferHeader()).success).toBe(true)
+    expect(parse(offsetHeader()).success).toBe(true)
+  })
+
+  it('a plain pair settlement (no route) still parses — pre-route data and the legacy endpoint', () => {
+    expect(SettlementDocSchema.safeParse(baseDoc()).success).toBe(true)
+  })
+
+  it('keeps the header (it is not stripped as an unknown key)', () => {
+    const parsed = SettlementDocSchema.parse(baseDoc({ route: transferHeader({ note: '晚餐', ownerRecorded: true }) }))
+    expect(parsed.route).toMatchObject({ id: 'route-1', kind: 'TRANSFER', note: '晚餐', ownerRecorded: true })
+  })
+
+  it('ignores header fields it does not know (forward compatible)', () => {
+    const parsed = SettlementDocSchema.parse(baseDoc({ route: transferHeader({ futureField: 1 }) }))
+    expect(parsed.route).not.toHaveProperty('futureField')
+  })
+
+  it('a transfer needs payer, receiver and amount; an offset must have none', () => {
+    expect(parse(transferHeader({ payerUid: undefined })).success).toBe(false)
+    expect(parse(offsetHeader({ amountMinor: 5 })).success).toBe(false)
+  })
+
+  it('rejects a leg index outside the route', () => {
+    expect(parse(transferHeader({ legIndex: 2 })).success).toBe(false)
+  })
+
+  it('the header\'s foreign group is all-or-none and must agree with the snapshot and trip currency', () => {
+    const fxGroup = { sourceCurrency: 'USD', sourceAmountMinor: 6500, settledOn: '2026-06-01', fxSnapshot: baseFx }
+    expect(parse(transferHeader(fxGroup)).success).toBe(true)
+    expect(parse(transferHeader({ ...fxGroup, fxSnapshot: undefined })).success).toBe(false)
+    expect(parse(transferHeader({ ...fxGroup, sourceAmountMinor: 6501 })).success).toBe(false)
+    expect(parse(transferHeader(fxGroup), { currency: 'TWD' }).success).toBe(false)
+    // An offset moves no money.
+    expect(parse(offsetHeader(fxGroup)).success).toBe(false)
+  })
+})

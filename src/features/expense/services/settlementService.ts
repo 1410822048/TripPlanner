@@ -29,114 +29,53 @@ import { subscribeToCollection, type ListSnapshotMetadata } from '@/services/rea
 import {
   requireWorkerWriteBase, preflightIdToken, workerFetch,
 } from '@/services/workerBase'
-import {
-  type SettlementRecord,
-  type CreateTripSettlementInput,
-  type CreateForeignSettlementInput,
-  SettlementDocSchema,
-} from '@/types/settlement'
+import { canonicalRouteLegs, type SettlementRoute } from '@tripmate/settlement-core'
+import { type SettlementRecord, SettlementDocSchema } from '@/types/settlement'
 
 /**
- * Variables required to record a settlement. Discriminated by `mode`
- * (carried on the embedded `CreateXxxSettlementInput`):
+ * Variables for recording a routed settlement — the ONLY way this bundle
+ * records one. A plain pair settlement is simply a one-leg route.
  *
- *   - The base `CreateTripSettlementInput` / `CreateForeignSettlementInput`
- *     carries intent plus `expectedRemainingMinor`. The amount is not a
- *     ledger input; Worker uses it only to reject stale confirmations
- *     when the pair balance changed after the sheet opened.
- *   - `settlementId` — minted at the call site (see ExpensePage.tsx) so
- *     the optimistic overlay row, the Worker request, and the resulting
- *     Firestore doc all share one id. Memory:
- *     [[settlement-id-hoist-load-bearing]] — moving id-minting back
- *     into the service breaks the realtime listener's atomic row swap.
- *   - `optimistic` — page-derived preview values for the optimistic
- *     cache row only. NEVER sent on the wire; the Worker derives its
- *     own authoritative canonical from pair-remaining. Branch-specific
- *     shape (see `OptimisticTripPatch` / `OptimisticForeignPatch`):
- *     FOREIGN MUST carry `sourceAmountMinor`, TRIP MUST NOT — type-
- *     level rule keeps callers from inserting a foreign row with an
- *     undefined source-side display.
+ *   - `routeId` is minted at the call site (crypto.randomUUID) so the
+ *     optimistic leg rows, the Worker request and the Firestore docs share
+ *     ids: the Worker derives leg i's doc id as routeLegId(routeId, i) over
+ *     canonical leg order, and so does the overlay. Memory:
+ *     [[settlement-id-hoist-load-bearing]].
+ *   - `route` is a proposal planned on the client's ledger. Every leg's
+ *     `expectedRemainingMinor` is the Worker's per-edge CAS; the Worker
+ *     re-validates the shape and every amount against its own ledger.
+ *   - `foreign` (TRANSFER only): the currency the receiver actually got,
+ *     with the rate they confirmed (FX CAS → 409 FX_RATE_CHANGED).
+ *   - `optimistic` is for the overlay rows only and never crosses the wire.
  */
-/** Conservative pending lock set for the optimistic-create window: ids of
- *  the pair's debt expenses (both directions), computed by the page. The
- *  Worker computes the precise lock set (forward sources ∪ reverse offset)
- *  and writes each expense's settlementLockIds, but until that commit + the
- *  expense listener propagate, ExpensePage's readonly union reads THIS off
- *  the optimistic settlement row so a non-owner can't briefly edit a source
- *  expense (which would then 403 on save). Over-approximation is safe — the
- *  realtime listener swaps in the server's exact appliedExpenseIds.
- *
- *  Top-level (not inside `optimistic`) on purpose: nesting it in the
- *  discriminated TRIP/FOREIGN `optimistic` would force a per-mode narrow at
- *  the mutate call-site. Here the page just spreads `{ ...submit,
- *  pendingAppliedExpenseIds }` purely. */
-type WithPendingLock = { pendingAppliedExpenseIds?: string[] }
-
-export type CreateTripSettlementVariables = CreateTripSettlementInput & WithPendingLock & {
-  settlementId: string
-  optimistic:   OptimisticTripPatch
+export interface CreateSettlementRouteVariables {
+  routeId: string
+  route:   SettlementRoute
+  note?:   string
+  foreign?: {
+    sourceCurrency: string
+    settledOn:      string
+    expectedFxRate: { rateDecimal: string; rateDate: string }
+  }
+  optimistic: {
+    currency:           string
+    /** Who the Worker will stamp as settledBy (the caller). */
+    settledBy:          string
+    ownerRecorded?:     boolean
+    /** FOREIGN only: the receiver-side source amount the sheet derived. */
+    sourceAmountMinor?: number
+    /** Per canonical leg: a conservative superset of the expenses the leg
+     *  will lock (both directions of its pair), so a non-owner can't edit
+     *  one in the window before the Worker's exact lock set lands. */
+    pendingAppliedExpenseIds: string[][]
+  }
 }
 
-export type CreateForeignSettlementVariables = CreateForeignSettlementInput & WithPendingLock & {
-  settlementId: string
-  optimistic:   OptimisticForeignPatch
-  /** The rate the receiver confirmed (required). The Worker still decides
-   *  the rate and refuses (409 FX_RATE_CHANGED) when it differs. */
-  expectedFxRate:  { rateDecimal: string; rateDate: string }
-}
-
-export type CreateSettlementVariables =
-  | CreateTripSettlementVariables
-  | CreateForeignSettlementVariables
-
-/**
- * Page-derived preview for the optimistic patch row. Phase 4.1 ledger
- * truth: `amountMinor` is ALWAYS `suggestion.amountMinor` (= pair-
- * remaining) for BOTH modes, because Worker also writes
- * `amountMinor = remaining`. FX is decoupled — it only populates the
- * source-side display.
- *
- *   - TRIP mode:    `amountMinor = suggestion.amountMinor`,
- *                   `currency    = tripCurrency`.
- *                   `sourceAmountMinor` is FORBIDDEN at the type level
- *                   (`?: never`) — there is no foreign source to display.
- *   - FOREIGN mode: `amountMinor = suggestion.amountMinor` (same as TRIP),
- *                   `currency    = tripCurrency`,
- *                   `sourceAmountMinor = useFxPreview's
- *                   estimateSourceMinorAtMostTargetHalfEven(suggestion)`
- *                   (display + audit only, NOT a ledger input). REQUIRED
- *                   — without it the optimistic foreign row would render
- *                   "undefined" in the source-side column until the
- *                   listener swap landed.
- *
- * The realtime listener swap replaces this row with the server's once
- * the commit lands. amountMinor will match exactly (both sides write
- * remaining); foreign sourceAmountMinor may diverge by 1-2 minor units
- * if the Worker's FX rate freshness differs from the client preview.
- */
-interface OptimisticPatchBase {
-  amountMinor: number
-  currency:    string
-}
-
-export interface OptimisticTripPatch extends OptimisticPatchBase {
-  /** Forbidden in TRIP mode: there is no foreign source amount to
-   *  display. `?: never` makes a callsite that smuggles one a compile
-   *  error rather than a silent runtime no-op. */
-  sourceAmountMinor?: never
-}
-
-export interface OptimisticForeignPatch extends OptimisticPatchBase {
-  /** Required in FOREIGN mode: the receiver's source-currency receipt
-   *  amount, computed by useFxPreview's atMost inverse. Persisted
-   *  alongside the ledger amountMinor for display + audit; NEVER a
-   *  ledger input (Worker re-derives authoritatively at tx time). */
-  sourceAmountMinor: number
-}
-
-/** Defensive cap — long trips with many splits accumulate settlement
- *  records over time. 200 covers a 14-day group trip with margin. */
-export const SETTLEMENT_LIST_LIMIT = 200
+/** Defensive cap on ACTIVE settlement docs. A routed settlement stores one
+ *  doc per leg, so the ceiling is higher than the number of payments ever
+ *  recorded. Matches the Worker's ROUTE_SETTLEMENT_READ_LIMIT: past it the
+ *  ledger can't be read completely on either side. */
+export const SETTLEMENT_LIST_LIMIT = 500
 const LIST_LIMIT = SETTLEMENT_LIST_LIMIT
 
 function settlementFromDoc(d: QueryDocumentSnapshot): SettlementRecord {
@@ -184,73 +123,40 @@ export const subscribeToSettlements = (
 }, onData, onError)
 
 /**
- * Record a settlement (X paid Y back). The Worker enforces the
- * receiver-only invariant (`toUid` must equal the caller's uid) so
- * `settledBy` is derived server-side from the verified Firebase token
- * -- not accepted from the client.
- *
- * Phase 4.1 rearchitecture (2026-06-02): the payload is a
- * stale-confirmed intent. `expectedRemainingMinor` is only the UI's
- * view of the remaining debt when the sheet opened; Worker recomputes
- * pair-remaining inside the tx, rejects stale confirmations, and writes
- * `amountMinor = remaining` for BOTH modes — 「已收款」 always clears the
- * entire suggested debt. FOREIGN additionally inverse-derives
- * `sourceAmountMinor` via at-most policy for display/audit (persisted
- * alongside `fxSnapshot.convertedAmountMinor`, which is the FX forward
- * result and may be ≤ amountMinor by a few minor units due to half-even
- * rounding plateaus — intentionally decoupled from the ledger).
- *
- * The entire OVERPAY class is eliminated by construction because there's
- * no client-supplied amount to be too large; the partial-clear class
- * (FX rounding leaving a few-yen tail) is eliminated because the ledger
- * always consumes remaining, regardless of FX artifacts.
- *
- * `vars.settlementId` is minted at the call site (see
- * CreateSettlementVariables) so the Worker's `currentDocument.exists
- * = false` precondition gives genuine create-only semantics: any
- * future replay of the same payload (e.g. a user-clicked retry CTA
- * reusing the same mutation variables) reaches the existing-doc
- * payload-match check inside the Worker tx and returns idempotently
- * without a duplicate write. workerFetch itself does NOT retry —
- * 5xx / AbortError throw WorkerAmbiguous, 4xx throw WorkerRejected.
- *
- * No Storage side effect to roll back, so we don't need the
- * expense/booking-style WorkerRejected vs WorkerAmbiguous fork: any
- * error surfaces through the global MutationCache.onError → toast.
+ * Record a routed settlement. The Worker is the authority: it re-checks the
+ * route's shape, authorizes the caller (receiver / offset participant /
+ * owner for departed members), CAS-checks every leg against its own ledger,
+ * derives lineage and locks, and writes every leg in one transaction.
+ * workerFetch does not retry: 5xx / AbortError → WorkerAmbiguous, 4xx →
+ * WorkerRejected. A retry with the same routeId is idempotent on the Worker.
  */
-export async function createSettlement(
+export async function createSettlementRoute(
   tripId: string,
-  vars:   CreateSettlementVariables,
+  vars:   CreateSettlementRouteVariables,
 ): Promise<void> {
   const workerBase = requireWorkerWriteBase()
   const idToken    = await preflightIdToken()
-
-  // Wire body shape is a thin pass-through of the discriminated input.
-  // `expectedRemainingMinor` is a stale-confirmation guard only; Worker
-  // still derives canonical amountMinor from pair-remaining in its tx.
-  if (vars.mode === 'TRIP_CURRENCY') {
-    await workerFetch(workerBase, idToken, '/settlement-create', {
-      mode:                   'TRIP_CURRENCY' as const,
-      tripId,
-      settlementId:           vars.settlementId,
-      fromUid:                vars.fromUid,
-      toUid:                  vars.toUid,
-      expectedRemainingMinor: vars.expectedRemainingMinor,
-      ...(vars.note ? { note: vars.note } : {}),
-    })
-    return
-  }
-  await workerFetch(workerBase, idToken, '/settlement-create', {
-    mode:                   'FOREIGN_CURRENCY' as const,
+  const { route } = vars
+  const legs = canonicalRouteLegs(route.legs).map(l => ({
+    fromUid:                l.fromUid,
+    toUid:                  l.toUid,
+    amountMinor:            l.amountMinor,
+    expectedRemainingMinor: l.expectedRemainingMinor,
+  }))
+  await workerFetch(workerBase, idToken, '/settlement-route-create', {
     tripId,
-    settlementId:           vars.settlementId,
-    fromUid:                vars.fromUid,
-    toUid:                  vars.toUid,
-    expectedRemainingMinor: vars.expectedRemainingMinor,
-    sourceCurrency:         vars.sourceCurrency,
-    settledOn:              vars.settledOn,
+    routeId: vars.routeId,
+    legs,
+    ...(route.kind === 'TRANSFER'
+      ? {
+          kind:        'TRANSFER' as const,
+          payerUid:    route.payerUid,
+          receiverUid: route.receiverUid,
+          amountMinor: route.amountMinor,
+          ...(vars.foreign ?? {}),
+        }
+      : { kind: 'OFFSET' as const }),
     ...(vars.note ? { note: vars.note } : {}),
-    expectedFxRate:         vars.expectedFxRate,
   })
 }
 
@@ -258,7 +164,7 @@ export async function createSettlement(
  * Delete a settlement. Worker enforces recorder-or-owner gating
  * (matches the existing rule); missing-doc is treated as success
  * (idempotent) so a double-tap from optimistic UI doesn't surface
- * a 404.
+ * a 404. Any leg id of a route cancels the WHOLE route.
  */
 export async function deleteSettlement(tripId: string, id: string): Promise<void> {
   const workerBase = requireWorkerWriteBase()

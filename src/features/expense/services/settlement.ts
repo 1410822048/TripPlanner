@@ -108,12 +108,11 @@ export interface BalanceResult {
   participants: TripMember[]
   /** Step-4 normalized remaining debt edges: `pairwise[from][to] = amount`
    *  represents real outstanding pair debt after settlement application
-   *  and opposite-direction cancellation. Consumed by `computeSettlements`
-   *  to produce suggestion list; surfaced so callers re-use the same
-   *  edges the algorithm internally derived. Worker validation reads the
-   *  same edges to gate `amount <= remaining` — passing the same shape
-   *  out (instead of recomputing pair-wise elsewhere) keeps UI suggestion
-   *  / Worker reject semantics in lockstep. */
+   *  and opposite-direction cancellation. The routed suggestions
+   *  (settlementRoutes.planRouteSuggestions) are planned on these edges and
+   *  each leg's expectedRemainingMinor is read from them; the Worker's
+   *  per-leg CAS reads the same edges from its own ledger, which keeps UI
+   *  suggestion / Worker accept semantics in lockstep. */
   pairwise: Record<string, Record<string, number>>
   /** Step-1 directional gross debt from ACTIVE expenses: `gross[from][to]`
    *  = total `from` owes `to` BEFORE any settlement (應清算 on that pair).

@@ -1,40 +1,43 @@
 // src/features/expense/components/SettlementRecordSheet.tsx
-// Phase 4.1 rearchitecture (2026-06-02) — 「已收款」 is NOT an amount-entry
-// form. The whole sheet is "confirm clear this suggestion":
-//   - The amount shown is the suggestion's remaining (read-only). The
-//     ledger amountMinor is always this value, for BOTH modes — the
-//     Worker writes `amountMinor = pair-remaining` regardless of which
-//     currency the receiver was actually paid in.
-//   - For foreign currency the user picks WHICH currency they actually
-//     received in; the sheet shows "約 TWD 110" derived from
-//     `useFxPreview` (inverse via atMost from remaining). This source
-//     amount is display + audit data only — it does NOT participate
-//     in the ledger.
-//   - Worker re-derives source authoritatively at tx time and writes
-//     fxSnapshot.convertedAmountMinor = forward(source), which may be
-//     ≤ amountMinor by 1-2 minor units due to half-even rounding
-//     plateaus — intentional, ledger is decoupled from FX math.
+// 記錄清算 — one sheet for every routed settlement the user can record:
 //
-// Foreign-mode trust gating mirrors the Worker:
-//   - Submit gates on a confirmed `useFxPreview` rate so the
-//     optimistic source-side display lands within fx-core rounding of
-//     what the Worker will write. Optimistic amountMinor is always
-//     `suggested.amountMinor` (= remaining), so it never jumps on
-//     listener swap regardless of FX freshness.
-//   - Future settledOn dates short-circuit the hook AND the submit gate —
-//     Worker FX router would reject FX_FUTURE_DATE_UNSUPPORTED anyway.
+//   - TRANSFER / 'suggestion': the receiver confirms a planned payment
+//     ("A 付給你 ¥X，經 B"). Amount fixed.
+//   - TRANSFER / 'payment' (「記錄收款」): the receiver records what someone
+//     actually paid them — pick the payer, enter the amount (capped at what
+//     the debt graph can explain, maxPayable).
+//   - OFFSET: a participant confirms a debt cycle cleared with no payment.
 //
-// settlementId is intentionally NOT minted here. The caller (ExpensePage)
-// mints via crypto.randomUUID so the optimistic patch / Worker request /
-// Firestore doc all share one id — see CreateSettlementVariables docstring.
+// The route sent is computed from the LIVE ledger at render time
+// (paymentRoute): the planned legs while they still match, else a fresh
+// route for the same payment. A stale suggestion is therefore replanned,
+// never forced through — and the Worker still CAS-checks every leg. An
+// offset can't be "re-routed" (it is not a payment), so a changed one is
+// refused with a prompt to reopen.
+//
+// Foreign currency (TRANSFER only): the receiver picks the currency they
+// actually got; the ledger amount stays in trip currency and the source
+// amount is derived at-most from it (display + audit), exactly as the
+// Worker derives it. The FX CAS rate is the one the derivation used.
+//
+// routeId is minted by the caller (ExpensePage) — see
+// CreateSettlementRouteVariables.
 import { useRef, useState } from 'react'
 import { SETTLEMENT_LIMITS } from '@tripmate/entity-contracts'
-import { ArrowRight, Loader2 } from 'lucide-react'
+import { ArrowRight, Loader2, Repeat } from 'lucide-react'
 import { estimateSourceMinorAtMostTargetHalfEven } from '@tripmate/fx-core'
+import {
+  isRouteCurrent,
+  routeParticipants,
+  type OffsetRoute,
+  type SettlementRoute,
+  type TransferRoute,
+} from '@tripmate/settlement-core'
 
 import FormModalShell from '@/components/ui/FormModalShell'
 import FormField from '@/components/ui/FormField'
 import CurrencyPicker from '@/components/ui/CurrencyPicker'
+import CurrencyInput from '@/components/ui/CurrencyInput'
 import DatePicker from '@/components/ui/pickers/DatePicker'
 import MemberAvatar from '@/components/ui/MemberAvatar'
 import { useFxPreview, type FxRateQuote } from '@/hooks/useFxPreview'
@@ -42,36 +45,47 @@ import { fxRateChanged } from '@/services/workerBase'
 import { useAwaitedSave, describeSaveFailure } from '@/hooks/useAwaitedSave'
 import { fxRateChangedMessage } from '../utils'
 import { toLocalDateString } from '@/utils/dates'
+import { currencySymbol } from '@/utils/currency'
 import {
   formatMinorAmount,
+  formatMinorForInput,
   currencyFractionDigits,
+  parseMoneyToMinorResult,
 } from '@/utils/money'
 import type { TripMember } from '@/features/trips/types'
-import type {
-  CreateTripSettlementVariables,
-  CreateForeignSettlementVariables,
-} from '../services/settlementService'
+import { maxPayable, payersFor, paymentRoute } from '../services/settlementRoutes'
 
-interface Suggestion {
-  fromUid:     string
-  toUid:       string
-  /** Suggested amount in trip currency (integer minor units). Comes from
-   *  the balance engine's `computeSettlements` output. */
-  amountMinor: number
-}
+type Pairwise = Record<string, Record<string, number>>
 
-/** Payload handed up to ExpensePage — the full `CreateSettlementVariables`
- *  minus `settlementId` (caller mints via crypto.randomUUID). Discriminated
- *  by `mode` at the top level so the optimistic shape stays correlated:
- *  TRIP_CURRENCY MUST NOT carry `sourceAmountMinor`, FOREIGN_CURRENCY MUST.
- *  ExpensePage just spreads + adds settlementId; no nested narrowing needed. */
-export type SettlementRecordSubmit = (
-  | Omit<CreateTripSettlementVariables,    'settlementId'>
-  | Omit<CreateForeignSettlementVariables, 'settlementId'>
-) & {
+/** What the user is recording. */
+export type RecordIntent =
+  | {
+      kind:        'TRANSFER'
+      mode:        'suggestion' | 'payment'
+      receiverUid: string
+      /** Required for 'suggestion'; the preselected payer for 'payment'. */
+      payerUid?:   string
+      /** Required for 'suggestion'; the prefilled amount for 'payment'. */
+      amountMinor?: number
+      /** The planned legs, used while they still match the ledger. */
+      planned?:    TransferRoute
+    }
+  | { kind: 'OFFSET'; route: OffsetRoute }
+
+/** Payload handed to ExpensePage — CreateSettlementRouteVariables minus the
+ *  id and the page-derived optimistic fields. */
+export interface RouteRecordSubmit {
+  route:    SettlementRoute
+  note?:    string
+  foreign?: {
+    sourceCurrency: string
+    settledOn:      string
+    expectedFxRate: FxRateQuote
+  }
+  /** FOREIGN only, for the optimistic row. */
+  sourceAmountMinor?: number
   /** Present when the FX rate shown is still provisional: the page returns
-   *  the mutation promise and passes this as `reportInForm`; the sheet
-   *  stays open until it settles (useAwaitedSave). */
+   *  the mutation promise and the sheet waits on it (useAwaitedSave). */
   reportInForm?: () => boolean
 }
 
@@ -79,225 +93,151 @@ interface Props {
   isOpen:       boolean
   onClose:      () => void
   /** Returns the mutation promise when the payload carries `reportInForm`;
-   *  the sheet tracks it (rejects with the Worker's error). Returns `false`
-   *  when the page refused the save synchronously (toast shown, sheet left
-   *  open, nothing written) — the sheet then releases its submit latch. */
-  onSave:       (payload: SettlementRecordSubmit) => false | void | Promise<unknown>
-  /** The pairwise suggestion the receiver tapped 「已收款」on. Drives the
-   *  read-only amount display + the from/to avatar row. */
-  suggested:    Suggestion
-  /** Trip currency — the currency picker defaults to this; the FX preview
-   *  triggers only when the picked currency differs. */
+   *  `false` when the page refused synchronously (sheet stays open, latch
+   *  released). */
+  onSave:       (payload: RouteRecordSubmit) => false | void | Promise<unknown>
+  intent:       RecordIntent
+  /** The live normalized ledger (computeBalancesFull().pairwise). */
+  pairwise:     Pairwise
   tripCurrency: string
-  /** Cloud trip id — FX preview then comes from the Worker's write-path
-   *  rate. Null in demo. */
+  /** Cloud trip id — FX preview comes from the Worker's write-path rate. */
   tripId?:      string | null
+  /** Ghost-expanded roster: any party may have left the trip. */
   members:      TripMember[]
-  /** Threaded through to FormModalShell. Always `false` from ExpensePage:
-   *  a normal save closes the sheet optimistically, and a provisional-rate
-   *  save's busy state is the sheet's own (useAwaitedSave). Double-submit is
-   *  guarded by the synchronous `submittedRef` latch either way. */
   isSaving:     boolean
 }
 
-/** Today where the user is. `settledOn` is the calendar date they
- *  received the money on, so it is bounded by their day, not UTC's — and
- *  it has to agree with useFxPreview's gate or the sheet would refuse a
- *  date the preview happily converted. The provider's `rateDate` is the
- *  one still bounded by UTC; see useFxPreview. */
+/** Today where the user is: `settledOn` is the calendar day they received
+ *  the money, bounded by their day (useFxPreview agrees). */
 function todayLocal(): string {
   return toLocalDateString(new Date())
 }
 
 export default function SettlementRecordSheet({
-  isOpen, onClose, onSave, suggested, tripCurrency, tripId, members, isSaving,
+  isOpen, onClose, onSave, intent, pairwise, tripCurrency, tripId, members, isSaving,
 }: Props) {
-  // Inline state — sheet is unmounted on close (parent gates with isOpen)
-  // and remounts via key when the suggestion identity changes, so every
-  // open initializes from fresh props.
+  const isTransfer = intent.kind === 'TRANSFER'
+  const isPayment  = intent.kind === 'TRANSFER' && intent.mode === 'payment'
+  const receiverUid = intent.kind === 'TRANSFER' ? intent.receiverUid : null
+  const payers = isPayment && receiverUid ? payersFor(pairwise, receiverUid, members.map(m => m.id)) : []
+
+  const [payerChoice, setPayerChoice] = useState<string | undefined>(() =>
+    intent.kind === 'TRANSFER' ? (intent.payerUid ?? payers[0]?.uid) : undefined)
+  const [amountText, setAmountText] = useState<string>(() => {
+    if (intent.kind !== 'TRANSFER' || intent.mode !== 'payment') return ''
+    const initial = intent.amountMinor
+      ?? (payerChoice && receiverUid ? maxPayable(pairwise, payerChoice, receiverUid) : 0)
+    return initial > 0 ? formatMinorForInput(initial, tripCurrency) : ''
+  })
   const [currency,  setCurrency]  = useState<string>(tripCurrency)
   const [settledOn, setSettledOn] = useState<string>(todayLocal())
   const [note,      setNote]      = useState<string>('')
   const [errors,    setErrors]    = useState<Record<string, string>>({})
 
-  // One-submit-per-open latch. The sheet closes optimistically (ExpensePage
-  // nulls recordTarget right after onSave), but a fast double-tap / Enter-
-  // repeat can fire handleSubmit twice BEFORE that unmount re-render lands —
-  // each call mints a fresh settlementId (caller-side crypto.randomUUID), so
-  // the 2nd write hits the Worker as a different id and 409s as stale once
-  // the 1st clears the debt → phantom optimistic row + confusing toast. A
-  // synchronous ref (NOT state — a setState is async and a same-tick 2nd
-  // click would still read the stale `false`) blocks the 2nd call. Resets
-  // per open via remount (parent keys the sheet on the suggestion identity).
+  // One-submit-per-open latch (sync ref: a same-tick double tap must not
+  // mint two route ids — the second would 409 as stale once the first lands).
   const submittedRef = useRef(false)
+  const memberById = new Map(members.map(m => [m.id, m]))
 
-  const fromMember = members.find(m => m.id === suggested.fromUid)
-  const toMember   = members.find(m => m.id === suggested.toUid)
+  const payerUid = intent.kind === 'TRANSFER'
+    ? (intent.mode === 'suggestion' ? intent.payerUid : payerChoice)
+    : undefined
+  const amountParse = isPayment ? parseMoneyToMinorResult(amountText, tripCurrency) : null
+  const amountMinor = intent.kind === 'TRANSFER'
+    ? (intent.mode === 'suggestion' ? intent.amountMinor : (amountParse?.ok ? amountParse.value : undefined))
+    : undefined
+  const maxMinor = payerUid && receiverUid ? maxPayable(pairwise, payerUid, receiverUid) : 0
 
-  const isForeignMode = currency !== tripCurrency
+  // The route this save would send, on the live ledger.
+  const route: SettlementRoute | null = intent.kind === 'OFFSET'
+    ? intent.route
+    : payerUid && receiverUid && amountMinor !== undefined && amountMinor > 0
+      ? paymentRoute(pairwise, payerUid, receiverUid, amountMinor, intent.planned)
+      : null
+  const offsetCurrent = intent.kind === 'OFFSET' ? isRouteCurrent(intent.route, pairwise) : true
+  const routeAmount = route?.kind === 'TRANSFER' ? route.amountMinor : 0
 
-  // FX preview only used when foreign. The hook gates internally on
-  // degenerate/invalid/future inputs, so we can call it unconditionally
-  // and read disabledReason for the user-facing message.
+  const isForeignMode = isTransfer && currency !== tripCurrency
   const fxPreview = useFxPreview({
     requestedDate:  settledOn,
     sourceCurrency: currency,
     tripCurrency,
     tripId,
   })
-  // A provisional-rate save waits here, owned by this sheet instance.
   const awaited = useAwaitedSave(onClose)
 
-  // Foreign-mode derivation: from the suggested trip-currency remaining,
-  // inverse-derive the largest source amount whose forward conversion
-  // does NOT exceed remaining (at-most policy — exactly what the Worker
-  // does authoritatively). This source amount is display + audit data
-  // only; the ledger amountMinor stays = remaining (Phase 4.1). We do
-  // NOT forward-convert it back here — the Worker owns the canonical
-  // `fxSnapshot.convertedAmountMinor`, so recomputing it client-side
-  // would be dead weight.
-  //
-  // Plain computation, not useMemo: the React Compiler memoises this derived
-  // value on its reactive inputs (currency / rate / remaining), so the
-  // binary-search inverse is skipped on unrelated re-renders (note / date
-  // typing) without a hand-written hook — matching the rest of the codebase.
-  const foreignDerived = ((): { sourceMinor: number } | null => {
-    if (!isForeignMode) return null
-    if (!fxPreview.rateDecimal) return null
-    const sourceMinor = estimateSourceMinorAtMostTargetHalfEven({
-      targetMinor:          suggested.amountMinor,
-      rateDecimal:          fxPreview.rateDecimal,
-      sourceFractionDigits: currencyFractionDigits(currency),
-      targetFractionDigits: currencyFractionDigits(tripCurrency),
-    })
-    return { sourceMinor }
-  })()
+  // Display + audit only: the largest source amount whose forward
+  // conversion does not exceed the cleared amount (the Worker's policy).
+  const foreignSourceMinor = isForeignMode && fxPreview.rateDecimal && routeAmount > 0
+    ? estimateSourceMinorAtMostTargetHalfEven({
+        targetMinor:          routeAmount,
+        rateDecimal:          fxPreview.rateDecimal,
+        sourceFractionDigits: currencyFractionDigits(currency),
+        targetFractionDigits: currencyFractionDigits(tripCurrency),
+      })
+    : null
 
-  function handleCurrencyChange(next: string) {
-    setCurrency(next)
-    setErrors({})
-  }
-
-  // Changing the date re-derives the FX rate (different cache key), so any
-  // prior settledOn / fx validation error is stale — clear it, same as
-  // handleCurrencyChange. Otherwise a fixed future-date / rate error banner
-  // lingers until the next submit (false-error UI).
-  function handleSettledOnChange(next: string) {
-    setSettledOn(next)
-    setErrors({})
-  }
+  function clearErrors() { setErrors({}) }
 
   function handleSubmit() {
-    if (submittedRef.current) return   // already submitted this open — no-op the 2nd tap
+    if (submittedRef.current) return
     const next: Record<string, string> = {}
-    // What a foreign submit sends, settled DURING validation: anything that
-    // could stop it is a validation error, never an early return after the
-    // latch below (which would leave the sheet silently stuck).
-    let foreignPayload: { expectedFxRate: FxRateQuote; sourceMinor: number } | null = null
+    let foreign: { expectedFxRate: FxRateQuote; sourceMinor: number } | null = null
 
-    if (isForeignMode) {
-      if (settledOn > todayLocal()) {
-        next.settledOn = '無法換算未來日期'
+    if (intent.kind === 'OFFSET') {
+      if (!offsetCurrent) next.route = '這筆抵銷已因其他清算而改變，請關閉後重新確認。'
+    } else {
+      if (!payerUid) next.payer = '請選擇付款人'
+      if (isPayment && (!amountParse?.ok || amountParse.value <= 0)) next.amount = '請輸入金額'
+      else if (!route) {
+        next.amount = maxMinor > 0
+          ? `帳上目前最多只能記錄 ${formatMinorAmount(maxMinor, tripCurrency)}`
+          : '帳務已變動，目前沒有可記錄的金額'
       }
-      if (fxPreview.disabledReason === 'invalid-input') {
-        next.settledOn = '請確認幣別或日期'
-      }
-      if (fxPreview.isError) {
-        next.fx = '無法取得匯率，請再試一次'
-      }
-      if (fxPreview.isLoading) {
-        next.fx = '正在取得匯率'
-      }
-      // The quote is what the Worker checks the save against; the derived
-      // source amount is computed from that same quote.
-      if (!fxPreview.rateQuote || !foreignDerived) {
-        next.fx = next.fx ?? '請確認匯率後再儲存'
-      } else {
-        foreignPayload = { expectedFxRate: fxPreview.rateQuote, sourceMinor: foreignDerived.sourceMinor }
-      }
-      // Tiny remaining + weak rate can inverse to 0 source minor (no
-      // source ≥ 1 fits at-most-remaining). Worker rejects this exact
-      // shape with SettlementValidationError('sourceCurrency') via the
-      // `foreign.sourceAmountMinor <= 0` guard; mirror it here on the
-      // SAME field so the user sees "換算後的金額過小" instead of a
-      // round-trip 400. Note: Phase 4.1 amountMinor=remaining is
-      // perfectly writeable when sourceMinor=0 (1 JPY for instance),
-      // but a 0 source is meaningless for the receipt — reject so the
-      // user picks a different source currency or uses TRIP_CURRENCY
-      // mode for the tiny remainder.
-      if (foreignDerived && foreignDerived.sourceMinor <= 0) {
-        next.fx = '換算後的金額過小，請選擇其他幣別'
+      if (isForeignMode) {
+        if (settledOn > todayLocal()) next.settledOn = '無法換算未來日期'
+        if (fxPreview.disabledReason === 'invalid-input') next.settledOn = '請確認幣別或日期'
+        if (fxPreview.isError) next.fx = '無法取得匯率，請再試一次'
+        if (fxPreview.isLoading) next.fx = '正在取得匯率'
+        if (!fxPreview.rateQuote || foreignSourceMinor === null) {
+          next.fx = next.fx ?? '請確認匯率後再儲存'
+        } else if (foreignSourceMinor <= 0) {
+          next.fx = '換算後的金額過小，請選擇其他幣別'
+        } else {
+          foreign = { expectedFxRate: fxPreview.rateQuote, sourceMinor: foreignSourceMinor }
+        }
       }
     }
 
-    if (Object.keys(next).length > 0) {
+    if (Object.keys(next).length > 0 || !route) {
       setErrors(next)
-      return                            // validation fail does NOT latch — user fixes + retries
+      return
     }
+    submittedRef.current = true
+    const trimmedNote = note.trim()
+    const base = { route, ...(trimmedNote ? { note: trimmedNote } : {}) }
 
-    submittedRef.current = true         // latch BEFORE onSave so a same-tick 2nd tap no-ops
-
-    // By mode, never by payload presence: a foreign sheet must not fall
-    // through to a trip-currency write. (Validation above guarantees the
-    // payload whenever foreign mode reaches here.)
-    if (isForeignMode && foreignPayload) {
-      const { expectedFxRate, sourceMinor } = foreignPayload
-      // FOREIGN: wire payload is intent only (mode + uids + sourceCurrency
-      // + settledOn + note). Optimistic patch mirrors what the Worker
-      // will write under Phase 4.1 ledger semantics:
-      //   amountMinor = suggested.amountMinor (== remaining, full clear)
-      // even though the Worker's FX forward (fxSnapshot.convertedAmountMinor)
-      // may be ≤ that by a few minor units. Using the suggestion's amount
-      // matches the authoritative server write and avoids a visible
-      // jump when the listener swap lands.
-      // expectedFxRate is the rate this render derived sourceMinor from —
-      // after adopting a refusal's rate, the next submit sends that rate.
+    if (isForeignMode && foreign) {
+      const { expectedFxRate, sourceMinor } = foreign
       awaited.submit(() => refusedUnlatch(onSave({
-        mode:                   'FOREIGN_CURRENCY',
-        fromUid:                suggested.fromUid,
-        toUid:                  suggested.toUid,
-        expectedRemainingMinor: suggested.amountMinor,
-        sourceCurrency:         currency,
-        settledOn,
-        ...(note.trim() ? { note: note.trim() } : {}),
-        optimistic: {
-          amountMinor:       suggested.amountMinor,
-          currency:          tripCurrency,
-          sourceAmountMinor: sourceMinor,
-        },
-        expectedFxRate,
+        ...base,
+        foreign: { sourceCurrency: currency, settledOn, expectedFxRate },
+        sourceAmountMinor: sourceMinor,
         ...(!fxPreview.isFinal ? { reportInForm: awaited.stillOpen } : {}),
       })), err => {
-        // Refused (definitively): unlatch so the user can confirm and
-        // resubmit; on FX_RATE_CHANGED show the refusal's rate as-is.
         submittedRef.current = false
         const current = fxRateChanged(err)
         if (!current) return describeSaveFailure(err)
         fxPreview.adoptRate(current)
         return fxRateChangedMessage(expectedFxRate, current)
       })
-    } else if (!isForeignMode) {
-      // TRIP: wire payload is intent only. Optimistic patch uses the
-      // suggestion's amount directly — Worker will compute the exact
-      // remaining at tx time (typically the same modulo any concurrent
-      // expense edit).
-      refusedUnlatch(onSave({
-        mode:                   'TRIP_CURRENCY',
-        fromUid:                suggested.fromUid,
-        toUid:                  suggested.toUid,
-        expectedRemainingMinor: suggested.amountMinor,
-        ...(note.trim() ? { note: note.trim() } : {}),
-        optimistic: {
-          amountMinor: suggested.amountMinor,
-          currency:    tripCurrency,
-        },
-      }))
+      return
     }
+    refusedUnlatch(onSave(base))
   }
 
   // The page can refuse synchronously (scope change, ledger not ready,
-  // update required, cap) without closing the sheet: release the latch so
-  // the next tap retries instead of being a silent dead button.
+  // update required, cap) without closing the sheet: release the latch.
   function refusedUnlatch(outcome: false | void | Promise<unknown>): void | Promise<unknown> {
     if (outcome === false) {
       submittedRef.current = false
@@ -306,85 +246,150 @@ export default function SettlementRecordSheet({
     return outcome
   }
 
+  const payer    = payerUid ? memberById.get(payerUid) : undefined
+  const receiver = receiverUid ? memberById.get(receiverUid) : undefined
+  const viaUids  = route ? routeParticipants(route.legs).filter(uid => uid !== payerUid && uid !== receiverUid) : []
+  const nameOf   = (uid: string) => memberById.get(uid)?.displayName ?? uid
+
   return (
     <FormModalShell
       isOpen={isOpen}
       isSaving={isSaving || awaited.saving}
-      title="記錄清算"
+      title={intent.kind === 'OFFSET' ? '記錄互相抵銷' : isPayment ? '記錄收款' : '記錄清算'}
       saveLabel="儲存紀錄"
       saveError={awaited.error}
       onClose={onClose}
       onSave={handleSubmit}
     >
       <div className="flex flex-col gap-4">
-        {/* Pairwise summary — visually anchors the sheet to the
-            suggestion the user tapped. Read-only; the receiver can't
-            switch payer here (would be a different debt edge). */}
-        {fromMember && toMember && (
-          <div className="flex items-center gap-2.5 px-3 py-2.5 bg-app rounded-input border border-border">
-            <MemberAvatar member={fromMember} size={32} />
-            <ArrowRight size={14} strokeWidth={2.5} className="text-muted shrink-0" />
-            <MemberAvatar member={toMember} size={32} />
-            <div className="flex-1 min-w-0 text-[13px] text-muted leading-tight">
-              <span className="font-semibold text-ink">{fromMember.displayName}</span>
-              <span> 支付給 </span>
-              <span className="font-semibold text-ink">{toMember.displayName}</span>
-              <span> 的清算</span>
+        {intent.kind === 'OFFSET' ? (
+          <div className="flex items-start gap-2.5 px-3 py-2.5 bg-app rounded-input border border-border">
+            <Repeat size={16} strokeWidth={2.2} className="text-teal shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0 text-[13px] text-muted leading-[1.5]">
+              <span className="font-semibold text-ink">{intent.route.participantUids.map(nameOf).join('、')}</span>
+              <span> 之間的欠款剛好繞成一圈，可以互相抵銷，不需要任何人付款。每個人的應收與應付都減少相同金額，淨額不變。</span>
             </div>
+          </div>
+        ) : (
+          <>
+            {isPayment ? (
+              <FormField label="付款人" error={errors.payer} required>
+                {payers.length === 0 ? (
+                  <div className="text-[13px] text-muted">目前帳上沒有人欠你錢。</div>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="付款人">
+                    {payers.map(p => {
+                      const m = memberById.get(p.uid)
+                      const selected = p.uid === payerUid
+                      return (
+                        <button
+                          key={p.uid}
+                          type="button"
+                          role="radio"
+                          aria-checked={selected}
+                          onClick={() => {
+                            setPayerChoice(p.uid)
+                            setAmountText(formatMinorForInput(p.maxMinor, tripCurrency))
+                            clearErrors()
+                          }}
+                          className={[
+                            'flex items-center gap-1.5 pl-1 pr-2.5 h-9 rounded-full border text-[12.5px] font-semibold cursor-pointer',
+                            selected ? 'border-teal bg-teal-pale text-teal' : 'border-border bg-surface text-ink',
+                          ].join(' ')}
+                        >
+                          {m && <MemberAvatar member={m} size={26} />}
+                          {m?.displayName ?? p.uid}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </FormField>
+            ) : payer && receiver && (
+              <div className="flex items-center gap-2.5 px-3 py-2.5 bg-app rounded-input border border-border">
+                <MemberAvatar member={payer} size={32} />
+                <ArrowRight size={14} strokeWidth={2.5} className="text-muted shrink-0" />
+                <MemberAvatar member={receiver} size={32} />
+                <div className="flex-1 min-w-0 text-[13px] text-muted leading-tight">
+                  <span className="font-semibold text-ink">{payer.displayName}</span>
+                  <span> 支付給 </span>
+                  <span className="font-semibold text-ink">{receiver.displayName}</span>
+                </div>
+              </div>
+            )}
+
+            <FormField label="清算金額" error={errors.amount} required={isPayment}>
+              {isPayment ? (
+                <CurrencyInput
+                  symbol={currencySymbol(tripCurrency)}
+                  inputMode="decimal"
+                  value={amountText}
+                  onChange={e => { setAmountText(e.target.value); clearErrors() }}
+                  error={!!errors.amount}
+                  aria-label="清算金額"
+                />
+              ) : (
+                <div className="w-full min-h-12 px-3 py-2.5 bg-app rounded-input border border-border text-[16px] leading-6 text-ink tabular-nums flex items-baseline gap-1 flex-wrap">
+                  <span className="font-semibold">{formatMinorAmount(amountMinor ?? 0, tripCurrency)}</span>
+                  {isForeignMode && foreignSourceMinor !== null && (
+                    <span className="text-muted text-[14px]">（≈ {formatMinorAmount(foreignSourceMinor, currency)}）</span>
+                  )}
+                </div>
+              )}
+              {isPayment && payerUid && (
+                <div className="mt-1 text-[11px] text-muted tabular-nums">
+                  帳上最多可記錄 {formatMinorAmount(maxMinor, tripCurrency)}
+                  {isForeignMode && foreignSourceMinor !== null && ` · ≈ ${formatMinorAmount(foreignSourceMinor, currency)}`}
+                </div>
+              )}
+            </FormField>
+          </>
+        )}
+
+        {errors.route && (
+          <div role="alert" className="px-3 py-2 rounded-input text-[12px] font-medium bg-warn-bg text-warn border border-warn">
+            {errors.route}
           </div>
         )}
 
-        {/* Amount display — READ ONLY. 「已收款」 clears the entire
-            remaining debt; Worker writes amountMinor = remaining
-            regardless of mode (Phase 4.1 ledger truth). Trip mode
-            shows ¥550 directly. Foreign mode shows "¥550 (≈ TWD 119)" —
-            the ¥550 is the actual debt cleared; the TWD value is the
-            inverse-derived source amount the receiver tells the system
-            they received in (recorded for audit / future review). */}
-        <FormField label="清算金額">
-          <div className="w-full min-h-12 px-3 py-2.5 bg-app rounded-input border border-border text-[16px] leading-6 text-ink tabular-nums flex items-baseline gap-1 flex-wrap">
-            <span className="font-semibold">
-              {formatMinorAmount(suggested.amountMinor, tripCurrency)}
-            </span>
-            {isForeignMode && (
-              !fxPreview.rateDecimal ? (
-                <span className="text-muted text-[14px]">
-                  （{fxPreview.isLoading ? '正在取得匯率…' : '請選擇收款幣別與日期'}）
-                </span>
-              ) : foreignDerived ? (
-                <span className="text-muted text-[14px]">
-                  （≈ {formatMinorAmount(foreignDerived.sourceMinor, currency)}）
-                </span>
-              ) : null
-            )}
+        {/* The legs this record will clear — every one on a real debt. */}
+        {route && (
+          <div className="flex flex-col gap-1">
+            <div className="text-[11px] font-semibold text-muted">
+              {route.kind === 'OFFSET'
+                ? '將抵銷的欠款'
+                : viaUids.length > 0
+                  ? `經 ${viaUids.map(nameOf).join('、')} 轉交，將清掉以下欠款`
+                  : '將清掉以下欠款'}
+            </div>
+            {route.legs.map(leg => (
+              <div key={`${leg.fromUid}-${leg.toUid}`} className="flex items-center gap-1.5 text-[12px] text-ink tabular-nums">
+                <span className="truncate">{nameOf(leg.fromUid)}</span>
+                <ArrowRight size={10} strokeWidth={2.5} className="text-muted shrink-0" />
+                <span className="truncate">{nameOf(leg.toUid)}</span>
+                <span className="ml-auto font-semibold">{formatMinorAmount(leg.amountMinor, tripCurrency)}</span>
+              </div>
+            ))}
           </div>
-        </FormField>
+        )}
 
-        <FormField label="收款幣別">
-          {/* Picking the trip currency keeps the sheet in TRIP_CURRENCY
-              mode (degenerate path, no FX). Picking a different code
-              flips to FOREIGN_CURRENCY. */}
-          <CurrencyPicker value={currency} onChange={handleCurrencyChange} />
-        </FormField>
+        {isTransfer && (
+          <FormField label="收款幣別">
+            <CurrencyPicker value={currency} onChange={next => { setCurrency(next); clearErrors() }} />
+          </FormField>
+        )}
 
         {isForeignMode && (
           <FormField label="收款日期" error={errors.settledOn} required>
-            {/* Settled-on bounds the FX rate lookup. maxDate caps the
-                picker at today so the user can't pick a future date
-                (Worker would reject with FX_FUTURE_DATE_UNSUPPORTED).
-                No minDate — historic settlements are valid. */}
             <DatePicker
               value={settledOn}
-              onChange={handleSettledOnChange}
+              onChange={next => { setSettledOn(next); clearErrors() }}
               maxDate={todayLocal()}
               error={!!errors.settledOn}
             />
           </FormField>
         )}
 
-        {/* Inline FX preview — mirrors ExpenseFormModal's foreign-mode
-            banner so the visual language is consistent. Four render
-            states: blocked (disabledReason) / loading / error / success. */}
         {isForeignMode && (
           <div
             role="status"

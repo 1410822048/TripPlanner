@@ -14,8 +14,12 @@
  *  receipt-touching writes, which epoch-1 bundles never send.
  *  Epoch 3: foreign-currency writes that convert (expense create / re-rating
  *  update, settlement create) require `expectedFxRate`, which epoch-2
- *  bundles never send. */
-export const CLIENT_SCHEMA_EPOCH = 3 as const
+ *  bundles never send.
+ *  Epoch 4: routed settlements — one record is several leg docs cancelled
+ *  together. An epoch-3 bundle lists each leg as its own settlement, and
+ *  its delete would silently cancel the whole route (other people's legs
+ *  included) with no explanation, so it must stop writing. */
+export const CLIENT_SCHEMA_EPOCH = 4 as const
 export const CLIENT_COMPATIBILITY_STORAGE_KEY = 'tripmate:client-compatibility:v1'
 
 const MANIFEST_URL = '/compatibility.json'

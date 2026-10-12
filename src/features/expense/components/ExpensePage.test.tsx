@@ -137,7 +137,7 @@ vi.mock('../hooks/useSettlements', () => ({
     dataUpdatedAt: harness.unconfirmed ? 0 : 1,
     isPending: harness.settlementPending, isError: !!harness.settlementError,
     error: harness.settlementError, refetch: harness.refetch }),
-  useCreateSettlement: () => ({ mutate: harness.createSettlement, mutateAsync: harness.createSettlementAsync }),
+  useCreateSettlementRoute: () => ({ mutate: harness.createSettlement, mutateAsync: harness.createSettlementAsync }),
   useDeleteSettlement: () => ({ mutate: harness.deleteSettlement }),
 }))
 
@@ -176,19 +176,22 @@ vi.mock('@/shared/toast', () => ({ toast: toastMocks }))
 vi.mock('./SettlementSummary', () => ({
   // Exposes the suggestion + delete callbacks so a test can drive the record
   // sheet and the delete path; the real component has its own spec.
-  default: ({ onRecordSettlement, onDeleteSettlement }: {
-    onRecordSettlement: (s: { fromUid: string; toUid: string; amountMinor: number }) => void
-    onDeleteSettlement: (id: string) => void
+  default: ({ onRecord, onDeleteSettlement }: {
+    onRecord: (intent: Record<string, unknown>) => void
+    onDeleteSettlement: (id: string, hideIds?: string[]) => void
   }) => (
     <>
       <button
         type="button"
-        onClick={() => onRecordSettlement({ fromUid: 'u2', toUid: 'u1', amountMinor: 600 })}
+        onClick={() => onRecord({ kind: 'TRANSFER', mode: 'suggestion', payerUid: 'u2', receiverUid: 'u1', amountMinor: 600 })}
       >
         record-settlement
       </button>
       <button type="button" onClick={() => onDeleteSettlement('settlement-1')}>
         delete-settlement
+      </button>
+      <button type="button" onClick={() => onDeleteSettlement('r-00', ['r-00', 'r-01'])}>
+        delete-route
       </button>
     </>
   ),
@@ -204,7 +207,7 @@ vi.mock('./SettlementRecordSheet', () => ({
       <button
         type="button"
         onClick={() => {
-          const r = onSave(harness.settleSubmit ?? { fromUid: 'u2', toUid: 'u1', amountMinor: 600 })
+          const r = onSave(harness.settleSubmit ?? { route: ONE_LEG })
           if (r) { harness.lastSavePromise = r; r.catch(() => {}) }
         }}
       >
@@ -243,6 +246,7 @@ vi.mock('@/components/ui/DemoBanner', () => ({ default: () => null }))
 vi.mock('@/components/ui/NoTripEmptyState', () => ({ default: () => null }))
 
 import ExpensePage from './ExpensePage'
+import { SETTLEMENT_LIST_LIMIT } from '../services/settlementService'
 
 const TS = {} as unknown as Timestamp
 
@@ -332,6 +336,18 @@ beforeEach(() => {
   toastMocks.success.mockReset()
   toastMocks.info.mockReset()
 })
+
+const ONE_LEG = {
+  kind: 'TRANSFER' as const, payerUid: 'u2', receiverUid: 'u1', amountMinor: 600,
+  legs: [{ fromUid: 'u2', toUid: 'u1', amountMinor: 600, expectedRemainingMinor: 600 }],
+}
+const TWO_LEGS = {
+  kind: 'TRANSFER' as const, payerUid: 'u2', receiverUid: 'u1', amountMinor: 600,
+  legs: [
+    { fromUid: 'u2', toUid: 'u3', amountMinor: 600, expectedRemainingMinor: 600 },
+    { fromUid: 'u3', toUid: 'u1', amountMinor: 600, expectedRemainingMinor: 600 },
+  ],
+}
 
 describe('ExpensePage read-first expense flow', () => {
   it('does not authorize cached ledger data as a complete ledger', () => {
@@ -528,6 +544,31 @@ describe('ExpensePage read-first expense flow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'mock settle submit' }))
 
     expect(harness.createSettlement).toHaveBeenCalledOnce()
+    const vars = harness.createSettlement.mock.calls[0]![0] as { routeId: string; route: unknown; optimistic: Record<string, unknown> }
+    // The page mints the route id; the receiver confirming is not 代記.
+    expect(vars.routeId).toMatch(/^[0-9a-f-]{36}$/)
+    expect(vars.route).toEqual(ONE_LEG)
+    expect(vars.optimistic).toMatchObject({ currency: 'JPY', settledBy: 'u1', ownerRecorded: false })
+    expect(screen.queryByRole('dialog', { name: 'settle-sheet' })).toBeNull()
+  })
+
+  it('refuses a route whose legs would push active settlements past the read limit', () => {
+    harness.settlements = Array.from({ length: SETTLEMENT_LIST_LIMIT - 1 }, (_, i) => ({ id: `s${i}`, fromUid: 'x', toUid: 'y', amountMinor: 1, deletedAt: null }))
+    harness.settleSubmit = { route: TWO_LEGS }
+    render(<ExpensePage />)
+    fireEvent.click(screen.getByRole('button', { name: 'record-settlement' }))
+    fireEvent.click(screen.getByRole('button', { name: 'mock settle submit' }))
+
+    // One slot left, two legs to write: the sheet stays open.
+    expect(harness.createSettlement).not.toHaveBeenCalled()
+    expect(toastMocks.error).toHaveBeenCalledWith(expect.stringContaining(`${SETTLEMENT_LIST_LIMIT}`))
+    expect(screen.getByRole('dialog', { name: 'settle-sheet' })).toBeTruthy()
+  })
+
+  it('cancelling a route hides every one of its legs', () => {
+    render(<ExpensePage />)
+    fireEvent.click(screen.getByRole('button', { name: 'delete-route' }))
+    expect(harness.deleteSettlement).toHaveBeenCalledWith({ settlementId: 'r-00', hideIds: ['r-00', 'r-01'] })
   })
 
   it('explains the stale bundle instead of silently dropping a settlement delete', () => {
@@ -638,17 +679,21 @@ describe('ExpensePage FX rate routing', () => {
     const reportInForm = () => true
     harness.createSettlementAsync.mockResolvedValue(undefined)
     harness.settleSubmit = {
-      mode: 'FOREIGN_CURRENCY', fromUid: 'u2', toUid: 'u1', expectedRemainingMinor: 600,
-      sourceCurrency: 'USD', settledOn: '2026-06-01',
-      optimistic: { amountMinor: 600, currency: 'JPY', sourceAmountMinor: 402 },
-      expectedFxRate: quote149, reportInForm,
+      route: ONE_LEG,
+      foreign: { sourceCurrency: 'USD', settledOn: '2026-06-01', expectedFxRate: quote149 },
+      sourceAmountMinor: 402,
+      reportInForm,
     }
     render(<ExpensePage />)
     fireEvent.click(screen.getByRole('button', { name: 'record-settlement' }))
     fireEvent.click(screen.getByRole('button', { name: 'mock settle submit' }))
 
     expect(harness.createSettlement).not.toHaveBeenCalled()
-    expect(harness.createSettlementAsync).toHaveBeenCalledWith(expect.objectContaining({ expectedFxRate: quote149, reportInForm }))
+    expect(harness.createSettlementAsync).toHaveBeenCalledWith(expect.objectContaining({
+      foreign: expect.objectContaining({ expectedFxRate: quote149 }),
+      optimistic: expect.objectContaining({ sourceAmountMinor: 402 }),
+      reportInForm,
+    }))
     await act(async () => { await harness.lastSavePromise })
     expect(screen.getByRole('dialog', { name: 'settle-sheet' })).toBeTruthy()
   })

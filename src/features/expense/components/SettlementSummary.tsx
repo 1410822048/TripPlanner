@@ -1,5 +1,5 @@
 // src/features/expense/components/SettlementSummary.tsx
-import { ArrowRight, Check, Clock } from 'lucide-react'
+import { Check, HandCoins } from 'lucide-react'
 import type { Expense } from '@/types'
 import type { SettlementRecord } from '@/types/settlement'
 import type { TripMember } from '@/features/trips/types'
@@ -8,7 +8,9 @@ import {
   computeBalancesFull,
   type OrphanReason,
 } from '../services/settlement'
-import { computeSettlementSuggestions } from '../services/settlementSuggestions'
+import { planRouteSuggestions, payersFor, type RouteSuggestion } from '../services/settlementRoutes'
+import type { RecordIntent } from './SettlementRecordSheet'
+import SettlementRouteCard from './SettlementRouteCard'
 import { formatMinorAmount } from '@/utils/money'
 import SettlementHistory from './SettlementHistory'
 
@@ -33,18 +35,13 @@ interface Props {
    *  blocked owner loses the affordance; the Worker's recorder-or-owner
    *  gate stays authoritative. */
   canDeleteAnySettlement: boolean
-  /** Opens the settlement record sheet preseeded with the suggestion the
-   *  receiver tapped. The sheet (lives at the page level) does the actual
-   *  mutate; this component just bubbles the intent up. Settlement FX
-   *  Commit 3/4 + Phase 4.1 replaced the previous one-click `onMarkSettled`
-   *  with this two-step flow so the receiver can pick which currency they
-   *  actually received in (for display + audit). The ledger amount is
-   *  always the full pair-remaining — the sheet never lets the receiver
-   *  override the cleared amount, only the source currency / date. */
-  onRecordSettlement: (suggestion: { fromUid: string; toUid: string; amountMinor: number }) => void
-  /** Removes a previously recorded settlement. Used to clean up
-   *  orphans whose expense was deleted, or to undo a premature「已收款」. */
-  onDeleteSettlement: (id: string) => void
+  /** Opens the record sheet: a suggestion the user confirms (transfer or
+   *  offset), or「記錄收款」for a payment that doesn't match a suggestion.
+   *  The page owns the sheet and the mutation. */
+  onRecord: (intent: RecordIntent) => void
+  /** Cancels a settlement — for a route, every leg (`hideIds`) goes with
+   *  it. Used to clean up orphans or undo a premature record. */
+  onDeleteSettlement: (id: string, hideIds?: string[]) => void
   /** Trip owner: may record the receipt for a receiver who has LEFT the
    *  trip (nobody else can confirm it any more). The Worker enforces it
    *  and marks the row `recordedOnBehalfOf`. */
@@ -53,7 +50,7 @@ interface Props {
 
 export default function SettlementSummary({
   expenses, members, settlements, formerMemberNames, currency, uid, canDeleteAnySettlement,
-  canRecordForDeparted = false, onRecordSettlement, onDeleteSettlement,
+  canRecordForDeparted = false, onRecord, onDeleteSettlement,
 }: Props) {
   // computeBalancesFull also returns `participants` (members + ghosts
   // for kicked-out uids still in expenses/settlements). Reusing that
@@ -61,12 +58,31 @@ export default function SettlementSummary({
   // `pairwise` is the same normalized debt-edge map the suggestion
   // engine walks — one row per real pair debt, matching what the Worker
   // validation reads to gate `amount <= remaining`.
-  const { balances, orphans, participants, pairwise, gross, applied } = computeBalancesFull(expenses, members, settlements, formerMemberNames)
-  // Domain-enriched suggestions: each carries an optional `settledContext`
-  // (應清算 / 已清算 / 還差) for a partially-cleared pair. The "is the
-  // breakdown mathematically explicable" decision lives in the service.
-  const suggestions = computeSettlementSuggestions({ pairwise, gross, applied })
+  const { balances, orphans, participants, pairwise } = computeBalancesFull(expenses, members, settlements, formerMemberNames)
+  // Simplified routes on real debt edges (settlement-core, same planner the
+  // Worker's validation agrees with), each leg previewed with the expenses
+  // it would clear.
+  const suggestions = planRouteSuggestions(pairwise, expenses, settlements)
   const memberById  = new Map(participants.map(m => [m.id, m]))
+  // 「記錄收款」: anyone the ledger can still explain paying me.
+  const me = uid ? memberById.get(uid) : undefined
+  const canRecordPayment = me != null && me.isGhost !== true
+    && payersFor(pairwise, uid!, participants.map(m => m.id)).length > 0
+
+  function recordSuggestion(s: RouteSuggestion) {
+    if (s.kind === 'OFFSET') {
+      onRecord({ kind: 'OFFSET', route: { kind: 'OFFSET', participantUids: s.participantUids, legs: s.legs.map(stripSources) } })
+      return
+    }
+    onRecord({
+      kind:        'TRANSFER',
+      mode:        'suggestion',
+      payerUid:    s.payerUid,
+      receiverUid: s.receiverUid,
+      amountMinor: s.amountMinor,
+      planned:     { kind: 'TRANSFER', payerUid: s.payerUid, receiverUid: s.receiverUid, amountMinor: s.amountMinor, legs: s.legs.map(stripSources) },
+    })
+  }
 
   // `expenses` includes soft-deleted rows (passed through for chronological
   // replay). Active-expense visual regions (balance cards, suggestions,
@@ -163,85 +179,36 @@ export default function SettlementSummary({
           <>
             <div className="my-3 border-t border-dashed border-border" />
             <div className="text-[10.5px] font-semibold text-muted tracking-[0.08em] uppercase mb-2">
-              付款建議（{suggestions.length} 筆）
+              付款建議（{suggestions.filter(x => x.kind === 'TRANSFER').length} 筆付款{suggestions.some(x => x.kind === 'OFFSET') ? `、${suggestions.filter(x => x.kind === 'OFFSET').length} 組抵銷` : ''}）
             </div>
             <div className="flex flex-col gap-1.5">
-              {suggestions.map((s, i) => {
-                const from = memberById.get(s.fromId)!
-                const to   = memberById.get(s.toId)!
-                // Receiver-only: only the payee (toId) can mark settled.
-                // Payer / third-party see a status pill, not a button.
-                // A departed PAYER is recordable: the debt came from real
-                // expenses and the receiver is the one confirming they were
-                // repaid.
-                //
-                // A departed RECEIVER is not, and `uid === s.toId` does not
-                // rule it out on its own: uid is who you are signed in as,
-                // not proof you are still on the roster. Once the roster
-                // listener drops you, you are your own ghost — still
-                // looking at the page, still matching toId, and the button
-                // would be offering an action the Worker refuses. (In the
-                // window BEFORE that listener lands you are not a ghost
-                // yet, and the Worker is what turns it down.)
-                const recordForDeparted = canRecordForDeparted && to.isGhost === true && uid !== s.fromId
-                const canRecord = (uid != null && uid === s.toId && !to.isGhost) || recordForDeparted
-                const isPayer   = uid != null && uid === s.fromId
-                // settledContext (應清算 / 已清算 / 還差) is computed in the
-                // settlement domain — the UI just renders it when present.
-                const settled   = s.settledContext
-                return (
-                  <div
-                    key={`${s.fromId}-${s.toId}-${i}`}
-                    className="flex items-center gap-2 px-2.5 py-2 bg-app rounded-input border border-border"
-                  >
-                    <MemberAvatar member={from} size={28} />
-                    <ArrowRight size={12} strokeWidth={2.5} className="text-muted shrink-0" />
-                    <MemberAvatar member={to}   size={28} />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-[14.5px] font-extrabold text-ink tabular-nums -tracking-[0.2px]">
-                        {formatMinorAmount(s.amountMinor, currency)}
-                      </div>
-                      {settled && (
-                        <div className="text-[10px] text-muted font-medium tabular-nums mt-px">
-                          應清算 {formatMinorAmount(settled.grossMinor, currency)}，已清算 {formatMinorAmount(settled.appliedMinor, currency)}
-                        </div>
-                      )}
-                    </div>
-                    {canRecord ? (
-                      <button
-                        type="button"
-                        onClick={() => onRecordSettlement({
-                          fromUid:     s.fromId,
-                          toUid:       s.toId,
-                          amountMinor: s.amountMinor,
-                        })}
-                        aria-label={recordForDeparted
-                          ? `代 ${to.displayName}（已退出）記錄已收到 ${from.displayName} 支付的 ${formatMinorAmount(s.amountMinor, currency)}`
-                          : `記錄已收到 ${from.displayName} 支付的 ${formatMinorAmount(s.amountMinor, currency)}`}
-                        className="shrink-0 flex items-center gap-1 px-2.5 h-7 rounded-full border-none bg-teal text-white text-[10.5px] font-bold tracking-[0.04em] cursor-pointer transition-all hover:-translate-y-px"
-                      >
-                        <Check size={11} strokeWidth={2.8} />
-                        {recordForDeparted ? '代記已收款' : '已收款'}
-                      </button>
-                    ) : (
-                      <div
-                        role="status"
-                        aria-label={isPayer
-                          ? `等待收款人（${to.displayName}）確認`
-                          : `尚未確認 ${from.displayName} 支付給 ${to.displayName} 的清算`}
-                        title={isPayer ? '由收款人（不是你）確認' : undefined}
-                        className="shrink-0 flex items-center gap-1 px-2.5 h-7 rounded-full bg-app text-muted text-[10.5px] font-medium tracking-[0.04em] opacity-75"
-                      >
-                        <Clock size={11} strokeWidth={2.4} />
-                        等待收款
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
+              {suggestions.map((sg, i) => (
+                <SettlementRouteCard
+                  key={sg.kind === 'TRANSFER'
+                    ? `t-${sg.payerUid}-${sg.receiverUid}-${i}`
+                    : `o-${sg.participantUids.join(',')}`}
+                  suggestion={sg}
+                  memberById={memberById}
+                  currency={currency}
+                  uid={uid}
+                  canRecordForDeparted={canRecordForDeparted}
+                  onRecord={recordSuggestion}
+                />
+              ))}
             </div>
           </>
         ))}
+
+        {hasActiveExpenses && canRecordPayment && (
+          <button
+            type="button"
+            onClick={() => onRecord({ kind: 'TRANSFER', mode: 'payment', receiverUid: uid! })}
+            className="mt-2 w-full flex items-center justify-center gap-1.5 h-9 rounded-input border border-dashed border-border bg-transparent text-[11.5px] font-semibold text-teal cursor-pointer hover:bg-teal-pale"
+          >
+            <HandCoins size={13} strokeWidth={2.2} />
+            記錄收款（金額或對象跟建議不同時）
+          </button>
+        )}
 
         {/* ── 已清算紀錄 + orphan 警告 ────────────────── */}
         {settlements.length > 0 && (
@@ -261,4 +228,8 @@ export default function SettlementSummary({
       </div>
     </div>
   )
+}
+
+function stripSources<L extends { fromUid: string; toUid: string; amountMinor: number; expectedRemainingMinor: number }>(leg: L) {
+  return { fromUid: leg.fromUid, toUid: leg.toUid, amountMinor: leg.amountMinor, expectedRemainingMinor: leg.expectedRemainingMinor }
 }

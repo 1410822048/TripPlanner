@@ -1,27 +1,10 @@
-// Service-level tests for the Worker-cutover settlement create/delete.
+// Service-level tests for the Worker-authoritative settlement writes.
 //
-// settlementService is mostly a thin wrapper around workerFetch, but
-// there's one protocol-level invariant that's worth locking down: the
-// `settledBy` field MUST NOT be sent to the Worker -- the Worker derives
-// it from the verified Firebase token. Forgetting this would let a
-// (future) raw-SDK caller pin `settledBy` to anything, and after M4
-// closes the rule to `if false` the server-side check is the only one
-// left.
-//
-// Phase 4.1 rearchitecture invariants additionally locked:
-//   - `expectedRemainingMinor` crosses the wire only as a stale-confirmation
-//     guard. NO `amountMinor` / `currency` / `sourceAmountMinor` cross the
-//     wire. The Worker derives the canonical from pair-remaining at tx
-//     time; forwarding any of these would invite a totals-only-validation
-//     regression and re-open the OVERPAY class of bug.
-//   - NO `optimistic` field crosses the wire — it's strictly for the
-//     local cache patch row (see useSettlements.ts).
-//
-// Other assertions cover: note conditional include (omit vs '' has
-// Firestore-level semantics), the delete payload shape, and the caller-
-// supplied settlementId (which the optimistic patch / Worker request /
-// Firestore doc all share, so the cache row swap is atomic without
-// temp-id juggling).
+// settlementService is a thin wrapper around workerFetch; what is worth
+// locking down is the wire contract: `settledBy` and the optimistic
+// fields never cross it (the Worker derives settledBy from the token),
+// legs go in canonical order (the Worker assigns leg doc ids by it, and so
+// does the client overlay), and the route id is the caller's.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -50,17 +33,9 @@ vi.mock('@/services/workerBase', async () => {
 
 vi.stubGlobal('fetch', fetchMock)
 
-import { createSettlement, deleteSettlement } from './settlementService'
+import { createSettlementRoute, deleteSettlement } from './settlementService'
 
-const TRIP_ID       = 'trip-1'
-const SETTLEMENT_ID = 'caller-minted-uuid'
-
-/** Stub optimistic slice — local-only field on the variables type. None
- *  of these values should ever appear in the wire body. */
-const OPTIMISTIC_STUB = {
-  amountMinor: 9750,
-  currency:    'JPY',
-} as const
+const TRIP_ID = 'trip-1'
 
 beforeEach(() => {
   fetchMock.mockReset()
@@ -73,222 +48,78 @@ function okResponse(body: unknown): Response {
   })
 }
 
-describe('createSettlement', () => {
-  it('TRIP_CURRENCY: posts stale-confirmed intent body (no amount, no currency) + does NOT send settledBy/optimistic', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse({ ok: true, settlementId: SETTLEMENT_ID }))
+const sentBody = () => JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string) as Record<string, unknown>
 
-    await createSettlement(TRIP_ID, {
-      mode:         'TRIP_CURRENCY',
-      settlementId: SETTLEMENT_ID,
-      fromUid:      'from-uid',
-      toUid:        'to-uid',
-      expectedRemainingMinor: OPTIMISTIC_STUB.amountMinor,
-      optimistic:   OPTIMISTIC_STUB,
-    })
+// a → c 300 via b; legs deliberately out of canonical order.
+const TRANSFER = {
+  kind: 'TRANSFER' as const, payerUid: 'a', receiverUid: 'c', amountMinor: 300,
+  legs: [
+    { fromUid: 'b', toUid: 'c', amountMinor: 300, expectedRemainingMinor: 900 },
+    { fromUid: 'a', toUid: 'b', amountMinor: 300, expectedRemainingMinor: 300 },
+  ],
+}
+const OPTIMISTIC = { currency: 'JPY', settledBy: 'c', pendingAppliedExpenseIds: [['e1'], ['e2']] }
 
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+describe('createSettlementRoute', () => {
+  it('posts the route in canonical leg order, with the caller-minted routeId and nothing local', async () => {
+    fetchMock.mockResolvedValueOnce(okResponse({ ok: true, routeId: 'r-1', settlementIds: ['r-1-00', 'r-1-01'] }))
+    await createSettlementRoute(TRIP_ID, { routeId: 'r-1', route: TRANSFER, optimistic: OPTIMISTIC })
+
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('https://worker.example.dev/settlement-create')
+    expect(url).toBe('https://worker.example.dev/settlement-route-create')
     expect(init.method).toBe('POST')
-
-    const sentBody = JSON.parse(init.body as string) as Record<string, unknown>
-    expect(sentBody).toEqual({
-      mode:         'TRIP_CURRENCY',
-      tripId:       TRIP_ID,
-      settlementId: SETTLEMENT_ID,
-      fromUid:      'from-uid',
-      toUid:        'to-uid',
-      expectedRemainingMinor: OPTIMISTIC_STUB.amountMinor,
+    expect(sentBody()).toEqual({
+      tripId: TRIP_ID, routeId: 'r-1', kind: 'TRANSFER', payerUid: 'a', receiverUid: 'c', amountMinor: 300,
+      // The Worker assigns leg doc ids by this order; so does the overlay.
+      legs: [
+        { fromUid: 'a', toUid: 'b', amountMinor: 300, expectedRemainingMinor: 300 },
+        { fromUid: 'b', toUid: 'c', amountMinor: 300, expectedRemainingMinor: 900 },
+      ],
     })
-    // Critical invariant: Worker derives settledBy from the token. If
-    // the client started sending it, the Worker would still ignore it
-    // -- but any future deserialization shim that forwarded the field
-    // verbatim would let a caller forge settledBy on another uid.
-    expect(sentBody).not.toHaveProperty('settledBy')
-    expect(sentBody).not.toHaveProperty('amountMinor')
-    expect(sentBody).not.toHaveProperty('currency')
-    expect(sentBody).not.toHaveProperty('optimistic')
+    // settledBy comes from the verified token; optimistic is local-only.
+    expect(sentBody()).not.toHaveProperty('settledBy')
+    expect(sentBody()).not.toHaveProperty('optimistic')
   })
 
-  it('forwards the caller-minted settlementId verbatim (no internal re-minting)', async () => {
-    // Guards against accidental regression to in-service minting --
-    // optimistic cache row depends on the id matching exactly so the
-    // listener-supplied real row replaces it without flicker.
-    fetchMock.mockResolvedValueOnce(okResponse({ ok: true, settlementId: 'another-uuid' }))
-
-    await createSettlement(TRIP_ID, {
-      mode:         'TRIP_CURRENCY',
-      settlementId: 'another-uuid',
-      fromUid:      'from-uid',
-      toUid:        'to-uid',
-      expectedRemainingMinor: OPTIMISTIC_STUB.amountMinor,
-      optimistic:   OPTIMISTIC_STUB,
+  it('sends the foreign trio and note on a transfer; empty note is omitted', async () => {
+    fetchMock.mockResolvedValueOnce(okResponse({ ok: true }))
+    await createSettlementRoute(TRIP_ID, {
+      routeId: 'r-2', route: TRANSFER, note: '晚餐',
+      foreign: { sourceCurrency: 'USD', settledOn: '2026-05-30', expectedFxRate: { rateDecimal: '150', rateDate: '2026-05-30' } },
+      optimistic: { ...OPTIMISTIC, sourceAmountMinor: 200 },
     })
-
-    const sentBody = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string) as { settlementId: string }
-    expect(sentBody.settlementId).toBe('another-uuid')
-  })
-
-  it('TRIP_CURRENCY: omits note field when input.note is undefined', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse({ ok: true, settlementId: SETTLEMENT_ID }))
-
-    await createSettlement(TRIP_ID, {
-      mode:         'TRIP_CURRENCY',
-      settlementId: SETTLEMENT_ID,
-      fromUid:      'from-uid',
-      toUid:        'to-uid',
-      expectedRemainingMinor: OPTIMISTIC_STUB.amountMinor,
-      optimistic:   OPTIMISTIC_STUB,
-    })
-
-    const sentBody = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string) as Record<string, unknown>
-    expect(sentBody).not.toHaveProperty('note')
-  })
-
-  it('TRIP_CURRENCY: includes note when provided', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse({ ok: true, settlementId: SETTLEMENT_ID }))
-
-    await createSettlement(TRIP_ID, {
-      mode:         'TRIP_CURRENCY',
-      settlementId: SETTLEMENT_ID,
-      fromUid:      'from-uid',
-      toUid:        'to-uid',
-      expectedRemainingMinor: OPTIMISTIC_STUB.amountMinor,
-      note:         '焼肉の精算',
-      optimistic:   OPTIMISTIC_STUB,
-    })
-
-    const sentBody = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string) as { note: string }
-    expect(sentBody.note).toBe('焼肉の精算')
-  })
-
-  it('TRIP_CURRENCY: omits note when input.note is empty string (preserves Firestore "field absent" semantics)', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse({ ok: true, settlementId: SETTLEMENT_ID }))
-
-    await createSettlement(TRIP_ID, {
-      mode:         'TRIP_CURRENCY',
-      settlementId: SETTLEMENT_ID,
-      fromUid:      'from-uid',
-      toUid:        'to-uid',
-      expectedRemainingMinor: OPTIMISTIC_STUB.amountMinor,
-      note:         '',
-      optimistic:   OPTIMISTIC_STUB,
-    })
-
-    const sentBody = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string) as Record<string, unknown>
-    expect(sentBody).not.toHaveProperty('note')
-  })
-
-  // ── FOREIGN_CURRENCY branch ─────────────────────────────────────
-  //
-  // Phase 4.1 rearchitecture: the client ships only a stale-confirmed
-  // intent (mode + uids + expectedRemainingMinor + sourceCurrency +
-  // settledOn + note?). NO sourceAmountMinor — Worker inverse-derives it
-  // from pair-remaining via atMost policy and writes both source +
-  // canonical authoritatively.
-  //
-  // These assertions are the only thing standing between a future
-  // refactor of the wire body and a silent regression where the
-  // client either (a) starts forwarding optimistic canonical (Worker
-  // .strict() now rejects, but a "tolerant" shim could re-open it) or
-  // (b) drops a required intent field (Worker 400s but the failure
-  // reads like "FX provider issue" to support).
-  const FOREIGN_OPTIMISTIC = {
-    amountMinor:       9750,
-    currency:          'JPY',
-    sourceAmountMinor: 6500,
-  } as const
-
-  it('FOREIGN_CURRENCY: ships stale-confirmed intent body + omits all amount fields', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse({ ok: true, settlementId: SETTLEMENT_ID }))
-
-    await createSettlement(TRIP_ID, {
-      mode:           'FOREIGN_CURRENCY',
-      settlementId:   SETTLEMENT_ID,
-      fromUid:        'from-uid',
-      toUid:          'to-uid',
-      expectedRemainingMinor: FOREIGN_OPTIMISTIC.amountMinor,
-      sourceCurrency: 'USD',
-      settledOn:      '2026-05-30',
-      expectedFxRate: { rateDecimal: '150', rateDate: '2026-05-30' },
-      optimistic:     FOREIGN_OPTIMISTIC,
-    })
-
-    const sentBody = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string) as Record<string, unknown>
-    expect(sentBody).toEqual({
-      mode:           'FOREIGN_CURRENCY',
-      tripId:         TRIP_ID,
-      settlementId:   SETTLEMENT_ID,
-      fromUid:        'from-uid',
-      toUid:          'to-uid',
-      expectedRemainingMinor: FOREIGN_OPTIMISTIC.amountMinor,
-      sourceCurrency: 'USD',
-      settledOn:      '2026-05-30',
-      // The confirmed rate travels — the Worker refuses the write if its own differs.
+    expect(sentBody()).toMatchObject({
+      note: '晚餐', sourceCurrency: 'USD', settledOn: '2026-05-30',
       expectedFxRate: { rateDecimal: '150', rateDate: '2026-05-30' },
     })
-    // Worker is authoritative on every amount field — none cross the wire.
-    expect(sentBody).not.toHaveProperty('amountMinor')
-    expect(sentBody).not.toHaveProperty('currency')
-    expect(sentBody).not.toHaveProperty('sourceAmountMinor')
-    expect(sentBody).not.toHaveProperty('optimistic')
-    expect(sentBody).not.toHaveProperty('settledBy')
+    // The Worker derives the source amount itself.
+    expect(sentBody()).not.toHaveProperty('sourceAmountMinor')
+
+    fetchMock.mockReset()
+    fetchMock.mockResolvedValueOnce(okResponse({ ok: true }))
+    await createSettlementRoute(TRIP_ID, { routeId: 'r-3', route: TRANSFER, note: '', optimistic: OPTIMISTIC })
+    expect(sentBody()).not.toHaveProperty('note')
   })
 
-  it('FOREIGN_CURRENCY: includes note when provided', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse({ ok: true, settlementId: SETTLEMENT_ID }))
-
-    await createSettlement(TRIP_ID, {
-      mode:           'FOREIGN_CURRENCY',
-      settlementId:   SETTLEMENT_ID,
-      fromUid:        'from-uid',
-      toUid:          'to-uid',
-      expectedRemainingMinor: FOREIGN_OPTIMISTIC.amountMinor,
-      sourceCurrency: 'USD',
-      settledOn:      '2026-05-30',
-      expectedFxRate: { rateDecimal: '150', rateDate: '2026-05-30' },
-      note:           'NYで受取',
-      optimistic:     FOREIGN_OPTIMISTIC,
+  it('an offset carries no payer, receiver, amount or currency', async () => {
+    fetchMock.mockResolvedValueOnce(okResponse({ ok: true }))
+    await createSettlementRoute(TRIP_ID, {
+      routeId: 'r-4',
+      route: { kind: 'OFFSET', participantUids: ['a', 'b'], legs: [{ fromUid: 'a', toUid: 'b', amountMinor: 5, expectedRemainingMinor: 5 }] },
+      optimistic: OPTIMISTIC,
     })
-
-    const sentBody = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string) as { note: string }
-    expect(sentBody.note).toBe('NYで受取')
-  })
-
-  it('FOREIGN_CURRENCY: omits note when empty string (same Firestore "field absent" semantics as TRIP_CURRENCY)', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse({ ok: true, settlementId: SETTLEMENT_ID }))
-
-    await createSettlement(TRIP_ID, {
-      mode:           'FOREIGN_CURRENCY',
-      settlementId:   SETTLEMENT_ID,
-      fromUid:        'from-uid',
-      toUid:          'to-uid',
-      expectedRemainingMinor: FOREIGN_OPTIMISTIC.amountMinor,
-      sourceCurrency: 'USD',
-      settledOn:      '2026-05-30',
-      expectedFxRate: { rateDecimal: '150', rateDate: '2026-05-30' },
-      note:           '',
-      optimistic:     FOREIGN_OPTIMISTIC,
+    expect(sentBody()).toEqual({
+      tripId: TRIP_ID, routeId: 'r-4', kind: 'OFFSET',
+      legs: [{ fromUid: 'a', toUid: 'b', amountMinor: 5, expectedRemainingMinor: 5 }],
     })
-
-    const sentBody = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string) as Record<string, unknown>
-    expect(sentBody).not.toHaveProperty('note')
   })
 
-  it('propagates Worker rejection as WorkerRejected (no silent success)', async () => {
-    fetchMock.mockResolvedValueOnce(new Response('no remaining debt from from-uid to to-uid', {
-      status:  400,
-      headers: { 'Content-Type': 'text/plain' },
+  it('propagates Worker rejection (e.g. stale suggestion)', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'settlement suggestion is stale', code: 'SETTLEMENT_STALE' }), {
+      status: 409, headers: { 'Content-Type': 'application/json' },
     }))
-
-    await expect(createSettlement(TRIP_ID, {
-      mode:         'TRIP_CURRENCY',
-      settlementId: SETTLEMENT_ID,
-      fromUid:      'from-uid',
-      toUid:        'to-uid',
-      expectedRemainingMinor: OPTIMISTIC_STUB.amountMinor,
-      optimistic:   OPTIMISTIC_STUB,
-    })).rejects.toThrowError(/no remaining debt/i)
+    await expect(createSettlementRoute(TRIP_ID, { routeId: 'r-5', route: TRANSFER, optimistic: OPTIMISTIC }))
+      .rejects.toMatchObject({ name: 'WorkerRejected' })
   })
 })
 
