@@ -441,6 +441,22 @@ describe('expenseCreate endpoint', () => {
 // ─── expenseUpdate ─────────────────────────────────────────────────
 
 describe('expenseUpdate endpoint', () => {
+	it("note '' clears the field via updateMask-without-value", async () => {
+		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('editor'))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, aliveExpenseReadDoc())
+
+		await expenseUpdate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'TRIP_CURRENCY', note: '' } },
+			'{}', BUCKET,
+		)
+
+		const writes = capturedTxResult!.writes as { updateMask?: string[]; fields: Record<string, unknown> }[]
+		expect(writes[0].updateMask).toContain('note')
+		expect(writes[0].fields.note).toBeUndefined()
+	})
+
 	it('happy path: writes patch with updateMask + currentDocument.exists=true + REQUEST_TIME transform for updatedAt', async () => {
 		txGetResponses.set(`trips/${TRIP_ID}`,                       tripReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, memberReadDoc('editor'))
@@ -2187,6 +2203,18 @@ describe('FX CAS (expectedFxRate)', () => {
 		const writes = capturedTxResult!.writes as Array<{ updateMask?: string[] }>
 		expect(writes[0].updateMask).toContain('note')
 		expect(writes[0].updateMask).not.toContain('fxSnapshot')
+	})
+
+	it("foreign text-only update: note '' clears the field via the mask", async () => {
+		seedForeignAlive()
+		await expenseUpdate(
+			CALLER_UID,
+			{ tripId: TRIP_ID, expenseId: EXPENSE_ID, patch: { mode: 'FOREIGN_CURRENCY', note: '' } },
+			'{}', BUCKET,
+		)
+		const writes = capturedTxResult!.writes as Array<{ updateMask?: string[]; fields: Record<string, unknown> }>
+		expect(writes[0].updateMask).toContain('note')
+		expect(writes[0].fields.note).toBeUndefined()
 	})
 
 	it('create: a trip-currency write carrying expectedFxRate is a caller bug', async () => {

@@ -43,6 +43,7 @@ const VALID_RESULT = {
 
 function request(over: Partial<BookingPdfExtractRequest> = {}): BookingPdfExtractRequest {
 	return {
+		tripId:    'trip-1',
 		fileName:  'airbnb.pdf',
 		pageCount: 2,
 		text:      'Airbnb Sakura House\n確認コード HM12345\n前往房源 東京都台東区浅草1-1-1',

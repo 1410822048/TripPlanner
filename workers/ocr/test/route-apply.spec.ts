@@ -64,6 +64,7 @@ describe('route apply authentication boundary', () => {
         { id: 'a', order: 0 },
         { id: 'b', order: 1 },
       ],
+      legs: [],
     }, 'not-used', 'project', 'test-secret-with-at-least-16-bytes')).rejects.toMatchObject({
       status: 401,
       code: 'PREVIEW_TOKEN_INVALID',
@@ -217,7 +218,17 @@ describe('route apply authentication boundary', () => {
     expect(receipt?.fields).not.toHaveProperty('legs')
   })
 
-  test('clears every travelToNext projection when a rolling-deploy client omits legs', async () => {
+  test('requires legs on the wire', () => {
+    expect(RouteApplyRequestSchema.safeParse({
+      tripId: 'trip-1',
+      revision: 'revision-1234567890',
+      date: '2026-07-15',
+      previewToken: 't'.repeat(32),
+      schedules: [{ id: 'a', order: 0 }, { id: 'b', order: 1 }],
+    }).success).toBe(false)
+  })
+
+  test('refuses a preview token that never signed legs before any Firestore call', async () => {
     const secret = 'test-secret-with-at-least-16-bytes'
     const schedules = [{ id: 'a', order: 0 }, { id: 'b', order: 1 }]
     const revision = 'revision-1234567890'
@@ -229,49 +240,13 @@ describe('route apply authentication boundary', () => {
       inputHash: 'input-hash',
       payloadHash: await stableHash({ revision, date, schedules }),
     }, secret)
-    getAdminToken.mockResolvedValue('admin-token')
-    requireTripMember.mockResolvedValue({
-      trip: { exists: true, fields: {}, name: 'trip', updateTime: 't1' },
-      member: {
-        exists: true,
-        fields: { role: { stringValue: 'editor' } },
-        name: 'member',
-        updateTime: 't1',
-      },
-    })
-    routeScheduleFingerprint.mockResolvedValue('input-hash')
-
-    let committedWrites: Array<Record<string, unknown>> = []
-    runFirestoreTransaction.mockImplementation(async (
-      _token: string,
-      _projectId: string,
-      body: (tx: {
-        get(path: string): Promise<Record<string, unknown>>
-        runQuery(): Promise<Array<Record<string, unknown>>>
-      }) => Promise<{ writes: Array<Record<string, unknown>>; result: unknown }>,
-    ) => {
-      const outcome = await body({
-        get: async () => ({ exists: false, fields: {}, name: '', updateTime: null }),
-        runQuery: async () => schedules,
-      })
-      committedWrites = outcome.writes
-      return outcome.result
-    })
 
     await expect(applyRoute('u1', {
-      tripId: 'trip-1', revision, date, schedules, previewToken,
-    }, 'service-account', 'project', secret)).resolves.toEqual({ status: 'applied', revision })
-
-    const scheduleWrites = committedWrites.filter(write => String(write.document).includes('/schedules/'))
-    expect(scheduleWrites).toHaveLength(2)
-    for (const write of scheduleWrites) {
-      expect(write).toMatchObject({
-        fields: {
-          routeRevision: { stringValue: revision },
-          travelToNext: { nullValue: null },
-        },
-        updateMask: ['order', 'routeRevision', 'travelToNext', 'updatedBy'],
-      })
-    }
+      tripId: 'trip-1', revision, date, schedules, legs: [], previewToken,
+    }, 'service-account', 'project', secret)).rejects.toMatchObject({
+      status: 409,
+      code: 'PREVIEW_PAYLOAD_MISMATCH',
+    })
+    expect(runFirestoreTransaction).not.toHaveBeenCalled()
   })
 })

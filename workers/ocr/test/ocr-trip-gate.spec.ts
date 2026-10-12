@@ -18,7 +18,7 @@ vi.mock('../src/firestore', async () => {
   }
 })
 
-import { assertOcrTripAccess, ocrTripIdRequired } from '../src/ocr-trip-gate'
+import { assertOcrTripAccess } from '../src/ocr-trip-gate'
 import { OcrRequestSchema } from '../src/schema'
 import { BookingPdfExtractRequestSchema } from '../src/booking-pdf-extract'
 
@@ -34,46 +34,36 @@ beforeEach(() => {
 describe('assertOcrTripAccess', () => {
   it.each(['owner', 'editor'])('allows an active %s', async role => {
     docFields.set(`trips/${TRIP}/members/${UID}`, member(role))
-    await expect(assertOcrTripAccess('{}', TRIP, UID, true)).resolves.toBeUndefined()
+    await expect(assertOcrTripAccess('{}', TRIP, UID)).resolves.toBeUndefined()
   })
 
   it('refuses a viewer', async () => {
     docFields.set(`trips/${TRIP}/members/${UID}`, member('viewer'))
-    await expect(assertOcrTripAccess('{}', TRIP, UID, false)).rejects.toMatchObject({ status: 403 })
+    await expect(assertOcrTripAccess('{}', TRIP, UID)).rejects.toMatchObject({ status: 403 })
   })
 
   it('refuses a stranger', async () => {
-    await expect(assertOcrTripAccess('{}', TRIP, UID, false)).rejects.toMatchObject({ status: 403 })
+    await expect(assertOcrTripAccess('{}', TRIP, UID)).rejects.toMatchObject({ status: 403 })
   })
 
   it('refuses a member being removed', async () => {
     docFields.set(`trips/${TRIP}/members/${UID}`, member('editor', { removingAt: { timestampValue: '2026-10-07T00:00:00Z' } }))
-    await expect(assertOcrTripAccess('{}', TRIP, UID, false)).rejects.toMatchObject({ status: 403 })
+    await expect(assertOcrTripAccess('{}', TRIP, UID)).rejects.toMatchObject({ status: 403 })
   })
 
   it('answers 404 / 410 before membership', async () => {
-    await expect(assertOcrTripAccess('{}', 'missing', UID, false)).rejects.toMatchObject({ status: 404 })
+    await expect(assertOcrTripAccess('{}', 'missing', UID)).rejects.toMatchObject({ status: 404 })
     docFields.set(`trips/${TRIP}`, { deletingAt: { timestampValue: '2026-10-07T00:00:00Z' } })
-    await expect(assertOcrTripAccess('{}', TRIP, UID, false)).rejects.toMatchObject({ status: 410 })
-  })
-
-  it('phase 1 lets a legacy request without tripId through; phase 2 refuses it', async () => {
-    await expect(assertOcrTripAccess('{}', undefined, UID, false)).resolves.toBeUndefined()
-    await expect(assertOcrTripAccess('{}', undefined, UID, true)).rejects.toMatchObject({ status: 400 })
-  })
-
-  it('reads the rollout flag strictly', () => {
-    expect(ocrTripIdRequired(undefined)).toBe(false)
-    expect(ocrTripIdRequired('0')).toBe(false)
-    expect(ocrTripIdRequired('1')).toBe(true)
+    await expect(assertOcrTripAccess('{}', TRIP, UID)).rejects.toMatchObject({ status: 410 })
   })
 })
 
-describe('request schemas accept tripId', () => {
+describe('request schemas require tripId', () => {
   it('OCR request', () => {
     const base = { image: 'a'.repeat(200), mimeType: 'image/jpeg' as const }
     expect(OcrRequestSchema.parse({ ...base, tripId: TRIP }).tripId).toBe(TRIP)
     expect(OcrRequestSchema.safeParse({ ...base, tripId: '../x' }).success).toBe(false)
+    expect(OcrRequestSchema.safeParse(base).success).toBe(false)
   })
 
   it('booking PDF request', () => {
@@ -82,5 +72,9 @@ describe('request schemas accept tripId', () => {
       lines: [{ page: 1, text: 'hello', x: 0, y: 0 }],
     })
     expect(r.success).toBe(true)
+    expect(BookingPdfExtractRequestSchema.safeParse({
+      pageCount: 1, text: 'x'.repeat(30),
+      lines: [{ page: 1, text: 'hello', x: 0, y: 0 }],
+    }).success).toBe(false)
   })
 })

@@ -13,6 +13,7 @@ import {
   encodeStringArray,
   listDocNames,
   batchStripDepartedMember,
+  StripDocVanishedError,
   deleteUserTripNotifications,
   deleteDoc,
   getDocFields,
@@ -20,7 +21,7 @@ import {
 }                                                           from './firestore'
 import { mapWithConcurrency }                               from './concurrency'
 import { getAdminToken, getProjectId }                      from './admin'
-import { CascadeError, TRIP_SUBCOLLECTIONS }                from './cascade'
+import { CascadeError, TRIP_SUBCOLLECTIONS, withTokenRetry } from './cascade'
 import {
   docResourceName,
   type TxContext,
@@ -216,19 +217,24 @@ export async function requireTripAccess(
 }
 
 /** Read-only form (two parallel GETs, no transaction) for endpoints that
- *  write nothing to Firestore: OCR, FX preview, route search, attachments. */
+ *  write nothing to Firestore: OCR, FX preview, route search, attachments.
+ *  Wrapped in withTokenRetry like every other admin-token caller, so a
+ *  revoked / rotated cached token is invalidated instead of 500-ing every
+ *  request until the isolate recycles. A pure read is always safe to replay. */
 export async function readTripAccess(
   serviceAccountJson: string,
   tripId:             string,
   callerUid:          string,
   opts:               TripAccessOptions = {},
 ): Promise<TripAccess> {
-  const accessToken = await getAdminToken(serviceAccountJson)
-  const projectId   = getProjectId(serviceAccountJson)
-  const [tripFields, memberFields] = await Promise.all([
-    getDocFields(accessToken, projectId, `trips/${tripId}`),
-    getDocFields(accessToken, projectId, `trips/${tripId}/members/${callerUid}`),
-  ])
+  const [tripFields, memberFields] = await withTokenRetry(async () => {
+    const accessToken = await getAdminToken(serviceAccountJson)
+    const projectId   = getProjectId(serviceAccountJson)
+    return Promise.all([
+      getDocFields(accessToken, projectId, `trips/${tripId}`),
+      getDocFields(accessToken, projectId, `trips/${tripId}/members/${callerUid}`),
+    ])
+  })
   return checkTripAccess(tripFields, memberFields, callerUid, opts)
 }
 
@@ -392,18 +398,17 @@ export async function runMemberStripCascade(
   targetUid:    string,
   targetExists: boolean,
 ): Promise<void> {
-  const lists = await mapWithConcurrency(TRIP_SUBCOLLECTIONS, 3, sub =>
-    listDocNames(accessToken, projectId, `trips/${tripId}/${sub}`),
-  )
-  // mapWithConcurrency preserves input order, so the wishes entry sits at
-  // the same index as in TRIP_SUBCOLLECTIONS; the >=0 guard degrades a
-  // future reorder/removal of that constant to "no wish docs" rather than
-  // mis-targeting the votes strip.
-  const wishIndex    = TRIP_SUBCOLLECTIONS.indexOf('wishes')
-  const wishDocNames = wishIndex >= 0 ? (lists[wishIndex] ?? []) : []
-  // memberIds strip (every doc) + wish-votes strip (wish docs) in ONE
-  // commit -- votes never becomes a separate post-ACL-strip failure window.
-  await batchStripDepartedMember(accessToken, projectId, lists.flat(), wishDocNames, targetUid)
+  // A doc deleted between list and commit fails its chunk (exists
+  // precondition, see batchStripDepartedMember); re-list and re-run --
+  // the strip is idempotent, so already-committed chunks are no-ops.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await listAndStrip(accessToken, projectId, tripId, targetUid)
+      break
+    } catch (err) {
+      if (!(err instanceof StripDocVanishedError) || attempt >= STRIP_MAX_ATTEMPTS) throw err
+    }
+  }
 
   // Member doc delete is the final membership mutation: by now every
   // subcollection + trip doc has had targetUid stripped from memberIds,
@@ -424,6 +429,28 @@ export async function runMemberStripCascade(
       error: err instanceof Error ? err.message : String(err),
     })
   }
+}
+
+const STRIP_MAX_ATTEMPTS = 3
+
+async function listAndStrip(
+  accessToken: string,
+  projectId:   string,
+  tripId:      string,
+  targetUid:   string,
+): Promise<void> {
+  const lists = await mapWithConcurrency(TRIP_SUBCOLLECTIONS, 3, sub =>
+    listDocNames(accessToken, projectId, `trips/${tripId}/${sub}`),
+  )
+  // mapWithConcurrency preserves input order, so the wishes entry sits at
+  // the same index as in TRIP_SUBCOLLECTIONS; the >=0 guard degrades a
+  // future reorder/removal of that constant to "no wish docs" rather than
+  // mis-targeting the votes strip.
+  const wishIndex    = TRIP_SUBCOLLECTIONS.indexOf('wishes')
+  const wishDocNames = wishIndex >= 0 ? (lists[wishIndex] ?? []) : []
+  // memberIds strip (every doc) + wish-votes strip (wish docs) in ONE
+  // commit -- votes never becomes a separate post-ACL-strip failure window.
+  await batchStripDepartedMember(accessToken, projectId, lists.flat(), wishDocNames, targetUid)
 }
 
 // Re-export TxReadDoc for the spec's mock typing -- same pattern

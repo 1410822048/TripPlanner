@@ -769,7 +769,18 @@ async function commitTransaction(
   }
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
-    throw new TxRestError(res.status, 'commit', `commit → ${res.status}: ${detail.slice(0, 300)}`)
+    const err = new TxRestError(res.status, 'commit', `commit → ${res.status}: ${detail.slice(0, 300)}`)
+    // A commit that RETURNED a 4xx was rejected as a whole -- Firestore
+    // commits are atomic, so nothing landed (e.g. 400 over the 500-write
+    // cap, 404 from an `exists: true` precondition). That is as definitive
+    // as a body throw, so stamp it the same way; otherwise the dispatcher
+    // reports a generic ambiguous 500 and the client keeps a phantom row.
+    // The conflict statuses stay unmarked: they feed the retry loop and
+    // end as TxRetryExhausted, which carries its own definitive mapping.
+    // A commit 5xx / timeout / lost response stays ambiguous -- the write
+    // may have applied.
+    if (res.status >= 400 && res.status < 500 && !isAborted(err)) markPrecommit(err)
+    throw err
   }
 }
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { batchStripDepartedMember } from '../src/firestore'
+import { batchStripDepartedMember, StripDocVanishedError } from '../src/firestore'
 
 const originalFetch = globalThis.fetch
 
@@ -39,6 +39,7 @@ describe('batchStripDepartedMember', () => {
 					{ fieldPath: 'memberIds', removeAllFromArray: { values: [{ stringValue: 'uid.with.dot' }] } },
 				],
 			},
+			currentDocument: { exists: true },
 		})
 		expect(captured.body?.writes[1]).toEqual({
 			update: { name: planningName, fields: {} },
@@ -46,6 +47,7 @@ describe('batchStripDepartedMember', () => {
 			updateTransforms: [
 				{ fieldPath: 'memberIds', removeAllFromArray: { values: [{ stringValue: 'uid.with.dot' }] } },
 			],
+			currentDocument: { exists: true },
 		})
 		expect(captured.body?.writes[2]).toEqual({
 			transform: {
@@ -55,6 +57,31 @@ describe('batchStripDepartedMember', () => {
 					{ fieldPath: 'votes', removeAllFromArray: { values: [{ stringValue: 'uid.with.dot' }] } },
 				],
 			},
+			currentDocument: { exists: true },
 		})
+	})
+
+	it('every write carries exists:true so a vanished doc is never recreated as a shell', async () => {
+		const names = ['schedules/s1', 'planning/p1', 'wishes/w1', 'bookings/b1']
+			.map(p => 'projects/demo/databases/(default)/documents/trips/t1/' + p)
+		const captured: { writes: Array<Record<string, unknown>> } = { writes: [] }
+		globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+			captured.writes = JSON.parse(String(init?.body)).writes
+			return new Response('{}', { status: 200 })
+		}) as typeof fetch
+
+		await batchStripDepartedMember('token', 'demo', names, [names[2]!], 'u1')
+
+		expect(captured.writes).toHaveLength(names.length)
+		for (const write of captured.writes) {
+			expect(write.currentDocument).toEqual({ exists: true })
+		}
+	})
+
+	it('a 404 commit (doc deleted after listing) surfaces as StripDocVanishedError', async () => {
+		globalThis.fetch = vi.fn(async () => new Response('{"error":{"status":"NOT_FOUND"}}', { status: 404 })) as typeof fetch
+		await expect(batchStripDepartedMember(
+			'token', 'demo', ['projects/demo/databases/(default)/documents/trips/t1/schedules/s1'], [], 'u1',
+		)).rejects.toBeInstanceOf(StripDocVanishedError)
 	})
 })

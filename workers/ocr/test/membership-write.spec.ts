@@ -1182,6 +1182,25 @@ describe('memberRemove endpoint', () => {
 		expect(stripIdx).toBeLessThan(deleteIdx)
 	})
 
+	it('a doc deleted between list and strip commit → re-list and re-strip before the member-doc delete', async () => {
+		seedAuthorizedRemove()
+		const { batchStripDepartedMember, StripDocVanishedError } = await import('../src/firestore')
+		vi.mocked(batchStripDepartedMember).mockImplementationOnce(async () => {
+			restCallOrder.push('batchStripDepartedMember:vanished')
+			throw new StripDocVanishedError('NOT_FOUND')
+		})
+
+		await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
+
+		const stripCalls = restCallOrder.filter(c => c.startsWith('batchStripDepartedMember:'))
+		expect(stripCalls).toHaveLength(2)
+		const firstStrip = restCallOrder.indexOf('batchStripDepartedMember:vanished')
+		const relist     = restCallOrder.findIndex((c, i) => i > firstStrip && c.startsWith('listDocNames:'))
+		const deleteIdx  = restCallOrder.findIndex(c => c.startsWith('deleteDoc:'))
+		expect(relist).toBeGreaterThan(firstStrip)
+		expect(deleteIdx).toBeGreaterThan(relist)
+	})
+
 	it('precheck tx commits BOTH removingAt marker AND trip.memberIds strip BEFORE the cascade phase begins', async () => {
 		// Two security-critical assertions stacked here -- both invariants
 		// MUST hold atomically inside the same tx before any non-tx work

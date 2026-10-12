@@ -587,7 +587,11 @@ export async function buildForeignUpdateWrite(args: {
   if (fp.title    !== undefined) { patchFields.title    = { stringValue: fp.title    }; pushUnique(updateMask, 'title') }
   if (fp.category !== undefined) { patchFields.category = { stringValue: fp.category }; pushUnique(updateMask, 'category') }
   if (fp.paidBy   !== undefined) { patchFields.paidBy   = { stringValue: fp.paidBy   }; pushUnique(updateMask, 'paidBy') }
-  if (fp.note     !== undefined) { patchFields.note     = { stringValue: fp.note     }; pushUnique(updateMask, 'note') }
+  if (fp.note     !== undefined) {
+    // '' = clear: listed in the mask without a value → field deletion.
+    if (fp.note !== '') patchFields.note = { stringValue: fp.note }
+    pushUnique(updateMask, 'note')
+  }
   if (fp.date     !== undefined) { patchFields.date     = { stringValue: fp.date     }; pushUnique(updateMask, 'date') }
 
   // Receipt set / delete -- reuse the single shared (path-only) encoder

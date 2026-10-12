@@ -134,12 +134,12 @@ const CreateBookingBodySchema = z.object({
   provider:         z.string().max(BOOKING_LIMITS.provider).optional(),
   checkIn:          z.string().max(BOOKING_LIMITS.dateText).optional(),
   checkOut:         z.string().max(BOOKING_LIMITS.dateText).optional(),
-  // 住所テキスト or Google Maps URL を受けるため 500(URL は 200 を超え得る)。
+  // 要接受地址文字或 Google Maps URL,所以是 500(URL 可能超過 200)。
   address:          z.string().max(BOOKING_LIMITS.address).optional(),
-  // 予約元 URL。href に出すため http(s) のみ。`isHttpUrl` は
-  // src/types/booking.ts と verbatim 同期(admin SDK は rules を bypass
-  // するので、ここの check が緩いと XSS の穴になる)。'' は CLEARABLE
-  // sentinel(encodeBookingUpdate が field 削除に変換)なので許可。
+  // 訂單來源 URL。因為會放進 href,只允許 http(s)。`isHttpUrl` 與
+  // src/types/booking.ts verbatim 同步(admin SDK 會 bypass rules,
+  // 所以這裡的 check 若較寬鬆就會成為 XSS 漏洞)。'' 是 CLEARABLE
+  // sentinel(encodeBookingUpdate 會轉成刪除 field),所以允許。
   link:             z.string().max(BOOKING_LIMITS.link).refine(v => v === '' || isHttpUrl(v), 'link must be an http(s) URL').optional(),
   note:             z.string().max(BOOKING_LIMITS.note).optional(),
 })
@@ -165,7 +165,7 @@ const UPDATABLE_BOOKING_FIELDS = new Set([
  *  field would write '' instead of removing the field, leaving the
  *  doc inconsistent with the no-attachment client path. */
 const CLEARABLE_BOOKING_FIELDS = new Set([
-  'confirmationCode', 'provider', 'checkIn', 'checkOut', 'address', 'link', 'note',
+  'title', 'origin', 'destination', 'confirmationCode', 'provider', 'checkIn', 'checkOut', 'address', 'link', 'note',
 ])
 
 /** Parse `checkIn` ('YYYY-MM-DD' or 'YYYY-MM-DDTHH:mm') to an ISO 8601

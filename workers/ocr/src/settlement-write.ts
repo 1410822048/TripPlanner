@@ -2,7 +2,7 @@
 // Worker-authoritative settlement create + delete.
 //
 // Design (Phase 4.1 rearchitecture, 2026-06-02):
-//   「済み」 is "clear the suggested debt", not "post an arbitrary
+//   「已收款」 is "clear the suggested debt", not "post an arbitrary
 //   amount". The request payload is a stale-confirmed intent:
 //     - TRIP:    {from, to, expectedRemainingMinor, note}
 //     - FOREIGN: {from, to, expectedRemainingMinor, sourceCurrency, settledOn, note}
@@ -143,6 +143,8 @@ export type {
  *  computes pair remaining off a partial view. */
 const EXPENSE_READ_LIMIT    = 500
 const SETTLEMENT_READ_LIMIT = 200
+/** Firestore's per-commit (and per-transaction) write cap. */
+const MAX_COMMIT_WRITES     = 500
 
 // ─── Authorization helpers ────────────────────────────────────────
 
@@ -652,7 +654,7 @@ async function doCreate(
     const pairwise    = computePairwiseRemaining(expenses, settlements)
     const remaining   = pairRemaining(pairwise, req.fromUid, req.toUid)
 
-    // No-debt reject. The whole point of the rearchitecture: 「済み」
+    // No-debt reject. The whole point of the rearchitecture: 「已收款」
     // is "clear the suggested debt", not "post an arbitrary number".
     // If pair-remaining is effectively zero (no edge, or already
     // cleared by a concurrent settlement landing first), there's
@@ -669,7 +671,7 @@ async function doCreate(
     }
 
     // Phase 4.1 ledger semantics: amountMinor ≡ remaining for BOTH modes.
-    // 「済み」 is "clear the suggested debt" — the receiver expects the
+    // 「已收款」 is "clear the suggested debt" — the receiver expects the
     // entire pair balance to be zeroed regardless of which currency they
     // happened to receive in. FX is decoupled from the ledger: it only
     // populates the source-side display + fxSnapshot.convertedAmountMinor
@@ -805,8 +807,17 @@ async function doCreate(
       req.settlementId,
       currentLockIds,
     )
+    const writes = [write, lockWrite, ...expenseLockWrites]
+    // The lock set can reach EXPENSE_READ_LIMIT on its own, so the commit
+    // could exceed Firestore's per-commit write cap and come back 400.
+    // Refuse up front with the same stable code as the read caps: the
+    // pair's ledger is too large to settle in one atomic write, and that
+    // will not change by retrying.
+    if (writes.length > MAX_COMMIT_WRITES) {
+      throw new CascadeError(409, 'too many expenses to lock for this settlement', 'PAIR_LEDGER_TOO_LARGE')
+    }
     return {
-      writes: [write, lockWrite, ...expenseLockWrites],
+      writes,
       result: { settlementId: req.settlementId },
     }
   })

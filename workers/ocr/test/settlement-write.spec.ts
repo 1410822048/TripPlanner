@@ -1461,6 +1461,39 @@ describe('read-cap truncation fail-closed (P2 fix)', () => {
 		const result = await settlementCreate(TO_UID, baseCreatePayload(), '{}')
 		expect(result.settlementId).toBe(SETTLEMENT_ID)
 	})
+
+	it('a lock set pushing the commit past 500 writes → 409 PAIR_LEDGER_TOO_LARGE (not a commit 400)', async () => {
+		setupAuthz()
+		// 499 debt-bearing expenses → 499 expense lock writes + settlement
+		// + pair lock = 501 writes, one over Firestore's commit cap. The
+		// reads themselves are under EXPENSE_READ_LIMIT.
+		const many = Array.from({ length: 499 }, (_, i) => expenseReadDoc({
+			id:     `exp-lock-${i}`,
+			paidBy: TO_UID,
+			amountMinor: 1,
+			splits: [[FROM_UID, 1]],
+		}))
+		txQueryResponses.set(`trips/${TRIP_ID}|expenses`,    many)
+		txQueryResponses.set(`trips/${TRIP_ID}|settlements`, [])
+
+		await expect(settlementCreate(TO_UID, baseCreatePayload(499), '{}'))
+			.rejects.toMatchObject({ status: 409, code: 'PAIR_LEDGER_TOO_LARGE', message: expect.stringMatching(/to lock/) })
+	})
+
+	it('a lock set landing exactly on 500 writes is accepted', async () => {
+		setupAuthz()
+		const many = Array.from({ length: 498 }, (_, i) => expenseReadDoc({
+			id:     `exp-lock-${i}`,
+			paidBy: TO_UID,
+			amountMinor: 1,
+			splits: [[FROM_UID, 1]],
+		}))
+		txQueryResponses.set(`trips/${TRIP_ID}|expenses`,    many)
+		txQueryResponses.set(`trips/${TRIP_ID}|settlements`, [])
+
+		const result = await settlementCreate(TO_UID, baseCreatePayload(498), '{}')
+		expect(result.settlementId).toBe(SETTLEMENT_ID)
+	})
 })
 
 // ─── Idempotent retry: intent-field exact match ───────────────────
@@ -1673,7 +1706,7 @@ describe('settlementCreate FOREIGN_CURRENCY (Settlement FX)', () => {
 		// Pre-rearchitecture this would have written amountMinor=5002
 		// (the FX forward), leaving a 1-JPY orphan tail. Phase 4.1 writes
 		// amountMinor=5003 (remaining) — the ledger zeroes the entire pair
-		// balance, 「済み」 means cleared regardless of FX artifacts.
+		// balance, 「已收款」 means cleared regardless of FX artifacts.
 		setupForeignAuthz()
 		seedDebt(FROM_UID, TO_UID, 5003)
 

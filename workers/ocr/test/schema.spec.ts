@@ -3,7 +3,7 @@ import { OcrRequestSchema, OcrResponseSchema, OCR_RESPONSE_JSON_SCHEMA } from '.
 
 describe('OCR request schema - supported provider media types', () => {
 	it('accepts only provider-readable image formats for direct OCR', () => {
-		const base = { image: 'a'.repeat(128), mimeType: 'image/webp' }
+		const base = { image: 'a'.repeat(128), mimeType: 'image/webp', tripId: 'trip-1' }
 		expect(OcrRequestSchema.safeParse(base).success).toBe(true)
 		expect(OcrRequestSchema.safeParse({ ...base, mimeType: 'image/heic' }).success).toBe(false)
 		expect(OcrRequestSchema.safeParse({ ...base, mimeType: 'image/heif' }).success).toBe(false)

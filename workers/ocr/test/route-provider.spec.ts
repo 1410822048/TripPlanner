@@ -11,7 +11,6 @@ import {
   parseOrsDirectionsResponse,
   parseOrsMatrixResponse,
   resolveGoogleMapsUrl,
-  safeGoogleMapsQuery,
 } from '../src/route-provider'
 
 const points = [
@@ -441,9 +440,12 @@ describe('route provider fixtures', () => {
     } }])).toEqual([])
   })
 
-  test('accepts only Google Maps hostnames for place URL resolution', () => {
-    expect(safeGoogleMapsQuery('https://maps.google.com/maps?q=Tokyo+Tower')).toBe('Tokyo Tower')
-    expect(() => safeGoogleMapsQuery('https://evil.example/maps?q=Tokyo')).toThrow(/hostname/i)
+  test('accepts only Google Maps hostnames for place URL resolution', async () => {
+    const fetchImpl = vi.fn()
+    await expect(resolveGoogleMapsUrl('https://maps.google.com/maps?q=Tokyo+Tower', fetchImpl))
+      .resolves.toMatchObject({ query: 'Tokyo Tower' })
+    await expect(resolveGoogleMapsUrl('https://evil.example/maps?q=Tokyo', fetchImpl)).rejects.toThrow(/hostname/i)
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 
   test('removes only an explicit Japanese postal prefix from a Google place label', () => {

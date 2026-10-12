@@ -16,6 +16,11 @@ vi.mock('../src/ocr-providers', async () => {
 	return { ...actual, runOcrProvider: runOcrProviderMock }
 })
 
+// The trip gate itself is covered in ocr-trip-gate.spec.ts; here it only
+// has to let a well-formed (tripId-bearing) request through to the provider.
+const assertOcrTripAccessMock = vi.hoisted(() => vi.fn(async () => undefined))
+vi.mock('../src/ocr-trip-gate', () => ({ assertOcrTripAccess: assertOcrTripAccessMock }))
+
 import worker, { ROUTES, RATE_CLASSES } from '../src/index'
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>
@@ -27,17 +32,17 @@ afterEach(() => {
 })
 
 describe('production OCR trip scope', () => {
-	it.each(['/ocr', '/ocr-fallback', '/booking-pdf-extract'])('%s rejects a legacy request before spending model quota', async path => {
+	it.each(['/ocr', '/ocr-fallback', '/booking-pdf-extract'])('%s rejects a request without tripId before spending model quota', async path => {
 		const route = ROUTES.find(r => r.path === path)!
 		const fetchMock = vi.fn()
 		globalThis.fetch = fetchMock
-		expect(env).toHaveProperty('OCR_REQUIRE_TRIP_ID', '1')
 		const body = path === '/booking-pdf-extract'
 			? { pageCount: 1, text: 'Hotel Sakura confirmation', lines: [{ page: 1, text: 'Hotel Sakura', x: 10, y: 100 }] }
 			: { image: 'a'.repeat(128), mimeType: 'image/webp' }
 		const res = await route.dispatch({ body, cors: {}, uid: 'user-1', env } as never)
 		expect(res.status).toBe(400)
 		expect(runOcrProviderMock).not.toHaveBeenCalled()
+		expect(assertOcrTripAccessMock).not.toHaveBeenCalled()
 		expect(fetchMock).not.toHaveBeenCalled()
 	})
 })
@@ -150,7 +155,7 @@ describe('OCR worker routing', () => {
 		runOcrProviderMock.mockRejectedValueOnce(new OcrError('provider credential detail', 502))
 
 		const res = await route!.dispatch({
-			body: { image: 'a'.repeat(128), mimeType: 'image/webp' },
+			body: { image: 'a'.repeat(128), mimeType: 'image/webp', tripId: 'trip-1' },
 			cors: {},
 			uid:  'user-1',
 			env:  {},
@@ -176,7 +181,7 @@ describe('OCR worker routing', () => {
 		})
 
 		const res = await route!.dispatch({
-			body: { image: 'a'.repeat(128), mimeType: 'image/webp' },
+			body: { image: 'a'.repeat(128), mimeType: 'image/webp', tripId: 'trip-1' },
 			cors: {},
 			uid:  'user-1',
 			// Deliberately include the removed legacy vars with reversed values:
@@ -226,6 +231,7 @@ describe('OCR worker routing', () => {
 
 		const res = await route!.dispatch({
 			body: {
+				tripId:    'trip-1',
 				pageCount: 1,
 				text:      'Hotel Sakura\nAirbnb\n2026-07-01',
 				lines: [
@@ -269,6 +275,7 @@ describe('OCR worker routing', () => {
 
 		const res = await route!.dispatch({
 			body: {
+				tripId:    'trip-1',
 				pageCount: 1,
 				text:      'Hotel Sakura\nAirbnb\n2026-07-01',
 				lines: [{ page: 1, text: 'Hotel Sakura', x: 10, y: 100 }],

@@ -67,10 +67,11 @@ export const RouteApplyRequestSchema = z.object({
   date: DateSchema,
   previewToken: z.string().min(32).max(2048),
   schedules: z.array(ApplyScheduleSchema).min(2).max(12),
-  // Optional for rolling compatibility with clients deployed before route
-  // estimates were persisted. When present, the HMAC token binds the exact
-  // array and applyRoute validates its topology before writing it.
-  legs: z.array(ApplyRouteLegSchema).max(11).optional(),
+  // Required: the HMAC token binds the exact array (legsHash) and
+  // applyRoute validates its topology before projecting it onto
+  // travelToNext. Without it there is nothing signed to compare, and the
+  // apply would silently null every schedule's travel estimate.
+  legs: z.array(ApplyRouteLegSchema).max(11),
 }).strict()
 export type RouteApplyRequest = z.infer<typeof RouteApplyRequestSchema>
 

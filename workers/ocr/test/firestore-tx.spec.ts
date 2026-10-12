@@ -3,7 +3,7 @@
 // the wrapper is what closes the stale-read race that was the
 // motivating P1, so the retry-on-ABORTED behaviour is load-bearing.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { runFirestoreTransaction, TxCancelled, TxCommitAmbiguous } from '../src/firestore-tx'
+import { runFirestoreTransaction, TxCancelled, TxCommitAmbiguous, isPrecommitError } from '../src/firestore-tx'
 
 /** A portable stand-in for the DOMException AbortSignal.timeout throws.
  *  isRpcTimeout keys on `.name`, so a plain Error tagged 'TimeoutError'
@@ -540,5 +540,52 @@ describe('runFirestoreTransaction', () => {
 		).rejects.toThrow(/503/)
 		expect(bodyCalls).toBe(1)
 		expect(commitCalls).toBe(1)
+	})
+
+	describe('commit 4xx is a definitive (precommit) rejection', () => {
+		const WRITE = {
+			document:        'projects/demo/databases/(default)/documents/trips/t1/expenses/e1',
+			fields:          {},
+			currentDocument: { exists: true },
+		}
+		async function commitWith(status: number, body: unknown): Promise<unknown> {
+			mockFetchSequence([
+				{ matches: ':beginTransaction', status: 200, body: { transaction: 'tx-1' } },
+				{ matches: ':commit',           status, body },
+			])
+			return runFirestoreTransaction('fake-token', 'demo', async () => ({ writes: [WRITE], result: undefined }))
+				.then(() => { throw new Error('expected rejection') }, (e: unknown) => e)
+		}
+
+		it.each([
+			[400, { error: { status: 'INVALID_ARGUMENT', message: 'maximum 500 writes allowed per request' } }],
+			[404, { error: { status: 'NOT_FOUND', message: 'No document to update' } }],
+		])('commit %i is marked precommit and not retried', async (status, body) => {
+			const err = await commitWith(status, body)
+			expect((err as Error).message).toMatch(new RegExp(`commit → ${status}`))
+			expect(isPrecommitError(err)).toBe(true)
+			const commitCalls = vi.mocked(globalThis.fetch).mock.calls
+				.filter(([u]) => String(u).includes(':commit')).length
+			expect(commitCalls).toBe(1)
+		})
+
+		it('commit 5xx stays unmarked (ambiguous)', async () => {
+			const err = await commitWith(503, { error: { status: 'UNAVAILABLE' } })
+			expect(isPrecommitError(err)).toBe(false)
+		})
+
+		it('commit timeout stays ambiguous and unmarked', async () => {
+			globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input)
+				if (url.includes(':beginTransaction')) {
+					return new Response(JSON.stringify({ transaction: 'tx-1' }), { status: 200 })
+				}
+				throw timeoutError()
+			}) as typeof fetch
+			const err = await runFirestoreTransaction('fake-token', 'demo', async () => ({ writes: [WRITE], result: undefined }))
+				.catch((e: unknown) => e)
+			expect(err).toBeInstanceOf(TxCommitAmbiguous)
+			expect(isPrecommitError(err)).toBe(false)
+		})
 	})
 })

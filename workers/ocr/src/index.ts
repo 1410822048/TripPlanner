@@ -1,57 +1,25 @@
 // TripMate OCR Worker — entry point.
 //
-// Endpoints:
-//   POST /ocr                  — Qwen receipt OCR (default product path)
-//   POST /booking-pdf-extract  — Qwen structured extraction from
-//                                client-side PDF text/layout digest.
-//   POST /invite-create        — owner mints a reusable invite link.
-//                                Worker mints the 256-bit token, caps the
-//                                expiry, and atomically rotates the
-//                                single-active pointer (inviteState/current)
-//                                so concurrent owner tabs can't leave two
-//                                live invites (see membership-write.ts).
-//   POST /invite-revoke        — owner revokes the active invite. 409s a
-//                                stale token (already rotated by a newer
-//                                /invite-create) instead of silent-ok.
-//   POST /invite-redeem        — invitee accepts a trip invite (atomic
-//                                member doc create + trip.memberIds
-//                                bump via Firestore REST tx), gated on the
-//                                inviteState/current pointer, then runs the
-//                                ACL cascade.
-//   POST /member-remove        — owner kicks a member. ACL projection
-//                                stripped BEFORE the member doc is
-//                                deleted -- the order is load-bearing
-//                                for the "no kicked-but-still-reading"
-//                                invariant (see membership-write.ts).
-//   POST /member-role-update   — owner flips a member between
-//                                'editor' / 'viewer'.
-//   POST /cascade-trip-delete  — full trip cascade (Storage + subcollections
-//                                + trip doc). Replaces client-side
-//                                cascade so firestore.rules can keep
-//                                `allow delete: if false` on the
-//                                two integrity-critical docs (trip
-//                                root + expense tombstones); closes
-//                                P1 accepted-risk. Other subcollections
-//                                still use ordinary canWrite-style
-//                                delete rules for normal editing UX.
-//   POST /upload-intents       — mint Worker-issued canonical R2 upload intents.
-//   POST /expense-create       — Worker-authoritative expense create
-//   POST /expense-update         + update, consuming intentIds atomically
-//                                with the doc write (Phase 3.5+).
-//   POST /wish-file-create     — Worker-authoritative wish create + update
-//   POST /wish-file-update       with image attachment (Phase 3.7).
-//   POST /booking-file-create  — Worker-authoritative booking create + update
-//   POST /booking-file-update    with file attachment (Phase 3.7).
-//   POST /settlement-create    — Worker-authoritative settlement create
-//   POST /settlement-delete      + delete, with full pairwise debt
-//                                computation in tx for the amountMinor<=remaining
-//                                gate that firestore.rules cannot express.
+// Endpoints: the ROUTES table below is the single, complete list (path,
+// method, rate class, and the per-endpoint dispatch closure). Each route's
+// module header documents its contract; grouped roughly as:
+//   - OCR / extraction: /ocr, /ocr-fallback, /expense-receipt-ocr(-fallback),
+//     /booking-pdf-extract
+//   - Worker-authoritative entity writes: /expense-*, /wish-*, /booking-file-*,
+//     /settlement-*, /upload-intents, /attachment-{upload,content,delete}
+//   - Membership: /invite-{create,revoke,redeem}, /member-{remove,leave,
+//     role-update}, /owner-transfer, /cascade-trip-delete
+//   - Previews / routing: /fx-rate, /route-{autocomplete,resolve-place,
+//     preview,apply,apply-status}
+// Cross-cutting order for every route: CORS → body size → Firebase auth →
+// two-layer per-uid rate limit → body parse → dispatch.
 //
 // Scheduled:
 //   Daily UTC 03:00 — purge expense receipts that have been soft-
 //                     deleted for more than 10 days, drain orphan
 //                     purges, scan orphan Storage, purge expired
 //                     upload intents.
+//   Every 5 min     — Wish voting-deadline sweep.
 //
 // All non-matching requests get a 404. CORS preflight (OPTIONS) is
 // handled inline. Dispatch is a flat endpoint descriptor table (ROUTES);
@@ -67,7 +35,7 @@
 // (`/expense-{create,update}`, `/wish-file-*`, `/booking-file-*`).
 // Cascade / OCR endpoints don't set the header; their log lines omit
 // the suffix.
-import { verifyFirebaseToken, extractBearerToken } from './auth'
+import { verifyFirebaseToken, extractBearerToken, isJwksUnavailable } from './auth'
 import { OcrError }                               from './claude'
 import { OcrRequestSchema, type OcrRequest, type OcrResponse } from './schema'
 import {
@@ -179,7 +147,7 @@ import {
 }                                                 from './route-dispatch'
 import { captureMessage, serializeErrorChain, type ReportWorkerError } from './sentry'
 
-import { assertOcrTripAccess, ocrTripIdRequired } from './ocr-trip-gate'
+import { assertOcrTripAccess }                from './ocr-trip-gate'
 import { fxPreview, FxPreviewRequestSchema } from './fx-preview'
 
 export { GlobalRateLimiter } from './rate-limiter'
@@ -198,9 +166,6 @@ type WorkerEnv = Env & {
    *  var (`wrangler secret put SENTRY_DSN`): absent in local dev and
    *  preview, where captureMessage no-ops. */
   SENTRY_DSN?:              string
-  /** "1" once every client sends tripId to /ocr, /ocr-fallback and
-   *  /booking-pdf-extract (phase 2 of ocr-trip-gate.ts). Unset = phase 1. */
-  OCR_REQUIRE_TRIP_ID?:     string
   // Rate-limiter bindings (per-PoP RateLimit + the GlobalRateLimiter Durable
   // Object) come from wrangler.jsonc via the generated Env type.
 }
@@ -730,7 +695,7 @@ export const ROUTES: RouteDescriptor[] = [
       // Booking confirmation import shares the primary Qwen deployment while
       // keeping its own strict schema, evidence checks, and normalization.
       handle:    async data => {
-        await assertOcrTripAccess(c.env.FIREBASE_SERVICE_ACCOUNT, data.tripId, c.uid, ocrTripIdRequired(c.env.OCR_REQUIRE_TRIP_ID))
+        await assertOcrTripAccess(c.env.FIREBASE_SERVICE_ACCOUNT, data.tripId, c.uid)
         return extractBookingPdfFields(data, ocrProviderConfig(c.env).qwen)
       },
       formatLog: (_data, result) =>
@@ -744,7 +709,7 @@ export const ROUTES: RouteDescriptor[] = [
       endpoint:  'ocr', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema:    OcrRequestSchema,
       handle:    async data => {
-        await assertOcrTripAccess(c.env.FIREBASE_SERVICE_ACCOUNT, data.tripId, c.uid, ocrTripIdRequired(c.env.OCR_REQUIRE_TRIP_ID))
+        await assertOcrTripAccess(c.env.FIREBASE_SERVICE_ACCOUNT, data.tripId, c.uid)
         return runConfiguredOcrProvider(c.env, RECEIPT_OCR_PROVIDERS.primary, data)
       },
       formatLog: (_data, result) => `items=${result.items.length}`,
@@ -757,7 +722,7 @@ export const ROUTES: RouteDescriptor[] = [
       endpoint:  'ocr-fallback', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
       schema:    OcrRequestSchema,
       handle:    async data => {
-        await assertOcrTripAccess(c.env.FIREBASE_SERVICE_ACCOUNT, data.tripId, c.uid, ocrTripIdRequired(c.env.OCR_REQUIRE_TRIP_ID))
+        await assertOcrTripAccess(c.env.FIREBASE_SERVICE_ACCOUNT, data.tripId, c.uid)
         return runConfiguredOcrProvider(c.env, RECEIPT_OCR_PROVIDERS.fallback, data)
       },
       formatLog: (_data, result) => `items=${result.items.length}`,
@@ -895,10 +860,30 @@ export default {
       const claims = await verifyFirebaseToken(token, env.FIREBASE_PROJECT_ID)
       uid = claims.sub
     } catch (e) {
+      // Google's key set could not be fetched: we never judged the token,
+      // so a 401 would tell the client to treat the user as signed out.
+      // 503 + precommit (nothing was written) lets the client fail the
+      // request definitively without an auth-failure path.
+      if (isJwksUnavailable(e)) {
+        console.error(`[auth] JWKS unavailable: ${(e as Error).message}${trace}`)
+        return json({ error: 'Auth temporarily unavailable', precommit: true }, 503, cors)
+      }
       console.warn(`[auth] invalid token: ${(e as Error).message}${trace}`)
       // Detail stays in the log only: echoing jose's reason ("exp" claim
       // failed / no matching kid) gives unauthenticated callers a verifier oracle.
       return json({ error: 'Invalid token' }, 401, cors)
+    }
+
+    // Bound once here so every route (and the rate-limit layer below)
+    // reports with the same tags and the POST survives the response via
+    // waitUntil. captureMessage no-ops on an unset DSN, so local dev and
+    // preview stay silent without a branch.
+    const report: ReportWorkerError = (message, extra) => {
+      ctx.waitUntil(captureMessage(env, message, 'error', {
+        endpoint: url.pathname,
+        uid:      uidTag(uid),
+        ...(traceId ? { trace: traceId } : {}),
+      }, extra))
     }
 
     // ─── Rate limit (per-uid, two-layer) ──────────────────────────────
@@ -908,15 +893,35 @@ export default {
     // binding and scope are NOT 1:1 (expense / upload-intent / wish-write /
     // booking-write share EXPENSE_RATE_LIMITER but keep distinct L2 scopes).
     // After auth so unauthenticated noise doesn't burn counter slots.
+    // A limiter failure (binding error, DO overloaded / reset, bad JSON)
+    // must not escape as a Cloudflare 1101: that page has no CORS headers,
+    // so the browser hides it as a network error, and nothing reaches
+    // Sentry. Fail closed with a precommit 503 -- nothing was written yet.
     const rc = RATE_CLASSES[route.rate]
-    const localResult = await env[rc.limiter].limit({ key: uid })
+    const limiterUnavailable = (e: unknown): Response => {
+      const err = e instanceof Error ? e : new Error(String(e))
+      console.error(`[rate-limit] limiter failed: ${err.message}${trace}`)
+      report(`[rate-limit] ${err.message}`, { error: serializeErrorChain(err) })
+      return json({ error: 'Rate limiter unavailable', precommit: true }, 503, cors)
+    }
+    let localResult: { success: boolean }
+    try {
+      localResult = await env[rc.limiter].limit({ key: uid })
+    } catch (e) {
+      return limiterUnavailable(e)
+    }
     if (!localResult.success) {
       console.warn(`[rate-limit] L1 deny uid=${uidTag(uid)} route=${url.pathname}${trace}`)
       return json({ error: 'Rate limit exceeded' }, 429, cors)
     }
-    const globalResult = await checkGlobalRateLimit(
-      env.GLOBAL_LIMITER, rc.scope, uid, rc.globalLimit, 60_000,
-    )
+    let globalResult: Awaited<ReturnType<typeof checkGlobalRateLimit>>
+    try {
+      globalResult = await checkGlobalRateLimit(
+        env.GLOBAL_LIMITER, rc.scope, uid, rc.globalLimit, 60_000,
+      )
+    } catch (e) {
+      return limiterUnavailable(e)
+    }
     if (!globalResult.allowed) {
       console.warn(
         `[rate-limit] L2 deny uid=${uidTag(uid)} route=${url.pathname} ` +
@@ -944,17 +949,6 @@ export default {
     // Per-route variation (schema / handle / formatLog / catchDomain /
     // cascadePrecommit) lives in the descriptor; auth + rate-limit + body
     // size were handled above. See route-dispatch.ts for the wrapper.
-    // Bound once here so every route reports with the same tags and the
-    // POST survives the response via waitUntil. captureMessage no-ops on
-    // an unset DSN, so local dev and preview stay silent without a branch.
-    const report: ReportWorkerError = (message, extra) => {
-      ctx.waitUntil(captureMessage(env, message, 'error', {
-        endpoint: url.pathname,
-        uid:      uidTag(uid),
-        ...(traceId ? { trace: traceId } : {}),
-      }, extra))
-    }
-
     return route.dispatch({
       body, request, cors, uid, traceId, env, executionCtx: ctx, requestUrl: request.url, report,
     })

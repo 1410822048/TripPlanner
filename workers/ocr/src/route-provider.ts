@@ -516,15 +516,6 @@ function googleMapsTarget(url: URL): GoogleMapsPlaceTarget | undefined {
   }
 }
 
-export function safeGoogleMapsQuery(rawUrl: string): string {
-  const target = googleMapsTarget(parseAllowedGoogleMapsUrl(rawUrl))
-  const query = target?.query || (target?.coordinates
-    ? `${target.coordinates.lat},${target.coordinates.lng}`
-    : undefined)
-  if (query) return query
-  throw new RouteProviderError('google-maps', 400, 'Google Maps URL has no place query')
-}
-
 export async function resolveGoogleMapsUrl(rawUrl: string, fetchImpl: FetchLike = fetch): Promise<GoogleMapsPlaceTarget> {
   let current = rawUrl
   for (let hop = 0; hop <= 3; hop += 1) {

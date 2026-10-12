@@ -40,8 +40,8 @@ const BookingPdfTextLineSchema = z.object({
 })
 
 export const BookingPdfExtractRequestSchema = z.object({
-  /** See ocr-trip-gate.ts: optional during the rollout only. */
-  tripId:    z.string().regex(TripIdRe).optional(),
+  /** Caller must be an active owner/editor of it (ocr-trip-gate.ts). */
+  tripId:    z.string().regex(TripIdRe),
   fileName:  z.string().max(200).optional(),
   pageCount: z.number().int().min(1).max(MAX_PDF_PAGES),
   text:      z.string().trim().min(20).max(BOOKING_PDF_TEXT_MAX_CHARS),

@@ -247,7 +247,8 @@ export function encodePatch(
   if (patch.category    !== undefined) out.category    = { stringValue: patch.category }
   if (patch.paidBy      !== undefined) out.paidBy      = { stringValue: patch.paidBy }
   if (patch.date        !== undefined) out.date        = { stringValue: patch.date }
-  if (patch.note        !== undefined) out.note        = { stringValue: patch.note }
+  // note '' = 清空:不寫值,由呼叫端把 'note' 列進 updateMask 刪除欄位
+  if (patch.note !== undefined && patch.note !== '') out.note = { stringValue: patch.note }
   if (patch.splits      !== undefined) out.splits      = encodeSplits(patch.splits)
   if (patch.items       !== undefined) out.items       = encodeItems(patch.items)
   if (patch.adjustments !== undefined) out.adjustments = encodeAdjustments(patch.adjustments)

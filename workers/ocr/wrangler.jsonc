@@ -21,8 +21,6 @@
 	// the CORS allowlist needs to be readable for debugging.
 	"vars": {
 		"FIREBASE_PROJECT_ID": "tripplanner-80a4f",
-		// Production requires tripId and an active owner/editor for all paid OCR/PDF routes.
-		"OCR_REQUIRE_TRIP_ID": "1",
 		"ALLOWED_ORIGINS": "https://tripmate-2wg.pages.dev,*.tripmate-2wg.pages.dev,http://localhost:5173,http://127.0.0.1:5173",
 		// SENTRY_DSN is deliberately NOT a var. It is set with
 		// `wrangler secret put SENTRY_DSN` (same value as the frontend's

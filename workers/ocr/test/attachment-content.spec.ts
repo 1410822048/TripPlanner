@@ -248,6 +248,38 @@ describe('attachment content proxy', () => {
   })
 })
 
+// BOLA guard: the trip the caller is authorized against must be the trip
+// segment of the object path. A member of trip-1 naming trip-1 in the
+// locator but another trip's object in the path is refused before any
+// Firestore or R2 call -- even if they are also a member of that trip,
+// the authorized trip and the object must agree.
+describe('attachment path must belong to the authorized trip', () => {
+  const FOREIGN_PATH = 'trips/trip-2/expenses/expense-1/receipt.png'
+
+  it('content: 400 for a path whose trip segment differs from tripId', async () => {
+    seedMembership('owner')
+    const response = await handleAttachmentContent({
+      request: contentRequest(FOREIGN_PATH),
+      uid: UID, cors: CORS, env: ENV, report: REPORT,
+    })
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({ error: 'invalid attachment path' })
+    expect(getObjectMock).not.toHaveBeenCalled()
+  })
+
+  it('delete: 400 for a path whose trip segment differs from tripId', async () => {
+    seedMembership('owner')
+    const response = await handleAttachmentDelete({
+      body: { tripId: TRIP_ID, path: FOREIGN_PATH }, uid: UID, cors: CORS, env: ENV, report: REPORT,
+    })
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({ error: 'invalid attachment path' })
+    expect(deleteObjectMock).not.toHaveBeenCalled()
+  })
+})
+
 describe('attachment delete proxy', () => {
   it('rejects an expense delete from a viewer', async () => {
     seedMembership('viewer')

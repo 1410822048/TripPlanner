@@ -941,7 +941,8 @@ describe('bookingFileUpdate: happy paths', () => {
 			{
 				tripId:              TRIP_ID,
 				bookingId:           BOOKING_ID,
-				patch:               { note: '', address: '', link: '' },
+				// origin / destination: a flight → hotel type switch clears them.
+				patch:               { type: 'hotel', origin: '', destination: '', note: '', address: '', link: '' },
 				attachments: { document: [FULL_INTENT_ID] },
 				expectedCurrentPaths: { document: FULL_PATH },
 			},
@@ -952,6 +953,9 @@ describe('bookingFileUpdate: happy paths', () => {
 			fields: Record<string, unknown>
 		}>
 		const patch = writes[1]!
+		expect(patch.updateMask).toEqual(expect.arrayContaining(['origin', 'destination']))
+		expect(patch.fields.origin).toBeUndefined()
+		expect(patch.fields.destination).toBeUndefined()
 		expect(patch.updateMask).toContain('note')
 		expect(patch.updateMask).toContain('address')
 		// link is CLEARABLE too: empty-string → mask entry, no field value.

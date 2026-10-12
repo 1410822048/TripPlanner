@@ -136,6 +136,12 @@ export async function listDocNames(
  *  strip fails and the caller's retry re-converges -- no new intermediate
  *  state.
  *
+ *  Every write carries `currentDocument: { exists: true }`, mirroring the
+ *  add side (cascade.ts arrayUnionWrite): without it a doc deleted between
+ *  listDocNames and commit would be RECREATED as a `{ memberIds: [] }`
+ *  shell. A vanished doc fails the chunk with 404 → StripDocVanishedError;
+ *  the caller re-lists and re-runs (the strip is idempotent).
+ *
  *  Idempotent (removeAllFromArray of an absent value is a no-op). Caller
  *  deletes the member doc LAST, after this returns. */
 export async function batchStripDepartedMember(
@@ -164,9 +170,10 @@ export async function batchStripDepartedMember(
           update: { name, fields: {} },
           updateMask: { fieldPaths: [completedByFieldPath] },
           updateTransforms: fieldTransforms,
+          currentDocument: { exists: true },
         }
       }
-      return { transform: { document: name, fieldTransforms } }
+      return { transform: { document: name, fieldTransforms }, currentDocument: { exists: true } }
     })
     const res = await fetch(
       `${BASE}/projects/${projectId}/databases/(default)/documents:commit`,
@@ -180,7 +187,20 @@ export async function batchStripDepartedMember(
         signal: AbortSignal.timeout(FS_REST_TIMEOUT_MS),
       },
     )
+    if (res.status === 404) {
+      const detail = await res.text().catch(() => '')
+      throw new StripDocVanishedError(detail.slice(0, 200))
+    }
     await assertOk(res, 'batchStripDepartedMember')
+  }
+}
+
+/** A listed doc was deleted before the strip commit landed (exists
+ *  precondition → 404). The whole chunk was rejected atomically. */
+export class StripDocVanishedError extends Error {
+  constructor(detail: string) {
+    super(`batchStripDepartedMember → 404: ${detail}`)
+    this.name = 'StripDocVanishedError'
   }
 }
 

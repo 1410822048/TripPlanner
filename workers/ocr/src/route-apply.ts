@@ -29,8 +29,7 @@ type PersistedRouteLeg =
   | { fromId: string; toId: string; kind: 'walking'; minutes: number }
   | { fromId: string; toId: string; kind: 'transit'; minMinutes: number; maxMinutes: number }
 
-function normalizeRouteLegs(input: RouteApplyRequest): PersistedRouteLeg[] | undefined {
-  if (!input.legs) return undefined
+function normalizeRouteLegs(input: RouteApplyRequest): PersistedRouteLeg[] {
   if (input.legs.length !== input.schedules.length - 1) {
     throw new RouteApplyError(409, 'PREVIEW_PAYLOAD_MISMATCH', 'preview legs do not match the signed schedule order')
   }
@@ -110,11 +109,11 @@ export async function applyRoute(
   if (claims.payloadHash !== payloadHash) {
     throw new RouteApplyError(409, 'PREVIEW_PAYLOAD_MISMATCH', 'preview payload does not match the signed preview')
   }
-  if (input.legs) {
-    const legsHash = await stableHash(input.legs)
-    if (!claims.legsHash || claims.legsHash !== legsHash) {
-      throw new RouteApplyError(409, 'PREVIEW_PAYLOAD_MISMATCH', 'preview legs do not match the signed preview')
-    }
+  // A token without legsHash (minted before legs were signed) can never
+  // match, so it is refused here rather than applied without estimates.
+  const legsHash = await stableHash(input.legs)
+  if (!claims.legsHash || claims.legsHash !== legsHash) {
+    throw new RouteApplyError(409, 'PREVIEW_PAYLOAD_MISMATCH', 'preview legs do not match the signed preview')
   }
   const routeLegs = normalizeRouteLegs(input)
   const accessToken = await getAdminToken(serviceAccountJson)
@@ -154,7 +153,7 @@ export async function applyRoute(
     if (currentHash !== claims.inputHash) throw new RouteApplyError(409, 'PREVIEW_STALE', 'schedule constraints changed after preview')
 
     const writes: TxWrite[] = input.schedules.map((schedule, index) => {
-      const routeLeg = routeLegs?.[index]
+      const routeLeg = routeLegs[index]
       return {
         document: docResourceName(projectId, `trips/${input.tripId}/schedules/${schedule.id}`),
         fields: {

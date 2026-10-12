@@ -714,6 +714,8 @@ function buildTripUpdateWrite(args: {
 
   const updateMask = Object.keys(patchFields)
   if (args.receiptDeletion) updateMask.push('receipt')
+  // note '' = clear: mask-without-field deletes it (same convention as booking).
+  if (patchParsed.data.note === '') pushUnique(updateMask, 'note')
   if (args.deleteForeignFields) {
     pushUnique(updateMask, 'sourceCurrency')
     pushUnique(updateMask, 'sourceAmountMinor')
