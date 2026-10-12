@@ -237,3 +237,5 @@ export function pairRemaining(
 
 // Routed (multi-hop) settlement planning — see ./routes.ts.
 export * from './routes'
+// Settlement lineage (appliedSources / lock set) — see ./lineage.ts.
+export * from './lineage'

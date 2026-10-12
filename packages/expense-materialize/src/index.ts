@@ -514,6 +514,56 @@ export function materializeExpenseSplitContributions(input: MaterializeInput): M
   return contributions
 }
 
+/** One member's share of a STORED expense, per receipt item. Settlement
+ *  lineage (@tripmate/settlement-core) uses it to name the items a
+ *  settlement cleared; Worker and client bind this same function so the
+ *  client's preview matches what the Worker records. The member roster is
+ *  everyone the expense references (payer, split members, allocation
+ *  members) — a departed member is still a valid allocation target here.
+ *  Throws MaterializeError when the stored items don't materialize. */
+export function memberItemContributions(
+  expense: {
+    paidBy:      string
+    splits:      ReadonlyArray<{ memberId: string }>
+    items?:      ReadonlyArray<MaterializeItem>
+    adjustments: ReadonlyArray<MaterializeAdjustment>
+  },
+  memberId: string,
+): Array<{ itemId: string; amountMinor: number }> {
+  const members: string[] = []
+  const seen = new Set<string>()
+  const add = (uid: string) => {
+    if (!uid || seen.has(uid)) return
+    seen.add(uid)
+    members.push(uid)
+  }
+  add(expense.paidBy)
+  for (const split of expense.splits) add(split.memberId)
+  for (const item of expense.items ?? []) {
+    for (const allocation of item.allocations) add(allocation.memberId)
+  }
+  return materializeExpenseSplitContributions({
+    items: (expense.items ?? []).map(item => ({
+      id:          item.id,
+      amountMinor: item.amountMinor,
+      allocations: item.allocations.map(a => ({ memberId: a.memberId, shares: a.shares })),
+    })),
+    adjustments: expense.adjustments.map(adj => {
+      const out: MaterializeAdjustment = {
+        id:          adj.id,
+        kind:        adj.kind,
+        scope:       adj.scope,
+        amountMinor: adj.amountMinor,
+      }
+      if (adj.targetItemId !== undefined) out.targetItemId = adj.targetItemId
+      return out
+    }),
+    members,
+  })
+    .filter(c => c.memberId === memberId)
+    .map(c => ({ itemId: c.itemId, amountMinor: c.amountMinor }))
+}
+
 export function materializeExpenseSplits(input: MaterializeInput): MaterializeSplit[] {
   const contributions = materializeExpenseSplitContributions(input)
   const memberTotals = new Map<string, number>()
