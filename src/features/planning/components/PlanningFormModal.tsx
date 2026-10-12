@@ -3,6 +3,7 @@
 // keeps the state shape one-line-add when fields evolve.
 import { useRef, useState } from 'react'
 import type { PlanItem, PlanCategory, CreatePlanItemInput } from '@/types'
+import { PLANNING_LIMITS } from '@tripmate/entity-contracts'
 import FormModalShell from '@/components/ui/FormModalShell'
 import FormField from '@/components/ui/FormField'
 import DeleteConfirm from '@/components/ui/DeleteConfirm'
@@ -51,7 +52,8 @@ interface Props {
    *  `reportInForm` goes into the mutation variables. */
   onSave:          (data: CreatePlanItemInput, reportInForm: () => boolean) => void | Promise<unknown>
   /** Visible only in edit mode. */
-  onDelete?:       () => void | Promise<unknown>
+  /** Receives this form's liveness, like onSave's reportInForm. */
+  onDelete?:       (stillOpen: () => boolean) => void | Promise<unknown>
 }
 
 export default function PlanningFormModal({
@@ -82,7 +84,7 @@ export default function PlanningFormModal({
   // Delete failures are toasted globally; this form only closes itself, and
   // only if it is still the open one.
   function handleDelete() {
-    awaited.submit(() => onDelete?.())
+    awaited.submit(() => onDelete?.(awaited.stillOpen))
   }
 
   return (
@@ -108,7 +110,7 @@ export default function PlanningFormModal({
         <input
           ref={titleRef}
           value={state.title}
-          maxLength={100}
+          maxLength={PLANNING_LIMITS.title}
           onChange={e => setField('title', e.target.value)}
           placeholder="例如：護照、充電器、換匯"
           className={inputClass(!!errors.title)}
@@ -118,7 +120,7 @@ export default function PlanningFormModal({
       <FormField label="備註">
         <textarea
           value={state.note}
-          maxLength={500}
+          maxLength={PLANNING_LIMITS.note}
           onChange={e => setField('note', e.target.value)}
           placeholder="數量、尺寸或補充說明"
           rows={3}

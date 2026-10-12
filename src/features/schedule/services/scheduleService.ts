@@ -11,7 +11,7 @@ import { validateUpdateOrThrow } from '@/services/validateUpdate'
 import { auditCreate, auditUpdate } from '@/utils/audit'
 import { getTripMemberIds } from '@/services/tripMemberIds'
 import { bumpTripActivity } from '@/services/tripActivity'
-import { ScheduleDocSchema, UpdateScheduleSchema, type Schedule, type CreateScheduleInput, type UpdateScheduleInput } from '@/types/schedule'
+import { CreateScheduleSchema, ScheduleDocSchema, UpdateScheduleSchema, type Schedule, type CreateScheduleInput, type UpdateScheduleInput } from '@/types/schedule'
 
 /** Defensive cap — schedules can run higher per trip (multi-day with
  *  multiple stops per day) so 200 vs bookings' 100. */
@@ -107,13 +107,18 @@ export async function createSchedule(
   order: number,
   scheduleId: string,
 ): Promise<string> {
+  // Same service-boundary check as updateSchedule, so a create can never
+  // store something the next edit would refuse.
+  const validated = validateUpdateOrThrow(CreateScheduleSchema, input, {
+    source: 'createSchedule', tripId, scheduleId,
+  })
   const [{ db, doc, setDoc, serverTimestamp }, memberIds] = await Promise.all([
     getFirebase(),
     getTripMemberIds(tripId),
   ])
   const ref = doc(db, ...P.schedule(tripId, scheduleId))
   await setDoc(ref, {
-    ...input,
+    ...validated,
     routeRevision: null,
     travelToNext: null,
     tripId,

@@ -4,6 +4,7 @@
 // prepare independently.
 import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
+import { PLANNING_LIMITS } from '@tripmate/entity-contracts'
 import { TimestampSchema } from './_shared'
 
 /**
@@ -52,8 +53,8 @@ export const PlanItemDocSchema = z.object({
 
 export const CreatePlanItemSchema = z.object({
   category: z.enum(['essentials', 'documents', 'packing', 'todo', 'other']),
-  title:    z.string().min(1, '請輸入標題').max(100),
-  note:     z.string().max(500).optional(),
+  title:    z.string().min(1, '請輸入標題').max(PLANNING_LIMITS.title),
+  note:     z.string().max(PLANNING_LIMITS.note).optional(),
 })
 export type CreatePlanItemInput = z.infer<typeof CreatePlanItemSchema>
 

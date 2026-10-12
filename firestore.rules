@@ -101,6 +101,16 @@ service cloud.firestore {
     function unchanged(field) {
       return !(field in request.resource.data.diff(resource.data).affectedKeys());
     }
+    // Client creates stamp both audit times with serverTimestamp(); a raw write
+    // can't omit or forge them (the client doc schemas require both).
+    function auditTimesStampedNow() {
+      return request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+    }
+    // Updates must keep a timestamp in updatedAt (createdAt is pinned elsewhere).
+    function updatedAtIsTimestamp() {
+      return request.resource.data.updatedAt is timestamp;
+    }
     function immutableEntityFieldsUnchanged() {
       return unchanged('tripId')
         && unchanged('createdBy')
@@ -539,15 +549,17 @@ service cloud.firestore {
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()
                       && memberIdsMatchTrip(tripId)
+                      && auditTimesStampedNow()
                       && request.resource.data.title is string
                       && request.resource.data.title.size() > 0
                       && request.resource.data.title.size() <= 200
-                      && request.resource.data.order is number
+                      // order/date mirror ScheduleDocSchema (int, YYYY-MM-DD) so raw writes can't break client parsing.
+                      && request.resource.data.order is int
                       && request.resource.data.order >= 0
                       && request.resource.data.category in
                            ['transport','accommodation','food','activity','shopping','other']
                       && request.resource.data.date is string
-                      && request.resource.data.date.size() <= 32
+                      && request.resource.data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
                       && (!('description' in request.resource.data)
                             || (request.resource.data.description is string
                                 && request.resource.data.description.size() <= 2000))
@@ -578,15 +590,16 @@ service cloud.firestore {
              ])
           && immutableEntityFieldsUnchanged()
           && request.resource.data.updatedBy == uid()
+          && updatedAtIsTimestamp()
           && request.resource.data.title is string
           && request.resource.data.title.size() > 0
           && request.resource.data.title.size() <= 200
-          && request.resource.data.order is number
+          && request.resource.data.order is int
           && request.resource.data.order >= 0
           && request.resource.data.category in
                ['transport','accommodation','food','activity','shopping','other']
           && request.resource.data.date is string
-          && request.resource.data.date.size() <= 32
+          && request.resource.data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
           && (!('description' in request.resource.data)
                 || (request.resource.data.description is string
                     && request.resource.data.description.size() <= 2000))
@@ -771,6 +784,7 @@ service cloud.firestore {
                       && request.resource.data.updatedBy == uid()
                       && request.resource.data.votes == [uid()]
                       && memberIdsMatchTrip(tripId)
+                      && auditTimesStampedNow()
                       && request.resource.data.title is string
                       && request.resource.data.title.size() > 0
                       && request.resource.data.title.size() <= 100
@@ -813,7 +827,8 @@ service cloud.firestore {
         //      prevents a malicious member from clearing or hijacking
         //      others' votes.
         allow update: if (
-          memberOfDoc() && isActiveMember(tripId) && wishVotingOpen(tripId) && (
+          memberOfDoc() && isActiveMember(tripId) && wishVotingOpen(tripId)
+          && updatedAtIsTimestamp() && (
             // 1. Proposer path: edit any field EXCEPT ownership / identity.
             (
               resource.data.proposedBy == uid()
@@ -899,6 +914,7 @@ service cloud.firestore {
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()
                       && memberIdsMatchTrip(tripId)
+                      && auditTimesStampedNow()
                       && request.resource.data.type in ['flight','hotel','train','bus','other']
                       // Every list query is orderBy('sortDate', 'desc'), and
                       // Firestore silently EXCLUDES docs missing the ordered
@@ -975,6 +991,7 @@ service cloud.firestore {
              ])
           && immutableEntityFieldsUnchanged()
           && request.resource.data.updatedBy == uid()
+          && updatedAtIsTimestamp()
           && request.resource.data.type in ['flight','hotel','train','bus','other']
           // Same orderBy-invisibility gate as create: an update must not be
           // able to strip sortDate off a doc that already has it.
@@ -1093,6 +1110,7 @@ service cloud.firestore {
         function validPlanningDoc() {
           return request.resource.data.keys().hasOnly(planningKeys())
             && request.resource.data.tripId == tripId
+            && updatedAtIsTimestamp()
             && request.resource.data.title is string
             && request.resource.data.title.size() > 0
             && request.resource.data.title.size() <= 100
@@ -1119,6 +1137,7 @@ service cloud.firestore {
                       && request.resource.data.createdBy == uid()
                       && request.resource.data.updatedBy == uid()
                       && memberIdsMatchTrip(tripId)
+                      && auditTimesStampedNow()
                       && request.resource.data.completedBy.size() == 0;
         allow update: if validPlanningDoc()
           && immutableEntityFieldsUnchanged()

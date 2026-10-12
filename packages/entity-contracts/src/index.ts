@@ -59,6 +59,16 @@ export const WISH_LIMITS = {
   address:     500,
 } as const
 
+export const SCHEDULE_LIMITS = {
+  title:       200,
+  description: 2000,
+} as const
+
+export const PLANNING_LIMITS = {
+  title: 100,
+  note:  500,
+} as const
+
 export const SETTLEMENT_LIMITS = {
   note: 200,
   /** Lineage expense titles are written truncated to EXPENSE_LIMITS.title

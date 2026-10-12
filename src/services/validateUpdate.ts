@@ -20,7 +20,7 @@ export function validateUpdateOrThrow<S extends ZodTypeAny>(
   const parsed = schema.safeParse(data)
   if (!parsed.success) {
     captureError(parsed.error as ZodError, ctx)
-    throw new Error('Update payload failed validation')
+    throw new Error('資料格式不正確，請檢查欄位後再試')
   }
   return parsed.data
 }

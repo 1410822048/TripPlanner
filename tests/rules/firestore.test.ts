@@ -2617,6 +2617,50 @@ describe('/trips/{tripId}/schedules shape guards', () => {
     )
   })
 
+  // order / date mirror ScheduleDocSchema (int >= 0, YYYY-MM-DD); anything
+  // looser would let a raw-SDK write land a doc the client then fails to parse.
+  test('schedule create with integer order and YYYY-MM-DD date succeeds', async () => {
+    await assertSucceeds(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-shape-ok'),
+        baseSchedule({ order: 3, date: '2026-05-23' })),
+    )
+  })
+
+  test('schedule create with fractional order is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-frac-order'),
+        baseSchedule({ order: 1.5 })),
+    )
+  })
+
+  test('schedule create with negative order is rejected', async () => {
+    await assertFails(
+      setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-neg-order'),
+        baseSchedule({ order: -1 })),
+    )
+  })
+
+  test.each(['tomorrow', '2026-5-22', '2026-05-22T00:00', ' 2026-05-22', ''])(
+    'schedule create with malformed date %j is rejected',
+    async (date) => {
+      await assertFails(
+        setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-bad-date'),
+          baseSchedule({ date })),
+      )
+    },
+  )
+
+  test('schedule update applies the same order / date shape guards', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'schedules', 's-shape-update'), baseSchedule())
+    })
+    const path = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-shape-update')
+    const audit = { updatedBy: EDITOR_UID, updatedAt: serverTimestamp() }
+    await assertFails(updateDoc(path, { order: 1.5, ...audit }))
+    await assertFails(updateDoc(path, { date: 'tomorrow', ...audit }))
+    await assertSucceeds(updateDoc(path, { order: 4, date: '2026-05-24', ...audit }))
+  })
+
   test('schedule create rejects the removed `endTime` field', async () => {
     await assertFails(
       setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-endtime'),
@@ -2825,6 +2869,124 @@ describe('/trips/{tripId}/schedules shape guards', () => {
       updatedBy: EDITOR_UID,
       updatedAt: serverTimestamp(),
     }))
+  })
+})
+
+// ─── Schedule / planning read + delete access matrix ───────────────
+// `allow read: if memberOfDoc()` and `allow delete: if canWrite(tripId)`
+// each need both an allow and a deny assertion, otherwise an accidental
+// `if false` (or `if true`) regression passes silently.
+describe('schedules / planning read + delete access', () => {
+  const MEMBER_IDS = [OWNER_UID, EDITOR_UID, VIEWER_UID]
+  const seedDocs = {
+    schedules: {
+      tripId: TRIP_ID, date: '2026-05-22', order: 0, title: 'Seeded',
+      category: 'activity', timeMode: 'flexible', durationMinutes: 60,
+      routeRevision: null, travelToNext: null, memberIds: MEMBER_IDS,
+      createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+      createdAt: Timestamp.now(), updatedAt: Timestamp.now(),
+    },
+    planning: {
+      tripId: TRIP_ID, category: 'essentials', title: 'Seeded', completedBy: {},
+      memberIds: MEMBER_IDS, createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+      createdAt: Timestamp.now(), updatedAt: Timestamp.now(),
+    },
+  } as const
+  const DOC_ID = 'access-doc'
+
+  beforeEach(async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      for (const [sub, data] of Object.entries(seedDocs)) {
+        await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, sub, DOC_ID), data)
+      }
+    })
+  })
+
+  for (const sub of Object.keys(seedDocs) as (keyof typeof seedDocs)[]) {
+    test(`${sub}: member (viewer) can get`, async () => {
+      await assertSucceeds(getDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, sub, DOC_ID)))
+    })
+
+    test(`${sub}: member list filtered by memberIds succeeds`, async () => {
+      await assertSucceeds(getDocs(query(
+        collection(asViewer(env).firestore(), 'trips', TRIP_ID, sub),
+        where('memberIds', 'array-contains', VIEWER_UID),
+      )))
+    })
+
+    // A stranger's `array-contains STRANGER_UID` list is provably empty and
+    // therefore allowed; the leak paths are an unfiltered list or one that
+    // borrows a real member's uid.
+    test(`${sub}: stranger cannot get or list`, async () => {
+      const db = asStranger(env).firestore()
+      await assertFails(getDoc(doc(db, 'trips', TRIP_ID, sub, DOC_ID)))
+      await assertFails(getDocs(collection(db, 'trips', TRIP_ID, sub)))
+      await assertFails(getDocs(query(
+        collection(db, 'trips', TRIP_ID, sub),
+        where('memberIds', 'array-contains', VIEWER_UID),
+      )))
+    })
+
+    test(`${sub}: anonymous caller cannot get`, async () => {
+      await assertFails(getDoc(doc(asAnon(env).firestore(), 'trips', TRIP_ID, sub, DOC_ID)))
+    })
+
+    test(`${sub}: editor can delete`, async () => {
+      await assertSucceeds(deleteDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, sub, DOC_ID)))
+    })
+
+    test(`${sub}: owner can delete`, async () => {
+      await assertSucceeds(deleteDoc(doc(asOwner(env).firestore(), 'trips', TRIP_ID, sub, DOC_ID)))
+    })
+
+    test(`${sub}: viewer cannot delete`, async () => {
+      await assertFails(deleteDoc(doc(asViewer(env).firestore(), 'trips', TRIP_ID, sub, DOC_ID)))
+    })
+
+    test(`${sub}: stranger cannot delete`, async () => {
+      await assertFails(deleteDoc(doc(asStranger(env).firestore(), 'trips', TRIP_ID, sub, DOC_ID)))
+    })
+  }
+})
+
+// ─── settlementPairLocks: Worker-only, closed to every client ──────
+// `allow read, write: if false` has no client allow path to pin — the only
+// writer is the Worker's Admin SDK, which bypasses rules. Every client verb
+// must be denied, including for the trip owner.
+describe('/trips/{tripId}/settlementPairLocks client deny-all', () => {
+  const LOCK_ID = 'pair-lock-1'
+
+  beforeEach(async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'settlementPairLocks', LOCK_ID), {
+        tripId: TRIP_ID, memberIds: [OWNER_UID, EDITOR_UID, VIEWER_UID], touchedAt: Timestamp.now(),
+      })
+    })
+  })
+
+  test('owner cannot get or list pair locks', async () => {
+    const db = asOwner(env).firestore()
+    await assertFails(getDoc(doc(db, 'trips', TRIP_ID, 'settlementPairLocks', LOCK_ID)))
+    await assertFails(getDocs(collection(db, 'trips', TRIP_ID, 'settlementPairLocks')))
+  })
+
+  test('owner cannot create, update, or delete pair locks', async () => {
+    const db = asOwner(env).firestore()
+    await assertFails(setDoc(doc(db, 'trips', TRIP_ID, 'settlementPairLocks', 'pair-lock-new'), {
+      tripId: TRIP_ID, memberIds: [OWNER_UID],
+    }))
+    await assertFails(updateDoc(doc(db, 'trips', TRIP_ID, 'settlementPairLocks', LOCK_ID), {
+      touchedAt: serverTimestamp(),
+    }))
+    await assertFails(deleteDoc(doc(db, 'trips', TRIP_ID, 'settlementPairLocks', LOCK_ID)))
+  })
+
+  test('editor and stranger are denied as well', async () => {
+    for (const ctx of [asEditor(env), asStranger(env)]) {
+      const db = ctx.firestore()
+      await assertFails(getDoc(doc(db, 'trips', TRIP_ID, 'settlementPairLocks', LOCK_ID)))
+      await assertFails(deleteDoc(doc(db, 'trips', TRIP_ID, 'settlementPairLocks', LOCK_ID)))
+    }
   })
 })
 
@@ -4070,4 +4232,83 @@ describe('/trips/{tripId} lastActivityByFeature bump', () => {
       }),
     )
   })
+})
+
+// ─── Audit timestamps on client-written entities ───────────────────
+// The client doc schemas require createdAt + updatedAt; a raw write that
+// omits or back-dates them would pass every other check and then fail to
+// parse for every member. Creates must carry server time on both, updates
+// must keep updatedAt a timestamp.
+describe('audit timestamps (schedules / planning / bookings / wishes)', () => {
+  const MEMBER_IDS = [OWNER_UID, EDITOR_UID, VIEWER_UID]
+  const base = {
+    schedules: {
+      tripId: TRIP_ID, date: '2026-05-22', order: 0, title: 'T',
+      category: 'activity', timeMode: 'flexible', durationMinutes: 60,
+      routeRevision: null, travelToNext: null, memberIds: MEMBER_IDS,
+      createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+    },
+    planning: {
+      tripId: TRIP_ID, category: 'essentials', title: 'T', completedBy: {},
+      memberIds: MEMBER_IDS, createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+    },
+    bookings: {
+      tripId: TRIP_ID, type: 'hotel', title: 'T', memberIds: MEMBER_IDS,
+      createdBy: EDITOR_UID, updatedBy: EDITOR_UID,
+    },
+    wishes: {
+      tripId: TRIP_ID, category: 'place', title: 'T', proposedBy: EDITOR_UID,
+      updatedBy: EDITOR_UID, memberIds: MEMBER_IDS, votes: [EDITOR_UID],
+    },
+  } as const
+  type Sub = keyof typeof base
+  // bookings also need sortDate (a timestamp the rules require on every write).
+  const extra = (sub: Sub, ts: unknown) => (sub === 'bookings' ? { sortDate: ts } : {})
+  const SEEDED = 'audit-seeded'
+  const past = Timestamp.fromMillis(Date.UTC(2020, 0, 1))
+
+  beforeEach(async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      for (const sub of Object.keys(base) as Sub[]) {
+        await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, sub, SEEDED), {
+          ...base[sub], ...extra(sub, Timestamp.now()),
+          createdAt: Timestamp.now(), updatedAt: Timestamp.now(),
+        })
+      }
+    })
+  })
+
+  for (const sub of Object.keys(base) as Sub[]) {
+    const ref = (id: string) => doc(asEditor(env).firestore(), 'trips', TRIP_ID, sub, id)
+
+    test(`${sub}: create with server-stamped audit times succeeds`, async () => {
+      await assertSucceeds(setDoc(ref('audit-ok'), {
+        ...base[sub], ...extra(sub, serverTimestamp()),
+        createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+      }))
+    })
+
+    test(`${sub}: create with a back-dated createdAt is denied`, async () => {
+      await assertFails(setDoc(ref('audit-backdated'), {
+        ...base[sub], ...extra(sub, serverTimestamp()),
+        createdAt: past, updatedAt: serverTimestamp(),
+      }))
+    })
+
+    test(`${sub}: create without updatedAt is denied`, async () => {
+      await assertFails(setDoc(ref('audit-missing'), {
+        ...base[sub], ...extra(sub, serverTimestamp()),
+        createdAt: serverTimestamp(),
+      }))
+    })
+
+    test(`${sub}: update keeping updatedAt a timestamp succeeds; a non-timestamp is denied`, async () => {
+      await assertSucceeds(updateDoc(ref(SEEDED), {
+        title: 'T2', updatedBy: EDITOR_UID, updatedAt: serverTimestamp(),
+      }))
+      await assertFails(updateDoc(ref(SEEDED), {
+        title: 'T3', updatedBy: EDITOR_UID, updatedAt: 'yesterday',
+      }))
+    })
+  }
 })

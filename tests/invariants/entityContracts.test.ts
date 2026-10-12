@@ -1,4 +1,5 @@
-// Repo invariant: firestore.rules caps the same booking / wish fields the
+// Repo invariant: firestore.rules caps the same booking / wish / schedule /
+// planning fields the
 // app and the Worker cap through @tripmate/entity-contracts. Rules can't
 // import, so compare the numbers from source text, per match block. A cap
 // the rules enforce more tightly breaks client writes the form allowed; a
@@ -6,7 +7,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { BOOKING_LIMITS, WISH_LIMITS } from '@tripmate/entity-contracts'
+import { BOOKING_LIMITS, PLANNING_LIMITS, SCHEDULE_LIMITS, WISH_LIMITS } from '@tripmate/entity-contracts'
 
 const RULES = readFileSync(join(process.cwd(), 'firestore.rules'), 'utf8')
 
@@ -32,6 +33,8 @@ describe('firestore.rules field caps match @tripmate/entity-contracts', () => {
   const cases: Array<[string, Record<string, number>, Record<string, string>]> = [
     ['bookings', BOOKING_LIMITS, { checkIn: 'dateText', checkOut: 'dateText' }],
     ['wishes',   WISH_LIMITS,    {}],
+    ['schedules', SCHEDULE_LIMITS, {}],
+    ['planning', PLANNING_LIMITS, {}],
   ]
   for (const [collection, limits, aliases] of cases) {
     it(collection, () => {

@@ -2,6 +2,7 @@
 // route Worker never has to infer coordinates or constraints from a title.
 import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
+import { SCHEDULE_LIMITS } from '@tripmate/entity-contracts'
 import { TimestampSchema } from './_shared'
 import {
   MAX_DURATION_MINUTES,
@@ -111,11 +112,11 @@ export const TravelToNextSchema = z.discriminatedUnion('kind', [
 ])
 
 const ScheduleInputBase = z.object({
-  title:              z.string().trim().min(1).max(100),
+  title:              z.string().trim().min(1).max(SCHEDULE_LIMITS.title),
   date:               DateSchema,
   ...TimingFields,
   category:           z.enum(['transport','accommodation','food','activity','shopping','other']),
-  description:        z.string().max(2000).optional(),
+  description:        z.string().max(SCHEDULE_LIMITS.description).optional(),
   estimatedCostMinor: z.number().int().min(0).max(1_000_000_000).optional(),
   location:           ScheduleLocationSchema.optional(),
 }).strict()
@@ -141,8 +142,8 @@ export const ScheduleDocSchema = z.object({
   tripId:             z.string().min(1).max(60),
   date:               DateSchema,
   order:              z.number().int().min(0),
-  title:              z.string().min(1).max(200),
-  description:        z.string().max(2000).optional(),
+  title:              z.string().min(1).max(SCHEDULE_LIMITS.title),
+  description:        z.string().max(SCHEDULE_LIMITS.description).optional(),
   location:           ScheduleLocationSchema.optional(),
   startTime:          TimeSchema.optional(),
   timeMode:           z.enum(['fixed','preferred','flexible']),
