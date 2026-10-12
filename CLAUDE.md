@@ -32,7 +32,7 @@ trips/{tripId}
   ├── expenses/{expenseId}       # 費用 + splits + 可選 items[](OCR)
   ├── wishes/{wishId}            # 願望清單 + votes[]
   ├── planning/{planItemId}      # 行前準備 checklist(集合名是單數 planning)
-  ├── settlements/{id}           # 收款人確認，Worker 交易／冪等檢查；僅減少既存 debt
+  ├── settlements/{id}           # 一段 leg = 一筆；同一 route 的 legs 帶相同 `route` header，整筆建立／撤銷
   └── (trip doc 本體:title/dest/dates/ownerId/icon/currency)
 
 invites/{token}                  # token 在 URL fragment(不進 server log)
@@ -92,7 +92,7 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 - **CRUD**: `useCreateExpense` / `useUpdateExpense` / `useDeleteExpense`(`features/expense/hooks/useExpenses.ts`)
 - **特色 1 — OCR**: 拍照 → 自動觸發 `useOcrFlow` → Cloudflare Worker → OCR provider 解析收據 → 填入 items[] + 標題 + 金額
 - **特色 2 — Items 模式**: items.length > 0 時,平均分攤 / 自訂 split 收起,改用 chip-per-row 多選分擔者,splits 反算
-- **特色 3 — Settlement (debt-edge model)**: 演算法在 `services/settlement.ts`,**pairwise gross → applied(cap)→ remaining → normalize → net** 五步純函式。核心不變式: **settlement 只能 reduce 既存 debt,不能 create 反向 debt** — 刪 expense 後不會冒出反方向應付款,超出天然債務的部分變 `orphan` 顯式 surface。`paid` / `owed` 顯示**只看 expenses**(不被 settlement 污染);`net` 來自 normalize 後的剩餘 debt。**受取人(toUid)唯一可按「已收款」**(firestore.rules 鎖死;付款人視覺上不是按鈕,是 Clock + 「等待收款」status pill)。Settlement 歷史:預設展開最近 2 筆,行內兩段刪除(`settledBy` 才能刪)。詳見「複雜流程詳解 / Settlement debt-edge model」
+- **特色 3 — Settlement (debt-edge model)**: 演算法在 `services/settlement.ts`,**pairwise gross → applied(cap)→ remaining → normalize → net** 五步純函式。核心不變式: **settlement 只能 reduce 既存 debt,不能 create 反向 debt** — 刪 expense 後不會冒出反方向應付款,超出天然債務的部分變 `orphan` 顯式 surface。`paid` / `owed` 顯示**只看 expenses**(不被 settlement 污染);`net` 來自 normalize 後的剩餘 debt。付款建議是**簡化後的 route**(跨人轉帳「A → C 經 B」/ 循環抵銷),由收款人(抵銷則參與者)記錄,另有「記錄收款」。紀錄以 route 合併成一列,撤銷一律整筆。詳見「複雜流程詳解 / Settlement debt-edge model」與「Routed settlement」
 - **特色 4 — 列表日期 fold**: `ExpenseDateGroups` 預設展開最近 2 天(`DEFAULT_EXPANDED_DAYS`);user override 用 `useState<Map<date,bool>>` 記,加新費用造成日期 reorder 時 toggle 選擇不被覆蓋
 - **Optimistic close**: 按存 → modal 立刻收 → list 顯示半透明 row + 旋轉「儲存中…」(overlay pending 偵測)→ server truth 一致時撤下 overlay
 - **觸發**:
@@ -143,7 +143,7 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 | `useOcrFlow` | OCR pipeline(compressImage → worker → onSuccess);loading 顯示 elapsed seconds + 8s 慢路徑切換文案。被 `useReceiptOcr` 包覆 |
 | `useReceiptOcr` | ExpenseFormModal 的 OCR 編排層:組合 `useOcrFlow` + receipt source machine(`sourceKey`/`analyzedSourceKey` 驅動 OCR CTA)+ camera/upload pick handlers + `pendingSourceKey` 記帳。回傳分層 `{ status, caps, handlers }`。form-apply(`applyOcrResultToForm`)與 sibling clear(att/items/adjustments)留在 component |
 | `useExpenseItems` | items state machine + chip 分擔者 |
-| `useSettlements` / `useCreateSettlement` / `useDeleteSettlement` | Settlement 記錄 CRUD + realtime listener。**受取人(toUid)唯一可建立**(rule + UI 雙層 gate);delete 由 `settledBy` 或 trip owner 觸發。算法層在 `services/settlement.ts` 的 `computeBalancesFull` 回 `{ balances, orphans }` |
+| `useSettlements` / `useCreateSettlementRoute` / `useDeleteSettlement` | Settlement 記錄 + realtime listener。建立一律是 route(一般清算 = 單段 route),overlay 每段 leg 一個 op 一起成敗;刪除帶 `hideIds` 隱藏整個 route。權限由 Worker 決定(收款人 / 抵銷參與者 / owner 代記已離開成員)。算法層在 `services/settlement.ts` 的 `computeBalancesFull`,建議在 `services/settlementRoutes.ts` |
 | `useFeatureBadges` | 讀 trip doc 的 `lastActivityByFeature`(**0 個額外 listener**,搭現有 trip-doc listener 便車),對比 `lastViewedStore` 算 unread,驅動 BottomNav 紅點 |
 | `useOnlineStatus` | 訂閱 `online`/`offline` event,搭配 `OfflineBanner` 顯示離線提示 |
 | `createRealtimeListHook` | Generic factory:onSnapshot → TanStack Query cache 同步；同 scope/query 透過 module-level refcount 共用 listener，generation 防止舊帳號／舊訂閱回寫 |
@@ -373,7 +373,20 @@ materializeExpenseSplits(items, adjustments, members) → ExpenseSplit[] → 進
 
 `paid` / `owed` 顯示**只看 active expenses**(soft-deleted 排除,跟 UI 顯示一致)。`net` 才反映 settlement 後的當下狀態。
 
-UI(`SettlementSummary`)結構: 成員淨額 → 付款建議(只 receiver 看到 green「已收款」 button,其他人 Clock + 「等待收款」status)→ 已清算紀錄(預設展開 2 筆 + 兩段刪除)→ orphan 警告 banner(amber, **reason-aware**)。
+UI(`SettlementSummary`)結構: 成員淨額 → 付款建議(簡化 route 卡片,可展開各段與來源費用;收款人 / 抵銷參與者看到「已收款」/「記錄抵銷」,其他人看到狀態,中間人看到不用付款的說明)→「記錄收款」→ 已清算紀錄(以 route 合併,預設展開 3 筆 + 兩段刪除,撤銷整筆)→ orphan 警告 banner(amber, **reason-aware**)。
+
+### Routed settlement(跨人債務簡化)
+
+設計與稽核紀錄:`docs/design/settlement-debt-simplification.md`。
+
+- **資料**:一個 route = 幾段**普通** pair settlement(leg),同一個 commit 寫入,每段帶相同的 `route` header(`id`、`legIndex`、`legCount`、`kind`、參與者、TRANSFER 的付款人／收款人／金額、備註、外幣四件組)。leg id = `routeLegId(routeId, i)`,依規範順序(from、to)推導。debt-edge 模型、orphan、lineage、費用鎖都把 leg 當成一般 settlement,**不需要新的 collection 或 rules**
+- **規劃**:`@tripmate/settlement-core` 的 `planSettlementRoutes` / `routeForPayment` / `maxPayable` / `validateRouteShape`,client 與 Worker 共用。lineage 也在 core(`buildSettlementLineage`,明細拆分以 `memberItemContributions` 注入),client 的建議預覽就是 Worker 會寫入的來源
+- **不變式**:中間人淨額為 0;TRANSFER 的 legs **無環**(否則收款人能夾帶別人的循環);OFFSET 只能是**單一連通分量**(否則能確認自己沒參與的循環);每段 `expectedRemainingMinor` 都必須**等於**權威剩餘量(CAS)
+- **Worker** `/settlement-route-create`:權限 → leg 0 冪等 → FX CAS(在讀帳之前)→ 讀帳(`paidBy IN participants`、全旅程 active settlements、pair lock 依序讀)→ 逐段 CAS 與 lineage(看得到本 route 前面各段)→ 寫入(**每筆費用的鎖只寫一次**)。`/settlement-delete` 收到任一 leg 就撤銷整個 route
+- **「任意順序」= 挑一筆 → 記錄 → 重新規劃**。record sheet 送出時以最新帳本重算同一筆付款,不會送出過期的 CAS 數字;抵銷變了就要求重新確認
+- **通知**:只有 leg 0 發送,每個 route 一則,對象是所有參與者
+- Schema Epoch 4:epoch-3 版會把 legs 當成獨立紀錄,刪一段會無聲撤銷整個 route
+- 舊的 `/settlement-create` 只留給還沒更新的舊版;它的 pair-scoped 讀取看得到 legs,與 route 共用 pair lock,有並存測試
 
 ### Settlement phase-2: chronological replay + orphan reason 分類
 

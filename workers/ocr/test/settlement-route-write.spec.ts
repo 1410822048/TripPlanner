@@ -56,7 +56,7 @@ import {
 	SettlementRouteCreateRequestSchema,
 	type SettlementRouteCreateRequest,
 } from '../src/settlement-route-write'
-import { settlementDelete } from '../src/settlement-write'
+import { settlementCreate, settlementDelete } from '../src/settlement-write'
 import * as fxRate from '../src/fx-rate'
 import type { FsValue } from '../src/firestore'
 
@@ -662,4 +662,27 @@ describe('property: random trips settle completely through the Worker', () => {
 			}
 		}
 	}, 60_000)
+})
+
+describe('legacy /settlement-create next to routes (pre-epoch-4 bundles)', () => {
+	it('sees route legs on the pair and clears exactly what is left', async () => {
+		seedTrip(['A', 'B'])
+		seedExpense('e1', 'B', { A: 1000 })
+		await settlementRouteCreate('B', request('r1', routeForPayment(ledger(), 'A', 'B', 300)!), SA)
+		// The old pair endpoint's CAS must reflect the leg already applied.
+		await expect(settlementCreate('B', { mode: 'TRIP_CURRENCY', tripId: TRIP, settlementId: 'legacy-1', fromUid: 'A', toUid: 'B', expectedRemainingMinor: 1000 }, SA))
+			.rejects.toMatchObject({ code: 'SETTLEMENT_STALE' })
+		await settlementCreate('B', { mode: 'TRIP_CURRENCY', tripId: TRIP, settlementId: 'legacy-1', fromUid: 'A', toUid: 'B', expectedRemainingMinor: 700 }, SA)
+		expect(ledger()).toEqual({})
+		// Its lineage continues where the leg stopped — no double draw.
+		const legacy = fake.fields(`trips/${TRIP}/settlements/legacy-1`)!
+		const drawn = ((legacy.appliedSources as { arrayValue: { values: FsValue[] } }).arrayValue.values)
+			.map(v => readInt(v.mapValue!.fields, 'amountMinor'))
+		expect(drawn).toEqual([700])
+		expect(readArr(fake.fields(`trips/${TRIP}/expenses/e1`), 'settlementLockIds').sort()).toEqual(['legacy-1', 'r1-00'])
+		// Cancelling the legacy settlement leaves the route intact.
+		await settlementDelete('B', { tripId: TRIP, settlementId: 'legacy-1' }, SA)
+		expect(ledger()).toEqual({ A: { B: 700 } })
+		expect(readArr(fake.fields(`trips/${TRIP}/expenses/e1`), 'settlementLockIds')).toEqual(['r1-00'])
+	})
 })
