@@ -13,7 +13,7 @@
 // (pdf.js via react-pdf). The old <iframe> couldn't render a blob: PDF on
 // iOS WebKit, so iOS used to fall back to a new tab — which kicks a
 // standalone PWA out to Safari. pdf.js renders in-app uniformly instead.
-// The top-bar "別タブで開く" anchor stays as an escape hatch (and PdfPreview
+// The top-bar "在新分頁開啟" anchor stays as an escape hatch (and PdfPreview
 // shows the same anchor if pdf.js fails to parse the bytes).
 import { lazy, Suspense, useRef } from 'react'
 import { createPortal } from 'react-dom'

@@ -378,8 +378,8 @@ export default function ExpenseFormModal({
     totalMinor: amountMinor, items: items.items, adjustments,
   })
   // Surface receipt mismatch near scan controls. The `amountMinor > 0` gate
-  // prevents blank / mid-edit 請求額 from reparsing to 0 and falsely warning
-  // "請求額より多く" while the user is still typing the total.
+  // prevents blank / mid-edit 帳單金額 from reparsing to 0 and falsely warning
+  // "明細比帳單金額多了" while the user is still typing the total.
   const receiptReconcileWarning =
     att.hasAttachment && items.hasItems && amountMinor > 0 && direction !== 'exact'
       ? `明細比帳單金額${direction === 'short' ? '少了' : '多了'} ${formatMinorAmount(Math.abs(itemsDiff), currency)}，合計不一致。請確認讀取結果。`

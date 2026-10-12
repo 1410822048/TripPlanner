@@ -67,8 +67,8 @@ export interface AcceptResult {
 
 /**
  * Render a human-readable countdown for an invite's `expiresAt`. Adapts to
- * the magnitude of the window — hour-scale expiries show "あと N 時間" /
- * "あと N 分", longer windows fall back to "あと N 日". Callers pass the
+ * the magnitude of the window — hour-scale expiries show "剩 N 小時" /
+ * "剩 N 分鐘", longer windows fall back to "剩 N 天". Callers pass the
  * current time from render scope (useState snapshot) so the formatter stays
  * pure / idempotent within a render pass.
  */

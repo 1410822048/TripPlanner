@@ -41,7 +41,7 @@ export interface UseExpenseItemsResult {
   reset:    (next: FormItem[]) => void
   /** Empty the list (called when the receipt is removed). */
   clear:    () => void
-  /** Append a blank row (manual "+ 行を追加" button). */
+  /** Append a blank row (manual "新增明細" button). */
   add:      () => void
   remove:   (i: number) => void
   setName:  (i: number, value: string) => void

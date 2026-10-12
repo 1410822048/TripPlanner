@@ -78,8 +78,8 @@ export class GlobalRateLimiter implements DurableObject {
  *  on `allowed: false`.
  *
  *  `scope` is mandatory and partitions counters across endpoints so
- *  high-frequency `/ocr` traffic doesn't crowd out a user's `/cascade-
- *  member` budget. Each (scope, uid) pair gets its own DO instance --
+ *  high-frequency `/ocr` traffic doesn't crowd out a user's membership
+ *  (`/invite-*`, `/member-*`) budget. Each (scope, uid) pair gets its own DO instance --
  *  idle ones cost nothing. */
 export async function checkGlobalRateLimit(
   namespace: DurableObjectNamespace,

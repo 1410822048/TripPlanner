@@ -30,7 +30,7 @@ export function parsePositiveMoneyToMinorResult(
 
 // User-facing message for an amount-field error. Adding a new
 // MoneyParseErrorReason forces this switch to be revisited instead of
-// silently collapsing real parse failures into "金額を入力してください".
+// silently collapsing real parse failures into "請輸入金額".
 export function moneyErrorMessage(reason: AmountErrorReason, currency: string): string {
   switch (reason) {
     case 'EMPTY':

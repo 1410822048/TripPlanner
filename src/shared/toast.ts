@@ -57,7 +57,7 @@ export const toast = {
     useToastStore.getState().push('info',    message),
   /**
    * Convenience wrapper for global mutation errors. `action` is the verb
-   * phrase for the operation (e.g. '行程の追加', '保存', '削除').
+   * phrase for the operation (e.g. '新增行程', '儲存', '刪除').
    */
   mutationError: (err: unknown, action: string) => {
     // Firebase codes → 繁中 (never the English SDK text); our own errors

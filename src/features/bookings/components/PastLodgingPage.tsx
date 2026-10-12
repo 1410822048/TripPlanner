@@ -1,6 +1,6 @@
 // src/features/bookings/components/PastLodgingPage.tsx
 // Dedicated history view for every hotel-type booking across the user's
-// trips. Reached from マイページ → 過往の旅程 card. Layout mirrors the
+// trips. Reached from 我的帳戶 → 過往旅程 card. Layout mirrors the
 // reference (image.png):
 //   - Back arrow + 過往旅程 heading
 //   - Flat list of bookings sorted by check-in date descending

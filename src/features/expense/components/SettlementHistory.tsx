@@ -1,5 +1,5 @@
 // src/features/expense/components/SettlementHistory.tsx
-// The「清算済み記録」section of the settlement card: an optional aggregate
+// The「已清算紀錄」section of the settlement card: an optional aggregate
 // orphan warning banner, the most-recent-N settlement rows (fold/unfold for
 // the rest), each delegated to SettlementRow. The orphan classification +
 // balances are computed by the parent (SettlementSummary) and passed in;

@@ -241,8 +241,8 @@ export function useFxPreview(input: UseFxPreviewInput): FxPreviewResult {
   const isDegenerate = input.sourceCurrency === input.tripCurrency
   // Input gating up front. Each branch is distinct because the user-
   // facing message differs:
-  //   - shape invalid (regex fail) → "通貨または日付を確認してください"
-  //   - future date                → "未来日付は換算できません"
+  //   - shape invalid (regex fail) → "請確認幣別或日期。"
+  //   - future date                → "無法換算未來日期"
   // Both prevent the fetch but the explanation in the form preview row
   // should be specific enough for the user to take action.
   const shapeValid =

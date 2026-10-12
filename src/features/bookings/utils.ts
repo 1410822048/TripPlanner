@@ -46,8 +46,8 @@ export const BOOKING_TYPE_META: Record<Booking['type'], { icon: LucideIcon; labe
   other:  { icon: MapPin,     label: '其他'     },
 }
 
-/** 表示順(section / form picker 共用)。BOOKING_TYPE_META と二重管理しないよう
- *  並び順だけをここに持つ。 */
+/** 顯示順序(section / form picker 共用)。為避免與 BOOKING_TYPE_META 雙重維護,
+ *  這裡只保存排列順序。 */
 export const BOOKING_TYPE_ORDER: Booking['type'][] = ['flight', 'hotel', 'train', 'bus', 'other']
 
 /**

@@ -62,7 +62,7 @@ interface SettlementSourceUnit extends SettlementAppliedSource {
 
 export interface SettlementLineage {
   /** Forward-direction sources consumed by the settlement amount — the
-   *  DISPLAY lineage (「清算の元になった費用」). Capped for storage by the
+   *  DISPLAY lineage (「清算來源費用」). Capped for storage by the
    *  caller (MAX_APPLIED_SOURCES). */
   appliedSources: SettlementAppliedSource[]
   /** Every expense whose edit would change the NET this settlement cleared:

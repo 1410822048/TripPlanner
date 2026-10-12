@@ -1,6 +1,6 @@
 // src/components/ui/OfflineBanner.tsx
 // 離線提示細條。離線時黃色 amber banner;從離線恢復後 2 秒內顯示綠
-// 色「同期しました」短暫提示讓使用者放心。
+// 色「已同步」短暫提示讓使用者放心。
 //
 // 為何接在 main 內(scroll 容器內)而不是 fixed:
 //   - fixed 蓋在 page 上方會擋內容

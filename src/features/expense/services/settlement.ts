@@ -16,7 +16,7 @@
 // │   舊算法把 settlement 當 reverse expense (paid+=、owed+=),於是   │
 // │   刪除 expense 後 settlement 還在 → 反方向債從天上掉下來。        │
 // │   debt-edge 模型則保證 settlement 只能 consume 既存債務,沒對應    │
-// │   的部分變成 orphan 顯式追蹤,UI 可以提示「未紐づけ」讓使用者     │
+// │   的部分變成 orphan 顯式追蹤,UI 可以提示「未對應」讓使用者       │
 // │   決定刪不刪。                                                   │
 // └─────────────────────────────────────────────────────────────────┘
 //
@@ -38,7 +38,7 @@
 // 不在當前 members 列表(被踢、自願退出、未結算離開),我們仍要把這
 // 筆 uid 納入計算,否則 sum(net) 不平衡,UI 會顯示「四個人共欠 800
 // 沒人收」這種帳對不起來的怪畫面。`isGhost: true` 旗標讓 UI 標示
-// 「退出済み」灰色 chip。
+// 「已退出」灰色 chip。
 import {
   SETTLEMENT_EPS,
   computePairwiseRemaining,
@@ -118,7 +118,7 @@ export interface BalanceResult {
   /** Step-1 directional gross debt from ACTIVE expenses: `gross[from][to]`
    *  = total `from` owes `to` BEFORE any settlement (應清算 on that pair).
    *  Pre-normalization + pre-cap — the raw expense-derived debt. Surfaced so
-   *  the UI can show「債務 ¥X のうち ¥Y 清算済み」on a partially-settled pair
+   *  the UI can show「應清算 ¥X,已清算 ¥Y」on a partially-settled pair
    *  without re-deriving it. Only directions with expense debt appear. */
   gross: Record<string, Record<string, number>>
   /** Step-2 settlements applied per direction, capped at `gross`:
@@ -148,7 +148,7 @@ const GHOST_CHIP = { avatarLabel: '退', color: '#7a7a7a', bg: '#e5e5e5' } as co
 /**
  * Build a placeholder TripMember for a uid that appears in expenses but
  * isn't an active member of the trip. UI uses isGhost to render the
- * 退出済み state.
+ * 已退出 state.
  *
  * `displayName` 由呼叫端從 trip doc 的 `formerMemberNames` 帶入。查不到時
  * 退回帶 uid 前綴的匿名字樣 —— 不是為了好看,而是因為兩個以上的已退出成員

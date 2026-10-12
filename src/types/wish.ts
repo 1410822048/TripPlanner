@@ -105,11 +105,11 @@ export const CreateWishSchema = z.object({
   category:    z.enum(['place', 'food']),
   title:       z.string().min(1, '請輸入標題').max(WISH_LIMITS.title),
   description: z.string().max(WISH_LIMITS.description).optional(),
-  // 提案リンク。href に出すため http(s) のみ。cap 500 は rules / Worker と
-  // lockstep。booking と違い '' の逃げ道は不要 — wishService は Worker へ
-  // 送る前に stripEmpty するので '' はここまで届かない。
+  // 提案連結。因為會放進 href,只允許 http(s)。cap 500 與 rules / Worker
+  // lockstep。與 booking 不同,不需要 '' 的退路 — wishService 送往 Worker
+  // 前會先 stripEmpty,所以 '' 不會到這裡。
   link:        z.string().max(WISH_LIMITS.link).refine(isHttpUrl, 'URL 必須以 http:// 或 https:// 開頭').optional(),
-  // 住所テキスト or Google Maps URL を受けるため 500(URL は 200 を超え得る)。
+  // 要接受地址文字或 Google Maps URL,所以是 500(URL 可能超過 200)。
   address:     z.string().max(WISH_LIMITS.address).optional(),
 })
 export type CreateWishInput = z.infer<typeof CreateWishSchema>

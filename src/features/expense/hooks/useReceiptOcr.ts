@@ -93,7 +93,7 @@ export function useReceiptOcr(input: UseReceiptOcrInput): UseReceiptOcrResult {
       applyOcrResult(result)
       // markAnalyzed only AFTER a successful apply — a parse-failure throw
       // propagates past this, so analyzedSourceKey stays put and caps keep
-      // offering 「明細を読み取る」 for a retry.
+      // offering 「讀取明細」 for a retry.
       receiptSource.markAnalyzed(pendingSourceKeyRef.current)
       pendingSourceKeyRef.current = null
     },
@@ -116,7 +116,7 @@ export function useReceiptOcr(input: UseReceiptOcrInput): UseReceiptOcrResult {
   // Two separate <input>s. We CAN'T detect "camera vs gallery" from a single
   // input, so the UX branches on which button was tapped:
   //   - camera button → capture=environment → auto-OCR on result
-  //   - upload button → no capture → manual 「明細を読み取る」 button
+  //   - upload button → no capture → manual 「讀取明細」 button
   async function onCameraPicked(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]
     e.target.value = ''

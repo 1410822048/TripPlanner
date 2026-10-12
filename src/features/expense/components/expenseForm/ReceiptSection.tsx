@@ -1,5 +1,5 @@
 // src/features/expense/components/expenseForm/ReceiptSection.tsx
-// Pure presentational section for the 「レシート」 FormField, split out of
+// Pure presentational section for the 「收據」 FormField, split out of
 // ExpenseFormModal (item 3 — the form's JSX is extracted into sections; the
 // receipt / OCR / attachment STATE stays in the modal and its hooks). This
 // component owns only picker-local UI state: the two hidden <input> refs and
@@ -152,9 +152,9 @@ interface ReceiptSectionProps {
   previewIsImage: boolean
   ocrLoading:     boolean
   ocrElapsedMs:   number
-  /** Manual 「明細を読み取る」 button visible (image attached, not yet OCR'd). */
+  /** Manual 「讀取明細」 button visible (image attached, not yet OCR'd). */
   canAnalyze:     boolean
-  /** 「もう一度読み取る」 link visible (already has items). */
+  /** 「再次讀取」 link visible (already has items). */
   canReanalyze:   boolean
   canFallback:    boolean
   /** Whether the full preview is openable (a new file or an existing

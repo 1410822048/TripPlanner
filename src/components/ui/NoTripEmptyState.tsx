@@ -1,7 +1,7 @@
 // src/components/ui/NoTripEmptyState.tsx
 // Empty state for feature pages when the signed-in user has no trips.
-// `reason` is plugged into a fixed Japanese sentence — pass the verb
-// phrase only (e.g. "予約を管理" → "予約を管理できるようになります。").
+// `reason` is plugged into a fixed Traditional Chinese sentence — pass the verb
+// phrase only (e.g. "管理訂單" → "就能管理訂單。").
 import type { LucideIcon } from 'lucide-react'
 
 interface Props {

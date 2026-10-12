@@ -175,7 +175,7 @@ describe('multiple settlements per pair', () => {
   it('exposes gross (應清算) + applied (已清算) per direction — the settled-vs-owed gap', () => {
     // m2 owes m1 1200 (e.g. the owner bumped the expense to 1200 after a
     // settlement); m2 has settled 1000 → 200 still owed. The UI reads
-    // gross/applied to show 「債務 ¥1,200 のうち ¥1,000 清算済み」.
+    // gross/applied to show 「應清算 ¥1,200,已清算 ¥1,000」.
     const expenses    = [mkExpense('m1', 1200, [['m2', 1200]])]
     const settlements = [mkSettlement('m2', 'm1', 1000)]
     const { gross, applied, pairwise } = computeBalancesFull(expenses, MEMBERS, settlements)

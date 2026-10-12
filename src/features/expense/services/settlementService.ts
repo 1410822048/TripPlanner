@@ -193,7 +193,7 @@ export const subscribeToSettlements = (
  * stale-confirmed intent. `expectedRemainingMinor` is only the UI's
  * view of the remaining debt when the sheet opened; Worker recomputes
  * pair-remaining inside the tx, rejects stale confirmations, and writes
- * `amountMinor = remaining` for BOTH modes — 「済み」 always clears the
+ * `amountMinor = remaining` for BOTH modes — 「已收款」 always clears the
  * entire suggested debt. FOREIGN additionally inverse-derives
  * `sourceAmountMinor` via at-most policy for display/audit (persisted
  * alongside `fxSnapshot.convertedAmountMinor`, which is the FX forward

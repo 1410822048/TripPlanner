@@ -28,8 +28,8 @@ import {
 import { deleteR2Object }                     from './r2-storage'
 import { getAdminToken, getProjectId }       from './admin'
 
-/** How long after soft-delete we keep receipts. Constant lives here so
- *  index.ts (cron wiring) and tests can reference the same value. */
+/** How long after soft-delete we keep receipts. Must stay in step with
+ *  the 10-day restore window on `deletedAt` in firestore.rules. */
 export const RECEIPT_RETENTION_MS = 10 * 24 * 3600 * 1000
 
 /** Page size for the collection-group query. 200 keeps each page's

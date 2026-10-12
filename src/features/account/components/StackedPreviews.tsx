@@ -1,5 +1,5 @@
 // src/features/account/components/StackedPreviews.tsx
-// Two decorative "pile" previews used inside マイページ's FeatureCard tiles:
+// Two decorative "pile" previews used inside 我的帳戶's FeatureCard tiles:
 //   - StackedEmojiPreview: 3 overlapping emoji tiles (for the lodging card).
 //   - StackedAvatarPreview: overlapping member avatars (+N overflow chip).
 // Both are purely visual; no click handlers of their own.

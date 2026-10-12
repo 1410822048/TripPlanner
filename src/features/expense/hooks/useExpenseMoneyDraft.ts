@@ -24,7 +24,7 @@ import { formatMinorForInput, parseMoneyToMinor } from '@/utils/money'
 import { normalizeMoneyTextForCurrency, safeReparseMoney } from '../utils'
 import type { FormItem } from './useExpenseItems'
 
-/** Default code used when 「外貨で記録」 opens. USD by default; if the trip
+/** Default code used when 「以其他幣別輸入」 opens. USD by default; if the trip
  *  currency itself is USD, fall back to EUR so the toggle never expands
  *  into a degenerate (source === trip) state. (Moved verbatim from
  *  ExpenseFormModal — the only consumer is this hook's init + switch.) */

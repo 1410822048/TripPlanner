@@ -20,10 +20,9 @@
 //     replay with the same input must hit the same doc. Provider may
 //     return an earlier rateDate (weekend / pre-publish window); we
 //     accept it and lock it in.
-//   - Doc is admin-only (firestore.rules Phase 5 will pin
-//     `allow read, write: if false` on /fxRates/{id}); for Phase 2 we
-//     rely on no client SDK touching the path, deferred lockdown is
-//     tracked in the design doc.
+//   - Doc is admin-only: firestore.rules has no match for /fxRates, so
+//     Firestore's default deny blocks every client SDK read and write;
+//     only this Worker's admin token reaches it.
 //   - rateDecimal is a canonical positive decimal string per
 //     `@tripmate/fx-core` (see canonicalizeRate); cache hits feed the
 //     same string straight into convertMinorHalfEven, so the math is

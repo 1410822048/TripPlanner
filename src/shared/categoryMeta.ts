@@ -8,8 +8,8 @@ import type { ExpenseCategory, ScheduleCategory } from '@/types'
 
 export type CategoryKey = ExpenseCategory | ScheduleCategory
 
-// 既存の schedule タイムライン(TimelineCard)が使っていたアイコンに合わせる
-// ことで、リスト表示とフォーム picker のアイコンが一致する。
+// 對齊既有 schedule 時間軸(TimelineCard)使用的圖示,
+// 讓列表顯示與表單 picker 的圖示一致。
 export const CATEGORY_ICON: Record<CategoryKey, LucideIcon> = {
   food:          Utensils,
   transport:     Bus,

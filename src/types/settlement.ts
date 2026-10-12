@@ -21,7 +21,7 @@
 //   settledOn quartet alongside the trip-currency amountMinor.
 //
 //   Critical invariant: amountMinor ≡ remaining (full clear) for BOTH
-//   modes. The ledger MUST zero the entire pair balance — 「済み」 is
+//   modes. The ledger MUST zero the entire pair balance — 「已收款」 is
 //   intent-driven, not amount-entry. FX is decoupled:
 //     - sourceAmountMinor + fxSnapshot.convertedAmountMinor record what
 //       the FX math produced (≤ amountMinor, may diverge by a few minor
@@ -68,7 +68,7 @@ export interface SettlementRecord {
    *  ALWAYS equals the pair-remaining the Worker computed at tx time —
    *  for BOTH TRIP_CURRENCY and FOREIGN_CURRENCY modes. Foreign mode's
    *  `fxSnapshot.convertedAmountMinor` is the FX forward result (may
-   *  be ≤ amountMinor); they're intentionally decoupled so 「済み」
+   *  be ≤ amountMinor); they're intentionally decoupled so 「已收款」
    *  always clears the entire pair balance regardless of FX rounding. */
   amountMinor: number
   currency:    string      // ISO 4217 — always trip currency
@@ -274,7 +274,7 @@ export const SettlementDocSchema = z.object({
  * the wire body is a thin translation in `settlementService.ts`.
  *
  * Phase 4.1 rearchitecture (2026-06-02): the payload is now INTENT
- * ONLY. 「済み」 is "clear the suggested debt", not "post an arbitrary
+ * ONLY. 「已收款」 is "clear the suggested debt", not "post an arbitrary
  * amount". The ledger ALWAYS clears the entire pair-remaining for
  * BOTH modes — there is no partial-clear path:
  *   - TRIP_CURRENCY:    payee received money in the trip currency.

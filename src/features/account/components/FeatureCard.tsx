@@ -1,5 +1,5 @@
 // src/features/account/components/FeatureCard.tsx
-// Square card with optional tap target — used by マイページ's 2-column
+// Square card with optional tap target — used by 我的帳戶's 2-column
 // feature grid. Has a body slot (children) + bottom label / sublabel block.
 // When `onClick` is omitted (or `disabled` is set), renders as a plain div
 // to avoid semantically misleading "button" roles on informational cards.

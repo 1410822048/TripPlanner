@@ -5,8 +5,8 @@
 // button so destructive actions stay discoverable but never compete
 // for the primary CTA position.
 //
-// Two-step pattern: tap the trigger button → it morphs into a "削除し
-// ますか？" panel with explicit cancel + delete affordances. Avoids the
+// Two-step pattern: tap the trigger button → it morphs into a "確定要刪除
+// {noun}嗎？" panel with explicit cancel + delete affordances. Avoids the
 // modal-on-modal jarring of a confirm dialog while still requiring an
 // intentional second tap.
 //
@@ -19,9 +19,8 @@ import { useState } from 'react'
 
 interface Props {
   /** The user-visible noun for what's being deleted. Composed into
-   *  the prompt copy via `この{noun}を削除しますか？` and trigger button
-   *  via `この{noun}を削除`. Pass nouns in Japanese (existing convention
-   *  in this codebase) — e.g. "予約", "行程", "ウィッシュ". */
+   *  the prompt copy via `確定要刪除{noun}嗎？` and the trigger button via
+   *  `刪除{noun}`. Pass Traditional Chinese nouns — e.g. "訂單", "行程". */
   noun:     string
   /** Fired after the user taps the second-step 削除 button. Caller
    *  performs the actual mutation + closes the modal. */

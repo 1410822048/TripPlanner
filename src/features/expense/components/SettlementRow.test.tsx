@@ -1,4 +1,4 @@
-// Render + fireEvent tests for SettlementRow — the single「清算済み」record
+// Render + fireEvent tests for SettlementRow — the single「已清算」record
 // row extracted from SettlementSummary. Covers the branches a pure fn can't:
 // trip- vs foreign-currency amount lines, the orphan reason chip + its
 // source hint, the canDelete gate, and the two-tap delete latch. The row is

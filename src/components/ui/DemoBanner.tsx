@@ -1,7 +1,7 @@
 // src/components/ui/DemoBanner.tsx
 // Top-of-page banner shown in demo (signed-out preview) mode. The
-// `reason` slot completes "サインインで…" — pass the suffix only,
-// e.g. "予約を保存" / "費用を保存" / "投票を保存".
+// `reason` slot completes "登入後即可…" — pass the suffix only,
+// e.g. "儲存訂單" / "儲存費用" / "儲存投票".
 interface Props {
   reason:   string
   onSignIn: () => void

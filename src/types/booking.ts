@@ -181,11 +181,11 @@ export const CreateBookingSchema = z.object({
   // no-file booking writing client-side past Worker cap).
   checkIn:          z.string().max(BOOKING_LIMITS.dateText).optional(),
   checkOut:         z.string().max(BOOKING_LIMITS.dateText).optional(),
-  // 住所テキスト or Google Maps URL を受けるため 500(URL は 200 を超え得る)。
+  // 要接受地址文字或 Google Maps URL,所以是 500(URL 可能超過 200)。
   address:          z.string().max(BOOKING_LIMITS.address).optional(),
-  // 予約元 URL。http(s) のみ(href に出すため)。cap 500 は rules / Worker と lockstep。
-  // '' はクリア用 sentinel として許可(stripEmpty / deleteField で
-  // Firestore には届かないので rules 側は strict のまま)。
+  // 訂單來源 URL。只允許 http(s)(因為會放進 href)。cap 500 與 rules / Worker lockstep。
+  // '' 作為清除用 sentinel 允許(經 stripEmpty / deleteField 後
+  // 不會送到 Firestore,所以 rules 端維持 strict)。
   link:             z.string().max(BOOKING_LIMITS.link).refine(v => v === '' || isHttpUrl(v), 'URL 必須以 http:// 或 https:// 開頭').optional(),
   note:             z.string().max(BOOKING_LIMITS.note).optional(),
 })

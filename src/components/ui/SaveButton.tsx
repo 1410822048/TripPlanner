@@ -5,7 +5,7 @@ import { Loader } from 'lucide-react'
 interface Props {
   onClick:   () => void
   isSaving?: boolean
-  /** 正常狀態文字，例：「変更を保存」 */
+  /** 正常狀態文字，例：「儲存變更」 */
   label:     string
   /** isSaving 時文字，預設「保存中…」 */
   loadingLabel?: string

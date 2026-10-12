@@ -28,7 +28,7 @@ export const MUTATION_ACTION = {
 
   // ── Entity-specific create labels ──────────────────────────────
   // All five list entities get their own create label so the failure
-  // toast (`{label}に失敗`) reads naturally and the Sentry tag pinpoints
+  // toast (`{label}失敗`) reads naturally and the Sentry tag pinpoints
   // which entity broke. Don't fall back to a generic `ADD` — it
   // fragments aggregation and reads worse in the UI.
   CREATE_BOOKING:    '新增訂單',

@@ -2,7 +2,7 @@
 // In-app PDF viewer (pdf.js via react-pdf). Lazy-loaded ONLY when the
 // attachment preview opens on a PDF, so pdfjs + its worker (~hundreds of KB)
 // stay out of the main bundle. Replaces the old per-platform split (desktop
-// <iframe> / iOS "別タブで開く"); iOS PWA users no longer get kicked out to
+// <iframe> / iOS "在新分頁開啟"); iOS PWA users no longer get kicked out to
 // Safari to read a booking document.
 //
 // Renders up to the product PDF page limit in a vertical scroll. New uploads

@@ -24,7 +24,7 @@ interface Props {
   formerMemberNames: Readonly<Record<string, string>>
   /** ISO currency code of the trip — used to format amounts inline. */
   currency: string
-  /** Current user uid — must equal `toUid` for the「済み」button to
+  /** Current user uid — must equal `toUid` for the「已收款」button to
    *  enable. Receiver-only mirrors the Worker (settlement-create). */
   uid: string | null
   /** Capability, not identity: whether the current user may delete ANY
@@ -43,7 +43,7 @@ interface Props {
    *  override the cleared amount, only the source currency / date. */
   onRecordSettlement: (suggestion: { fromUid: string; toUid: string; amountMinor: number }) => void
   /** Removes a previously recorded settlement. Used to clean up
-   *  orphans whose expense was deleted, or to undo a premature「済み」. */
+   *  orphans whose expense was deleted, or to undo a premature「已收款」. */
   onDeleteSettlement: (id: string) => void
   /** Trip owner: may record the receipt for a receiver who has LEFT the
    *  trip (nobody else can confirm it any more). The Worker enforces it
@@ -70,7 +70,7 @@ export default function SettlementSummary({
 
   // `expenses` includes soft-deleted rows (passed through for chronological
   // replay). Active-expense visual regions (balance cards, suggestions,
-  // "清算済み" chip) need to gate on whether any LIVE expense exists --
+  // "已清算" chip) need to gate on whether any LIVE expense exists --
   // otherwise tombstone-only trips render 0-amount balances + misleading
   // "all settled" chip. Short-circuit `some` is also the cheapest test for
   // the early-return guard below.
@@ -243,7 +243,7 @@ export default function SettlementSummary({
           </>
         ))}
 
-        {/* ── 清算済み記録 + orphan 警告 ────────────────── */}
+        {/* ── 已清算紀錄 + orphan 警告 ────────────────── */}
         {settlements.length > 0 && (
           <SettlementHistory
             expenses={expenses}

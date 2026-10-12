@@ -1,5 +1,5 @@
 // src/features/expense/components/SettlementRow.tsx
-// A single「清算済み」record row inside the settlement history list.
+// A single「已清算」record row inside the settlement history list.
 // Renders the from→to avatars, the cleared amount (two-line when the payee
 // recorded a foreign-currency receipt), an optional orphan reason chip, and
 // the two-tap delete affordance. Pure presentation — the parent decides

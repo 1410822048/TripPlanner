@@ -1,5 +1,5 @@
 // src/features/expense/services/settlementSuggestions.ts
-// UI 向け settlement suggestion 層 — 從 settlement.ts 拆出來純為可讀性
+// 給 UI 用的 settlement suggestion 層 — 從 settlement.ts 拆出來純為可讀性
 // (debt-edge 主算法 + orphan 時序 replay 留在那邊)。純函式,無 side
 // effect,不影響 Worker contract:
 //

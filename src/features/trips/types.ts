@@ -30,7 +30,7 @@ export interface TripMember {
   /**
    * True when this uid only appears in expense history (paidBy / splits)
    * but is no longer a trip member — kicked out, left, or removed before
-   * settling. Surfaces in UI as a "(退出済み)" label so settlement stays
+   * settling. Surfaces in UI as a "(已退出)" label so settlement stays
    * reconcilable without confusing readers. Active members leave this
    * undefined.
    */

@@ -295,7 +295,7 @@ describe('expenseReceiptOcr — post-OCR revalidation (mid-OCR race)', () => {
   })
 
   it('expense becomes settlement-locked (non-owner) while OCR runs → 403', async () => {
-    // The whole point of the FULL re-run post-check: someone records 済み
+    // The whole point of the FULL re-run post-check: someone records 已收款
     // mid-OCR → settlementLockIds set, but the lock write does NOT bump
     // updatedAt. A path/updatedAt-only check would PASS and the non-owner's
     // stale draft would only 403 at save. The re-run authorization rejects.

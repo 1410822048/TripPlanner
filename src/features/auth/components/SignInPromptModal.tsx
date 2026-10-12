@@ -15,7 +15,7 @@ import { userErrorMessage } from '@/utils/errorMessage'
 interface Props {
   isOpen:   boolean
   onClose:  () => void
-  /** Context-specific hook, e.g. "旅程を作成するには" or "費用を保存するには" */
+  /** Context-specific hook, e.g. "若要建立旅程，" or "若要儲存費用，" */
   reason?:  string
   /** Called after a successful sign-in — caller can retry the pending action. */
   onSignedIn?: () => void
