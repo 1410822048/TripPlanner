@@ -6,6 +6,8 @@ import { VitePWA } from 'vite-plugin-pwa'
 import { visualizer } from 'rollup-plugin-visualizer'
 import path from 'path'
 import { execSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 
 // Inline build-identifying constants at config-load time so they land in
 // the bundle as statically-inlined strings (no runtime JSON import, no
@@ -91,8 +93,26 @@ export default defineConfig({
     // Auth SDK and Sentry are intentionally NOT preloaded here for
     // separate reasons (see the previous version of this comment block
     // — preserved in git history).
-    {
+    (() => {
+      // CSP allows the inline script below by its sha256, which changes with
+      // every build (chunk names are hashed) — so the hash is stamped into
+      // the BUILT dist/_headers, never into public/_headers.
+      let outDir = 'dist'
+      let inlineScript: string | null = null
+      return {
       name: 'preload-firebase-chunks',
+      configResolved(config: { root: string; build: { outDir: string } }) {
+        outDir = path.resolve(config.root, config.build.outDir)
+      },
+      closeBundle() {
+        const headersPath = path.join(outDir, '_headers')
+        if (!inlineScript || !existsSync(headersPath)) return
+        const hash = createHash('sha256').update(inlineScript).digest('base64')
+        const headers = readFileSync(headersPath, 'utf8')
+        const stamped = headers.replace("script-src 'self'", `script-src 'self' 'sha256-${hash}'`)
+        if (stamped === headers) throw new Error('preload-firebase-chunks: script-src not found in _headers')
+        writeFileSync(headersPath, stamped)
+      },
       transformIndexHtml: {
         order: 'post',
         handler(html, ctx) {
@@ -110,11 +130,13 @@ export default defineConfig({
           // Inline script — minified by hand because vite's HTML pass
           // doesn't run our terser config over transformIndexHtml output.
           // try/catch guards against private-mode / SSR localStorage throws.
-          const script = `<script>(function(){try{if(localStorage.getItem('tripmate.auth.hint')==='1'){var p=document.createElement('link');p.rel='preconnect';p.href='https://firestore.googleapis.com';p.crossOrigin='';document.head.appendChild(p);var hs=${hrefs};for(var i=0;i<hs.length;i++){var l=document.createElement('link');l.rel='modulepreload';l.href=hs[i];l.crossOrigin='';document.head.appendChild(l);}}}catch(e){}})();</script>`
-          return html.replace('</head>', `    ${script}\n  </head>`)
+          const body = `(function(){try{if(localStorage.getItem('tripmate.auth.hint')==='1'){var p=document.createElement('link');p.rel='preconnect';p.href='https://firestore.googleapis.com';p.crossOrigin='';document.head.appendChild(p);var hs=${hrefs};for(var i=0;i<hs.length;i++){var l=document.createElement('link');l.rel='modulepreload';l.href=hs[i];l.crossOrigin='';document.head.appendChild(l);}}}catch(e){}})();`
+          inlineScript = body
+          return html.replace('</head>', `    <script>${body}</script>\n  </head>`)
         },
       },
-    },
+      }
+    })(),
     // Bundle visualiser. Off by default; opt-in via `ANALYZE=1 npm run build`
     // so the normal build stays fast and doesn't open browser tabs.
     ...(process.env.ANALYZE

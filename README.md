@@ -12,7 +12,7 @@
 | 🎫 訂單 | 機票 / 飯店 / 電車 / 巴士 / 其他確認單（含附件上傳）|
 | 🧾 費用 | 共同支出記帳 + 自動結算分攤 |
 | ❤️ Wish | 大家投票決定想去的地方 / 想吃的東西 |
-| 🗺 規劃 | 預留（尚未實作）|
+| 🗺 規劃 | 行前準備清單（分類 checklist，成員各自勾選進度）|
 | 👤 我的 | 個人資料 + 過往住宿 + 朋友圈 |
 
 支援多 trip 切換、邀請連結（5 小時 expiry，含 QR code）、角色權限（owner / editor / viewer）、PWA 離線。
@@ -66,7 +66,7 @@ VITE_FIREBASE_AUTH_DOMAIN=<project-id>.firebaseapp.com
 VITE_FIREBASE_PROJECT_ID=<project-id>
 VITE_FIREBASE_MESSAGING_SENDER_ID=...
 VITE_FIREBASE_APP_ID=...
-VITE_USE_EMULATOR=false
+VITE_USE_FIREBASE_EMULATORS=false   # 僅 dev 生效
 VITE_SENTRY_DSN=                 # 可選，留空則停用錯誤回報
 ```
 
@@ -102,12 +102,12 @@ npm run test:rules   # Firestore rules 整合測試（需 JDK + emulator）
 通過代表**部署到 production 的規則就是被測過的那份**。
 
 需要：
-- **JDK 11 / 17 / 21**（任一 LTS）。
+- **JDK 21**（firebase-tools 需要 Java 21+）。
   Windows 推薦 `winget install Microsoft.OpenJDK.21`（需 admin）。
 - Firebase CLI（已在 devDependencies）。
 
-CI 不跑 rules tests（emulator 啟動時間 + 額外服務），只在本地 + 改 rules 時
-手動跑一次。
+CI 也會跑 `npm run test:rules`（見 `.github/workflows/ci.yml`）；改 rules 時
+建議先在本地跑一次。
 
 ## Build & Deploy
 

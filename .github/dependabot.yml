@@ -1,0 +1,83 @@
+# Automated dependency update PRs. Every PR runs the full CI `check` job
+# (audit gate, lint, typecheck, all test suites, rules emulator, build);
+# nothing deploys until a PR is merged to main.
+#
+# Grouping keeps the weekly volume reviewable: minor + patch land as one PR
+# per group, majors stay separate so each breaking change is reviewed alone.
+# Packages that must move together (Cloudflare toolchain, Firebase SDKs,
+# pdf.js + react-pdf, Vitest) share a group so a PR never splits a lockstep.
+version: 2
+updates:
+  # Root lockfile — covers the workspaces too (packages/*, workers/ocr,
+  # firebase-functions as a workspace).
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Taipei
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: 'chore(deps)'
+    groups:
+      cloudflare:
+        patterns: ['wrangler', '@cloudflare/*', 'miniflare']
+      firebase:
+        patterns: ['firebase', 'firebase-*', '@firebase/*']
+      pdf:
+        patterns: ['pdfjs-dist', 'react-pdf']
+      vitest:
+        patterns: ['vitest', '@vitest/*', '@testing-library/*', 'jsdom']
+      react:
+        patterns: ['react', 'react-dom', 'react-router*', '@types/react*', 'babel-plugin-react-compiler']
+      minor-and-patch:
+        update-types: ['minor', 'patch']
+    ignore:
+      # jsdom 30 breaks camelCase SVG attribute-value selectors used by the
+      # component tests; stay on 29 until that is fixed upstream.
+      - dependency-name: jsdom
+        versions: ['>=30']
+      # pdfjs-dist is exact-pinned in lockstep with react-pdf's own pdf.js;
+      # 6.x waits until react-pdf ships against it.
+      - dependency-name: pdfjs-dist
+        update-types: ['version-update:semver-major']
+      # Node / npm are pinned on purpose (CI + Functions engine); bump by hand.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
+
+  # Functions are deployed from their own lockfile, which the root update
+  # does not touch.
+  - package-ecosystem: npm
+    directory: /firebase-functions
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Taipei
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'chore(deps-functions)'
+    groups:
+      firebase:
+        patterns: ['firebase', 'firebase-*', '@firebase/*']
+      minor-and-patch:
+        update-types: ['minor', 'patch']
+    ignore:
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
+
+  # Workflow actions are pinned to full commit SHAs; Dependabot bumps the SHA
+  # and the trailing `# vX.Y.Z` comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Taipei
+    commit-message:
+      prefix: 'chore(ci)'
+    groups:
+      actions:
+        patterns: ['*']

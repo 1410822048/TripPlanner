@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
@@ -28,6 +29,18 @@ function parseManifest(raw, source) {
   return value
 }
 
+/** The manifest at HEAD, or null outside a git checkout (e.g. a tarball build). */
+function committedManifest() {
+  try {
+    const raw = execFileSync('git', ['show', 'HEAD:public/compatibility.json'], {
+      cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    return parseManifest(raw, 'HEAD:public/compatibility.json')
+  } catch {
+    return null
+  }
+}
+
 const publicPath = path.join(root, 'public', 'compatibility.json')
 const sourcePath = path.join(root, 'src', 'services', 'clientCompatibility.ts')
 const headersPath = path.join(root, 'public', '_headers')
@@ -46,6 +59,19 @@ if (!isEpoch(clientEpoch)) throw new Error('CLIENT_SCHEMA_EPOCH is invalid')
 if (manifest.minimumWriteEpoch > clientEpoch) {
   throw new Error(`minimumWriteEpoch ${manifest.minimumWriteEpoch} exceeds client epoch ${clientEpoch}`)
 }
+// Revisions only move forward, and a changed minimumWriteEpoch needs a new
+// revision: clients that cached the old pair reject a same-revision change,
+// so a rollback shipped that way would silently never apply.
+const committed = committedManifest()
+if (committed) {
+  if (manifest.revision < committed.revision) {
+    throw new Error(`revision ${manifest.revision} is lower than the committed ${committed.revision}`)
+  }
+  if (manifest.revision === committed.revision && manifest.minimumWriteEpoch !== committed.minimumWriteEpoch) {
+    throw new Error(`minimumWriteEpoch changed without bumping revision (${committed.revision})`)
+  }
+}
+
 if (!/^\/compatibility\.json\r?\n[ \t]+Cache-Control:[ \t]*no-store, max-age=0, must-revalidate[ \t]*$/m.test(headersRaw)) {
   throw new Error('public/_headers is missing the no-store compatibility rule')
 }

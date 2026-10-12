@@ -21,6 +21,39 @@ export default defineConfig({
     // vitest.setup.ts; it skips the DOM part when there is no document).
     // Required because we don't set `globals: true`.
     setupFiles: ['./vitest.setup.ts'],
+    // `npm run test:coverage` (CI) enforces these floors. They sit just
+    // under the measured baseline: the point is to stop coverage from
+    // sliding unnoticed, not to chase a number. Raise them as coverage
+    // grows; never lower them to make a PR pass.
+    coverage: {
+      provider: 'v8',
+      include:  ['src/**/*.{ts,tsx}', 'packages/*/src/**/*.ts'],
+      exclude: [
+        '**/*.{test,spec}.{ts,tsx}',
+        '**/*.d.ts',
+        'src/test/**',
+        'src/**/mocks.ts',
+        'src/mocks/**',
+        'src/main.tsx',
+      ],
+      reporter: ['text-summary', 'html'],
+      reportsDirectory: './coverage',
+      thresholds: {
+        // Whole app (baseline 2026-10-13: stmt 61.3 / br 56.7 / fn 57.4 / ln 64.7).
+        statements: 60,
+        branches:   55,
+        functions:  56,
+        lines:      63,
+        // Money logic is held to a higher bar: a regression here is a wrong
+        // balance, not a wrong pixel.
+        'packages/*/src/**': {
+          statements: 92, branches: 85, functions: 95, lines: 94,
+        },
+        'src/features/expense/services/**': {
+          statements: 87, branches: 78, functions: 86, lines: 90,
+        },
+      },
+    },
     // Two projects, one config. jsdom costs ~0.3s of environment setup per
     // file, and most plain .ts suites (pure functions, services with mocked
     // SDKs, packages, invariants) never touch the DOM, so they run in node.

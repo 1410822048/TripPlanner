@@ -20,7 +20,7 @@
 | CI | GitHub Actions(`.github/workflows/ci.yml`) |
 | Pre-commit | Husky + lint-staged：完整 workspace typecheck、staged TypeScript ESLint；完整測試由 CI 執行 |
 
-依賴工具固定 npm 11.21.0（CI 與 Functions engine）；Node 22 驗證。CI 使用嚴格 `npm ci`、audit gate 與完整 SHA 固定的 Actions。相容性與安全 override 維護方式見 `docs/runbooks/dependency-security-overrides.md`；本次升級與暫緩原因見 `docs/reviews/2026-10-06-production-audit.md`。
+依賴工具固定 npm 11.21.0（CI 與 Functions engine）；Node 22 驗證。依賴更新由 Dependabot 每週一開 PR（`.github/dependabot.yml`，連動套件同組、major 分開；已知 blocker 如 jsdom 30 / pdfjs-dist 6 列在 ignore）。CI 使用嚴格 `npm ci`、audit gate 與完整 SHA 固定的 Actions。相容性與安全 override 維護方式見 `docs/runbooks/dependency-security-overrides.md`；本次升級與暫緩原因見 `docs/reviews/2026-10-06-production-audit.md`。
 
 ## 資料模型(Firestore)
 
@@ -31,14 +31,14 @@ trips/{tripId}
   ├── bookings/{bookingId}       # 訂單(機票/飯店/火車/巴士/其他)
   ├── expenses/{expenseId}       # 費用 + splits + 可選 items[](OCR)
   ├── wishes/{wishId}            # 願望清單 + votes[]
-  ├── plannings/{planItemId}     # 行前準備 checklist
+  ├── planning/{planItemId}      # 行前準備 checklist(集合名是單數 planning)
   ├── settlements/{id}           # 收款人確認，Worker 交易／冪等檢查；僅減少既存 debt
   └── (trip doc 本體:title/dest/dates/ownerId/icon/currency)
 
 invites/{token}                  # token 在 URL fragment(不進 server log)
 ```
 
-**所有 5 個 feature entity(schedules/expenses/bookings/wishes/plannings)都帶有 `createdBy` + `updatedBy` + `createdAt` + `updatedAt`。`updatedBy` 在每次 create / update / toggle / vote 都會被服務層寫入當前 uid,rules 用 `request.resource.data.updatedBy == uid()` 鎖死,client 偽造會被 Firestore 拒。BottomNav 紅點另讀 trip doc 的 `lastActivityByFeature[feature] = { ts, by }`，以 `by` 排除自己的動態；不另外監聽 entity collections。**
+**所有 5 個 feature entity(schedules/expenses/bookings/wishes/planning)都帶有 `createdBy` + `updatedBy` + `createdAt` + `updatedAt`。`updatedBy` 在每次 create / update / toggle / vote 都會被服務層寫入當前 uid,rules 用 `request.resource.data.updatedBy == uid()` 鎖死,client 偽造會被 Firestore 拒。BottomNav 紅點另讀 trip doc 的 `lastActivityByFeature[feature] = { ts, by }`，以 `by` 排除自己的動態；不另外監聽 entity collections。**
 
 R2:`trips/{tripId}/expenses/{expenseId}/receipt.webp` + `thumb.webp` 等(private bucket,WebP thumbnail variants)。
 
@@ -421,6 +421,8 @@ client 對 Worker 失敗只有兩種處置:**definitive → 回滾樂觀列**,**
 3. manifest 提到 `{ revision: 2, minimumWriteEpoch: 2 }` → 再部署一次 Pages(manifest 由 Pages 提供)。**已成功取得 revision 2 manifest 的** epoch-1 bundle 從此停寫,由 `AppCompatibilityGate` 顯示更新 CTA
 4. 確認 production `/compatibility.json` 真的是 revision 2、並等過 active-client 的 refresh 窗口後,才部署 strict Worker
 
+> 實際紀錄:上面第 3 步的 `{ revision: 2, minimumWriteEpoch: 2 }` **從未單獨部署**。manifest 歷史是 `{1,1}`(2026-08-13)→ `{2,3}`(2026-10-08,FX CAS 同批)。revision 2 已被用掉:**下一次改 manifest 必須用 revision ≥ 3**。同一個 revision 換掉 `minimumWriteEpoch` 會被已快取 `{2,3}` 的 client 當成錯誤丟棄(rollback 無聲失效);`scripts/check-client-compatibility.mjs` 會對照 HEAD 版本擋下這種變更。
+
 **cutoff 不是全域同步生效,別這樣宣稱。** `clientCompatibility.ts` 在 module load 時**同步** hydrate localStorage 裡的舊 manifest,refresh 是非同步 effect,而未知狀態一律 fail-open(這是刻意的:寧可放行也不要因為 manifest 抓不到就鎖死全 app)。所以休眠很久的裝置醒來時,會先帶著 `{revision:1, minimumWriteEpoch:1}` 的 cached snapshot 放行寫入,直到 refresh 落地為止 —— 這段窗口內的請求仍會打到 strict Worker 並吃 400。epoch gate 的作用是把這類 400 的範圍**縮小到還沒成功取得 cutoff manifest 的 late client**;對那些 client 這不是一次性的 —— 只要 fetch 持續失敗,cached revision 1 就持續 fail-open,使用者每次重試都可能再撞一次,直到某次 refresh 成功為止。**Worker 才是最終邊界**。要做到零 400 只能讓 Worker 保留 backward-compatible grace 或版本化端點,這裡不值得。
 
 方向與 rules tighten 相反(那邊是 Worker→Pages→rules);差別在於這裡的舊寫入者是**使用者裝置上的 bundle**,只有 epoch gate 能讓它停手。順帶一提 top-level request schema 沒有 `.strict()`(Zod 預設 strip),所以第 1 階段新欄位送到舊 Worker 會被無害丟棄。
@@ -494,6 +496,7 @@ npm run dev                                # vite dev server
 npm run build                              # tsc -b + vite build(含 React Compiler)
 npm run deploy:pages                       # build + Cloudflare Pages deploy
 npm test                                   # 前端 + 共用 packages 測試
+npm run test:coverage                      # 同上 + 覆蓋率門檻(vitest.config.ts;CI 跑這個)
 npm --workspace workers/ocr exec -- vitest run # Worker 測試
 npm run functions:test                     # Functions 測試
 npm run test:rules                         # Firestore Rules emulator 測試
