@@ -26,7 +26,15 @@ const FALLBACK_NAME = '成員'
 async function loadMemberName(tripId: string, uid: string): Promise<string> {
   const snap = await getFirestore().doc(`trips/${tripId}/members/${uid}`).get()
   const displayName = snap.get('displayName')
-  return typeof displayName === 'string' && displayName.length > 0 ? displayName : FALLBACK_NAME
+  if (typeof displayName === 'string' && displayName.length > 0) return displayName
+  // A member who left has no member doc but keeps a name on the trip — and
+  // routed settlements routinely name departed payers / intermediates.
+  if (!snap.exists) {
+    const former = (await getFirestore().doc(`trips/${tripId}`).get()).get('formerMemberNames')
+    const name = former && typeof former === 'object' ? (former as Record<string, unknown>)[uid] : undefined
+    if (typeof name === 'string' && name.length > 0) return name
+  }
+  return FALLBACK_NAME
 }
 
 async function loadTripTitle(tripId: string): Promise<string> {
@@ -195,14 +203,21 @@ export async function writeNotificationDocs(
   let actorName = ''
   if (isSettlementTemplate(event.templateKey)) {
     actorName = await actorDisplayName(event.tripId, event.actorUid)
-    if (!event.settlement) {
+    if (event.offset) {
+      // A routed debt-cycle offset: nobody paid, nobody's net moved.
+      const names = await Promise.all(event.offset.participantUids.map(uid => loadMemberName(event.tripId, uid)))
+      const verb = event.action === 'deleted' ? '取消了' : '記錄了'
+      body = `${actorName} ${verb} ${names.join('、')} 之間的互相抵銷（不需付款）`
+    } else if (!event.settlement) {
       body = settlementFallbackBody(actorName, event.action)
     } else {
-      const [fromName, toName] = await Promise.all([
+      const [fromName, toName, ...viaNames] = await Promise.all([
         loadMemberName(event.tripId, event.settlement.fromUid),
         loadMemberName(event.tripId, event.settlement.toUid),
+        ...(event.settlement.viaUids ?? []).map(uid => loadMemberName(event.tripId, uid)),
       ])
-      body = settlementBody(actorName, event.action, fromName, toName, event.settlement.amountMinor, event.settlement.currency)
+      body = settlementBody(actorName, event.action, fromName!, toName!, event.settlement.amountMinor, event.settlement.currency)
+        + (viaNames.length > 0 ? `（經 ${viaNames.join('、')}）` : '')
       settlementInfo = {
         fromUid:     event.settlement.fromUid,
         fromName,

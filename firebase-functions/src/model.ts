@@ -53,6 +53,14 @@ export interface NormalizedSettlementInfo {
   toUid: string
   amountMinor: number
   currency: string
+  /** Routed settlement: the people the payment was passed through. */
+  viaUids?: string[]
+}
+
+/** A routed debt-cycle offset: no money moved, every participant's net is
+ *  unchanged. Carried instead of `settlement` (there is no payer/receiver). */
+export interface NormalizedOffsetInfo {
+  participantUids: string[]
 }
 
 export interface NormalizedPushEvent {
@@ -83,6 +91,7 @@ export interface NormalizedPushEvent {
   // Default is true.
   pushActor?: boolean
   settlement?: NormalizedSettlementInfo
+  offset?: NormalizedOffsetInfo
   // false = inbox-only. Writes the notification row for every recipient but
   // skips token load + FCM send. Currently used for low-signal trip title
   // updates. Absent → true (push + inbox).

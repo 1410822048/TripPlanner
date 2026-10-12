@@ -1,4 +1,4 @@
-import type { EventAuth, NormalizedPushEvent, NormalizedSettlementInfo } from './model.js'
+import type { EventAuth, NormalizedOffsetInfo, NormalizedPushEvent, NormalizedSettlementInfo } from './model.js'
 
 type Doc = Record<string, unknown>
 
@@ -98,6 +98,53 @@ function settlementInfoOf(doc: Doc | undefined): NormalizedSettlementInfo | unde
   const { fromUid, toUid, amountMinor, currency } = doc
   if (!isString(fromUid) || !isString(toUid) || !isNonNegativeInteger(amountMinor) || !isString(currency)) return undefined
   return { fromUid, toUid, amountMinor, currency }
+}
+
+interface RouteHeader {
+  id: string
+  legIndex: number
+  kind: 'TRANSFER' | 'OFFSET'
+  participantUids: string[]
+  payerUid?: string
+  receiverUid?: string
+  amountMinor?: number
+}
+
+/** The `route` map a routed-settlement leg carries (Worker
+ *  settlement-route-write.ts). Undefined for an ordinary pair settlement. */
+function routeHeaderOf(doc: Doc | null | undefined): RouteHeader | undefined {
+  const route = doc?.route
+  if (!route || typeof route !== 'object') return undefined
+  const r = route as Record<string, unknown>
+  if (!isString(r.id) || typeof r.legIndex !== 'number' || (r.kind !== 'TRANSFER' && r.kind !== 'OFFSET')) return undefined
+  const participantUids = Array.isArray(r.participantUids) ? r.participantUids.filter(isString) : []
+  return {
+    id: r.id,
+    legIndex: r.legIndex,
+    kind: r.kind,
+    participantUids,
+    ...(isString(r.payerUid) ? { payerUid: r.payerUid } : {}),
+    ...(isString(r.receiverUid) ? { receiverUid: r.receiverUid } : {}),
+    ...(isNonNegativeInteger(r.amountMinor) ? { amountMinor: r.amountMinor } : {}),
+  }
+}
+
+/** What the notification says about a whole route: payer → receiver (via
+ *  the intermediates) for a transfer, the participants for an offset. */
+function routeInfoOf(route: RouteHeader, doc: Doc | undefined): { settlement?: NormalizedSettlementInfo; offset?: NormalizedOffsetInfo } {
+  if (route.kind === 'OFFSET') return { offset: { participantUids: route.participantUids } }
+  const currency = doc?.currency
+  if (!route.payerUid || !route.receiverUid || route.amountMinor === undefined || !isString(currency)) return {}
+  const viaUids = route.participantUids.filter(uid => uid !== route.payerUid && uid !== route.receiverUid)
+  return {
+    settlement: {
+      fromUid: route.payerUid,
+      toUid: route.receiverUid,
+      amountMinor: route.amountMinor,
+      currency,
+      ...(viaUids.length > 0 ? { viaUids } : {}),
+    },
+  }
 }
 
 function isTombstoned(doc: Doc | null): boolean {
@@ -216,9 +263,19 @@ export function normalizeSettlementWrite(input: {
   before: Doc | null
   after: Doc | null
 }): NormalizedPushEvent[] {
-  const { eventId, tripId, settlementId, auth, before, after } = input
+  const { eventId, tripId, auth, before, after } = input
   const doc = after ?? before
-  const partyUids = [doc?.fromUid, doc?.toUid].filter(isString)
+  // A routed settlement is several legs committed together. Only leg 0
+  // speaks for the route — one notification per route, never one per leg —
+  // and it names the route (payer → receiver via …, or the offset) and
+  // tells everyone on it, intermediates included: their pair balances moved.
+  const route = routeHeaderOf(doc)
+  if (route && route.legIndex !== 0) return []
+  const settlementId = route ? route.id : input.settlementId
+  const partyUids = route ? route.participantUids : [doc?.fromUid, doc?.toUid].filter(isString)
+  const info = (d: Doc | null) => route
+    ? routeInfoOf(route, d ?? undefined)
+    : { settlement: settlementInfoOf(d ?? undefined) }
 
   if (!before && after) {
     return actorEvent({
@@ -231,7 +288,7 @@ export function normalizeSettlementWrite(input: {
       route: '/expense',
       templateKey: 'settlement.created',
       partyUids,
-      settlement: settlementInfoOf(after),
+      ...info(after),
     })
   }
 
@@ -250,7 +307,7 @@ export function normalizeSettlementWrite(input: {
       route: '/expense',
       templateKey: 'settlement.deleted',
       partyUids,
-      settlement: settlementInfoOf(after),
+      ...info(after),
     })
   }
 
@@ -274,7 +331,7 @@ export function normalizeSettlementWrite(input: {
       route: '/expense',
       templateKey: 'settlement.deleted',
       partyUids,
-      settlement: settlementInfoOf(before),
+      ...info(before),
     })
   }
 

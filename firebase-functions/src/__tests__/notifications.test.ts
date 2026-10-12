@@ -143,6 +143,37 @@ describe('writeNotificationDocs', () => {
     })
   })
 
+  test('names the intermediates of a routed payment', async () => {
+    firestoreMock.docData.set('trips/trip-1/members/actor-1', { displayName: '佐藤' })
+    firestoreMock.docData.set('trips/trip-1/members/a', { displayName: '田中' })
+    firestoreMock.docData.set('trips/trip-1/members/c', { displayName: '佐藤' })
+    // b has left: no member doc, name kept on the trip.
+    firestoreMock.docData.set('trips/trip-1', { title: 'Tokyo', formerMemberNames: { b: '鈴木' } })
+
+    await writeNotificationDocs(baseEvent({
+      entityType: 'settlement', entityId: 'route-1', action: 'created', templateKey: 'settlement.created',
+      settlement: { fromUid: 'a', toUid: 'c', amountMinor: 1000, currency: 'JPY', viaUids: ['b'] },
+    }), ['a'])
+
+    const [, doc] = firestoreMock.txCreate.mock.calls[0]!
+    expect(doc.body).toBe('佐藤 記錄了 田中 → 佐藤 的 ¥1,000（經 鈴木）')
+  })
+
+  test('describes an offset as no payment, naming everyone in it', async () => {
+    firestoreMock.docData.set('trips/trip-1/members/actor-1', { displayName: '佐藤' })
+    firestoreMock.docData.set('trips/trip-1/members/a', { displayName: '田中' })
+    firestoreMock.docData.set('trips/trip-1/members/b', { displayName: '鈴木' })
+
+    await writeNotificationDocs(baseEvent({
+      entityType: 'settlement', entityId: 'route-2', action: 'deleted', templateKey: 'settlement.deleted',
+      offset: { participantUids: ['a', 'b'] },
+    }), ['a'])
+
+    const [, doc] = firestoreMock.txCreate.mock.calls[0]!
+    expect(doc.body).toBe('佐藤 取消了 田中、鈴木 之間的互相抵銷（不需付款）')
+    expect(doc.settlement).toBeUndefined()
+  })
+
   test('writes a fallback settlement body when settlement metadata is missing', async () => {
     firestoreMock.docData.set('trips/trip-1/members/actor-1', { displayName: '佐藤' })
 

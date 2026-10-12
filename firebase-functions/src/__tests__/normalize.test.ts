@@ -110,6 +110,56 @@ describe('normalizeSettlementWrite', () => {
   })
 })
 
+describe('normalizeSettlementWrite — routed settlements', () => {
+  const header = (legIndex: number, extra: Record<string, unknown> = {}) => ({
+    id: 'route-1', legIndex, legCount: 2, kind: 'TRANSFER',
+    payerUid: 'a', receiverUid: 'c', amountMinor: 1000, participantUids: ['a', 'b', 'c'], ...extra,
+  })
+  const leg = (legIndex: number, from: string, to: string, extra: Record<string, unknown> = {}) => ({
+    fromUid: from, toUid: to, amountMinor: 1000, currency: 'JPY', settledBy: 'c', deletedAt: null,
+    route: header(legIndex, extra),
+  })
+
+  test('only leg 0 notifies: one event per route, never one per leg', () => {
+    expect(normalizeSettlementWrite({ eventId: 'l1', tripId: 'trip-1', settlementId: 'route-1-01', before: null, after: leg(1, 'b', 'c') })).toEqual([])
+    const event = single(normalizeSettlementWrite({ eventId: 'l0', tripId: 'trip-1', settlementId: 'route-1-00', before: null, after: leg(0, 'a', 'b') }))
+    expect(event.templateKey).toBe('settlement.created')
+    expect(event.entityId).toBe('route-1')
+    expect(event.actorUid).toBe('c')
+    // Everyone on the route — the intermediate's balances moved too.
+    expect(event.partyUids).toEqual(['a', 'b', 'c'])
+    // Names the logical payment, not the leg it happened to arrive on.
+    expect(event.settlement).toEqual({ fromUid: 'a', toUid: 'c', amountMinor: 1000, currency: 'JPY', viaUids: ['b'] })
+  })
+
+  test('cancelling a route notifies once, attributed to the canceller', () => {
+    const before = leg(0, 'a', 'b')
+    const after = { ...before, deletedAt: '2026-10-13T00:00:00Z', deletedBy: 'owner' }
+    const event = single(normalizeSettlementWrite({ eventId: 'd0', tripId: 'trip-1', settlementId: 'route-1-00', before, after }))
+    expect(event.templateKey).toBe('settlement.deleted')
+    expect(event.actorUid).toBe('owner')
+    expect(normalizeSettlementWrite({
+      eventId: 'd1', tripId: 'trip-1', settlementId: 'route-1-01',
+      before: leg(1, 'b', 'c'), after: { ...leg(1, 'b', 'c'), deletedAt: '2026-10-13T00:00:00Z', deletedBy: 'owner' },
+    })).toEqual([])
+  })
+
+  test('an offset names its participants and carries no payer', () => {
+    const offset = { fromUid: 'a', toUid: 'b', amountMinor: 50, currency: 'JPY', settledBy: 'b', deletedAt: null,
+      route: { id: 'route-2', legIndex: 0, legCount: 3, kind: 'OFFSET', participantUids: ['a', 'b', 'c'] } }
+    const event = single(normalizeSettlementWrite({ eventId: 'o0', tripId: 'trip-1', settlementId: 'route-2-00', before: null, after: offset }))
+    expect(event.offset).toEqual({ participantUids: ['a', 'b', 'c'] })
+    expect(event.settlement).toBeUndefined()
+    expect(event.partyUids).toEqual(['a', 'b', 'c'])
+  })
+
+  test('a direct one-leg route has no intermediates', () => {
+    const direct = { ...leg(0, 'a', 'c'), route: header(0, { legCount: 1, participantUids: ['a', 'c'] }) }
+    const event = single(normalizeSettlementWrite({ eventId: 'x', tripId: 'trip-1', settlementId: 'route-1-00', before: null, after: direct }))
+    expect(event.settlement).toEqual({ fromUid: 'a', toUid: 'c', amountMinor: 1000, currency: 'JPY' })
+  })
+})
+
 describe('normalizeBookingWrite', () => {
   const base = { type: 'hotel', title: 'Hotel', updatedBy: 'u1', createdBy: 'u1' }
 
