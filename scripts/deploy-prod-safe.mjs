@@ -324,15 +324,15 @@ function indexLabel(index) {
       return `${field.fieldPath},${mode}`;
     })
     .join(' ');
-  return `(${index.collectionGroup}/${index.queryScope}) ${fields}`;
+  return `(${collectionGroupOfIndex(index)}/${index.queryScope}) ${fields}`;
 }
 
 function localCompositeIndexes() {
   return readJsonFile(FIRESTORE_INDEXES_FILE).indexes ?? [];
 }
 
-function readyRemoteCompositeIndexKeys() {
-  const indexes = parseJsonOutput(
+function remoteCompositeIndexes() {
+  return parseJsonOutput(
     gcloud([
       'firestore',
       'indexes',
@@ -343,8 +343,11 @@ function readyRemoteCompositeIndexKeys() {
       '--format=json',
     ]).stdout,
   );
+}
+
+function readyRemoteCompositeIndexKeys() {
   return new Set(
-    indexes
+    remoteCompositeIndexes()
       .filter((index) => index.state === 'READY')
       .map(indexKey),
   );
@@ -453,6 +456,30 @@ async function deployIndexes() {
     if (missing.length > 0) {
       console.log(
         `Waiting for ${missing.length} composite index(es): ${missing.map(indexLabel).join('; ')}`,
+      );
+      return false;
+    }
+    return true;
+  });
+}
+
+// Contract step of the index expand/contract pair. deployIndexes() only adds
+// (non-interactive firebase skips deletion without --force), so the code that
+// still queried an old index keeps working while Worker/Functions/Pages roll
+// out. Once the new release is fully live, firestore.indexes.json becomes the
+// exact remote set: --force deletes composite indexes AND field overrides
+// that are no longer in the file.
+async function pruneIndexes() {
+  await firebaseDeployWith409Retry('Firestore indexes prune',
+    ['deploy', '--only', 'firestore:indexes', '--project', PROJECT_ID, '--force'],
+  );
+
+  const expectedKeys = new Set(localCompositeIndexes().map(indexKey));
+  await waitUntil('firestore composite index prune', async () => {
+    const extra = remoteCompositeIndexes().filter((index) => !expectedKeys.has(indexKey(index)));
+    if (extra.length > 0) {
+      console.log(
+        `Waiting for ${extra.length} retired composite index(es) to disappear: ${extra.map(indexLabel).join('; ')}`,
       );
       return false;
     }
@@ -944,6 +971,9 @@ async function main() {
     return;
   }
 
+  // One fixed order for every release: what is depended on goes out before
+  // what depends on it (indexes → Worker → Functions → Rules → Pages), and
+  // anything retired is removed only after the whole release is live.
   buildPages();
   preflightGcloud({ firestore: true, cloudRun: true, artifacts: true });
   preflightWorkerDeploy();
@@ -953,9 +983,10 @@ async function main() {
   await deployRules();
   deployPages();
 
-  // Post-deploy hygiene: retire old functions + prune revisions/images. Kept
-  // AFTER the critical path so a cost/cleanup error can never abort the
-  // functions/rules/pages release above.
+  // Post-deploy contraction + hygiene: retired indexes, retired functions,
+  // old revisions/images. Kept AFTER the critical path so a cleanup error can
+  // never abort the functions/rules/pages release above.
+  await pruneIndexes();
   await retireUnexpectedFunctions();
   await pruneCloudRunRevisionsToLatest();
   await pruneFunctionArtifactsToOne();

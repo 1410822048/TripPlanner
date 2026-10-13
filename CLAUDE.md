@@ -286,6 +286,7 @@ global MutationCache.onMutate:同步檢查 Schema Epoch(只讀 memory snapshot,�
 - **`activeDate` 以 trip 為鍵**(`{ tripId, date }`)。只做 `dateRange.includes()` 不夠 —— 兩個旅程日期重疊(或複製出來的旅程)時,舊日期仍然合法,刪除 / 退出後會被下一個旅程繼承。改成 keyed 後,任何切換都自動失效,刪除 / 退出因此完全不需要碰 `activeDate`(事前 reset 會在失敗時吃掉選日,放 `onSuccess` 則會被晚到的回呼清掉之後才選的日期)。
 - **`/route-apply` 是唯一不經 useMutation 的 Worker 寫入**,epoch preflight 放在 `applyRoutePreview` service choke point(涵蓋所有 stale-open caller);`routeErrorMessage` 對 `UpdateRequiredError` 回原文案,避免 fallback 成「請重新預覽後再試」這種兌現不了的建議。其他 Worker write 端點全部包在 mutation hooks 內,由全域 guard 涵蓋 —— 新增直接 `workerFetch` 寫入時必須比照。
 - **不走 TanStack 的直接寫入**(`features/account`)採分類豁免,不要一律擋:只有 `usePushNotifications.enable()`(建立完整 token entity)在 `Notification.requestPermission()` 前 preflight;`disable()` / 登出 `revokeStoredPushToken` / 權限撤銷後的清理屬 cleanup,**永遠放行**,否則舊 client 會被困在無法關閉通知的狀態;通知已讀 / 忽略只寫 timestamp 欄位,一併放行。
+- 目前單一使用者：一次 main push 完成發版,需要時在同一批提高 epoch 與 manifest(見 `docs/runbooks/github-actions-deployment.md`)。下面是多人使用時的分階段做法。
 - 發版採兩段式：先部署新 epoch client（minimum 仍容許舊版）→ 更新窗口後,提高 manifest minimum 再部署 Pages。Firestore 清空不會清掉裝置上的舊 PWA bundle,**部署 Pages 也不會** —— 已安裝的 SW 會一直跑到使用者更新為止,所以「讓舊 bundle 停止寫入」只有提高 manifest minimum 這一條路。
 - 當這一版的 Worker 會**拒絕舊 bundle 送得出來的請求**(新必填欄位 / 改掉的 wire 契約)時,epoch 兩段式要再接第三段:cutoff 生效後才部署 strict Worker,否則兩者之間的窗口全是 400。範例見「附件 stale-replace 契約」。
 
@@ -519,7 +520,7 @@ npm run test:emulator                      # Worker settlement 寫入 × Firesto
 npm run e2e:settlement                     # 整套本機(Auth/Firestore/Functions 模擬器 + Worker 模擬器模式 + Vite)用 Playwright 以三個 DEV 帳號走完清算流程,含通知收件匣;截圖在 e2e-results/
 npm run typecheck                          # 全部 workspace typecheck
 npm run lint                               # 前端 + Worker lint
-npm run deploy:prod                        # 正式部署安全編排
+npm run deploy:prod                        # 正式部署安全編排(GitHub Actions 推 main 自動執行;固定順序:索引新增 → Worker → Functions → Rules → Pages → 刪除已移除的索引)
 firebase deploy --only firestore           # firestore rules + indexes
 cd workers/ocr && npm run deploy            # production Worker + production R2 binding
 cd workers/ocr && npx wrangler tail        # Worker 即時 log

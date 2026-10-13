@@ -16,7 +16,12 @@ production job 會 checkout `main` 並比對本次通過 CI 的 `github.sha`。
 部署共用 concurrency group，`cancel-in-progress=false`，不會中途切斷發版。
 
 完整發布順序固定在 `scripts/deploy-prod-safe.mjs`：建置 Web App → preflight →
-Firestore indexes（等待 READY）→ Worker → Functions（等待 ACTIVE）→ Rules → Pages。
+Firestore indexes（只新增，等待 READY）→ Worker → Functions（等待 ACTIVE）→ Rules → Pages
+→ 刪除已從 `firestore.indexes.json` 移除的索引與 field override（`--force`）→ 清理退役 Functions 與舊映像。
+
+這個順序對每一次發版都通用，不需要依改了哪些部分另外安排：被依賴的先上
+（索引 → 伺服器 → 權限 → App），要退役的東西等整個新版上線後才移除。
+發版期間不使用 App；任一步失敗，修正後重跑整個 workflow 即可，每一步都可重複執行。
 `scripts/audit-trip-currency.mjs` 不在自動部署流程內，不會自動修復或 backfill 使用者資料。
 
 ## Cloudflare 設定
@@ -84,12 +89,14 @@ Service Account User 僅授予目前 Functions build/runtime 使用的 compute s
 發布後比對正式網域的 index.html、sw.js、compatibility.json 與本次 dist，
 允許 CDN 傳播短暫延遲；不一致則 run 失敗。
 
-腳本成功發布後會清理退役 Functions、不再使用的 Cloud Run revisions 與舊 runtime
-images；這是既有行為，不是新的備份機制。Firestore／R2 使用者資料不清空。
+腳本成功發布後會刪除已移除的索引、清理退役 Functions、不再使用的 Cloud Run revisions
+與舊 runtime images。Firestore／R2 使用者資料不清空。
 
-**Schema Epoch 仍須人工分階段安排提交。** 自動化不會替你決定 cutoff 或更新窗口。
-增加必填 wire 欄位時，先發布相容 client，再提高 manifest minimum 並等 active-client
-refresh 窗口，最後才發布 strict Worker；不得把四階段壓成一次 main push。
+**目前只有一位使用者，一次 main push 就是一次完整發版，不分階段。** 新版 Worker 會拒絕
+舊 bundle 送得出來的請求、或舊 bundle 會寫出錯誤格式時，在同一個 commit 提高
+`CLIENT_SCHEMA_EPOCH` 與 `public/compatibility.json`（revision 遞增、minimum 提到新 epoch），
+手機上已安裝的舊 PWA 會顯示更新提示。發版後在手機上更新 App。日後有其他使用者時，
+才需要恢復「相容 client → 提高 minimum → 等更新窗口 → strict Worker」的分階段做法。
 
 2026-10-07 Round 3 發布例外：使用者確認 Firestore 無資料、只有本人使用，明確授權
 立即停止舊版相容。這次略過貨幣修復／ledger backfill，移除 `/members` collection-group
