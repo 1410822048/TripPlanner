@@ -54,7 +54,7 @@ describe('planRouteSuggestions', () => {
       expense('e1', 'b', { a: 100 }, { createdAt: { toMillis: () => 1 } as Expense['createdAt'] }),
       expense('e2', 'b', { a: 400 }, { createdAt: { toMillis: () => 2 } as Expense['createdAt'] }),
     ]
-    const prior = [{ id: 's', tripId: 't', fromUid: 'a', toUid: 'b', amountMinor: 150, currency: 'JPY', settledBy: 'b', createdAt: { toMillis: () => 3 } as SettlementRecord['createdAt'], deletedAt: null }] as SettlementRecord[]
+    const prior = [{ id: 's', tripId: 't', fromUid: 'a', toUid: 'b', amountMinor: 150, currency: 'JPY', settledBy: 'b', createdAt: { toMillis: () => 3 } as SettlementRecord['createdAt'], deletedAt: null }] as unknown as SettlementRecord[]
     const { pairwise } = computeBalancesFull(expenses, members, prior)
     const [route] = planRouteSuggestions(pairwise, expenses, prior)
     expect(route!.legs[0]!.sources).toEqual([{ expenseId: 'e2', expenseTitle: 'e2', amountMinor: 350 }])
@@ -65,7 +65,7 @@ describe('planRouteSuggestions', () => {
     const legs = previewRouteLegs(
       { kind: 'TRANSFER', payerUid: 'a', receiverUid: 'b', amountMinor: 100, legs: [{ fromUid: 'a', toUid: 'b', amountMinor: 100, expectedRemainingMinor: 100 }] },
       expenses,
-      [{ id: 'x', fromUid: 'a', toUid: 'b', amountMinor: 100, deletedAt: TS } as SettlementRecord],
+      [{ id: 'x', fromUid: 'a', toUid: 'b', amountMinor: 100, deletedAt: TS } as unknown as SettlementRecord],
     )
     expect(legs[0]!.sources).toEqual([{ expenseId: 'live', expenseTitle: 'live', amountMinor: 100 }])
   })
@@ -118,17 +118,20 @@ describe('groupSettlementHistory', () => {
     id: `r-0${i}`, tripId: 't', fromUid: 'x', toUid: 'y', amountMinor: 5, currency: 'JPY', settledBy: 'c',
     createdAt: TS, deletedAt: null, route: { ...header, legIndex: i },
   })
-  const single = { id: 's', tripId: 't', fromUid: 'a', toUid: 'b', amountMinor: 1, currency: 'JPY', settledBy: 'b', createdAt: TS, deletedAt: null } as SettlementRecord
+  const single: SettlementRecord = {
+    id: 's-00', tripId: 't', fromUid: 'a', toUid: 'b', amountMinor: 1, currency: 'JPY', settledBy: 'b', createdAt: TS, deletedAt: null,
+    route: { id: 's', legIndex: 0, legCount: 1, kind: 'TRANSFER', participantUids: ['a', 'b'], payerUid: 'a', receiverUid: 'b', amountMinor: 1 },
+  }
 
   it('merges a route\'s legs into one entry in leg order, keeping list order', () => {
     const entries = groupSettlementHistory([leg(1), single, leg(0)])
-    expect(entries.map(e => e.kind === 'route' ? [e.id, e.legs.map(l => l.id), e.complete] : e.id))
-      .toEqual([['r', ['r-00', 'r-01'], true], 's'])
+    expect(entries.map(e => [e.id, e.legs.map(l => l.id), e.complete]))
+      .toEqual([['r', ['r-00', 'r-01'], true], ['s', ['s-00'], true]])
   })
 
   it('marks a route as incomplete while only some legs are visible', () => {
     const [entry] = groupSettlementHistory([leg(1)])
-    expect(entry).toMatchObject({ kind: 'route', complete: false })
+    expect(entry).toMatchObject({ id: 'r', complete: false })
   })
 
   it('derives every leg id for a whole-route cancel', () => {

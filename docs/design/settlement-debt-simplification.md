@@ -127,8 +127,8 @@ Request（`.strict()`）：`{ tripId, routeId, kind, legs[{fromUid,toUid,amountM
 
 - `SettlementDocSchema` 新增選填的 `route` header（header 自身也有 FX 群組不變式）；未知欄位仍會被略過。沒有 route 的舊資料照常解析。
 - `SETTLEMENT_LIST_LIMIT` 200 → 500（一段 leg 一筆 doc），Worker 讀取上限同步。
-- **Schema Epoch 4**，manifest `{ revision: 3, minimumWriteEpoch: 4 }`。epoch-3 的舊版不會破壞帳本（它會略過 `route`，舊的 `/settlement-create` 也受 pair lock 與 CAS 保護，有測試），但它把每段 leg 當成獨立紀錄顯示，刪一段就會在沒有任何說明的情況下撤銷整個 route（包括別人的段），所以要停止它寫入。
-- 舊的 `/settlement-create` 保留給還沒拿到新 manifest 的舊版（Worker 是最終邊界）；新版一律走 route 端點。
+- **只有一種資料形狀**：資料庫上線前會清空，沒有舊資料要共存，所以舊的 `/settlement-create` 與「單筆清算」的撤銷、顯示路徑都已移除。每筆 settlement 都是 route leg（一般的兩人清算就是單段 route），`route` header 在 schema 裡是必填；沒有 header 的 doc 視為資料損毀（撤銷時回 500，不會逐段處理）。
+- **Schema Epoch 4**，manifest `{ revision: 3, minimumWriteEpoch: 4 }`。這不是為了舊資料，而是為了**已安裝在手機上的舊版 PWA**：它只會呼叫已移除的 `/settlement-create`，升版後它會顯示「請更新」，而不是送出必定失敗的請求。
 - 不需要改 Firestore rules：legs 就是 settlements（client 不可寫、只能讀 active 的），trip cascade 本來就涵蓋 settlements。
 
 部署順序：Worker → Functions → Pages（含 manifest）。rules 不變。
@@ -142,13 +142,13 @@ Request（`.strict()`）：`{ tripId, routeId, kind, legs[{fromUid,toUid,amountM
 | 3 | max-flow 的結果可能含環 | 同上 | 規劃時消掉環並留在帳上，並直接測試這個守門邏輯 |
 | 4 | 兩段 leg 鎖同一筆費用、各寫一次 | 鎖 id 集合（後寫蓋掉前寫） | 每筆費用合併成一次寫入 |
 | 5 | client 指定 leg id | id 唯一、可依 route 找回所有 leg | 由 routeId 推導 |
-| 6 | 舊版刪除一段 leg | 中間人淨額不變（決定 2） | 任一 leg 撤銷整個 route；epoch 4 停止舊版寫入 |
+| 6 | 刪除其中一段 leg | 中間人淨額不變（決定 2） | 任一 leg 撤銷整個 route |
 | 7 | 每段 leg 各發一則通知 | 通知以 route 為單位 | 只有 leg 0 發送 |
 | 8 | route doc 與 legs 分屬兩個 listener | 畫面與 overlay 要一次看到完整的 route | header 冗餘寫在每段 leg 上 |
 
 ## 12. 測試
 
 - settlement-core：200 組固定 seed 的性質測試，涵蓋只走真實債務、整份計畫剛好清空帳本、中間人淨額為 0、經濟淨額正確、「挑一筆 → 記錄 → 重新規劃」最後一定清完、過期建議會被 CAS 拒絕、同一對不會被選兩次；另有上限拆分、多路徑、記錄收款、lineage 等測試。
-- Worker：用記憶體版 Firestore（原子提交、前置條件、REQUEST_TIME），在建立／撤銷之後讀回帳本驗證。涵蓋 multi-hop、multi-path、部分與重疊的邊、CAS 過期、競爭、冪等、形狀攻擊、循環權限、已離開成員（付款人／收款人／中間人／循環）、外幣（CAS、取整、過小金額）、合併鎖、整筆撤銷，以及固定 seed 的端到端性質測試（鎖集合與 lineage 一致、不重複扣同一份額）；還有舊 `/settlement-create` 與 route 並存的相容性測試。
+- Worker：用記憶體版 Firestore（原子提交、前置條件、REQUEST_TIME），在建立／撤銷之後讀回帳本驗證。涵蓋 multi-hop、multi-path、部分與重疊的邊、CAS 過期、競爭、冪等、形狀攻擊、循環權限、已離開成員（付款人／收款人／中間人／循環）、外幣（CAS、取整、過小金額）、合併鎖、整筆撤銷，以及固定 seed 的端到端性質測試（鎖集合與 lineage 一致、不重複扣同一份額）；以及撤銷的邊界情況（不存在、非成員、旅程刪除中、沒有 header 的 doc）。
 - Functions：每個 route 只發一則通知、取消通知、抵銷內容、經手人與已離開成員的名字。
 - Client：schema（header、外幣群組、向前相容）、service 傳輸格式、overlay（多段一起成功或失敗、撤銷時隱藏所有 leg）、record sheet（過期重算、記錄收款上限、抵銷過期、外幣）、付款建議卡與紀錄分組、ExpensePage 依 leg 數檢查上限。

@@ -2,23 +2,20 @@
 // The「已清算紀錄」section of the settlement card: an optional aggregate
 // orphan warning banner, the most-recent-N entries (fold/unfold for the
 // rest). A routed settlement is ONE entry (SettlementRouteRow) however many
-// legs it has; a plain pair settlement is a SettlementRow. The orphan classification +
+// legs it has. The orphan classification +
 // balances are computed by the parent (SettlementSummary) and passed in;
 // this component only owns the fold state.
 import { useState } from 'react'
 import { AlertCircle, ChevronDown } from 'lucide-react'
-import type { Expense } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import type { OrphanReason, OrphanSettlement } from '../services/settlement'
 import { formatMinorAmount } from '@/utils/money'
 import { orphanReasonExplain } from './settlementOrphanCopy'
-import SettlementRow from './SettlementRow'
 import SettlementRouteRow from './SettlementRouteRow'
 import { groupSettlementHistory, routeLegIds } from '../services/settlementRoutes'
 import type { SettlementRecord } from '@/types/settlement'
 
 interface HistoryProps {
-  expenses:    Expense[]
   settlements: SettlementRecord[]
   memberById:  Map<string, TripMember>
   currency:    string
@@ -52,7 +49,7 @@ interface HistoryProps {
 const DEFAULT_VISIBLE = 3
 
 export default function SettlementHistory({
-  expenses, settlements, memberById, currency, uid, canDeleteAnySettlement, totalOrphanMinor, orphanByReason, orphanById, onDelete,
+  settlements, memberById, currency, uid, canDeleteAnySettlement, totalOrphanMinor, orphanByReason, orphanById, onDelete,
 }: HistoryProps) {
   const [expanded, setExpanded] = useState(false)
   const entries    = groupSettlementHistory(settlements)
@@ -86,45 +83,20 @@ export default function SettlementHistory({
       )}
 
       <div className="flex flex-col gap-1">
-        {visible.map(entry => {
-          // Worker (settlement-delete) allows the recorder OR the trip
-          // owner. Mirror BOTH client-side so the owner's correction path
-          // (deleting a settlement another member mis-recorded) is reachable
-          // from the UI — not just the recorder deleting their own.
-          if (entry.kind === 'route') {
-            const canDelete = canDeleteAnySettlement || (uid != null && uid === entry.settledBy)
-            return (
-              <SettlementRouteRow
-                key={entry.id}
-                header={entry.header}
-                legs={entry.legs}
-                memberById={memberById}
-                currency={currency}
-                canDelete={canDelete}
-                orphans={entry.legs.flatMap(l => orphanById.get(l.id) ?? [])}
-                onDelete={() => onDelete(entry.legs[0]!.id, routeLegIds(entry.header))}
-              />
-            )
-          }
-          const s = entry.record
-          const from = memberById.get(s.fromUid)
-          const to   = memberById.get(s.toUid)
-          if (!from || !to) return null
-          const canDelete = canDeleteAnySettlement || (uid != null && uid === s.settledBy)
-          return (
-            <SettlementRow
-              key={s.id}
-              record={s}
-              from={from}
-              to={to}
-              currency={currency}
-              expenses={expenses}
-              canDelete={canDelete}
-              orphan={orphanById.get(s.id)}
-              onDelete={() => onDelete(s.id)}
-            />
-          )
-        })}
+        {visible.map(entry => (
+          <SettlementRouteRow
+            key={entry.id}
+            header={entry.header}
+            legs={entry.legs}
+            memberById={memberById}
+            currency={currency}
+            // Worker (settlement-delete) allows the recorder OR the trip
+            // owner; mirror both so the owner's correction path is reachable.
+            canDelete={canDeleteAnySettlement || (uid != null && uid === entry.settledBy)}
+            orphans={entry.legs.flatMap(l => orphanById.get(l.id) ?? [])}
+            onDelete={() => onDelete(entry.legs[0]!.id, routeLegIds(entry.header))}
+          />
+        ))}
       </div>
 
       {canFold && (

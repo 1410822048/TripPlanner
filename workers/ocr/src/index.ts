@@ -78,15 +78,11 @@ import {
   BookingValidationError,
 }                                                 from './booking-write'
 import {
-  settlementCreate,
+  settlementRouteCreate,
   settlementDelete,
-  SettlementCreateRequestSchema,
+  SettlementRouteCreateRequestSchema,
   SettlementDeleteRequestSchema,
   SettlementValidationError,
-}                                                 from './settlement-write'
-import {
-  settlementRouteCreate,
-  SettlementRouteCreateRequestSchema,
 }                                                 from './settlement-route-write'
 import {
   inviteCreate,
@@ -506,35 +502,6 @@ export const ROUTES: RouteDescriptor[] = [
       handle:      data => fxPreview(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
       formatLog:   (data, result) => `trip=${data.tripId} ${data.sourceCurrency}->${result.tripCurrency} date=${data.requestedDate}`,
       catchDomain: fxErrorCatcher(),
-    }),
-  },
-  {
-    path: '/settlement-create', rate: 'settlement-write',
-    dispatch: c => handleJsonRoute({
-      endpoint:       'settlement-create', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
-      schema:         SettlementCreateRequestSchema,
-      handle:         data => settlementCreate(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
-      // Mode-aware log line: no branch carries a user-entered ledger or
-      // source amount. `expectedRemainingMinor` is the stale-confirmation
-      // guard; Worker recomputes pair-remaining in the tx and writes
-      // amountMinor = remaining.
-      formatLog: (data, result) =>
-        data.mode === 'FOREIGN_CURRENCY'
-          ? `trip=${data.tripId} settlement=${result.settlementId} from=${data.fromUid} mode=FOREIGN expectedRemainingMinor=${data.expectedRemainingMinor} sourceCurrency=${data.sourceCurrency} settledOn=${data.settledOn}`
-          : `trip=${data.tripId} settlement=${result.settlementId} from=${data.fromUid} mode=TRIP expectedRemainingMinor=${data.expectedRemainingMinor}`,
-      formatResponse: result => ({ ok: true, ...result }),
-      // FOREIGN_CURRENCY calls getFxSnapshot which throws FxError on
-      // future-date / provider-down / etc; without the FxError catcher the
-      // route's generic catch maps it to 500 and the client UI can't
-      // distinguish "FX provider down, retry later" from a real server bug.
-      catchDomain: chainCatchers(
-        validationErrorCatcher(SettlementValidationError),
-        fxErrorCatcher(),
-      ),
-      // Whole body runs in one tx → every CascadeError (read-cap 409,
-      // trip.currency 500) is pre-commit; stamp precommit so the client
-      // rolls back instead of keeping a phantom settlement on a 5xx.
-      cascadePrecommit: true,
     }),
   },
   {

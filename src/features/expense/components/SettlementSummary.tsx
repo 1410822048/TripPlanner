@@ -27,7 +27,7 @@ interface Props {
   /** ISO currency code of the trip — used to format amounts inline. */
   currency: string
   /** Current user uid — must equal `toUid` for the「已收款」button to
-   *  enable. Receiver-only mirrors the Worker (settlement-create). */
+   *  enable. Receiver-only mirrors the Worker (settlement-route-create). */
   uid: string | null
   /** Capability, not identity: whether the current user may delete ANY
    *  settlement (not just their own records). The caller folds trip
@@ -44,7 +44,7 @@ interface Props {
   onDeleteSettlement: (id: string, hideIds?: string[]) => void
   /** Trip owner: may record the receipt for a receiver who has LEFT the
    *  trip (nobody else can confirm it any more). The Worker enforces it
-   *  and marks the row `recordedOnBehalfOf`. */
+   *  and marks the route `ownerRecorded`. */
   canRecordForDeparted?: boolean
 }
 
@@ -213,7 +213,6 @@ export default function SettlementSummary({
         {/* ── 已清算紀錄 + orphan 警告 ────────────────── */}
         {settlements.length > 0 && (
           <SettlementHistory
-            expenses={expenses}
             settlements={settlements}
             memberById={memberById}
             currency={currency}

@@ -1,27 +1,34 @@
-// Tests for SettlementDocSchema's FX-group invariants. The schema
-// parses Firestore docs on read; the all-or-none + cross-field
-// equality contract must hold so that:
-//   - the Commit 3 history-row UI never renders a half-populated FX
-//     state (sourceCurrency present without fxSnapshot, etc.)
-//   - chronological replay in computeBalancesFull reads amountMinor
-//     consistent with fxSnapshot.convertedAmountMinor (the audit trail)
-//   - a Worker bug in Commit 2 (or a raw admin write) that drifts one
-//     field surfaces via the same firestoreDocFromSchema Sentry path
-//     as other doc-shape regressions
-//
-// Mirrors expense.test.ts shape — same baseDoc / baseFx pattern, same
-// drift-one-field-at-a-time matrix. Commit 1 ships the schema dormant
-// (client still only sends TRIP_CURRENCY payloads); this test
-// guarantees the schema is ready the moment Commit 2 lights it up.
+// Tests for SettlementDocSchema — every settlement is a routed-settlement
+// leg: an ordinary from → to amount plus the shared `route` header. The
+// schema parses Firestore docs on read; its invariants keep the history UI
+// and the chronological replay from ever seeing a half-populated record,
+// and route a Worker bug / raw admin write through the same
+// firestoreDocFromSchema Sentry path as other doc-shape regressions.
 import { describe, it, expect } from 'vitest'
 import { Timestamp } from 'firebase/firestore'
 import { SettlementDocSchema } from './settlement'
 
 const NOW = Timestamp.fromDate(new Date('2026-06-01T00:00:00Z'))
 
-/** TRIP_CURRENCY baseline — no FX fields, the degenerate path. Typed
- *  as Record<string, unknown> so fixtures can freely add / override
- *  optional fields without TS narrowing them away. */
+function transferHeader(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'route-1', legIndex: 0, legCount: 2, kind: 'TRANSFER',
+    participantUids: ['alice-uid', 'bob-uid', 'carol-uid'],
+    payerUid: 'alice-uid', receiverUid: 'carol-uid', amountMinor: 9750,
+    ...over,
+  }
+}
+
+function offsetHeader(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'route-2', legIndex: 1, legCount: 3, kind: 'OFFSET',
+    participantUids: ['alice-uid', 'bob-uid', 'carol-uid'],
+    ...over,
+  }
+}
+
+/** A trip-currency transfer leg. Record<string, unknown> so fixtures can
+ *  add / override fields freely. */
 function baseDoc(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     tripId:      'trip-1',
@@ -29,16 +36,15 @@ function baseDoc(overrides: Record<string, unknown> = {}): Record<string, unknow
     toUid:       'bob-uid',
     amountMinor: 9750,
     currency:    'JPY',
-    settledBy:   'bob-uid',
+    settledBy:   'carol-uid',
+    route:       transferHeader(),
     createdAt:   NOW,
     deletedAt:   null,
     ...overrides,
   }
 }
 
-/** Valid fxSnapshot fixture aligned with foreignDoc(): USD 65.00
- *  source → JPY 9750 canonical @ 150. Pulled out so drift tests can
- *  spread + override one field at a time. */
+/** USD 65.00 received for JPY 9750 @ 150. */
 const baseFx = {
   provider:             'frankfurter-v2' as const,
   baseCurrency:         'USD',
@@ -50,316 +56,91 @@ const baseFx = {
   convertedAmountMinor: 9750,
   fetchedAt:            NOW,
 }
+const fxGroup = { sourceCurrency: 'USD', sourceAmountMinor: 6500, settledOn: '2026-06-01', fxSnapshot: baseFx }
+const parse = (doc: Record<string, unknown>) => SettlementDocSchema.safeParse(doc).success
 
-/** FOREIGN_CURRENCY baseline — full 4-field group + matching fx
- *  snapshot. Cross-field equalities all satisfied; individual tests
- *  drift one field at a time to verify each invariant fires. */
-function foreignDoc(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    ...baseDoc(),
-    sourceCurrency:    'USD',
-    sourceAmountMinor: 6500,
-    fxSnapshot:        { ...baseFx },
-    settledOn:         '2026-06-01',
-    ...overrides,
-  }
-}
-
-describe('SettlementDocSchema — TRIP_CURRENCY (degenerate path)', () => {
-  it('parses with no FX fields', () => {
-    const result = SettlementDocSchema.safeParse(baseDoc())
-    expect(result.success).toBe(true)
+describe('SettlementDocSchema — legs', () => {
+  it('parses a transfer leg and an offset leg', () => {
+    expect(parse(baseDoc())).toBe(true)
+    expect(parse(baseDoc({ route: offsetHeader() }))).toBe(true)
   })
 
-  it('parses with optional note', () => {
-    const result = SettlementDocSchema.safeParse(baseDoc({ note: '6/1 dinner' }))
-    expect(result.success).toBe(true)
+  it('requires the route header: no write path produces a settlement without one', () => {
+    expect(parse(baseDoc({ route: undefined }))).toBe(false)
   })
 
-  it('parses Worker-derived appliedSources audit snapshot', () => {
-    const result = SettlementDocSchema.safeParse(baseDoc({
-      appliedSources: [
-        {
-          expenseId:    'expense-1',
-          expenseTitle: 'Dinner',
-          itemId:       'item-1',
-          itemName:     'Noodles',
-          amountMinor:  750,
-        },
-      ],
-    }))
-    expect(result.success).toBe(true)
-  })
-
-  it('still parses legacy lineage with a 101–200 char expense title (listener must not die)', () => {
-    const result = SettlementDocSchema.safeParse(baseDoc({
-      appliedSources: [{ expenseId: 'expense-1', expenseTitle: '店'.repeat(150), amountMinor: 750 }],
-    }))
-    expect(result.success).toBe(true)
-  })
-
-  it('parses Worker-derived appliedExpenseIds lock index', () => {
-    const result = SettlementDocSchema.safeParse(baseDoc({
-      appliedExpenseIds: ['expense-1', 'expense-2'],
-    }))
-    expect(result.success).toBe(true)
-  })
-
-  it('rejects half-populated appliedSources item identity', () => {
-    const result = SettlementDocSchema.safeParse(baseDoc({
-      appliedSources: [
-        {
-          expenseId:    'expense-1',
-          expenseTitle: 'Dinner',
-          itemId:       'item-1',
-          amountMinor:  750,
-        },
-      ],
-    }))
-    expect(result.success).toBe(false)
-  })
-
-  it('rejects non-currency-code currency', () => {
-    const result = SettlementDocSchema.safeParse(baseDoc({ currency: 'jpy' }))
-    expect(result.success).toBe(false)
-  })
-
-  it('rejects zero amountMinor', () => {
-    const result = SettlementDocSchema.safeParse(baseDoc({ amountMinor: 0 }))
-    expect(result.success).toBe(false)
-  })
-})
-
-describe('SettlementDocSchema — deletedAt / deletedBy soft-delete invariant', () => {
-  it('parses an active settlement (deletedAt: null, no deletedBy)', () => {
-    const result = SettlementDocSchema.safeParse(baseDoc())
-    expect(result.success).toBe(true)
-  })
-
-  it('parses a cancelled settlement (deletedAt set + deletedBy present)', () => {
-    const result = SettlementDocSchema.safeParse(baseDoc({
-      deletedAt: NOW,
-      deletedBy: 'alice-uid',
-    }))
-    expect(result.success).toBe(true)
-  })
-
-  it('rejects deletedAt missing entirely (required, not optional)', () => {
-    const doc = baseDoc()
-    delete doc.deletedAt
-    const result = SettlementDocSchema.safeParse(doc)
-    expect(result.success).toBe(false)
-  })
-
-  it('rejects deletedAt set without deletedBy', () => {
-    const result = SettlementDocSchema.safeParse(baseDoc({ deletedAt: NOW }))
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.issues.some(i => i.path.includes('deletedBy'))).toBe(true)
-    }
-  })
-
-  it('rejects deletedBy present while deletedAt is null', () => {
-    const result = SettlementDocSchema.safeParse(baseDoc({ deletedBy: 'alice-uid' }))
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.issues.some(i => i.path.includes('deletedBy'))).toBe(true)
-    }
-  })
-})
-
-describe('SettlementDocSchema — FX group all-or-none', () => {
-  it('parses fully populated FOREIGN_CURRENCY doc', () => {
-    const result = SettlementDocSchema.safeParse(foreignDoc())
-    expect(result.success).toBe(true)
-  })
-
-  // Drop each of the 4 group fields one at a time to confirm all-or-none.
-  for (const field of ['sourceCurrency', 'sourceAmountMinor', 'fxSnapshot', 'settledOn'] as const) {
-    it(`rejects when only ${field} is missing (3/4 populated)`, () => {
-      const doc = foreignDoc()
-      delete doc[field]
-      const result = SettlementDocSchema.safeParse(doc)
-      expect(result.success).toBe(false)
-      if (!result.success) {
-        expect(result.error.issues.some(i =>
-          i.message.includes('all-or-none'),
-        )).toBe(true)
-      }
-    })
-  }
-
-  // Keep only one of the 4 fields to confirm 1/4 also fails.
-  it('rejects when only sourceCurrency is present (1/4 populated)', () => {
-    const doc = baseDoc({ sourceCurrency: 'USD' })
-    const result = SettlementDocSchema.safeParse(doc)
-    expect(result.success).toBe(false)
-  })
-
-  it('rejects when only fxSnapshot is present (1/4 populated)', () => {
-    const doc = baseDoc({ fxSnapshot: { ...baseFx } })
-    const result = SettlementDocSchema.safeParse(doc)
-    expect(result.success).toBe(false)
-  })
-})
-
-describe('SettlementDocSchema — FX cross-field equality', () => {
-  it('rejects sourceCurrency !== fxSnapshot.baseCurrency', () => {
-    const result = SettlementDocSchema.safeParse(foreignDoc({
-      sourceCurrency: 'EUR',
-    }))
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.issues.some(i =>
-        i.message.includes('baseCurrency'),
-      )).toBe(true)
-    }
-  })
-
-  it('rejects currency !== fxSnapshot.quoteCurrency', () => {
-    const result = SettlementDocSchema.safeParse(foreignDoc({
-      currency: 'TWD',
-    }))
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.issues.some(i =>
-        i.message.includes('quoteCurrency'),
-      )).toBe(true)
-    }
-  })
-
-  it('rejects sourceAmountMinor !== fxSnapshot.sourceAmountMinor', () => {
-    const result = SettlementDocSchema.safeParse(foreignDoc({
-      sourceAmountMinor: 6501,
-    }))
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.issues.some(i =>
-        i.message.includes('sourceAmountMinor'),
-      )).toBe(true)
-    }
-  })
-
-  it('ACCEPTS amountMinor !== fxSnapshot.convertedAmountMinor (Phase 4.1 ledger truth: decoupled)', () => {
-    // Phase 4.1 (2026-06-02) explicitly drops the equality check between
-    // amountMinor and fxSnapshot.convertedAmountMinor. amountMinor is the
-    // ledger clear (≡ remaining); convertedAmountMinor is the FX forward
-    // result and may diverge by a few minor units due to half-even
-    // rounding plateaus. A doc with amountMinor=9751, convertedAmountMinor=
-    // 9750 is a legitimate "rate plateau" foreign settlement, not a drift
-    // bug — the other 4 FX cross-field checks (baseCurrency, quoteCurrency,
-    // sourceAmountMinor, requestedDate) still enforce group integrity.
-    const result = SettlementDocSchema.safeParse(foreignDoc({
-      amountMinor: 9751,
-    }))
-    expect(result.success).toBe(true)
-  })
-
-  it('rejects settledOn !== fxSnapshot.requestedDate', () => {
-    const result = SettlementDocSchema.safeParse(foreignDoc({
-      settledOn: '2026-05-31',
-    }))
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.issues.some(i =>
-        i.message.includes('requestedDate'),
-      )).toBe(true)
-    }
-  })
-})
-
-describe('SettlementDocSchema — FX field-level validation', () => {
-  it('rejects non-canonical rateDecimal (trailing zero)', () => {
-    const result = SettlementDocSchema.safeParse(foreignDoc({
-      fxSnapshot: { ...baseFx, rateDecimal: '150.0' },
-    }))
-    expect(result.success).toBe(false)
-  })
-
-  // Zero is rejected to match fx-core::isCanonicalRateString. A bug
-  // ever writing "0" into a Firestore doc would silently materialise
-  // every conversion as 0 minor units — fail fast at parse.
-  it('rejects zero rateDecimal ("0")', () => {
-    const result = SettlementDocSchema.safeParse(foreignDoc({
-      fxSnapshot: { ...baseFx, rateDecimal: '0' },
-    }))
-    expect(result.success).toBe(false)
-  })
-
-  it('rejects zero rateDecimal ("0.0")', () => {
-    const result = SettlementDocSchema.safeParse(foreignDoc({
-      fxSnapshot: { ...baseFx, rateDecimal: '0.0' },
-    }))
-    expect(result.success).toBe(false)
-  })
-
-  it('rejects malformed settledOn date', () => {
-    const result = SettlementDocSchema.safeParse(foreignDoc({
-      settledOn: '2026/06/01',
-      fxSnapshot: { ...baseFx, requestedDate: '2026/06/01' },
-    }))
-    expect(result.success).toBe(false)
-  })
-
-  it('rejects lowercase sourceCurrency', () => {
-    const result = SettlementDocSchema.safeParse(foreignDoc({
-      sourceCurrency: 'usd',
-      fxSnapshot: { ...baseFx, baseCurrency: 'usd' },
-    }))
-    expect(result.success).toBe(false)
-  })
-})
-
-describe('SettlementDocSchema — routed settlement leg header', () => {
-  const transferHeader = (over: Record<string, unknown> = {}) => ({
-    id: 'route-1', legIndex: 0, legCount: 2, kind: 'TRANSFER',
-    participantUids: ['alice-uid', 'bob-uid', 'carol-uid'],
-    payerUid: 'alice-uid', receiverUid: 'carol-uid', amountMinor: 9750,
-    ...over,
-  })
-  const offsetHeader = (over: Record<string, unknown> = {}) => ({
-    id: 'route-2', legIndex: 1, legCount: 3, kind: 'OFFSET',
-    participantUids: ['alice-uid', 'bob-uid', 'carol-uid'],
-    ...over,
-  })
-  const parse = (route: unknown, over: Record<string, unknown> = {}) =>
-    SettlementDocSchema.safeParse(baseDoc({ route, ...over }))
-
-  it('accepts a transfer leg and an offset leg', () => {
-    expect(parse(transferHeader()).success).toBe(true)
-    expect(parse(offsetHeader()).success).toBe(true)
-  })
-
-  it('a plain pair settlement (no route) still parses — pre-route data and the legacy endpoint', () => {
-    expect(SettlementDocSchema.safeParse(baseDoc()).success).toBe(true)
-  })
-
-  it('keeps the header (it is not stripped as an unknown key)', () => {
-    const parsed = SettlementDocSchema.parse(baseDoc({ route: transferHeader({ note: '晚餐', ownerRecorded: true }) }))
+  it('keeps the header, ignoring header fields it does not know (forward compatible)', () => {
+    const parsed = SettlementDocSchema.parse(baseDoc({ route: transferHeader({ note: '晚餐', ownerRecorded: true, futureField: 1 }) }))
     expect(parsed.route).toMatchObject({ id: 'route-1', kind: 'TRANSFER', note: '晚餐', ownerRecorded: true })
-  })
-
-  it('ignores header fields it does not know (forward compatible)', () => {
-    const parsed = SettlementDocSchema.parse(baseDoc({ route: transferHeader({ futureField: 1 }) }))
     expect(parsed.route).not.toHaveProperty('futureField')
   })
 
   it('a transfer needs payer, receiver and amount; an offset must have none', () => {
-    expect(parse(transferHeader({ payerUid: undefined })).success).toBe(false)
-    expect(parse(offsetHeader({ amountMinor: 5 })).success).toBe(false)
+    expect(parse(baseDoc({ route: transferHeader({ payerUid: undefined }) }))).toBe(false)
+    expect(parse(baseDoc({ route: offsetHeader({ amountMinor: 5 }) }))).toBe(false)
   })
 
   it('rejects a leg index outside the route', () => {
-    expect(parse(transferHeader({ legIndex: 2 })).success).toBe(false)
+    expect(parse(baseDoc({ route: transferHeader({ legIndex: 2 }) }))).toBe(false)
   })
 
-  it('the header\'s foreign group is all-or-none and must agree with the snapshot and trip currency', () => {
-    const fxGroup = { sourceCurrency: 'USD', sourceAmountMinor: 6500, settledOn: '2026-06-01', fxSnapshot: baseFx }
-    expect(parse(transferHeader(fxGroup)).success).toBe(true)
-    expect(parse(transferHeader({ ...fxGroup, fxSnapshot: undefined })).success).toBe(false)
-    expect(parse(transferHeader({ ...fxGroup, sourceAmountMinor: 6501 })).success).toBe(false)
-    expect(parse(transferHeader(fxGroup), { currency: 'TWD' }).success).toBe(false)
-    // An offset moves no money.
-    expect(parse(offsetHeader(fxGroup)).success).toBe(false)
+  it('parses Worker-derived lineage (appliedSources / appliedExpenseIds)', () => {
+    expect(parse(baseDoc({
+      appliedSources: [{ expenseId: 'expense-1', expenseTitle: 'Dinner', itemId: 'item-1', itemName: 'Noodles', amountMinor: 750 }],
+      appliedExpenseIds: ['expense-1', 'expense-2'],
+    }))).toBe(true)
+  })
+
+  it('still parses lineage with a 101–200 char expense title (listener must not die)', () => {
+    expect(parse(baseDoc({ appliedSources: [{ expenseId: 'expense-1', expenseTitle: '店'.repeat(150), amountMinor: 750 }] }))).toBe(true)
+  })
+
+  it('rejects half-populated appliedSources item identity, a bad currency code and a zero amount', () => {
+    expect(parse(baseDoc({ appliedSources: [{ expenseId: 'expense-1', expenseTitle: 'Dinner', itemId: 'item-1', amountMinor: 750 }] }))).toBe(false)
+    expect(parse(baseDoc({ currency: 'jpy' }))).toBe(false)
+    expect(parse(baseDoc({ amountMinor: 0 }))).toBe(false)
+  })
+})
+
+describe('SettlementDocSchema — deletedAt / deletedBy soft-delete invariant', () => {
+  it('active: no deletedBy; cancelled: deletedBy present', () => {
+    expect(parse(baseDoc())).toBe(true)
+    expect(parse(baseDoc({ deletedAt: NOW, deletedBy: 'carol-uid' }))).toBe(true)
+  })
+
+  it('rejects deletedAt without deletedBy, and deletedBy on an active leg', () => {
+    expect(parse(baseDoc({ deletedAt: NOW }))).toBe(false)
+    expect(parse(baseDoc({ deletedBy: 'carol-uid' }))).toBe(false)
+  })
+})
+
+describe('SettlementDocSchema — foreign currency on the route header', () => {
+  const foreign = (fx: Record<string, unknown>, over: Record<string, unknown> = {}) =>
+    baseDoc({ route: transferHeader(fx), ...over })
+
+  it('parses a full group', () => {
+    expect(parse(foreign(fxGroup))).toBe(true)
+  })
+
+  it.each(['sourceCurrency', 'sourceAmountMinor', 'fxSnapshot', 'settledOn'])('rejects the group missing %s', field => {
+    expect(parse(foreign({ ...fxGroup, [field]: undefined }))).toBe(false)
+  })
+
+  it('rejects parts that disagree with the snapshot', () => {
+    expect(parse(foreign({ ...fxGroup, sourceCurrency: 'EUR' }))).toBe(false)
+    expect(parse(foreign({ ...fxGroup, sourceAmountMinor: 6501 }))).toBe(false)
+    expect(parse(foreign({ ...fxGroup, settledOn: '2026-05-31' }))).toBe(false)
+  })
+
+  it('rejects a snapshot quoted in another currency than the leg', () => {
+    expect(parse(foreign(fxGroup, { currency: 'TWD' }))).toBe(false)
+  })
+
+  it('accepts a forward conversion below the cleared amount (display only, decoupled from the ledger)', () => {
+    expect(parse(foreign({ ...fxGroup, fxSnapshot: { ...baseFx, convertedAmountMinor: 9748 } }))).toBe(true)
+  })
+
+  it('an offset moves no money and carries no foreign group', () => {
+    expect(parse(baseDoc({ route: offsetHeader(fxGroup) }))).toBe(false)
   })
 })

@@ -21,64 +21,8 @@ import { MAX_ROUTE_LEGS, ROUTE_ID_MAX } from '@tripmate/settlement-core'
 // ─── Request body schemas ─────────────────────────────────────────
 
 const AMOUNT_MINOR_MAX = 999_999_999_999
-
-/** Settlement create request. Discriminated by `mode`:
- *
- *    - TRIP_CURRENCY (degenerate): client just declares "clear the
- *      remaining debt from fromUid to toUid in trip currency".
- *      No amount on the wire — Worker computes pair-remaining and
- *      writes it as the canonical amountMinor.
- *    - FOREIGN_CURRENCY: client picks the currency the payee actually
- *      received + the date that pins the FX rate. Worker resolves the
- *      rate, inverse-derives the source amount whose forward conversion
- *      does NOT exceed remaining (at-most-target policy), persists the
- *      forward-converted canonical alongside the source-domain trio +
- *      fxSnapshot.
- *
- *  Key shape change from the pre-rearchitecture design: the wire body
- *  no longer carries `amountMinor` / `currency` / `sourceAmountMinor`.
- *  Removing them eliminates the OVERPAY class of bug entirely — the
- *  client can no longer specify a value the Worker has to reject. The
- *  Worker is the sole authority for the canonical settlement amount,
- *  derived from pair-remaining at tx time.
- *
- *  Per-branch `.strict()` rejects extras at the protocol layer so we
- *  don't rely solely on firestore.rules' missing `keys().hasOnly()`
- *  gate. settlementId is client-minted via `crypto.randomUUID()` so
- *  the Worker's `currentDocument.exists=false` gives genuine
- *  create-only semantics (retry-safe). */
 const CurrencyRe = /^[A-Z]{3}$/
 const IsoDateRe  = /^\d{4}-\d{2}-\d{2}$/
-
-const SettlementCreateBaseSchema = z.object({
-  tripId:       z.string().regex(TripIdRe),
-  settlementId: z.string().regex(TripIdRe),
-  fromUid:      z.string().min(1).max(UID_MAX),
-  toUid:        z.string().min(1).max(UID_MAX),
-  expectedRemainingMinor: z.number().int().positive().max(AMOUNT_MINOR_MAX),
-  note:         z.string().max(SETTLEMENT_LIMITS.note).optional(),
-})
-
-const SettlementCreateTripSchema = SettlementCreateBaseSchema.extend({
-  mode: z.literal('TRIP_CURRENCY'),
-}).strict()
-
-const SettlementCreateForeignSchema = SettlementCreateBaseSchema.extend({
-  mode:           z.literal('FOREIGN_CURRENCY'),
-  sourceCurrency: z.string().regex(CurrencyRe, 'sourceCurrency must be ISO 4217 alpha-3 uppercase'),
-  settledOn:      z.string().regex(IsoDateRe, 'settledOn must be YYYY-MM-DD'),
-  /** The rate the receiver last confirmed (FX CAS, fx-rate.ts
-   *  assertExpectedFxRate). */
-  expectedFxRate: ExpectedFxRateSchema,
-}).strict()
-
-export const SettlementCreateRequestSchema = z.discriminatedUnion('mode', [
-  SettlementCreateTripSchema,
-  SettlementCreateForeignSchema,
-])
-export type SettlementCreateRequest        = z.infer<typeof SettlementCreateRequestSchema>
-export type SettlementCreateTripRequest    = z.infer<typeof SettlementCreateTripSchema>
-export type SettlementCreateForeignRequest = z.infer<typeof SettlementCreateForeignSchema>
 
 /** Routed settlement create (/settlement-route-create). A route is a set of
  *  ordinary pair settlements (legs) on real debt edges, recorded together:

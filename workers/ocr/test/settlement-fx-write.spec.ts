@@ -31,23 +31,16 @@ import {
   type ForeignRate,
 } from '../src/settlement-fx-write'
 import { SettlementValidationError } from '../src/settlement-write-shared'
-import type { SettlementCreateForeignRequest } from '../src/settlement-write-shared'
+import type { ForeignIntent } from '../src/settlement-fx-write'
 import * as fxRate from '../src/fx-rate'
 import type { FxSnapshot } from '../src/fx-rate'
 
 const SA_JSON = 'service-account-json'
 
-// A full FOREIGN_CURRENCY request; resolveForeignRate / deriveForeignArtifacts
-// only read sourceCurrency + settledOn, but typing it fully keeps the
-// fixtures honest against the real schema-inferred shape.
-function foreignReq(over: { sourceCurrency: string; settledOn: string }): SettlementCreateForeignRequest {
+// The foreign intent a route request carries (sourceCurrency / settledOn /
+// the confirmed rate) — all resolveForeignRate / deriveForeignArtifacts read.
+function foreignReq(over: { sourceCurrency: string; settledOn: string }): ForeignIntent {
   return {
-    mode:                   'FOREIGN_CURRENCY',
-    tripId:                 'trip-1',
-    settlementId:           'settle-1',
-    fromUid:                'from-uid',
-    toUid:                  'to-uid',
-    expectedRemainingMinor: 15000,
     sourceCurrency:         over.sourceCurrency,
     settledOn:              over.settledOn,
     // The default mocked rate (150, dated settledOn).

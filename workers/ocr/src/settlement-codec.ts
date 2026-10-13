@@ -38,7 +38,6 @@ import type { TripCurrencyContext }                         from './settlement-w
  *  detected so the client retries / surfaces an error -- never silently
  *  computes pair remaining off a partial view. */
 export const EXPENSE_READ_LIMIT    = 500
-export const SETTLEMENT_READ_LIMIT = 200
 /** Firestore's per-commit (and per-transaction) write cap. */
 export const MAX_COMMIT_WRITES     = 500
 

@@ -27,13 +27,17 @@ import {
 import {
   SettlementValidationError,
   type TripCurrencyContext,
-  type SettlementCreateForeignRequest,
 }                                          from './settlement-write-shared'
+import type { FxRateQuote }                from './fx-rate'
 
 /** What the FX half reads from a request: the received currency, the day it
  *  was received and the rate the receiver confirmed. Both the pair endpoint
  *  (/settlement-create FOREIGN) and the route endpoint carry exactly this. */
-export type ForeignIntent = Pick<SettlementCreateForeignRequest, 'sourceCurrency' | 'settledOn' | 'expectedFxRate'>
+export interface ForeignIntent {
+  sourceCurrency: string
+  settledOn:      string
+  expectedFxRate: FxRateQuote
+}
 
 /** Carries the source-domain artifacts that FOREIGN_CURRENCY persists
  *  alongside the trip-currency canonical fields. Mirrors expense-write's

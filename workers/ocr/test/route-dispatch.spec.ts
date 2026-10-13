@@ -246,7 +246,7 @@ describe('handleJsonRoute — internal-error reporting', () => {
 // CascadeError CAN fire mid-delete, must NOT be stamped.
 describe('handleJsonRoute — precommit marking', () => {
 	const baseArgs = {
-		endpoint:  'settlement-create',
+		endpoint:  'settlement-route-create',
 		body:      { x: 1 },
 		cors:      {} as Record<string, string>,
 		uid:       'uid-123456',

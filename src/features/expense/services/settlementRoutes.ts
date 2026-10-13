@@ -161,33 +161,31 @@ export function routeRole(
 
 // ─── History ──────────────────────────────────────────────────────
 
-export type SettlementHistoryEntry =
-  | { kind: 'single'; id: string; record: SettlementRecord }
-  /** One logical route. `legs` are the ones currently visible, in leg
-   *  order; `complete` is false while the listener has delivered only part
-   *  of it (never cancel against a partial view — the Worker cancels the
-   *  whole route anyway). */
-  | { kind: 'route'; id: string; header: SettlementRouteHeader; legs: SettlementRecord[]; complete: boolean; settledBy: string; createdAtMs: number }
+/** One logical route in the history. `legs` are the ones currently
+ *  visible, in leg order; `complete` is false while the listener has
+ *  delivered only part of it. */
+export interface SettlementHistoryEntry {
+  id:          string
+  header:      SettlementRouteHeader
+  legs:        SettlementRecord[]
+  complete:    boolean
+  settledBy:   string
+  createdAtMs: number
+}
 
-/** Group route legs into one entry per route, keep plain settlements as
- *  they are, newest first. Input order (createdAt desc) is preserved for
- *  ties so the list doesn't jump. */
+/** One entry per route, in list order (createdAt desc), so the list doesn't
+ *  jump. */
 export function groupSettlementHistory(settlements: SettlementRecord[]): SettlementHistoryEntry[] {
   const out: SettlementHistoryEntry[] = []
-  const routes = new Map<string, Extract<SettlementHistoryEntry, { kind: 'route' }>>()
+  const routes = new Map<string, SettlementHistoryEntry>()
   for (const s of settlements) {
-    if (!s.route) {
-      out.push({ kind: 'single', id: s.id, record: s })
-      continue
-    }
     const existing = routes.get(s.route.id)
     if (existing) {
       existing.legs.push(s)
       if (s.route.legIndex === 0) existing.header = s.route
       continue
     }
-    const entry = {
-      kind:        'route' as const,
+    const entry: SettlementHistoryEntry = {
       id:          s.route.id,
       header:      s.route,
       legs:        [s],
@@ -199,7 +197,7 @@ export function groupSettlementHistory(settlements: SettlementRecord[]): Settlem
     out.push(entry)
   }
   for (const entry of routes.values()) {
-    entry.legs.sort((a, b) => (a.route!.legIndex - b.route!.legIndex))
+    entry.legs.sort((a, b) => a.route.legIndex - b.route.legIndex)
     entry.complete = entry.legs.length === entry.header.legCount
   }
   return out

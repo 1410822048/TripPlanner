@@ -23,11 +23,15 @@
 //     already applied in this route: CAS on expectedRemainingMinor, capacity,
 //     lineage (appliedSources + lock set)
 //   → write legs + pair locks + ONE merged lock write per expense
-// Delete: any leg id → the whole route (see buildRouteDeleteWrites); a single
-// leg can never be cancelled on its own, or an intermediate's net would move.
+// Delete (/settlement-delete): any leg id → the whole route; a single leg
+// can never be cancelled on its own, or an intermediate's net would move.
+//
+// This is the only settlement write path: a plain pair settlement is a
+// one-leg route.
 import { getAdminToken, getProjectId }                      from './admin'
 import { readString, type FsValue }                         from './firestore'
 import { withTokenRetry, CascadeError }                     from './cascade'
+import { checkTripAccess }                                  from './membership-shared'
 import {
   runFirestoreTransaction,
   docResourceName,
@@ -50,6 +54,7 @@ import { buildSettlementLineage }                           from './settlement-l
 import {
   SettlementValidationError,
   type SettlementRouteCreateRequest,
+  type SettlementDeleteRequest,
 }                                                           from './settlement-write-shared'
 import {
   EXPENSE_READ_LIMIT,
@@ -76,8 +81,12 @@ import {
   decodeStringArrayField,
 }                                                           from './settlement-lock-write'
 
-export { SettlementRouteCreateRequestSchema }               from './settlement-write-shared'
-export type { SettlementRouteCreateRequest }
+export {
+  SettlementRouteCreateRequestSchema,
+  SettlementDeleteRequestSchema,
+  SettlementValidationError,
+}                                                           from './settlement-write-shared'
+export type { SettlementRouteCreateRequest, SettlementDeleteRequest }
 
 /** Whole-trip active settlement read for a route. Matches the client's
  *  SETTLEMENT_LIST_LIMIT: a trip past it can't be listed completely by the
@@ -96,11 +105,9 @@ export interface StoredRouteHeader {
   kind:      'TRANSFER' | 'OFFSET'
 }
 
-/** `route.id` + leg position, when the settlement is a route leg. Null for
- *  an ordinary pair settlement (or a malformed header — treated as not a
- *  route only when it carries no id at all; a header with an id but broken
- *  counts is a corrupt route and must not be cancelled leg-by-leg). */
-export function readRouteHeader(fields: Record<string, FsValue>): StoredRouteHeader | null {
+/** `route.id` + leg position. Null when the doc carries no header at all;
+ *  a header with an id but broken counts is a corrupt route (500). */
+function readRouteHeader(fields: Record<string, FsValue>): StoredRouteHeader | null {
   const route = (fields.route as { mapValue?: { fields?: Record<string, FsValue> } } | undefined)?.mapValue?.fields
   if (!route) return null
   const id = readString(route, 'id')
@@ -441,14 +448,62 @@ async function doRouteCreate(
   })
 }
 
-// ─── Delete (called from /settlement-delete) ──────────────────────
+// ─── Delete: /settlement-delete ───────────────────────────────────
+
+/** Cancel a route, given any one of its leg ids. Recorder (settledBy, the
+ *  same on every leg) or the trip owner. Missing / already-cancelled →
+ *  no-op success, so a double tap or a retry after a lost response is
+ *  harmless. Every settlement is a route leg (one-leg routes included):
+ *  a doc without a header is corrupt and is refused rather than
+ *  cancelled leg-by-leg. */
+export async function settlementDelete(
+  callerUid:          string,
+  req:                SettlementDeleteRequest,
+  serviceAccountJson: string,
+): Promise<{ ok: true }> {
+  return withTokenRetry(() => doDelete(callerUid, req, serviceAccountJson))
+}
+
+async function doDelete(
+  callerUid:          string,
+  req:                SettlementDeleteRequest,
+  serviceAccountJson: string,
+): Promise<{ ok: true }> {
+  const accessToken = await getAdminToken(serviceAccountJson)
+  const projectId   = getProjectId(serviceAccountJson)
+
+  await runFirestoreTransaction(accessToken, projectId, async (tx) => {
+    const [trip, member, settlement] = await Promise.all([
+      tx.get(`trips/${req.tripId}`),
+      tx.get(`trips/${req.tripId}/members/${callerUid}`),
+      tx.get(`trips/${req.tripId}/settlements/${req.settlementId}`),
+    ])
+    checkTripAccess(trip.exists ? trip.fields : null, member.exists ? member.fields : null, callerUid)
+    if (!settlement.exists) return { writes: [], result: undefined }
+
+    // Owner from trip.ownerId — the same source of truth as every other
+    // Worker endpoint (members/{uid}.role could drift from it).
+    const isOwner    = readString(trip.fields, 'ownerId') === callerUid
+    const isRecorder = readString(settlement.fields, 'settledBy') === callerUid
+    if (!isOwner && !isRecorder) {
+      throw new CascadeError(403, 'only the recorder (settledBy) or trip owner may delete a settlement')
+    }
+    // After authz, so a stranger can't probe cancellation state.
+    if (isSoftDeleted(settlement.fields)) return { writes: [], result: undefined }
+
+    const header = readRouteHeader(settlement.fields)
+    if (!header) throw new CascadeError(500, `settlement ${req.settlementId} has no route header`)
+    return { writes: await buildRouteDeleteWrites(tx, projectId, req.tripId, header, callerUid), result: undefined }
+  })
+  return { ok: true }
+}
 
 /** Writes that cancel a WHOLE route, given any one of its legs (already
  *  read and authorized by the caller). All legs are soft-deleted together,
  *  every pair lock is touched in sorted order, and each locked expense
  *  loses every one of this route's leg ids in a single write. Legs already
  *  cancelled are skipped, so a repeat is a no-op. */
-export async function buildRouteDeleteWrites(
+async function buildRouteDeleteWrites(
   tx:        TxContext,
   projectId: string,
   tripId:    string,

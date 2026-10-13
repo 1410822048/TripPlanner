@@ -385,8 +385,8 @@ UI(`SettlementSummary`)結構: 成員淨額 → 付款建議(簡化 route 卡片
 - **Worker** `/settlement-route-create`:權限 → leg 0 冪等 → FX CAS(在讀帳之前)→ 讀帳(`paidBy IN participants`、全旅程 active settlements、pair lock 依序讀)→ 逐段 CAS 與 lineage(看得到本 route 前面各段)→ 寫入(**每筆費用的鎖只寫一次**)。`/settlement-delete` 收到任一 leg 就撤銷整個 route
 - **「任意順序」= 挑一筆 → 記錄 → 重新規劃**。record sheet 送出時以最新帳本重算同一筆付款,不會送出過期的 CAS 數字;抵銷變了就要求重新確認
 - **通知**:只有 leg 0 發送,每個 route 一則,對象是所有參與者
-- Schema Epoch 4:epoch-3 版會把 legs 當成獨立紀錄,刪一段會無聲撤銷整個 route
-- 舊的 `/settlement-create` 只留給還沒更新的舊版;它的 pair-scoped 讀取看得到 legs,與 route 共用 pair lock,有並存測試
+- **只有一種形狀**:每筆 settlement 都是 route leg(兩人清算 = 單段 route),`route` header 必填;舊的 `/settlement-create` 與單筆清算路徑已移除(上線前清庫,沒有舊資料)
+- Schema Epoch 4:讓手機上已安裝、只會呼叫舊端點的 PWA 顯示更新提示
 
 ### Settlement phase-2: chronological replay + orphan reason 分類
 

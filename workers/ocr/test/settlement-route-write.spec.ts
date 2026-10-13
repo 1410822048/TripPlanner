@@ -52,11 +52,11 @@ import {
 } from '@tripmate/settlement-core'
 import { fake } from './helpers/fake-firestore'
 import {
+	settlementDelete,
 	settlementRouteCreate,
 	SettlementRouteCreateRequestSchema,
 	type SettlementRouteCreateRequest,
 } from '../src/settlement-route-write'
-import { settlementCreate, settlementDelete } from '../src/settlement-write'
 import * as fxRate from '../src/fx-rate'
 import type { FsValue } from '../src/firestore'
 
@@ -664,25 +664,31 @@ describe('property: random trips settle completely through the Worker', () => {
 	}, 60_000)
 })
 
-describe('legacy /settlement-create next to routes (pre-epoch-4 bundles)', () => {
-	it('sees route legs on the pair and clears exactly what is left', async () => {
+describe('/settlement-delete edge cases', () => {
+	beforeEach(() => {
 		seedTrip(['A', 'B'])
-		seedExpense('e1', 'B', { A: 1000 })
-		await settlementRouteCreate('B', request('r1', routeForPayment(ledger(), 'A', 'B', 300)!), SA)
-		// The old pair endpoint's CAS must reflect the leg already applied.
-		await expect(settlementCreate('B', { mode: 'TRIP_CURRENCY', tripId: TRIP, settlementId: 'legacy-1', fromUid: 'A', toUid: 'B', expectedRemainingMinor: 1000 }, SA))
-			.rejects.toMatchObject({ code: 'SETTLEMENT_STALE' })
-		await settlementCreate('B', { mode: 'TRIP_CURRENCY', tripId: TRIP, settlementId: 'legacy-1', fromUid: 'A', toUid: 'B', expectedRemainingMinor: 700 }, SA)
-		expect(ledger()).toEqual({})
-		// Its lineage continues where the leg stopped — no double draw.
-		const legacy = fake.fields(`trips/${TRIP}/settlements/legacy-1`)!
-		const drawn = ((legacy.appliedSources as { arrayValue: { values: FsValue[] } }).arrayValue.values)
-			.map(v => readInt(v.mapValue!.fields, 'amountMinor'))
-		expect(drawn).toEqual([700])
-		expect(readArr(fake.fields(`trips/${TRIP}/expenses/e1`), 'settlementLockIds').sort()).toEqual(['legacy-1', 'r1-00'])
-		// Cancelling the legacy settlement leaves the route intact.
-		await settlementDelete('B', { tripId: TRIP, settlementId: 'legacy-1' }, SA)
-		expect(ledger()).toEqual({ A: { B: 700 } })
-		expect(readArr(fake.fields(`trips/${TRIP}/expenses/e1`), 'settlementLockIds')).toEqual(['r1-00'])
+		seedExpense('e1', 'B', { A: 100 })
+	})
+
+	it('a missing settlement is a no-op success (double tap / lost response)', async () => {
+		await expect(settlementDelete('B', { tripId: TRIP, settlementId: 'nope-00' }, SA)).resolves.toEqual({ ok: true })
+		expect(fake.commits.at(-1)).toEqual([])
+	})
+
+	it('a non-member cannot cancel, and a trip being deleted refuses everyone', async () => {
+		await settlementRouteCreate('B', request('r1', planSettlementRoutes(ledger())[0]!), SA)
+		await expect(settlementDelete('stranger', { tripId: TRIP, settlementId: 'r1-00' }, SA)).rejects.toMatchObject({ status: 403 })
+		fake.set(`trips/${TRIP}`, { ...fake.fields(`trips/${TRIP}`)!, deletingAt: { timestampValue: fake.tick() } })
+		await expect(settlementDelete('B', { tripId: TRIP, settlementId: 'r1-00' }, SA)).rejects.toMatchObject({ status: 410 })
+		expect(docsIn('settlements').every(d => isActive(d.fields))).toBe(true)
+	})
+
+	it('refuses a settlement without a route header instead of cancelling it piecemeal', async () => {
+		fake.set(`trips/${TRIP}/settlements/raw`, {
+			fromUid: str('A'), toUid: str('B'), amountMinor: int(100), settledBy: str('B'),
+			deletedAt: { nullValue: null }, createdAt: { timestampValue: fake.tick() },
+		})
+		await expect(settlementDelete('B', { tripId: TRIP, settlementId: 'raw' }, SA)).rejects.toMatchObject({ status: 500 })
+		expect(isActive(fake.fields(`trips/${TRIP}/settlements/raw`)!)).toBe(true)
 	})
 })

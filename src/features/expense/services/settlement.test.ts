@@ -79,6 +79,10 @@ function mkSettlement(
     amountMinor,
     currency: 'JPY',
     settledBy: toUid,
+    route: {
+      id: `s_${fromUid}_${toUid}_${amountMinor}${idSuffix}`, legIndex: 0, legCount: 1, kind: 'TRANSFER',
+      participantUids: [fromUid, toUid].sort(), payerUid: fromUid, receiverUid: toUid, amountMinor,
+    },
     createdAt: TS,
     deletedAt: null,
   }
