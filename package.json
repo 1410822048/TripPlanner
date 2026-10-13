@@ -114,7 +114,7 @@
     "rollup-plugin-visualizer": "^7.1.1",
     "sharp": "^0.35.5",
     "tailwindcss": "^4.3.0",
-    "typescript": "~6.0.2",
+    "typescript": "~7.0.2",
     "typescript-eslint": "^8.71.1",
     "vite": "^8.3.3",
     "vite-plugin-pwa": "^2.0.0",
