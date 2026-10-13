@@ -177,6 +177,7 @@ Request（`.strict()`）：`{ tripId, routeId, kind, legs[{fromUid,toUid,amountM
   - 同一筆費用被兩段鎖住、來源預算與完整鎖定、最壞情況的文件大小、Firestore 大小計算、讀帳投影、壞文件 fail-closed
   - 整筆撤銷，以及固定 seed 的端到端性質測試（鎖定集合與 lineage 一致、每段來源加總等於金額、不重複扣同一份額）
   - 撤銷的邊界情況（不存在、非成員、旅程刪除中、讀不出 legs、費用已不持有鎖）
+- Firestore 模擬器（`npm run test:emulator`，CI 也會跑）：Worker 的寫入程式直接對真的 Firestore 模擬器。確認 transaction 內的 `select` 只回傳 `legs`、`createdAt`；建立、冪等重試、撤銷後帳本復原；兩筆同時寫同一筆債只有一筆成功；`firestore-size.ts` 與模擬器的 1 MiB 限制完全一致（剛好 1,048,576 bytes 被接受，多 1 byte 被拒絕）。
 - Functions：一份文件一則通知、取消通知、抵銷內容、經手人、參與者退回由 legs 推導。
 - Client：
   - schema（形狀、legIndex 範圍、外幣群組、向前相容）、service 傳輸格式、overlay（一份文件一個操作）

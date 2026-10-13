@@ -98,6 +98,11 @@ jobs:
       - name: Test (rules)
         run: npm run test:rules
 
+      # Worker settlement writes against the same emulator: transactional
+      # projections, conflicts and the 1 MiB document limit.
+      - name: Test (emulator)
+        run: npm run test:emulator
+
       - name: Build
         run: npm run build
         env:

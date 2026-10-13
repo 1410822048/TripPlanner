@@ -514,6 +514,7 @@ npm run test:coverage                      # 同上 + 覆蓋率門檻(vitest.con
 npm --workspace workers/ocr exec -- vitest run # Worker 測試
 npm run functions:test                     # Functions 測試
 npm run test:rules                         # Firestore Rules emulator 測試
+npm run test:emulator                      # Worker settlement 寫入 × Firestore emulator(投影、衝突、1 MiB)
 npm run typecheck                          # 全部 workspace typecheck
 npm run lint                               # 前端 + Worker lint
 npm run deploy:prod                        # 正式部署安全編排

@@ -1,0 +1,10 @@
+{
+	"extends": "../tsconfig.json",
+	"compilerOptions": {
+		// Runs on Node against the Firestore emulator (root
+		// vitest.emulator.config.ts), not in the Workers runtime.
+		"types": ["../worker-configuration.d.ts", "node"]
+	},
+	"include": ["./**/*.ts", "../worker-configuration.d.ts", "../test/pdfjs-dist.d.ts"],
+	"exclude": []
+}
