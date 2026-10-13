@@ -28,23 +28,41 @@
 
 本方案要同時做到：**轉帳筆數大幅減少**，而且**每一塊錢仍追溯到具體費用、仍由伺服器驗證**。
 
-## 2. 資料模型：route = 一組普通的 pair settlement
+## 2. 資料模型：一筆清算 = 一個 route = 一份文件
 
-A 欠 B 10、B 欠 C 10 → 建議「A 付 C 10（經 B）」。C 確認時，Worker 在**同一個 transaction** 寫入兩筆**普通**的 settlement doc（leg）：
+A 欠 B 10、B 欠 C 10 → 建議「A 付 C 10（經 B）」。C 確認時，Worker 在一個 transaction 寫入**一份** settlement doc `trips/{tripId}/settlements/{routeId}`：
 
-| leg id | fromUid → toUid | amountMinor | lineage／鎖 |
-|---|---|---|---|
-| `{routeId}-00` | A → B | 10 | A、B 之間的費用 |
-| `{routeId}-01` | B → C | 10 | B、C 之間的費用 |
+| 欄位 | 內容 |
+|---|---|
+| `kind` | `TRANSFER`／`OFFSET` |
+| `legs[]` | 帳本：`{ fromUid, toUid, amountMinor }`，依規範順序（from、to）排列，每段都落在真實債務邊上。本例為 A→B 10、B→C 10 |
+| `participantUids` | 所有 leg 涉及的人（排序） |
+| `payerUid`、`receiverUid`、`amountMinor` | 只有 TRANSFER |
+| `note`、`ownerRecorded` | 選填 |
+| `sourceCurrency`、`sourceAmountMinor`、`settledOn`、`fxSnapshot` | 外幣四件組，只有 TRANSFER，全有或全無 |
+| `appliedSources[]` | 顯示用 lineage，每筆帶 `legIndex`；整份文件最多 400 筆 |
+| `lockedExpenses[]` | 完整的鎖定集合：`{ expenseId, legIndexes }`，每筆費用一次，記錄被哪幾段鎖住 |
+| `settledBy`、`createdAt`、`deletedAt`、`deletedBy` | 同其他實體 |
 
-每段 leg 都帶相同的 `route` header（map）：`id`、`legIndex`、`legCount`、`kind`（TRANSFER／OFFSET）、`participantUids`；TRANSFER 另有 `payerUid`、`receiverUid`、`amountMinor`；可選 `note`、`ownerRecorded`，以及外幣四件組（`sourceCurrency`、`sourceAmountMinor`、`settledOn`、`fxSnapshot`）。
+- 帳本、orphan、時序重播、lineage 都以 **leg** 為單位運算：client 用 `settlementLegs()` 把文件攤平，Worker 用 `decodeSettlementLegs()`。「清算只能抵銷、不能創造反向債務」照舊成立。
+- 一份文件 = listener 一次送達、撤銷一次寫入、一則通知、一個 overlay 操作；不可能只看到半個 route。
+- 外幣與備註描述整筆付款；leg 一律是旅程幣別（B 沒有用外幣付給任何人）。
+- 文件 id 就是 client 鑄造的 `routeId`，重試時冪等。
 
-- `computePairwiseRemaining`、orphan 時序重播、lineage、費用 `settlementLockIds`、`(fromUid,toUid,deletedAt)` 查詢**全部照舊可用**。每段 leg 都落在真實債務邊上，「清算只能抵銷、不能創造反向債務」自然成立。
-- leg id 由 `routeLegId(routeId, i)` 依規範順序（from、to 排序）**推導**，不由 client 指定：避免與既有 settlement 撞 id，刪除時也能直接逐一讀到每段 leg。
-- 外幣與備註只放在 header：B 沒有用外幣付給任何人。leg 一律是旅程幣別，頂層不帶 FX 欄位。
+### 為什麼是一份文件
+比較過三種做法：
 
-### 為什麼不另開 `settlementRoutes` collection（原設計的修正）
-原設計是另開 route doc。實作前發現：route doc 與 legs 會被**兩個 listener 分別送達**，畫面會短暫看到「有 legs 沒 route」或反過來，overlay 也得跨兩個 collection 對帳；另外還要多一組 rules、一份 cascade 清單、一個 listener。把 header 冗餘寫在每段 leg 上之後，一次 commit、一個 listener 就能看到完整的 route；冪等改用 leg 0 判斷，通知只由 leg 0 發送。
+1. 另開 route collection，再每段一份 leg doc：兩個 listener 不同步送達，畫面會短暫不一致，還要多一組 rules、cascade 清單與 listener。
+2. 每段一份 leg doc，每份都抄一份 route header：解決了同步，但同一筆付款散在多份文件，通知、overlay、撤銷都得把「一組文件」當成一筆處理（只由第一段發通知、撤銷時要隱藏所有段）。
+3. 一份 route doc，legs 在裡面：唯一「一筆付款 = 一份資料」的模型。代價是 1 MiB 文件上限，以及帳本要先把 leg 攤平。
+
+資料庫上線前會清空，沒有遷移成本，因此採用 3。它的兩個代價分別由下面的大小設計與 `settlementLegs()` 處理。
+
+### 1 MiB 文件上限
+- `appliedSources` 只供顯示，整份文件共用 400 筆預算（`MAX_ROUTE_APPLIED_SOURCES`），以 max-min 公平的方式分給各段（`capRouteSources`），每段保留最舊的來源。被截掉的部分在畫面顯示為「其他較新的費用 ¥X（未逐筆列出）」。client 預覽用同一個函式，所以預覽就是實際寫入的內容。
+- `lockedExpenses` 永遠完整（最多 500 筆費用，受費用讀取上限約束），不受預算影響。
+- Worker 依 Firestore 公布的計算方式（`firestore-size.ts`）算出文件的實際儲存大小，超過 1,000,000 bytes 就以 409 拒絕。最壞情況測試涵蓋：45 段、30 位 128 字元 uid、400 筆每字 4 bytes 的標題與品項名、500 筆每段都鎖的費用、外幣與備註。即使這樣也仍在上限之內。
+- Worker 讀帳時只投影 `legs`、`createdAt`（`select`），不會把其他 route 的 lineage 一起讀進來。
 
 ## 3. 不變式（`validateRouteShape`，client 與 Worker 共用）
 
@@ -100,38 +118,40 @@ Request（`.strict()`）：`{ tripId, routeId, kind, legs[{fromUid,toUid,amountM
 
 1. `validateRouteShape`（純函式，不讀資料）
 2. `authorizeMemberTx` ＋ route 權限（第 4 節）
-3. 冪等：leg 0 已存在 → payload 相同就回成功（不碰 FX、不讀帳），不同就是撞 id；已撤銷的 routeId 不能重用
+3. 冪等：route doc 已存在 → payload（含每段 leg）相同就回成功（不碰 FX、不讀帳），不同就是撞 id；已撤銷的 routeId 不能重用
 4. 外幣：`resolveForeignRate` ＋ `expectedFxRate` CAS，**在讀帳本之前**（網路等待不進衝突視窗）
-5. 讀帳本（全部 fail-closed）：`paidBy IN participants` 的費用（≤500）、全旅程 active settlements（≤500）、每條邊的 pair lock（**依 key 排序逐一讀取**）
+5. 讀帳本（全部 fail-closed）：`paidBy IN participants` 的費用（≤500）、全旅程 active settlements（≤500 份，只投影 `legs`、`createdAt`；任何一份讀不出 legs 就 500）、每條邊的 pair lock（**依 key 排序逐一讀取**）
 6. 逐段（依規範順序）在「已套用本 route 前面各段」的帳本上做 CAS、容量檢查、lineage
-7. 寫入：每段 leg（`exists:false`）＋每個 pair lock ＋**每筆費用一次**合併後的鎖寫入（兩段 leg 鎖同一筆費用時，分兩次寫同一欄位，後寫會蓋掉前寫的鎖 id）。總寫入超過 500 → 409 `PAIR_LEDGER_TOO_LARGE`
+7. 組出 route doc，檢查儲存大小，然後寫入：route doc（`exists:false`）＋每個 pair lock ＋**每筆被鎖的費用一次**（`settlementLockIds` 加上 routeId；同一筆費用被兩段鎖住也只寫一次、只記一次）。總寫入超過 500 → 409 `PAIR_LEDGER_TOO_LARGE`
 
 外幣：route 的 `amountMinor` 以旅程幣別入帳；`sourceAmountMinor` 由它以 at-most 反推（只用於顯示與稽核），換算後為 0 時拒絕。
 
 ## 7. 撤銷：`/settlement-delete`
 
-收到任一 leg id，就撤銷**整個 route**：讀出所有 leg，全部軟刪除，依排序碰觸每個 pair lock，每筆被鎖的費用一次移除本 route 所有 leg id。已撤銷的再撤一次不做任何事。沒有 route header 的舊單筆清算照舊處理。
+收到 settlement id（即 routeId），軟刪除這份文件，一次寫入就撤銷整個 route。接著依排序碰觸每段的 pair lock，並把 routeId 從 `lockedExpenses` 裡每筆費用的 `settlementLockIds` 移除。已撤銷的再撤一次不做任何事；讀不出 legs 的文件視為損毀（500），不會在不知道碰了哪些對的情況下撤銷。
 
 ## 8. 畫面
 
 - **付款建議**：顯示簡化後的 TRANSFER（「A → C ¥X　經 B」）與 OFFSET（「A、B、C 互相抵銷 · 不需付款」）。展開可看每段 leg，以及每段會清掉哪些費用與明細項目（用與 Worker 相同的 lineage 程式預覽）。
 - **中間人**：說明「你不用付款：會同時清掉 A 欠你的與你欠 C 的各 ¥X，你的淨額不變」。
 - **記錄收款**：選付款人（只列帳上能解釋的人），輸入金額（預設並限制為 `maxPayable`）。
-- **清算紀錄**：同一個 route 合併成一列，可展開看各段、來源與 orphan 說明；刪除會明確標示是「整筆刪除」。
+- **清算紀錄**：一份文件一列，可展開看各段、來源（含未逐筆列出的金額）與 orphan 說明；刪除會明確標示是「整筆刪除」。
 
 ## 9. 通知（Functions）
 
-只有 leg 0 會發通知：每個 route 一則，對象是所有參與者（中間人的債務也變了）。內容是「付款人 → 收款人 ¥X（經 …）」，或「A、B、C 之間的互相抵銷（不需付款）」。已離開成員的名字從 `formerMemberNames` 取得。
+一份文件一則通知，對象是所有參與者（中間人的債務也變了）。內容是「付款人 → 收款人 ¥X（經 …）」，或「A、B、C 之間的互相抵銷（不需付款）」。已離開成員的名字從 `formerMemberNames` 取得。
 
 ## 10. 相容性與部署
 
-- `SettlementDocSchema` 新增選填的 `route` header（header 自身也有 FX 群組不變式）；未知欄位仍會被略過。沒有 route 的舊資料照常解析。
-- `SETTLEMENT_LIST_LIMIT` 200 → 500（一段 leg 一筆 doc），Worker 讀取上限同步。
-- **只有一種資料形狀**：資料庫上線前會清空，沒有舊資料要共存，所以舊的 `/settlement-create` 與「單筆清算」的撤銷、顯示路徑都已移除。每筆 settlement 都是 route leg（一般的兩人清算就是單段 route），`route` header 在 schema 裡是必填；沒有 header 的 doc 視為資料損毀（撤銷時回 500，不會逐段處理）。
-- **Schema Epoch 4**，manifest `{ revision: 3, minimumWriteEpoch: 4 }`。這不是為了舊資料，而是為了**已安裝在手機上的舊版 PWA**：它只會呼叫已移除的 `/settlement-create`，升版後它會顯示「請更新」，而不是送出必定失敗的請求。
-- 不需要改 Firestore rules：legs 就是 settlements（client 不可寫、只能讀 active 的），trip cascade 本來就涵蓋 settlements。
+- `SettlementDocSchema` 就是 route 的形狀：`legs` 必填，lineage 的 `legIndex` 與 `lockedExpenses` 的 `legIndexes` 必須指向存在的 leg，外幣群組維持原本的不變式。未知欄位會被略過，上限比 Worker 寬鬆，避免一份稍大的文件讓整個 listener 失效。
+- `SETTLEMENT_LIST_LIMIT` = 500 份文件，也就是 500 筆付款或抵銷，不再以 leg 計算。Worker 的讀取上限相同。
+- **只有一種資料形狀**：資料庫上線前會清空，沒有舊資料要共存。舊的 `/settlement-create`、單筆清算，以及「每段一份文件」的形狀都已移除。
+- **Schema Epoch 4**，manifest `{ revision: 3, minimumWriteEpoch: 4 }`。這不是為了舊資料，而是為了**已安裝在手機上的舊版 PWA**：它只會呼叫已移除的端點，升版後它會顯示「請更新」，而不是送出必定失敗的請求。
+- Firestore rules 的行為不變（只更新註解）。indexes 有兩項變更：
+  - 移除舊的 `(fromUid, toUid, deletedAt)` 複合索引，它只服務已刪除的逐對讀取。
+  - `appliedSources`、`lockedExpenses` 不建單欄索引：它們從不被查詢，不建索引可省掉大型陣列的索引寫入。
 
-部署順序：Worker → Functions → Pages（含 manifest）。rules 不變。
+部署順序：Worker → Functions → Firestore indexes → Pages（含 manifest）。rules 行為不變，可以之後順帶部署。
 
 ## 11. 設計稽核：找到並修正的反例
 
@@ -140,15 +160,25 @@ Request（`.strict()`）：`{ tripId, routeId, kind, legs[{fromUid,toUid,amountM
 | 1 | 兩個不相連的循環合併成一筆 OFFSET，A 可以確認 D、E、F 之間的循環 | 只有參與者能確認抵銷 | 每個連通分量一筆；Worker 驗證 `DISCONNECTED` |
 | 2 | TRANSFER 夾帶一個守恆的無關循環 | 收款人只能清掉經過自己這筆付款的債 | Worker 驗證 `CYCLIC` |
 | 3 | max-flow 的結果可能含環 | 同上 | 規劃時消掉環並留在帳上，並直接測試這個守門邏輯 |
-| 4 | 兩段 leg 鎖同一筆費用、各寫一次 | 鎖 id 集合（後寫蓋掉前寫） | 每筆費用合併成一次寫入 |
-| 5 | client 指定 leg id | id 唯一、可依 route 找回所有 leg | 由 routeId 推導 |
-| 6 | 刪除其中一段 leg | 中間人淨額不變（決定 2） | 任一 leg 撤銷整個 route |
-| 7 | 每段 leg 各發一則通知 | 通知以 route 為單位 | 只有 leg 0 發送 |
-| 8 | route doc 與 legs 分屬兩個 listener | 畫面與 overlay 要一次看到完整的 route | header 冗餘寫在每段 leg 上 |
+| 4 | 兩段 leg 鎖同一筆費用、各寫一次 | 鎖集合（後寫蓋掉前寫） | 每筆費用一次寫入、只記一次 routeId |
+| 5 | 只撤銷其中一段 leg | 中間人淨額不變（決定 2） | 一份文件，撤銷就是整份；結構上做不到只撤一段 |
+| 6 | 一筆付款散在多份文件，listener 先送到一部分 | 畫面與 overlay 一次看到完整的付款 | 一份文件 |
+| 7 | 長行程的 lineage 讓文件超過 1 MiB，commit 被 Firestore 拒絕 | 記錄一定寫得進去，或乾淨地被拒絕 | 400 筆來源預算、鎖定集合不截斷、依 Firestore 規則精確計算大小、最壞情況測試 |
+| 8 | Worker 讀帳時把每份 route 的 lineage 一起讀進來 | 讀取成本只跟帳本有關 | `select` 只投影 `legs`、`createdAt` |
+| 9 | 鎖定集合只存整份聯集：一段的 orphan 原因被別段的費用改動誤判；若改用「費用目前是否涉及這一對」來篩，又會漏掉「被改到不涉及這一對」的費用（這正是 lineage 要解釋的情況） | orphan 原因只由這一段實際動用的費用決定 | `lockedExpenses` 記錄每筆費用被哪幾段鎖住，逐段精確 |
+| 10 | 文件裡有一段 leg 是壞的 | 一筆付款整筆套用，或整筆不套用 | client 整份排除並警告；Worker 讀帳與撤銷都 500 fail-closed |
 
 ## 12. 測試
 
-- settlement-core：200 組固定 seed 的性質測試，涵蓋只走真實債務、整份計畫剛好清空帳本、中間人淨額為 0、經濟淨額正確、「挑一筆 → 記錄 → 重新規劃」最後一定清完、過期建議會被 CAS 拒絕、同一對不會被選兩次；另有上限拆分、多路徑、記錄收款、lineage 等測試。
-- Worker：用記憶體版 Firestore（原子提交、前置條件、REQUEST_TIME），在建立／撤銷之後讀回帳本驗證。涵蓋 multi-hop、multi-path、部分與重疊的邊、CAS 過期、競爭、冪等、形狀攻擊、循環權限、已離開成員（付款人／收款人／中間人／循環）、外幣（CAS、取整、過小金額）、合併鎖、整筆撤銷，以及固定 seed 的端到端性質測試（鎖集合與 lineage 一致、不重複扣同一份額）；以及撤銷的邊界情況（不存在、非成員、旅程刪除中、沒有 header 的 doc）。
-- Functions：每個 route 只發一則通知、取消通知、抵銷內容、經手人與已離開成員的名字。
-- Client：schema（header、外幣群組、向前相容）、service 傳輸格式、overlay（多段一起成功或失敗、撤銷時隱藏所有 leg）、record sheet（過期重算、記錄收款上限、抵銷過期、外幣）、付款建議卡與紀錄分組、ExpensePage 依 leg 數檢查上限。
+- settlement-core：200 組固定 seed 的性質測試。涵蓋：只走真實債務、整份計畫剛好清空帳本、中間人淨額為 0、經濟淨額正確、「挑一筆 → 記錄 → 重新規劃」最後一定清完、過期建議被 CAS 拒絕、同一對不會被選兩次。另有上限拆分、多路徑、記錄收款、lineage、來源預算（公平分配與 prefix 的性質測試）。
+- Worker：用記憶體版 Firestore（原子提交、前置條件、REQUEST_TIME、`select` 投影），在建立／撤銷之後讀回帳本驗證。涵蓋：
+  - 文件形狀與規範順序、multi-hop、multi-path、部分與重疊的邊、CAS 過期、競爭、冪等（含外幣）
+  - 形狀攻擊、循環權限、已離開成員（付款人／收款人／中間人／循環）、外幣（CAS、取整、過小金額）
+  - 同一筆費用被兩段鎖住、來源預算與完整鎖定、最壞情況的文件大小、Firestore 大小計算、讀帳投影、壞文件 fail-closed
+  - 整筆撤銷，以及固定 seed 的端到端性質測試（鎖定集合與 lineage 一致、每段來源加總等於金額、不重複扣同一份額）
+  - 撤銷的邊界情況（不存在、非成員、旅程刪除中、讀不出 legs、費用已不持有鎖）
+- Functions：一份文件一則通知、取消通知、抵銷內容、經手人、參與者退回由 legs 推導。
+- Client：
+  - schema（形狀、legIndex 範圍、外幣群組、向前相容）、service 傳輸格式、overlay（一份文件一個操作）
+  - 帳本（多段 route 套用、orphan 指名文件與段、壞 leg 整份排除、逐段精確的 lineage、被改離這一對的費用、已離開成員）
+  - record sheet、付款建議卡、紀錄列（各段來源與未列出金額）、ExpensePage（一份文件佔一個名額、鎖定）
