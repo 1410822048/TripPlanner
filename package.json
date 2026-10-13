@@ -67,7 +67,7 @@
     "@tripmate/pdf-page-limit": "file:./packages/pdf-page-limit",
     "@tripmate/route-estimate-core": "file:./packages/route-estimate-core",
     "@tripmate/settlement-core": "file:./packages/settlement-core",
-    "firebase": "^12.17.1",
+    "firebase": "^13.0.0",
     "jsqr": "^1.4.0",
     "lucide-react": "^1.55.0",
     "mapbox-gl": "^3.32.0",
