@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { straightLineMeters } from '@tripmate/route-estimate-core'
 import { stableHash } from './route-security'
 
 export interface RouteProviderEnv {
@@ -147,7 +148,7 @@ export function parseGeoapifyPinMetadata(
     const stationName = properties.name?.trim() || properties.address_line1?.trim()
     if (stationName
         && countryCode === metadata.countryCode
-        && coordinateDistanceMeters(coordinates, { lat: properties.lat, lng: properties.lon }) <= 50
+        && withinMeters(coordinates, { lat: properties.lat, lng: properties.lon }, 50)
         && /(?:^|[._-])(?:railway|train|subway|metro|tram|light_rail|monorail)(?:$|[._-])/iu.test(properties.category ?? '')) {
       nearbyRailStationNames.push(stationName)
     }
@@ -350,7 +351,7 @@ function reconcileJapaneseStationAlias(
     const aliasIndex = candidates.findIndex(candidate =>
       candidate.countryCode === 'JP'
       && isRomanizedStationName(candidate.name)
-      && coordinateDistanceMeters(exactTargetCoordinates, candidate) <= 30,
+      && withinMeters(exactTargetCoordinates, candidate, 30),
     )
     return aliasIndex < 0
       ? candidates
@@ -364,7 +365,7 @@ function reconcileJapaneseStationAlias(
     index !== localIndex
     && candidate.countryCode === 'JP'
     && isRomanizedStationName(candidate.name)
-    && coordinateDistanceMeters(local, candidate) <= 30,
+    && withinMeters(local, candidate, 30),
   )
   if (aliasIndex < 0) return candidates
 
@@ -391,20 +392,19 @@ export function dedupePlaceCandidates(
   }).slice(0, 5)
 }
 
-function coordinateDistanceMeters(
+/** Whether two coordinates lie within maxMeters. Provider coordinates are
+ * only checked to be finite, so an out-of-range one is simply "not near"
+ * instead of an error from the shared (asserting) haversine. */
+function withinMeters(
   left: { lat: number; lng: number },
   right: { lat: number; lng: number },
-): number {
-  const radians = Math.PI / 180
-  const lat1 = left.lat * radians
-  const lat2 = right.lat * radians
-  const deltaLat = (right.lat - left.lat) * radians
-  const deltaLng = (right.lng - left.lng) * radians
-  const sinLat = Math.sin(deltaLat / 2)
-  const sinLng = Math.sin(deltaLng / 2)
-  const haversine = sinLat * sinLat + Math.cos(lat1) * Math.cos(lat2) * sinLng * sinLng
-  const a = Math.min(1, Math.max(0, haversine))
-  return 6_371_000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+  maxMeters: number,
+): boolean {
+  try {
+    return straightLineMeters(left, right) <= maxMeters
+  } catch {
+    return false
+  }
 }
 
 function isValidTimeZone(timeZone: string): boolean {

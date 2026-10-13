@@ -1,27 +1,13 @@
 import { describe, expect, test, vi } from 'vitest'
 import {
   createRoutePreviewDeadline,
-  estimateStaticTransitRange,
-  isDirectWalkingLeg,
   optimizeAnchoredRoute,
   ROUTE_PREVIEW_DEADLINE_MS,
 } from '../src/route-core'
 
 describe('route core worker fixtures', () => {
-  test.each([
-    [14.99, true],
-    [15, true],
-    [15.01, false],
-  ])('classifies %s walking minutes at the 15-minute gate', (minutes, expected) => {
-    expect(isDirectWalkingLeg(minutes)).toBe(expected)
-  })
-
-  test.each([
-    [3500, { minMinutes: 10, maxMinutes: 15, basis: 'ors-walking-distance' }],
-    [8000, { minMinutes: 15, maxMinutes: 25, basis: 'ors-walking-distance' }],
-  ])('estimates a conservative static transit range for %sm', (distanceMeters, expected) => {
-    expect(estimateStaticTransitRange(distanceMeters)).toEqual(expected)
-  })
+  // Segment classification and transit ranges live in
+  // @tripmate/route-estimate-core (tested there); the Worker only measures.
 
   test('finds the exact shorter order while keeping the first and last stops', () => {
     const result = optimizeAnchoredRoute([

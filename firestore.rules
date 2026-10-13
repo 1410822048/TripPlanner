@@ -230,22 +230,18 @@ service cloud.firestore {
               && d.startTime.matches('^(?:[01][0-9]|2[0-3]):[0-5][0-9]$')));
     }
 
+    // Measurements only (class and transit range are derived at read time);
+    // bounds match the Worker's ApplyRouteLegSchema.
     function validTravelToNext(value) {
       return value == null || (value is map
+        && value.keys().hasAll(['toId', 'walkingMinutes', 'walkingDistanceMeters'])
+        && value.keys().hasOnly(['toId', 'walkingMinutes', 'walkingDistanceMeters'])
         && value.toId is string
         && value.toId.size() > 0 && value.toId.size() <= 128
-        && value.kind is string
-        && ((value.kind == 'walking'
-              && value.keys().hasOnly(['toId', 'kind', 'minutes'])
-              && value.minutes is int
-              && value.minutes >= 0 && value.minutes <= 10080)
-            || (value.kind == 'transit'
-              && value.keys().hasOnly(['toId', 'kind', 'minMinutes', 'maxMinutes'])
-              && value.minMinutes is int
-              && value.maxMinutes is int
-              && value.minMinutes >= 1 && value.minMinutes <= 1440
-              && value.maxMinutes >= 1 && value.maxMinutes <= 1440
-              && value.maxMinutes > value.minMinutes)));
+        && value.walkingMinutes is int
+        && value.walkingMinutes >= 0 && value.walkingMinutes <= 10080
+        && value.walkingDistanceMeters is int
+        && value.walkingDistanceMeters >= 0 && value.walkingDistanceMeters <= 2000000);
     }
     // Note: validExpenseReceipt + validBookingAttachment + validWishImage
     // USED to live here. Removed once each entity's media field moved to

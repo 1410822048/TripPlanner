@@ -25,9 +25,12 @@ function encodeInteger(value: number): FsValue {
   return { integerValue: String(value) }
 }
 
-type PersistedRouteLeg =
-  | { fromId: string; toId: string; kind: 'walking'; minutes: number }
-  | { fromId: string; toId: string; kind: 'transit'; minMinutes: number; maxMinutes: number }
+interface PersistedRouteLeg {
+  fromId: string
+  toId: string
+  walkingMinutes: number
+  walkingDistanceMeters: number
+}
 
 function normalizeRouteLegs(input: RouteApplyRequest): PersistedRouteLeg[] {
   if (input.legs.length !== input.schedules.length - 1) {
@@ -39,33 +42,21 @@ function normalizeRouteLegs(input: RouteApplyRequest): PersistedRouteLeg[] {
     if (!from || !to || leg.legIndex !== index || leg.fromId !== from.id || leg.toId !== to.id) {
       throw new RouteApplyError(409, 'PREVIEW_PAYLOAD_MISMATCH', 'preview legs do not match the signed schedule order')
     }
-    return leg.kind === 'walking'
-      ? {
-          fromId: leg.fromId,
-          toId: leg.toId,
-          kind: 'walking' as const,
-          minutes: Math.round(leg.walkingMinutes),
-        }
-      : {
-          fromId: leg.fromId,
-          toId: leg.toId,
-          kind: 'transit' as const,
-          minMinutes: leg.transitEstimate.minMinutes,
-          maxMinutes: leg.transitEstimate.maxMinutes,
-        }
+    return {
+      fromId: leg.fromId,
+      toId: leg.toId,
+      walkingMinutes: leg.walkingMinutes,
+      walkingDistanceMeters: leg.walkingDistanceMeters,
+    }
   })
 }
 
 function encodeTravelToNext(leg: PersistedRouteLeg): FsValue {
+  // Measurements only: the class and transit range are derived at read time.
   const fields: Record<string, FsValue> = {
     toId: encodeString(leg.toId),
-    kind: encodeString(leg.kind),
-  }
-  if (leg.kind === 'walking') {
-    fields.minutes = encodeInteger(leg.minutes)
-  } else {
-    fields.minMinutes = encodeInteger(leg.minMinutes)
-    fields.maxMinutes = encodeInteger(leg.maxMinutes)
+    walkingMinutes: encodeInteger(leg.walkingMinutes),
+    walkingDistanceMeters: encodeInteger(leg.walkingDistanceMeters),
   }
   return {
     mapValue: { fields },

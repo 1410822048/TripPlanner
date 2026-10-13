@@ -2,12 +2,11 @@ import { getAdminToken } from './admin'
 import { readMap, readString, type FsValue } from './firestore'
 import { readTripAccess, requireTripMember } from './membership-shared'
 import { runFirestoreTransaction, TxCancelled, type TxReadDoc } from './firestore-tx'
+import { TRAVEL_MEASUREMENT_LIMITS } from '@tripmate/entity-contracts'
+import { classifySegment, straightLineMeters } from '@tripmate/route-estimate-core'
 import {
   createRoutePreviewDeadline,
-  estimateStaticTransitRange,
-  isDirectWalkingLeg,
   optimizeAnchoredRoute,
-  type StaticTransitEstimate,
   type RoutePreviewDeadline,
 } from './route-core'
 import {
@@ -87,20 +86,22 @@ export interface RouteSchedule {
   startTime?: string
   durationMinutes: number
   location: PlaceCandidate
+  /** category === 'transport': its location is where it departs, so the
+   * segment after it has no estimate. */
+  isTransport: boolean
 }
 
-interface RoutePreviewLegBase {
+/** ORS walking measurements only — the same facts route-apply persists as
+ * travelToNext. The segment class and transit range are derived from them
+ * by @tripmate/route-estimate-core on both sides, never sent as data. */
+export interface RoutePreviewLeg {
   legIndex: number
   fromId: string
   toId: string
   walkingMinutes: number
+  walkingDistanceMeters: number
   geometryAvailable: boolean
 }
-
-export type RoutePreviewLeg = RoutePreviewLegBase & (
-  | { kind: 'walking' }
-  | { kind: 'transit-check'; transitEstimate: StaticTransitEstimate }
-)
 
 export interface RoutePreviewResponse {
   previewRevision: string
@@ -111,7 +112,6 @@ export interface RoutePreviewResponse {
   canApply: boolean
   routeChanged: boolean
   geometryDegraded: boolean
-  confidence: 'walking-verified' | 'transit-unverified'
   timeConflictScheduleIds: string[]
   applyPlan: {
     revision: string
@@ -188,6 +188,7 @@ export function scheduleFromDoc(doc: TxReadDoc): RouteSchedule | undefined {
     ...(startTime ? { startTime } : {}),
     durationMinutes,
     location,
+    isTransport: readString(doc.fields, 'category') === 'transport',
   }
 }
 
@@ -221,6 +222,13 @@ export function findTimeConflictIds(schedules: RouteSchedule[]): string[] {
   return [...conflicts]
 }
 
+/** Integer, and within the persisted contract. Anything past the cap is far
+ * beyond the long-distance threshold, where the numbers are never shown;
+ * without the clamp one cross-country leg would fail the whole preview. */
+function clampMeasurement(value: number, max: number): number {
+  return Math.min(max, Math.round(value))
+}
+
 function matrixValue(
   matrix: Array<Array<number | null>>,
   fromIndex: number,
@@ -233,9 +241,23 @@ function matrixValue(
   return value
 }
 
+type LegMeasurement = Pick<RoutePreviewLeg, 'walkingMinutes' | 'walkingDistanceMeters'>
+
+/** Whether a leg is shown as walking: the shared classifier, so the map
+ * agrees with the label the app derives from the same measurements. */
+export function isWalkingLeg(from: RouteSchedule, to: RouteSchedule, leg: LegMeasurement): boolean {
+  return classifySegment({
+    walkingMinutes: leg.walkingMinutes,
+    walkingDistanceMeters: leg.walkingDistanceMeters,
+    straightLineMeters: straightLineMeters(from.location, to.location),
+    originIsTransport: from.isTransport,
+  }).kind === 'walking'
+}
+
 export function buildDisplayGeometry(
   schedules: RouteSchedule[],
   legs: RoutePreviewLeg[],
+  walkingLegs: boolean[],
   directions: OrsDirectionsResult | undefined,
 ): RouteDisplayGeometry {
   return {
@@ -244,12 +266,13 @@ export function buildDisplayGeometry(
       const from = schedules[index]!
       const to = schedules[index + 1]!
       const directionLeg = directions?.legs[index]
-      const useOrsGeometry = leg.kind === 'walking' && directionLeg?.coordinates.length
+      const walking = walkingLegs[index] === true
+      const useOrsGeometry = walking && directionLeg?.coordinates.length
       return {
         type: 'Feature' as const,
         properties: {
           provider: useOrsGeometry ? 'ors' as const : 'reference' as const,
-          mode: leg.kind,
+          mode: walking ? 'walking' as const : 'transit-check' as const,
           legIndex: leg.legIndex,
         },
         geometry: {
@@ -475,31 +498,40 @@ async function previewRouteWithDeadline(
     }))
   }
 
-  const legs: RoutePreviewLeg[] = schedules.slice(0, -1).map((from, legIndex) => {
+  const measuredLegs = schedules.slice(0, -1).map((from, legIndex) => {
     const to = schedules[legIndex + 1]!
     const fromIndex = sourceIndexById.get(from.id)
     const toIndex = sourceIndexById.get(to.id)
     if (fromIndex === undefined || toIndex === undefined) {
       throw new RouteValidationError(500, 'schedules', 'ROUTE_ORDER_INVALID', 'route order contains an unknown schedule')
     }
-    const matrixMinutes = matrixValue(matrix.durationsMinutes, fromIndex, toIndex)
-    const matrixDistanceMeters = matrixValue(matrix.distancesMeters, fromIndex, toIndex)
-    const walkingMinutes = directions?.legs[legIndex]?.durationMinutes ?? matrixMinutes
-    const legBase = {
-      legIndex,
-      fromId: from.id,
-      toId: to.id,
-      walkingMinutes,
-      geometryAvailable: isDirectWalkingLeg(walkingMinutes) && Boolean(directions?.legs[legIndex]?.coordinates.length),
+    // Minutes and meters come from the same ORS answer (the directions leg
+    // when there is one, else the matrix) so a stored pair is consistent.
+    const direction = directions?.legs[legIndex]
+    const measurement: LegMeasurement = {
+      walkingMinutes: clampMeasurement(
+        direction?.durationMinutes ?? matrixValue(matrix.durationsMinutes, fromIndex, toIndex),
+        TRAVEL_MEASUREMENT_LIMITS.walkingMinutes,
+      ),
+      walkingDistanceMeters: clampMeasurement(
+        direction?.distanceMeters ?? matrixValue(matrix.distancesMeters, fromIndex, toIndex),
+        TRAVEL_MEASUREMENT_LIMITS.walkingDistanceMeters,
+      ),
     }
-    return isDirectWalkingLeg(walkingMinutes)
-      ? { ...legBase, kind: 'walking' as const }
-      : {
-          ...legBase,
-          kind: 'transit-check' as const,
-          transitEstimate: estimateStaticTransitRange(matrixDistanceMeters),
-        }
+    const walking = isWalkingLeg(from, to, measurement)
+    return {
+      walking,
+      leg: {
+        legIndex,
+        fromId: from.id,
+        toId: to.id,
+        ...measurement,
+        geometryAvailable: walking && Boolean(direction?.coordinates.length),
+      },
+    }
   })
+  const legs = measuredLegs.map(({ leg }) => leg)
+  const walkingLegs = measuredLegs.map(({ walking }) => walking)
 
   // Provider calls can take several seconds. Re-read the complete routing
   // fingerprint before signing so the user never receives a preview that was
@@ -529,7 +561,7 @@ async function previewRouteWithDeadline(
     payloadHash,
     legsHash,
   }, secret)
-  const geometryDegraded = legs.some(leg => leg.kind === 'walking' && !leg.geometryAvailable)
+  const geometryDegraded = legs.some((leg, index) => walkingLegs[index] && !leg.geometryAvailable)
 
   return {
     previewRevision: revision,
@@ -540,10 +572,9 @@ async function previewRouteWithDeadline(
     canApply: optimization.improved,
     routeChanged: optimization.improved,
     geometryDegraded,
-    confidence: legs.some(leg => leg.kind === 'transit-check') ? 'transit-unverified' : 'walking-verified',
     timeConflictScheduleIds: findTimeConflictIds(schedules),
     applyPlan,
-    display: buildDisplayGeometry(schedules, legs, directions),
+    display: buildDisplayGeometry(schedules, legs, walkingLegs, directions),
     legs,
   }
 }
