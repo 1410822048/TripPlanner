@@ -71,7 +71,7 @@ describe('extractBookingPdfText', () => {
   })
 
   it('caps each emitted line to the worker request schema limit', async () => {
-    const pdfDestroy = vi.fn()
+    const taskDestroy = vi.fn()
     const getPage = vi.fn(async () => ({
       getTextContent: vi.fn(async () => ({
         items: [{
@@ -84,9 +84,8 @@ describe('extractBookingPdfText', () => {
       promise: Promise.resolve({
         numPages: 1,
         getPage,
-        destroy: pdfDestroy,
       }),
-      destroy: vi.fn(),
+      destroy: taskDestroy,
     }))
     mocks.getPdfJs.mockResolvedValue({
       VerbosityLevel: { ERRORS: 0 },
@@ -99,11 +98,11 @@ describe('extractBookingPdfText', () => {
       'A'.repeat(BOOKING_PDF_LINE_MAX_CHARS),
     ])
     expect(digest.text).toHaveLength(BOOKING_PDF_LINE_MAX_CHARS)
-    expect(pdfDestroy).toHaveBeenCalledTimes(1)
+    expect(taskDestroy).toHaveBeenCalledTimes(1)
   })
 
   it('normalizes compatibility glyphs, removes overprint copies, and preserves column boundaries', async () => {
-    const pdfDestroy = vi.fn()
+    const taskDestroy = vi.fn()
     const overprint = (str: string, x: number, y: number, width: number) => [
       { str, width, transform: [1, 0, 0, 1, x, y] },
       { str, width, transform: [1, 0, 0, 1, x, y + 1.5] },
@@ -142,9 +141,8 @@ describe('extractBookingPdfText', () => {
         promise: Promise.resolve({
           numPages: 1,
           getPage,
-          destroy: pdfDestroy,
         }),
-        destroy: vi.fn(),
+        destroy: taskDestroy,
       })),
     })
 
@@ -158,6 +156,6 @@ describe('extractBookingPdfText', () => {
       'New York',
     ])
     expect(digest.lines).toHaveLength(5)
-    expect(pdfDestroy).toHaveBeenCalledTimes(1)
+    expect(taskDestroy).toHaveBeenCalledTimes(1)
   })
 })

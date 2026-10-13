@@ -133,7 +133,12 @@ export default function PdfPreview({ url }: { url: string }) {
   return file ? (
     <PdfZoomViewport>
       {({ pageWidth, scale }) => (
+        // react-pdf 11 suspends by default and routes failures to an Error
+        // Boundary. This viewer owns its spinner and the new-tab fallback via
+        // `loading` / `onLoadError`, so keep the non-suspense mode (inherited
+        // by every <Page>). `file` and `options` are already stable.
         <Document
+          suspense={false}
           file={file}
           options={PDF_DOCUMENT_OPTIONS}
           loading={spinner}

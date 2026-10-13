@@ -1,7 +1,7 @@
 // The worker comes from top-level `pdfjs-dist`, but the runtime pdf.js comes
 // from react-pdf's bundled copy. pdf.js throws "API version does not match
 // Worker version" if they differ, so BOTH `pdfjs-dist` and `react-pdf` are
-// pinned EXACT in package.json (5.4.296 / 10.4.1) as a locked pair — they
+// pinned EXACT in package.json (6.3.289 / 11.0.0) as a locked pair — they
 // dedupe to one install. Bump them together; never re-add a caret to either.
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 

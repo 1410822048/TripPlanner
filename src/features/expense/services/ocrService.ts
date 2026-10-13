@@ -144,7 +144,7 @@ function fileToBase64(file: File): Promise<string> {
  *  swaps / clears the receipt, while the timeout still bounds a hung worker.
  *
  *  `AbortSignal.any` is Baseline 2024 (Chrome 116 / Firefox 124 / Safari 17.4).
- *  The app's client baseline is Safari/iOS 17.4+, so it's used directly rather
+ *  The app's client baseline is Safari/iOS 18+ (pdf.js 6), so it's used directly rather
  *  than hand-combining controllers. (`AbortSignal.timeout`, already used here,
  *  is the older Safari 16.4+ floor.) */
 const OCR_TIMEOUT_MS = 60_000

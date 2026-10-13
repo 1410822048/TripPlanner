@@ -64,9 +64,10 @@ export function pdfPageLimitMessage(
 
 interface PdfDocument {
   readonly numPages: number
-  destroy(): Promise<void> | void
 }
 
+// pdf.js 6 removed PDFDocumentProxy.destroy(); the loading task owns the
+// document's lifetime, so it is the only thing to destroy.
 interface PdfLoadingTask {
   readonly promise: Promise<PdfDocument>
   destroy(): Promise<void> | void
@@ -120,21 +121,18 @@ export async function assertPdfPageLimitWithPdfJs(
 
   try {
     const pdf = await withTimeout(loadingTask.promise, timeoutMs)
-    try {
-      const pageCount = pdf.numPages
-      if (!Number.isInteger(pageCount) || pageCount < 1) {
-        throw new Error('invalid PDF page count')
-      }
-      if (pageCount > maxPages) {
-        throw new PdfPageLimitError(PDF_PAGE_LIMIT_EXCEEDED, { pageCount, maxPages })
-      }
-      return pageCount
-    } finally {
-      await destroyQuietly(pdf)
+    const pageCount = pdf.numPages
+    if (!Number.isInteger(pageCount) || pageCount < 1) {
+      throw new Error('invalid PDF page count')
     }
+    if (pageCount > maxPages) {
+      throw new PdfPageLimitError(PDF_PAGE_LIMIT_EXCEEDED, { pageCount, maxPages })
+    }
+    return pageCount
   } catch (e) {
-    await destroyQuietly(loadingTask)
     if (e instanceof PdfPageLimitError) throw e
     throw new PdfPageLimitError(PDF_UNREADABLE, { cause: e })
+  } finally {
+    await destroyQuietly(loadingTask)
   }
 }

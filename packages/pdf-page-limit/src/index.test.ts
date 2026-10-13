@@ -10,10 +10,8 @@ import {
 
 describe('assertPdfPageLimitWithPdfJs', () => {
   it('uses stopAtErrors because upload accepts only PDFs that pass strict pdf.js validation', async () => {
-    const pdf = {
-      numPages: 2,
-      destroy: vi.fn(),
-    }
+    // pdf.js 6: PDFDocumentProxy has no destroy(); the task owns it.
+    const pdf = { numPages: 2 }
     const loadingTask = {
       promise: Promise.resolve(pdf),
       destroy: vi.fn(),
@@ -28,8 +26,7 @@ describe('assertPdfPageLimitWithPdfJs', () => {
     expect(pdfjs.getDocument).toHaveBeenCalledWith(
       expect.objectContaining({ stopAtErrors: true }),
     )
-    expect(pdf.destroy).toHaveBeenCalledOnce()
-    expect(loadingTask.destroy).not.toHaveBeenCalled()
+    expect(loadingTask.destroy).toHaveBeenCalledOnce()
   })
 
   it('times out a stalled pdf.js loading task and destroys it', async () => {

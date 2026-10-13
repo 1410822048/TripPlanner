@@ -192,45 +192,44 @@ export async function extractBookingPdfText(file: File, signal?: AbortSignal): P
     loadingTask = task
 
     const pdf = await raceAbort(task.promise, parseSignal)
-    try {
-      const pageCount = pdf.numPages
-      if (!Number.isInteger(pageCount) || pageCount < 1) {
-        throw new PdfPageLimitError(PDF_UNREADABLE)
-      }
-      if (pageCount > MAX_PDF_PAGES) {
-        throw new PdfPageLimitError(PDF_PAGE_LIMIT_EXCEEDED, { pageCount })
-      }
-
-      const lines: BookingPdfTextLine[] = []
-      for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
-        parseSignal.throwIfAborted()
-        const page = await raceAbort(pdf.getPage(pageNumber), parseSignal)
-        const content = await raceAbort(page.getTextContent(), parseSignal)
-        const positioned: PositionedText[] = []
-        for (const item of content.items) {
-          parseSignal.throwIfAborted()
-          if (!isPdfTextItem(item)) continue
-          const [, , , , xRaw, yRaw] = item.transform
-          const text = item.str.normalize('NFKC')
-          if (!text.trim()) continue
-          positioned.push({
-            text,
-            x:     Number.isFinite(xRaw) ? xRaw : 0,
-            y:     Number.isFinite(yRaw) ? yRaw : 0,
-            width: typeof item.width === 'number' && Number.isFinite(item.width) ? item.width : 0,
-          })
-        }
-        lines.push(...groupItemsIntoLines(pageNumber, positioned))
-      }
-
-      return buildDigest(lines, file.name || undefined, pageCount)
-    } finally {
-      await destroyQuietly(pdf)
+    const pageCount = pdf.numPages
+    if (!Number.isInteger(pageCount) || pageCount < 1) {
+      throw new PdfPageLimitError(PDF_UNREADABLE)
     }
+    if (pageCount > MAX_PDF_PAGES) {
+      throw new PdfPageLimitError(PDF_PAGE_LIMIT_EXCEEDED, { pageCount })
+    }
+
+    const lines: BookingPdfTextLine[] = []
+    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+      parseSignal.throwIfAborted()
+      const page = await raceAbort(pdf.getPage(pageNumber), parseSignal)
+      const content = await raceAbort(page.getTextContent(), parseSignal)
+      const positioned: PositionedText[] = []
+      for (const item of content.items) {
+        parseSignal.throwIfAborted()
+        if (!isPdfTextItem(item)) continue
+        const [, , , , xRaw, yRaw] = item.transform
+        const text = item.str.normalize('NFKC')
+        if (!text.trim()) continue
+        positioned.push({
+          text,
+          x:     Number.isFinite(xRaw) ? xRaw : 0,
+          y:     Number.isFinite(yRaw) ? yRaw : 0,
+          width: typeof item.width === 'number' && Number.isFinite(item.width) ? item.width : 0,
+        })
+      }
+      lines.push(...groupItemsIntoLines(pageNumber, positioned))
+    }
+
+    return buildDigest(lines, file.name || undefined, pageCount)
   } catch (e) {
-    if (loadingTask) await destroyQuietly(loadingTask)
     if (e instanceof PdfPageLimitError) throw e
     if (isAbortError(e)) throw e
     throw new PdfPageLimitError(PDF_UNREADABLE, { cause: e })
+  } finally {
+    // pdf.js 6 removed PDFDocumentProxy.destroy(); the loading task owns the
+    // document's lifetime, so it is the only thing to destroy.
+    if (loadingTask) await destroyQuietly(loadingTask)
   }
 }
