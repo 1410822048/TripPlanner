@@ -36,7 +36,9 @@ export default function SettlementRouteCard({ suggestion, memberById, currency, 
     const receiver = memberById.get(suggestion.receiverUid)
     // A signed-in user whose own member doc is gone is their own ghost:
     // `uid === receiver` alone would offer an action the Worker refuses.
-    onBehalf = canRecordForDeparted && receiver?.isGhost === true && uid !== suggestion.payerUid
+    // Even when the owner is the payer: once the receiver has left, the
+    // owner is the only one the Worker lets record it (or it stays open).
+    onBehalf = canRecordForDeparted && receiver?.isGhost === true
     canRecord = (uid != null && uid === suggestion.receiverUid && receiver?.isGhost !== true) || onBehalf
   } else {
     const people = suggestion.participantUids.map(id => memberById.get(id))

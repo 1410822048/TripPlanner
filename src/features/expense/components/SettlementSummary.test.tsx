@@ -82,6 +82,12 @@ describe('SettlementSummary — receiver-only record gate', () => {
     expect(screen.getByRole('button', { name: /代 .*記錄已收到/ })).toBeTruthy()
   })
 
+  it('lets the owner record for a departed payee even when the owner is the payer', () => {
+    // u2 (the owner here) owes u1, who has left: nobody else could ever record it.
+    render(<SettlementSummary {...base({ members: [B], uid: 'u2', canRecordForDeparted: true, formerMemberNames: { u1: 'Alice' } })} />)
+    expect(screen.getByRole('button', { name: /代 Alice（已退出）記錄已收到/ })).toBeTruthy()
+  })
+
   it('a non-owner gets no 代記 button for a departed payee', () => {
     render(<SettlementSummary {...base({ members: [B, C], uid: 'u3', formerMemberNames: { u1: 'Alice' } })} />)
     expect(screen.queryByRole('button', { name: /記錄已收到/ })).toBeNull()
