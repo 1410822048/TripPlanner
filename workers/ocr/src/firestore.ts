@@ -4,16 +4,17 @@
 //   - batched array transforms for membership ACL projection repair
 //   - transactions for cross-document invariants
 //
-// All calls go through https://firestore.googleapis.com with the
-// admin OAuth bearer token from admin.ts. No client SDK — Workers
-// runtime can't load the firebase-admin Node package.
-const BASE = 'https://firestore.googleapis.com/v1'
+// All calls go through https://firestore.googleapis.com (or the local
+// emulator, see emulator.ts) with the admin OAuth bearer token from
+// admin.ts. No client SDK — Workers runtime can't load the firebase-admin
+// Node package.
+import { firestoreRestBase } from './emulator'
 
 function docPath(projectId: string, path: string): string {
   return `projects/${projectId}/databases/(default)/documents/${path}`
 }
 function fullName(projectId: string, path: string): string {
-  return `${BASE}/${docPath(projectId, path)}`
+  return `${firestoreRestBase()}/${docPath(projectId, path)}`
 }
 
 // Cloudflare Workers `fetch` may cache GET responses based on the
@@ -45,7 +46,7 @@ async function runQueryRows<T>(
   structuredQuery: Record<string, unknown>,
   operation: string,
 ): Promise<T[]> {
-  const response = await fetch(`${BASE}/${parent}:runQuery`, {
+  const response = await fetch(`${firestoreRestBase()}/${parent}:runQuery`, {
     ...restInit(),
     method: 'POST',
     headers: {
@@ -176,7 +177,7 @@ export async function batchStripDepartedMember(
       return { transform: { document: name, fieldTransforms }, currentDocument: { exists: true } }
     })
     const res = await fetch(
-      `${BASE}/projects/${projectId}/databases/(default)/documents:commit`,
+      `${firestoreRestBase()}/projects/${projectId}/databases/(default)/documents:commit`,
       {
         method:  'POST',
         headers: {
@@ -251,7 +252,7 @@ export async function batchDeleteDocs(
     const chunk = docNames.slice(i, i + 500)
     const writes = chunk.map(name => ({ delete: name }))
     const res = await fetch(
-      `${BASE}/projects/${projectId}/databases/(default)/documents:commit`,
+      `${firestoreRestBase()}/projects/${projectId}/databases/(default)/documents:commit`,
       {
         method:  'POST',
         headers: {
@@ -785,7 +786,7 @@ export async function setScanCursor(
 ): Promise<void> {
   const path    = `_scanState/${scanKey}`
   const docName = buildDocName(projectId, path)
-  const url     = new URL(`${BASE}/${docName}`)
+  const url     = new URL(`${firestoreRestBase()}/${docName}`)
   // Both fields in the mask so the PATCH writes them both; the doc
   // either gets created with these two fields or has its existing
   // pageToken + savedAt overwritten.

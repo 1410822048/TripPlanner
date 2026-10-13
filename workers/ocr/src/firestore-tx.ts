@@ -21,8 +21,7 @@
 // this Worker.
 import { invalidateAdminToken }     from './admin'
 import type { FsValue }             from './firestore'
-
-const BASE = 'https://firestore.googleapis.com/v1'
+import { firestoreRestBase }       from './emulator'
 
 /** A single write in a transaction commit. Mirrors the Firestore
  *  REST `Write` proto subset we actually use.
@@ -525,7 +524,7 @@ async function beginTransaction(
   signal?:           AbortSignal,
   retryTransaction?: string,
 ): Promise<string> {
-  const url = `${BASE}/projects/${projectId}/databases/(default)/documents:beginTransaction`
+  const url = `${firestoreRestBase()}/projects/${projectId}/databases/(default)/documents:beginTransaction`
   const res = await fetch(url, {
     cache: 'no-store',
     method: 'POST',
@@ -555,7 +554,7 @@ const TX_ROLLBACK_TIMEOUT_MS = 2_000
  *  whose locks should be released. */
 async function rollbackTransaction(accessToken: string, projectId: string, txId: string): Promise<void> {
   try {
-    await fetch(`${BASE}/projects/${projectId}/databases/(default)/documents:rollback`, {
+    await fetch(`${firestoreRestBase()}/projects/${projectId}/databases/(default)/documents:rollback`, {
       cache: 'no-store',
       method: 'POST',
       headers: {
@@ -581,7 +580,7 @@ async function readDocInTransaction(
   // NOT the GET endpoint (the GET endpoint accepts `?transaction=`
   // for read but ergonomics are messier and batchGet is the more
   // common pattern in Firestore docs / Admin SDK source).
-  const url = `${BASE}/projects/${projectId}/databases/(default)/documents:batchGet`
+  const url = `${firestoreRestBase()}/projects/${projectId}/databases/(default)/documents:batchGet`
   const fullName = `projects/${projectId}/databases/(default)/documents/${path}`
   const res = await fetch(url, {
     cache: 'no-store',
@@ -635,7 +634,7 @@ async function runQueryInTransaction(
   // under it. Empty parent → database root (we don't expose that to
   // callers but keep the encoding correct).
   const parentPath = query.parent ? `documents/${query.parent}` : 'documents'
-  const url = `${BASE}/projects/${projectId}/databases/(default)/${parentPath}:runQuery`
+  const url = `${firestoreRestBase()}/projects/${projectId}/databases/(default)/${parentPath}:runQuery`
 
   const filters = (query.filters ?? []).map(f => {
     if (isUnaryFilter(f)) {
@@ -711,7 +710,7 @@ async function commitTransaction(
   writes:      TxWrite[],
   signal?:     AbortSignal,
 ): Promise<void> {
-  const url = `${BASE}/projects/${projectId}/databases/(default)/documents:commit`
+  const url = `${firestoreRestBase()}/projects/${projectId}/databases/(default)/documents:commit`
   const restWrites = writes.map(w => {
     if (w.op === 'delete') {
       // REST Write supports either {update}, {delete}, or {transform};

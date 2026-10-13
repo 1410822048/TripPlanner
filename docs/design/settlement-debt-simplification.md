@@ -167,6 +167,7 @@ Request（`.strict()`）：`{ tripId, routeId, kind, legs[{fromUid,toUid,amountM
 | 8 | Worker 讀帳時把每份 route 的 lineage 一起讀進來 | 讀取成本只跟帳本有關 | `select` 只投影 `legs`、`createdAt` |
 | 9 | 鎖定集合只存整份聯集：一段的 orphan 原因被別段的費用改動誤判；若改用「費用目前是否涉及這一對」來篩，又會漏掉「被改到不涉及這一對」的費用（這正是 lineage 要解釋的情況） | orphan 原因只由這一段實際動用的費用決定 | `lockedExpenses` 記錄每筆費用被哪幾段鎖住，逐段精確 |
 | 10 | 文件裡有一段 leg 是壞的 | 一筆付款整筆套用，或整筆不套用 | client 整份排除並警告；Worker 讀帳與撤銷都 500 fail-closed |
+| 11 | owner 自己欠已離開成員錢時，畫面不給 owner「代記」按鈕（E2E 抓到） | 收款人離開後由 owner 代記（Worker 允許），否則這筆永遠無法記錄 | 付款建議卡移除「owner 不是付款人」的限制，與 Worker 一致 |
 
 ## 12. 測試
 
@@ -179,6 +180,7 @@ Request（`.strict()`）：`{ tripId, routeId, kind, legs[{fromUid,toUid,amountM
   - 撤銷的邊界情況（不存在、非成員、旅程刪除中、讀不出 legs、費用已不持有鎖）
 - Firestore 模擬器（`npm run test:emulator`，CI 也會跑）：Worker 的寫入程式直接對真的 Firestore 模擬器。確認 transaction 內的 `select` 只回傳 `legs`、`createdAt`；建立、冪等重試、撤銷後帳本復原；兩筆同時寫同一筆債只有一筆成功；`firestore-size.ts` 與模擬器的 1 MiB 限制完全一致（剛好 1,048,576 bytes 被接受，多 1 byte 被拒絕）。
 - Functions：一份文件一則通知、取消通知、抵銷內容、經手人、參與者退回由 legs 推導。
+- 端到端（`npm run e2e:settlement`）：Firebase 模擬器 + Worker 模擬器模式 + 真的 App，Playwright 以 owner／editor／viewer 三個帳號操作。涵蓋：付款人／中間人／收款人各自看到的建議、明細預覽、記錄（一份文件、逐段鎖定）、非 owner 看到唯讀費用、整筆撤銷、記錄收款（部分金額）、循環抵銷、外幣收款（真實匯率）、收款人離開後 owner 代記；並檢查沒有頁面錯誤。
 - Client：
   - schema（形狀、legIndex 範圍、外幣群組、向前相容）、service 傳輸格式、overlay（一份文件一個操作）
   - 帳本（多段 route 套用、orphan 指名文件與段、壞 leg 整份排除、逐段精確的 lineage、被改離這一對的費用、已離開成員）

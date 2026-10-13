@@ -1,0 +1,143 @@
+// Local Firebase-emulator Worker (npm run dev:emulator) — NEVER deploy.
+// Talks to the Auth + Firestore emulators (see src/emulator.ts): only a
+// demo- project, only loopback hosts, local-only R2. No crons, no routes,
+// no workers.dev URL. Rate limits / Durable Objects mirror wrangler.jsonc
+// (pinned by tests/invariants/workerEmulatorConfig.test.ts).
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "tripmate-ocr-emulator",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-07-02",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"workers_dev": false,
+	"preview_urls": false,
+	"vars": {
+		"FIREBASE_PROJECT_ID": "demo-tripmate",
+		"ALLOWED_ORIGINS": "http://localhost:5173,http://127.0.0.1:5173,http://127.0.0.1:5199",
+		"FIRESTORE_EMULATOR_HOST": "127.0.0.1:8080",
+		"FIREBASE_AUTH_EMULATOR_HOST": "127.0.0.1:9099",
+		"FIREBASE_SERVICE_ACCOUNT": "{\"type\":\"service_account\",\"project_id\":\"demo-tripmate\",\"client_email\":\"emulator@demo-tripmate.invalid\",\"private_key\":\"emulator-only\",\"token_uri\":\"http://127.0.0.1:9099/token\"}"
+	},
+	"r2_buckets": [
+		{
+			"binding": "ATTACHMENTS",
+			"bucket_name": "tripmate-attachments-emulator"
+		}
+	],
+	"ratelimits": [
+		{
+			"name": "OCR_RATE_LIMITER",
+			"namespace_id": "1001",
+			"simple": {
+				"limit": 30,
+				"period": 60
+			}
+		},
+		{
+			"name": "CASCADE_RATE_LIMITER",
+			"namespace_id": "1002",
+			"simple": {
+				"limit": 5,
+				"period": 60
+			}
+		},
+		{
+			"name": "TRIP_CASCADE_RATE_LIMITER",
+			"namespace_id": "1003",
+			"simple": {
+				"limit": 1,
+				"period": 60
+			}
+		},
+		{
+			"name": "EXPENSE_RATE_LIMITER",
+			"namespace_id": "1004",
+			"simple": {
+				"limit": 30,
+				"period": 60
+			}
+		},
+		{
+			"name": "SETTLEMENT_RATE_LIMITER",
+			"namespace_id": "1005",
+			"simple": {
+				"limit": 5,
+				"period": 60
+			}
+		},
+		{
+			"name": "ROUTE_SEARCH_RATE_LIMITER",
+			"namespace_id": "1007",
+			"simple": {
+				"limit": 60,
+				"period": 60
+			}
+		},
+		{
+			"name": "ROUTE_PREVIEW_RATE_LIMITER",
+			"namespace_id": "1008",
+			"simple": {
+				"limit": 10,
+				"period": 60
+			}
+		},
+		{
+			"name": "ROUTE_WRITE_RATE_LIMITER",
+			"namespace_id": "1009",
+			"simple": {
+				"limit": 10,
+				"period": 60
+			}
+		},
+		{
+			"name": "ATTACHMENT_UPLOAD_RATE_LIMITER",
+			"namespace_id": "1010",
+			"simple": {
+				"limit": 30,
+				"period": 60
+			}
+		},
+		{
+			"name": "ATTACHMENT_CONTENT_RATE_LIMITER",
+			"namespace_id": "1011",
+			"simple": {
+				"limit": 600,
+				"period": 60
+			}
+		},
+		{
+			"name": "ATTACHMENT_DELETE_RATE_LIMITER",
+			"namespace_id": "1012",
+			"simple": {
+				"limit": 60,
+				"period": 60
+			}
+		},
+		{
+			"name": "FX_PREVIEW_RATE_LIMITER",
+			"namespace_id": "1013",
+			"simple": {
+				"limit": 60,
+				"period": 60
+			}
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "GLOBAL_LIMITER",
+				"class_name": "GlobalRateLimiter"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"GlobalRateLimiter"
+			]
+		}
+	]
+}

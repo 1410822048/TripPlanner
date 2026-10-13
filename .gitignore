@@ -79,6 +79,9 @@ skills-lock.json
 
 # ─── Test coverage (npm run test:coverage) ─────────────────────
 /coverage/
+
+# ─── E2E screenshots (npm run e2e:settlement) ─────────────────
+/e2e-results/
 /.nyc_output/
 
 # ─── Editor & IDE ──────────────────────────────────────────────

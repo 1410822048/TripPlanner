@@ -62,6 +62,7 @@ import {
 } from '@tripmate/fx-core'
 import { getAdminToken, getProjectId }            from './admin'
 import type { FsValue } from './firestore'
+import { firestoreRestBase } from './emulator'
 
 // ─── Types ────────────────────────────────────────────────────────
 
@@ -203,8 +204,6 @@ const CCY_RE      = /^[A-Z]{3}$/
 
 const FRANKFURTER_BASE = 'https://api.frankfurter.dev/v2/rates'
 
-const FIRESTORE_BASE = 'https://firestore.googleapis.com/v1'
-
 /** Provider request timeout. Frankfurter is generally <300ms; 8s
  *  leaves headroom for global outliers without blocking the
  *  expense-write tx for too long on a true outage. */
@@ -261,7 +260,7 @@ async function readCache(
 ): Promise<CacheRecord | null> {
   const path    = `fxRates/${cacheKey}`
   const docName = `projects/${projectId}/databases/(default)/documents/${path}`
-  const res = await fetchImpl(`${FIRESTORE_BASE}/${docName}`, {
+  const res = await fetchImpl(`${firestoreRestBase()}/${docName}`, {
     cache:   'no-store',
     headers: { Authorization: `Bearer ${accessToken}` },
     // Runs inside expense/settlement write flows: never hang them.
@@ -313,7 +312,7 @@ async function writeCache(
 ): Promise<void> {
   const path    = `fxRates/${cacheKey}`
   const docName = `projects/${projectId}/databases/(default)/documents/${path}`
-  const url     = new URL(`${FIRESTORE_BASE}/${docName}`)
+  const url     = new URL(`${firestoreRestBase()}/${docName}`)
   // Listing each field in the mask makes this a scoped upsert: if a
   // doc already exists with extra fields (e.g. a future Phase 5 admin
   // annotation), those survive the write.

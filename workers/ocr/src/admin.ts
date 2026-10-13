@@ -12,6 +12,7 @@
 // All HTTP via fetch + WebCrypto for signing. NO firebase-admin SDK —
 // it requires Node APIs that aren't in the Workers runtime.
 import { importPKCS8, SignJWT } from 'jose'
+import { EMULATOR_ADMIN_TOKEN, emulatorActive } from './emulator'
 
 interface ServiceAccount {
   client_email: string
@@ -109,6 +110,7 @@ async function exchangeToken(tokenUri: string, jwt: string): Promise<TokenExchan
  *  gets a cross-request-context error. A few duplicate token exchanges on
  *  a cold isolate are the cheaper failure mode. */
 export async function getAdminToken(serviceAccountJson: string): Promise<string> {
+  if (emulatorActive()) return EMULATOR_ADMIN_TOKEN
   const now = Date.now()
   if (cached && cached.expiresAtMs > now + 60_000) {
     return cached.accessToken

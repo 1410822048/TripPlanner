@@ -36,6 +36,7 @@
 // Cascade / OCR endpoints don't set the header; their log lines omit
 // the suffix.
 import { verifyFirebaseToken, extractBearerToken, isJwksUnavailable } from './auth'
+import { configureEmulators } from './emulator'
 import { OcrError }                               from './claude'
 import { OcrRequestSchema, type OcrRequest, type OcrResponse } from './schema'
 import {
@@ -166,6 +167,10 @@ type WorkerEnv = Env & {
    *  var (`wrangler secret put SENTRY_DSN`): absent in local dev and
    *  preview, where captureMessage no-ops. */
   SENTRY_DSN?:              string
+  /** Local Firebase-emulator runs only (emulator.ts, wrangler.emulator.jsonc);
+   *  never set in production. */
+  FIRESTORE_EMULATOR_HOST?:     string
+  FIREBASE_AUTH_EMULATOR_HOST?: string
   // Rate-limiter bindings (per-PoP RateLimit + the GlobalRateLimiter Durable
   // Object) come from wrangler.jsonc via the generated Env type.
 }
@@ -806,6 +811,7 @@ const WISH_DEADLINE_SWEEP_CRON = '*/5 * * * *'
 
 export default {
   async fetch(request, env, ctx): Promise<Response> {
+    configureEmulators(env)
     const url     = new URL(request.url)
     const cors    = corsHeaders(env, request.headers.get('Origin'))
 
@@ -953,6 +959,7 @@ export default {
   // the 5-min Wish-deadline sweep and the daily maintenance batch below.
   // Branch on event.cron so neither ever runs the other's jobs.
   async scheduled(event, env, ctx): Promise<void> {
+    configureEmulators(env)
     // Crons stay best-effort — a failure never throws, because tomorrow's
     // pass re-converges on whatever this one missed. That also means the
     // console line was the only trace a failing job left, and nobody reads

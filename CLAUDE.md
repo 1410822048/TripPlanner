@@ -497,6 +497,7 @@ Demo / not-signed-in 使用者點任何「寫入」action 都會跳 SignInModal�
 - **AI**: 收據 `/ocr` 與 Booking PDF extraction 使用 Alibaba Model Studio 的 Qwen3.7-Flash(`QWEN_BASE_URL` / `QWEN_MODEL`);收據 `/ocr-fallback` 使用 Microsoft Foundry Claude 原生 Anthropic Messages API(`ANTHROPIC_FOUNDRY_RESOURCE` / `CLAUDE_DEPLOYMENT`)。兩者皆以嚴格 JSON schema 驗證輸出。
 - **Wrangler**: `npx wrangler tail` 看即時 log(找 `[qwen]` / `[claude]` 前綴);`npx wrangler deploy` 部署
 - **secrets**: `QWEN_API_KEY`(primary 為 qwen 時必填)、`ANTHROPIC_FOUNDRY_API_KEY`(fallback 用 Claude 時必填)
+- **本機模擬器模式**(`src/emulator.ts`、`wrangler.emulator.jsonc`、`npm run dev:emulator`):同時設 `FIRESTORE_EMULATOR_HOST` + `FIREBASE_AUTH_EMULATOR_HOST` 才啟用,而且專案 ID 必須是 `demo-`、主機必須是 loopback,否則每個請求都直接失敗。啟用後 Firestore REST 指向模擬器、接受 Auth 模擬器的未簽章 token、管理員憑證用模擬器的 `owner`。正式 `wrangler.jsonc` 不得出現這些變數(`tests/invariants/workerEmulatorConfig.test.ts` 釘住);`wrangler.emulator.jsonc` **永不部署**
 
 ### Firebase
 - **Auth**: Google sign-in(popup → redirect fallback iOS PWA)
@@ -515,6 +516,7 @@ npm --workspace workers/ocr exec -- vitest run # Worker 測試
 npm run functions:test                     # Functions 測試
 npm run test:rules                         # Firestore Rules emulator 測試
 npm run test:emulator                      # Worker settlement 寫入 × Firestore emulator(投影、衝突、1 MiB)
+npm run e2e:settlement                     # 整套本機(模擬器 + Worker 模擬器模式 + Vite)用 Playwright 以三個 DEV 帳號走完清算流程;截圖在 e2e-results/
 npm run typecheck                          # 全部 workspace typecheck
 npm run lint                               # 前端 + Worker lint
 npm run deploy:prod                        # 正式部署安全編排

@@ -8,6 +8,7 @@
     "dev": "wrangler dev",
     "start": "wrangler dev",
     "test": "vitest",
+    "dev:emulator": "wrangler dev --config wrangler.emulator.jsonc --local --port 8787 --persist-to .wrangler/emulator-state",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit && npm run typecheck:test",
     "typecheck:test": "tsc -p test/tsconfig.json --noEmit && tsc -p test-emulator/tsconfig.json --noEmit",

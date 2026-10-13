@@ -13,6 +13,7 @@ import {
   jwtVerify,
   type JWTPayload,
 } from 'jose'
+import { emulatorActive, verifyEmulatorToken } from './emulator'
 
 /** Google's JWKS endpoint could not be reached (network failure). Tagged
  *  so the caller can tell "we could not check the token" apart from "the
@@ -65,6 +66,8 @@ export async function verifyFirebaseToken(
   token:     string,
   projectId: string,
 ): Promise<FirebaseTokenClaims> {
+  // Local emulator runs only (emulator.ts): unsigned Auth-emulator tokens.
+  if (emulatorActive()) return verifyEmulatorToken(token, projectId)
   const { payload } = await jwtVerify(token, JWKS, {
     issuer:   `https://securetoken.google.com/${projectId}`,
     audience: projectId,
