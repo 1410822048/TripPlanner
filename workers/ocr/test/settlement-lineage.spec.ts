@@ -3,7 +3,7 @@
 // These exercise the source-unit accounting directly with plain domain
 // fixtures — no Firestore REST shapes, no tx mock, no FX. The endpoint
 // wiring (decode → buildSettlementLineage → encode appliedSources /
-// appliedExpenseIds) is covered by settlement-write.spec.ts; this file
+// lockedExpenses) is covered by settlement-route-write.spec.ts; this file
 // pins the DOMAIN invariants the orchestrator relies on:
 //   - consumeSourceUnits draws down + mutates remainingMinor in place
 //   - collapseAppliedSources merges by (expenseId, itemId), not naively

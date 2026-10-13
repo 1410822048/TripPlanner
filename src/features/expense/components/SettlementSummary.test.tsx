@@ -1,8 +1,8 @@
 // Render tests for SettlementSummary — the orchestration the math tests in
 // settlement.test.ts / settlement-core don't reach: the empty-state guard,
 // the record gate per route kind (receiver / offset participant / owner for
-// departed), the intermediate's explanation, 「記錄收款」, route-grouped
-// history and whole-route cancel. computeBalancesFull and the planner run
+// departed), the intermediate's explanation, 「記錄收款」, one history row
+// per settlement and whole-route cancel. computeBalancesFull and the planner run
 // for real (they're pure) — the only fixtures are expenses / members /
 // settlements, exactly like the page.
 import { describe, it, expect, vi } from 'vitest'
@@ -166,15 +166,20 @@ describe('SettlementSummary —「記錄收款」', () => {
 })
 
 describe('SettlementSummary — route history', () => {
-  const header = { id: 'r1', legCount: 2, kind: 'TRANSFER' as const, participantUids: ['u1', 'u2', 'u3'], payerUid: 'u1', receiverUid: 'u3', amountMinor: 3000 }
-  const leg = (i: number, from: string, to: string): SettlementRecord => ({
-    id: `r1-0${i}`, tripId: 't1', fromUid: from, toUid: to, amountMinor: 3000, currency: 'JPY',
-    settledBy: 'u3', createdAt: TS, deletedAt: null, route: { ...header, legIndex: i },
-    appliedSources: [{ expenseId: i === 0 ? 'dinner' : 'taxi', expenseTitle: i === 0 ? '晚餐' : '計程車', amountMinor: 3000 }],
-  })
-  const settled = [leg(0, 'u1', 'u2'), leg(1, 'u2', 'u3')]
+  const route: SettlementRecord = {
+    id: 'r1', tripId: 't1', kind: 'TRANSFER', currency: 'JPY', participantUids: ['u1', 'u2', 'u3'],
+    legs: [{ fromUid: 'u1', toUid: 'u2', amountMinor: 3000 }, { fromUid: 'u2', toUid: 'u3', amountMinor: 3000 }],
+    payerUid: 'u1', receiverUid: 'u3', amountMinor: 3000,
+    appliedSources: [
+      { legIndex: 0, expenseId: 'dinner', expenseTitle: '晚餐', amountMinor: 3000 },
+      { legIndex: 1, expenseId: 'taxi', expenseTitle: '計程車', amountMinor: 3000 },
+    ],
+    lockedExpenses: [{ expenseId: 'dinner', legIndexes: [0] }, { expenseId: 'taxi', legIndexes: [1] }],
+    settledBy: 'u3', createdAt: TS, deletedAt: null,
+  }
+  const settled = [route]
 
-  it('shows one row per route, and cancelling it hides every leg', () => {
+  it('shows one row per settlement, and cancelling it cancels the whole route', () => {
     const onDeleteSettlement = vi.fn()
     render(<SettlementSummary {...base({ expenses: CHAIN, members: [A, B, C], settlements: settled, uid: 'u3', onDeleteSettlement })} />)
     expect(screen.getByText(/已清算紀錄（1 筆）/)).toBeTruthy()
@@ -182,7 +187,7 @@ describe('SettlementSummary — route history', () => {
     expect(within(history).getByText('經 Bob')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '刪除清算紀錄' }))
     fireEvent.click(screen.getByRole('button', { name: /確認刪除整筆清算紀錄/ }))
-    expect(onDeleteSettlement).toHaveBeenCalledWith('r1-00', ['r1-00', 'r1-01'])
+    expect(onDeleteSettlement).toHaveBeenCalledWith('r1')
     // The ledger is settled by the route: no suggestion left.
     expect(screen.getByText(/所有成員的帳務已平衡/)).toBeTruthy()
   })

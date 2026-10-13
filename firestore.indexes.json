@@ -43,15 +43,6 @@
       ]
     },
     {
-      "collectionGroup": "settlements",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "fromUid",   "order": "ASCENDING" },
-        { "fieldPath": "toUid",     "order": "ASCENDING" },
-        { "fieldPath": "deletedAt", "order": "ASCENDING" }
-      ]
-    },
-    {
       "collectionGroup": "bookings",
       "queryScope": "COLLECTION",
       "fields": [
@@ -173,6 +164,16 @@
       "collectionGroup": "routeApplications",
       "fieldPath": "expiresAt",
       "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "settlements",
+      "fieldPath": "appliedSources",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "settlements",
+      "fieldPath": "lockedExpenses",
       "indexes": []
     }
   ]

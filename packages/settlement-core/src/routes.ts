@@ -67,7 +67,7 @@ export const MAX_ROUTE_LEGS = 45
 /** People per route. The Worker reads the route's ledger with one
  *  `paidBy IN participants` query, and Firestore caps IN at 30 values. */
 export const MAX_ROUTE_PARTICIPANTS = 30
-/** Route ids leave room for the `-NN` leg suffix within doc-id limits. */
+/** A route is one settlement doc; its id is the doc id. */
 export const ROUTE_ID_MAX = 50
 
 const positive = (n: number) => n > SETTLEMENT_EPS
@@ -168,18 +168,11 @@ export function routeParticipants(legs: ReadonlyArray<{ fromUid: string; toUid: 
   return [...new Set(legs.flatMap(l => [l.fromUid, l.toUid]))].sort()
 }
 
-/** Canonical leg order (by from, then to). The Worker assigns leg indices
- *  — and therefore leg doc ids — in this order, so client and Worker agree
- *  on which id belongs to which edge. */
+/** Canonical leg order (by from, then to). The Worker stores legs — and
+ *  lineage refers to them by index — in this order, so client and Worker
+ *  agree on which index belongs to which edge. */
 export function canonicalRouteLegs<L extends { fromUid: string; toUid: string }>(legs: readonly L[]): L[] {
   return [...legs].sort(byEdge)
-}
-
-/** Doc id of the `index`-th canonical leg of `routeId`. Derived, never
- *  client-chosen: a client-chosen id could collide with an unrelated
- *  settlement, and a derived one lets delete find every leg by id. */
-export function routeLegId(routeId: string, index: number): string {
-  return `${routeId}-${String(index).padStart(2, '0')}`
 }
 
 /** True while every leg still matches the live ledger, i.e. the Worker's

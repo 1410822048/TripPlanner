@@ -11,6 +11,8 @@
 //   - REQUEST_TIME transforms (nested paths too) get one strictly
 //     increasing timestamp per commit, like Firestore's commit time
 //   - IS_NULL matches only a present null field; IN / EQUAL on strings
+//   - `select` projects top-level fields (so a test can catch code that
+//     reads a field the projection left out)
 // Anything else (transform-only writes, ordering, cursors) is out of scope.
 import type { FsValue } from '../../src/firestore'
 import type { TxContext, TxQuery, TxReadDoc, TxWrite } from '../../src/firestore-tx'
@@ -22,12 +24,14 @@ type Fields = Record<string, FsValue>
 export class FakeFirestore {
   readonly docs = new Map<string, Fields>()
   readonly getCalls: string[] = []
+  readonly queries: TxQuery[] = []
   readonly commits: TxWrite[][] = []
   private clock = Date.UTC(2026, 9, 13)
 
   reset(): void {
     this.docs.clear()
     this.getCalls.length = 0
+    this.queries.length = 0
     this.commits.length = 0
     this.clock = Date.UTC(2026, 9, 13)
   }
@@ -59,12 +63,16 @@ export class FakeFirestore {
   }
 
   runQuery(query: TxQuery): TxReadDoc[] {
+    this.queries.push(structuredClone(query))
     const base = `${query.parent}/${query.collection}/`
     const out: TxReadDoc[] = []
     for (const [path, fields] of [...this.docs.entries()].sort(([a], [b]) => a.localeCompare(b))) {
       if (!path.startsWith(base) || path.slice(base.length).includes('/')) continue
       if (!(query.filters ?? []).every(f => matches(fields, f))) continue
-      out.push({ exists: true, fields: structuredClone(fields), name: PREFIX + path, updateTime: null })
+      const projected = query.select
+        ? Object.fromEntries(Object.entries(fields).filter(([k]) => query.select!.includes(k)))
+        : fields
+      out.push({ exists: true, fields: structuredClone(projected), name: PREFIX + path, updateTime: null })
     }
     return query.limit !== undefined ? out.slice(0, query.limit) : out
   }

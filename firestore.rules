@@ -1039,9 +1039,8 @@ service cloud.firestore {
         allow delete: if canWrite(tripId);
       }
 
-      // Settlement records — bilateral "X paid Y back" entries.
-      // Reads stay open to trip members for ACTIVE settlements; writes are
-      // Worker-authoritative.
+      // Settlement records — one doc per route (its legs clear real debt
+      // edges). Members read ACTIVE settlements; writes are Worker-only.
       match /settlements/{settlementId} {
         // Settlements don't carry memberIds[] (they're a bounded set
         // per trip and writes are rare — denormalising would pay cost
@@ -1066,33 +1065,15 @@ service cloud.firestore {
         allow read: if exists(memberPath(tripId))
           && 'deletedAt' in resource.data
           && resource.data.deletedAt == null;
-        // Settlement CREATE / cancel are Worker-only. The domain
-        // invariant `amountMinor <= pairwise[fromUid][toUid]` (sum of
-        // expense.splits for that uid pair minus already-applied
-        // settlements) can't be expressed in CEL — no array reduce,
-        // no cross-doc sum. The Worker endpoints /settlement-create
-        // and /settlement-delete re-derive gross → applied →
-        // remaining inside a single tx with a per-pair lock doc and
-        // fail-closed read-cap truncation. /settlement-delete is a
-        // soft-delete (updates deletedBy/deletedAt, doesn't remove the
-        // doc) — there's no `allow update` line below, so implicit deny
-        // already blocks a direct client update the same way `create`/
-        // `delete` are blocked explicitly. Admin SDK on Worker bypasses
-        // these rules; clients calling setDoc / updateDoc / deleteDoc
-        // directly are rejected. See settlement-write.ts in
-        // workers/ocr/src/.
+        // Create / cancel only through the Worker (settlement-route-
+        // write.ts): "each leg ≤ its edge's remaining debt" needs cross-doc
+        // sums CEL can't do. Cancel is a soft-delete; no `allow update`.
         allow create: if false;
         allow delete: if false;
       }
 
-      // Pair-lock guard docs written by Worker `settlement-create` /
-      // `settlement-delete` to force tx contention on concurrent
-      // same-pair settlement writes (Firestore tx contention is per-
-      // document; two new settlements with different ids alone don't
-      // conflict). Direction-agnostic lock; see pairLockKey() in the
-      // Worker for the length-prefixed key encoding. Worker admin SDK
-      // bypasses these rules; no client should ever touch this
-      // collection -- closed end-to-end.
+      // Worker-only pair locks: they make two settlement writes over the
+      // same pair conflict in Firestore. Closed to clients.
       match /settlementPairLocks/{pairKey} {
         allow read, write: if false;
       }

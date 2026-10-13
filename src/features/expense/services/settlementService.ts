@@ -1,8 +1,8 @@
 // src/features/expense/services/settlementService.ts
 // Realtime read + Worker-authoritative write for
 // trips/{tripId}/settlements/{id}. See src/types/settlement.ts for the
-// entity model: a settlement clears a debt edge (from → to) in the
-// debt-edge ledger computed by computeBalancesFull.
+// entity model: a settlement is a route whose legs clear debt edges
+// (from → to) in the debt-edge ledger computed by computeBalancesFull.
 //
 // Reads (list + onSnapshot) stay on the Firebase SDK -- persistentLocalCache
 // covers offline + cross-tab and there's no domain invariant that needs
@@ -13,13 +13,12 @@
 // once it is absent from the raw cache.
 //
 // Writes (create + delete) go through the Cloudflare Worker because the
-// core invariant `amountMinor == Worker-computed pair-remaining` can't be
-// expressed in firestore.rules (no array reduce / cross-doc sum in CEL).
-// The Worker re-derives gross → applied → remaining inside a single tx,
-// writes amountMinor = remaining (Phase 4.1 ledger truth — full clear of
-// the suggested debt, both TRIP and FOREIGN modes), guards concurrent
-// same-pair creates with a per-pair lock doc, and fail-closes on read-cap
-// truncation. See workers/ocr/src/settlement-write.ts.
+// core invariant "every leg ≤ the Worker-computed remaining of its edge"
+// can't be expressed in firestore.rules (no array reduce / cross-doc sum in
+// CEL). The Worker re-derives gross → applied → remaining inside a single
+// tx, CAS-checks every leg, guards concurrent creates over the same pair
+// with a per-pair lock doc, and fail-closes on read-cap truncation. See
+// workers/ocr/src/settlement-route-write.ts.
 import type { QueryDocumentSnapshot } from 'firebase/firestore'
 import { getFirebase } from '@/services/firebase'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
@@ -30,17 +29,15 @@ import {
   requireWorkerWriteBase, preflightIdToken, workerFetch,
 } from '@/services/workerBase'
 import { canonicalRouteLegs, type SettlementRoute } from '@tripmate/settlement-core'
-import { type SettlementRecord, SettlementDocSchema } from '@/types/settlement'
+import { type LockedExpense, type SettlementRecord, SettlementDocSchema } from '@/types/settlement'
 
 /**
- * Variables for recording a routed settlement — the ONLY way this bundle
- * records one. A plain pair settlement is simply a one-leg route.
+ * Variables for recording a settlement — always a route; a plain pair
+ * settlement is simply a one-leg route.
  *
  *   - `routeId` is minted at the call site (crypto.randomUUID) so the
- *     optimistic leg rows, the Worker request and the Firestore docs share
- *     ids: the Worker derives leg i's doc id as routeLegId(routeId, i) over
- *     canonical leg order, and so does the overlay. Memory:
- *     [[settlement-id-hoist-load-bearing]].
+ *     optimistic row, the Worker request and the Firestore doc share one
+ *     id (the doc id). Memory: [[settlement-id-hoist-load-bearing]].
  *   - `route` is a proposal planned on the client's ledger. Every leg's
  *     `expectedRemainingMinor` is the Worker's per-edge CAS; the Worker
  *     re-validates the shape and every amount against its own ledger.
@@ -64,17 +61,16 @@ export interface CreateSettlementRouteVariables {
     ownerRecorded?:     boolean
     /** FOREIGN only: the receiver-side source amount the sheet derived. */
     sourceAmountMinor?: number
-    /** Per canonical leg: a conservative superset of the expenses the leg
-     *  will lock (both directions of its pair), so a non-owner can't edit
-     *  one in the window before the Worker's exact lock set lands. */
-    pendingAppliedExpenseIds: string[][]
+    /** A conservative superset of the expenses the route will lock (both
+     *  directions of every leg's pair), so a non-owner can't edit one in
+     *  the window before the Worker's exact lock set lands. */
+    pendingLocks: LockedExpense[]
   }
 }
 
-/** Defensive cap on ACTIVE settlement docs. A routed settlement stores one
- *  doc per leg, so the ceiling is higher than the number of payments ever
- *  recorded. Matches the Worker's ROUTE_SETTLEMENT_READ_LIMIT: past it the
- *  ledger can't be read completely on either side. */
+/** Defensive cap on ACTIVE settlement docs (one per recorded payment /
+ *  offset). Matches the Worker's SETTLEMENT_READ_LIMIT: past it the ledger
+ *  can't be read completely on either side. */
 export const SETTLEMENT_LIST_LIMIT = 500
 const LIST_LIMIT = SETTLEMENT_LIST_LIMIT
 
@@ -123,10 +119,10 @@ export const subscribeToSettlements = (
 }, onData, onError)
 
 /**
- * Record a routed settlement. The Worker is the authority: it re-checks the
+ * Record a settlement. The Worker is the authority: it re-checks the
  * route's shape, authorizes the caller (receiver / offset participant /
  * owner for departed members), CAS-checks every leg against its own ledger,
- * derives lineage and locks, and writes every leg in one transaction.
+ * derives lineage and locks, and writes the one doc in one transaction.
  * workerFetch does not retry: 5xx / AbortError → WorkerAmbiguous, 4xx →
  * WorkerRejected. A retry with the same routeId is idempotent on the Worker.
  */
@@ -161,10 +157,9 @@ export async function createSettlementRoute(
 }
 
 /**
- * Delete a settlement. Worker enforces recorder-or-owner gating
- * (matches the existing rule); missing-doc is treated as success
- * (idempotent) so a double-tap from optimistic UI doesn't surface
- * a 404. Any leg id of a route cancels the WHOLE route.
+ * Cancel a settlement — the whole route. Worker enforces recorder-or-owner
+ * gating; missing-doc is treated as success (idempotent) so a double-tap
+ * from optimistic UI doesn't surface a 404.
  */
 export async function deleteSettlement(tripId: string, id: string): Promise<void> {
   const workerBase = requireWorkerWriteBase()

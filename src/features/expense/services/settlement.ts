@@ -47,6 +47,7 @@ import {
 import type { Expense } from '@/types'
 import type { SettlementRecord } from '@/types/settlement'
 import type { TripMember } from '@/features/trips/types'
+import { legKey, settlementLegs, type SettlementLeg } from './settlementLegs'
 import {
   buildOrphanReasonMap,
   classifyOrphan,
@@ -76,12 +77,12 @@ export interface Settlement {
 export type { OrphanReason }
 
 /**
- * 一筆 settlement 中無法對應到既存債務的剩餘金額。
+ * 一段 settlement leg 中無法對應到既存債務的剩餘金額。
  *
- * 每一筆 leftover > 0 的 settlement 各自獨立一個 entry,並夾帶
- * `settlementId` 讓 UI 能精準指向「就是這筆要刪」。`reason` 由
- * `computeBalancesFull` 透過 chronological replay 推算出來 — 詳
- * `OrphanReason`。
+ * 每一段 leftover > 0 的 leg 各自獨立一個 entry,並夾帶 `settlementId` +
+ * `legIndex` 讓 UI 能精準指向「就是這筆要刪」(刪除一律撤銷整個 route)。
+ * `reason` 由 `computeBalancesFull` 透過 chronological replay 推算出來 —
+ * 詳 `OrphanReason`。
  *
  * 順序穩定性:settlements 在算法內**按 `createdAt` 排序後處理**,所以
  * 早的先消化 gross、晚的承擔 leftover。沒這層排序的話,Firestore
@@ -90,10 +91,12 @@ export type { OrphanReason }
 export interface OrphanSettlement {
   fromUserId:   string
   toUserId:     string
-  /** 這筆 settlement 自己的 leftover(非 pair 累積)。Integer minor units. */
+  /** 這段 leg 自己的 leftover(非 pair 累積)。Integer minor units. */
   amountMinor:  number
-  /** 對應的 SettlementRecord.id,UI 用來一鍵刪除這筆 orphan。 */
+  /** 所屬 SettlementRecord(route)的 id,UI 用來一鍵撤銷整筆。 */
   settlementId: string
+  /** 這段在 route 裡的位置(`SettlementRecord.legs[legIndex]`)。 */
+  legIndex:     number
   /** Why this settlement is orphan -- drives the reason-specific
    *  warning banner in SettlementSummary. */
   reason:       OrphanReason
@@ -197,8 +200,10 @@ export function expandWithGhosts(
     }
   }
   for (const s of settlements) {
-    ensure(s.fromUid)
-    ensure(s.toUid)
+    for (const leg of s.legs) {
+      ensure(leg.fromUid)
+      ensure(leg.toUid)
+    }
   }
   return ghosts.length === 0 ? members : [...members, ...ghosts]
 }
@@ -262,11 +267,10 @@ function isExpenseSettlementSafe(e: Expense): boolean {
   return true
 }
 
-/** Same trust-boundary check as core's `isSettlementSafe`, but bound
- *  to the rich SettlementRecord shape so the filter callsite can
- *  console.warn the offending `s.id`. Predicates intentionally
- *  identical to the core; the only difference is the input type. */
-function isSettlementSafe(s: SettlementRecord): boolean {
+/** Same trust-boundary check as core's `isSettlementSafe`, applied to
+ *  every leg of a settlement so the filter callsite can console.warn the
+ *  offending doc. Predicates intentionally identical to the core. */
+function isLegSafe(s: { fromUid: string; toUid: string; amountMinor: number }): boolean {
   if (!Number.isFinite(s.amountMinor) || s.amountMinor <= 0) return false
   if (typeof s.fromUid !== 'string' || s.fromUid === '') return false
   if (typeof s.toUid   !== 'string' || s.toUid   === '') return false
@@ -276,14 +280,14 @@ function isSettlementSafe(s: SettlementRecord): boolean {
 
 // ─── Orphan attribution by lineage ──────────────────────────────────
 
-/** How much of one settlement's recorded lineage is no longer backed by
- *  a live expense. Sources draw on each expense's CURRENT contribution to
- *  the pair (`from`'s split in an expense paid by `to`), shared out in
- *  chronological order, so two settlements that cleared the same expense
- *  are not both counted as backed by it. Settlements without lineage
- *  (legacy) or with a truncated source list only report what they name. */
+/** How much of one leg's recorded lineage is no longer backed by a live
+ *  expense. Sources draw on each expense's CURRENT contribution to the pair
+ *  (`from`'s split in an expense paid by `to`), shared out in
+ *  chronological order, so two legs that cleared the same expense are not
+ *  both counted as backed by it. A leg whose source list was trimmed only
+ *  reports what it names. Keyed by leg key. */
 function lineageShortfalls(
-  pairSettlements: SettlementRecord[],
+  pairSettlements: SettlementLeg[],
   activeExpenses:  Expense[],
 ): Map<string, number> {
   const from = pairSettlements[0]!.fromUid
@@ -297,45 +301,45 @@ function lineageShortfalls(
   const out = new Map<string, number>()
   for (const st of pairSettlements) {
     let lost = 0
-    for (const src of st.appliedSources ?? []) {
+    for (const src of st.sources) {
       const available = capacity.get(src.expenseId) ?? 0
       const taken = Math.min(src.amountMinor, available)
       capacity.set(src.expenseId, available - taken)
       lost += src.amountMinor - taken
     }
-    out.set(st.id, Math.min(lost, st.amountMinor))
+    out.set(st.key, Math.min(lost, st.amountMinor))
   }
   return out
 }
 
-/** Split a pair's total leftover across its settlements: first to the ones
- *  whose own sources disappeared (oldest first, each up to its shortfall),
- *  then — for leftover lineage can't explain, e.g. legacy records or a
+/** Split a pair's total leftover across its legs: first to the ones whose
+ *  own sources disappeared (oldest first, each up to its shortfall), then —
+ *  for leftover lineage can't explain, e.g. a trimmed source list or a
  *  genuine overpayment — newest first, which is what the old chronological
- *  cap produced. Σ result === leftover, and no settlement is charged more
- *  than its own amount. */
+ *  cap produced. Σ result === leftover, and no leg is charged more than its
+ *  own amount. */
 function attributeLeftover(
-  chronological:  SettlementRecord[],
+  chronological:  SettlementLeg[],
   leftover:       number,
   activeExpenses: Expense[],
-): Array<{ settlement: SettlementRecord; amountMinor: number }> {
+): Array<{ leg: SettlementLeg; amountMinor: number }> {
   const shortfall = lineageShortfalls(chronological, activeExpenses)
   const charged = new Map<string, number>()
   let rest = leftover
   for (const st of chronological) {
     if (rest <= 0) break
-    const take = Math.min(rest, shortfall.get(st.id) ?? 0)
-    if (take > 0) { charged.set(st.id, take); rest -= take }
+    const take = Math.min(rest, shortfall.get(st.key) ?? 0)
+    if (take > 0) { charged.set(st.key, take); rest -= take }
   }
   for (let i = chronological.length - 1; i >= 0 && rest > 0; i--) {
     const st = chronological[i]!
-    const already = charged.get(st.id) ?? 0
+    const already = charged.get(st.key) ?? 0
     const take = Math.min(rest, st.amountMinor - already)
-    if (take > 0) { charged.set(st.id, already + take); rest -= take }
+    if (take > 0) { charged.set(st.key, already + take); rest -= take }
   }
   return chronological
-    .filter(st => (charged.get(st.id) ?? 0) > 0)
-    .map(st => ({ settlement: st, amountMinor: charged.get(st.id)! }))
+    .filter(st => (charged.get(st.key) ?? 0) > 0)
+    .map(st => ({ leg: st, amountMinor: charged.get(st.key)! }))
 }
 
 // ─── Debt-edge model: 主算法 ───────────────────────────────────────
@@ -381,12 +385,14 @@ export function computeBalancesFull(
   // treats a cancelled settlement as if it never existed -- unlike a
   // soft-deleted expense, there's no "moving target over time" a cancelled
   // settlement needs to explain, so there's no raw/active split to keep.
-  const settlements = settlementsRaw.filter(s => {
+  // A route is applied whole or not at all: one bad leg excludes the doc.
+  // From here on the ledger works per LEG.
+  const settlements = settlementLegs(settlementsRaw.filter(s => {
     if (s.deletedAt !== null) return false
-    if (isSettlementSafe(s)) return true
+    if (s.legs.length > 0 && s.legs.every(isLegSafe)) return true
     console.warn(`[settlement] excluding malformed settlement ${s.id}`, s)
     return false
-  })
+  }))
 
   // order 維護全參與者 ID(active 先、ghost 按首見順序在後);ghosts 同
   // 步累積 TripMember 物件,讓回傳的 participants 一次走完免重複 walk。
@@ -464,7 +470,7 @@ export function computeBalancesFull(
   // recorded sources were deleted or reduced is the one to point at — not
   // simply the newest one, which may still be fully backed by live expenses.
   const leftoverByPair = new Map<string, number>()
-  const pairSettlements = new Map<string, SettlementRecord[]>()
+  const pairSettlements = new Map<string, SettlementLeg[]>()
   for (const st of sortedSettlements) {
     if (st.fromUid === st.toUid) continue
     ensure(st.fromUid); ensure(st.toUid)
@@ -483,30 +489,32 @@ export function computeBalancesFull(
   for (const [key, list] of pairSettlements) {
     const leftover = leftoverByPair.get(key) ?? 0
     if (leftover <= SETTLEMENT_EPS) continue
-    for (const { settlement: st, amountMinor } of attributeLeftover(list, leftover, activeExpenses)) {
+    for (const { leg: st, amountMinor } of attributeLeftover(list, leftover, activeExpenses)) {
       if (amountMinor <= SETTLEMENT_EPS) continue
-      // Per-settlement entry instead of per-pair sum so UI can target
-      // the exact unmatched record for one-tap delete.
+      // Per-leg entry instead of per-pair sum so UI can target the exact
+      // unmatched record for one-tap cancel.
       orphans.push({
         fromUserId:   st.fromUid,
         toUserId:     st.toUid,
         amountMinor,
-        settlementId: st.id,
-        reason:       classifyOrphan(replayById.get(st.id), amountMinor),
+        settlementId: st.settlementId,
+        legIndex:     st.legIndex,
+        reason:       classifyOrphan(replayById.get(st.key), amountMinor),
       })
     }
   }
   // Stable output order: chronological, as before.
-  const chronoIndex = new Map(sortedSettlements.map((st, i) => [st.id, i]))
-  orphans.sort((a, b) => (chronoIndex.get(a.settlementId) ?? 0) - (chronoIndex.get(b.settlementId) ?? 0))
+  const chronoIndex = new Map(sortedSettlements.map((st, i) => [st.key, i]))
+  const orderOf = (o: OrphanSettlement) => chronoIndex.get(legKey(o.settlementId, o.legIndex)) ?? 0
+  orphans.sort((a, b) => orderOf(a) - orderOf(b))
 
   // Steps 3-4 (remaining + normalize) delegate to @tripmate/settlement-
   // core so this file and the Worker's create-gate share one canonical
   // pairwise impl. Core re-filters + re-sorts internally so the call is
   // self-contained; we pass `activeExpenses` (Expense is a structural
   // superset of CoreExpense — amount/paidBy/splits all line up) and
-  // adapt SettlementRecord → CoreSettlement by flattening createdAt to
-  // an epoch-ms number. Core does NOT return per-settlement leftover,
+  // adapt each leg → CoreSettlement by flattening createdAt to an
+  // epoch-ms number. Core does NOT return per-settlement leftover,
   // which is why steps 1-2 above stay here for orphan extraction.
   const normalized = computePairwiseRemaining(
     activeExpenses,

@@ -1,22 +1,20 @@
 // workers/ocr/src/settlement-fx-write.ts
-// Foreign-currency domain for the settlement-create endpoint: FX rate
-// resolution, source-amount derivation, and the Firestore encoder for the
-// persisted fxSnapshot mirror. Split out of settlement-write.ts (boundary
-// extraction) so the orchestrator imports a named FX boundary rather than
-// inlining rate I/O + half-even money math next to auth + tx plumbing.
+// Foreign-currency domain for the settlement endpoint: FX rate resolution,
+// source-amount derivation, and the Firestore encoder for the persisted
+// fxSnapshot mirror, kept as a named boundary so the orchestrator
+// (settlement-route-write.ts) doesn't inline rate I/O + half-even money
+// math next to auth + tx plumbing.
 //
-// Phase 4.1 ledger semantics (2026-06-02): settlement.amountMinor ≡
-// remaining (full clear). FX does NOT derive amountMinor; it only
-// populates the source-side display + audit (sourceAmountMinor +
-// fxSnapshot.convertedAmountMinor), which may be ≤ amountMinor by a few
-// minor units due to half-even rounding plateaus.
+// FX never derives the ledger amount (the transfer's trip-currency
+// amountMinor); it only populates the source-side display + audit
+// (sourceAmountMinor + fxSnapshot.convertedAmountMinor), which may be ≤
+// amountMinor by a few minor units due to half-even rounding plateaus.
 //
-// The prep is split in two so the NETWORK half runs OUTSIDE the pair-docs
-// conflict window (see doCreate in settlement-write.ts): resolveForeignRate
-// does the FX I/O BEFORE the pair fan-out; deriveForeignArtifacts is
-// pure-CPU and runs AFTER `remaining` is known. Keeping that ordering is
-// load-bearing — the orchestrator calls resolveForeignRate before reading
-// any pair doc so a slow FX provider can't lengthen the tx conflict window.
+// The prep is split in two so the NETWORK half runs OUTSIDE the ledger
+// conflict window: resolveForeignRate does the FX I/O BEFORE any ledger
+// read; deriveForeignArtifacts is pure-CPU and runs after the legs are
+// checked. Keeping that ordering is load-bearing — a slow FX provider must
+// not lengthen the tx conflict window.
 import { CascadeError }                    from './cascade'
 import { assertExpectedFxRate, resolveFxRate, type FxSnapshot } from './fx-rate'
 import {
@@ -31,8 +29,7 @@ import {
 import type { FxRateQuote }                from './fx-rate'
 
 /** What the FX half reads from a request: the received currency, the day it
- *  was received and the rate the receiver confirmed. Both the pair endpoint
- *  (/settlement-create FOREIGN) and the route endpoint carry exactly this. */
+ *  was received and the rate the receiver confirmed. */
 export interface ForeignIntent {
   sourceCurrency: string
   settledOn:      string
@@ -50,7 +47,7 @@ export interface ForeignSettlementArtifacts {
   fxSnapshot:        FxSnapshot
 }
 
-/** The FX rate + fraction-digit context resolved before the pair fan-out.
+/** The FX rate + fraction-digit context resolved before the ledger read.
  *  Carries everything deriveForeignArtifacts needs so that step touches no
  *  network. `rate` is the non-null result of resolveFxRate. */
 export interface ForeignRate {

@@ -1,21 +1,19 @@
 // src/features/expense/components/SettlementRouteRow.tsx
-// One logical routed settlement in the「已清算紀錄」list: every leg of the
-// route merged into a single row (payer → receiver, or an offset), with the
-// legs, their expense sources and any orphan explanation behind a toggle.
-// Cancelling is all-or-nothing — the Worker cancels the whole route from any
-// one leg — so the confirm copy says so.
+// One settlement in the「已清算紀錄」list: the route as a single row (payer
+// → receiver, or an offset), with its legs, their expense sources and any
+// orphan explanation behind a toggle. Cancelling is all-or-nothing — the
+// Worker cancels the whole route — so the confirm copy says so.
 import { useState } from 'react'
 import { AlertCircle, ArrowRight, ChevronDown, Repeat, Trash2 } from 'lucide-react'
 import MemberAvatar from '@/components/ui/MemberAvatar'
 import type { TripMember } from '@/features/trips/types'
-import type { SettlementRecord, SettlementRouteHeader } from '@/types/settlement'
+import { legSources, type SettlementRecord } from '@/types/settlement'
 import type { OrphanSettlement } from '../services/settlement'
 import { formatMinorAmount } from '@/utils/money'
 import { ORPHAN_REASON_COPY, ORPHAN_REASON_LABEL } from './settlementOrphanCopy'
 
 interface Props {
-  header:     SettlementRouteHeader
-  legs:       SettlementRecord[]
+  settlement: SettlementRecord
   memberById: Map<string, TripMember>
   currency:   string
   canDelete:  boolean
@@ -24,7 +22,8 @@ interface Props {
   onDelete:   () => void
 }
 
-export default function SettlementRouteRow({ header, legs, memberById, currency, canDelete, orphans, onDelete }: Props) {
+export default function SettlementRouteRow({ settlement: header, memberById, currency, canDelete, orphans, onDelete }: Props) {
+  const { legs } = header
   const [confirming, setConfirming] = useState(false)
   const [open, setOpen] = useState(orphans.length > 0)
   const nameOf = (id: string) => memberById.get(id)?.displayName ?? id
@@ -34,7 +33,7 @@ export default function SettlementRouteRow({ header, legs, memberById, currency,
     ? header.participantUids.filter(id => id !== header.payerUid && id !== header.receiverUid)
     : []
   const orphanTotal = orphans.reduce((s, o) => s + o.amountMinor, 0)
-  const orphanByLeg = new Map(orphans.map(o => [o.settlementId, o]))
+  const orphanByLeg = new Map(orphans.map(o => [o.legIndex, o]))
   const payer = isTransfer ? member(header.payerUid!) : undefined
   const receiver = isTransfer ? member(header.receiverUid!) : undefined
 
@@ -118,21 +117,24 @@ export default function SettlementRouteRow({ header, legs, memberById, currency,
           </button>
           {open && (
             <ul className="mt-1 flex flex-col gap-1">
-              {legs.map(leg => {
-                const orphan = orphanByLeg.get(leg.id)
+              {legs.map((leg, legIndex) => {
+                const orphan = orphanByLeg.get(legIndex)
+                const sources = legSources(header, legIndex)
+                const traced = sources.reduce((sum, src) => sum + src.amountMinor, 0)
                 return (
-                  <li key={leg.id} className="text-[10.5px] text-ink">
+                  <li key={`${leg.fromUid}>${leg.toUid}`} className="text-[10.5px] text-ink">
                     <div className="flex items-center gap-1 tabular-nums">
                       <span className="truncate">{nameOf(leg.fromUid)}</span>
                       <ArrowRight size={9} strokeWidth={2.5} className="text-muted shrink-0" />
                       <span className="truncate">{nameOf(leg.toUid)}</span>
                       <span className="ml-auto font-semibold">{formatMinorAmount(leg.amountMinor, currency)}</span>
                     </div>
-                    {(leg.appliedSources?.length ?? 0) > 0 && (
+                    {sources.length > 0 && (
                       <div className="text-[10px] text-muted leading-[1.45]">
-                        來源：{leg.appliedSources!.map(src =>
+                        來源：{sources.map(src =>
                           `${src.itemName ? `${src.expenseTitle} / ${src.itemName}` : src.expenseTitle} ${formatMinorAmount(src.amountMinor, currency)}`,
                         ).join('、')}
+                        {traced < leg.amountMinor && `、其他較新的費用 ${formatMinorAmount(leg.amountMinor - traced, currency)}（未逐筆列出）`}
                       </div>
                     )}
                     {orphan && (

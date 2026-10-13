@@ -2205,29 +2205,30 @@ describe('/trips/{tripId}/bookings membership projection writes are Worker-only'
 // ─── Settlement create / delete are Worker-only (M4 close) ─────────
 //
 // firestore.rules has `allow create: if false` and `allow delete: if false`
-// on /trips/{tripId}/settlements; the domain invariant
-// `amount <= pairwise[fromUid][toUid]` (sum of expense.splits for that
-// uid pair minus already-applied settlements) can't be expressed in
-// CEL — no array reduce, no cross-doc sum. The Worker endpoints
-// /settlement-create and /settlement-delete own this path; per-payload
-// validation (settledBy=token, toUid=caller, fromUid distinct + real
-// member, amount int>0, currency 3-char, createdAt pinned to request
-// time, recorder-or-owner delete, idempotent retry payload-match) is
-// covered in workers/ocr/test/settlement-write.spec.ts.
+// on /trips/{tripId}/settlements: every leg of a settlement route must stay
+// within its edge's remaining debt, which CEL can't express (no array
+// reduce, no cross-doc sum). The Worker endpoints /settlement-route-create
+// and /settlement-delete own this path; per-payload validation (caller
+// authorization, per-leg CAS, route shape, idempotent retry, recorder-or-
+// owner cancel) is covered in workers/ocr/test/settlement-route-write.spec.ts.
 //
 // `allow read` stays open to trip members so the SettlementSummary
 // realtime listener works; the read test below guards against an
 // accidental over-close.
 describe('/trips/{tripId}/settlements client write rejection (Worker-only)', () => {
   function settlementShape() {
+    // A one-leg route the caller received: the shape the Worker writes.
     return {
-      tripId:    TRIP_ID,
-      settledBy: EDITOR_UID,
-      toUid:     EDITOR_UID,    // receiver = caller
-      fromUid:   VIEWER_UID,    // payer = distinct, real member
-      amountMinor:    100,
-      currency:  'JPY',
-      createdAt: serverTimestamp(),
+      tripId:          TRIP_ID,
+      kind:            'TRANSFER',
+      currency:        'JPY',
+      participantUids: [EDITOR_UID, VIEWER_UID].sort(),
+      legs:            [{ fromUid: VIEWER_UID, toUid: EDITOR_UID, amountMinor: 100 }],
+      payerUid:        VIEWER_UID,
+      receiverUid:     EDITOR_UID,    // receiver = caller
+      amountMinor:     100,
+      settledBy:       EDITOR_UID,
+      createdAt:       serverTimestamp(),
     }
   }
 

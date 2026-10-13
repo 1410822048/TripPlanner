@@ -1,16 +1,15 @@
 import { describe, expect, it } from 'vitest'
+import { MAX_ROUTE_APPLIED_SOURCES } from '@tripmate/settlement-core'
 import { MOCK_TIMESTAMP as TS } from '@/mocks/utils'
 import type { Expense } from '@/types'
 import type { SettlementRecord } from '@/types/settlement'
 import { computeBalancesFull } from './settlement'
 import {
-  groupSettlementHistory,
   payersFor,
   paymentRoute,
-  pendingLegLocks,
+  pendingRouteLocks,
   planRouteSuggestions,
   previewRouteLegs,
-  routeLegIds,
   routeRole,
 } from './settlementRoutes'
 
@@ -25,6 +24,15 @@ function expense(id: string, paidBy: string, splits: Record<string, number>, ove
 }
 
 const members = ['a', 'b', 'c'].map(id => ({ id, displayName: id, avatarLabel: id, color: '#000', bg: '#fff' }))
+
+/** A one-leg settlement: `from` paid `to`. */
+function paid(id: string, fromUid: string, toUid: string, amountMinor: number, over: Partial<SettlementRecord> = {}): SettlementRecord {
+  return {
+    id, tripId: 't', kind: 'TRANSFER', currency: 'JPY', participantUids: [fromUid, toUid].sort(),
+    legs: [{ fromUid, toUid, amountMinor }], payerUid: fromUid, receiverUid: toUid, amountMinor,
+    settledBy: toUid, createdAt: TS, deletedAt: null, ...over,
+  }
+}
 
 describe('planRouteSuggestions', () => {
   it('previews which expenses (and receipt items) each leg clears', () => {
@@ -54,7 +62,7 @@ describe('planRouteSuggestions', () => {
       expense('e1', 'b', { a: 100 }, { createdAt: { toMillis: () => 1 } as Expense['createdAt'] }),
       expense('e2', 'b', { a: 400 }, { createdAt: { toMillis: () => 2 } as Expense['createdAt'] }),
     ]
-    const prior = [{ id: 's', tripId: 't', fromUid: 'a', toUid: 'b', amountMinor: 150, currency: 'JPY', settledBy: 'b', createdAt: { toMillis: () => 3 } as SettlementRecord['createdAt'], deletedAt: null }] as unknown as SettlementRecord[]
+    const prior = [paid('s', 'a', 'b', 150, { createdAt: { toMillis: () => 3 } as SettlementRecord['createdAt'] })]
     const { pairwise } = computeBalancesFull(expenses, members, prior)
     const [route] = planRouteSuggestions(pairwise, expenses, prior)
     expect(route!.legs[0]!.sources).toEqual([{ expenseId: 'e2', expenseTitle: 'e2', amountMinor: 350 }])
@@ -65,9 +73,18 @@ describe('planRouteSuggestions', () => {
     const legs = previewRouteLegs(
       { kind: 'TRANSFER', payerUid: 'a', receiverUid: 'b', amountMinor: 100, legs: [{ fromUid: 'a', toUid: 'b', amountMinor: 100, expectedRemainingMinor: 100 }] },
       expenses,
-      [{ id: 'x', fromUid: 'a', toUid: 'b', amountMinor: 100, deletedAt: TS } as unknown as SettlementRecord],
+      [paid('x', 'a', 'b', 100, { deletedAt: TS, deletedBy: 'b' })],
     )
     expect(legs[0]!.sources).toEqual([{ expenseId: 'live', expenseTitle: 'live', amountMinor: 100 }])
+  })
+
+  it('previews exactly the route-wide source budget the Worker stores', () => {
+    const many = Array.from({ length: MAX_ROUTE_APPLIED_SOURCES + 20 }, (_, i) =>
+      expense(`e${String(i).padStart(3, '0')}`, 'b', { a: 10 }, { createdAt: { toMillis: () => i } as Expense['createdAt'] }))
+    const { pairwise } = computeBalancesFull(many, members, [])
+    const [route] = planRouteSuggestions(pairwise, many, [])
+    expect(route!.legs[0]!.sources).toHaveLength(MAX_ROUTE_APPLIED_SOURCES)
+    expect(route!.legs[0]!.sources[0]!.expenseId).toBe('e000')
   })
 })
 
@@ -112,41 +129,20 @@ describe('routeRole', () => {
   })
 })
 
-describe('groupSettlementHistory', () => {
-  const header = { id: 'r', legCount: 2, kind: 'TRANSFER' as const, participantUids: ['a', 'b', 'c'], payerUid: 'a', receiverUid: 'c', amountMinor: 5 }
-  const leg = (i: number): SettlementRecord => ({
-    id: `r-0${i}`, tripId: 't', fromUid: 'x', toUid: 'y', amountMinor: 5, currency: 'JPY', settledBy: 'c',
-    createdAt: TS, deletedAt: null, route: { ...header, legIndex: i },
-  })
-  const single: SettlementRecord = {
-    id: 's-00', tripId: 't', fromUid: 'a', toUid: 'b', amountMinor: 1, currency: 'JPY', settledBy: 'b', createdAt: TS, deletedAt: null,
-    route: { id: 's', legIndex: 0, legCount: 1, kind: 'TRANSFER', participantUids: ['a', 'b'], payerUid: 'a', receiverUid: 'b', amountMinor: 1 },
-  }
-
-  it('merges a route\'s legs into one entry in leg order, keeping list order', () => {
-    const entries = groupSettlementHistory([leg(1), single, leg(0)])
-    expect(entries.map(e => [e.id, e.legs.map(l => l.id), e.complete]))
-      .toEqual([['r', ['r-00', 'r-01'], true], ['s', ['s-00'], true]])
-  })
-
-  it('marks a route as incomplete while only some legs are visible', () => {
-    const [entry] = groupSettlementHistory([leg(1)])
-    expect(entry).toMatchObject({ id: 'r', complete: false })
-  })
-
-  it('derives every leg id for a whole-route cancel', () => {
-    expect(routeLegIds(header)).toEqual(['r-00', 'r-01'])
-  })
-})
-
-describe('pendingLegLocks', () => {
-  it('covers both directions of the leg\'s pair, active expenses only', () => {
+describe('pendingRouteLocks', () => {
+  it('covers both directions of every leg\'s pair, active expenses only', () => {
     const expenses = [
       expense('fwd', 'b', { a: 1 }),
       expense('rev', 'a', { b: 1 }),
       expense('other', 'c', { a: 1 }),
       expense('dead', 'b', { a: 1 }, { deletedAt: TS }),
     ]
-    expect(pendingLegLocks(expenses, { fromUid: 'a', toUid: 'b' })).toEqual(['fwd', 'rev'])
+    expect(pendingRouteLocks(expenses, [{ fromUid: 'a', toUid: 'b' }])).toEqual([
+      { expenseId: 'fwd', legIndexes: [0] }, { expenseId: 'rev', legIndexes: [0] },
+    ])
+    // Each expense once, with every leg whose pair it is on.
+    expect(pendingRouteLocks(expenses, [{ fromUid: 'a', toUid: 'b' }, { fromUid: 'a', toUid: 'c' }])).toEqual([
+      { expenseId: 'fwd', legIndexes: [0] }, { expenseId: 'rev', legIndexes: [0] }, { expenseId: 'other', legIndexes: [1] },
+    ])
   })
 })

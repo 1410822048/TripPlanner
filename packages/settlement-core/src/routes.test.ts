@@ -9,7 +9,6 @@ import {
   maxPayable,
   planSettlementRoutes,
   routeForPayment,
-  routeLegId,
   routeParticipants,
   validateRouteShape,
   type CoreExpense,
@@ -509,10 +508,8 @@ describe('caps fallback (only when a route cannot fit)', () => {
   }, 60_000)
 })
 
-describe('route ids', () => {
-  it('derives leg ids from the route id and canonical leg order', () => {
-    expect(routeLegId('r1', 0)).toBe('r1-00')
-    expect(routeLegId('r1', 44)).toBe('r1-44')
+describe('canonical leg order', () => {
+  it('sorts legs by from, then to', () => {
     const legs = [{ fromUid: 'b', toUid: 'c' }, { fromUid: 'a', toUid: 'b' }]
     expect(canonicalRouteLegs(legs)).toEqual([{ fromUid: 'a', toUid: 'b' }, { fromUid: 'b', toUid: 'c' }])
   })

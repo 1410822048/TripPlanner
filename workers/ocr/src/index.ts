@@ -505,9 +505,9 @@ export const ROUTES: RouteDescriptor[] = [
     }),
   },
   {
-    // Routed settlement (multi-hop / cycle offset). The legs are ordinary
-    // settlements; see settlement-route-write.ts. Same rate class and error
-    // surface as /settlement-create.
+    // Settlement create. Every settlement is a route (one doc: a pair
+    // payment, a multi-hop transfer or a cycle offset); see
+    // settlement-route-write.ts.
     path: '/settlement-route-create', rate: 'settlement-write',
     dispatch: c => handleJsonRoute({
       endpoint:       'settlement-route-create', body: c.body, cors: c.cors, uid: c.uid, report: c.report,

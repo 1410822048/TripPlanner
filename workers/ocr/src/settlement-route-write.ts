@@ -1,33 +1,34 @@
 // workers/ocr/src/settlement-route-write.ts
-// Routed settlement — multi-hop debt simplification, Worker-authoritative.
+// Settlement writes — Worker-authoritative. Every settlement is a ROUTE:
+// "A paid C ¥10, via B", a debt cycle cleared with no money moving, or
+// simply "A paid B" (a one-leg route). One route = ONE doc,
+// trips/{tripId}/settlements/{routeId}:
 //
-// A route ("A paid C ¥10, via B", or a debt cycle cleared with no money
-// moving) is stored as ORDINARY pair settlement docs — one per leg, each on
-// a real debt edge — committed in one transaction. Every leg carries the
-// same `route` header map (id, kind, payer/receiver/amount, participants,
-// note, foreign trio), so:
-//   - the debt math (computePairwiseRemaining), orphan replay, lineage and
-//     expense locks treat each leg exactly like any pair settlement;
-//   - one listener sees a route atomically (no second collection to lag);
-//   - old bundles that strip unknown keys still read correct balances.
-// Leg doc ids are derived (routeLegId(routeId, i) over canonical leg order),
-// so create is idempotent on the first leg and delete finds every leg by id.
+//   legs[]            the ledger: ordinary from → to clears on real debt
+//                     edges, in canonical order (canonicalRouteLegs)
+//   payer / receiver / amount, foreign trio, note    TRANSFER header
+//   appliedSources[]  display lineage, flattened, each tagged legIndex;
+//                     trimmed to MAX_ROUTE_APPLIED_SOURCES across the route
+//   lockedExpenses[]  the complete lock set, each expense once with the legs
+//                     that lock it — expense.settlementLockIds holds this
+//                     route's id for every one of them
+//
+// One doc, so a listener can never see half a route, a cancel is one
+// write, and a notification fires once. The debt math reads `legs` only
+// (projected query), so other routes' lineage never enters the ledger read.
 //
 // Create, inside ONE transaction:
 //   authorize (receiver / offset participant / owner for departed)
-//   → idempotency on leg 0 (same payload = success, else collision)
+//   → idempotency on the route doc (same payload = success, else collision)
 //   → FX rate + expectedFxRate CAS (network, before any ledger read)
 //   → read the route's ledger: expenses paidBy IN participants, every active
-//     settlement, every touched pair lock (sorted) — all fail-closed on caps
+//     settlement's legs, every touched pair lock (sorted) — fail-closed caps
 //   → per leg, in canonical order, against the ledger INCLUDING the legs
 //     already applied in this route: CAS on expectedRemainingMinor, capacity,
-//     lineage (appliedSources + lock set)
-//   → write legs + pair locks + ONE merged lock write per expense
-// Delete (/settlement-delete): any leg id → the whole route; a single leg
-// can never be cancelled on its own, or an intermediate's net would move.
-//
-// This is the only settlement write path: a plain pair settlement is a
-// one-leg route.
+//     lineage
+//   → write the route doc + pair locks + ONE lock write per expense
+// Delete (/settlement-delete): the route doc, as a whole — a single leg can
+// never be cancelled on its own, or an intermediate's net would move.
 import { getAdminToken, getProjectId }                      from './admin'
 import { readString, type FsValue }                         from './firestore'
 import { withTokenRetry, CascadeError }                     from './cascade'
@@ -43,14 +44,15 @@ import {
 }                                                           from './firestore-tx'
 import {
   canonicalRouteLegs,
+  capRouteSources,
   computePairwiseRemaining,
   pairRemaining,
-  routeLegId,
   routeParticipants,
   validateRouteShape,
   type CoreSettlement,
 }                                                           from '@tripmate/settlement-core'
 import { buildSettlementLineage }                           from './settlement-lineage'
+import { documentSize }                                     from './firestore-size'
 import {
   SettlementValidationError,
   type SettlementRouteCreateRequest,
@@ -59,11 +61,12 @@ import {
 import {
   EXPENSE_READ_LIMIT,
   MAX_COMMIT_WRITES,
-  MAX_APPLIED_SOURCES,
   authorizeMemberTx,
-  decodeSettlementForDomain,
+  decodeLockedExpenseIds,
+  decodeSettlementLegs,
   decodePairExpenseForSettlement,
   encodeAppliedSources,
+  encodeLockedExpenses,
   readInteger,
   isSoftDeleted,
 }                                                           from './settlement-codec'
@@ -88,48 +91,30 @@ export {
 }                                                           from './settlement-write-shared'
 export type { SettlementRouteCreateRequest, SettlementDeleteRequest }
 
-/** Whole-trip active settlement read for a route. Matches the client's
+/** Whole-trip active settlement read. Matches the client's
  *  SETTLEMENT_LIST_LIMIT: a trip past it can't be listed completely by the
  *  client either, so the ledger is refused rather than computed partially. */
-export const ROUTE_SETTLEMENT_READ_LIMIT = 500
+export const SETTLEMENT_READ_LIMIT = 500
+
+/** Ceiling for the route doc's stored size (firestore-size.ts), with
+ *  headroom under Firestore's 1 MiB. The read caps and
+ *  MAX_ROUTE_APPLIED_SOURCES keep even the largest route well below it
+ *  (pinned by a worst-case test); this is the backstop that turns a
+ *  miscount into a clean refusal instead of a commit Firestore rejects. */
+export const SETTLEMENT_DOC_BYTES_MAX = 1_000_000
 
 type RouteLegInput = SettlementRouteCreateRequest['legs'][number]
-
-// ─── Route header (the `route` map on every leg) ──────────────────
-
-/** The header as decoded from a leg doc. */
-export interface StoredRouteHeader {
-  id:        string
-  legIndex:  number
-  legCount:  number
-  kind:      'TRANSFER' | 'OFFSET'
-}
-
-/** `route.id` + leg position. Null when the doc carries no header at all;
- *  a header with an id but broken counts is a corrupt route (500). */
-function readRouteHeader(fields: Record<string, FsValue>): StoredRouteHeader | null {
-  const route = (fields.route as { mapValue?: { fields?: Record<string, FsValue> } } | undefined)?.mapValue?.fields
-  if (!route) return null
-  const id = readString(route, 'id')
-  if (!id) return null
-  const legIndex = readInteger(route, 'legIndex')
-  const legCount = readInteger(route, 'legCount')
-  const kind = readString(route, 'kind')
-  if (legIndex === null || legCount === null || legCount < 1 || legCount > 99
-      || (kind !== 'TRANSFER' && kind !== 'OFFSET')) {
-    throw new CascadeError(500, `settlement route header for ${id} is malformed`)
-  }
-  return { id, legIndex, legCount, kind }
-}
 
 function isForeign(req: SettlementRouteCreateRequest): req is SettlementRouteCreateRequest & ForeignIntent & { kind: 'TRANSFER' } {
   return req.kind === 'TRANSFER' && req.sourceCurrency !== undefined
 }
 
+const settlementPath = (tripId: string, routeId: string) => `trips/${tripId}/settlements/${routeId}`
+
 // ─── Authorization ────────────────────────────────────────────────
 
 /** Who may record a route. Returns true when the trip owner is recording on
- *  behalf of departed members (written as `route.ownerRecorded`).
+ *  behalf of departed members (written as `ownerRecorded`).
  *
  *    TRANSFER — the receiver (they confirm they got the money); or the
  *               owner when the receiver has LEFT the trip, since nobody
@@ -183,58 +168,50 @@ async function authorizeRoute(
 
 // ─── Idempotency ──────────────────────────────────────────────────
 
-/** Leg 0 already exists: the route committed before (all legs land in one
- *  commit). Same payload from the same caller → success without writing;
- *  anything else is an id collision. Never touches FX or the ledger, so a
- *  retry after a lost response succeeds even with the FX provider down. */
-async function routeIdempotency(
-  tx:        TxContext,
+/** The route doc already exists: same payload from the same caller →
+ *  success without writing (a retry after a lost response); anything else
+ *  is an id collision. Never touches FX or the ledger, so the retry
+ *  succeeds even with the FX provider down. */
+function routeIdempotency(
   req:       SettlementRouteCreateRequest,
   legs:      RouteLegInput[],
-  legIds:    string[],
-  firstLeg:  TxReadDoc,
+  existing:  TxReadDoc,
   callerUid: string,
-): Promise<TxResult<RouteCreateResult>> {
-  const collision = () => new SettlementValidationError(
-    'routeId',
-    'routeId already exists with a different payload (id collision or replay attempt)',
-  )
-  if (isSoftDeleted(firstLeg.fields)) {
+): TxResult<RouteCreateResult> {
+  if (isSoftDeleted(existing.fields)) {
     throw new SettlementValidationError('routeId', 'routeId already exists but has been cancelled')
   }
-  const header = (firstLeg.fields.route as { mapValue?: { fields?: Record<string, FsValue> } } | undefined)?.mapValue?.fields
-  if (!header) throw collision()
+  const f = existing.fields
+  const stored = (() => {
+    try { return decodeSettlementLegs(f) } catch { return null }
+  })()
   const same =
-       readString(header, 'id') === req.routeId
-    && readString(header, 'kind') === req.kind
-    && readInteger(header, 'legCount') === legs.length
-    && readString(firstLeg.fields, 'settledBy') === callerUid
-    && (readString(header, 'note') ?? '') === (req.note ?? '')
+       stored !== null
+    && stored.length === legs.length
+    && stored.every((leg, i) =>
+         leg.fromUid === legs[i]!.fromUid && leg.toUid === legs[i]!.toUid && leg.amountMinor === legs[i]!.amountMinor)
+    && readString(f, 'kind') === req.kind
+    && readString(f, 'settledBy') === callerUid
+    && (readString(f, 'note') ?? '') === (req.note ?? '')
     && (req.kind !== 'TRANSFER' || (
-         readString(header, 'payerUid') === req.payerUid
-      && readString(header, 'receiverUid') === req.receiverUid
-      && readInteger(header, 'amountMinor') === req.amountMinor
-      && readString(header, 'sourceCurrency') === req.sourceCurrency
-      && readString(header, 'settledOn') === req.settledOn))
-  if (!same) throw collision()
-  for (let i = 0; i < legs.length; i++) {
-    const doc = i === 0 ? firstLeg : await tx.get(`trips/${req.tripId}/settlements/${legIds[i]}`)
-    const leg = legs[i]!
-    if (!doc.exists
-        || readString(doc.fields, 'fromUid') !== leg.fromUid
-        || readString(doc.fields, 'toUid') !== leg.toUid
-        || readInteger(doc.fields, 'amountMinor') !== leg.amountMinor) {
-      throw collision()
-    }
+         readString(f, 'payerUid') === req.payerUid
+      && readString(f, 'receiverUid') === req.receiverUid
+      && readInteger(f, 'amountMinor') === req.amountMinor
+      && readString(f, 'sourceCurrency') === req.sourceCurrency
+      && readString(f, 'settledOn') === req.settledOn))
+  if (!same) {
+    throw new SettlementValidationError(
+      'routeId',
+      'routeId already exists with a different payload (id collision or replay attempt)',
+    )
   }
-  return { writes: [], result: { routeId: req.routeId, settlementIds: legIds } }
+  return { writes: [], result: { routeId: req.routeId } }
 }
 
 // ─── Create ───────────────────────────────────────────────────────
 
 export interface RouteCreateResult {
-  routeId:       string
-  settlementIds: string[]
+  routeId: string
 }
 
 export async function settlementRouteCreate(
@@ -261,7 +238,7 @@ async function doRouteCreate(
     throw new SettlementValidationError('legs', `invalid route: ${shapeError}`)
   }
   const participants = routeParticipants(legs)
-  const legIds = legs.map((_, i) => routeLegId(req.routeId, i))
+  const docPath = settlementPath(req.tripId, req.routeId)
 
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
@@ -270,12 +247,12 @@ async function doRouteCreate(
     const ctx = await authorizeMemberTx(tx, req.tripId, callerUid)
     const ownerRecorded = await authorizeRoute(tx, req, ctx, callerUid, participants)
 
-    const firstLeg = await tx.get(`trips/${req.tripId}/settlements/${legIds[0]}`)
-    if (firstLeg.exists) return routeIdempotency(tx, req, legs, legIds, firstLeg, callerUid)
+    const existing = await tx.get(docPath)
+    if (existing.exists) return routeIdempotency(req, legs, existing, callerUid)
 
     // FX before any ledger doc enters the read set: a slow provider must not
-    // hold the hot docs' conflict window open (same reasoning as the pair
-    // endpoint). An FX failure here is definitively pre-commit.
+    // hold the hot docs' conflict window open. An FX failure here is
+    // definitively pre-commit.
     let foreignRate: ForeignRate | undefined
     if (isForeign(req)) foreignRate = await resolveForeignRate(req, ctx, serviceAccountJson)
 
@@ -289,11 +266,14 @@ async function doRouteCreate(
         filters:    [{ fieldPath: 'paidBy', op: 'IN', value: participantValues }],
         limit:      EXPENSE_READ_LIMIT + 1,
       }),
+      // The ledger needs each settlement's legs and order, nothing else:
+      // other routes' lineage never enters this read.
       tx.runQuery({
         parent:     `trips/${req.tripId}`,
         collection: 'settlements',
         filters:    [{ fieldPath: 'deletedAt', op: 'IS_NULL' }],
-        limit:      ROUTE_SETTLEMENT_READ_LIMIT + 1,
+        select:     ['legs', 'createdAt'],
+        limit:      SETTLEMENT_READ_LIMIT + 1,
       }),
     ])
     // Pair locks one by one in sorted key order: two routes sharing pairs
@@ -304,7 +284,7 @@ async function doRouteCreate(
     if (expenseReads.length > EXPENSE_READ_LIMIT) {
       throw new CascadeError(409, 'too many expenses to compute this route safely', 'PAIR_LEDGER_TOO_LARGE')
     }
-    if (settlementReads.length > ROUTE_SETTLEMENT_READ_LIMIT) {
+    if (settlementReads.length > SETTLEMENT_READ_LIMIT) {
       throw new CascadeError(409, 'too many settlements to compute this route safely', 'PAIR_LEDGER_TOO_LARGE')
     }
 
@@ -327,7 +307,7 @@ async function doRouteCreate(
       }
     })
     const coreExpenses = pairExpenses.map(e => ({ amountMinor: e.amountMinor, paidBy: e.paidBy, splits: e.splits }))
-    const settlements = settlementReads.map(d => decodeSettlementForDomain(d.fields))
+    const settlements = settlementReads.flatMap(d => decodeSettlementLegs(d.fields))
 
     // Sequential consumption: each leg is checked and attributed against the
     // ledger with this route's earlier legs already applied, so a later
@@ -357,105 +337,94 @@ async function doRouteCreate(
     if (isForeign(req)) {
       // The receiver got `amountMinor` worth of trip currency in another
       // currency; the legs stay in trip currency (nobody in the middle paid
-      // in foreign money), so the foreign trio lives on the route header only.
+      // in foreign money), so the foreign trio describes the route only.
       foreign = deriveForeignArtifacts(req, ctx, req.amountMinor, foreignRate!)
       if (foreign.sourceAmountMinor <= 0) {
         throw new SettlementValidationError('sourceCurrency', 'amount is too small to settle in the chosen source currency')
       }
     }
 
-    const header: Record<string, FsValue> = {
-      id:              { stringValue: req.routeId },
+    const sources = capRouteSources(legLineage.map(l => l.appliedSources))
+    const locked = encodeLockedExpenses(legLineage.map(l => l.lockExpenseIds))
+
+    const fields: Record<string, FsValue> = {
+      tripId:          { stringValue: req.tripId },
       kind:            { stringValue: req.kind },
-      legCount:        { integerValue: String(legs.length) },
+      currency:        { stringValue: ctx.currency },
       participantUids: encodeStringArray(participants),
+      legs: {
+        arrayValue: {
+          values: legs.map(leg => ({ mapValue: { fields: {
+            fromUid:     { stringValue: leg.fromUid },
+            toUid:       { stringValue: leg.toUid },
+            amountMinor: { integerValue: String(leg.amountMinor) },
+          } } })),
+        },
+      },
+      settledBy:       { stringValue: callerUid },
+      deletedAt:       { nullValue: null },
     }
     if (req.kind === 'TRANSFER') {
-      header.payerUid    = { stringValue: req.payerUid }
-      header.receiverUid = { stringValue: req.receiverUid }
-      header.amountMinor = { integerValue: String(req.amountMinor) }
+      fields.payerUid    = { stringValue: req.payerUid }
+      fields.receiverUid = { stringValue: req.receiverUid }
+      fields.amountMinor = { integerValue: String(req.amountMinor) }
     }
-    if (ownerRecorded) header.ownerRecorded = { booleanValue: true }
-    if (req.note != null && req.note !== '') header.note = { stringValue: req.note }
+    if (ownerRecorded) fields.ownerRecorded = { booleanValue: true }
+    if (req.note != null && req.note !== '') fields.note = { stringValue: req.note }
     if (foreign) {
-      header.sourceCurrency    = { stringValue:  foreign.sourceCurrency }
-      header.sourceAmountMinor = { integerValue: String(foreign.sourceAmountMinor) }
-      header.settledOn         = { stringValue:  foreign.settledOn }
-      header.fxSnapshot        = encodeFxSnapshot(foreign.fxSnapshot)
+      fields.sourceCurrency    = { stringValue:  foreign.sourceCurrency }
+      fields.sourceAmountMinor = { integerValue: String(foreign.sourceAmountMinor) }
+      fields.settledOn         = { stringValue:  foreign.settledOn }
+      fields.fxSnapshot        = encodeFxSnapshot(foreign.fxSnapshot)
+    }
+    if (sources.some(list => list.length > 0)) fields.appliedSources = encodeAppliedSources(sources)
+    if (locked.ids.length > 0) fields.lockedExpenses = locked.value
+
+    const updateTransforms: NonNullable<TxUpdateWrite['updateTransforms']> = [
+      { fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' },
+    ]
+    if (foreign) updateTransforms.push({ fieldPath: 'fxSnapshot.fetchedAt', setToServerValue: 'REQUEST_TIME' })
+    if (documentSize(docPath, fields, updateTransforms.map(t => t.fieldPath)) > SETTLEMENT_DOC_BYTES_MAX) {
+      throw new CascadeError(409, 'this settlement is too large to store as one record', 'PAIR_LEDGER_TOO_LARGE')
+    }
+    const routeWrite: TxWrite = {
+      document:        docResourceName(projectId, docPath),
+      fields,
+      currentDocument: { exists: false },
+      updateTransforms,
     }
 
-    const legWrites: TxWrite[] = legs.map((leg, i) => {
-      const lineage = legLineage[i]!
-      const fields: Record<string, FsValue> = {
-        tripId:      { stringValue: req.tripId },
-        fromUid:     { stringValue: leg.fromUid },
-        toUid:       { stringValue: leg.toUid },
-        amountMinor: { integerValue: String(leg.amountMinor) },
-        currency:    { stringValue: ctx.currency },
-        settledBy:   { stringValue: callerUid },
-        deletedAt:   { nullValue: null },
-        route:       { mapValue: { fields: { ...header, legIndex: { integerValue: String(i) } } } },
-      }
-      const sources = lineage.appliedSources.slice(0, MAX_APPLIED_SOURCES)
-      if (sources.length > 0) fields.appliedSources = encodeAppliedSources(sources)
-      if (lineage.lockExpenseIds.length > 0) fields.appliedExpenseIds = encodeStringArray(lineage.lockExpenseIds)
-      const updateTransforms: NonNullable<TxUpdateWrite['updateTransforms']> = [
-        { fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' },
-      ]
-      if (foreign) updateTransforms.push({ fieldPath: 'route.fxSnapshot.fetchedAt', setToServerValue: 'REQUEST_TIME' })
-      return {
-        document:        docResourceName(projectId, `trips/${req.tripId}/settlements/${legIds[i]}`),
-        fields,
-        currentDocument: { exists: false },
-        updateTransforms,
-      }
-    })
+    const lockWrites = lockPaths.map(path => buildLockWrite(projectId, path, req.routeId))
 
-    const lockWrites = lockPaths.map(path => buildLockWrite(projectId, path, legIds[0]!))
-
-    // ONE write per expense carrying every leg id that locks it. Two legs
-    // (A→B and C→B) can lock the same expense B paid; two separate writes
-    // of the field in one commit would let the second overwrite the first
-    // and silently drop a lock id.
-    const lockersByExpense = new Map<string, string[]>()
-    legLineage.forEach((lineage, i) => {
-      for (const expenseId of lineage.lockExpenseIds) {
-        const list = lockersByExpense.get(expenseId) ?? []
-        list.push(legIds[i]!)
-        lockersByExpense.set(expenseId, list)
-      }
-    })
+    // ONE write per locked expense, adding this route's id once however many
+    // of its legs lock the expense.
     const currentLocks = new Map(activeExpenseReads.map((d, i) => [
       pairExpenses[i]!.id,
       decodeStringArrayField(d.fields, 'settlementLockIds'),
     ]))
-    const expenseLockWrites: TxWrite[] = [...lockersByExpense.keys()].sort().map(expenseId => {
-      const existing = currentLocks.get(expenseId) ?? []
-      const next = [...existing, ...lockersByExpense.get(expenseId)!.filter(id => !existing.includes(id))]
+    const expenseLockWrites: TxWrite[] = locked.ids.map(expenseId => {
+      const existingLocks = currentLocks.get(expenseId) ?? []
       return {
         document:        docResourceName(projectId, `trips/${req.tripId}/expenses/${expenseId}`),
-        fields:          { settlementLockIds: encodeStringArray(next) },
+        fields:          { settlementLockIds: encodeStringArray([...existingLocks.filter(id => id !== req.routeId), req.routeId]) },
         updateMask:      ['settlementLockIds'],
         currentDocument: { exists: true },
       }
     })
 
-    const writes = [...legWrites, ...lockWrites, ...expenseLockWrites]
+    const writes = [routeWrite, ...lockWrites, ...expenseLockWrites]
     if (writes.length > MAX_COMMIT_WRITES) {
       throw new CascadeError(409, 'this route locks too many expenses to record in one atomic write', 'PAIR_LEDGER_TOO_LARGE')
     }
-    return { writes, result: { routeId: req.routeId, settlementIds: legIds } }
+    return { writes, result: { routeId: req.routeId } }
   })
 }
 
 // ─── Delete: /settlement-delete ───────────────────────────────────
 
-/** Cancel a route, given any one of its leg ids. Recorder (settledBy, the
- *  same on every leg) or the trip owner. Missing / already-cancelled →
- *  no-op success, so a double tap or a retry after a lost response is
- *  harmless. Every settlement is a route leg (one-leg routes included):
- *  a doc without a header is corrupt and is refused rather than
- *  cancelled leg-by-leg. */
+/** Cancel a route — the whole doc, every leg at once. Recorder (settledBy)
+ *  or the trip owner. Missing / already-cancelled → no-op success, so a
+ *  double tap or a retry after a lost response is harmless. */
 export async function settlementDelete(
   callerUid:          string,
   req:                SettlementDeleteRequest,
@@ -471,12 +440,13 @@ async function doDelete(
 ): Promise<{ ok: true }> {
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
+  const docPath     = settlementPath(req.tripId, req.settlementId)
 
   await runFirestoreTransaction(accessToken, projectId, async (tx) => {
     const [trip, member, settlement] = await Promise.all([
       tx.get(`trips/${req.tripId}`),
       tx.get(`trips/${req.tripId}/members/${callerUid}`),
-      tx.get(`trips/${req.tripId}/settlements/${req.settlementId}`),
+      tx.get(docPath),
     ])
     checkTripAccess(trip.exists ? trip.fields : null, member.exists ? member.fields : null, callerUid)
     if (!settlement.exists) return { writes: [], result: undefined }
@@ -491,63 +461,39 @@ async function doDelete(
     // After authz, so a stranger can't probe cancellation state.
     if (isSoftDeleted(settlement.fields)) return { writes: [], result: undefined }
 
-    const header = readRouteHeader(settlement.fields)
-    if (!header) throw new CascadeError(500, `settlement ${req.settlementId} has no route header`)
-    return { writes: await buildRouteDeleteWrites(tx, projectId, req.tripId, header, callerUid), result: undefined }
+    // Fail-closed: a doc without decodable legs is corrupt (500), never
+    // cancelled without knowing which pairs it touched.
+    const legs = decodeSettlementLegs(settlement.fields)
+    const lockPaths = [...new Set(legs.map(l => pairLockPath(req.tripId, l.fromUid, l.toUid)))].sort()
+    for (const path of lockPaths) await tx.get(path)
+
+    const unlockWrites: TxWrite[] = []
+    for (const expenseId of decodeLockedExpenseIds(settlement.fields)) {
+      const doc = await tx.get(`trips/${req.tripId}/expenses/${expenseId}`)
+      if (!doc.exists) continue
+      const existingLocks = decodeStringArrayField(doc.fields, 'settlementLockIds')
+      if (!existingLocks.includes(req.settlementId)) continue
+      unlockWrites.push({
+        document:        docResourceName(projectId, `trips/${req.tripId}/expenses/${expenseId}`),
+        fields:          { settlementLockIds: encodeStringArray(existingLocks.filter(id => id !== req.settlementId)) },
+        updateMask:      ['settlementLockIds'],
+        currentDocument: { exists: true },
+      })
+    }
+
+    const softDelete: TxWrite = {
+      document:         docResourceName(projectId, docPath),
+      fields:           { deletedBy: { stringValue: callerUid } },
+      updateMask:       ['deletedBy'],
+      currentDocument:  { exists: true },
+      updateTransforms: [{ fieldPath: 'deletedAt', setToServerValue: 'REQUEST_TIME' }],
+    }
+    const lockWrites = lockPaths.map(path => buildLockWrite(projectId, path, req.settlementId))
+    const writes = [softDelete, ...lockWrites, ...unlockWrites]
+    if (writes.length > MAX_COMMIT_WRITES) {
+      throw new CascadeError(409, 'this route locks too many expenses to cancel in one atomic write', 'PAIR_LEDGER_TOO_LARGE')
+    }
+    return { writes, result: undefined }
   })
   return { ok: true }
-}
-
-/** Writes that cancel a WHOLE route, given any one of its legs (already
- *  read and authorized by the caller). All legs are soft-deleted together,
- *  every pair lock is touched in sorted order, and each locked expense
- *  loses every one of this route's leg ids in a single write. Legs already
- *  cancelled are skipped, so a repeat is a no-op. */
-async function buildRouteDeleteWrites(
-  tx:        TxContext,
-  projectId: string,
-  tripId:    string,
-  header:    StoredRouteHeader,
-  callerUid: string,
-): Promise<TxWrite[]> {
-  const legIds = Array.from({ length: header.legCount }, (_, i) => routeLegId(header.id, i))
-  const legDocs: Array<{ id: string; doc: TxReadDoc }> = []
-  for (const id of legIds) legDocs.push({ id, doc: await tx.get(`trips/${tripId}/settlements/${id}`) })
-  const active = legDocs.filter(({ doc }) => doc.exists && !isSoftDeleted(doc.fields))
-  if (active.length === 0) return []
-
-  const lockPaths = [...new Set(active.map(({ doc }) =>
-    pairLockPath(tripId, readString(doc.fields, 'fromUid') ?? '', readString(doc.fields, 'toUid') ?? '')))].sort()
-  for (const path of lockPaths) await tx.get(path)
-
-  const routeLegIds = new Set(legIds)
-  const expenseIds = [...new Set(active.flatMap(({ doc }) => decodeStringArrayField(doc.fields, 'appliedExpenseIds')))].sort()
-  const unlockWrites: TxWrite[] = []
-  for (const expenseId of expenseIds) {
-    const doc = await tx.get(`trips/${tripId}/expenses/${expenseId}`)
-    if (!doc.exists) continue
-    const existing = decodeStringArrayField(doc.fields, 'settlementLockIds')
-    const next = existing.filter(id => !routeLegIds.has(id))
-    if (next.length === existing.length) continue
-    unlockWrites.push({
-      document:        docResourceName(projectId, `trips/${tripId}/expenses/${expenseId}`),
-      fields:          { settlementLockIds: encodeStringArray(next) },
-      updateMask:      ['settlementLockIds'],
-      currentDocument: { exists: true },
-    })
-  }
-
-  const softDeletes: TxWrite[] = active.map(({ id }) => ({
-    document:        docResourceName(projectId, `trips/${tripId}/settlements/${id}`),
-    fields:          { deletedBy: { stringValue: callerUid } },
-    updateMask:      ['deletedBy'],
-    currentDocument: { exists: true },
-    updateTransforms: [{ fieldPath: 'deletedAt', setToServerValue: 'REQUEST_TIME' }],
-  }))
-  const lockWrites = lockPaths.map(path => buildLockWrite(projectId, path, legIds[0]!))
-  const writes = [...softDeletes, ...lockWrites, ...unlockWrites]
-  if (writes.length > MAX_COMMIT_WRITES) {
-    throw new CascadeError(409, 'this route locks too many expenses to cancel in one atomic write', 'PAIR_LEDGER_TOO_LARGE')
-  }
-  return writes
 }

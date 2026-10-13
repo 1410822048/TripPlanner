@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildSettlementLineage, collapseAppliedSources, type LineageExpense } from './index'
+import { buildSettlementLineage, capRouteSources, collapseAppliedSources, type LineageExpense } from './index'
 
 // The Worker's spec (workers/ocr/test/settlement-lineage.spec.ts) covers the
 // materializer-bound behaviour in depth; these pin what the shared core
@@ -109,5 +109,38 @@ describe('buildSettlementLineage — lock set and edge cases', () => {
     })
     expect(buildSettlementLineage([e], [], 'A', 'B', 50, attribute).appliedSources)
       .toEqual([{ expenseId: 'e', expenseTitle: 'e', itemId: 'ghost-item', itemName: 'ghost-item', amountMinor: 50 }])
+  })
+})
+
+describe('capRouteSources', () => {
+  const list = (n: number, tag: string) => Array.from({ length: n }, (_, i) => `${tag}${i}`)
+
+  it('keeps everything that fits', () => {
+    const legs = [list(3, 'a'), list(0, 'b'), list(2, 'c')]
+    expect(capRouteSources(legs, 5)).toEqual(legs)
+  })
+
+  it('shares the budget max-min fairly, oldest sources first, small legs untouched', () => {
+    const capped = capRouteSources([list(10, 'a'), list(2, 'b'), list(10, 'c')], 9)
+    expect(capped).toEqual([['a0', 'a1', 'a2', 'a3'], ['b0', 'b1'], ['c0', 'c1', 'c2']])
+  })
+
+  it('fills the budget exactly, keeps prefixes and never lets one trimmed leg get 2+ more than another (property)', () => {
+    let seed = 7
+    const rand = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31
+    for (let round = 0; round < 300; round++) {
+      const legs = Array.from({ length: 1 + Math.floor(rand() * 45) }, (_, i) => list(Math.floor(rand() * 120), `${i}:`))
+      const budget = Math.floor(rand() * 500)
+      const capped = capRouteSources(legs, budget)
+      const total = legs.reduce((s, l) => s + l.length, 0)
+      expect(capped.reduce((s, l) => s + l.length, 0)).toBe(Math.min(total, budget))
+      capped.forEach((l, i) => expect(l).toEqual(legs[i]!.slice(0, l.length)))
+      const trimmed = capped.filter((l, i) => l.length < legs[i]!.length).map(l => l.length)
+      if (trimmed.length === 0) continue
+      const floor = Math.min(...trimmed)
+      expect(Math.max(...trimmed) - floor).toBeLessThanOrEqual(1)
+      // A leg kept whole never holds more than a trimmed one was allowed.
+      capped.forEach((l, i) => { if (l.length === legs[i]!.length) expect(l.length).toBeLessThanOrEqual(floor + 1) })
+    }
   })
 })

@@ -3,8 +3,8 @@
 // settlementService is a thin wrapper around workerFetch; what is worth
 // locking down is the wire contract: `settledBy` and the optimistic
 // fields never cross it (the Worker derives settledBy from the token),
-// legs go in canonical order (the Worker assigns leg doc ids by it, and so
-// does the client overlay), and the route id is the caller's.
+// legs go in canonical order (the Worker stores them, and indexes lineage,
+// in that order), and the route id — the doc id — is the caller's.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -58,11 +58,11 @@ const TRANSFER = {
     { fromUid: 'a', toUid: 'b', amountMinor: 300, expectedRemainingMinor: 300 },
   ],
 }
-const OPTIMISTIC = { currency: 'JPY', settledBy: 'c', pendingAppliedExpenseIds: [['e1'], ['e2']] }
+const OPTIMISTIC = { currency: 'JPY', settledBy: 'c', pendingLocks: [{ expenseId: 'e1', legIndexes: [0] }] }
 
 describe('createSettlementRoute', () => {
   it('posts the route in canonical leg order, with the caller-minted routeId and nothing local', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse({ ok: true, routeId: 'r-1', settlementIds: ['r-1-00', 'r-1-01'] }))
+    fetchMock.mockResolvedValueOnce(okResponse({ ok: true, routeId: 'r-1' }))
     await createSettlementRoute(TRIP_ID, { routeId: 'r-1', route: TRANSFER, optimistic: OPTIMISTIC })
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
@@ -70,7 +70,7 @@ describe('createSettlementRoute', () => {
     expect(init.method).toBe('POST')
     expect(sentBody()).toEqual({
       tripId: TRIP_ID, routeId: 'r-1', kind: 'TRANSFER', payerUid: 'a', receiverUid: 'c', amountMinor: 300,
-      // The Worker assigns leg doc ids by this order; so does the overlay.
+      // The Worker stores the legs (and indexes lineage) in this order.
       legs: [
         { fromUid: 'a', toUid: 'b', amountMinor: 300, expectedRemainingMinor: 300 },
         { fromUid: 'b', toUid: 'c', amountMinor: 300, expectedRemainingMinor: 900 },

@@ -2,8 +2,8 @@
 // draw down (the DISPLAY sources), and which expenses must be LOCKED because
 // editing them would re-open the settled net".
 //
-// Shared by the Worker (authoritative: written onto every settlement doc as
-// appliedSources / appliedExpenseIds) and the client (preview: the payment
+// Shared by the Worker (authoritative: written onto the settlement doc as
+// appliedSources / lockedExpenses) and the client (preview: the payment
 // suggestion shows which expenses each leg will clear). One implementation,
 // so the preview cannot drift from what the Worker records.
 //
@@ -224,4 +224,35 @@ export function buildSettlementLineage<E extends LineageExpense>(
   for (const source of appliedSources) lockIds.add(source.expenseId)
 
   return { appliedSources, lockExpenseIds: [...lockIds] }
+}
+
+/** Display sources one settlement doc keeps, across all of its legs. A
+ *  route is ONE doc (≤ 1 MiB): at ≤ ~1.4 KB per source (100-char title,
+ *  200-char item name, ids) this budget keeps the doc well below the limit
+ *  together with the ≤ 500-expense lock set. Locks never depend on it —
+ *  lockedExpenses is always complete; only the display list is trimmed, and
+ *  the UI shows the untraced remainder of a leg as such. */
+export const MAX_ROUTE_APPLIED_SOURCES = 400
+
+/** Trim each leg's display sources to a shared `budget`, max-min fair: the
+ *  largest per-leg quota q with Σ min(len, q) ≤ budget, then one more each,
+ *  in leg order, for legs still cut short. Every leg keeps its OLDEST
+ *  sources (the lineage order), and a leg that fits is never trimmed.
+ *  Deterministic, so the client preview equals what the Worker records. */
+export function capRouteSources<T>(perLeg: ReadonlyArray<readonly T[]>, budget = MAX_ROUTE_APPLIED_SOURCES): T[][] {
+  const used = (q: number) => perLeg.reduce((sum, list) => sum + Math.min(list.length, q), 0)
+  let lo = 0
+  let hi = perLeg.reduce((max, list) => Math.max(max, list.length), 0)
+  if (used(hi) <= budget) return perLeg.map(list => [...list])
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2)
+    if (used(mid) <= budget) lo = mid
+    else hi = mid - 1
+  }
+  let spare = budget - used(lo)
+  return perLeg.map(list => {
+    let take = Math.min(list.length, lo)
+    if (spare > 0 && list.length > lo) { take++; spare-- }
+    return list.slice(0, take)
+  })
 }

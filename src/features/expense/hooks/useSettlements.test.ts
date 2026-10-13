@@ -25,7 +25,7 @@ vi.mock('../services/settlementService', () => ({
 import { OVERLAY_AMBIGUOUS_SETTLE_MS } from '@/hooks/listOverlay'
 import {
   SETTLEMENT_DELETE_RETRY_DELAY_MS,
-  optimisticRouteRows,
+  optimisticRouteRow,
   settlementOverlay,
   useCreateSettlementRoute,
   useDeleteSettlement,
@@ -198,10 +198,10 @@ describe('useDeleteSettlement overlay flow', () => {
   })
 })
 
-describe('routed settlements: every leg moves together', () => {
+describe('a settlement is one row, however many legs its route has', () => {
   const ROUTE = {
     kind: 'TRANSFER' as const, payerUid: 'a', receiverUid: 'c', amountMinor: 300,
-    // Out of canonical order on purpose: leg ids follow canonical order.
+    // Out of canonical order on purpose: the row stores canonical order.
     legs: [
       { fromUid: 'b', toUid: 'c', amountMinor: 300, expectedRemainingMinor: 300 },
       { fromUid: 'a', toUid: 'b', amountMinor: 300, expectedRemainingMinor: 500 },
@@ -209,7 +209,7 @@ describe('routed settlements: every leg moves together', () => {
   }
   const VARS = {
     routeId: 'r1', route: ROUTE, note: '晚餐',
-    optimistic: { currency: 'JPY', settledBy: 'c', pendingAppliedExpenseIds: [['e1'], ['e2']] },
+    optimistic: { currency: 'JPY', settledBy: 'c', pendingLocks: [{ expenseId: 'e1', legIndexes: [0] }, { expenseId: 'e2', legIndexes: [0, 1] }] },
   }
 
   function renderCreate(qc = makeQueryClient()) {
@@ -218,51 +218,67 @@ describe('routed settlements: every leg moves together', () => {
     return renderHook(() => useCreateSettlementRoute(TRIP), { wrapper })
   }
 
-  it('optimistic rows carry the Worker\'s leg ids, header and pending locks', () => {
-    const rows = optimisticRouteRows(TRIP, VARS)
-    expect(rows.map(r => [r.id, r.fromUid, r.toUid, r.appliedExpenseIds])).toEqual([
-      ['r1-00', 'a', 'b', ['e1']],
-      ['r1-01', 'b', 'c', ['e2']],
-    ])
-    expect(rows[1]!.route).toMatchObject({
-      id: 'r1', legIndex: 1, legCount: 2, kind: 'TRANSFER', payerUid: 'a', receiverUid: 'c',
-      amountMinor: 300, participantUids: ['a', 'b', 'c'], note: '晚餐',
+  it('the optimistic row carries the Worker\'s id, canonical legs and pending locks', () => {
+    const r = optimisticRouteRow(TRIP, VARS)
+    expect(r).toMatchObject({
+      id: 'r1', tripId: TRIP, kind: 'TRANSFER', currency: 'JPY', payerUid: 'a', receiverUid: 'c', amountMinor: 300,
+      participantUids: ['a', 'b', 'c'], note: '晚餐', settledBy: 'c', deletedAt: null,
+      lockedExpenses: [{ expenseId: 'e1', legIndexes: [0] }, { expenseId: 'e2', legIndexes: [0, 1] }],
     })
-    expect(rows.every(r => r.settledBy === 'c' && r.deletedAt === null)).toBe(true)
+    expect(r.legs).toEqual([
+      { fromUid: 'a', toUid: 'b', amountMinor: 300 },
+      { fromUid: 'b', toUid: 'c', amountMinor: 300 },
+    ])
+    expect(r.ownerRecorded).toBeUndefined()
   })
 
-  it('shows every leg while in flight and drops them all on a definitive failure', async () => {
+  it('an optimistic offset has no payer, and a foreign transfer shows the received amount', () => {
+    const offset = optimisticRouteRow(TRIP, {
+      routeId: 'o1', route: { kind: 'OFFSET', participantUids: ['a', 'b', 'c'], legs: ROUTE.legs.map(l => ({ ...l, amountMinor: 300, expectedRemainingMinor: 300 })) },
+      optimistic: { currency: 'JPY', settledBy: 'c', ownerRecorded: true, pendingLocks: [] },
+    })
+    expect(offset.payerUid).toBeUndefined()
+    expect(offset.amountMinor).toBeUndefined()
+    expect(offset.ownerRecorded).toBe(true)
+    const foreign = optimisticRouteRow(TRIP, {
+      ...VARS,
+      foreign: { sourceCurrency: 'USD', settledOn: '2026-10-10', expectedFxRate: { rateDecimal: '150', rateDate: '2026-10-10' } },
+      optimistic: { ...VARS.optimistic, sourceAmountMinor: 200 },
+    })
+    expect(foreign).toMatchObject({ sourceCurrency: 'USD', sourceAmountMinor: 200, settledOn: '2026-10-10' })
+  })
+
+  it('shows the row while in flight and drops it on a definitive failure', async () => {
     let reject!: (e: unknown) => void
     serviceMocks.createSettlementRoute.mockReturnValueOnce(new Promise((_, r) => { reject = r }))
     const hook = renderCreate()
     act(() => { hook.result.current.mutate(VARS) })
-    await waitFor(() => expect(visibleIds([])).toEqual(['r1-01', 'r1-00']))
+    await waitFor(() => expect(visibleIds([])).toEqual(['r1']))
     await act(async () => { reject(rejectedErr()); await Promise.resolve() })
     await waitFor(() => expect(visibleIds([])).toEqual([]))
   })
 
-  it('an ambiguous failure keeps every leg until server truth decides', async () => {
+  it('an ambiguous failure keeps the row until server truth decides', async () => {
     vi.useFakeTimers()
     serviceMocks.createSettlementRoute.mockRejectedValueOnce(ambiguousErr())
-    serviceMocks.getSettlementsByTripFromServer.mockResolvedValue([row('r1-00'), row('r1-01')])
+    serviceMocks.getSettlementsByTripFromServer.mockResolvedValue([row('r1')])
     const hook = renderCreate()
     await act(async () => { await hook.result.current.mutateAsync(VARS).catch(() => {}) })
-    expect(visibleIds([])).toEqual(['r1-01', 'r1-00'])
+    expect(visibleIds([])).toEqual(['r1'])
     await act(async () => { await vi.advanceTimersByTimeAsync(OVERLAY_AMBIGUOUS_SETTLE_MS + 50) })
-    // The commit did land: the real rows take over, nothing duplicated.
-    expect(visibleIds(['r1-00', 'r1-01'])).toEqual(['r1-00', 'r1-01'])
+    // The commit did land: the real row takes over, nothing duplicated.
+    expect(visibleIds(['r1'])).toEqual(['r1'])
   })
 
-  it('cancelling a route hides all of its legs at once and restores them all on refusal', async () => {
+  it('cancelling hides the row and restores it on refusal, with one request', async () => {
     serviceMocks.deleteSettlement.mockRejectedValueOnce(rejectedErr())
     const hook = renderDeleteMutation()
     let pending!: Promise<unknown>
-    act(() => { pending = hook.result.current.mutateAsync({ settlementId: 'r1-00', hideIds: ['r1-00', 'r1-01'] }).catch(() => {}) })
-    expect(visibleIds(['r1-00', 'r1-01', 'other'])).toEqual(['other'])
+    act(() => { pending = hook.result.current.mutateAsync({ settlementId: 'r1' }).catch(() => {}) })
+    expect(visibleIds(['r1', 'other'])).toEqual(['other'])
     await act(async () => { await pending })
-    expect(visibleIds(['r1-00', 'r1-01', 'other'])).toEqual(['r1-00', 'r1-01', 'other'])
-    // Only one request: the Worker cancels the route from any one leg.
+    expect(visibleIds(['r1', 'other'])).toEqual(['r1', 'other'])
     expect(serviceMocks.deleteSettlement).toHaveBeenCalledTimes(1)
-    expect(serviceMocks.deleteSettlement).toHaveBeenCalledWith(TRIP, 'r1-00')
+    expect(serviceMocks.deleteSettlement).toHaveBeenCalledWith(TRIP, 'r1')
   })
 })

@@ -7,12 +7,10 @@
 // back ambiguous — the request may or may not have committed. That is why
 // confirmation reads the server rather than trusting a timer.
 //
-// Every record is a routed settlement (a plain pair settlement is a
-// one-leg route), stored as one doc per leg. Both mutations therefore own
-// one overlay op PER LEG, settled together — the Worker commits or cancels
-// every leg of a route at once.
+// Every record is a route (a plain pair settlement is a one-leg route)
+// stored as ONE doc, so each mutation owns exactly one overlay op.
 import { useMutation } from '@tanstack/react-query'
-import { canonicalRouteLegs, routeLegId, routeParticipants } from '@tripmate/settlement-core'
+import { canonicalRouteLegs, routeParticipants } from '@tripmate/settlement-core'
 import {
   getSettlementsByTrip,
   getSettlementsByTripFromServer,
@@ -50,22 +48,22 @@ export const useSettlements = createRealtimeListHook<SettlementRecord>({
   overlay:         settlementOverlay,
 })
 
-/** The optimistic leg rows of a route: the same ids (routeLegId over
- *  canonical leg order) and the same `route` header the Worker writes, so
- *  once server truth carries them the overlay yields row by row. */
-export function optimisticRouteRows(
+/** The optimistic row of a route: the same id (the doc id) and the same
+ *  fields the Worker writes, minus what only the Worker derives (lineage,
+ *  the FX snapshot). Once server truth carries the id the overlay yields. */
+export function optimisticRouteRow(
   tripId: string,
   vars:   CreateSettlementRouteVariables,
-): SettlementRecord[] {
+): SettlementRecord {
   const { route, optimistic } = vars
   const legs = canonicalRouteLegs(route.legs)
-  const createdAt = mockTimestampNow()
-  const header: NonNullable<SettlementRecord['route']> = {
+  return {
     id:              vars.routeId,
-    legIndex:        0,
-    legCount:        legs.length,
+    tripId,
     kind:            route.kind,
+    currency:        optimistic.currency,
     participantUids: routeParticipants(legs),
+    legs:            legs.map(leg => ({ fromUid: leg.fromUid, toUid: leg.toUid, amountMinor: leg.amountMinor })),
     ...(route.kind === 'TRANSFER'
       ? { payerUid: route.payerUid, receiverUid: route.receiverUid, amountMinor: route.amountMinor }
       : {}),
@@ -74,25 +72,13 @@ export function optimisticRouteRows(
     ...(vars.foreign && optimistic.sourceAmountMinor !== undefined
       ? { sourceCurrency: vars.foreign.sourceCurrency, sourceAmountMinor: optimistic.sourceAmountMinor, settledOn: vars.foreign.settledOn }
       : {}),
-  }
-  return legs.map((leg, i) => ({
-    id:          routeLegId(vars.routeId, i),
-    tripId,
-    fromUid:     leg.fromUid,
-    toUid:       leg.toUid,
-    amountMinor: leg.amountMinor,
-    currency:    optimistic.currency,
+    lockedExpenses: optimistic.pendingLocks,
     settledBy:   optimistic.settledBy,
+    createdAt:   mockTimestampNow(),
     deletedAt:   null,
-    appliedExpenseIds: optimistic.pendingAppliedExpenseIds[i] ?? [],
-    route:       { ...header, legIndex: i },
-    createdAt,
-  }))
+  }
 }
 
-/** Record a route. One create op per leg, all added before the request and
- *  settled together. Not useTripListMutation: that factory owns exactly one
- *  op per mutation. */
 export function useCreateSettlementRoute(tripId: string) {
   const uid = useUid()
   const key = settlementKeys.all(tripId, uid)
@@ -102,24 +88,24 @@ export function useCreateSettlementRoute(tripId: string) {
       return createSettlementRoute(tripId, vars)
     },
     meta: { action: MUTATION_ACTION.RECORD_SETTLEMENT } satisfies MutationMeta,
-    onMutate: vars => ({
-      handles: optimisticRouteRows(tripId, vars).map(row => settlementOverlay.add(key, {
-        kind: 'create',
-        row,
-        confirms: base => base.some(s => s.id === row.id),
-        authoritativeFetch: () => getSettlementsByTripFromServer(tripId),
-      })),
-    }),
-    onSuccess: (_data, _vars, ctx) => {
-      for (const handle of ctx.handles) settlementOverlay.markSucceeded(handle)
-    },
-    onError: (err, _vars, ctx) => {
-      // Definitive: nothing was written, drop every leg. Ambiguous: every
-      // leg or none landed — hold them all until server truth decides.
-      for (const handle of ctx?.handles ?? []) {
-        if (isWorkerAmbiguousError(err)) settlementOverlay.markAmbiguous(handle)
-        else settlementOverlay.drop(handle)
+    onMutate: vars => {
+      const row = optimisticRouteRow(tripId, vars)
+      return {
+        handle: settlementOverlay.add(key, {
+          kind: 'create',
+          row,
+          confirms: base => base.some(s => s.id === row.id),
+          authoritativeFetch: () => getSettlementsByTripFromServer(tripId),
+        }),
       }
+    },
+    onSuccess: (_data, _vars, ctx) => settlementOverlay.markSucceeded(ctx.handle),
+    onError: (err, _vars, ctx) => {
+      if (!ctx) return
+      // Definitive: nothing was written. Ambiguous: hold the row until
+      // server truth decides.
+      if (isWorkerAmbiguousError(err)) settlementOverlay.markAmbiguous(ctx.handle)
+      else settlementOverlay.drop(ctx.handle)
     },
   })
 }
@@ -127,16 +113,15 @@ export function useCreateSettlementRoute(tripId: string) {
 /** One retry of the idempotent delete, then let server truth decide.
  *  A retry failure still cannot prove the original write failed, so it
  *  hands over to the ambiguous path rather than restoring the rows. */
-function scheduleDeleteRetry(handles: OverlayHandle[], tripId: string, settlementId: string): void {
+function scheduleDeleteRetry(handle: OverlayHandle, tripId: string, settlementId: string): void {
   const timer = setTimeout(() => {
-    // The ops are gone when overlays were cleared (sign-out / account
-    // switch) or they already settled: don't send the old account's delete
-    // under whoever is signed in now.
-    const live = handles.filter(h => settlementOverlay.getSnapshot(h.queryKeyHash).some(op => op.opId === h.opId))
-    if (live.length === 0) return
+    // The op is gone when overlays were cleared (sign-out / account switch)
+    // or it already settled: don't send the old account's delete under
+    // whoever is signed in now.
+    if (!settlementOverlay.getSnapshot(handle.queryKeyHash).some(op => op.opId === handle.opId)) return
     void deleteSettlement(tripId, settlementId)
-      .then(() => { for (const h of live) settlementOverlay.markSucceeded(h) })
-      .catch(() => { for (const h of live) settlementOverlay.markAmbiguous(h) })
+      .then(() => settlementOverlay.markSucceeded(handle))
+      .catch(() => settlementOverlay.markAmbiguous(handle))
   }, SETTLEMENT_DELETE_RETRY_DELAY_MS)
   ;(timer as unknown as { unref?: () => void }).unref?.()
 }
@@ -146,40 +131,34 @@ export function useDeleteSettlement(tripId: string) {
   const key = settlementKeys.all(tripId, uid)
 
   return useMutation({
-    // `hideIds`: every row the cancel removes — all legs of a route (the
-    // Worker cancels the whole route from any one leg id) — besides the
-    // settlement named in the request.
-    mutationFn: ({ settlementId }: { settlementId: string; hideIds?: string[] }) => {
+    mutationFn: ({ settlementId }: { settlementId: string }) => {
       if (!uid) {
         throw new Error(`useDeleteSettlement[${MUTATION_ACTION.CANCEL_SETTLEMENT}]: uid is undefined`)
       }
       return deleteSettlement(tripId, settlementId)
     },
     meta: { action: MUTATION_ACTION.CANCEL_SETTLEMENT } satisfies MutationMeta,
-    onMutate: ({ settlementId, hideIds }) => ({
-      handles: [...new Set([settlementId, ...(hideIds ?? [])])].map(id => settlementOverlay.add(key, {
+    onMutate: ({ settlementId }) => ({
+      handle: settlementOverlay.add(key, {
         kind: 'remove',
-        id,
-        confirms: base => !base.some(s => s.id === id),
+        id: settlementId,
+        confirms: base => !base.some(s => s.id === settlementId),
         authoritativeFetch: () => getSettlementsByTripFromServer(tripId),
-        // If we can't reach the server, show the rows again. A settlement
+        // If we can't reach the server, show the row again. A settlement
         // that looks cancelled but isn't invites the user to record the
         // payment twice; a stale visible row is corrected by the next
         // snapshot.
         whenUnconfirmable: 'drop',
-      })),
+      }),
     }),
-    onSuccess: (_data, _vars, ctx) => {
-      for (const handle of ctx.handles) settlementOverlay.markSucceeded(handle)
-    },
+    onSuccess: (_data, _vars, ctx) => settlementOverlay.markSucceeded(ctx.handle),
     onError: (err, vars, ctx) => {
-      const handles = ctx?.handles
-      if (!handles) return
+      if (!ctx) return
       if (!isWorkerAmbiguousError(err)) {
-        for (const handle of handles) settlementOverlay.drop(handle)
+        settlementOverlay.drop(ctx.handle)
         return
       }
-      scheduleDeleteRetry(handles, tripId, vars.settlementId)
+      scheduleDeleteRetry(ctx.handle, tripId, vars.settlementId)
     },
   })
 }

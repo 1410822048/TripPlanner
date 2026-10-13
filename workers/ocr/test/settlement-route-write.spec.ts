@@ -1,11 +1,11 @@
-// Endpoint tests for routed settlement (settlement-route-write.ts) and the
-// route-aware /settlement-delete.
+// Endpoint tests for settlement writes (settlement-route-write.ts): every
+// settlement is a route stored as ONE doc with its legs inside.
 //
-// Unlike settlement-write.spec (one captured TxResult per test), these run
-// against an in-memory Firestore (helpers/fake-firestore) so a test can
-// create a route, create another, cancel one, and then read the LEDGER back
-// through the same computePairwiseRemaining the Worker uses. The point is to
-// try to break the accounting, not only to check write shapes.
+// These run against an in-memory Firestore (helpers/fake-firestore) so a
+// test can create a route, create another, cancel one, and then read the
+// LEDGER back through the same computePairwiseRemaining the Worker uses.
+// The point is to try to break the accounting, not only to check write
+// shapes.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('../src/admin', () => ({
@@ -43,20 +43,26 @@ vi.mock('../src/fx-rate', async () => {
 import {
 	canonicalPairKey,
 	computePairwiseRemaining,
+	MAX_ROUTE_APPLIED_SOURCES,
+	MAX_ROUTE_LEGS,
 	planSettlementRoutes,
 	routeForPayment,
-	routeLegId,
 	type CoreExpense,
 	type CoreSettlement,
 	type SettlementRoute,
 } from '@tripmate/settlement-core'
+import { EXPENSE_LIMITS, SETTLEMENT_LIMITS } from '@tripmate/entity-contracts'
 import { fake } from './helpers/fake-firestore'
 import {
+	SETTLEMENT_DOC_BYTES_MAX,
 	settlementDelete,
 	settlementRouteCreate,
 	SettlementRouteCreateRequestSchema,
 	type SettlementRouteCreateRequest,
 } from '../src/settlement-route-write'
+import { encodeAppliedSources, encodeLockedExpenses } from '../src/settlement-codec'
+import { documentSize } from '../src/firestore-size'
+import { encodeStringArray } from '../src/settlement-lock-write'
 import * as fxRate from '../src/fx-rate'
 import type { FsValue } from '../src/firestore'
 
@@ -107,25 +113,31 @@ const readStr = (f: Fields | undefined, k: string) => (f?.[k] as { stringValue?:
 const readInt = (f: Fields | undefined, k: string) => Number((f?.[k] as { integerValue?: string } | undefined)?.integerValue)
 const readArr = (f: Fields | undefined, k: string) =>
 	((f?.[k] as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []).map(v => v.stringValue!)
-const routeOf = (f: Fields) => (f.route as { mapValue: { fields: Fields } } | undefined)?.mapValue.fields
+const mapsIn = (f: Fields | undefined, k: string) =>
+	((f?.[k] as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []).map(v => v.mapValue!.fields!)
 const isActive = (f: Fields) => 'nullValue' in (f.deletedAt ?? {})
+/** A settlement doc's legs as [from, to, amount]. */
+const legsOf = (f: Fields) => mapsIn(f, 'legs').map(l => [readStr(l, 'fromUid')!, readStr(l, 'toUid')!, readInt(l, 'amountMinor')] as const)
+/** A settlement doc's lineage as [legIndex, expenseId, amount]. */
+const sourcesOf = (f: Fields) => mapsIn(f, 'appliedSources').map(v => [readInt(v, 'legIndex'), readStr(v, 'expenseId')!, readInt(v, 'amountMinor')] as const)
+const settlement = (id: string) => fake.fields(`trips/${TRIP}/settlements/${id}`)!
+/** A settlement doc's lock set as [expenseId, legIndexes]. */
+const lockedOf = (f: Fields) => mapsIn(f, 'lockedExpenses').map(v =>
+	[readStr(v, 'expenseId')!, ((v.legIndexes as { arrayValue?: { values?: FsValue[] } }).arrayValue?.values ?? []).map(i => Number(i.integerValue))] as const)
+const locksOf = (expenseId: string) => readArr(fake.fields(`trips/${TRIP}/expenses/${expenseId}`), 'settlementLockIds').sort()
 
 /** The ledger exactly as the Worker would compute it from what's stored. */
 function ledger(): Record<string, Record<string, number>> {
 	const expenses: CoreExpense[] = docsIn('expenses').filter(d => isActive(d.fields)).map(({ fields }) => ({
 		amountMinor: readInt(fields, 'amountMinor'),
 		paidBy:      readStr(fields, 'paidBy')!,
-		splits: ((fields.splits as { arrayValue: { values: FsValue[] } }).arrayValue.values).map(v => ({
-			memberId:    readStr(v.mapValue!.fields, 'memberId')!,
-			amountMinor: readInt(v.mapValue!.fields, 'amountMinor'),
-		})),
+		splits: mapsIn(fields, 'splits').map(f => ({ memberId: readStr(f, 'memberId')!, amountMinor: readInt(f, 'amountMinor') })),
 	}))
-	const settlements: CoreSettlement[] = docsIn('settlements').filter(d => isActive(d.fields)).map(({ fields }) => ({
-		fromUid:     readStr(fields, 'fromUid')!,
-		toUid:       readStr(fields, 'toUid')!,
-		amountMinor: readInt(fields, 'amountMinor'),
-		createdAtMs: Date.parse((fields.createdAt as { timestampValue: string }).timestampValue),
-	}))
+	const settlements: CoreSettlement[] = docsIn('settlements').filter(d => isActive(d.fields)).flatMap(({ fields }) =>
+		legsOf(fields).map(([fromUid, toUid, amountMinor]) => ({
+			fromUid, toUid, amountMinor,
+			createdAtMs: Date.parse((fields.createdAt as { timestampValue: string }).timestampValue),
+		})))
 	return computePairwiseRemaining(expenses, settlements)
 }
 
@@ -154,36 +166,34 @@ describe('/settlement-route-create — basic and multi-hop', () => {
 		seedExpense('e2', 'C', { B: 1000 })   // B owes C 1000
 	})
 
-	it('records A → C via B as two ordinary legs with one route header', async () => {
-		const [route] = planSettlementRoutes(ledger())
-		expect(route).toMatchObject({ kind: 'TRANSFER', payerUid: 'A', receiverUid: 'C', amountMinor: 1000 })
-		const result = await settlementRouteCreate('C', request('r1', route!, { note: '晚餐' }), SA)
-		expect(result).toEqual({ routeId: 'r1', settlementIds: ['r1-00', 'r1-01'] })
+	it('records A → C via B as ONE doc holding both legs', async () => {
+		const [planned] = planSettlementRoutes(ledger())
+		expect(planned).toMatchObject({ kind: 'TRANSFER', payerUid: 'A', receiverUid: 'C', amountMinor: 1000 })
+		const result = await settlementRouteCreate('C', request('r1', planned!, { note: '晚餐' }), SA)
+		expect(result).toEqual({ routeId: 'r1' })
 
-		const legs = docsIn('settlements')
-		expect(legs.map(l => [l.id, readStr(l.fields, 'fromUid'), readStr(l.fields, 'toUid'), readInt(l.fields, 'amountMinor')]))
-			.toEqual([['r1-00', 'A', 'B', 1000], ['r1-01', 'B', 'C', 1000]])
-		for (const [i, leg] of legs.entries()) {
-			expect(readStr(leg.fields, 'settledBy')).toBe('C')
-			expect(readStr(leg.fields, 'currency')).toBe('JPY')
-			const header = routeOf(leg.fields)!
-			expect(readStr(header, 'id')).toBe('r1')
-			expect(readInt(header, 'legIndex')).toBe(i)
-			expect(readInt(header, 'legCount')).toBe(2)
-			expect(readStr(header, 'kind')).toBe('TRANSFER')
-			expect(readStr(header, 'payerUid')).toBe('A')
-			expect(readStr(header, 'receiverUid')).toBe('C')
-			expect(readInt(header, 'amountMinor')).toBe(1000)
-			expect(readStr(header, 'note')).toBe('晚餐')
-			expect(readArr(header, 'participantUids')).toEqual(['A', 'B', 'C'])
-			// FX never lands on a leg — B did not pay anyone in foreign money.
-			expect(leg.fields.sourceCurrency).toBeUndefined()
-		}
-		// Lineage per leg: each draws from the expense behind its own edge.
-		expect(readArr(legs[0]!.fields, 'appliedExpenseIds')).toEqual(['e1'])
-		expect(readArr(legs[1]!.fields, 'appliedExpenseIds')).toEqual(['e2'])
-		expect(readArr(fake.fields(`trips/${TRIP}/expenses/e1`), 'settlementLockIds')).toEqual(['r1-00'])
-		expect(readArr(fake.fields(`trips/${TRIP}/expenses/e2`), 'settlementLockIds')).toEqual(['r1-01'])
+		expect(docsIn('settlements').map(d => d.id)).toEqual(['r1'])
+		const doc = settlement('r1')
+		expect(legsOf(doc)).toEqual([['A', 'B', 1000], ['B', 'C', 1000]])
+		expect(readStr(doc, 'tripId')).toBe(TRIP)
+		expect(readStr(doc, 'kind')).toBe('TRANSFER')
+		expect(readStr(doc, 'payerUid')).toBe('A')
+		expect(readStr(doc, 'receiverUid')).toBe('C')
+		expect(readInt(doc, 'amountMinor')).toBe(1000)
+		expect(readStr(doc, 'currency')).toBe('JPY')
+		expect(readStr(doc, 'settledBy')).toBe('C')
+		expect(readStr(doc, 'note')).toBe('晚餐')
+		expect(readArr(doc, 'participantUids')).toEqual(['A', 'B', 'C'])
+		expect(doc.createdAt).toHaveProperty('timestampValue')
+		expect(doc.sourceCurrency).toBeUndefined()
+		expect(doc.ownerRecorded).toBeUndefined()
+		// Lineage per leg: each draws from the expense behind its own edge;
+		// the lock set names which legs lock each expense, and each expense
+		// holds the route id once.
+		expect(sourcesOf(doc)).toEqual([[0, 'e1', 1000], [1, 'e2', 1000]])
+		expect(lockedOf(doc)).toEqual([['e1', [0]], ['e2', [1]]])
+		expect(locksOf('e1')).toEqual(['r1'])
+		expect(locksOf('e2')).toEqual(['r1'])
 		// Both pair locks touched.
 		expect(fake.fields(`trips/${TRIP}/settlementPairLocks/${canonicalPairKey('A', 'B')}`)).toBeDefined()
 		expect(fake.fields(`trips/${TRIP}/settlementPairLocks/${canonicalPairKey('B', 'C')}`)).toBeDefined()
@@ -191,26 +201,34 @@ describe('/settlement-route-create — basic and multi-hop', () => {
 	})
 
 	it('reads pair locks one at a time in sorted order', async () => {
-		const [route] = planSettlementRoutes(ledger())
-		await settlementRouteCreate('C', request('r1', route!), SA)
+		const [planned] = planSettlementRoutes(ledger())
+		await settlementRouteCreate('C', request('r1', planned!), SA)
 		const lockReads = fake.getCalls.filter(p => p.includes('/settlementPairLocks/'))
 		expect(lockReads).toEqual([...lockReads].sort())
 		expect(lockReads).toHaveLength(2)
 	})
 
+	it('reads the other settlements\' legs only, never their lineage', async () => {
+		const [planned] = planSettlementRoutes(ledger())
+		await settlementRouteCreate('C', request('r1', planned!), SA)
+		const ledgerQuery = fake.queries.find(q => q.collection === 'settlements')
+		expect(ledgerQuery?.select).toEqual(['legs', 'createdAt'])
+		expect(ledgerQuery?.filters).toEqual([{ fieldPath: 'deletedAt', op: 'IS_NULL' }])
+	})
+
 	it('refuses everyone but the receiver, including the payer and the intermediate', async () => {
-		const [route] = planSettlementRoutes(ledger())
+		const [planned] = planSettlementRoutes(ledger())
 		for (const caller of ['A', 'B', OWNER]) {
 			const before = snapshot()
-			await expect(settlementRouteCreate(caller, request('r1', route!), SA))
+			await expect(settlementRouteCreate(caller, request('r1', planned!), SA))
 				.rejects.toMatchObject({ name: 'SettlementValidationError', field: 'receiverUid' })
 			expect(snapshot()).toBe(before)
 		}
 	})
 
 	it('refuses a non-member outright', async () => {
-		const [route] = planSettlementRoutes(ledger())
-		await expect(settlementRouteCreate('stranger', request('r1', route!), SA)).rejects.toMatchObject({ status: 403 })
+		const [planned] = planSettlementRoutes(ledger())
+		await expect(settlementRouteCreate('stranger', request('r1', planned!), SA)).rejects.toMatchObject({ status: 403 })
 	})
 })
 
@@ -224,9 +242,9 @@ describe('multi-path, partial and overlapping edges', () => {
 	})
 
 	it('one logical payment over two paths, then the rest of a partially used edge', async () => {
-		const route = routeForPayment(ledger(), 'A', 'C', 700)!
-		expect(route.legs).toHaveLength(4)
-		await settlementRouteCreate('C', request('r1', route), SA)
+		const planned = routeForPayment(ledger(), 'A', 'C', 700)!
+		expect(planned.legs).toHaveLength(4)
+		await settlementRouteCreate('C', request('r1', planned), SA)
 		// A→D was only partly used (400 of 500): 100 is still owed to D.
 		expect(ledger()).toEqual({ A: { D: 100 } })
 
@@ -235,11 +253,13 @@ describe('multi-path, partial and overlapping edges', () => {
 		expect(ledger()).toEqual({})
 
 		// The two legs on A→D together drew exactly the 500 of e2, never twice.
-		const onAD = docsIn('settlements').filter(d => readStr(d.fields, 'fromUid') === 'A' && readStr(d.fields, 'toUid') === 'D')
-		const drawn = onAD.flatMap(d => ((d.fields.appliedSources as { arrayValue: { values: FsValue[] } }).arrayValue.values))
-			.map(v => readInt(v.mapValue!.fields, 'amountMinor'))
+		const drawn = ['r1', 'r2'].flatMap(id => {
+			const doc = settlement(id)
+			const legs = legsOf(doc)
+			return sourcesOf(doc).filter(([i]) => legs[i]![0] === 'A' && legs[i]![1] === 'D').map(([, , amount]) => amount)
+		})
 		expect(drawn).toEqual([400, 100])
-		expect(readArr(fake.fields(`trips/${TRIP}/expenses/e2`), 'settlementLockIds').sort()).toEqual(['r1-01', 'r2-00'])
+		expect(locksOf('e2')).toEqual(['r1', 'r2'])
 	})
 
 	it('a stale suggestion is refused (per-edge CAS) and nothing is written', async () => {
@@ -255,9 +275,9 @@ describe('multi-path, partial and overlapping edges', () => {
 
 	it('a second create racing on the same edges sees the first and is refused', async () => {
 		const plan = planSettlementRoutes(ledger())
-		const route = plan.find(r => r.kind === 'TRANSFER')!
-		await settlementRouteCreate(recorderOf(route), request('r1', route), SA)
-		await expect(settlementRouteCreate(recorderOf(route), request('r2', route), SA))
+		const planned = plan.find(r => r.kind === 'TRANSFER')!
+		await settlementRouteCreate(recorderOf(planned), request('r1', planned), SA)
+		await expect(settlementRouteCreate(recorderOf(planned), request('r2', planned), SA))
 			.rejects.toMatchObject({ status: 409, code: 'SETTLEMENT_STALE' })
 	})
 
@@ -301,6 +321,12 @@ describe('route shape is re-validated by the Worker', () => {
 		expect(docsIn('settlements')).toEqual([])
 	})
 
+	it('stores legs in canonical order whatever order the client sent', async () => {
+		const [planned] = planSettlementRoutes(ledger()).filter(r => r.kind === 'TRANSFER')
+		await settlementRouteCreate('C', request('r1', { ...planned!, legs: [...planned!.legs].reverse() }), SA)
+		expect(legsOf(settlement('r1'))).toEqual([['A', 'B', 100], ['B', 'C', 100]])
+	})
+
 	it('refuses a leg larger than the remaining it claims (schema)', () => {
 		expect(SettlementRouteCreateRequestSchema.safeParse({
 			tripId: TRIP, routeId: 'r1', kind: 'TRANSFER', payerUid: 'A', receiverUid: 'B', amountMinor: 200,
@@ -341,11 +367,13 @@ describe('cycles (OFFSET)', () => {
 		await settlementRouteCreate('B', request('r1', abc!), SA)
 		await settlementRouteCreate('F', request('r2', def!), SA)
 		expect(ledger()).toEqual({})
-		// Every leg locks its expense; the offset header names no payer.
-		const leg = docsIn('settlements')[0]!
-		expect(readStr(routeOf(leg.fields), 'kind')).toBe('OFFSET')
-		expect(routeOf(leg.fields)!.payerUid).toBeUndefined()
-		expect(readArr(fake.fields(`trips/${TRIP}/expenses/e1`), 'settlementLockIds')).toHaveLength(1)
+		// Every leg locks its expense; an offset names no payer and no amount.
+		const doc = settlement('r1')
+		expect(readStr(doc, 'kind')).toBe('OFFSET')
+		expect(legsOf(doc)).toHaveLength(3)
+		expect(doc.payerUid).toBeUndefined()
+		expect(doc.amountMinor).toBeUndefined()
+		expect(locksOf('e1')).toEqual(['r1'])
 	})
 
 	it('refuses both cycles bundled into one offset', async () => {
@@ -359,11 +387,11 @@ describe('cycles (OFFSET)', () => {
 		const before = ledger()
 		const [abc] = planSettlementRoutes(before)
 		await settlementRouteCreate('C', request('r1', abc!), SA)
-		// Owner may cancel; so may the recorder.
-		await settlementDelete(OWNER, { tripId: TRIP, settlementId: 'r1-02' }, SA)
+		// The owner may cancel; so may the recorder.
+		await settlementDelete(OWNER, { tripId: TRIP, settlementId: 'r1' }, SA)
 		expect(ledger()).toEqual(before)
-		for (const id of ['e1', 'e2', 'e3']) expect(readArr(fake.fields(`trips/${TRIP}/expenses/${id}`), 'settlementLockIds')).toEqual([])
-		expect(docsIn('settlements').every(d => readStr(d.fields, 'deletedBy') === OWNER)).toBe(true)
+		for (const id of ['e1', 'e2', 'e3']) expect(locksOf(id)).toEqual([])
+		expect(readStr(settlement('r1'), 'deletedBy')).toBe(OWNER)
 	})
 })
 
@@ -387,12 +415,11 @@ describe('departed members (ghosts)', () => {
 
 	it('a debt owed to a ghost can only be recorded by the owner, marked as such', async () => {
 		seedExpense('e1', GHOST, { A: 400 })
-		const [route] = planSettlementRoutes(ledger())
-		await expect(settlementRouteCreate('A', request('r1', route!), SA)).rejects.toMatchObject({ field: 'receiverUid' })
-		await settlementRouteCreate(OWNER, request('r1', route!), SA)
-		const leg = docsIn('settlements')[0]!
-		expect((routeOf(leg.fields)!.ownerRecorded as { booleanValue: boolean }).booleanValue).toBe(true)
-		expect(readStr(leg.fields, 'settledBy')).toBe(OWNER)
+		const [planned] = planSettlementRoutes(ledger())
+		await expect(settlementRouteCreate('A', request('r1', planned!), SA)).rejects.toMatchObject({ field: 'receiverUid' })
+		await settlementRouteCreate(OWNER, request('r1', planned!), SA)
+		expect((settlement('r1').ownerRecorded as { booleanValue: boolean }).booleanValue).toBe(true)
+		expect(readStr(settlement('r1'), 'settledBy')).toBe(OWNER)
 	})
 
 	it('the owner may record a cycle only when everyone in it has left', async () => {
@@ -426,27 +453,30 @@ describe('idempotency and cancelled ids', () => {
 	})
 
 	it('a retry of the same route succeeds without writing again, even with FX down', async () => {
-		const [route] = planSettlementRoutes(ledger())
-		const req = request('r1', route!)
+		const [planned] = planSettlementRoutes(ledger())
+		const req = request('r1', planned!)
 		await settlementRouteCreate('C', req, SA)
 		const commits = fake.commits.length
 		vi.mocked(fxRate.resolveFxRate).mockRejectedValue(new Error('provider down'))
-		await expect(settlementRouteCreate('C', req, SA)).resolves.toEqual({ routeId: 'r1', settlementIds: ['r1-00', 'r1-01'] })
+		await expect(settlementRouteCreate('C', req, SA)).resolves.toEqual({ routeId: 'r1' })
 		expect(fake.commits[commits]).toEqual([])
 	})
 
 	it('a different payload under the same routeId is a collision', async () => {
-		const [route] = planSettlementRoutes(ledger())
-		await settlementRouteCreate('C', request('r1', route!), SA)
-		await expect(settlementRouteCreate('C', request('r1', route!, { note: 'other' }), SA))
+		const [planned] = planSettlementRoutes(ledger())
+		await settlementRouteCreate('C', request('r1', planned!), SA)
+		await expect(settlementRouteCreate('C', request('r1', planned!, { note: 'other' }), SA))
 			.rejects.toMatchObject({ field: 'routeId' })
+		// A different amount, legs and header alike.
+		const smaller = { ...planned!, amountMinor: 999, legs: planned!.legs.map(l => ({ ...l, amountMinor: 999 })) } as SettlementRoute
+		await expect(settlementRouteCreate('C', request('r1', smaller), SA)).rejects.toMatchObject({ field: 'routeId' })
 	})
 
 	it('a cancelled routeId cannot be reused', async () => {
-		const [route] = planSettlementRoutes(ledger())
-		const req = request('r1', route!)
+		const [planned] = planSettlementRoutes(ledger())
+		const req = request('r1', planned!)
 		await settlementRouteCreate('C', req, SA)
-		await settlementDelete('C', { tripId: TRIP, settlementId: 'r1-00' }, SA)
+		await settlementDelete('C', { tripId: TRIP, settlementId: 'r1' }, SA)
 		await expect(settlementRouteCreate('C', req, SA)).rejects.toMatchObject({ field: 'routeId', message: expect.stringContaining('cancelled') })
 	})
 })
@@ -458,25 +488,26 @@ describe('cancel is all-or-nothing', () => {
 		seedExpense('e2', 'C', { B: 1000 })
 	})
 
-	it('cancelling via any one leg cancels the whole route; a repeat is a no-op', async () => {
+	it('cancelling the route cancels every leg in one write; a repeat is a no-op', async () => {
 		const before = ledger()
-		const [route] = planSettlementRoutes(before)
-		await settlementRouteCreate('C', request('r1', route!), SA)
-		await settlementDelete('C', { tripId: TRIP, settlementId: 'r1-01' }, SA)
-		expect(docsIn('settlements').every(d => !isActive(d.fields))).toBe(true)
+		const [planned] = planSettlementRoutes(before)
+		await settlementRouteCreate('C', request('r1', planned!), SA)
+		await settlementDelete('C', { tripId: TRIP, settlementId: 'r1' }, SA)
+		expect(isActive(settlement('r1'))).toBe(false)
 		expect(ledger()).toEqual(before)
+		expect(fake.commits.at(-1)!.filter(w => w.document.includes('/settlements/'))).toHaveLength(1)
 		const commits = fake.commits.length
-		await settlementDelete('C', { tripId: TRIP, settlementId: 'r1-00' }, SA)
+		await settlementDelete('C', { tripId: TRIP, settlementId: 'r1' }, SA)
 		expect(fake.commits[commits]).toEqual([])
 	})
 
 	it('only the recorder or the owner may cancel — not the payer or the intermediate', async () => {
-		const [route] = planSettlementRoutes(ledger())
-		await settlementRouteCreate('C', request('r1', route!), SA)
+		const [planned] = planSettlementRoutes(ledger())
+		await settlementRouteCreate('C', request('r1', planned!), SA)
 		for (const caller of ['A', 'B']) {
-			await expect(settlementDelete(caller, { tripId: TRIP, settlementId: 'r1-00' }, SA)).rejects.toMatchObject({ status: 403 })
+			await expect(settlementDelete(caller, { tripId: TRIP, settlementId: 'r1' }, SA)).rejects.toMatchObject({ status: 403 })
 		}
-		expect(docsIn('settlements').every(d => isActive(d.fields))).toBe(true)
+		expect(isActive(settlement('r1'))).toBe(true)
 	})
 
 	it('cancelling one route keeps other routes\' locks on a shared expense', async () => {
@@ -486,27 +517,91 @@ describe('cancel is all-or-nothing', () => {
 		const [r1, r2] = planSettlementRoutes(ledger())
 		await settlementRouteCreate('B', request('r1', r1!), SA)
 		await settlementRouteCreate('B', request('r2', r2!), SA)
-		expect(readArr(fake.fields(`trips/${TRIP}/expenses/e1`), 'settlementLockIds').sort()).toEqual(['r1-00', 'r2-00'])
-		await settlementDelete('B', { tripId: TRIP, settlementId: 'r1-00' }, SA)
-		expect(readArr(fake.fields(`trips/${TRIP}/expenses/e1`), 'settlementLockIds')).toEqual(['r2-00'])
+		expect(locksOf('e1')).toEqual(['r1', 'r2'])
+		await settlementDelete('B', { tripId: TRIP, settlementId: 'r1' }, SA)
+		expect(locksOf('e1')).toEqual(['r2'])
 	})
 })
 
 describe('expense locks', () => {
-	it('two legs locking the same expense produce ONE write carrying both ids', async () => {
+	it('an expense locked by two legs of one route gets the route id once, in one write', async () => {
 		// e1 (B paid; A 1000, C 200) is A→B's source AND the reverse offset of
 		// the B→C pair, so both legs of A→C via B lock it.
 		seedTrip(['A', 'B', 'C'])
 		seedExpense('e1', 'B', { A: 1000, C: 200 })
 		seedExpense('e2', 'C', { B: 1500 })
-		const route = routeForPayment(ledger(), 'A', 'C', 1000)!
-		await settlementRouteCreate('C', request('r1', route), SA)
+		const planned = routeForPayment(ledger(), 'A', 'C', 1000)!
+		await settlementRouteCreate('C', request('r1', planned), SA)
 		const last = fake.commits.at(-1)!
-		const e1Writes = last.filter(w => w.document.endsWith('/expenses/e1'))
-		expect(e1Writes).toHaveLength(1)
-		expect(readArr(fake.fields(`trips/${TRIP}/expenses/e1`), 'settlementLockIds').sort()).toEqual(['r1-00', 'r1-01'])
-		await settlementDelete('C', { tripId: TRIP, settlementId: 'r1-00' }, SA)
-		expect(readArr(fake.fields(`trips/${TRIP}/expenses/e1`), 'settlementLockIds')).toEqual([])
+		expect(last.filter(w => w.document.endsWith('/expenses/e1'))).toHaveLength(1)
+		expect(locksOf('e1')).toEqual(['r1'])
+		expect(lockedOf(settlement('r1'))).toEqual([['e1', [0, 1]], ['e2', [1]]])
+		await settlementDelete('C', { tripId: TRIP, settlementId: 'r1' }, SA)
+		expect(locksOf('e1')).toEqual([])
+	})
+})
+
+describe('lineage budget and the 1 MiB document limit', () => {
+	it('keeps at most MAX_ROUTE_APPLIED_SOURCES display sources but locks every expense', async () => {
+		seedTrip(['A', 'B'])
+		const n = MAX_ROUTE_APPLIED_SOURCES + 50
+		for (let i = 0; i < n; i++) seedExpense(`e${String(i).padStart(3, '0')}`, 'B', { A: 10 })
+		const [planned] = planSettlementRoutes(ledger())
+		await settlementRouteCreate('B', request('r1', planned!), SA)
+		const doc = settlement('r1')
+		const sources = sourcesOf(doc)
+		expect(sources).toHaveLength(MAX_ROUTE_APPLIED_SOURCES)
+		// The oldest sources are the ones kept; the rest of the leg is untraced, not lost.
+		expect(sources[0]).toEqual([0, 'e000', 10])
+		expect(lockedOf(doc)).toHaveLength(n)
+		expect(locksOf('e449')).toEqual(['r1'])
+		expect(ledger()).toEqual({})
+	})
+
+	it('the largest storable route stays below the limit (worst-case sizes)', () => {
+		// Every field at its cap: 45 legs between 30 128-char uids, 400 sources
+		// with 4-byte-character titles / item names, and 500 locked expenses
+		// each locked by every leg.
+		const wide = (n: number) => '𠀀'.repeat(n)   // 4 UTF-8 bytes per character
+		const perLeg = Array.from({ length: MAX_ROUTE_LEGS }, () => [] as Array<{ expenseId: string; expenseTitle: string; itemId: string; itemName: string; amountMinor: number }>)
+		for (let i = 0; i < MAX_ROUTE_APPLIED_SOURCES; i++) {
+			perLeg[i % MAX_ROUTE_LEGS]!.push({
+				expenseId: 'x'.repeat(60), expenseTitle: wide(EXPENSE_LIMITS.title + 50), itemId: 'i'.repeat(64),
+				itemName: wide(EXPENSE_LIMITS.itemName), amountMinor: 999_999_999_999,
+			})
+		}
+		const uid = (i: number) => `u${String(i).padStart(127, '0')}`
+		const fields: Fields = {
+			tripId: str('t'.repeat(60)), kind: str('TRANSFER'), currency: str('JPY'),
+			participantUids: encodeStringArray(Array.from({ length: 30 }, (_, i) => uid(i))),
+			legs: { arrayValue: { values: Array.from({ length: MAX_ROUTE_LEGS }, (_, i) => ({ mapValue: { fields: {
+				fromUid: str(uid(i % 30)), toUid: str(uid((i + 1) % 30)), amountMinor: int(999_999_999_999),
+			} } })) } },
+			payerUid: str(uid(0)), receiverUid: str(uid(1)), amountMinor: int(999_999_999_999),
+			note: str(wide(SETTLEMENT_LIMITS.note)), ownerRecorded: { booleanValue: true },
+			appliedSources: encodeAppliedSources(perLeg),
+			lockedExpenses: encodeLockedExpenses(Array.from({ length: MAX_ROUTE_LEGS }, () =>
+				Array.from({ length: 500 }, (_, i) => `${'x'.repeat(57)}${String(i).padStart(3, '0')}`))).value,
+			settledBy: str(uid(1)), deletedAt: { nullValue: null },
+			sourceCurrency: str('USD'), sourceAmountMinor: int(999_999_999_999), settledOn: str('2026-10-13'),
+			fxSnapshot: { mapValue: { fields: {
+				provider: str('frankfurter-v2'), baseCurrency: str('USD'), quoteCurrency: str('JPY'),
+				requestedDate: str('2026-10-13'), rateDate: str('2026-10-13'), rateDecimal: str('1'.repeat(40)),
+				sourceAmountMinor: int(1), convertedAmountMinor: int(1),
+			} } },
+		}
+		const bytes = documentSize(`trips/${'t'.repeat(60)}/settlements/${'r'.repeat(50)}`, fields, ['createdAt', 'fxSnapshot.fetchedAt'])
+		expect(bytes).toBeLessThan(SETTLEMENT_DOC_BYTES_MAX)
+	})
+
+	it('measures stored size by Firestore\'s rules', () => {
+		// name: "trips"(6) + "t"(2) + "settlements"(12) + "s"(2) + 16 = 38;
+		// a: 2 + "é"(3) = 5; n: 2 + 8 = 10; m: 2 + (b: 2 + 1) = 5; l: 2 + (1 + 8) = 11;
+		// createdAt (server time): 10 + 8 = 18; document overhead 32.
+		expect(documentSize('trips/t/settlements/s', {
+			a: str('é'), n: int(1), m: { mapValue: { fields: { b: { booleanValue: true } } } },
+			l: { arrayValue: { values: [{ nullValue: null }, { timestampValue: '2026-10-13T00:00:00Z' }] } },
+		}, ['createdAt'])).toBe(38 + 5 + 10 + 5 + 11 + 18 + 32)
 	})
 })
 
@@ -518,63 +613,67 @@ describe('foreign currency', () => {
 	})
 	const fx = { sourceCurrency: 'USD', settledOn: '2026-10-10', expectedFxRate: { rateDecimal: '150', rateDate: '2026-10-10' } }
 
-	it('stores the received currency on the route header only; legs stay in trip currency', async () => {
-		const [route] = planSettlementRoutes(ledger())
-		await settlementRouteCreate('C', request('r1', route!, fx), SA)
-		for (const leg of docsIn('settlements')) {
-			expect(readStr(leg.fields, 'currency')).toBe('JPY')
-			expect(readInt(leg.fields, 'amountMinor')).toBe(30_000)
-			expect(leg.fields.sourceCurrency).toBeUndefined()
-			const header = routeOf(leg.fields)!
-			expect(readStr(header, 'sourceCurrency')).toBe('USD')
-			expect(readStr(header, 'settledOn')).toBe('2026-10-10')
-			// 30000 JPY at 150 → 200.00 USD exactly (at-most inverse).
-			expect(readInt(header, 'sourceAmountMinor')).toBe(20_000)
-			const snap = (header.fxSnapshot as { mapValue: { fields: Fields } }).mapValue.fields
-			expect(readInt(snap, 'convertedAmountMinor')).toBe(30_000)
-			expect((snap.fetchedAt as { timestampValue?: string }).timestampValue).toBeDefined()
-		}
+	it('stores the received currency on the route; legs stay in trip currency', async () => {
+		const [planned] = planSettlementRoutes(ledger())
+		await settlementRouteCreate('C', request('r1', planned!, fx), SA)
+		const doc = settlement('r1')
+		expect(readStr(doc, 'currency')).toBe('JPY')
+		expect(legsOf(doc)).toEqual([['A', 'B', 30_000], ['B', 'C', 30_000]])
+		expect(readStr(doc, 'sourceCurrency')).toBe('USD')
+		expect(readStr(doc, 'settledOn')).toBe('2026-10-10')
+		// 30000 JPY at 150 → 200.00 USD exactly (at-most inverse).
+		expect(readInt(doc, 'sourceAmountMinor')).toBe(20_000)
+		const snap = (doc.fxSnapshot as { mapValue: { fields: Fields } }).mapValue.fields
+		expect(readInt(snap, 'convertedAmountMinor')).toBe(30_000)
+		expect((snap.fetchedAt as { timestampValue?: string }).timestampValue).toBeDefined()
 		expect(ledger()).toEqual({})
 	})
 
 	it('rounds the source amount at-most (never claims more than was cleared)', async () => {
-		const route = routeForPayment(ledger(), 'A', 'C', 301)!
-		await settlementRouteCreate('C', request('r1', route, fx), SA)
-		const header = routeOf(docsIn('settlements')[0]!.fields)!
+		const planned = routeForPayment(ledger(), 'A', 'C', 301)!
+		await settlementRouteCreate('C', request('r1', planned, fx), SA)
+		const doc = settlement('r1')
 		// 301 JPY / 150 = 2.0066 USD → 2.00 USD; forward 2.00 USD = 300 JPY ≤ 301.
-		expect(readInt(header, 'sourceAmountMinor')).toBe(200)
-		expect(readInt((header.fxSnapshot as { mapValue: { fields: Fields } }).mapValue.fields, 'convertedAmountMinor')).toBe(300)
+		expect(readInt(doc, 'sourceAmountMinor')).toBe(200)
+		expect(readInt((doc.fxSnapshot as { mapValue: { fields: Fields } }).mapValue.fields, 'convertedAmountMinor')).toBe(300)
 		// The ledger clears exactly what the route says, independent of FX rounding.
 		expect(ledger()).toEqual({ A: { B: 29_699 }, B: { C: 29_699 } })
 	})
 
 	it('refuses a changed rate (FX CAS) without writing', async () => {
-		const [route] = planSettlementRoutes(ledger())
+		const [planned] = planSettlementRoutes(ledger())
 		const before = snapshot()
-		await expect(settlementRouteCreate('C', request('r1', route!, { ...fx, expectedFxRate: { rateDecimal: '149', rateDate: '2026-10-10' } }), SA))
+		await expect(settlementRouteCreate('C', request('r1', planned!, { ...fx, expectedFxRate: { rateDecimal: '149', rateDate: '2026-10-10' } }), SA))
 			.rejects.toMatchObject({ code: 'FX_RATE_CHANGED', status: 409 })
 		expect(snapshot()).toBe(before)
 	})
 
 	it('refuses an amount too small to express in the source currency', async () => {
 		vi.mocked(fxRate.resolveFxRate).mockImplementation(async input => ({ rateDate: input.requestedDate, rateDecimal: '20000', fetchedAtMs: 1 }))
-		const route = routeForPayment(ledger(), 'A', 'C', 50)!
-		await expect(settlementRouteCreate('C', request('r1', route, { ...fx, expectedFxRate: { rateDecimal: '20000', rateDate: '2026-10-10' } }), SA))
+		const planned = routeForPayment(ledger(), 'A', 'C', 50)!
+		await expect(settlementRouteCreate('C', request('r1', planned, { ...fx, expectedFxRate: { rateDecimal: '20000', rateDate: '2026-10-10' } }), SA))
 			.rejects.toMatchObject({ field: 'sourceCurrency' })
 		expect(docsIn('settlements')).toEqual([])
 	})
 
 	it('refuses paying in the trip currency through the foreign path', async () => {
-		const [route] = planSettlementRoutes(ledger())
-		await expect(settlementRouteCreate('C', request('r1', route!, { ...fx, sourceCurrency: 'JPY' }), SA))
+		const [planned] = planSettlementRoutes(ledger())
+		await expect(settlementRouteCreate('C', request('r1', planned!, { ...fx, sourceCurrency: 'JPY' }), SA))
 			.rejects.toMatchObject({ field: 'sourceCurrency' })
+	})
+
+	it('a retry of a foreign route is recognised as the same payment', async () => {
+		const [planned] = planSettlementRoutes(ledger())
+		await settlementRouteCreate('C', request('r1', planned!, fx), SA)
+		await expect(settlementRouteCreate('C', request('r1', planned!, fx), SA)).resolves.toEqual({ routeId: 'r1' })
+		await expect(settlementRouteCreate('C', request('r1', planned!), SA)).rejects.toMatchObject({ field: 'routeId' })
 	})
 
 	it('cancelling a foreign route restores the ledger', async () => {
 		const before = ledger()
-		const [route] = planSettlementRoutes(before)
-		await settlementRouteCreate('C', request('r1', route!, fx), SA)
-		await settlementDelete('C', { tripId: TRIP, settlementId: 'r1-00' }, SA)
+		const [planned] = planSettlementRoutes(before)
+		await settlementRouteCreate('C', request('r1', planned!, fx), SA)
+		await settlementDelete('C', { tripId: TRIP, settlementId: 'r1' }, SA)
 		expect(ledger()).toEqual(before)
 	})
 })
@@ -593,10 +692,23 @@ describe('fail-closed ledger reads', () => {
 		seedTrip(['A', 'B'])
 		seedExpense('e1', 'B', { A: 100 })
 		for (let i = 0; i < 501; i++) {
-			fake.set(`trips/${TRIP}/settlements/s${i}`, { fromUid: str('X'), toUid: str('Y'), amountMinor: int(1), deletedAt: { nullValue: null }, createdAt: { timestampValue: fake.tick() } })
+			fake.set(`trips/${TRIP}/settlements/s${i}`, {
+				legs: { arrayValue: { values: [{ mapValue: { fields: { fromUid: str('X'), toUid: str('Y'), amountMinor: int(1) } } }] } },
+				deletedAt: { nullValue: null }, createdAt: { timestampValue: fake.tick() },
+			})
 		}
 		await expect(settlementRouteCreate('B', request('r1', planSettlementRoutes(ledger())[0]!), SA))
 			.rejects.toMatchObject({ code: 'PAIR_LEDGER_TOO_LARGE' })
+	})
+
+	it('refuses to compute a ledger when another settlement\'s legs are unreadable', async () => {
+		seedTrip(['A', 'B'])
+		seedExpense('e1', 'B', { A: 100 })
+		fake.set(`trips/${TRIP}/settlements/broken`, { deletedAt: { nullValue: null }, createdAt: { timestampValue: fake.tick() } })
+		const before = snapshot()
+		await expect(settlementRouteCreate('B', request('r1', planSettlementRoutes(ledger())[0]!), SA))
+			.rejects.toMatchObject({ status: 500 })
+		expect(snapshot()).toBe(before)
 	})
 })
 
@@ -631,33 +743,36 @@ describe('property: random trips settle completely through the Worker', () => {
 				const caller = receiverGone ? OWNER : pick.kind === 'TRANSFER' ? pick.receiverUid : pick.participantUids.find(u => u !== 'F')!
 				const id = `s${seed}r${n++}`
 				await settlementRouteCreate(caller, request(id, pick), SA)
-				if (r() < 0.2) await settlementDelete(caller, { tripId: TRIP, settlementId: routeLegId(id, 0) }, SA)
+				if (r() < 0.2) await settlementDelete(caller, { tripId: TRIP, settlementId: id }, SA)
 			}
 			expect(ledger(), `seed ${seed}`).toEqual({})
 
-			// Every lock on every expense is held by exactly the active legs
-			// whose lineage names it — nothing stale, nothing missing.
+			// Every lock on every expense is held by exactly the active routes
+			// whose lock set names it — nothing stale, nothing missing.
 			const active = docsIn('settlements').filter(d => isActive(d.fields))
-			for (const { id, fields } of docsIn('expenses')) {
-				const expected = active.filter(l => readArr(l.fields, 'appliedExpenseIds').includes(id)).map(l => l.id).sort()
-				expect(readArr(fields, 'settlementLockIds').sort(), `seed ${seed} ${id}`).toEqual(expected)
+			for (const { id } of docsIn('expenses')) {
+				const expected = active.filter(d => lockedOf(d.fields).some(([e]) => e === id)).map(d => d.id).sort()
+				expect(locksOf(id), `seed ${seed} ${id}`).toEqual(expected)
 			}
 			// Lineage accounts for every leg amount, and no expense share is
 			// drawn down more than it holds.
 			const drawnPerShare = new Map<string, number>()
-			for (const leg of active) {
-				const sources = ((leg.fields.appliedSources as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? [])
-				const total = sources.reduce((s, v) => s + readInt(v.mapValue!.fields, 'amountMinor'), 0)
-				expect(total, `seed ${seed} ${leg.id}`).toBe(readInt(leg.fields, 'amountMinor'))
-				for (const v of sources) {
-					const key = `${readStr(v.mapValue!.fields, 'expenseId')}|${readStr(leg.fields, 'fromUid')}`
-					drawnPerShare.set(key, (drawnPerShare.get(key) ?? 0) + readInt(v.mapValue!.fields, 'amountMinor'))
-				}
+			for (const { id, fields } of active) {
+				const legs = legsOf(fields)
+				const sources = sourcesOf(fields)
+				legs.forEach(([from, , amount], i) => {
+					const mine = sources.filter(([legIndex]) => legIndex === i)
+					expect(mine.reduce((s, [, , a]) => s + a, 0), `seed ${seed} ${id}#${i}`).toBe(amount)
+					for (const [, expenseId, a] of mine) {
+						const key = `${expenseId}|${from}`
+						drawnPerShare.set(key, (drawnPerShare.get(key) ?? 0) + a)
+					}
+				})
 			}
 			for (const [key, drawn] of drawnPerShare) {
 				const [expenseId, member] = key.split('|')
-				const splits = (fake.fields(`trips/${TRIP}/expenses/${expenseId}`)!.splits as { arrayValue: { values: FsValue[] } }).arrayValue.values
-				const share = splits.map(v => v.mapValue!.fields).filter(f => readStr(f, 'memberId') === member).reduce((s, f) => s + readInt(f, 'amountMinor'), 0)
+				const share = mapsIn(fake.fields(`trips/${TRIP}/expenses/${expenseId}`), 'splits')
+					.filter(f => readStr(f, 'memberId') === member).reduce((s, f) => s + readInt(f, 'amountMinor'), 0)
 				expect(drawn, `seed ${seed} ${key}`).toBeLessThanOrEqual(share)
 			}
 		}
@@ -671,24 +786,31 @@ describe('/settlement-delete edge cases', () => {
 	})
 
 	it('a missing settlement is a no-op success (double tap / lost response)', async () => {
-		await expect(settlementDelete('B', { tripId: TRIP, settlementId: 'nope-00' }, SA)).resolves.toEqual({ ok: true })
+		await expect(settlementDelete('B', { tripId: TRIP, settlementId: 'nope' }, SA)).resolves.toEqual({ ok: true })
 		expect(fake.commits.at(-1)).toEqual([])
 	})
 
 	it('a non-member cannot cancel, and a trip being deleted refuses everyone', async () => {
 		await settlementRouteCreate('B', request('r1', planSettlementRoutes(ledger())[0]!), SA)
-		await expect(settlementDelete('stranger', { tripId: TRIP, settlementId: 'r1-00' }, SA)).rejects.toMatchObject({ status: 403 })
+		await expect(settlementDelete('stranger', { tripId: TRIP, settlementId: 'r1' }, SA)).rejects.toMatchObject({ status: 403 })
 		fake.set(`trips/${TRIP}`, { ...fake.fields(`trips/${TRIP}`)!, deletingAt: { timestampValue: fake.tick() } })
-		await expect(settlementDelete('B', { tripId: TRIP, settlementId: 'r1-00' }, SA)).rejects.toMatchObject({ status: 410 })
-		expect(docsIn('settlements').every(d => isActive(d.fields))).toBe(true)
+		await expect(settlementDelete('B', { tripId: TRIP, settlementId: 'r1' }, SA)).rejects.toMatchObject({ status: 410 })
+		expect(isActive(settlement('r1'))).toBe(true)
 	})
 
-	it('refuses a settlement without a route header instead of cancelling it piecemeal', async () => {
+	it('refuses a settlement without legs instead of cancelling it blind', async () => {
 		fake.set(`trips/${TRIP}/settlements/raw`, {
-			fromUid: str('A'), toUid: str('B'), amountMinor: int(100), settledBy: str('B'),
-			deletedAt: { nullValue: null }, createdAt: { timestampValue: fake.tick() },
+			settledBy: str('B'), deletedAt: { nullValue: null }, createdAt: { timestampValue: fake.tick() },
 		})
 		await expect(settlementDelete('B', { tripId: TRIP, settlementId: 'raw' }, SA)).rejects.toMatchObject({ status: 500 })
 		expect(isActive(fake.fields(`trips/${TRIP}/settlements/raw`)!)).toBe(true)
+	})
+
+	it('skips a lock id the expense no longer holds and an expense that is gone', async () => {
+		await settlementRouteCreate('B', request('r1', planSettlementRoutes(ledger())[0]!), SA)
+		fake.set(`trips/${TRIP}/expenses/e1`, { ...fake.fields(`trips/${TRIP}/expenses/e1`)!, settlementLockIds: encodeStringArray(['other']) })
+		await settlementDelete('B', { tripId: TRIP, settlementId: 'r1' }, SA)
+		expect(locksOf('e1')).toEqual(['other'])
+		expect(fake.commits.at(-1)!.some(w => w.document.endsWith('/expenses/e1'))).toBe(false)
 	})
 })

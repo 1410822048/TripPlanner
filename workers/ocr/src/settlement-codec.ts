@@ -1,9 +1,9 @@
 // workers/ocr/src/settlement-codec.ts
-// Shared substrate of the settlement write endpoints (pair settlement
-// settlement-write.ts, routed settlement settlement-route-write.ts): the
+// Substrate of the settlement endpoints (settlement-route-write.ts): the
 // fail-closed read caps, the member/currency authorization read, and the
-// Firestore REST <-> domain codecs for expenses, settlements and lineage.
-// Pure decode/encode plus one tx read (authorizeMemberTx); no writes.
+// Firestore REST <-> domain codecs for expenses, settlement legs and
+// lineage. Pure decode/encode plus one tx read (authorizeMemberTx); no
+// writes.
 import { EXPENSE_LIMITS } from '@tripmate/entity-contracts'
 import {
   docIdFromName,
@@ -94,28 +94,26 @@ export function decodeExpenseForDomain(fields: Record<string, FsValue>): CoreExp
   return { amountMinor, paidBy, splits }
 }
 
-export function decodeSettlementForDomain(fields: Record<string, FsValue>): CoreSettlement {
-  const fromUid = readString(fields, 'fromUid') ?? ''
-  const toUid   = readString(fields, 'toUid')   ?? ''
-  const amountMinor = requireMinor(fields, 'amountMinor', 'settlement')
-  // createdAt arrives as Firestore Timestamp -> REST timestampValue ISO 8601.
-  // Convert to ms epoch for computePairwiseRemaining's sort step.
-  // The rules pin createdAt == request.time on every create so every
-  // legitimately-recorded settlement carries one; missing/unparseable
-  // falls back to 0 which sorts first deterministically.
-  const iso = fields.createdAt?.timestampValue
-  const createdAtMs = typeof iso === 'string' ? Date.parse(iso) : 0
-  return {
-    fromUid,
-    toUid,
-    amountMinor,
-    createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : 0,
-  }
+/** A settlement doc's ledger: its legs, each an ordinary from → to clear
+ *  stamped with the doc's createdAt (the order the pair math folds in).
+ *  Reads only `legs` and `createdAt`, so it works on the projected
+ *  ledger query. Fail-closed: a doc whose legs can't be decoded is a 500,
+ *  never a silently smaller ledger. */
+export function decodeSettlementLegs(fields: Record<string, FsValue>): CoreSettlement[] {
+  const legs = (fields.legs as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values
+  if (!legs || legs.length === 0) throw new CascadeError(500, 'settlement: legs is missing or empty')
+  const createdAtMs = parseCreatedAtMs(fields)
+  return legs.map(v => {
+    const leg = v.mapValue?.fields ?? {}
+    const fromUid = readString(leg, 'fromUid')
+    const toUid   = readString(leg, 'toUid')
+    if (!fromUid || !toUid || fromUid === toUid) throw new CascadeError(500, 'settlement leg: fromUid / toUid is malformed')
+    return { fromUid, toUid, amountMinor: requireMinor(leg, 'amountMinor', 'settlement leg'), createdAtMs }
+  })
 }
 
-
-export const MAX_APPLIED_SOURCES = 80
-
+/** createdAt (REST timestampValue) as epoch ms. Every Worker write stamps
+ *  REQUEST_TIME; missing / unparseable sorts first, deterministically. */
 export function parseCreatedAtMs(fields: Record<string, FsValue>): number {
   const iso = fields.createdAt?.timestampValue
   const ms = typeof iso === 'string' ? Date.parse(iso) : 0
@@ -178,11 +176,14 @@ export function lineageTitle(title: string): string {
   return chars.length <= LINEAGE_TITLE_MAX ? title : chars.slice(0, LINEAGE_TITLE_MAX - 1).join('') + '…'
 }
 
-export function encodeAppliedSources(sources: SettlementAppliedSource[]): FsValue {
+/** The doc's display lineage: every leg's sources, flattened, each tagged
+ *  with the index of the leg it belongs to. */
+export function encodeAppliedSources(perLeg: SettlementAppliedSource[][]): FsValue {
   return {
     arrayValue: {
-      values: sources.map(source => {
+      values: perLeg.flatMap((sources, legIndex) => sources.map(source => {
         const fields: Record<string, FsValue> = {
+          legIndex:     { integerValue: String(legIndex) },
           expenseId:    { stringValue:  source.expenseId },
           expenseTitle: { stringValue:  lineageTitle(source.expenseTitle) },
           amountMinor:  { integerValue: String(source.amountMinor) },
@@ -192,9 +193,44 @@ export function encodeAppliedSources(sources: SettlementAppliedSource[]): FsValu
           fields.itemName = { stringValue: source.itemName }
         }
         return { mapValue: { fields } }
-      }),
+      })),
     },
   }
+}
+
+/** The doc's lock set, per expense: which legs lock it. Sorted by expense
+ *  id; each expense once, however many legs lock it. `ids` is the union
+ *  the expense lock writes use. */
+export function encodeLockedExpenses(perLeg: readonly (readonly string[])[]): { ids: string[]; value: FsValue } {
+  const legsByExpense = new Map<string, number[]>()
+  perLeg.forEach((ids, legIndex) => {
+    for (const id of ids) {
+      const legs = legsByExpense.get(id) ?? []
+      if (!legs.includes(legIndex)) legs.push(legIndex)
+      legsByExpense.set(id, legs)
+    }
+  })
+  const ids = [...legsByExpense.keys()].sort()
+  return {
+    ids,
+    value: {
+      arrayValue: {
+        values: ids.map(expenseId => ({ mapValue: { fields: {
+          expenseId:  { stringValue: expenseId },
+          legIndexes: { arrayValue: { values: legsByExpense.get(expenseId)!.map(i => ({ integerValue: String(i) })) } },
+        } } })),
+      },
+    },
+  }
+}
+
+/** Every expense id in a doc's `lockedExpenses`. */
+export function decodeLockedExpenseIds(fields: Record<string, FsValue>): string[] {
+  const entries = (fields.lockedExpenses as { arrayValue?: { values?: FsValue[] } } | undefined)?.arrayValue?.values ?? []
+  return entries.flatMap(v => {
+    const id = readString(v.mapValue?.fields, 'expenseId')
+    return id ? [id] : []
+  })
 }
 
 export function readInteger(fields: Record<string, FsValue> | undefined, key: string): number | null {
@@ -205,9 +241,8 @@ export function readInteger(fields: Record<string, FsValue> | undefined, key: st
 }
 
 /** True when a settlement doc has been soft-deleted (cancelled). Shared
- *  by the create-path idempotency check (reject reuse of a cancelled
- *  id) and the delete-path idempotency check (no-op on a second
- *  cancel). */
+ *  by the create-path idempotency check (reject reuse of a cancelled id)
+ *  and the delete-path idempotency check (no-op on a second cancel). */
 export function isSoftDeleted(fields: Record<string, FsValue>): boolean {
   return Boolean((fields.deletedAt as { timestampValue?: string } | undefined)?.timestampValue)
 }

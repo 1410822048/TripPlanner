@@ -5,14 +5,14 @@
 // chronological replay over (expense create/delete + settlement) events,
 // so SettlementSummary can show a reason-specific warning banner.
 //
-// Standalone by design — imports only @tripmate/settlement-core + types,
-// never settlement.ts, so there's no import cycle (settlement.ts imports
+// Standalone by design — imports only @tripmate/settlement-core, types and
+// the leg view, never settlement.ts, so there is no import cycle (settlement.ts imports
 // buildOrphanReasonMap / classifyOrphan from here). It keeps its own tiny
 // `ensureSlot` copy rather than sharing settlement.ts's: a 4-line generic
 // helper isn't worth a cross-import or a shared micro-module.
 import { SETTLEMENT_EPS } from '@tripmate/settlement-core'
 import type { Expense } from '@/types'
-import type { SettlementRecord } from '@/types/settlement'
+import type { SettlementLeg } from './settlementLegs'
 
 /**
  * Reason this settlement is orphan. Classified by chronological replay
@@ -61,7 +61,7 @@ function ensureSlot<T>(
 }
 
 /**
- * Per-settlement state captured at its recording time by the
+ * Per-leg state captured at its recording time by the
  * chronological replay. Combined with the FINAL leftover (computed
  * by the main forward-cap loop) to derive each orphan's `reason`.
  *
@@ -81,17 +81,18 @@ interface SettlementReplayInfo {
   editedAfter?: boolean
   /** An expense involving either party was soft-deleted after recording. */
   deletedAfter?: boolean
-  /** Lineage-based facts, only for settlements carrying the Worker's
-   *  `appliedExpenseIds` / `appliedSources`: the exact expenses the
-   *  settlement was applied against. Authoritative over the replay. */
+  /** Lineage-based facts from the Worker's per-leg lock set: the exact
+   *  expenses this leg was applied against. Authoritative over the replay. */
   lineageDeleted?: boolean
   lineageEdited?:  boolean
 }
 
-/** Expenses a settlement was applied against, from its Worker lineage. */
-function lineageExpenseIds(st: SettlementRecord): string[] {
-  if (st.appliedExpenseIds && st.appliedExpenseIds.length > 0) return st.appliedExpenseIds
-  return [...new Set((st.appliedSources ?? []).map(s => s.expenseId))]
+/** Expenses a leg was applied against, from the Worker's lineage: the
+ *  leg's own lock set (exact per leg, even after an edit moved an expense
+ *  off the pair), else the expenses its sources name. */
+function lineageExpenseIds(st: SettlementLeg): string[] {
+  if (st.lockExpenseIds.length > 0) return st.lockExpenseIds
+  return [...new Set(st.sources.map(s => s.expenseId))]
 }
 
 function involves(e: Expense, a: string, b: string): boolean {
@@ -101,7 +102,7 @@ function involves(e: Expense, a: string, b: string): boolean {
 
 /**
  * Chronological replay over (expense create/delete + settlement) events.
- * Returns per-settlement replay state used by the main loop to classify
+ * Returns per-leg replay state (keyed by leg key) used by the main loop to classify
  * each orphan reason -- including MIXED, when both at-recording
  * overpayment AND a subsequent soft-delete contributed to the leftover.
  *
@@ -111,12 +112,12 @@ function involves(e: Expense, a: string, b: string): boolean {
  */
 export function buildOrphanReasonMap(
   expenses:    Expense[],
-  settlements: SettlementRecord[],
+  settlements: SettlementLeg[],
 ): Map<string, SettlementReplayInfo> {
   type Event =
     | { type: 'expense_create'; ts: number; expense: Expense }
     | { type: 'expense_delete'; ts: number; expense: Expense }
-    | { type: 'settlement';     ts: number; settlement: SettlementRecord }
+    | { type: 'settlement';     ts: number; settlement: SettlementLeg }
 
   const events: Event[] = []
   for (const e of expenses) {
@@ -201,7 +202,7 @@ export function buildOrphanReasonMap(
       const cMs = e.createdAt?.toMillis?.() ?? 0
       if (uMs > ev.ts && uMs > cMs) lineageEdited = true
     }
-    out.set(st.id, { atRecording, overpayment, editedAfter, deletedAfter, lineageDeleted, lineageEdited })
+    out.set(st.key, { atRecording, overpayment, editedAfter, deletedAfter, lineageDeleted, lineageEdited })
   }
   return out
 }

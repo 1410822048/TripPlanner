@@ -1,10 +1,10 @@
 // Render + fireEvent tests for SettlementHistory — the「已清算紀錄」section
 // extracted from SettlementSummary. Covers the logic this component owns:
-// one row per route however many legs it has, the recent-N fold/unfold, the
-// aggregate orphan banner + reason copy, the recorder-or-owner delete gate,
-// the per-leg orphan classification it threads down, and that cancelling
-// names every leg of the route. Pure presentation — no mocks;
-// SettlementRouteRow is exercised as the real child.
+// one row per settlement (a route, however many legs it has), the recent-N
+// fold/unfold, the aggregate orphan banner + reason copy, the
+// recorder-or-owner delete gate, the per-leg orphan classification it
+// threads down, and that cancelling names the settlement. Pure presentation
+// — no mocks; SettlementRouteRow is exercised as the real child.
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import SettlementHistory from './SettlementHistory'
@@ -18,24 +18,24 @@ const B: TripMember = { id: 'u2', displayName: 'Bob', avatarLabel: 'B', color: '
 const C: TripMember = { id: 'u3', displayName: 'Carol', avatarLabel: 'C', color: '#000', bg: '#fff' }
 const memberById = new Map([[A.id, A], [B.id, B], [C.id, C]])
 
-/** A one-leg route u1 → u2 recorded by u2. */
-function rec(routeId: string, over: Partial<SettlementRecord> = {}): SettlementRecord {
+/** A one-leg settlement u1 → u2 recorded by u2. */
+function rec(id: string, over: Partial<SettlementRecord> = {}): SettlementRecord {
   const amountMinor = over.amountMinor ?? 5000
   return {
-    id: `${routeId}-00`, tripId: 't1', fromUid: 'u1', toUid: 'u2',
-    amountMinor, currency: 'JPY', settledBy: 'u2', createdAt: TS, deletedAt: null,
-    route: { id: routeId, legIndex: 0, legCount: 1, kind: 'TRANSFER', participantUids: ['u1', 'u2'], payerUid: 'u1', receiverUid: 'u2', amountMinor },
+    id, tripId: 't1', kind: 'TRANSFER', currency: 'JPY', participantUids: ['u1', 'u2'],
+    legs: [{ fromUid: 'u1', toUid: 'u2', amountMinor }], payerUid: 'u1', receiverUid: 'u2', amountMinor,
+    settledBy: 'u2', createdAt: TS, deletedAt: null,
     ...over,
   }
 }
 
-/** u1 → u3 via u2, two legs. */
-function viaB(routeId: string): SettlementRecord[] {
-  const header = { id: routeId, legCount: 2, kind: 'TRANSFER' as const, participantUids: ['u1', 'u2', 'u3'], payerUid: 'u1', receiverUid: 'u3', amountMinor: 700 }
-  return [
-    { ...rec(routeId), id: `${routeId}-00`, fromUid: 'u1', toUid: 'u2', amountMinor: 700, settledBy: 'u3', route: { ...header, legIndex: 0 } },
-    { ...rec(routeId), id: `${routeId}-01`, fromUid: 'u2', toUid: 'u3', amountMinor: 700, settledBy: 'u3', route: { ...header, legIndex: 1 } },
-  ]
+/** u1 → u3 via u2: one settlement, two legs. */
+function viaB(id: string, over: Partial<SettlementRecord> = {}): SettlementRecord {
+  return rec(id, {
+    participantUids: ['u1', 'u2', 'u3'], payerUid: 'u1', receiverUid: 'u3', amountMinor: 700, settledBy: 'u3',
+    legs: [{ fromUid: 'u1', toUid: 'u2', amountMinor: 700 }, { fromUid: 'u2', toUid: 'u3', amountMinor: 700 }],
+    ...over,
+  })
 }
 
 type HistoryProps = Parameters<typeof SettlementHistory>[0]
@@ -45,7 +45,7 @@ function renderHistory(over: Partial<HistoryProps> = {}) {
     <SettlementHistory
       settlements={[rec('s1')]} memberById={memberById}
       currency="JPY" uid={null} canDeleteAnySettlement={false}
-      totalOrphanMinor={0} orphanByReason={{}} orphanById={new Map()}
+      totalOrphanMinor={0} orphanByReason={{}} orphansBySettlement={new Map()}
       onDelete={onDelete}
       {...over}
     />,
@@ -55,9 +55,9 @@ function renderHistory(over: Partial<HistoryProps> = {}) {
 
 const DELETE = { name: '刪除清算紀錄' }
 
-describe('SettlementHistory — one row per route', () => {
+describe('SettlementHistory — one row per settlement', () => {
   it('a two-leg route is one entry, showing who it went through', () => {
-    renderHistory({ settlements: viaB('r1') })
+    renderHistory({ settlements: [viaB('r1')] })
     expect(screen.getByText(/已清算紀錄（1 筆）/)).toBeTruthy()
     expect(screen.getByText('經 Bob')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /明細（2 段）/ }))
@@ -76,8 +76,8 @@ describe('SettlementHistory — fold', () => {
     expect(screen.getByRole('button', { name: /收起/ })).toBeTruthy()
   })
 
-  it('counts routes, not legs, toward the fold threshold', () => {
-    renderHistory({ settlements: [...viaB('r1'), ...viaB('r2'), ...viaB('r3')], canDeleteAnySettlement: true, uid: 'x' })
+  it('counts settlements, not legs, toward the fold threshold', () => {
+    renderHistory({ settlements: [viaB('r1'), viaB('r2'), viaB('r3')], canDeleteAnySettlement: true, uid: 'x' })
     expect(screen.queryByRole('button', { name: /顯示其他/ })).toBeNull()
     expect(screen.getAllByRole('button', DELETE)).toHaveLength(3)
   })
@@ -110,12 +110,11 @@ describe('SettlementHistory — delete gate + wiring', () => {
     expect(screen.getAllByRole('button', DELETE).length).toBeGreaterThan(0)
   })
 
-  it('threads the per-leg orphan classification and cancels every leg of the route', () => {
+  it('threads the per-leg orphan classification and cancels the whole settlement', () => {
     const onDelete = vi.fn()
-    const legs = viaB('r1')
     renderHistory({
-      settlements: legs, uid: 'u3', canDeleteAnySettlement: false, onDelete,
-      orphanById: new Map([['r1-01', { fromUserId: 'u2', toUserId: 'u3', amountMinor: 700, settlementId: 'r1-01', reason: 'OVERPAYMENT' }]]),
+      settlements: [viaB('r1')], uid: 'u3', canDeleteAnySettlement: false, onDelete,
+      orphansBySettlement: new Map([['r1', [{ fromUserId: 'u2', toUserId: 'u3', amountMinor: 700, settlementId: 'r1', legIndex: 1, reason: 'OVERPAYMENT' }]]]),
     })
     expect(screen.getByLabelText(/未對應/)).toBeTruthy()
     // Opened by default when something is unmatched, with the reason copy.
@@ -123,6 +122,22 @@ describe('SettlementHistory — delete gate + wiring', () => {
 
     fireEvent.click(screen.getByRole('button', DELETE))
     fireEvent.click(screen.getByRole('button', { name: /確認刪除整筆清算紀錄/ }))
-    expect(onDelete).toHaveBeenCalledWith('r1-00', ['r1-00', 'r1-01'])
+    expect(onDelete).toHaveBeenCalledWith('r1')
+  })
+})
+
+describe('SettlementHistory — lineage detail', () => {
+  it('lists each leg\'s own sources and names the untraced remainder of a trimmed leg', () => {
+    renderHistory({
+      settlements: [viaB('r1', {
+        appliedSources: [
+          { legIndex: 0, expenseId: 'e1', expenseTitle: '晚餐', amountMinor: 500 },
+          { legIndex: 1, expenseId: 'e2', expenseTitle: '計程車', itemId: 'i1', itemName: '夜間加成', amountMinor: 700 },
+        ],
+      })],
+    })
+    fireEvent.click(screen.getByRole('button', { name: /明細（2 段）/ }))
+    expect(screen.getByText(/來源：晚餐 ¥500、其他較新的費用 ¥200（未逐筆列出）/)).toBeTruthy()
+    expect(screen.getByText(/來源：計程車 \/ 夜間加成 ¥700$/)).toBeTruthy()
   })
 })

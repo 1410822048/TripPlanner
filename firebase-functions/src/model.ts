@@ -53,11 +53,11 @@ export interface NormalizedSettlementInfo {
   toUid: string
   amountMinor: number
   currency: string
-  /** Routed settlement: the people the payment was passed through. */
+  /** The people the payment was passed through (a multi-hop route). */
   viaUids?: string[]
 }
 
-/** A routed debt-cycle offset: no money moved, every participant's net is
+/** A debt-cycle offset: no money moved, every participant's net is
  *  unchanged. Carried instead of `settlement` (there is no payer/receiver). */
 export interface NormalizedOffsetInfo {
   participantUids: string[]

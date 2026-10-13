@@ -1,7 +1,7 @@
 // workers/ocr/src/settlement-lineage.ts
 // Worker binding of the shared settlement lineage (@tripmate/settlement-core
 // lineage.ts): which expenses / items a settlement drew down (appliedSources)
-// and which expenses it locks (appliedExpenseIds → settlementLockIds).
+// and which expenses it locks (lockedExpenses → settlementLockIds).
 //
 // The algorithm lives in settlement-core so the client's payment-suggestion
 // preview runs the exact same code; this module only binds the receipt

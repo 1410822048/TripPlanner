@@ -1,13 +1,12 @@
 // workers/ocr/src/settlement-write-shared.ts
-// Cross-cutting substrate shared by the settlement-write orchestration
-// (settlement-write.ts) and its domain sub-modules — settlement-fx-write.ts
-// (foreign FX) and settlement-lock-write.ts (pair / expense locks): the
+// Cross-cutting substrate shared by the settlement orchestration
+// (settlement-route-write.ts) and its domain sub-modules — settlement-fx-
+// write.ts (foreign FX) and settlement-lock-write.ts (pair locks): the
 // request schemas + inferred types, the validation-error class, and the
-// trip-currency auth context. Split out of settlement-write.ts (boundary
-// extraction) so the FX module can throw SettlementValidationError and take
-// the request / context types WITHOUT importing back into the orchestration
-// module — the same cycle-avoidance role expense-write-shared.ts /
-// expense-validate.ts play for the expense path.
+// trip-currency auth context. Kept apart so the FX module can throw
+// SettlementValidationError and take the request / context types WITHOUT
+// importing back into the orchestration module — the same cycle-avoidance
+// role expense-write-shared.ts / expense-validate.ts play for expenses.
 //
 // Settlement's validation surface is small (no per-line materialize, no
 // cross-field reconciliation), so a single shared module is proportionate
@@ -24,8 +23,8 @@ const AMOUNT_MINOR_MAX = 999_999_999_999
 const CurrencyRe = /^[A-Z]{3}$/
 const IsoDateRe  = /^\d{4}-\d{2}-\d{2}$/
 
-/** Routed settlement create (/settlement-route-create). A route is a set of
- *  ordinary pair settlements (legs) on real debt edges, recorded together:
+/** Settlement create (/settlement-route-create). A settlement is a route:
+ *  one doc whose legs are clears on real debt edges, recorded together:
  *
  *    - TRANSFER: the receiver confirms the payer paid them `amountMinor`
  *      (trip currency); intermediates net to zero. Optional foreign trio
@@ -37,7 +36,7 @@ const IsoDateRe  = /^\d{4}-\d{2}-\d{2}$/
  *  ledger (409 SETTLEMENT_STALE). The Worker never trusts the route: shape
  *  (conservation, acyclic / connected, caps) is re-validated with the
  *  shared validateRouteShape, and amounts against the live remaining.
- *  Leg doc ids are derived from `routeId` (routeLegId), never sent. */
+ *  `routeId` is the doc id (minted by the client so a retry is idempotent). */
 const RouteIdRe = new RegExp(`^[A-Za-z0-9_-]{1,${ROUTE_ID_MAX}}$`)
 
 const RouteLegRequestSchema = z.object({
@@ -86,6 +85,7 @@ export const SettlementRouteCreateRequestSchema = z.discriminatedUnion('kind', [
 })
 export type SettlementRouteCreateRequest = z.infer<typeof SettlementRouteCreateRequestSchema>
 
+/** Cancel a settlement (the whole route) by its doc id. */
 export const SettlementDeleteRequestSchema = z.object({
   tripId:       z.string().regex(TripIdRe),
   settlementId: z.string().regex(TripIdRe),

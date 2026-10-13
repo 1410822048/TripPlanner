@@ -46,7 +46,7 @@ function firebaseCode(err: unknown): string | undefined {
 // then a few known messages, then the HTTP status. A message that is
 // already Chinese was written for users and is kept.
 const WORKER_CODES: Record<string, string> = {
-  PAIR_LEDGER_TOO_LARGE:      '這兩位成員之間的費用或清算筆數超過系統可計算的上限，無法自動清算',
+  PAIR_LEDGER_TOO_LARGE:      '這筆清算牽涉的費用或清算紀錄超過系統可計算的上限，無法自動清算',
   SETTLEMENT_STALE:           '欠款金額已有變動，請重新開啟清算後再試',
   LEDGER_CURRENCY_MISMATCH:   '帳本中有以其他幣別記錄的費用，請聯絡旅程擁有者修正',
   TX_RETRY_EXHAUSTED:         '資料同時被其他成員修改，請再試一次',

@@ -193,6 +193,9 @@ export interface TxQuery {
    *  10k expenses. Callers pass the same defensive cap they'd use for
    *  the client-side getDocs equivalent (see settlement-write). */
   limit?:     number
+  /** Projection: only these top-level fields come back. The documents are
+   *  still part of the transaction's read set exactly as without it. */
+  select?:    string[]
 }
 
 export interface TxContext {
@@ -498,7 +501,7 @@ export class TxRetryExhausted extends Error {
  *  already-applied doc / used intents); it propagates to the route as a
  *  generic 5xx, which the client classifies as WorkerAmbiguous and
  *  reconciles via the realtime listener instead of rolling back. Callers
- *  with genuine same-id replay semantics (settlement-create) can retry
+ *  with genuine same-id replay semantics (settlement create) can retry
  *  at the application layer, but that is an explicit caller decision. */
 export class TxCommitAmbiguous extends Error {
   readonly cause: unknown
@@ -656,6 +659,9 @@ async function runQueryInTransaction(
   }
   if (query.limit != null) {
     structuredQuery.limit = query.limit
+  }
+  if (query.select) {
+    structuredQuery.select = { fields: query.select.map(fieldPath => ({ fieldPath })) }
   }
 
   const res = await fetch(url, {

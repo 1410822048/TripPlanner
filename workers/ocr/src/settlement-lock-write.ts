@@ -5,7 +5,7 @@
 // writes over the same pair conflict in Firestore and one retries against
 // the other's result. Also the settlementLockIds reference-set codec; the
 // per-expense lock writes themselves are built in settlement-route-write.ts
-// (merged per expense). Pure builders — no tx I/O.
+// (one per expense, holding route ids). Pure builders — no tx I/O.
 import {
   docResourceName,
   type TxWrite,
@@ -15,11 +15,9 @@ import { canonicalPairKey }                 from '@tripmate/settlement-core'
 
 // ─── Pair-key / Pair-lock path ────────────────────────────────────
 
-/** Deterministic unordered pair key for the pair-LOCK doc id. Settlement
- *  docs themselves are read by (fromUid,toUid) equality, NOT by a stored
- *  pairKey field — see the read fan-out in doCreate for why. The lock
- *  serializes same-pair create/delete so two concurrent creates on the
- *  same pair conflict on a shared doc.
+/** Deterministic unordered pair key for the pair-LOCK doc id. The lock
+ *  serializes create/cancel over the same pair: two routes are different
+ *  docs, so without a shared doc they would not conflict in Firestore.
  *
  *  Direction-agnostic via lexicographic min/max ordering (A→B and B→A
  *  share the same key). Storage is bounded (one lock doc per
@@ -45,7 +43,7 @@ export function pairLockPath(tripId: string, a: string, b: string): string {
 }
 
 /** Build the lock-doc write that "touches" the pair guard. Same shape
- *  for create + delete: stamp the latest settlement id + REQUEST_TIME.
+ *  for create + delete: stamp the latest route id + REQUEST_TIME.
  *  No `currentDocument` precondition -- the doc is lazily created on
  *  the first settlement for the pair and persists thereafter (cascade
  *  is responsible for cleanup). */

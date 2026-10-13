@@ -7,6 +7,7 @@ import MemberAvatar from '@/components/ui/MemberAvatar'
 import {
   computeBalancesFull,
   type OrphanReason,
+  type OrphanSettlement,
 } from '../services/settlement'
 import { planRouteSuggestions, payersFor, type RouteSuggestion } from '../services/settlementRoutes'
 import type { RecordIntent } from './SettlementRecordSheet'
@@ -39,9 +40,9 @@ interface Props {
    *  offset), or「記錄收款」for a payment that doesn't match a suggestion.
    *  The page owns the sheet and the mutation. */
   onRecord: (intent: RecordIntent) => void
-  /** Cancels a settlement — for a route, every leg (`hideIds`) goes with
-   *  it. Used to clean up orphans or undo a premature record. */
-  onDeleteSettlement: (id: string, hideIds?: string[]) => void
+  /** Cancels a settlement — the whole route, every leg with it. Used to
+   *  clean up orphans or undo a premature record. */
+  onDeleteSettlement: (id: string) => void
   /** Trip owner: may record the receipt for a receiver who has LEFT the
    *  trip (nobody else can confirm it any more). The Worker enforces it
    *  and marks the route `ownerRecorded`. */
@@ -105,10 +106,15 @@ export default function SettlementSummary({
     acc[o.reason] = (acc[o.reason] ?? 0) + o.amountMinor
     return acc
   }, {})
-  // Per-settlement lookup so each history row can render its own reason
-  // chip without re-walking `orphans`. Map handles the "no orphan" case
-  // by returning undefined.
-  const orphanById = new Map(orphans.map(o => [o.settlementId, o]))
+  // Per-settlement lookup (a route may have an orphan on several legs) so
+  // each history row can render its own reason chips without re-walking
+  // `orphans`.
+  const orphansBySettlement = new Map<string, OrphanSettlement[]>()
+  for (const o of orphans) {
+    const list = orphansBySettlement.get(o.settlementId)
+    if (list) list.push(o)
+    else orphansBySettlement.set(o.settlementId, [o])
+  }
 
   return (
     <div className="px-4 mt-4">
@@ -220,7 +226,7 @@ export default function SettlementSummary({
             canDeleteAnySettlement={canDeleteAnySettlement}
             totalOrphanMinor={totalOrphanMinor}
             orphanByReason={orphanByReason}
-            orphanById={orphanById}
+            orphansBySettlement={orphansBySettlement}
             onDelete={onDeleteSettlement}
           />
         )}

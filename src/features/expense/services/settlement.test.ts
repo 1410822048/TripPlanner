@@ -71,18 +71,18 @@ function mkSettlement(
   amountMinor: number,
   idSuffix = '',
 ): SettlementRecord {
+  // A one-leg route: the plain pair settlement.
   return {
     id: `s_${fromUid}_${toUid}_${amountMinor}${idSuffix}`,
     tripId: 'demo',
-    fromUid,
-    toUid,
-    amountMinor,
+    kind: 'TRANSFER',
     currency: 'JPY',
+    participantUids: [fromUid, toUid].sort(),
+    legs: [{ fromUid, toUid, amountMinor }],
+    payerUid: fromUid,
+    receiverUid: toUid,
+    amountMinor,
     settledBy: toUid,
-    route: {
-      id: `s_${fromUid}_${toUid}_${amountMinor}${idSuffix}`, legIndex: 0, legCount: 1, kind: 'TRANSFER',
-      participantUids: [fromUid, toUid].sort(), payerUid: fromUid, receiverUid: toUid, amountMinor,
-    },
     createdAt: TS,
     deletedAt: null,
   }
@@ -219,7 +219,7 @@ describe('multiple settlements per pair', () => {
     expect(orphans).toEqual([
       // Second settlement was over-cap at its own recording time (applied
       // had already consumed available debt) → OVERPAYMENT.
-      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 10, settlementId: 's_m2_m1_50_b', reason: 'OVERPAYMENT' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 10, settlementId: 's_m2_m1_50_b', legIndex: 0, reason: 'OVERPAYMENT' },
     ])
   })
 })
@@ -289,7 +289,7 @@ describe('orphan settlements', () => {
     const { balances, orphans } = computeBalancesFull(expenses, MEMBERS, settlements)
     expect(orphans).toEqual([
       // Gross existed at recording (30) but settlement (50) exceeded it.
-      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 20, settlementId: 's_m2_m1_50', reason: 'OVERPAYMENT' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 20, settlementId: 's_m2_m1_50', legIndex: 0, reason: 'OVERPAYMENT' },
     ])
     // Critical: the overpayment does NOT flip m1 into a debtor position.
     // Net is at most "0 on this pair" — no reverse-debt creation.
@@ -312,7 +312,7 @@ describe('orphan settlements', () => {
     const settlements = [mkSettlement('m2', 'm1', 50)]
     const { balances, orphans } = computeBalancesFull([], MEMBERS, settlements)
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 50, settlementId: 's_m2_m1_50', reason: 'UNKNOWN' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 50, settlementId: 's_m2_m1_50', legIndex: 0, reason: 'UNKNOWN' },
     ])
     for (const b of balances) {
       expect(b.net).toBe(0)
@@ -331,10 +331,10 @@ describe('orphan settlements', () => {
     const sorted = [...orphans].sort((a, b) => a.fromUserId.localeCompare(b.fromUserId))
     expect(sorted).toEqual([
       // m2 had gross 20 at recording, paid 30 → OVERPAYMENT.
-      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 10, settlementId: 's_m2_m1_30', reason: 'OVERPAYMENT' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 10, settlementId: 's_m2_m1_30', legIndex: 0, reason: 'OVERPAYMENT' },
       // m3 had no gross at all on this pair → UNKNOWN (could be either
       // overpayment-to-the-wrong-person or a legacy hard-deleted expense).
-      { fromUserId: 'm3', toUserId: 'm1', amountMinor: 15, settlementId: 's_m3_m1_15', reason: 'UNKNOWN' },
+      { fromUserId: 'm3', toUserId: 'm1', amountMinor: 15, settlementId: 's_m3_m1_15', legIndex: 0, reason: 'UNKNOWN' },
     ])
   })
 
@@ -350,8 +350,8 @@ describe('orphan settlements', () => {
     ]
     const { orphans } = computeBalancesFull([], MEMBERS, settlements)
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 30, settlementId: 's_m2_m1_30_a', reason: 'UNKNOWN' },
-      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 50, settlementId: 's_m2_m1_50_b', reason: 'UNKNOWN' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 30, settlementId: 's_m2_m1_30_a', legIndex: 0, reason: 'UNKNOWN' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 50, settlementId: 's_m2_m1_50_b', legIndex: 0, reason: 'UNKNOWN' },
     ])
   })
 })
@@ -381,7 +381,7 @@ describe('chronological settlement attribution', () => {
     const later:   SettlementRecord = { ...mkSettlement('m2', 'm1', 50, '_late'),  createdAt: tsAt(2000) }
     const { orphans } = computeBalancesFull(expenses, MEMBERS, [earlier, later])
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 10, settlementId: 's_m2_m1_50_late', reason: 'OVERPAYMENT' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 10, settlementId: 's_m2_m1_50_late', legIndex: 0, reason: 'OVERPAYMENT' },
     ])
   })
 
@@ -395,7 +395,7 @@ describe('chronological settlement attribution', () => {
     const later:   SettlementRecord = { ...mkSettlement('m2', 'm1', 50, '_late'),  createdAt: tsAt(2000) }
     const { orphans } = computeBalancesFull(expenses, MEMBERS, [later, earlier])
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 10, settlementId: 's_m2_m1_50_late', reason: 'OVERPAYMENT' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 10, settlementId: 's_m2_m1_50_late', legIndex: 0, reason: 'OVERPAYMENT' },
     ])
   })
 })
@@ -419,7 +419,7 @@ describe('orphan reason classification (phase-2)', () => {
     const settlement = { ...mkSettlement('m2', 'm1', 50), createdAt: tsAt(2000) }
     const { orphans, balances } = computeBalancesFull([expense], MEMBERS, [settlement])
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 50, settlementId: 's_m2_m1_50', reason: 'EXPENSE_DELETED' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 50, settlementId: 's_m2_m1_50', legIndex: 0, reason: 'EXPENSE_DELETED' },
     ])
     // Soft-deleted expense must NOT count toward paid / owed / net.
     expect(balances.find(b => b.memberId === 'm1')!.paid).toBe(0)
@@ -439,7 +439,7 @@ describe('orphan reason classification (phase-2)', () => {
     const settlement = { ...mkSettlement('m2', 'm1', 500), createdAt: tsAt(2000) }
     const { orphans } = computeBalancesFull([expense], MEMBERS, [settlement])
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 200, settlementId: 's_m2_m1_500', reason: 'EXPENSE_CHANGED' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 200, settlementId: 's_m2_m1_500', legIndex: 0, reason: 'EXPENSE_CHANGED' },
     ])
   })
 
@@ -453,7 +453,7 @@ describe('orphan reason classification (phase-2)', () => {
       createdAt: tsAt(1000),
       updatedAt: tsAt(3000),
     }
-    const settlement = { ...mkSettlement('m2', 'm1', 250), createdAt: tsAt(2000), appliedExpenseIds: ['e1'] }
+    const settlement = { ...mkSettlement('m2', 'm1', 250), createdAt: tsAt(2000), lockedExpenses: [{ expenseId: 'e1', legIndexes: [0] }] }
     const { orphans } = computeBalancesFull([expense], MEMBERS, [settlement])
     expect(orphans.map(o => o.reason)).toEqual(['EXPENSE_CHANGED'])
   })
@@ -466,7 +466,7 @@ describe('orphan reason classification (phase-2)', () => {
       updatedAt: tsAt(4000),
       deletedAt: tsAt(4000),
     }
-    const settlement = { ...mkSettlement('m2', 'm1', 100), createdAt: tsAt(2000), appliedExpenseIds: ['e1'] }
+    const settlement = { ...mkSettlement('m2', 'm1', 100), createdAt: tsAt(2000), lockedExpenses: [{ expenseId: 'e1', legIndexes: [0] }] }
     const { orphans } = computeBalancesFull([expense], MEMBERS, [settlement])
     expect(orphans.map(o => o.reason)).toEqual(['EXPENSE_DELETED'])
   })
@@ -480,15 +480,15 @@ describe('orphan reason classification (phase-2)', () => {
     const e2 = { ...mkExpense('m1', 100, [['m1', 50], ['m2', 50]], '_e2'), id: 'e2', createdAt: tsAt(3000) }
     const s1: SettlementRecord = {
       ...mkSettlement('m2', 'm1', 100, '_1'), createdAt: tsAt(2000),
-      appliedExpenseIds: ['e1'], appliedSources: [{ expenseId: 'e1', expenseTitle: 't', amountMinor: 100 }],
+      lockedExpenses: [{ expenseId: 'e1', legIndexes: [0] }], appliedSources: [{ legIndex: 0, expenseId: 'e1', expenseTitle: 't', amountMinor: 100 }],
     }
     const s2: SettlementRecord = {
       ...mkSettlement('m2', 'm1', 50, '_2'), createdAt: tsAt(4000),
-      appliedExpenseIds: ['e2'], appliedSources: [{ expenseId: 'e2', expenseTitle: 't', amountMinor: 50 }],
+      lockedExpenses: [{ expenseId: 'e2', legIndexes: [0] }], appliedSources: [{ legIndex: 0, expenseId: 'e2', expenseTitle: 't', amountMinor: 50 }],
     }
     const { orphans, balances } = computeBalancesFull([e1, e2], MEMBERS, [s1, s2])
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 100, settlementId: s1.id, reason: 'EXPENSE_DELETED' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 100, settlementId: s1.id, legIndex: 0, reason: 'EXPENSE_DELETED' },
     ])
     // Attribution never moves money: everyone is square.
     expect(balances.every(b => b.net === 0)).toBe(true)
@@ -499,9 +499,9 @@ describe('orphan reason classification (phase-2)', () => {
     // 40 of lineage is lost, and the later half is the one that ran past
     // what is left of e1.
     const e1 = { ...mkExpense('m1', 120, [['m1', 60], ['m2', 60]], '_e1'), id: 'e1', createdAt: tsAt(1000), updatedAt: tsAt(5000) }
-    const src = (amountMinor: number) => [{ expenseId: 'e1', expenseTitle: 't', amountMinor }]
-    const s1: SettlementRecord = { ...mkSettlement('m2', 'm1', 50, '_1'), createdAt: tsAt(2000), appliedExpenseIds: ['e1'], appliedSources: src(50) }
-    const s2: SettlementRecord = { ...mkSettlement('m2', 'm1', 50, '_2'), createdAt: tsAt(3000), appliedExpenseIds: ['e1'], appliedSources: src(50) }
+    const src = (amountMinor: number) => [{ legIndex: 0, expenseId: 'e1', expenseTitle: 't', amountMinor }]
+    const s1: SettlementRecord = { ...mkSettlement('m2', 'm1', 50, '_1'), createdAt: tsAt(2000), lockedExpenses: [{ expenseId: 'e1', legIndexes: [0] }], appliedSources: src(50) }
+    const s2: SettlementRecord = { ...mkSettlement('m2', 'm1', 50, '_2'), createdAt: tsAt(3000), lockedExpenses: [{ expenseId: 'e1', legIndexes: [0] }], appliedSources: src(50) }
     const { orphans } = computeBalancesFull([e1], MEMBERS, [s1, s2])
     expect(orphans.map(o => [o.settlementId, o.amountMinor])).toEqual([[s2.id, 40]])
   })
@@ -519,7 +519,7 @@ describe('orphan reason classification (phase-2)', () => {
     const settlement = { ...mkSettlement('m2', 'm1', 50), createdAt: tsAt(2000) }
     const { orphans } = computeBalancesFull([expense], MEMBERS, [settlement])
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 20, settlementId: 's_m2_m1_50', reason: 'OVERPAYMENT' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 20, settlementId: 's_m2_m1_50', legIndex: 0, reason: 'OVERPAYMENT' },
     ])
   })
 
@@ -554,7 +554,7 @@ describe('orphan reason classification (phase-2)', () => {
     const settlement = { ...mkSettlement('m2', 'm1', 70), createdAt: tsAt(2000) }
     const { orphans } = computeBalancesFull([expense], MEMBERS, [settlement])
     expect(orphans).toEqual([
-      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 70, settlementId: 's_m2_m1_70', reason: 'MIXED' },
+      { fromUserId: 'm2', toUserId: 'm1', amountMinor: 70, settlementId: 's_m2_m1_70', legIndex: 0, reason: 'MIXED' },
     ])
   })
 
@@ -848,5 +848,87 @@ describe('normalized pair edges', () => {
       { fromId: 'm2', toId: 'm1', amountMinor: 10 },
       { fromId: 'm3', toId: 'm2', amountMinor: 10 },
     ])
+  })
+})
+
+// ─── Multi-leg routes ──────────────────────────────────────────────
+//
+// A settlement doc is a route holding its legs. The ledger applies each leg
+// to its own pair, and anything it reports per leg (orphans) names both
+// the settlement and the leg.
+describe('multi-leg routes', () => {
+  // m3 → m2 → m1: m3 paid m1 100 via m2.
+  const LEGS = [
+    { fromUid: 'm2', toUid: 'm1', amountMinor: 100 },
+    { fromUid: 'm3', toUid: 'm2', amountMinor: 100 },
+  ]
+  function route(over: Partial<SettlementRecord> = {}): SettlementRecord {
+    return {
+      id: 'r1', tripId: 'demo', kind: 'TRANSFER', currency: 'JPY', participantUids: ['m1', 'm2', 'm3'],
+      legs: LEGS, payerUid: 'm3', receiverUid: 'm1', amountMinor: 100,
+      settledBy: 'm1', createdAt: tsAt(2000), deletedAt: null, ...over,
+    }
+  }
+  const owesM1 = () => ({ ...mkExpense('m1', 100, [['m2', 100]], '_a'), createdAt: tsAt(1000) })
+  const owesM2 = () => ({ ...mkExpense('m2', 100, [['m3', 100]], '_b'), createdAt: tsAt(1000) })
+
+  it('applies every leg of a route to its own pair', () => {
+    const { pairwise, orphans, balances } = computeBalancesFull([owesM1(), owesM2()], MEMBERS, [route()])
+    expect(pairwise).toEqual({})
+    expect(orphans).toEqual([])
+    expect(balances.every(b => b.net === 0)).toBe(true)
+  })
+
+  it('an orphan names the settlement and the leg', () => {
+    const deleted = { ...owesM2(), deletedAt: tsAt(3000), updatedAt: tsAt(3000) }
+    const { orphans } = computeBalancesFull([owesM1(), deleted], MEMBERS, [route()])
+    expect(orphans).toEqual([
+      { fromUserId: 'm3', toUserId: 'm2', amountMinor: 100, settlementId: 'r1', legIndex: 1, reason: 'EXPENSE_DELETED' },
+    ])
+  })
+
+  it('a route with one malformed leg is excluded whole, never half-applied', () => {
+    const broken = route({ legs: [LEGS[0]!, { fromUid: 'm3', toUid: 'm3', amountMinor: 100 }] })
+    const { pairwise } = computeBalancesFull([owesM1(), owesM2()], MEMBERS, [broken])
+    expect(pairwise).toEqual({ m2: { m1: 100 }, m3: { m2: 100 } })
+  })
+
+  it('lineage is exact per leg: another leg\'s locked expense never explains this one', () => {
+    // m1 pays m4 via m2, m3. Leg 0 (m1 → m2) over-covered its pair at
+    // recording (150 against 100): OVERPAYMENT. The later edit of leg 2's
+    // expense (m3 ↔ m4, no party in common with leg 0) must not relabel it.
+    const a = { ...mkExpense('m2', 100, [['m1', 100]], '_a'), createdAt: tsAt(1000) }
+    const b = { ...mkExpense('m3', 100, [['m2', 100]], '_b'), createdAt: tsAt(1000) }
+    const c = { ...mkExpense('m4', 100, [['m3', 100]], '_c'), createdAt: tsAt(1000), updatedAt: tsAt(3000) }
+    const viaTwo = route({
+      participantUids: ['m1', 'm2', 'm3', 'm4'], payerUid: 'm1', receiverUid: 'm4',
+      legs: [
+        { fromUid: 'm1', toUid: 'm2', amountMinor: 150 },
+        { fromUid: 'm2', toUid: 'm3', amountMinor: 100 },
+        { fromUid: 'm3', toUid: 'm4', amountMinor: 100 },
+      ],
+      lockedExpenses: [{ expenseId: a.id, legIndexes: [0] }, { expenseId: b.id, legIndexes: [1] }, { expenseId: c.id, legIndexes: [2] }],
+    })
+    const { orphans } = computeBalancesFull([a, b, c], MEMBERS, [viaTwo])
+    expect(orphans).toEqual([
+      { fromUserId: 'm1', toUserId: 'm2', amountMinor: 50, settlementId: 'r1', legIndex: 0, reason: 'OVERPAYMENT' },
+    ])
+  })
+
+  it('lineage follows an expense its leg locked even after an edit moved it off the pair', () => {
+    // Leg 1's expense (m3 owed m2) is rewritten to involve nobody on the
+    // route: the leg is now unbacked, and lineage still knows why.
+    const moved = { ...owesM2(), splits: [{ memberId: 'm2', amountMinor: 100 }], updatedAt: tsAt(3000) }
+    const r = route({ lockedExpenses: [{ expenseId: owesM1().id, legIndexes: [0] }, { expenseId: moved.id, legIndexes: [1] }] })
+    const { orphans } = computeBalancesFull([owesM1(), moved], MEMBERS, [r])
+    expect(orphans).toEqual([
+      { fromUserId: 'm3', toUserId: 'm2', amountMinor: 100, settlementId: 'r1', legIndex: 1, reason: 'EXPENSE_CHANGED' },
+    ])
+  })
+
+  it('names departed route participants as ghosts', () => {
+    const viaGhost = route({ legs: [{ fromUid: 'gone', toUid: 'm1', amountMinor: 100 }, { fromUid: 'm3', toUid: 'gone', amountMinor: 100 }] })
+    const ghosts = expandWithGhosts(MEMBERS, [], [viaGhost], { gone: '小鬼' })
+    expect(ghosts.map(m => m.displayName)).toEqual(['Alice', 'Bob', 'Carol', '小鬼'])
   })
 })

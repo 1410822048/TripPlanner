@@ -91,6 +91,38 @@ describe('runFirestoreTransaction', () => {
 		expect(rpcCalls).toBe(1)
 	})
 
+	it('runQuery sends the projection, filters and limit inside the transaction', async () => {
+		let queryBody: Record<string, unknown> | undefined
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input)
+			if (url.includes(':beginTransaction')) return new Response(JSON.stringify({ transaction: 'tx-1' }), { status: 200 })
+			if (url.includes(':runQuery')) {
+				queryBody = JSON.parse(String(init?.body))
+				return new Response(JSON.stringify([{ document: { name: 'projects/demo/databases/(default)/documents/trips/t1/settlements/r1', fields: {} } }]), { status: 200 })
+			}
+			if (url.includes(':commit')) return new Response(JSON.stringify({ commitTime: '2026-05-21T10:00:01Z' }), { status: 200 })
+			throw new Error(`unexpected URL ${url}`)
+		}) as typeof fetch
+
+		await runFirestoreTransaction('fake-token', 'demo', async tx => {
+			await tx.runQuery({
+				parent: 'trips/t1', collection: 'settlements', limit: 501,
+				filters: [{ fieldPath: 'deletedAt', op: 'IS_NULL' }],
+				select: ['legs', 'createdAt'],
+			})
+			return { writes: [], result: undefined }
+		})
+		expect(queryBody).toEqual({
+			transaction: 'tx-1',
+			structuredQuery: {
+				from:   [{ collectionId: 'settlements' }],
+				where:  { unaryFilter: { field: { fieldPath: 'deletedAt' }, op: 'IS_NULL' } },
+				limit:  501,
+				select: { fields: [{ fieldPath: 'legs' }, { fieldPath: 'createdAt' }] },
+			},
+		})
+	})
+
 	it('happy path: begin → batchGet → commit, returns body.result', async () => {
 		mockFetchSequence([
 			{ matches: ':beginTransaction', status: 200, body: { transaction: 'tx-1' } },

@@ -59,14 +59,6 @@ const SERVER_INDEXES: Array<{ dependsOn: string; index: FirestoreIndex }> = [
     },
   },
   {
-    // workers/ocr/src/settlement-write.ts: in-tx pair reads (fromUid == a AND toUid == b AND deletedAt IS NULL).
-    dependsOn: 'settlement create/delete pairwise tx reads',
-    index: {
-      collectionGroup: 'settlements', queryScope: 'COLLECTION',
-      fields: [asc('fromUid'), asc('toUid'), asc('deletedAt')],
-    },
-  },
-  {
     // firebase-functions/src/dispatch.ts loadEnabledTokens: users/{uid}/pushTokens.
     dependsOn: 'push dispatch (disabledAt == null ORDER BY lastSeenAt DESC)',
     index: {

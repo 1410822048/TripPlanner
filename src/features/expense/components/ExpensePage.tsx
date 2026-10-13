@@ -8,7 +8,7 @@ import { useOverlayPendingRowIds } from '@/hooks/listOverlay'
 import { canonicalRouteLegs, routeParticipants } from '@tripmate/settlement-core'
 import { useSettlements, useCreateSettlementRoute, useDeleteSettlement } from '../hooks/useSettlements'
 import { computeBalancesFull, expandWithGhosts, orderMembersLikeExpense } from '../services/settlement'
-import { pendingLegLocks } from '../services/settlementRoutes'
+import { pendingRouteLocks } from '../services/settlementRoutes'
 import { EXPENSE_LIST_LIMIT } from '../services/expenseService'
 import { SETTLEMENT_LIST_LIMIT } from '../services/settlementService'
 import { useMembers } from '@/features/members/hooks/useMembers'
@@ -145,7 +145,7 @@ export default function ExpensePage() {
     .sort((a, b) => b[1] - a[1])
   // Expenses a non-owner may not edit / soft-delete. PRIMARY source is the
   // server-enforced `expense.settlementLockIds` (exactly what the Worker +
-  // rules gate on). Settlement lineage (appliedExpenseIds / appliedSources)
+  // rules gate on). Each settlement's complete lock set (lockedExpenses)
   // is UNIONED in only to cover the optimistic windows where the two can
   // briefly disagree: on optimistic CREATE the settlement row lands before
   // the expense's lock field propagates; on optimistic DELETE the settlement
@@ -157,8 +157,7 @@ export default function ExpensePage() {
     if ((e.settlementLockIds?.length ?? 0) > 0) lockedExpenseIds.add(e.id)
   }
   for (const settlement of settlements) {
-    for (const id of settlement.appliedExpenseIds ?? []) lockedExpenseIds.add(id)
-    for (const source of settlement.appliedSources ?? []) lockedExpenseIds.add(source.expenseId)
+    for (const lock of settlement.lockedExpenses ?? []) lockedExpenseIds.add(lock.expenseId)
   }
   const editingExpenseId = modal.editTarget?.id ?? null
   const expenseById = new Map(expenses.map(e => [e.id, e]))
@@ -306,12 +305,12 @@ export default function ExpensePage() {
     if (!ledgerReady) { toast.error(LEDGER_UNAVAILABLE_MESSAGE); return false }
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) { toast.error(writeBlockReason); return false }
-    // Every leg is an active settlement doc; past the listener's limit the
-    // ledger would become unreadable for everyone.
-    if (settlements.length + route.legs.length > SETTLEMENT_LIST_LIMIT) { toast.error(SETTLEMENT_CAP_MESSAGE); return false }
+    // One more active settlement doc; past the listener's limit the ledger
+    // would become unreadable for everyone.
+    if (settlements.length + 1 > SETTLEMENT_LIST_LIMIT) { toast.error(SETTLEMENT_CAP_MESSAGE); return false }
     const legs = canonicalRouteLegs(route.legs)
-    // Mint the route id here (not in the service) so the optimistic leg
-    // rows, the Worker request and the Firestore docs share ids. Memory:
+    // Mint the route id here (not in the service) so the optimistic row,
+    // the Worker request and the Firestore doc share one id. Memory:
     // [[settlement-id-hoist-load-bearing]].
     const vars = {
       routeId: crypto.randomUUID(),
@@ -325,10 +324,10 @@ export default function ExpensePage() {
           ? route.receiverUid !== uid
           : !routeParticipants(legs).includes(uid),
         ...(sourceAmountMinor !== undefined ? { sourceAmountMinor } : {}),
-        // Conservative per-leg lock superset until the Worker's exact set
-        // and the expense listener land: a non-owner must not briefly edit
-        // a source expense post-record (it would 403 on save).
-        pendingAppliedExpenseIds: legs.map(leg => pendingLegLocks(expenses, leg)),
+        // Conservative lock superset until the Worker's exact set and the
+        // expense listener land: a non-owner must not briefly edit a source
+        // expense post-record (it would 403 on save).
+        pendingLocks: pendingRouteLocks(expenses, legs),
       },
     }
     if (reportInForm && foreign) {
@@ -337,7 +336,7 @@ export default function ExpensePage() {
       return createSettlementMut.mutateAsync({ ...vars, reportInForm })
     }
     createSettlementMut.mutate(vars)
-    // Close optimistically — the overlay already shows the legs; errors
+    // Close optimistically — the overlay already shows the record; errors
     // surface through the global MutationCache.onError toast.
     setRecordTarget(null)
   }
@@ -445,14 +444,14 @@ export default function ExpensePage() {
           // Only opens the sheet; handleRecordSettlement mutates.
           setRecordTarget({ intent, openId: crypto.randomUUID(), tripId: cloudTripId, uid })
         }}
-        onDeleteSettlement={(id, hideIds) => {
+        onDeleteSettlement={id => {
           if (isDemo) { signIn.open(); return }
           if (!uid) { toast.error('正在準備登入，請稍候'); return }
           // Visible to whoever recorded the settlement, so no owner gate hides
           // it — without this the tap would silently do nothing.
           const writeBlockReason = getClientWriteBlockReason()
           if (writeBlockReason) { toast.error(writeBlockReason); return }
-          deleteSettlementMut.mutate({ settlementId: id, ...(hideIds ? { hideIds } : {}) })
+          deleteSettlementMut.mutate({ settlementId: id })
         }}
       /> : <div className="mx-4 mt-4 rounded-xl border border-border bg-surface p-4 text-sm" role={ledgerError ? 'alert' : 'status'}>
         <p>{ledgerError ? `帳務資料無法完整載入：${ledgerError.message}` : '正在載入完整帳務資料…'}</p>

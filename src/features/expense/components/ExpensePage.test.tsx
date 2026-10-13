@@ -178,7 +178,7 @@ vi.mock('./SettlementSummary', () => ({
   // sheet and the delete path; the real component has its own spec.
   default: ({ onRecord, onDeleteSettlement }: {
     onRecord: (intent: Record<string, unknown>) => void
-    onDeleteSettlement: (id: string, hideIds?: string[]) => void
+    onDeleteSettlement: (id: string) => void
   }) => (
     <>
       <button
@@ -189,9 +189,6 @@ vi.mock('./SettlementSummary', () => ({
       </button>
       <button type="button" onClick={() => onDeleteSettlement('settlement-1')}>
         delete-settlement
-      </button>
-      <button type="button" onClick={() => onDeleteSettlement('r-00', ['r-00', 'r-01'])}>
-        delete-route
       </button>
     </>
   ),
@@ -552,23 +549,36 @@ describe('ExpensePage read-first expense flow', () => {
     expect(screen.queryByRole('dialog', { name: 'settle-sheet' })).toBeNull()
   })
 
-  it('refuses a route whose legs would push active settlements past the read limit', () => {
-    harness.settlements = Array.from({ length: SETTLEMENT_LIST_LIMIT - 1 }, (_, i) => ({ id: `s${i}`, fromUid: 'x', toUid: 'y', amountMinor: 1, deletedAt: null }))
+  it('a multi-leg route is one settlement: it takes one slot and locks per leg', () => {
+    const settlement = (i: number) => ({ id: `s${i}`, legs: [{ fromUid: 'x', toUid: 'y', amountMinor: 1 }], deletedAt: null })
+    harness.settlements = Array.from({ length: SETTLEMENT_LIST_LIMIT - 1 }, (_, i) => settlement(i))
     harness.settleSubmit = { route: TWO_LEGS }
     render(<ExpensePage />)
     fireEvent.click(screen.getByRole('button', { name: 'record-settlement' }))
     fireEvent.click(screen.getByRole('button', { name: 'mock settle submit' }))
 
-    // One slot left, two legs to write: the sheet stays open.
+    // One slot left, one doc to write — however many legs it has.
+    expect(harness.createSettlement).toHaveBeenCalledOnce()
+    const vars = harness.createSettlement.mock.calls[0]![0] as { optimistic: { pendingLocks: unknown[] } }
+    expect(Array.isArray(vars.optimistic.pendingLocks)).toBe(true)
+  })
+
+  it('refuses a settlement that would push active settlements past the read limit', () => {
+    harness.settlements = Array.from({ length: SETTLEMENT_LIST_LIMIT }, (_, i) => ({ id: `s${i}`, legs: [{ fromUid: 'x', toUid: 'y', amountMinor: 1 }], deletedAt: null }))
+    render(<ExpensePage />)
+    fireEvent.click(screen.getByRole('button', { name: 'record-settlement' }))
+    fireEvent.click(screen.getByRole('button', { name: 'mock settle submit' }))
+
+    // No slot left: the sheet stays open.
     expect(harness.createSettlement).not.toHaveBeenCalled()
     expect(toastMocks.error).toHaveBeenCalledWith(expect.stringContaining(`${SETTLEMENT_LIST_LIMIT}`))
     expect(screen.getByRole('dialog', { name: 'settle-sheet' })).toBeTruthy()
   })
 
-  it('cancelling a route hides every one of its legs', () => {
+  it('cancelling a settlement sends its id — the Worker cancels the whole route', () => {
     render(<ExpensePage />)
-    fireEvent.click(screen.getByRole('button', { name: 'delete-route' }))
-    expect(harness.deleteSettlement).toHaveBeenCalledWith({ settlementId: 'r-00', hideIds: ['r-00', 'r-01'] })
+    fireEvent.click(screen.getByRole('button', { name: 'delete-settlement' }))
+    expect(harness.deleteSettlement).toHaveBeenCalledWith({ settlementId: 'settlement-1' })
   })
 
   it('explains the stale bundle instead of silently dropping a settlement delete', () => {
@@ -629,7 +639,7 @@ describe('ExpensePage read-first expense flow', () => {
     // form 與 detail 兩者皆空、modal.isOpen 卻卡在 true。
     const deleted = receiptExpense({ id: 'e-del', deletedAt: TS })
     harness.expenses = [deleted]
-    harness.settlements = [{ id: 's1', appliedExpenseIds: ['e-del'] }]
+    harness.settlements = [{ id: 's1', lockedExpenses: [{ expenseId: 'e-del', legIndexes: [0] }] }]
     harness.modalIsOpen = true
     harness.modalEditTarget = deleted
     harness.canWrite = true

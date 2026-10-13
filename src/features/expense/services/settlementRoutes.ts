@@ -5,19 +5,19 @@
 // 同一份程式碼；這裡只做 client 需要的組裝：
 //   planRouteSuggestions   簡化後的付款建議 + 每段 leg 預覽會清掉哪些費用
 //   paymentRoute           「記錄收款」：把一筆真實付款映射到目前帳上的合法路徑
-//   groupSettlementHistory 清算紀錄：同一個 route 的 legs 合併成一列
 //   routeRole              目前使用者在 route 裡的角色（付款 / 收款 / 中間人 / 抵銷參與者）
+//   pendingRouteLocks      寫入途中先鎖住的費用（Worker 鎖定集合的超集）
 //
 // 一律吃 computeBalancesFull 回傳的 pairwise（normalized remaining）——與 Worker
 // 計算 CAS 用的是同一份邊，所以建議與 Worker 的接受條件一致。
 import {
   buildSettlementLineage,
   canonicalRouteLegs,
+  capRouteSources,
   isRouteCurrent,
   maxPayable,
   planSettlementRoutes,
   routeForPayment,
-  routeLegId,
   type CoreSettlement,
   type LineageExpense,
   type OffsetRoute,
@@ -28,7 +28,8 @@ import {
 } from '@tripmate/settlement-core'
 import { memberItemContributions, type MaterializeAdjustment, type MaterializeItem } from '@tripmate/expense-materialize'
 import type { Expense } from '@/types'
-import type { SettlementRecord, SettlementRouteHeader } from '@/types/settlement'
+import type { LockedExpense, SettlementRecord } from '@/types/settlement'
+import { settlementLegs } from './settlementLegs'
 
 type Pairwise = Record<string, Record<string, number>>
 
@@ -63,28 +64,30 @@ function toLineageExpense(e: Expense): ClientLineageExpense {
 const attribute = (e: ClientLineageExpense, memberId: string) => memberItemContributions(e, memberId)
 
 /** Which expenses each leg of `route` would clear, given the active
- *  expenses and settlements the pairwise ledger was computed from. */
+ *  expenses and settlements the pairwise ledger was computed from — trimmed
+ *  to the same route-wide budget the Worker stores, so the preview lists
+ *  exactly what the record will. */
 export function previewRouteLegs(
   route:       SettlementRoute,
   expenses:    Expense[],
   settlements: SettlementRecord[],
 ): PreviewLeg[] {
   const active = expenses.filter(e => !e.deletedAt).map(toLineageExpense)
-  const prior: CoreSettlement[] = settlements
-    .filter(s => s.deletedAt === null)
+  const prior: CoreSettlement[] = settlementLegs(settlements.filter(s => s.deletedAt === null))
     .map(s => ({ fromUid: s.fromUid, toUid: s.toUid, amountMinor: s.amountMinor, createdAtMs: s.createdAt?.toMillis?.() ?? 0 }))
-  return canonicalRouteLegs(route.legs).map(leg => {
+  const legs = canonicalRouteLegs(route.legs)
+  const sources = capRouteSources(legs.map(leg => {
     const inPair = (a: string, b: string) => (a === leg.fromUid && b === leg.toUid) || (a === leg.toUid && b === leg.fromUid)
-    const { appliedSources } = buildSettlementLineage(
+    return buildSettlementLineage(
       active.filter(e => e.paidBy === leg.fromUid || e.paidBy === leg.toUid),
       prior.filter(s => inPair(s.fromUid, s.toUid)),
       leg.fromUid,
       leg.toUid,
       leg.amountMinor,
       attribute,
-    )
-    return { ...leg, sources: appliedSources }
-  })
+    ).appliedSources
+  }))
+  return legs.map((leg, i) => ({ ...leg, sources: sources[i]! }))
 }
 
 /** The simplified suggestion list (offsets first, then transfers). */
@@ -159,65 +162,18 @@ export function routeRole(
   }
 }
 
-// ─── History ──────────────────────────────────────────────────────
-
-/** One logical route in the history. `legs` are the ones currently
- *  visible, in leg order; `complete` is false while the listener has
- *  delivered only part of it. */
-export interface SettlementHistoryEntry {
-  id:          string
-  header:      SettlementRouteHeader
-  legs:        SettlementRecord[]
-  complete:    boolean
-  settledBy:   string
-  createdAtMs: number
-}
-
-/** One entry per route, in list order (createdAt desc), so the list doesn't
- *  jump. */
-export function groupSettlementHistory(settlements: SettlementRecord[]): SettlementHistoryEntry[] {
-  const out: SettlementHistoryEntry[] = []
-  const routes = new Map<string, SettlementHistoryEntry>()
-  for (const s of settlements) {
-    const existing = routes.get(s.route.id)
-    if (existing) {
-      existing.legs.push(s)
-      if (s.route.legIndex === 0) existing.header = s.route
-      continue
-    }
-    const entry: SettlementHistoryEntry = {
-      id:          s.route.id,
-      header:      s.route,
-      legs:        [s],
-      complete:    false,
-      settledBy:   s.settledBy,
-      createdAtMs: s.createdAt?.toMillis?.() ?? 0,
-    }
-    routes.set(s.route.id, entry)
-    out.push(entry)
-  }
-  for (const entry of routes.values()) {
-    entry.legs.sort((a, b) => a.route.legIndex - b.route.legIndex)
-    entry.complete = entry.legs.length === entry.header.legCount
-  }
-  return out
-}
-
-/** Every leg doc id of a route — what an optimistic cancel hides. */
-export function routeLegIds(header: Pick<SettlementRouteHeader, 'id' | 'legCount'>): string[] {
-  return Array.from({ length: header.legCount }, (_, i) => routeLegId(header.id, i))
-}
-
 // ─── Optimistic locks ─────────────────────────────────────────────
 
-/** Conservative pending lock set for one leg: every active expense creating
- *  debt either way within the leg's pair. A superset of what the Worker
- *  will lock; the listener swaps in the exact set. */
-export function pendingLegLocks(expenses: Expense[], leg: { fromUid: string; toUid: string }): string[] {
+/** Conservative pending lock set for a route (legs in canonical order):
+ *  every active expense creating debt either way within a leg's pair,
+ *  with the legs whose pair it is on. A superset of what the Worker will
+ *  lock; the listener swaps in the exact set. */
+export function pendingRouteLocks(expenses: Expense[], legs: ReadonlyArray<{ fromUid: string; toUid: string }>): LockedExpense[] {
+  const onPair = (e: Expense, leg: { fromUid: string; toUid: string }) =>
+    (e.paidBy === leg.toUid   && e.splits.some(s => s.memberId === leg.fromUid)) ||
+    (e.paidBy === leg.fromUid && e.splits.some(s => s.memberId === leg.toUid))
   return expenses
     .filter(e => !e.deletedAt)
-    .filter(e =>
-      (e.paidBy === leg.toUid   && e.splits.some(s => s.memberId === leg.fromUid)) ||
-      (e.paidBy === leg.fromUid && e.splits.some(s => s.memberId === leg.toUid)))
-    .map(e => e.id)
+    .map(e => ({ expenseId: e.id, legIndexes: legs.flatMap((leg, i) => (onPair(e, leg) ? [i] : [])) }))
+    .filter(lock => lock.legIndexes.length > 0)
 }
