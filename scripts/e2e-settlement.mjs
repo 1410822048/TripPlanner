@@ -33,7 +33,7 @@ const OUT = join(ROOT, 'e2e-results', 'settlement')
 const isWin = process.platform === 'win32'
 
 if (!process.env.E2E_INNER) {
-  const build = spawnSync('npm', ['--workspace', 'firebase-functions', 'run', 'build'], { stdio: 'inherit', shell: true })
+  const build = spawnSync('npm', ['--prefix', 'firebase-functions', 'run', 'build'], { stdio: 'inherit', shell: true })
   if (build.status !== 0) process.exit(build.status ?? 1)
   const result = spawnSync(
     'npx',

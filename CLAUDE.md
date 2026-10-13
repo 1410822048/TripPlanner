@@ -516,6 +516,7 @@ npm run deploy:pages                       # build + Cloudflare Pages deploy
 npm test                                   # 前端 + 共用 packages 測試
 npm run test:coverage                      # 同上 + 覆蓋率門檻(vitest.config.ts;CI 跑這個)
 npm --workspace workers/ocr exec -- vitest run # Worker 測試
+npm ci --prefix firebase-functions         # Functions 是獨立套件(不是 workspace),用自己的 lockfile 安裝;那份也是 Cloud Build 部署用的
 npm run functions:test                     # Functions 測試
 npm run test:rules                         # Firestore Rules emulator 測試
 npm run test:emulator                      # Worker settlement 寫入 × Firestore emulator(投影、衝突、1 MiB)

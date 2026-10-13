@@ -40,22 +40,19 @@ jobs:
         run: npm install --global npm@11.21.0
 
       # vite-plugin-pwa 2 支援 Vite 8，安裝必須遵守 peer dependency 約束。
+      # firebase-functions is a standalone package (not a workspace): its own
+      # package-lock.json is the one Cloud Build installs, so CI installs and
+      # audits that same lockfile.
       - name: Install
-        run: npm ci
+        run: |
+          npm ci
+          npm ci --prefix firebase-functions
 
       - name: Audit dependencies
         run: npm audit --audit-level=high
 
-      # Cloud Build installs Functions from firebase-functions/package-lock.json,
-      # which npm ignores inside the workspace — so the root audit above never
-      # sees it. Audit it in isolation (outside the repo so npm can't climb to
-      # the workspace root) and fail on runtime drift between the two locks.
-      - name: Audit Functions deploy lockfile
-        run: |
-          node scripts/check-functions-lock.mjs
-          tmp="$(mktemp -d)"
-          cp firebase-functions/package.json firebase-functions/package-lock.json "$tmp/"
-          (cd "$tmp" && npm audit --package-lock-only --audit-level=high)
+      - name: Audit Functions dependencies
+        run: npm audit --prefix firebase-functions --audit-level=high
 
       - name: Lint
         run: npm run lint
@@ -78,7 +75,7 @@ jobs:
 
       # firebase-functions has its own vitest config and lives outside the
       # root glob (src/** + packages/**), same as the Worker above. Typecheck
-      # already covers it via `npm run typecheck` (--workspaces), but the test
+      # already covers it via `npm run typecheck` (--prefix), but the test
       # run does not — without this step the push dispatch/normalize/send
       # suite never executes in CI.
       - name: Test (functions)
@@ -169,8 +166,11 @@ jobs:
         run: npm install --global npm@11.21.0
 
       # Install before obtaining cloud credentials; never expose them to CI tests.
+      # Functions' predeploy build uses its own TypeScript install.
       - name: Install
-        run: npm ci
+        run: |
+          npm ci
+          npm ci --prefix firebase-functions
 
       - name: Authenticate Google Cloud with WIF
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3

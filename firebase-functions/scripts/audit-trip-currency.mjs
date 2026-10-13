@@ -10,18 +10,18 @@
 //
 // Usage (needs Google credentials with Firestore read on the project, e.g.
 // `gcloud auth application-default login`):
-//   node scripts/audit-trip-currency.mjs
-//   node scripts/audit-trip-currency.mjs --json > report.json
+//   node firebase-functions/scripts/audit-trip-currency.mjs
+//   node firebase-functions/scripts/audit-trip-currency.mjs --json > report.json
 // Restore ONE trip's currency after reviewing the report (writes only
 // trips/{id}.currency; expenses and settlements are never modified):
-//   node scripts/audit-trip-currency.mjs --set <tripId>=JPY --apply
+//   node firebase-functions/scripts/audit-trip-currency.mjs --set <tripId>=JPY --apply
 // Without --apply, --set only prints what it would change.
 //
 // Backfill trip.ledgerStartedAt (the marker firestore.rules uses to pin the
 // currency once a trip has expenses) on trips created before the marker
 // existed. Run AFTER restoring any mismatched trips above:
-//   node scripts/audit-trip-currency.mjs --backfill-ledger            (dry run)
-//   node scripts/audit-trip-currency.mjs --backfill-ledger --apply
+//   node firebase-functions/scripts/audit-trip-currency.mjs --backfill-ledger            (dry run)
+//   node firebase-functions/scripts/audit-trip-currency.mjs --backfill-ledger --apply
 //
 // Expenses/settlements created AFTER a trip was flipped were recorded as the
 // wrong currency by the app itself; they are listed (mismatch counts are per
@@ -128,5 +128,5 @@ if (asJson) {
       console.log(`    settlements ${cur}: ${v.count}  (${v.firstCreatedAt} … ${v.lastCreatedAt})`)
     }
   }
-  if (report.length) console.log('\nReview, then restore with: node scripts/audit-trip-currency.mjs --set <tripId>=<CUR> --apply')
+  if (report.length) console.log('\nReview, then restore with: node firebase-functions/scripts/audit-trip-currency.mjs --set <tripId>=<CUR> --apply')
 }

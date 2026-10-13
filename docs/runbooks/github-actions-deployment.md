@@ -22,7 +22,7 @@ Firestore indexes（只新增，等待 READY）→ Worker → Functions（等待
 這個順序對每一次發版都通用，不需要依改了哪些部分另外安排：被依賴的先上
 （索引 → 伺服器 → 權限 → App），要退役的東西等整個新版上線後才移除。
 發版期間不使用 App；任一步失敗，修正後重跑整個 workflow 即可，每一步都可重複執行。
-`scripts/audit-trip-currency.mjs` 不在自動部署流程內，不會自動修復或 backfill 使用者資料。
+`firebase-functions/scripts/audit-trip-currency.mjs` 不在自動部署流程內，不會自動修復或 backfill 使用者資料。
 
 ## Cloudflare 設定
 

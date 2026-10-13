@@ -8,8 +8,7 @@
 # pdf.js + react-pdf, Vitest) share a group so a PR never splits a lockstep.
 version: 2
 updates:
-  # Root lockfile — covers the workspaces too (packages/*, workers/ocr,
-  # firebase-functions as a workspace).
+  # Root lockfile — covers the workspaces too (packages/*, workers/ocr).
   - package-ecosystem: npm
     directory: /
     schedule:
@@ -58,8 +57,9 @@ updates:
       - dependency-name: '@types/node'
         update-types: ['version-update:semver-major']
 
-  # Functions are deployed from their own lockfile, which the root update
-  # does not touch.
+  # firebase-functions is a standalone package, not a workspace: its own
+  # package.json + package-lock.json are the only ones that describe it (and
+  # the ones Cloud Build installs), so this entry can update both together.
   - package-ecosystem: npm
     directory: /firebase-functions
     schedule:
