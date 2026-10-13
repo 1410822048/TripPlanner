@@ -38,10 +38,17 @@ updates:
       # component tests; stay on 29 until that is fixed upstream.
       - dependency-name: jsdom
         versions: ['>=30']
-      # pdfjs-dist is exact-pinned in lockstep with react-pdf's own pdf.js;
-      # 6.x waits until react-pdf ships against it.
-      - dependency-name: pdfjs-dist
-        update-types: ['version-update:semver-major']
+      # No pdfjs-dist ignore: it is exact-pinned in lockstep with react-pdf's
+      # own pdf.js, so ignoring its major let a PR move react-pdf to 11 while
+      # holding pdfjs-dist at 5.7 (GHSA-hq66-cqwq-w95j). Upgrade both together.
+      # @cloudflare/vitest-pool-workers (0.23) still peers vitest ^4.1.
+      - dependency-name: vitest
+        versions: ['>=5']
+      - dependency-name: '@vitest/*'
+        versions: ['>=5']
+      # typescript-eslint (8.71) peers typescript <6.1.0.
+      - dependency-name: typescript
+        versions: ['>=7']
       # Node / npm are pinned on purpose (CI + Functions engine); bump by hand.
       - dependency-name: '@types/node'
         update-types: ['version-update:semver-major']
@@ -66,6 +73,11 @@ updates:
     ignore:
       - dependency-name: '@types/node'
         update-types: ['version-update:semver-major']
+      # Same blockers as the root entry.
+      - dependency-name: vitest
+        versions: ['>=5']
+      - dependency-name: typescript
+        versions: ['>=7']
 
   # Workflow actions are pinned to full commit SHAs; Dependabot bumps the SHA
   # and the trailing `# vX.Y.Z` comment together.
