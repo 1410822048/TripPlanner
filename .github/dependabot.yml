@@ -46,6 +46,11 @@ updates:
         versions: ['>=5']
       - dependency-name: '@vitest/*'
         versions: ['>=5']
+      # Babel 8 + babel-plugin-react-compiler 1.x memoises fewer components
+      # than Babel 7 (141 vs 166 files on 2026-10-13); every test still
+      # passes, so CI cannot catch it. Re-measure before taking it.
+      - dependency-name: '@babel/core'
+        versions: ['>=8']
       # typescript-eslint (8.71) peers typescript <6.1.0.
       - dependency-name: typescript
         versions: ['>=7']

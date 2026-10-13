@@ -88,7 +88,7 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
-    "@babel/core": "^8.0.7",
+    "@babel/core": "^7.29.7",
     "@eslint/js": "^10.0.1",
     "@firebase/rules-unit-testing": "^5.0.1",
     "@rolldown/plugin-babel": "^0.2.4",
