@@ -83,6 +83,7 @@ for (const schedule of schedules) {
     description: '',
     estimatedCostMinor: 0,
     routeRevision: null,
+    travelToNext: null,
     createdBy: 'dev-owner',
     updatedBy: 'dev-owner',
     memberIds,

@@ -141,9 +141,7 @@ async function as(role) {
   const page = await context.newPage()
   page.on('pageerror', e => problems.push(`[${role}] page error: ${e.message}`))
   page.on('console', m => {
-    // The shared emulator seed writes schedules in an older shape; that is
-    // the schedule page's concern, not this walkthrough's.
-    if (m.type() === 'error' && !/scheduleFromDoc/.test(m.text())) problems.push(`[${role}] console: ${m.text().slice(0, 300)}`)
+    if (m.type() === 'error') problems.push(`[${role}] console: ${m.text().slice(0, 300)}`)
   })
   await page.goto(`${APP}/expense`)
   await page.getByRole('button', { name: '登入' }).first().click()
