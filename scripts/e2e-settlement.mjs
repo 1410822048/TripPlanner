@@ -1,19 +1,23 @@
 // End-to-end settlement walkthrough on a fully local stack:
-//   Firebase Auth + Firestore emulators → the real Worker in emulator mode
-//   (workers/ocr/src/emulator.ts) → the real app (Vite dev, emulator mode),
-//   driven by Playwright as three DEV accounts (owner / editor / viewer).
+//   Firebase Auth + Firestore + Functions emulators → the real Worker in
+//   emulator mode (workers/ocr/src/emulator.ts) → the real app (Vite dev,
+//   emulator mode), driven by Playwright as three DEV accounts
+//   (owner / editor / viewer). Every piece runs the code in this checkout:
+//   the emulators load firestore.rules and the built firebase-functions.
 //
 //   npm run e2e:settlement
 //
 // Needs Java 21 (Firestore emulator) and Playwright's Chromium
 // (`npx playwright install chromium` once). The foreign-currency step asks
-// the Worker for a real rate (Frankfurter), so it needs internet.
-// Screenshots: e2e-results/settlement/. Ports: 8080, 9099, 8787, 5199.
+// the Worker for a real rate (Frankfurter), so it needs internet. Push
+// delivery itself (FCM) is out of reach; the notification inbox rows the
+// Functions write before sending are checked instead.
+// Screenshots: e2e-results/settlement/. Ports: 8080, 9099, 5001, 8787, 5199.
 //
-// The outer run wraps everything in `firebase emulators:exec`; the inner run
-// (E2E_INNER=1) starts the Worker and Vite, seeds, walks the scenarios with
-// assertions against both the screen and the emulator's data, and stops
-// what it started.
+// The outer run builds the Functions and wraps everything in
+// `firebase emulators:exec`; the inner run (E2E_INNER=1) starts the Worker
+// and Vite, seeds, walks the scenarios with assertions against the screen,
+// the stored data and the notification inboxes, and stops what it started.
 import { spawn, spawnSync } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -29,9 +33,11 @@ const OUT = join(ROOT, 'e2e-results', 'settlement')
 const isWin = process.platform === 'win32'
 
 if (!process.env.E2E_INNER) {
+  const build = spawnSync('npm', ['--workspace', 'firebase-functions', 'run', 'build'], { stdio: 'inherit', shell: true })
+  if (build.status !== 0) process.exit(build.status ?? 1)
   const result = spawnSync(
     'npx',
-    ['firebase', 'emulators:exec', '--only', 'auth,firestore', `--project=${PROJECT}`, '"node scripts/e2e-settlement.mjs"'],
+    ['firebase', 'emulators:exec', '--only', 'auth,firestore,functions', `--project=${PROJECT}`, '"node scripts/e2e-settlement.mjs"'],
     { stdio: 'inherit', shell: true, env: { ...process.env, E2E_INNER: '1' } },
   )
   process.exit(result.status ?? 1)
@@ -92,6 +98,36 @@ async function list(collection) {
 }
 const activeSettlements = async () => (await list('settlements')).filter(s => s.deletedAt === null)
 const locksOf = async title => (await list('expenses')).find(e => e.title === title)?.settlementLockIds ?? []
+
+// ─── Notification inboxes (written by the Functions emulator) ─────
+
+async function inbox(uid) {
+  const res = await fetch(`${DOCS}/users/${uid}/notifications?pageSize=500`, { headers: { Authorization: 'Bearer owner' } })
+  return ((await res.json()).documents ?? []).map(d =>
+    Object.fromEntries(Object.entries(d.fields ?? {}).map(([k, v]) => [k, plain(v)])))
+}
+const about = (rows, settlementId, action) =>
+  rows.filter(n => n.entityType === 'settlement' && n.entityId === settlementId && n.action === action)
+
+/** Each of `uids` gets exactly ONE `action` notification for the settlement
+ *  (one per route, never one per leg) whose body matches; the actor gets
+ *  none. Triggers run asynchronously, so wait for them, then wait a little
+ *  more so a late duplicate would still be caught. */
+async function expectNotified(settlementId, action, { to, actor, body }) {
+  const until = Date.now() + 30_000
+  while (Date.now() < until) {
+    const counts = await Promise.all(to.map(async uid => about(await inbox(uid), settlementId, action).length))
+    if (counts.every(c => c > 0)) break
+    await new Promise(r => setTimeout(r, 500))
+  }
+  await new Promise(r => setTimeout(r, 2000))
+  for (const uid of to) {
+    const rows = about(await inbox(uid), settlementId, action)
+    assert.equal(rows.length, 1, `${uid}: exactly one ${action} notification for ${settlementId}`)
+    assert.match(rows[0].body, body)
+  }
+  assert.equal(about(await inbox(actor), settlementId, action).length, 0, `the actor (${actor}) is not notified`)
+}
 
 // ─── Browser helpers ──────────────────────────────────────────────
 
@@ -201,6 +237,12 @@ async function run() {
   await viewer.page.getByRole('button', { name: /明細（2 段）/ }).last().click()
   await shot(viewer.page, '05-recorded', '已清算紀錄')
   ok('one settlement doc, two legs, per-leg locks; everyone is square')
+  const routeId = active[0].id
+  await expectNotified(routeId, 'created', {
+    to: ['dev-owner', 'dev-editor'], actor: 'dev-viewer',
+    body: /^DEV viewer 記錄了 DEV owner → DEV viewer 的 ¥3,000（經 DEV editor）$/,
+  })
+  ok('notified once per route: payer and intermediate, "…（經 DEV editor）"; not the recorder')
 
   step('A locked expense is read-only for a non-owner')
   await editor.page.getByText('晚餐', { exact: true }).first().click()
@@ -217,6 +259,8 @@ async function run() {
   assert.deepEqual(await locksOf('晚餐'), [])
   assert.match(await suggestionText(viewer.page), /¥3,000 經 DEV editor/)
   ok('cancelled as a whole; suggestion back')
+  await expectNotified(routeId, 'deleted', { to: ['dev-owner', 'dev-editor'], actor: 'dev-viewer', body: /^DEV viewer 取消了 DEV owner → DEV viewer 的 ¥3,000（經 DEV editor）$/ })
+  ok('the cancel is notified once, to the same people')
 
   step('記錄收款: a partial payment routes the same way')
   await viewer.page.getByRole('button', { name: /記錄收款/ }).click()
@@ -229,6 +273,7 @@ async function run() {
   assert.deepEqual(active.map(s => s.legs.map(l => l.amountMinor)), [[1000, 1000]])
   assert.match(await suggestionText(viewer.page), /¥2,000 經 DEV editor/)
   ok('¥1,000 recorded via DEV editor; ¥2,000 still suggested')
+  await expectNotified(active[0].id, 'created', { to: ['dev-owner', 'dev-editor'], actor: 'dev-viewer', body: /的 ¥1,000（經 DEV editor）$/ })
   await recordButtons(viewer.page).first().click()
   await sheet(viewer.page).locator('button', { hasText: '儲存紀錄' }).click()
   await settle(viewer.page)
@@ -249,6 +294,11 @@ async function run() {
   assert.equal(offset?.legs.length, 3)
   assert.equal(offset?.settledBy, 'dev-editor')
   ok('one OFFSET doc with three legs, recorded by a participant')
+  await expectNotified(offset.id, 'created', {
+    to: ['dev-owner', 'dev-viewer'], actor: 'dev-editor',
+    body: /^DEV editor 記錄了 DEV editor、DEV owner、DEV viewer 之間的互相抵銷（不需付款）$/,
+  })
+  ok('the offset is notified once to the other participants')
 
   step('Foreign currency: the receiver got US dollars')
   await addExpense(owner.page, { title: '門票', amount: 15000, paidBy: 'viewer', splitAmong: ['owner'] })
@@ -266,7 +316,9 @@ async function run() {
   assert.equal(foreign.amountMinor, 15000)
   assert.deepEqual(foreign.legs, [{ fromUid: 'dev-owner', toUid: 'dev-viewer', amountMinor: 15000 }])
   assert.ok(foreign.sourceAmountMinor > 0 && foreign.fxSnapshot?.rateDecimal)
-  ok(`¥15,000 cleared, received as $${(foreign.sourceAmountMinor / 100).toFixed(2)} at ${foreign.fxSnapshot.rateDecimal}`)
+  ok(`¥15,000 cleared, received as US$${(foreign.sourceAmountMinor / 100).toFixed(2)} at ${foreign.fxSnapshot.rateDecimal}`)
+  await expectNotified(foreign.id, 'created', { to: ['dev-owner'], actor: 'dev-viewer', body: /^DEV viewer 記錄了 DEV owner → DEV viewer 的 ¥15,000$/ })
+  ok('a direct payment names no intermediary')
 
   step('A departed receiver: only the owner may record — even as the payer')
   await addExpense(owner.page, { title: '早餐', amount: 2000, paidBy: 'viewer', splitAmong: ['owner'] })
@@ -296,6 +348,9 @@ async function run() {
   await owner.page.getByText('由旅程擁有者代為記錄').first().waitFor()
   await shot(owner.page, '10-departed', '已清算紀錄')
   ok('the owner recorded it on the departed receiver\'s behalf; everyone is square')
+  // The departed receiver keeps their name (formerMemberNames) in the copy.
+  await expectNotified(byOwner.id, 'created', { to: ['dev-viewer'], actor: 'dev-owner', body: /^DEV owner 記錄了 DEV owner → DEV viewer 的 ¥2,000$/ })
+  ok('the departed receiver is still named in the notification')
 
   for (const s of [owner, editor, viewer]) await s.close()
   assert.deepEqual(problems, [], 'no page errors or console errors')

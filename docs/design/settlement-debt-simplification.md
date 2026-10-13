@@ -180,7 +180,7 @@ Request（`.strict()`）：`{ tripId, routeId, kind, legs[{fromUid,toUid,amountM
   - 撤銷的邊界情況（不存在、非成員、旅程刪除中、讀不出 legs、費用已不持有鎖）
 - Firestore 模擬器（`npm run test:emulator`，CI 也會跑）：Worker 的寫入程式直接對真的 Firestore 模擬器。確認 transaction 內的 `select` 只回傳 `legs`、`createdAt`；建立、冪等重試、撤銷後帳本復原；兩筆同時寫同一筆債只有一筆成功；`firestore-size.ts` 與模擬器的 1 MiB 限制完全一致（剛好 1,048,576 bytes 被接受，多 1 byte 被拒絕）。
 - Functions：一份文件一則通知、取消通知、抵銷內容、經手人、參與者退回由 legs 推導。
-- 端到端（`npm run e2e:settlement`）：Firebase 模擬器 + Worker 模擬器模式 + 真的 App，Playwright 以 owner／editor／viewer 三個帳號操作。涵蓋：付款人／中間人／收款人各自看到的建議、明細預覽、記錄（一份文件、逐段鎖定）、非 owner 看到唯讀費用、整筆撤銷、記錄收款（部分金額）、循環抵銷、外幣收款（真實匯率）、收款人離開後 owner 代記；並檢查沒有頁面錯誤。
+- 端到端（`npm run e2e:settlement`）：Firebase 模擬器（Auth、Firestore、Functions，全部跑本機程式碼與 rules）+ Worker 模擬器模式 + 真的 App，Playwright 以 owner／editor／viewer 三個帳號操作。涵蓋：付款人／中間人／收款人各自看到的建議、明細預覽、記錄（一份文件、逐段鎖定）、非 owner 看到唯讀費用、整筆撤銷、記錄收款（部分金額）、循環抵銷、外幣收款（真實匯率）、收款人離開後 owner 代記；每一步都檢查 Functions 寫入的通知收件匣（每筆清算每位收件人剛好一則、記錄者本人不會收到、內文含「經 …」或抵銷說明、已離開成員仍有名字），並檢查沒有頁面錯誤。推播送達本身（FCM）無法在本機驗證。
 - Client：
   - schema（形狀、legIndex 範圍、外幣群組、向前相容）、service 傳輸格式、overlay（一份文件一個操作）
   - 帳本（多段 route 套用、orphan 指名文件與段、壞 leg 整份排除、逐段精確的 lineage、被改離這一對的費用、已離開成員）

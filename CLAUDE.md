@@ -516,7 +516,7 @@ npm --workspace workers/ocr exec -- vitest run # Worker 測試
 npm run functions:test                     # Functions 測試
 npm run test:rules                         # Firestore Rules emulator 測試
 npm run test:emulator                      # Worker settlement 寫入 × Firestore emulator(投影、衝突、1 MiB)
-npm run e2e:settlement                     # 整套本機(模擬器 + Worker 模擬器模式 + Vite)用 Playwright 以三個 DEV 帳號走完清算流程;截圖在 e2e-results/
+npm run e2e:settlement                     # 整套本機(Auth/Firestore/Functions 模擬器 + Worker 模擬器模式 + Vite)用 Playwright 以三個 DEV 帳號走完清算流程,含通知收件匣;截圖在 e2e-results/
 npm run typecheck                          # 全部 workspace typecheck
 npm run lint                               # 前端 + Worker lint
 npm run deploy:prod                        # 正式部署安全編排
