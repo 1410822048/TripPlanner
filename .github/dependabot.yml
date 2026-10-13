@@ -37,9 +37,18 @@ updates:
       # component tests; stay on 29 until that is fixed upstream.
       - dependency-name: jsdom
         versions: ['>=30']
-      # No pdfjs-dist ignore: it is exact-pinned in lockstep with react-pdf's
-      # own pdf.js, so ignoring its major let a PR move react-pdf to 11 while
-      # holding pdfjs-dist at 5.7 (GHSA-hq66-cqwq-w95j). Upgrade both together.
+      # pdfjs-dist is never bumped on its own: it must equal the pdf.js that
+      # react-pdf pins (src/utils/pdfJs.version.test.ts). When a react-pdf PR
+      # arrives, set pdfjs-dist (root + workers/ocr) to react-pdf's version in
+      # the same PR; until then that test keeps the PR red.
+      - dependency-name: pdfjs-dist
+      # firebase 13 needs @firebase/rules-unit-testing 6 (which peers ^13) in
+      # the same change; Dependabot proposes them separately, so both stay
+      # red. Migrate the pair by hand.
+      - dependency-name: firebase
+        versions: ['>=13']
+      - dependency-name: '@firebase/rules-unit-testing'
+        versions: ['>=6']
       # @cloudflare/vitest-pool-workers (0.23) still peers vitest ^4.1.
       - dependency-name: vitest
         versions: ['>=5']

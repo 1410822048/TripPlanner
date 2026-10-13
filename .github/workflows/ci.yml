@@ -7,7 +7,9 @@ name: CI
 
 on:
   push:
-    branches: ['**']
+    # Dependabot branches are checked by their pull_request run; a push run
+    # on top of it would only duplicate the same check.
+    branches: ['**', '!dependabot/**']
   pull_request:
   workflow_dispatch:
     inputs:
