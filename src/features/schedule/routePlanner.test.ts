@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { estimateTravelSegment, googleMapsDirectionsUrl } from './routePlanner'
+import { googleMapsDirectionsUrl } from './routePlanner'
 
 describe('Google Maps route links', () => {
   test('builds a keyless Google Maps transit deep link from verified coordinates', () => {
@@ -44,21 +44,5 @@ describe('Google Maps route links', () => {
       'transit',
     )).toThrow(/coordinate/i)
     expect(() => googleMapsDirectionsUrl('   ', '淺草雷門', 'transit')).toThrow(/place name/i)
-  })
-
-  test('estimates short segments as walking and long segments as transit', () => {
-    expect(estimateTravelSegment(
-      { lat: 35.7107, lng: 139.7966 },
-      { lat: 35.7115, lng: 139.7970 },
-    )).toEqual({ kind: 'walking', minutes: 2 })
-
-    const longSegment = estimateTravelSegment(
-      { lat: 35.7720, lng: 140.3929 },
-      { lat: 35.7115, lng: 139.7970 },
-    )
-    expect(longSegment.kind).toBe('transit')
-    if (longSegment.kind === 'transit') {
-      expect(longSegment.maxMinutes).toBeGreaterThan(longSegment.minMinutes)
-    }
   })
 })

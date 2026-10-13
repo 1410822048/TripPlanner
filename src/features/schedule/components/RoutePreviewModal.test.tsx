@@ -83,7 +83,6 @@ function preview(): RoutePreview {
     canApply: true,
     routeChanged: true,
     geometryDegraded: false,
-    confidence: 'transit-unverified',
     timeConflictScheduleIds: [],
     applyPlan: {
       revision: 'revision-1234567890',
@@ -96,20 +95,8 @@ function preview(): RoutePreview {
     },
     display: { type: 'FeatureCollection', features: [] },
     legs: [
-      { legIndex: 0, fromId: 'a', toId: 'b', kind: 'walking', walkingMinutes: 12, geometryAvailable: true },
-      {
-        legIndex: 1,
-        fromId: 'b',
-        toId: 'c',
-        kind: 'transit-check',
-        walkingMinutes: 38,
-        geometryAvailable: false,
-        transitEstimate: {
-          minMinutes: 20,
-          maxMinutes: 30,
-          basis: 'ors-walking-distance',
-        },
-      },
+      { legIndex: 0, fromId: 'a', toId: 'b', walkingMinutes: 12, walkingDistanceMeters: 960, geometryAvailable: true },
+      { legIndex: 1, fromId: 'b', toId: 'c', walkingMinutes: 38, walkingDistanceMeters: 3_040, geometryAvailable: false },
     ],
   }
 }
@@ -202,18 +189,19 @@ describe('RoutePreviewModal', () => {
     expect(timeline.textContent).toContain('時間未定')
     expect(stops[1]?.querySelector('.lucide-clock-3')).toBeNull()
     expect(timeline.textContent).toContain('步行約 12 分鐘')
-    expect(timeline.textContent).toContain('大眾運輸估計約 20–30 分鐘')
+    // Classified from the Worker's measurements with the timeline's rules.
+    expect(timeline.textContent).toContain('大眾運輸約 15–25 分鐘')
     const walkingMapLink = screen.getByRole('link', { name: '在 Google 地圖查看鎌倉站到長谷站的步行路線' })
     expect(walkingMapLink).toBeTruthy()
     expect(walkingMapLink.textContent).toBe('地圖')
     expect(walkingMapLink.querySelector('svg[viewBox="0 0 192 192"]')).toBeTruthy()
     expect(screen.getByRole('link', { name: '在 Google 地圖查看長谷站到鎌倉高校前的大眾運輸' })).toBeTruthy()
     expect(within(timeline).getAllByRole('link', { name: /在 Google 地圖查看/ })).toHaveLength(2)
-    expect(within(stops[2]!).queryByText(/步行約|大眾運輸估計約/)).toBeNull()
+    expect(within(stops[2]!).queryByText(/步行約|大眾運輸約/)).toBeNull()
 
     expect(screen.getByText('已整理為較順路的順序')).toBeTruthy()
     expect(screen.getByText('僅依地點位置整理順序，不含大眾運輸精確時間計算。')).toBeTruthy()
-    expect(screen.getByText('長距離時間以 40 km/h 參考速度及 5 分鐘候車估值推算，不代表實際班次與轉乘時間。')).toBeTruthy()
+    expect(screen.getByText('大眾運輸時間為門到門估計（含走到車站、候車與出站），不代表實際班次與轉乘時間。')).toBeTruthy()
 
     const collapse = screen.getByRole('button', { name: '收起路線說明' })
     expect(collapse.getAttribute('aria-expanded')).toBe('true')
@@ -221,6 +209,30 @@ describe('RoutePreviewModal', () => {
 
     expect(screen.getByRole('button', { name: '展開路線說明' }).getAttribute('aria-expanded')).toBe('false')
     expect(screen.queryByText('僅依地點位置整理順序，不含大眾運輸精確時間計算。')).toBeNull()
+  })
+
+  test('explains unestimated legs instead of the transit disclaimer when no leg is transit', async () => {
+    const train = { ...schedule('a', '新幹線', 0, '09:40'), category: 'transport' as const }
+    requestRoutePreview.mockResolvedValue({
+      ...preview(),
+      applyPlan: { revision: 'revision-1234567890', date: '2026-07-21', schedules: [{ id: 'a', order: 0 }, { id: 'b', order: 1 }] },
+      legs: [{ legIndex: 0, fromId: 'a', toId: 'b', walkingMinutes: 5, walkingDistanceMeters: 400, geometryAvailable: false }],
+    })
+
+    render(
+      <RoutePreviewModal
+        isOpen
+        tripId="trip-1"
+        date="2026-07-21"
+        schedules={[train, schedule('b', '飯店', 1)]}
+        onClose={() => undefined}
+      />,
+    )
+
+    expect(await screen.findByText('交通時間待確認')).toBeTruthy()
+    expect(screen.getByText('交通類行程之後與長途移動的路段不估算時間，請以訂單或時刻表為準。')).toBeTruthy()
+    expect(screen.queryByText(/門到門估計/)).toBeNull()
+    expect(screen.queryByText('所有路段步行時間皆在 15 分鐘內。')).toBeNull()
   })
 
   test('describes an unchanged route as needing no apply instead of an apply failure', async () => {

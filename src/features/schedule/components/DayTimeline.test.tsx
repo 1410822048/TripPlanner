@@ -92,7 +92,8 @@ describe('DayTimeline', () => {
     expect(screen.queryByText('取消')).toBeNull()
     expect(onOpenDetails).not.toHaveBeenCalled()
     expect(screen.queryByText('鎌倉站地點 → 長谷寺地點')).toBeNull()
-    expect(screen.getByText('大眾運輸估計約 10–15 分鐘')).toBeTruthy()
+    // ~1.4 km apart: a 23-minute walk is ambiguous, so both modes are shown.
+    expect(screen.getByText('大眾運輸約 10–20 分 · 步行約 23 分')).toBeTruthy()
     expect(screen.getByText('路線')).toBeTruthy()
     expect(screen.queryByText('免費')).toBeNull()
     expect(container.querySelector('.lucide-train-front')).not.toBeNull()
@@ -174,7 +175,7 @@ describe('DayTimeline', () => {
 
     const { container } = renderTimeline([first, second])
 
-    expect(screen.getByText(/步行估計約/)).toBeTruthy()
+    expect(screen.getByText(/^步行約 \d+ 分鐘$/)).toBeTruthy()
     expect(container.querySelector('.lucide-footprints')).not.toBeNull()
   })
 
@@ -185,7 +186,7 @@ describe('DayTimeline', () => {
       title: '鎌倉站',
       order: 0,
       routeRevision: revision,
-      travelToNext: { toId: 'b', kind: 'walking', minutes: 6 },
+      travelToNext: { toId: 'b', walkingMinutes: 6, walkingDistanceMeters: 480 },
     })
     const second = schedule({
       id: 'b',
@@ -208,8 +209,11 @@ describe('DayTimeline', () => {
 
     const { container } = renderTimeline([first, second])
 
-    expect(screen.getByText('步行估計約 6 分鐘')).toBeTruthy()
-    expect(screen.queryByText(/大眾運輸估計/)).toBeNull()
+    expect(screen.getByText('步行約 6 分鐘')).toBeTruthy()
+    // Both start at 09:00, so the measured row also carries the overlap.
+    expect(screen.getByText(/^依實際路線/)).toBeTruthy()
+    expect(screen.getByText('與上一個行程時間重疊 60 分鐘')).toBeTruthy()
+    expect(screen.queryByText(/大眾運輸/)).toBeNull()
     expect(container.querySelector('.lucide-footprints')).not.toBeNull()
   })
 
@@ -220,14 +224,15 @@ describe('DayTimeline', () => {
       title: '鎌倉站',
       order: 0,
       routeRevision: revision,
-      travelToNext: { toId: 'c', kind: 'walking', minutes: 1 },
+      travelToNext: { toId: 'c', walkingMinutes: 1, walkingDistanceMeters: 80 },
     })
     const second = schedule({ id: 'b', title: '長谷寺', order: 1, routeRevision: revision })
 
     renderTimeline([first, second])
 
-    expect(screen.queryByText('步行估計約 1 分鐘')).toBeNull()
-    expect(screen.getByText(/大眾運輸估計/)).toBeTruthy()
+    expect(screen.queryByText('步行約 1 分鐘')).toBeNull()
+    expect(screen.getByText(/^大眾運輸約/)).toBeTruthy()
+    expect(screen.queryByText('依實際路線')).toBeNull()
   })
 
   test('falls back to the local estimate when adjacent revisions differ', () => {
@@ -236,14 +241,49 @@ describe('DayTimeline', () => {
       title: '鎌倉站',
       order: 0,
       routeRevision: 'revision-1234567890',
-      travelToNext: { toId: 'b', kind: 'walking', minutes: 1 },
+      travelToNext: { toId: 'b', walkingMinutes: 1, walkingDistanceMeters: 80 },
     })
     const second = schedule({ id: 'b', title: '長谷寺', order: 1, routeRevision: 'revision-other-1234' })
 
     renderTimeline([first, second])
 
-    expect(screen.queryByText('步行估計約 1 分鐘')).toBeNull()
-    expect(screen.getByText(/大眾運輸估計/)).toBeTruthy()
+    expect(screen.queryByText('步行約 1 分鐘')).toBeNull()
+    expect(screen.getByText(/^大眾運輸約/)).toBeTruthy()
+    expect(screen.queryByText('依實際路線')).toBeNull()
+  })
+
+  test('flags a reservation that even the fastest estimate misses', () => {
+    // 09:00–10:00, then a fixed 10:05: at best 10 minutes away.
+    const first = schedule({ id: 'a', title: '鎌倉站', order: 0 })
+    const second = schedule({ id: 'b', title: '午餐預約', order: 1, timeMode: 'fixed', startTime: '10:05' })
+
+    renderTimeline([first, second])
+
+    const notice = screen.getByText('依估計至少晚到 5 分鐘')
+    expect(notice.className).toContain('text-danger')
+    const summary = screen.getByText('1 處預估遲到')
+    expect(summary.className).toContain('text-danger')
+  })
+
+  test('a preferred time that is only at risk is a warning', () => {
+    const first = schedule({ id: 'a', title: '鎌倉站', order: 0 })
+    // 10–20 minutes away from a 10:00 end: on time at best, 5 late at worst.
+    const second = schedule({ id: 'b', title: '長谷寺', order: 1, startTime: '10:15' })
+
+    renderTimeline([first, second])
+
+    expect(screen.getByText('可能晚到，最多約 5 分鐘').className).toContain('text-warn')
+    expect(screen.getByText('1 處可能遲到').className).toContain('text-warn')
+  })
+
+  test('does not estimate the segment after a transport schedule', () => {
+    const train = schedule({ id: 'a', title: '新幹線', order: 0, category: 'transport' })
+    const hotel = schedule({ id: 'b', title: '飯店', order: 1 })
+
+    const { container } = renderTimeline([train, hotel])
+
+    expect(screen.getByText('交通時間待確認')).toBeTruthy()
+    expect(container.querySelector('.lucide-circle-help, .lucide-circle-question-mark')).not.toBeNull()
   })
 
   test('blames the role when a viewer is on an up-to-date bundle', () => {

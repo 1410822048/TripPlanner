@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { TRAVEL_MEASUREMENT_LIMITS } from '@tripmate/entity-contracts'
 import {
   WORKER_BASE_URL,
   WorkerAmbiguous,
@@ -32,26 +33,18 @@ const ApplyPlanSchema = z.object({
   schedules: z.array(z.object({ id: z.string(), order: z.number().int() }).strict()),
 }).strict()
 
-const RouteLegBaseSchema = {
+// Strict on purpose, unlike entity read schemas: legs are echoed back to the
+// Worker and must match its signature (legsHash) byte for byte, so silently
+// stripping an unknown field would only move the failure to apply time.
+// Measurements only — the class and transit range come from travelEstimate.
+const RouteLegSchema = z.object({
   legIndex: z.number().int().nonnegative(),
   fromId: z.string().min(1).max(128),
   toId: z.string().min(1).max(128),
-  walkingMinutes: z.number().finite().nonnegative(),
+  walkingMinutes: z.number().int().min(0).max(TRAVEL_MEASUREMENT_LIMITS.walkingMinutes),
+  walkingDistanceMeters: z.number().int().min(0).max(TRAVEL_MEASUREMENT_LIMITS.walkingDistanceMeters),
   geometryAvailable: z.boolean(),
-}
-
-const RouteLegSchema = z.discriminatedUnion('kind', [
-  z.object({ ...RouteLegBaseSchema, kind: z.literal('walking') }).strict(),
-  z.object({
-    ...RouteLegBaseSchema,
-    kind: z.literal('transit-check'),
-    transitEstimate: z.object({
-      minMinutes: z.number().int().min(1).max(1440),
-      maxMinutes: z.number().int().min(1).max(1440),
-      basis: z.literal('ors-walking-distance'),
-    }).strict().refine(value => value.maxMinutes > value.minMinutes),
-  }).strict(),
-])
+}).strict()
 
 const RoutePreviewSchema = z.object({
   previewRevision: z.string().min(16),
@@ -62,7 +55,6 @@ const RoutePreviewSchema = z.object({
   canApply: z.boolean(),
   routeChanged: z.boolean(),
   geometryDegraded: z.boolean(),
-  confidence: z.enum(['walking-verified', 'transit-unverified']),
   timeConflictScheduleIds: z.array(z.string().min(1).max(128)).max(12),
   applyPlan: ApplyPlanSchema,
   display: DisplayGeometrySchema,

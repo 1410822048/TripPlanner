@@ -355,6 +355,7 @@ materializeExpenseSplits(items, adjustments, members) → ExpenseSplit[] → 進
 - **空狀態**: 沒項目時顯示一個大 CTA 按鈕「行程を追加」
 - **DayTotal**: 該日估價總額(右上角)
 - **TripTotal**: 全程總額(TripHeaderCard 內)
+- **交通估算與可行性**(`travelEstimate.ts` + `@tripmate/route-estimate-core`,設計見 `docs/design/travel-time-estimation.md`):`travelToNext` **只存量測值**(`walkingMinutes` / `walkingDistanceMeters`),分類(步行 / either / 大眾運輸 / 長途 / 待確認)、門到門區間與可行性一律讀取時計算,改公式不必重新套用路線。長途看兩點直線距離(> 80 km);交通類行程之後的路段一律「待確認」。有開始時間的行程是時間錨點:只判斷能否從上一個錨點的**計畫結束**準時抵達,遲到不連鎖;未知路段是 `[0, ∞)`,仍能判定重疊與預估遲到。只提示,不擋儲存、不改時間
 
 ### Wish 投票機制
 

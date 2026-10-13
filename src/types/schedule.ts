@@ -2,7 +2,7 @@
 // route Worker never has to infer coordinates or constraints from a title.
 import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
-import { SCHEDULE_LIMITS } from '@tripmate/entity-contracts'
+import { SCHEDULE_LIMITS, TRAVEL_MEASUREMENT_LIMITS } from '@tripmate/entity-contracts'
 import { TimestampSchema } from './_shared'
 import {
   MAX_DURATION_MINUTES,
@@ -27,9 +27,15 @@ export type ScheduleLocation =
   | { status: 'unresolved'; query: string }
   | { status: 'resolved'; place: PlaceRef }
 
-export type TravelToNext =
-  | { toId: string; kind: 'walking'; minutes: number }
-  | { toId: string; kind: 'transit'; minMinutes: number; maxMinutes: number }
+/** Worker-owned projection of an applied route: ORS walking-network
+ * measurements only. Everything derived from them (segment class, transit
+ * range, feasibility) is computed at read time by @tripmate/route-estimate-core,
+ * so a formula change applies to every stored route without re-optimizing. */
+export interface TravelToNext {
+  toId: string
+  walkingMinutes: number
+  walkingDistanceMeters: number
+}
 
 export interface Schedule {
   id: string
@@ -97,19 +103,16 @@ const TimingFields = {
   durationMinutes:   z.number().int().min(MIN_DURATION_MINUTES).max(MAX_DURATION_MINUTES),
 } as const
 
-export const TravelToNextSchema = z.discriminatedUnion('kind', [
-  z.object({
-    toId: ScheduleIdSchema,
-    kind: z.literal('walking'),
-    minutes: z.number().int().min(0).max(10_080),
-  }).strict(),
-  z.object({
-    toId: ScheduleIdSchema,
-    kind: z.literal('transit'),
-    minMinutes: z.number().int().min(1).max(1440),
-    maxMinutes: z.number().int().min(1).max(1440),
-  }).strict().refine(value => value.maxMinutes > value.minMinutes),
-])
+/** READ schema. Lenient on purpose: extra fields are stripped, and the
+ * document schema turns an unparseable value into null (the timeline falls
+ * back to its local estimate) instead of failing the whole schedule. The
+ * strict WRITE checks live where the value is written: the Worker's
+ * ApplyRouteLegSchema and firestore.rules validTravelToNext. */
+export const TravelToNextReadSchema = z.object({
+  toId: ScheduleIdSchema,
+  walkingMinutes: z.number().int().min(0).max(TRAVEL_MEASUREMENT_LIMITS.walkingMinutes),
+  walkingDistanceMeters: z.number().int().min(0).max(TRAVEL_MEASUREMENT_LIMITS.walkingDistanceMeters),
+})
 
 const ScheduleInputBase = z.object({
   title:              z.string().trim().min(1).max(SCHEDULE_LIMITS.title),
@@ -149,7 +152,7 @@ export const ScheduleDocSchema = z.object({
   timeMode:           z.enum(['fixed','preferred','flexible']),
   durationMinutes:    z.number().int().min(MIN_DURATION_MINUTES).max(MAX_DURATION_MINUTES),
   routeRevision:      z.string().min(1).max(128).nullable(),
-  travelToNext:       TravelToNextSchema.nullable(),
+  travelToNext:       TravelToNextReadSchema.nullable().catch(null),
   category:           z.enum(['transport','accommodation','food','activity','shopping','other']),
   estimatedCostMinor: z.number().int().min(0).max(1_000_000_000).optional(),
   createdBy:          z.string().min(1),
@@ -157,7 +160,10 @@ export const ScheduleDocSchema = z.object({
   memberIds:          z.array(z.string().min(1)).min(1),
   createdAt:          TimestampSchema,
   updatedAt:          TimestampSchema,
-}).strict().superRefine((value, ctx) => {
+// Not .strict(): unknown top-level fields are stripped on read. The client
+// WRITE schemas above stay strict; the nested location schemas are shared
+// by reads and writes and stay strict too.
+}).superRefine((value, ctx) => {
   if (value.travelToNext && !value.routeRevision) {
     ctx.addIssue({
       code: 'custom',

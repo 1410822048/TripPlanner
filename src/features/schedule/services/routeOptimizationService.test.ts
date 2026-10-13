@@ -75,7 +75,6 @@ const previewResponse = {
   canApply: true,
   routeChanged: true,
   geometryDegraded: false,
-  confidence: 'transit-unverified',
   timeConflictScheduleIds: [],
   applyPlan: { revision: 'r'.repeat(16), date: '2026-07-20', schedules: [] },
   display: { type: 'FeatureCollection', features: [] },
@@ -257,48 +256,39 @@ describe('requestRoutePreview', () => {
     })
   })
 
-  it('accepts a bounded static transit estimate for a long leg', async () => {
-    workerFetch.mockResolvedValueOnce({
-      ...previewResponse,
-      legs: [{
-        legIndex: 0,
-        fromId: 'a',
-        toId: 'b',
-        kind: 'transit-check',
-        walkingMinutes: 38,
-        geometryAvailable: false,
-        transitEstimate: {
-          minMinutes: 20,
-          maxMinutes: 30,
-          basis: 'ors-walking-distance',
-        },
-      }],
-    })
+  it('accepts a leg carrying the walking measurements', async () => {
+    const leg = {
+      legIndex: 0,
+      fromId: 'a',
+      toId: 'b',
+      walkingMinutes: 38,
+      walkingDistanceMeters: 3_040,
+      geometryAvailable: false,
+    }
+    workerFetch.mockResolvedValueOnce({ ...previewResponse, legs: [leg] })
 
-    await expect(requestRoutePreview('trip-static-estimate', '2026-07-20')).resolves.toMatchObject({
-      legs: [{ transitEstimate: { minMinutes: 20, maxMinutes: 30 } }],
-    })
+    await expect(requestRoutePreview('trip-measured-leg', '2026-07-20')).resolves.toMatchObject({ legs: [leg] })
   })
 
-  it('rejects an inverted static transit estimate range', async () => {
+  it.each([
+    ['a derived field the leg must not carry', { kind: 'transit-check' }],
+    ['fractional minutes (the Worker rounds before signing)', { walkingMinutes: 38.4 }],
+    ['a missing distance', { walkingDistanceMeters: undefined }],
+  ])('rejects a leg with %s', async (_label, change) => {
     workerFetch.mockResolvedValueOnce({
       ...previewResponse,
       legs: [{
         legIndex: 0,
         fromId: 'a',
         toId: 'b',
-        kind: 'transit-check',
         walkingMinutes: 38,
+        walkingDistanceMeters: 3_040,
         geometryAvailable: false,
-        transitEstimate: {
-          minMinutes: 30,
-          maxMinutes: 20,
-          basis: 'ors-walking-distance',
-        },
+        ...change,
       }],
     })
 
-    await expect(requestRoutePreview('trip-invalid-estimate', '2026-07-20'))
+    await expect(requestRoutePreview(`trip-bad-leg-${Object.keys(change)[0]}`, '2026-07-20'))
       .rejects.toThrow('Worker 回傳的路線資料格式不相容，請確認 Worker 已更新')
   })
 
@@ -315,8 +305,8 @@ describe('requestRoutePreview', () => {
       legIndex: 0,
       fromId: 'a',
       toId: 'b',
-      kind: 'walking',
       walkingMinutes: 8,
+      walkingDistanceMeters: 640,
       geometryAvailable: true,
     }]
     await applyRoutePreview('trip-1', {

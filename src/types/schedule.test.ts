@@ -43,32 +43,49 @@ describe('Schedule route fields', () => {
     }).success).toBe(false)
   })
 
-  test('strict docs reject missing timing fields and removed optimization fields', () => {
+  test('docs still reject missing timing fields and a legacy location shape', () => {
     expect(ScheduleDocSchema.safeParse({
       tripId: 'trip', date: '2026-05-01', order: 0, title: 'Old', category: 'activity',
       startTime: '10:00', endTime: '11:30', optimizedStartTime: '12:00', location: { name: 'Old place' }, ...audit,
     }).success).toBe(false)
   })
 
-  test('canonical docs validate the bounded travelToNext projection', () => {
+  describe('travelToNext (read side)', () => {
     const base = {
       tripId: 'trip', date: '2026-05-01', order: 0, title: 'Stop', category: 'activity',
       timeMode: 'preferred', durationMinutes: 60, startTime: '10:00',
       routeRevision: 'revision-1234567890', ...audit,
     }
-    expect(ScheduleDocSchema.safeParse({
-      ...base,
-      travelToNext: { toId: 'next', kind: 'walking', minutes: 6 },
-    }).success).toBe(true)
-    expect(ScheduleDocSchema.safeParse({
-      ...base,
-      travelToNext: { toId: 'next', kind: 'transit', minMinutes: 25, maxMinutes: 15 },
-    }).success).toBe(false)
-    expect(ScheduleDocSchema.safeParse({
-      ...base,
-      routeRevision: null,
-      travelToNext: { toId: 'next', kind: 'walking', minutes: 6 },
-    }).success).toBe(false)
+    const parse = (travelToNext: unknown) => ScheduleDocSchema.parse({ ...base, travelToNext })
+
+    test('keeps the measured walking time and distance', () => {
+      expect(parse({ toId: 'next', walkingMinutes: 6, walkingDistanceMeters: 480 }).travelToNext)
+        .toEqual({ toId: 'next', walkingMinutes: 6, walkingDistanceMeters: 480 })
+    })
+
+    test('strips fields a newer Worker might add instead of failing', () => {
+      expect(parse({ toId: 'next', walkingMinutes: 6, walkingDistanceMeters: 480, extra: 'x' }).travelToNext)
+        .toEqual({ toId: 'next', walkingMinutes: 6, walkingDistanceMeters: 480 })
+    })
+
+    test.each([
+      ['the legacy derived shape', { toId: 'next', kind: 'walking', minutes: 6 }],
+      ['a fractional distance', { toId: 'next', walkingMinutes: 6, walkingDistanceMeters: 480.5 }],
+      ['a negative time', { toId: 'next', walkingMinutes: -1, walkingDistanceMeters: 480 }],
+      ['a non-object', 'walking'],
+    ])('turns %s into null and keeps the schedule', (_label, travelToNext) => {
+      const result = ScheduleDocSchema.safeParse({ ...base, travelToNext })
+      expect(result.success).toBe(true)
+      expect(result.data?.travelToNext).toBeNull()
+    })
+
+    test('still requires a route revision alongside a valid measurement', () => {
+      expect(ScheduleDocSchema.safeParse({
+        ...base,
+        routeRevision: null,
+        travelToNext: { toId: 'next', walkingMinutes: 6, walkingDistanceMeters: 480 },
+      }).success).toBe(false)
+    })
   })
 
   test('new schedule writes reject the removed optimizedStartTime field', () => {
@@ -92,16 +109,19 @@ describe('Schedule route fields', () => {
     }
   })
 
-  test('new writes and canonical documents reject the removed endTime field', () => {
+  test('new writes reject the removed endTime field; documents tolerate and strip it', () => {
     expect(CreateScheduleSchema.safeParse({
       title: 'Stop', date: '2026-05-01', timeMode: 'preferred', durationMinutes: 90,
       startTime: '10:00', endTime: '11:30', category: 'activity',
     }).success).toBe(false)
 
-    expect(ScheduleDocSchema.safeParse({
+    // Read side: an installed bundle must not drop a schedule because the
+    // document carries a field it does not know.
+    const doc = ScheduleDocSchema.parse({
       tripId: 'trip', date: '2026-05-01', order: 0, title: 'Stop', category: 'activity',
       timeMode: 'preferred', durationMinutes: 90, startTime: '10:00', endTime: '11:30',
-      ...audit,
-    }).success).toBe(false)
+      routeRevision: null, travelToNext: null, ...audit,
+    })
+    expect(doc).not.toHaveProperty('endTime')
   })
 })
