@@ -2,10 +2,11 @@
 # (audit gate, lint, typecheck, all test suites, rules emulator, build);
 # nothing deploys until a PR is merged to main.
 #
-# Grouping keeps the weekly volume reviewable: minor + patch land as one PR
-# per group, majors stay separate so each breaking change is reviewed alone.
-# Packages that must move together (Cloudflare toolchain, Firebase SDKs,
-# pdf.js + react-pdf, Vitest) share a group so a PR never splits a lockstep.
+# Every merge to main deploys, so the weekly volume is kept to one PR per
+# lockfile: ALL minor + patch updates land together in `minor-and-patch`.
+# The named groups take majors only, so packages that must move together
+# (Cloudflare toolchain, Firebase SDKs, react-pdf, Vitest, React) still get
+# one PR per breaking change instead of being split.
 version: 2
 updates:
   # Root lockfile — covers the workspaces too (packages/*, workers/ocr).
@@ -22,14 +23,19 @@ updates:
     groups:
       cloudflare:
         patterns: ['wrangler', '@cloudflare/*', 'miniflare']
+        update-types: ['major']
       firebase:
         patterns: ['firebase', 'firebase-*', '@firebase/*']
+        update-types: ['major']
       pdf:
         patterns: ['pdfjs-dist', 'react-pdf']
+        update-types: ['major']
       vitest:
         patterns: ['vitest', '@vitest/*', '@testing-library/*', 'jsdom']
+        update-types: ['major']
       react:
         patterns: ['react', 'react-dom', 'react-router*', '@types/react*', 'babel-plugin-react-compiler']
+        update-types: ['major']
       minor-and-patch:
         update-types: ['minor', 'patch']
     ignore:
@@ -82,6 +88,7 @@ updates:
     groups:
       firebase:
         patterns: ['firebase', 'firebase-*', '@firebase/*']
+        update-types: ['major']
       minor-and-patch:
         update-types: ['minor', 'patch']
     ignore:
