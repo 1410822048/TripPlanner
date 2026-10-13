@@ -64,6 +64,14 @@ export const SCHEDULE_LIMITS = {
   description: 2000,
 } as const
 
+/** Schedule.travelToNext / route-preview leg: ORS walking measurements.
+ * The Worker clamps to these; anything beyond them is far past the
+ * long-distance threshold, where the numbers are never shown. */
+export const TRAVEL_MEASUREMENT_LIMITS = {
+  walkingMinutes:        10_080,
+  walkingDistanceMeters: 2_000_000,
+} as const
+
 export const PLANNING_LIMITS = {
   title: 100,
   note:  500,
