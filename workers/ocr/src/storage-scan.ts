@@ -187,8 +187,8 @@ export interface StorageScanReport {
    *  blob's customMetadata.uploaderUid at upload time). Used for abuse
    *  detection: any uid exceeding ABUSE_THRESHOLD fires a Sentry
    *  warning before the cron returns. `'<unknown>'` bucket covers
-   *  blobs uploaded before the Phase 2 customMetadata change shipped
-   *  (legacy data) or by clients that bypassed metadata somehow. */
+   *  blobs without that metadata (every current upload path sets it,
+   *  so these were written some other way). */
   orphansByUid:  Record<string, number>
 }
 
@@ -341,10 +341,7 @@ export async function scanOrphanStorage(
       // Per-candidate subrequest reservation: 1 entity read + 2
       // optional Storage operations (head + delete), plus 1 intent
       // recheck when applicable. Reserving precisely (3 or 4) keeps
-      // the budget gate accurate for
-      // pre-Phase-3.5 blobs without metadata -- a flat reservation of 3
-      // would prematurely trip budgetHit on a page dominated by legacy
-      // blobs that only need 2 subrequests each.
+      // the budget gate accurate for blobs without an intent id.
       const reservation = hasValidIntent ? 4 : 3
       if (subreq.used + reservation > budget) {
         report.budgetHit = true
@@ -360,10 +357,9 @@ export async function scanOrphanStorage(
         // scan cycle catches it as orphan. Defence-in-depth on top of
         // the 24h grace.
         //
-        // Blobs without `metadata.uploadIntentId` (legacy / pre-Phase-
-        // 3.5 uploads) or with a malformed value fall straight through
-        // to the entity check; the entity-recheck contract is unchanged
-        // for them.
+        // Blobs without a valid `metadata.uploadIntentId` fall straight
+        // through to the entity check; the entity-recheck contract is
+        // unchanged for them.
         if (hasValidIntent) {
           subreq.used += 1
           const intentPath = `trips/${parsed.tripId}/uploadIntents/${intentId}`
@@ -426,9 +422,8 @@ export async function scanOrphanStorage(
 
   // Phase 2 abuse detection: any uploaderUid that produced more than
   // ABUSE_THRESHOLD confirmed orphans in this run fires a Sentry
-  // `warning`-level event. `'<unknown>'` is excluded -- legacy blobs
-  // without metadata accumulate naturally during Phase 2 rollout, and
-  // a high <unknown> count is noise, not attributable abuse.
+  // `warning`-level event. `'<unknown>'` is excluded: with no uploader
+  // on the blob there is nobody to attribute the abuse to.
   for (const [uid, count] of Object.entries(report.orphansByUid)) {
     if (uid === '<unknown>') continue
     if (count <= ABUSE_THRESHOLD) continue
@@ -487,8 +482,7 @@ export async function scanOrphanStorage(
  *
  *  Phase 2 uploaderUid attribution: when the blob's customMetadata
  *  carries an uploaderUid, count this orphan against that uid. Blobs
- *  without metadata (legacy / pre-Phase-2 uploads) bucket as
- *  `'<unknown>'` so they don't get attributed to nobody-in-particular. */
+ *  without metadata bucket as `'<unknown>'`. */
 async function tryDelete(
   bucket:      R2Bucket,
   obj:         { name: string; metadata?: Record<string, string> },

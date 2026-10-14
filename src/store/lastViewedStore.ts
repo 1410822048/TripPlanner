@@ -79,15 +79,11 @@ export const useLastViewedStore = create<LastViewedStore>()(
     }),
     {
       name: 'tripmate-last-viewed',
-      // Schema version — bump + add a `migrate` handler when the `viewed`
-      // shape changes (e.g. adding a new BadgeFeature key, switching to a
-      // nested per-feature object). Without a version, an old shape would
-      // hydrate into the new typed slot and silently break badge math.
-      //
-      // v2 added `ownerUid`; a blob predating it has unknown provenance and
-      // is discarded rather than claimed by whoever signs in next. The cost
-      // is one round of unread dots, which clears as the user visits tabs —
-      // far cheaper than silently hiding a co-member's updates.
+      // Schema version — bump when the `viewed` shape changes. A blob from
+      // any other version is discarded rather than claimed by whoever
+      // signs in next. The cost is one round of unread dots, which clears
+      // as the user visits tabs — far cheaper than silently hiding a
+      // co-member's updates.
       version: 2,
       migrate: () => ({ viewed: {}, ownerUid: null }),
       partialize: (s) => ({ viewed: s.viewed, ownerUid: s.ownerUid }),

@@ -111,12 +111,10 @@ async function doMemberRemove(
       )
     }
 
-    // Target existence: idempotent on missing. This still continues to
-    // the cascade phase below, because legacy delete-first partial kicks
-    // can leave subcollection memberIds carrying memberUid after the
-    // members/{uid} doc is already gone. Returning early here would leave
-    // a real read-leak via collection-group queries gated on same-doc
-    // memberIds.
+    // Target existence: idempotent on missing. The cascade deletes the
+    // member doc LAST, so a missing doc means an earlier kick already ran
+    // to completion; continuing re-runs an idempotent strip, which makes a
+    // retried kick safe instead of a 404.
     const [target, currentInvite] = await Promise.all([
       tx.get(`trips/${req.tripId}/members/${req.memberUid}`),
       tx.get(`trips/${req.tripId}/inviteState/current`),
@@ -133,9 +131,9 @@ async function doMemberRemove(
     // Revoke the active invite in the same commit. Invite links are
     // reusable and usually sit in a group chat, so without this the person
     // just removed could tap the same link and walk straight back in with
-    // the link's role. Only on a real kick — a repair run over a legacy
-    // partial kick (no member doc) must not rotate the owner's link, and
-    // neither must a retry of a kick whose marker is already set: the first
+    // the link's role. Only on a real kick — a re-run over a finished kick
+    // (no member doc) must not rotate the owner's link, and neither must a
+    // retry of a kick whose marker is already set: the first
     // attempt revoked the link that existed then, and the current one may be
     // a fresh link the owner made since.
     if (target.exists && !('removingAt' in target.fields) && currentInvite.exists) {
@@ -159,8 +157,8 @@ async function doMemberRemove(
   // + the final member-doc delete. The removingAt marker (set above when
   // the target doc exists) blocks the kicked user from creating docs
   // during this phase via firestore.rules canWrite(); a missing member
-  // doc means this run is just repairing stale projections from a legacy
-  // partial kick.
+  // doc means an earlier kick finished and this run is an idempotent
+  // re-strip.
   await runMemberStripCascade(accessToken, projectId, req.tripId, req.memberUid, removePrecheck.targetExists)
 
   return { ok: true }
@@ -175,7 +173,7 @@ async function doMemberRemove(
 //                     must transfer ownership or delete the trip).
 // No idempotent-on-missing path: requireTripMember 403s when the caller's
 // own member doc is gone (= already left). Unlike /member-remove (which
-// continues-on-missing to repair an OTHER user's legacy partial kick),
+// continues-on-missing so a retried kick of ANOTHER user is idempotent),
 // a self-leaver can't even reach this UI once their member doc is gone
 // (their /members collection-group listener drops the trip), so there's
 // nothing to repair here.

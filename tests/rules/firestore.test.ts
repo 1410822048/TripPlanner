@@ -291,7 +291,6 @@ describe('/trips/{tripId} write', () => {
           userId:      STRANGER_UID,
           displayName: 'Stranger',
           role:        'editor',
-          inviteToken: INVITE_TOKEN,
           joinedAt:    serverTimestamp(),
           memberIds:   [STRANGER_UID],
         },

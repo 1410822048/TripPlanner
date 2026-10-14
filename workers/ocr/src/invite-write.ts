@@ -101,20 +101,14 @@ async function doInviteRedeem(
   // disjoint new rosters, only one commit lands -- the loser ABORTs,
   // retries, reads the now-committed roster and reapplies on top.
   //
-  // `tripRosterIncludesCaller` is an internal-only signal -- post-tx
-  // we use it to decide whether to run cascadeMemberAdd on the
-  // already-member branch (see "Cascade-recovery contract" comment at
-  // the call site below). NOT surfaced in the public response.
-  //
   // Explicit return-type annotation: the two branches inside return
   // different `outcome` literal types ('already-member' vs 'joined'),
   // which TS would otherwise pick from the first branch and reject the
   // second. The annotation widens to the InviteRedeemOutcome union up
   // front so both branches type-check.
   type InviteTxResult = {
-    outcome:                    InviteRedeemOutcome
-    role:                       'editor' | 'viewer'
-    tripRosterIncludesCaller:   boolean
+    outcome: InviteRedeemOutcome
+    role:    'editor' | 'viewer'
   }
   const result = await runFirestoreTransaction<InviteTxResult>(accessToken, projectId, async (tx) => {
     const [trip, invite, existingMember, current] = await Promise.all([
@@ -170,34 +164,24 @@ async function doInviteRedeem(
     // needsCascade signal, so we hoist it above both.
     const currentRoster = readTripRoster(trip)
 
-    // existingMember.exists branches into three states. Distinguishing
-    // them by `removingAt` (NOT by roster membership alone) is the
-    // load-bearing decision -- conflating "roster missing caller" with
-    // "kick in progress" leaves legacy half-joins permanently stuck
-    // (member doc created but trip roster never bumped, e.g. old
-    // acceptInvite Step-2a arrayUnion failed mid-flight).
+    // existingMember.exists branches into three states:
     //
     //   (A) removingAt present                                → kick
     //       mid-flight (/member-remove committed its authz tx; cascade
     //       is actively stripping ACL). Re-running cascadeMemberAdd
     //       would silently undo the kick. Throw 409.
     //
-    //   (B) removingAt absent + roster MISSING callerUid      → legacy
-    //       half-join recovery. The member doc exists from an earlier
-    //       redeem attempt whose post-create trip-roster bump failed
-    //       (old-client acceptInvite Step 1 succeeded, Step 2a
-    //       arrayUnion failed). Repair: write the missing roster entry
-    //       inside this same tx so the post-tx cascade's "trip roster
-    //       includes memberUid" check passes and projects ACL onto
-    //       every subcollection doc. Do NOT overwrite the existing
-    //       member doc -- only the trip roster needs repair.
+    //   (B) removingAt absent + roster MISSING callerUid      → no
+    //       current flow produces this: a redeem writes the member doc
+    //       and the roster in one tx, and a kick strips the roster in
+    //       the same tx that sets removingAt. Refuse rather than guess.
     //
     //   (C) removingAt absent + roster HAS callerUid          → genuine
     //       idempotent already-member. A prior redeem committed its tx
     //       and roster; the post-tx cascade may have failed. Re-run
     //       cascade (it's idempotent via arrayUnion).
     //
-    // In all three cases, `role` reported back is the INVITE's role
+    // `role` reported back is the INVITE's role
     // (not the existing member doc's role) -- post-redeem
     // /member-role-update can diverge member.role from invitedRole;
     // the response carries the contract of the invite the user clicked.
@@ -218,32 +202,15 @@ async function doInviteRedeem(
         )
       }
 
-      // Case B: repair — half-join recovery.
+      // Case B: refuse — inconsistent membership.
       if (!rosterHasCaller) {
-        const repairedRoster = [...currentRoster, callerUid]
-        const repairWrite: TxWrite = {
-          document:   docResourceName(projectId, `trips/${req.tripId}`),
-          fields:     { memberIds: encodeMemberIds(repairedRoster) },
-          updateMask: ['memberIds'],
-        }
-        return {
-          writes: [repairWrite],
-          result: {
-            outcome:                  'already-member' as const,
-            role:                     invitedRole,
-            tripRosterIncludesCaller: true,  // just repaired
-          },
-        }
+        throw new CascadeError(409, 'member doc exists but the trip roster is missing the caller')
       }
 
       // Case C: idempotent already-member.
       return {
         writes: [],
-        result: {
-          outcome:                  'already-member' as const,
-          role:                     invitedRole,
-          tripRosterIncludesCaller: true,
-        },
+        result: { outcome: 'already-member' as const, role: invitedRole },
       }
     }
 
@@ -259,70 +226,42 @@ async function doInviteRedeem(
       // legitimate and let it re-establish the doc, but do NOT bump
       // trip.memberIds again (avoid duplicate).
       const writes = buildInviteWrites(projectId, req, callerUid, invitedRole, currentRoster, { bumpTrip: false })
-      return {
-        writes,
-        result: {
-          outcome:                  'joined' as const,
-          role:                     invitedRole,
-          tripRosterIncludesCaller: true,
-        },
-      }
+      return { writes, result: { outcome: 'joined' as const, role: invitedRole } }
     }
     const newRoster = [...currentRoster, callerUid]
     const writes = buildInviteWrites(projectId, req, callerUid, invitedRole, newRoster, { bumpTrip: true })
-    return {
-      writes,
-      result: {
-        outcome:                  'joined' as const,
-        role:                     invitedRole,
-        tripRosterIncludesCaller: true,  // we just put them in
-      },
-    }
+    return { writes, result: { outcome: 'joined' as const, role: invitedRole } }
   })
 
   // Cascade-recovery contract. By the time we reach this point, the tx
-  // body has either thrown (kick-in-flight → 409) or normalized the
-  // state to "trip roster includes callerUid" -- the legacy half-join
-  // case (B above) writes the missing roster entry inside the tx,
-  // making tripRosterIncludesCaller true for both joined and
-  // already-member outcomes.
+  // body has either thrown (kick in flight / inconsistent roster → 409)
+  // or left the trip roster including callerUid, so both outcomes cascade:
   //
   //   - outcome === 'joined' → tx just created the member doc; ACL
   //     projection MUST be cascaded onto every subcollection doc.
-  //   - outcome === 'already-member' AND tripRosterIncludesCaller →
-  //     either (B) we just repaired the trip roster, or (C) a prior
-  //     redeem's post-tx cascade failed. Both cases require running
-  //     cascadeMemberAdd: idempotent via arrayUnion, and the ONLY
-  //     mechanism that recovers a torn subcollection ACL state. The
-  //     cascade's own removal-aware refuse (trip roster MUST include
-  //     the cascade target) is a defense-in-depth check; the
-  //     tripRosterIncludesCaller invariant above is the primary gate.
+  //   - outcome === 'already-member' → a prior redeem's post-tx cascade
+  //     may have failed. cascadeMemberAdd is idempotent via arrayUnion,
+  //     and the ONLY mechanism that recovers a torn subcollection ACL
+  //     state. Its own removal-aware refuse (trip roster MUST include the
+  //     cascade target) is a defense-in-depth check.
   //
-  // tripRosterIncludesCaller=false on the already-member branch is
-  // unreachable -- case A throws, case B repairs, case C is the only
-  // remaining shape. The OR guard below stays as a defensive narrow.
-  const needsCascade =
-       result.outcome === 'joined'
-    || (result.outcome === 'already-member' && result.tripRosterIncludesCaller)
-  if (needsCascade) {
-    // POST-COMMIT. The member doc + trip roster are already live by now, so
-    // a cascade failure must never surface as a definitive rejection: the
-    // client would roll the join back visually while the membership stands.
-    // Wrapping is load-bearing rather than cosmetic — the cascade runs its
-    // own transactions, so its CascadeError arrives carrying the wrapper's
-    // precommit mark, which is true of THAT transaction and false of this
-    // request. PostCommitError is what makes the dispatcher ignore it.
-    //
-    // Recovery is the already-member branch above: a re-redeem re-runs the
-    // cascade (arrayUnion is idempotent) and repairs the torn projection.
-    // But the user has no reason to re-redeem — as far as they can tell they
-    // joined — so a torn projection would just sit there, leaving them a
-    // member who cannot read the trip's subcollections. Repair it here.
-    try {
-      await cascadeWithRepairRetry(callerUid, req.tripId, serviceAccountJson)
-    } catch (cascadeError) {
-      throw new PostCommitError(cascadeError)
-    }
+  // POST-COMMIT. The member doc + trip roster are already live by now, so
+  // a cascade failure must never surface as a definitive rejection: the
+  // client would roll the join back visually while the membership stands.
+  // Wrapping is load-bearing rather than cosmetic — the cascade runs its
+  // own transactions, so its CascadeError arrives carrying the wrapper's
+  // precommit mark, which is true of THAT transaction and false of this
+  // request. PostCommitError is what makes the dispatcher ignore it.
+  //
+  // Recovery is the already-member branch above: a re-redeem re-runs the
+  // cascade (arrayUnion is idempotent) and repairs the torn projection.
+  // But the user has no reason to re-redeem — as far as they can tell they
+  // joined — so a torn projection would just sit there, leaving them a
+  // member who cannot read the trip's subcollections. Repair it here.
+  try {
+    await cascadeWithRepairRetry(callerUid, req.tripId, serviceAccountJson)
+  } catch (cascadeError) {
+    throw new PostCommitError(cascadeError)
   }
 
   return { outcome: result.outcome, role: result.role }

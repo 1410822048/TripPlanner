@@ -327,10 +327,9 @@ export async function drainOrphanPurges(
       }
       used += SUBREQUESTS_PER_ENTRY
       report.scanned += 1
-      // Per-entry try/catch: a malformed legacy entry (e.g. schedule
-      // entityRef from before the rules tightening) should NOT stop
-      // the whole drain. Log + continue; the entry stays in the
-      // queue and a future deploy can clean it up manually.
+      // Per-entry try/catch: one malformed entry should NOT stop the
+      // whole drain. Log + continue; the entry stays in the queue and
+      // can be cleaned up manually.
       try {
         await processPurgeEntry(
           accessToken, projectId, bucket,

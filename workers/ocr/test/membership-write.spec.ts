@@ -390,53 +390,21 @@ describe('inviteRedeem endpoint', () => {
 		expect(cascadeCalls).toEqual([{ tripId: TRIP_ID, memberUid: INVITEE }])
 	})
 
-	it('already-member + roster MISSING caller + NO removingAt: legacy half-join repair (bump trip roster + cascade runs)', async () => {
-		// The P1 fix this test guards against: the previous implementation
-		// treated "member doc exists but trip roster missing caller" as
-		// "kick in progress" and refused cascade. That conflation traps
-		// any user whose acceptInvite Step 1 (setDoc members/{uid}) landed
-		// but Step 2a (arrayUnion trip.memberIds) failed -- e.g. the
-		// pre-Worker legacy client flow under partial network failure.
-		// Symptom: member doc exists forever, trip.memberIds missing the
-		// uid, no removingAt marker (no kick was ever started). Retry
-		// must REPAIR the trip roster and cascade, not refuse.
-		//
-		// Discriminator: `removingAt` on the existing member doc. Absent
-		// here, so the redeem is a recovery, not a kick race.
+	it('already-member + roster MISSING caller + NO removingAt: refused, no repair and no cascade', async () => {
+		// No current flow leaves a member doc without its roster entry (redeem
+		// writes both in one tx; a kick strips the roster in the tx that sets
+		// removingAt). Guessing a repair would re-add someone the roster says
+		// is not a member, so the redeem refuses.
 		txGetResponses.set(`trips/${TRIP_ID}`,                    tripReadDoc({ memberIds: [OWNER_UID] }))
 		txGetResponses.set(`trips/${TRIP_ID}/invites/${VALID_TOK}`, inviteReadDoc())
 		txGetResponses.set(`trips/${TRIP_ID}/members/${INVITEE}`,   memberReadDoc(INVITEE, 'editor'))
 
-		const result = await inviteRedeem(
+		await expect(inviteRedeem(
 			INVITEE,
 			{ tripId: TRIP_ID, token: VALID_TOK, displayName: DISPLAY },
 			'{}',
-		)
-
-		expect(result).toEqual({ outcome: 'already-member', role: 'editor' })
-
-		// Single write: trip.memberIds overwrite restoring caller to the
-		// roster. Member doc is NOT re-created (already exists) -- only
-		// the trip-side projection is missing.
-		const writes = capturedTxResult!.writes as Array<{
-			document:   string
-			fields:     Record<string, unknown>
-			updateMask: string[]
-		}>
-		expect(writes).toHaveLength(1)
-		const repairWrite = writes[0]
-		expect(repairWrite.document).toMatch(/\/documents\/trips\/trip-1$/)
-		expect(repairWrite.updateMask).toEqual(['memberIds'])
-		expect(repairWrite.fields.memberIds).toEqual({
-			arrayValue: { values: [
-				{ stringValue: OWNER_UID },
-				{ stringValue: INVITEE },
-			] },
-		})
-
-		// Cascade MUST run after repair -- subcollection memberIds[] are
-		// still missing caller and require arrayUnion projection.
-		expect(cascadeCalls).toEqual([{ tripId: TRIP_ID, memberUid: INVITEE }])
+		)).rejects.toMatchObject({ status: 409 })
+		expect(cascadeCalls).toEqual([])
 	})
 
 	it('repairs a transient cascade failure by retrying once, and reports success', async () => {

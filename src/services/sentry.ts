@@ -10,7 +10,7 @@
 //      is still observable.
 //
 //   2. Idle: dynamic-import @sentry/browser in requestIdleCallback (or
-//      a setTimeout fallback for Safari < 16.4). Run init, drain the
+//      a setTimeout fallback on Safari, which does not ship it). Run init, drain the
 //      buffer through captureException, then uninstall our bootstrap
 //      handlers (Sentry installs its own that capture stack traces +
 //      breadcrumbs richer than our buffer can).
@@ -154,9 +154,9 @@ export function initSentry(): void {
     }
   }
 
-  // requestIdleCallback isn't on Safari < 16.4 (~6% of iOS as of mid-
-  // 2026). Fallback to a setTimeout so the chunk still loads, just on
-  // a fixed delay instead of idle-aware.
+  // Safari (every version, iOS included) does not ship
+  // requestIdleCallback; there the chunk loads on a fixed delay instead
+  // of idle-aware.
   if ('requestIdleCallback' in window) {
     requestIdleCallback(load, { timeout: 3000 })
   } else {

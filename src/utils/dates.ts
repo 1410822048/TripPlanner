@@ -58,29 +58,16 @@ export function toTripDateTimestamp<T>(
 
 /**
  * Read a stored trip date Timestamp back as its calendar date
- * ('YYYY-MM-DD'), independent of the viewer's timezone.
- *
- * Handles both encodings in the database: current writes (00:00 UTC) and
- * legacy writes (00:00 in the writer's local zone, i.e. up to ±12h away
- * from UTC midnight). Rounding to the NEAREST UTC midnight (+12h, then
- * take the UTC date) maps both to the intended calendar day for any
- * writer offset in (-12h, +12h].
+ * ('YYYY-MM-DD'), independent of the viewer's timezone: the UTC date of
+ * the 00:00 UTC instant `toTripDateTimestamp` wrote.
  */
 export function tripTimestampToDateString(ts: { toMillis: () => number }): string {
-  const d  = new Date(ts.toMillis() + 12 * 3_600_000)
-  const y  = d.getUTCFullYear()
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0')
-  const dd = String(d.getUTCDate()).padStart(2, '0')
-  return `${y}-${mm}-${dd}`
+  return new Date(ts.toMillis()).toISOString().slice(0, 10)
 }
 
-/**
- * Inclusive day count between two stored trip-date Timestamps. Rounding
- * the difference absorbs the ≤12h skew when one bound is a legacy
- * local-midnight write and the other a current UTC-midnight write.
- */
+/** Inclusive day count between two stored trip-date Timestamps. */
 export function daysBetween(start: Timestamp, end: Timestamp): number {
-  return Math.round((end.toMillis() - start.toMillis()) / 86_400_000) + 1
+  return (end.toMillis() - start.toMillis()) / 86_400_000 + 1
 }
 
 /** Inclusive date range from startDate to endDate as 'YYYY-MM-DD' strings. */

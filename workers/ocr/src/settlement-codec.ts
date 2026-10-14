@@ -166,10 +166,10 @@ export function decodePairExpenseForSettlement(doc: TxReadDoc): PairExpenseForSe
   }
 }
 
-/** Lineage titles are display-only snapshots; cap them at the client's
- *  read limit (code points, so an emoji is never split) so a legacy long
- *  expense title can't make the settlement unparseable for every member. */
-// Written at the expense title cap (+ '…'), well inside what clients read.
+/** Lineage titles are display-only snapshots; cap them in code points (so
+ *  an emoji is never split) so an over-long title can't make the
+ *  settlement unparseable for every member. Written at the expense title
+ *  cap (+ '…'), inside SETTLEMENT_LIMITS.lineageTitleRead in UTF-16. */
 const LINEAGE_TITLE_MAX = EXPENSE_LIMITS.title
 export function lineageTitle(title: string): string {
   const chars = Array.from(title)

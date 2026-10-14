@@ -192,12 +192,6 @@ export interface Member {
   role: 'owner' | 'editor' | 'viewer'
   joinedAt: Timestamp
   /**
-   * LEGACY, read-only. Older invite redemptions stored the (bearer) token
-   * here; the Worker no longer writes it because member docs are readable by
-   * every member. Never read or display it.
-   */
-  inviteToken?: string
-  /**
    * Mirror of trip.memberIds. Lets the members-list rule check
    * `request.auth.uid in resource.data.memberIds` against THIS doc
    * instead of a cross-document exists() — same-doc, no lag.
@@ -220,7 +214,6 @@ export const MemberDocSchema = z.object({
   avatarUrl:   z.string().optional(),
   role:        z.enum(['owner', 'editor', 'viewer']),
   joinedAt:    TimestampSchema,
-  inviteToken: z.string().optional(),
   memberIds:   z.array(z.string().min(1)).min(1),
   removingAt:  TimestampSchema.optional(),
 })

@@ -92,13 +92,4 @@ describe('trip date Timestamps (timezone-independent calendar dates)', () => {
   it('stores 00:00 UTC regardless of the writer timezone', () => {
     expect(toTripDateTimestamp('2026-11-01', Ts).toMillis()).toBe(Date.UTC(2026, 10, 1))
   })
-
-  it('reads legacy local-midnight writes from any offset in (-12h, +12h] as the same day', () => {
-    // Legacy encoding = 00:00 in the WRITER's zone. Taipei (+8) wrote
-    // 2026-11-01 as 2026-10-31T16:00Z; a PDT viewer used to see 10/31.
-    for (const offsetHours of [-11, -8, -3, 0, 5.5, 8, 9, 12]) {
-      const legacy = { toMillis: () => Date.UTC(2026, 10, 1) - offsetHours * 3_600_000 }
-      expect(tripTimestampToDateString(legacy)).toBe('2026-11-01')
-    }
-  })
 })

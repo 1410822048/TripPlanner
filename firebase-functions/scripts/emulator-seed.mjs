@@ -40,7 +40,7 @@ await tripRef.set({
   destination: 'Tokyo, Japan',
   icon: '✈️',
   startDate: Timestamp.fromDate(new Date(`${date}T00:00:00.000Z`)),
-  endDate: Timestamp.fromDate(new Date(`${date}T23:59:59.000Z`)),
+  endDate: Timestamp.fromDate(new Date(`${date}T00:00:00.000Z`)),
   currency: 'JPY',
   defaultCountryCode: 'JP',
   ownerId: 'dev-owner',

@@ -80,7 +80,8 @@ export const PLANNING_LIMITS = {
 export const SETTLEMENT_LIMITS = {
   note: 200,
   /** Lineage expense titles are written truncated to EXPENSE_LIMITS.title
-   *  (+ ellipsis); reads accept up to this so legacy rows still parse. */
+   *  code points (+ ellipsis); Zod counts UTF-16 units, where that can be
+   *  up to twice as long, so reads accept twice the cap. */
   lineageTitleRead: 200,
 } as const
 

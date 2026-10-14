@@ -112,7 +112,7 @@ export const useTripStore = create<TripStore>()(
           // Unowned (null) is claimed WITHOUT discarding: there is no other
           // account to protect against. Only state stamped with a different
           // uid gets wiped. Blobs of unknown provenance never reach here —
-          // the v1→v2 migration already discarded them.
+          // `migrate` discards any blob from another version.
           if (s.ownerUid === null) return { ownerUid: uid }
           return { ...emptyAccountState(), ownerUid: uid }
         })
@@ -120,22 +120,11 @@ export const useTripStore = create<TripStore>()(
     }),
     {
       name: 'tripmate-trip-store',
-      // Schema version — bump when the persisted shape changes (rename /
-      // remove a field, switch a string id to a branded type, etc.) and
-      // add a `migrate(persistedState, fromVersion)` handler here. Without
-      // a version, future schema drifts hydrate stale data silently and
-      // can corrupt the rehydration logic in useCurrentTripSync.
-      //
-      // `selectedTripAt` was added without a version bump because Zustand
-      // persist's merge falls the missing field back to the initial
-      // state (`0`), which behaves as "stale" — the desired safe default
-      // for any pre-existing persisted blob.
-      //
-      // v2 added `ownerUid`. Merge-defaulting it to null would be WRONG
-      // here: the first account to sign in afterwards would claim state it
-      // may not own, which is the exact leak the field exists to stop. A
-      // blob of unknown provenance is therefore discarded — cheap, since
-      // selection and ordering both rebuild themselves in one session.
+      // Schema version — bump when the persisted shape changes. A blob
+      // from any other version is discarded, never merged: merging would
+      // let whoever signs in next claim state of unknown provenance (the
+      // leak `ownerUid` exists to stop). Cheap, since selection and
+      // ordering rebuild themselves in one session.
       version: 2,
       migrate: () => ({ ...emptyAccountState(), ownerUid: null }),
       partialize: (s) => ({

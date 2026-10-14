@@ -25,7 +25,6 @@ afterEach(() => {
 describe('workerBase', () => {
   it('requireWorkerWriteBase throws when VITE_WORKER_BASE_URL unset', async () => {
     vi.stubEnv('VITE_WORKER_BASE_URL', '')
-    vi.stubEnv('VITE_OCR_API_URL', '')
     const { requireWorkerWriteBase } = await import('./workerBase')
     expect(() => requireWorkerWriteBase()).toThrow(/VITE_WORKER_BASE_URL/)
   })
@@ -45,22 +44,8 @@ describe('workerBase', () => {
 
   it('WORKER_BASE_URL falls back to prod when env unset (read-only OCR is safe)', async () => {
     vi.stubEnv('VITE_WORKER_BASE_URL', '')
-    vi.stubEnv('VITE_OCR_API_URL', '')
     const { WORKER_BASE_URL } = await import('./workerBase')
     expect(WORKER_BASE_URL).toBe('https://tripmate-ocr.tripmate.workers.dev')
-  })
-
-  // Regression guard for the "stale preview env with legacy OCR var
-  // still pointing at prod" scenario. WORKER_BASE_URL honours the
-  // legacy name so existing OCR keeps working; requireWorkerWriteBase
-  // does NOT, because a write-path fallback to prod would route
-  // preview admin-SDK writes against production Firestore.
-  it('legacy VITE_OCR_API_URL feeds OCR fallback but NOT the write gate', async () => {
-    vi.stubEnv('VITE_WORKER_BASE_URL', '')
-    vi.stubEnv('VITE_OCR_API_URL', 'https://legacy-prod-worker.example.dev')
-    const { WORKER_BASE_URL, requireWorkerWriteBase } = await import('./workerBase')
-    expect(WORKER_BASE_URL).toBe('https://legacy-prod-worker.example.dev')
-    expect(() => requireWorkerWriteBase()).toThrow(/VITE_WORKER_BASE_URL/)
   })
 })
 

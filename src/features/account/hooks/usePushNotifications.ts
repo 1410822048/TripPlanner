@@ -17,6 +17,7 @@ import {
   writeStoredPushTokenHash,
 } from '../services/pushTokenService'
 import { userErrorMessage } from '@/utils/errorMessage'
+import { isStandalonePwa } from '@/utils/displayMode'
 
 export type PushSupport = 'checking' | 'supported' | 'unsupported' | 'ios-not-installed'
 export type PushPermission = 'default' | 'granted' | 'denied' | 'unknown'
@@ -40,10 +41,6 @@ function isIOS(): boolean {
   return /iphone|ipad|ipod/i.test(ua)
     || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
 }
-function isStandalone(): boolean {
-  return window.matchMedia?.('(display-mode: standalone)').matches === true
-    || (navigator as { standalone?: boolean }).standalone === true
-}
 
 function detectSupport(): PushSupport {
   if (typeof window === 'undefined') return 'unsupported'
@@ -51,7 +48,7 @@ function detectSupport(): PushSupport {
   // iOS only delivers Web Push to Home-Screen-installed PWAs — surface the
   // install hint rather than a flat "unsupported" (covers <16.4 Safari too,
   // which lacks PushManager entirely).
-  if (isIOS() && !isStandalone()) return 'ios-not-installed'
+  if (isIOS() && !isStandalonePwa()) return 'ios-not-installed'
   const base = 'Notification' in window
     && 'serviceWorker' in navigator
     && 'PushManager' in window

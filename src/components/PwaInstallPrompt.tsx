@@ -12,14 +12,14 @@
 //     modal that walks them through it.
 //
 // The banner is hidden when:
-//   - already running in standalone mode (display-mode: standalone, or
-//     iOS legacy navigator.standalone),
+//   - already running in standalone mode (display-mode: standalone),
 //   - the user dismissed it within the last 14 days,
 //   - the browser hasn't fired beforeinstallprompt and we're not on iOS
 //     Safari (e.g. desktop Firefox — no install support at all).
 import { useEffect, useRef, useState } from 'react'
 import { Download, Share, Plus, X } from 'lucide-react'
 import PwaPromptBanner from '@/components/ui/PwaPromptBanner'
+import { isStandalonePwa } from '@/utils/displayMode'
 
 const DISMISSED_KEY = 'tripmate-install-dismissed-at'
 const DISMISS_TTL_MS = 14 * 24 * 60 * 60 * 1000  // 14 days
@@ -37,15 +37,6 @@ interface BeforeInstallPromptEvent extends Event {
 }
 
 type Mode = 'hidden' | 'native' | 'ios'
-
-function isStandalone(): boolean {
-  if (typeof window === 'undefined') return false
-  // Android / desktop / iOS-PWA all support display-mode media query.
-  if (window.matchMedia?.('(display-mode: standalone)').matches) return true
-  // iOS Safari pre-iOS 17 only exposes the legacy property.
-  const navStandalone = (window.navigator as Navigator & { standalone?: boolean }).standalone
-  return !!navStandalone
-}
 
 function isIosSafari(): boolean {
   if (typeof navigator === 'undefined') return false
@@ -83,7 +74,7 @@ export default function PwaInstallPrompt() {
   const deferredRef = useRef<BeforeInstallPromptEvent | null>(null)
 
   useEffect(() => {
-    if (isStandalone()) return
+    if (isStandalonePwa()) return
     if (recentlyDismissed()) return
 
     let appearTimer: number | undefined

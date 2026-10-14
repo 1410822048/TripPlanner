@@ -28,13 +28,6 @@ addPlugins([precacheRedirectPlugin])
 precacheAndRoute((self as unknown as { __WB_MANIFEST: PrecacheManifest }).__WB_MANIFEST)
 cleanupOutdatedCaches()
 
-// LINE Seed JP was removed from the app shell. Its named runtime cache is not
-// managed by cleanupOutdatedCaches(), so remove the legacy payload once when
-// the new worker activates instead of leaving the old CJK subsets on device.
-sw.addEventListener('activate', event => {
-  event.waitUntil(caches.delete('google-fonts-cache'))
-})
-
 sw.addEventListener('message', event => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     void sw.skipWaiting()

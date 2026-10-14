@@ -42,39 +42,21 @@ function stripTrailingSlash(s: string): string {
 
 const FALLBACK = stripTrailingSlash('https://tripmate-ocr.tripmate.workers.dev')
 
-/** Strict source for WRITE endpoints. Reads ONLY `VITE_WORKER_BASE_URL`
- *  -- the legacy `VITE_OCR_API_URL` is deliberately not consulted here.
- *  A stale preview env that still has `VITE_OCR_API_URL=<prod>` left
- *  over from the pre-rename setup would otherwise sneak past the
- *  no-fallback gate and route admin-SDK writes against prod data. */
+/** `VITE_WORKER_BASE_URL`, the one env var for both surfaces. */
 const WRITE_RAW = stripTrailingSlash(
   ((import.meta.env.VITE_WORKER_BASE_URL as string | undefined)?.trim() ?? ''),
-)
-
-/** Permissive source for READ-ONLY OCR. Honors the legacy
- *  `VITE_OCR_API_URL` so existing dev / preview envs that haven't
- *  flipped to the new name still get a working OCR endpoint. The
- *  worst case here is OCR pollution against the prod Worker (cost /
- *  rate-limit, no Firestore writes), which we accept. */
-const READ_RAW = WRITE_RAW || stripTrailingSlash(
-  ((import.meta.env.VITE_OCR_API_URL as string | undefined)?.trim() ?? ''),
 )
 
 /** Read-only Worker base URL (OCR). Falls back to the prod URL if env
  *  is unset -- safe for receipt OCR extraction, which doesn't touch
  *  Firestore. */
-export const WORKER_BASE_URL: string = READ_RAW || FALLBACK
+export const WORKER_BASE_URL: string = WRITE_RAW || FALLBACK
 
 /**
  * Worker base URL for MUTATING endpoints. Throws when
  * `VITE_WORKER_BASE_URL` is unset so a misconfigured preview / staging
  * deploy cannot silently fall back to production and issue admin-SDK
  * writes against prod data.
- *
- * The legacy `VITE_OCR_API_URL` is intentionally NOT consulted as a
- * fallback here -- a preview env that still has the old name set to
- * the prod URL (from a pre-rename deploy) would otherwise bypass the
- * gate and corrupt prod Firestore.
  *
  * Honest deploys never see this throw: dev has `VITE_WORKER_BASE_URL`
  * in `.env`, prod / staging Cloudflare Pages set it as an env var. A
@@ -88,9 +70,7 @@ export function requireWorkerWriteBase(): string {
       'VITE_WORKER_BASE_URL is not set. Refusing to issue Worker write ' +
       'against the default URL -- this would route preview/staging traffic ' +
       'to the production Worker (which uses the production service-account ' +
-      'to write Firestore). Set the env var explicitly for this deploy. ' +
-      'Note: the legacy VITE_OCR_API_URL is NOT consulted as a fallback ' +
-      'for write endpoints, only for the read-only OCR path.',
+      'to write Firestore). Set the env var explicitly for this deploy.',
     )
   }
   return WRITE_RAW
