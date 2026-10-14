@@ -21,8 +21,15 @@ import {
   type RoutePreview,
 } from '../services/routeOptimizationService'
 import { googleMapsDirectionsUrl } from '../routePlanner'
-import type { SegmentEstimate } from '@tripmate/route-estimate-core'
-import { classifyScheduleSegment, segmentLabel, segmentTravelMode } from '../travelEstimate'
+import {
+  NOTICE_TONE_TEXT,
+  classifyScheduleSegment,
+  planDayTravel,
+  segmentLabel,
+  segmentTravelMode,
+  type DayTravelPlan,
+  type FeasibilitySummary,
+} from '../travelEstimate'
 import BottomSheet from '@/components/ui/BottomSheet'
 import GoogleMapsIcon from '@/components/icons/GoogleMapsIcon'
 
@@ -41,11 +48,15 @@ interface RoutePreviewError {
   canRetryPreview: boolean
 }
 
+type PreviewLeg = RoutePreview['legs'][number]
+
 interface PreviewSectionProps {
-  preview: RoutePreview
-  scheduleById: Map<string, Schedule>
-  /** Each leg classified once, keyed by its origin schedule. */
-  estimateByOrigin: Map<string, SegmentEstimate>
+  /** The day in the order the preview would apply. */
+  stops: Schedule[]
+  /** Segments and arrival notices for `stops`, as the timeline would show
+   * them after applying. */
+  plan: DayTravelPlan
+  legByOrigin: Map<string, PreviewLeg>
   timeConflicts: Set<string>
 }
 
@@ -56,36 +67,34 @@ const FRESH_PREVIEW_REQUIRED_CODES = new Set([
   'REVISION_CONFLICT',
 ])
 
-function StopTimeline({ preview, scheduleById, estimateByOrigin, timeConflicts }: PreviewSectionProps) {
-  const orderedStops = [...preview.applyPlan.schedules].sort((left, right) => left.order - right.order)
-  const legByOrigin = new Map(preview.legs.map(leg => [leg.fromId, leg]))
+function StopTimeline({ stops, plan, legByOrigin, timeConflicts }: PreviewSectionProps) {
 
   return (
     <section role="region" aria-label="站點與路線規劃" className="shrink-0">
       <h3 className="sr-only">站點與路線規劃</h3>
-      <span className="sr-only">共 {orderedStops.length} 個地點</span>
+      <span className="sr-only">共 {stops.length} 個地點</span>
 
       <ol className="m-0 list-none space-y-0 p-0">
-        {orderedStops.map((plannedStop, index) => {
-          const item = scheduleById.get(plannedStop.id)
-          const title = item?.title ?? plannedStop.id
-          const time = item?.startTime
-          const hasTimeConflict = timeConflicts.has(plannedStop.id)
-          const leg = legByOrigin.get(plannedStop.id)
-          const nextItem = leg ? scheduleById.get(leg.toId) : undefined
-          const origin = leg ? resolvedPlace(item?.location) : undefined
-          const destination = leg ? resolvedPlace(nextItem?.location) : undefined
-          const estimate = leg ? estimateByOrigin.get(leg.fromId) : undefined
+        {stops.map((item, index) => {
+          const title = item.title
+          const time = item.startTime
+          const hasTimeConflict = timeConflicts.has(item.id)
+          const nextItem = stops[index + 1]
+          const estimate = plan.segments[index]?.estimate
+          const notice = plan.notices[index + 1]
+          const leg = legByOrigin.get(item.id)
+          const origin = resolvedPlace(item.location)
+          const destination = resolvedPlace(nextItem?.location)
           const isWalking = estimate?.kind === 'walking'
           const directionsHref = estimate && origin && destination
             ? googleMapsDirectionsUrl(origin, destination, segmentTravelMode(estimate))
             : null
           const routeModeLabel = isWalking ? '步行路線' : '大眾運輸'
-          const isLast = index === orderedStops.length - 1
+          const isLast = index === stops.length - 1
 
           return (
             <li
-              key={plannedStop.id}
+              key={item.id}
               className={`relative grid grid-cols-[30px_minmax(0,1fr)] gap-2.5 ${isLast ? '' : 'pb-1'}`}
             >
               {!isLast && (
@@ -112,27 +121,34 @@ function StopTimeline({ preview, scheduleById, estimateByOrigin, timeConflicts }
                   </span>
                 </div>
 
-                {leg && estimate && (
+                {nextItem && estimate && (
                   <div className="flex min-h-12 items-center justify-between gap-2 px-2 py-2 text-[11px] font-semibold text-muted">
-                    <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full bg-tile px-2.5 py-1.5">
-                      {isWalking ? (
-                        <Footprints size={13} aria-hidden className="shrink-0 text-teal" />
-                      ) : estimate.kind === 'unknown' ? (
-                        <CircleHelp size={13} aria-hidden className="shrink-0 text-teal" />
-                      ) : (
-                        <TrainFront size={13} aria-hidden className="shrink-0 text-teal" />
-                      )}
-                      <span className="truncate">
-                        {segmentLabel(estimate)}
-                        {isWalking && !leg.geometryAvailable && '（未顯示路線）'}
+                    <div className="flex min-w-0 flex-col items-start gap-1">
+                      <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full bg-tile px-2.5 py-1.5">
+                        {isWalking ? (
+                          <Footprints size={13} aria-hidden className="shrink-0 text-teal" />
+                        ) : estimate.kind === 'unknown' ? (
+                          <CircleHelp size={13} aria-hidden className="shrink-0 text-teal" />
+                        ) : (
+                          <TrainFront size={13} aria-hidden className="shrink-0 text-teal" />
+                        )}
+                        <span className="truncate">
+                          {segmentLabel(estimate)}
+                          {isWalking && leg?.toId === nextItem.id && !leg.geometryAvailable && '（未顯示路線）'}
+                        </span>
                       </span>
-                    </span>
+                      {notice && (
+                        <span className={`px-1 text-[10.5px] font-bold leading-4 ${NOTICE_TONE_TEXT[notice.tone]}`}>
+                          {notice.text}
+                        </span>
+                      )}
+                    </div>
                     {directionsHref && (
                       <a
                         href={directionsHref}
                         target="_blank"
                         rel="noopener noreferrer"
-                        aria-label={`在 Google 地圖查看${title}到${nextItem?.title ?? leg.toId}的${routeModeLabel}`}
+                        aria-label={`在 Google 地圖查看${title}到${nextItem.title}的${routeModeLabel}`}
                         className="inline-flex min-h-8 shrink-0 items-center gap-1 rounded-chip border border-border bg-surface px-2.5 font-bold text-teal no-underline shadow-[0_1px_3px_rgba(32,42,45,0.04)] transition-colors hover:bg-teal-pale focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal"
                       >
                         地圖
@@ -152,19 +168,27 @@ function StopTimeline({ preview, scheduleById, estimateByOrigin, timeConflicts }
 
 interface ExplanationSummaryProps {
   preview: RoutePreview
-  estimates: SegmentEstimate[]
+  plan: DayTravelPlan
   timeConflicts: Set<string>
   expanded: boolean
   onToggle: () => void
 }
 
-function ExplanationSummary({ preview, estimates, timeConflicts, expanded, onToggle }: ExplanationSummaryProps) {
+const SUMMARY_DOT: Record<FeasibilitySummary['tone'], string> = {
+  danger: 'bg-danger',
+  warn:   'bg-warn',
+  muted:  'bg-teal',
+}
+
+function ExplanationSummary({ preview, plan, timeConflicts, expanded, onToggle }: ExplanationSummaryProps) {
+  const estimates = plan.segments.map(segment => segment.estimate)
+  const { summary } = plan
   const hasTransit = estimates.some(estimate => estimate.kind === 'either' || estimate.kind === 'transit')
   const allWalking = estimates.every(estimate => estimate.kind === 'walking')
   const hasUnestimated = estimates.some(estimate => estimate.kind === 'unknown' || estimate.kind === 'long-distance')
   const routeNeedsNoChange = !preview.routeChanged
   const summaryTitle = routeNeedsNoChange
-    ? '目前順序已相當順暢，無需套用'
+    ? '目前已是最順路的順序，無需套用'
     : preview.canApply
       ? '已整理為較順路的順序'
       : '預覽完成，但目前無法套用'
@@ -178,8 +202,17 @@ function ExplanationSummary({ preview, estimates, timeConflicts, expanded, onTog
         onClick={onToggle}
         className="flex min-h-11 w-full items-center gap-2 border-none bg-transparent px-3 py-2 text-left hover:bg-app/60 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-teal"
       >
-        <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${preview.canApply || routeNeedsNoChange ? 'bg-teal' : 'bg-warn'}`} />
-        <span className="min-w-0 flex-1 text-[11.5px] font-extrabold text-ink">{summaryTitle}</span>
+        <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+          summary ? SUMMARY_DOT[summary.tone] : preview.canApply || routeNeedsNoChange ? 'bg-teal' : 'bg-warn'
+        }`} />
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="text-[11.5px] font-extrabold text-ink">{summaryTitle}</span>
+          {summary && (
+            <span className={`text-[10.5px] font-bold ${NOTICE_TONE_TEXT[summary.tone]}`}>
+              {routeNeedsNoChange ? '此順序' : '套用後'}有 {summary.text}
+            </span>
+          )}
+        </span>
         <span className="shrink-0 text-[10.5px] font-semibold text-muted">{expanded ? '收起' : '展開'}</span>
         <ChevronUp size={13} className={`shrink-0 text-muted transition-transform ${expanded ? '' : 'rotate-180'}`} />
       </button>
@@ -189,8 +222,8 @@ function ExplanationSummary({ preview, estimates, timeConflicts, expanded, onTog
           <div className="flex items-start gap-2 text-[10.5px] leading-5 text-muted">
             <Info size={13} className="mt-0.5 shrink-0 text-warn" />
             <div className="flex min-w-0 flex-col">
-              <span>僅依地點位置整理順序，不含大眾運輸精確時間計算。</span>
-              <span>固定行程仍需自行確認抵達時間。</span>
+              <span>排序只依地點位置，不考慮行程時間。</span>
+              <span>抵達提醒依估計交通時間計算，固定行程仍請自行確認。</span>
             </div>
           </div>
 
@@ -302,12 +335,16 @@ export default function RoutePreviewModal({ isOpen, tripId, date, schedules, onC
     })
     .filter((stop): stop is { id: string; label: string; order: number; lng: number; lat: number } => Boolean(stop))
   const timeConflicts = new Set(preview?.timeConflictScheduleIds ?? [])
-  // Same classifier as the timeline, fed the Worker's measurements: what the
-  // preview says is what the day shows after applying.
-  const estimateByOrigin = new Map((preview?.legs ?? []).map(leg => [
-    leg.fromId,
-    classifyScheduleSegment(scheduleById.get(leg.fromId), scheduleById.get(leg.toId), leg).estimate,
-  ]))
+  const orderedStops = [...(preview?.applyPlan.schedules ?? [])]
+    .sort((left, right) => left.order - right.order)
+    .flatMap(({ id }) => scheduleById.get(id) ?? [])
+  const legByOrigin = new Map((preview?.legs ?? []).map(leg => [leg.fromId, leg]))
+  // Same plan as the timeline, fed the new order and the Worker's
+  // measurements: what the preview says is what the day shows after applying.
+  const plan = planDayTravel(orderedStops, (from, to) => {
+    const leg = legByOrigin.get(from.id)
+    return classifyScheduleSegment(from, to, leg?.toId === to.id ? leg : undefined)
+  })
 
   return (
     <BottomSheet
@@ -373,14 +410,14 @@ export default function RoutePreviewModal({ isOpen, tripId, date, schedules, onC
             />
           </Suspense>
           <StopTimeline
-            preview={preview}
-            scheduleById={scheduleById}
-            estimateByOrigin={estimateByOrigin}
+            stops={orderedStops}
+            plan={plan}
+            legByOrigin={legByOrigin}
             timeConflicts={timeConflicts}
           />
           <ExplanationSummary
             preview={preview}
-            estimates={[...estimateByOrigin.values()]}
+            plan={plan}
             timeConflicts={timeConflicts}
             expanded={explanationExpanded}
             onToggle={() => setExplanationExpanded(value => !value)}

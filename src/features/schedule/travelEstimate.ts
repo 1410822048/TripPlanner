@@ -185,10 +185,15 @@ const SUMMARY_LABELS: Array<[FeasibilityNotice['status'], string]> = [
   ['tight', '時間很趕'],
 ]
 
+export interface FeasibilitySummary {
+  tone: NoticeTone
+  text: string
+}
+
 /** One line for the day header, only when something needs attention. */
 export function feasibilitySummary(
   notices: Array<FeasibilityNotice | undefined>,
-): { tone: NoticeTone; text: string } | undefined {
+): FeasibilitySummary | undefined {
   const parts = SUMMARY_LABELS.flatMap(([status, label]) => {
     const count = notices.filter(notice => notice?.status === status).length
     return count > 0 ? [`${count} 處${label}`] : []
@@ -198,4 +203,27 @@ export function feasibilitySummary(
     tone: notices.some(notice => notice?.tone === 'danger') ? 'danger' : 'warn',
     text: parts.join(' · '),
   }
+}
+
+export interface DayTravelPlan {
+  /** segments[i] is the gap between items[i] and items[i + 1]. */
+  segments: ScheduleSegment[]
+  /** notices[i] is the arrival notice for items[i], shown on the gap into it. */
+  notices: Array<FeasibilityNotice | undefined>
+  summary: FeasibilitySummary | undefined
+}
+
+/** Segments, arrival notices and the summary for one ordered day. The
+ * timeline passes its stored order; the route preview passes the order it
+ * would apply, so both judge a day the same way. */
+export function planDayTravel(
+  items: Schedule[],
+  segmentBetween: (from: Schedule, to: Schedule) => ScheduleSegment,
+): DayTravelPlan {
+  // One segment per gap, shared by the travel rows and the feasibility
+  // check so both always describe the same estimate.
+  const segments = items.slice(1).map((next, idx) => segmentBetween(items[idx]!, next))
+  const verdicts = scheduleDayFeasibility(items, segments)
+  const notices = items.map((item, idx) => feasibilityNotice(verdicts[idx], item.timeMode))
+  return { segments, notices, summary: feasibilitySummary(notices) }
 }

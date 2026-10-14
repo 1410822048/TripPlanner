@@ -1,6 +1,6 @@
 # 設計方案：行程交通時間估算與時間可行性提示
 
-> 狀態：第一、二階段已實作並依參考資料校正（2026-10-13）；第三階段（路線預覽顯示套用後的可行性）尚未進行
+> 狀態：三個階段皆已實作；第一、二階段依參考資料校正（2026-10-13），第三階段（路線預覽顯示套用後的可行性）2026-10-14 完成
 > 範圍：時間軸的交通時間、路線預覽的交通時間、行程之間的時間可行性提示
 > 不在範圍：真實時刻表、即時路況、計程車／自駕模式
 
@@ -290,6 +290,8 @@ App 本身只會把 `travelToNext` 寫成 `null`（新增行程、改了路線�
 路線優化目前只看步行距離，可能把 `preferred` 行程排到趕不上的位置（`fixed` 是固定錨點，不會動）。
 
 - 預覽的 `legs` 改帶 `walkingMinutes` 與 `walkingDistanceMeters`，App 直接用 `classifySegment` 和 `dayFeasibility` 算出「套用後」的狀態，在預覽裡顯示「套用後會有 1 處預估遲到」。
+- 實作：時間軸與預覽共用 `planDayTravel(items, segmentBetween)`（`travelEstimate.ts`），差別只在傳入的順序與量測來源。時間軸傳目前順序與已套用的量測值；預覽傳 `applyPlan` 的順序與 Worker 回傳的 legs。提醒放在通往該行程的那一段下方；說明摘要的標題下加一行「套用後有 1 處時間重疊」（順序不變時是「此順序有…」），顏色跟時間軸摘要相同。
+- 順序不變時的標題改成「目前已是最順路的順序，無需套用」：「順暢」會讓人以為時間也沒問題。
 - 排序本身先不改。把時間放進最佳化目標（有時間窗限制的排序問題）是另一個題目，等這版用一陣子再評估。
 
 ## 8. 程式結構
@@ -306,7 +308,7 @@ App 本身只會把 `travelToNext` 寫成 `null`（新增行程、改了路線�
 | `workers/ocr/src/route-apply.ts` | 寫入新形狀 |
 | `firestore.rules` `validTravelToNext` | 改驗新形狀 |
 | `firebase-functions/scripts/emulator-seed.mjs`、`src/features/schedule/mocks.ts` | 跟著新形狀 |
-| `src/features/schedule/components/RoutePreviewModal.tsx` | 顯示文字改用共用分類（第三階段再加可行性） |
+| `src/features/schedule/components/RoutePreviewModal.tsx` | 顯示文字改用共用分類；第三階段用 `planDayTravel` 顯示套用後的抵達提醒與摘要 |
 
 ## 9. 測試
 

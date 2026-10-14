@@ -14,9 +14,7 @@ import { fromLocalDateString } from '@/utils/dates'
 import { formatMinorAmount } from '@/utils/money'
 import {
   NOTICE_TONE_TEXT,
-  feasibilityNotice,
-  feasibilitySummary,
-  scheduleDayFeasibility,
+  planDayTravel,
   scheduleSegment,
 } from '../travelEstimate'
 import ListEmptyCard from '@/components/ui/ListEmptyCard'
@@ -53,12 +51,7 @@ interface Props {
 function DayTimeline({
   display, items, dayTotal, isLoading, canWrite, roleCanWrite, currency, routeAction, onAdd, onOpenDetails,
 }: Props) {
-  // One segment per gap, shared by the travel rows and the feasibility
-  // check so both always describe the same estimate.
-  const segments = items.slice(1).map((next, idx) => scheduleSegment(items[idx]!, next))
-  const verdicts = scheduleDayFeasibility(items, segments)
-  const notices = items.map((item, idx) => feasibilityNotice(verdicts[idx], item.timeMode))
-  const summary = feasibilitySummary(notices)
+  const { segments, notices, summary } = planDayTravel(items, scheduleSegment)
 
   return (
     <div className="mx-5 mt-5">
