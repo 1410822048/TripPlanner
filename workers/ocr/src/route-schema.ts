@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { TRAVEL_MEASUREMENT_LIMITS } from '@tripmate/entity-contracts'
 
 export const TripIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,60}$/)
 export const DateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -40,26 +41,16 @@ export const ApplyScheduleSchema = z.object({
   order: z.number().int().min(0).max(100),
 }).strict()
 
-const ApplyRouteLegBaseSchema = {
+// The strict WRITE side of Schedule.travelToNext (the app's read schema is
+// lenient). Bounds match firestore.rules validTravelToNext.
+const ApplyRouteLegSchema = z.object({
   legIndex: z.number().int().min(0).max(10),
   fromId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
   toId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
-  walkingMinutes: z.number().finite().min(0).max(10_080),
+  walkingMinutes: z.number().int().min(0).max(TRAVEL_MEASUREMENT_LIMITS.walkingMinutes),
+  walkingDistanceMeters: z.number().int().min(0).max(TRAVEL_MEASUREMENT_LIMITS.walkingDistanceMeters),
   geometryAvailable: z.boolean(),
-}
-
-const ApplyRouteLegSchema = z.discriminatedUnion('kind', [
-  z.object({ ...ApplyRouteLegBaseSchema, kind: z.literal('walking') }).strict(),
-  z.object({
-    ...ApplyRouteLegBaseSchema,
-    kind: z.literal('transit-check'),
-    transitEstimate: z.object({
-      minMinutes: z.number().int().min(1).max(1440),
-      maxMinutes: z.number().int().min(1).max(1440),
-      basis: z.literal('ors-walking-distance'),
-    }).strict().refine(value => value.maxMinutes > value.minMinutes),
-  }).strict(),
-])
+}).strict()
 
 export const RouteApplyRequestSchema = z.object({
   tripId: TripIdSchema,

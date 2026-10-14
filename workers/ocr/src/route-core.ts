@@ -1,9 +1,3 @@
-import {
-  estimateTransitRange,
-  WALKING_DIRECT_THRESHOLD_MINUTES,
-} from '@tripmate/route-estimate-core'
-
-export { WALKING_DIRECT_THRESHOLD_MINUTES }
 export const ROUTE_PREVIEW_DEADLINE_MS = 30_000
 
 export interface RoutePreviewDeadline {
@@ -26,12 +20,6 @@ export function createRoutePreviewDeadline(
   }
 }
 
-export function isDirectWalkingLeg(durationMinutes: number): boolean {
-  return Number.isFinite(durationMinutes)
-    && durationMinutes >= 0
-    && durationMinutes <= WALKING_DIRECT_THRESHOLD_MINUTES
-}
-
 type DistanceCell = number | null
 export type DistanceMatrix = DistanceCell[][]
 
@@ -40,19 +28,6 @@ export interface AnchoredRouteResult {
   originalDistanceMeters: number
   optimizedDistanceMeters: number
   improved: boolean
-}
-
-export interface StaticTransitEstimate {
-  minMinutes: number
-  maxMinutes: number
-  basis: 'ors-walking-distance'
-}
-
-/** A display-only range derived from ORS walking-network distance. It is not
- * a timetable, is never used to validate fixed schedules, and does not affect
- * route ordering or the signed apply plan. */
-export function estimateStaticTransitRange(distanceMeters: number): StaticTransitEstimate {
-  return { ...estimateTransitRange(distanceMeters), basis: 'ors-walking-distance' }
 }
 
 interface PathState {

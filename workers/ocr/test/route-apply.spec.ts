@@ -31,27 +31,40 @@ describe('route apply authentication boundary', () => {
     vi.clearAllMocks()
   })
 
-  test('accepts the bounded route-leg wire shape', () => {
-    expect(RouteApplyRequestSchema.safeParse({
-      tripId: 'trip-1',
-      revision: 'revision-1234567890',
-      date: '2026-07-15',
-      previewToken: 't'.repeat(32),
-      schedules: [{ id: 'a', order: 0 }, { id: 'b', order: 1 }],
-      legs: [{
-        legIndex: 0,
-        fromId: 'a',
-        toId: 'b',
-        kind: 'transit-check',
-        walkingMinutes: 38,
-        geometryAvailable: false,
-        transitEstimate: {
-          minMinutes: 15,
-          maxMinutes: 25,
-          basis: 'ors-walking-distance',
-        },
-      }],
-    }).success).toBe(true)
+  const applyRequest = (leg: Record<string, unknown>) => ({
+    tripId: 'trip-1',
+    revision: 'revision-1234567890',
+    date: '2026-07-15',
+    previewToken: 't'.repeat(32),
+    schedules: [{ id: 'a', order: 0 }, { id: 'b', order: 1 }],
+    legs: [{
+      legIndex: 0,
+      fromId: 'a',
+      toId: 'b',
+      walkingMinutes: 38,
+      walkingDistanceMeters: 3_040,
+      geometryAvailable: false,
+      ...leg,
+    }],
+  })
+
+  test('accepts the measurement-only route-leg wire shape', () => {
+    expect(RouteApplyRequestSchema.safeParse(applyRequest({})).success).toBe(true)
+    expect(RouteApplyRequestSchema.safeParse(applyRequest({
+      walkingMinutes: 10_080, walkingDistanceMeters: 2_000_000,
+    })).success).toBe(true)
+  })
+
+  // The strict write side of travelToNext; bounds match firestore.rules.
+  test.each([
+    ['a derived class', { kind: 'walking' }],
+    ['a derived transit range', { transitEstimate: { minMinutes: 15, maxMinutes: 25 } }],
+    ['fractional minutes', { walkingMinutes: 38.4 }],
+    ['a fractional distance', { walkingDistanceMeters: 3_040.5 }],
+    ['an out-of-range distance', { walkingDistanceMeters: 2_000_001 }],
+    ['a missing distance', { walkingDistanceMeters: undefined }],
+  ])('rejects a leg with %s', (_label, leg) => {
+    expect(RouteApplyRequestSchema.safeParse(applyRequest(leg)).success).toBe(false)
   })
 
   test('maps malformed preview tokens to a safe 401 before any Firestore call', async () => {
@@ -80,8 +93,8 @@ describe('route apply authentication boundary', () => {
       legIndex: 0,
       fromId: 'a',
       toId: 'b',
-      kind: 'walking' as const,
       walkingMinutes: 8,
+      walkingDistanceMeters: 640,
       geometryAvailable: true,
     }]
     const previewToken = await createPreviewToken({
@@ -110,8 +123,8 @@ describe('route apply authentication boundary', () => {
       legIndex: 0,
       fromId: 'b',
       toId: 'a',
-      kind: 'walking' as const,
       walkingMinutes: 8,
+      walkingDistanceMeters: 640,
       geometryAvailable: true,
     }]
     const previewToken = await createPreviewToken({
@@ -140,8 +153,8 @@ describe('route apply authentication boundary', () => {
       legIndex: 0,
       fromId: 'a',
       toId: 'b',
-      kind: 'walking' as const,
-      walkingMinutes: 8.4,
+      walkingMinutes: 8,
+      walkingDistanceMeters: 640,
       geometryAvailable: true,
     }]
     const previewToken = await createPreviewToken({
@@ -193,8 +206,8 @@ describe('route apply authentication boundary', () => {
           mapValue: {
             fields: {
               toId: { stringValue: 'b' },
-              kind: { stringValue: 'walking' },
-              minutes: { integerValue: '8' },
+              walkingMinutes: { integerValue: '8' },
+              walkingDistanceMeters: { integerValue: '640' },
             },
           },
         },
@@ -202,6 +215,9 @@ describe('route apply authentication boundary', () => {
       updateMask: ['order', 'routeRevision', 'travelToNext', 'updatedBy'],
     })
     expect(firstSchedule?.fields).not.toHaveProperty('revision')
+    // Measurements only: nothing derived is persisted.
+    const travel = (firstSchedule?.fields as { travelToNext: { mapValue: { fields: object } } }).travelToNext
+    expect(Object.keys(travel.mapValue.fields).sort()).toEqual(['toId', 'walkingDistanceMeters', 'walkingMinutes'])
 
     const lastSchedule = committedWrites.find(write => String(write.document).endsWith('/schedules/b'))
     expect(lastSchedule).toMatchObject({

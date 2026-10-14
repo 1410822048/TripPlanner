@@ -12,7 +12,11 @@ import type { Schedule } from '@/types'
 // the same string at LOCAL midnight, which is what a day header means.
 import { fromLocalDateString } from '@/utils/dates'
 import { formatMinorAmount } from '@/utils/money'
-import type { TravelSegmentEstimate } from '../routePlanner'
+import {
+  NOTICE_TONE_TEXT,
+  planDayTravel,
+  scheduleSegment,
+} from '../travelEstimate'
 import ListEmptyCard from '@/components/ui/ListEmptyCard'
 import GhostAddButton from '@/components/ui/GhostAddButton'
 import { UPDATE_REQUIRED_EMPTY_STATE } from '@/services/clientCompatibility'
@@ -47,6 +51,8 @@ interface Props {
 function DayTimeline({
   display, items, dayTotal, isLoading, canWrite, roleCanWrite, currency, routeAction, onAdd, onOpenDetails,
 }: Props) {
+  const { segments, notices, summary } = planDayTravel(items, scheduleSegment)
+
   return (
     <div className="mx-5 mt-5">
       {display && (
@@ -66,6 +72,11 @@ function DayTimeline({
                   {items.length} 個行程
                   {items.length > 1 && ` · ${items.length - 1} 段交通`}
                   {dayTotal > 0 && ` · 合計 ${formatMinorAmount(dayTotal, currency)}`}
+                </p>
+              )}
+              {!isLoading && summary && (
+                <p className={`mt-0.5 text-[11px] font-bold ${NOTICE_TONE_TEXT[summary.tone]}`}>
+                  {summary.text}
                 </p>
               )}
             </div>
@@ -121,7 +132,7 @@ function DayTimeline({
         <>
           {items.map((s, idx) => {
             const next = items[idx + 1]
-            const appliedEstimate = next ? appliedRouteEstimate(s, next) : undefined
+            const segment = segments[idx]
             return (
               <Fragment key={s.id}>
                 <TimelineCard
@@ -130,7 +141,9 @@ function DayTimeline({
                   currency={currency}
                   onOpenDetails={() => onOpenDetails(s)}
                 />
-                {next && <TravelSegmentRow from={s} to={next} appliedEstimate={appliedEstimate} />}
+                {next && segment && (
+                  <TravelSegmentRow from={s} to={next} segment={segment} notice={notices[idx + 1]} />
+                )}
               </Fragment>
             )
           })}
@@ -144,19 +157,6 @@ function DayTimeline({
       )}
     </div>
   )
-}
-
-function appliedRouteEstimate(
-  from: Schedule,
-  to: Schedule,
-): TravelSegmentEstimate | undefined {
-  const revision = from.routeRevision
-  if (!revision || to.routeRevision !== revision) return undefined
-  const leg = from.travelToNext
-  if (!leg || leg.toId !== to.id) return undefined
-  return leg.kind === 'walking'
-    ? { kind: 'walking', minutes: leg.minutes }
-    : { kind: 'transit', minMinutes: leg.minMinutes, maxMinutes: leg.maxMinutes }
 }
 
 export default DayTimeline

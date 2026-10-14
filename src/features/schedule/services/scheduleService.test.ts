@@ -59,7 +59,7 @@ const current = {
   category: 'activity',
   estimatedCostMinor: 500,
   routeRevision: 'revision-1',
-  travelToNext: { toId: 'schedule-2', kind: 'walking', minutes: 5 },
+  travelToNext: { toId: 'schedule-2', walkingMinutes: 5, walkingDistanceMeters: 400 },
 } as Schedule
 
 function nextInput(overrides: Partial<CreateScheduleInput> = {}): CreateScheduleInput {

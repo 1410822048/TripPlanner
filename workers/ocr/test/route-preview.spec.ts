@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest'
 import {
   buildDisplayGeometry,
+  isWalkingLeg,
   findTimeConflictIds,
   resolveRoutePlace,
   routeScheduleFingerprint,
@@ -21,7 +22,7 @@ const place = (id: string, lat: number, lng: number) => ({
   countryCode: 'JP',
 })
 
-function schedule(id: string, order: number, startTime?: string): RouteSchedule {
+function schedule(id: string, order: number, startTime?: string, isTransport = false): RouteSchedule {
   return {
     id,
     order,
@@ -29,6 +30,7 @@ function schedule(id: string, order: number, startTime?: string): RouteSchedule 
     ...(startTime ? { startTime } : {}),
     durationMinutes: 60,
     location: place(id, 35 + order * 0.01, 139 + order * 0.01),
+    isTransport,
   }
 }
 
@@ -144,6 +146,32 @@ describe('route preview display contract', () => {
     })
 
     expect(parsed?.location.provider).toBe('google-maps')
+    expect(parsed?.isTransport).toBe(false)
+
+    const train = scheduleFromDoc({
+      exists: true,
+      name: 'projects/test/databases/(default)/documents/trips/trip-1/schedules/train',
+      updateTime: '2026-07-20T00:00:00.000Z',
+      fields: {
+        order: { integerValue: '0' },
+        timeMode: { stringValue: 'flexible' },
+        durationMinutes: { integerValue: '60' },
+        category: { stringValue: 'transport' },
+        location: { mapValue: { fields: {
+          status: { stringValue: 'resolved' },
+          place: { mapValue: { fields: {
+            provider: { stringValue: 'google-maps' },
+            providerPlaceId: { stringValue: 'tokyo-station' },
+            name: { stringValue: '東京駅' },
+            lat: { doubleValue: 35.6812 },
+            lng: { doubleValue: 139.7671 },
+            timeZone: { stringValue: 'Asia/Tokyo' },
+            countryCode: { stringValue: 'JP' },
+          } } },
+        } } },
+      },
+    })
+    expect(train?.isTransport).toBe(true)
   })
 
   test('keeps 鎌倉駅 when the Google link carries an explicit station hint', async () => {
@@ -645,18 +673,10 @@ describe('route preview display contract', () => {
   test('draws ORS only for short walking legs and a direct reference line for long legs', () => {
     const schedules = [schedule('a', 0), schedule('b', 1), schedule('c', 2)]
     const legs: RoutePreviewLeg[] = [
-      { legIndex: 0, fromId: 'a', toId: 'b', kind: 'walking', walkingMinutes: 10, geometryAvailable: true },
-      {
-        legIndex: 1,
-        fromId: 'b',
-        toId: 'c',
-        kind: 'transit-check',
-        walkingMinutes: 30,
-        geometryAvailable: false,
-        transitEstimate: { minMinutes: 20, maxMinutes: 30, basis: 'ors-walking-distance' },
-      },
+      { legIndex: 0, fromId: 'a', toId: 'b', walkingMinutes: 10, walkingDistanceMeters: 800, geometryAvailable: true },
+      { legIndex: 1, fromId: 'b', toId: 'c', walkingMinutes: 30, walkingDistanceMeters: 2_400, geometryAvailable: false },
     ]
-    const geometry = buildDisplayGeometry(schedules, legs, {
+    const geometry = buildDisplayGeometry(schedules, legs, [true, false], {
       durationMinutes: 40,
       distanceMeters: 4000,
       coordinates: [[139, 35], [139.02, 35.02]],
@@ -677,5 +697,16 @@ describe('route preview display contract', () => {
         coordinates: [[139.01, 35.01], [139.02, 35.02]],
       },
     })
+  })
+
+  test('a short leg leaving a transport schedule is not drawn as walking', () => {
+    // Its location is where the train departs; where it arrives is unknown.
+    const schedules = [schedule('train', 0, undefined, true), schedule('hotel', 1)]
+    const legs: RoutePreviewLeg[] = [
+      { legIndex: 0, fromId: 'train', toId: 'hotel', walkingMinutes: 5, walkingDistanceMeters: 400, geometryAvailable: false },
+    ]
+    expect(isWalkingLeg(schedules[0]!, schedules[1]!, legs[0]!)).toBe(false)
+    expect(isWalkingLeg(schedule('a', 0), schedule('b', 1), legs[0]!)).toBe(true)
+    expect(buildDisplayGeometry(schedules, legs, [false], undefined).features[0]?.properties.mode).toBe('transit-check')
   })
 })

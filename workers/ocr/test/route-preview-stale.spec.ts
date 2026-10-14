@@ -42,6 +42,7 @@ vi.mock('../src/route-provider', async importOriginal => ({
 }))
 
 import { previewRoute } from '../src/route-preview'
+import { RouteApplyRequestSchema } from '../src/route-schema'
 
 function scheduleDoc(id: string, order: number, lat: number, lng: number): TxReadDoc {
   return {
@@ -108,7 +109,7 @@ describe('route preview freshness', () => {
     }
   })
 
-  test('materializes a static transit estimate from the optimized leg matrix distance', async () => {
+  test('carries the rounded ORS measurements from one source, not a derived estimate', async () => {
     const docs = [
       scheduleDoc('a', 0, 35, 139),
       scheduleDoc('b', 1, 35.03, 139.03),
@@ -119,15 +120,17 @@ describe('route preview freshness', () => {
     })
     mocks.orsMatrix.mockResolvedValueOnce({
       durationsMinutes: [[0, 38], [38, 0]],
-      distancesMeters: [[0, 3500], [3500, 0]],
+      distancesMeters: [[0, 3499.6], [3499.6, 0]],
     })
+    // The directions leg differs from the matrix; both numbers must come
+    // from the directions leg so the stored pair is one route's.
     mocks.orsDirections.mockResolvedValueOnce({
-      durationMinutes: 38,
-      distanceMeters: 3500,
+      durationMinutes: 37.6,
+      distanceMeters: 3612.4,
       coordinates: [[139, 35], [139.03, 35.03]],
       legs: [{
-        durationMinutes: 38,
-        distanceMeters: 3500,
+        durationMinutes: 37.6,
+        distanceMeters: 3612.4,
         coordinates: [[139, 35], [139.03, 35.03]],
       }],
     })
@@ -140,14 +143,58 @@ describe('route preview freshness', () => {
       { ORS_API_KEY: 'ors-key', ROUTE_PREVIEW_HMAC_SECRET: 'x'.repeat(32) },
     )
 
-    expect(result.legs).toEqual([expect.objectContaining({
-      kind: 'transit-check',
+    // Exactly what route-apply will persist as travelToNext; the app derives
+    // the class (transit here) and the range with the shared classifier.
+    expect(result.legs).toEqual([{
+      legIndex: 0,
+      fromId: 'a',
+      toId: 'b',
       walkingMinutes: 38,
-      transitEstimate: {
-        minMinutes: 10,
-        maxMinutes: 15,
-        basis: 'ors-walking-distance',
-      },
-    })])
+      walkingDistanceMeters: 3612,
+      geometryAvailable: false,
+    }])
+    expect(result.display.features[0]?.properties.mode).toBe('transit-check')
+  })
+
+  test('clamps a cross-country leg to the persisted bounds instead of failing the preview', async () => {
+    // Tokyo → Fukuoka on one day: ORS walking time is far past 10,080 min.
+    const docs = [
+      scheduleDoc('a', 0, 35.68, 139.77),
+      scheduleDoc('b', 1, 33.59, 130.42),
+    ]
+    mocks.runFirestoreTransaction.mockImplementation(async (_token, _projectId, work) => {
+      const outcome = await work({ runQuery: vi.fn(async () => docs) })
+      return outcome.result
+    })
+    mocks.orsMatrix.mockResolvedValueOnce({
+      durationsMinutes: [[0, 13_250], [13_250, 0]],
+      distancesMeters: [[0, 1_104_000], [1_104_000, 0]],
+    })
+    mocks.orsDirections.mockResolvedValueOnce({
+      durationMinutes: 13_250,
+      distanceMeters: 1_104_000,
+      coordinates: [[139.77, 35.68], [130.42, 33.59]],
+      legs: [{ durationMinutes: 13_250, distanceMeters: 1_104_000, coordinates: [[139.77, 35.68], [130.42, 33.59]] }],
+    })
+
+    const result = await previewRoute(
+      'user-1',
+      { tripId: 'trip-1', date: '2026-07-20' },
+      '{}',
+      'test-project',
+      { ORS_API_KEY: 'ors-key', ROUTE_PREVIEW_HMAC_SECRET: 'x'.repeat(32) },
+    )
+
+    expect(result.legs[0]).toMatchObject({ walkingMinutes: 10_080, walkingDistanceMeters: 1_104_000 })
+    // The app classifies it as long-distance from the straight line, so the
+    // clamped minutes are never shown; the apply schema accepts them.
+    expect(RouteApplyRequestSchema.safeParse({
+      tripId: 'trip-1',
+      revision: 'revision-1234567890',
+      date: '2026-07-20',
+      previewToken: 't'.repeat(32),
+      schedules: [{ id: 'a', order: 0 }, { id: 'b', order: 1 }],
+      legs: result.legs,
+    }).success).toBe(true)
   })
 })

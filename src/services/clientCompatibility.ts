@@ -18,8 +18,12 @@
  *  Epoch 4: settlements are routes (one doc holding its legs), created only
  *  through `/settlement-route-create`. An epoch-3 bundle can only call the
  *  removed `/settlement-create` and can't read the new shape, so it must
- *  stop writing and ask for the update. */
-export const CLIENT_SCHEMA_EPOCH = 4 as const
+ *  stop writing and ask for the update.
+ *  Epoch 5: route legs and Schedule.travelToNext carry walking measurements
+ *  only. An epoch-4 bundle rejects the new preview response, sends the old
+ *  leg shape to /route-apply, and its strict schedule schema drops any
+ *  schedule with the new travelToNext, so it must ask for the update. */
+export const CLIENT_SCHEMA_EPOCH = 5 as const
 export const CLIENT_COMPATIBILITY_STORAGE_KEY = 'tripmate:client-compatibility:v1'
 
 const MANIFEST_URL = '/compatibility.json'

@@ -7,7 +7,13 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { BOOKING_LIMITS, PLANNING_LIMITS, SCHEDULE_LIMITS, WISH_LIMITS } from '@tripmate/entity-contracts'
+import {
+  BOOKING_LIMITS,
+  PLANNING_LIMITS,
+  SCHEDULE_LIMITS,
+  TRAVEL_MEASUREMENT_LIMITS,
+  WISH_LIMITS,
+} from '@tripmate/entity-contracts'
 
 const RULES = readFileSync(join(process.cwd(), 'firestore.rules'), 'utf8')
 
@@ -48,4 +54,19 @@ describe('firestore.rules field caps match @tripmate/entity-contracts', () => {
       }
     })
   }
+})
+
+describe('firestore.rules validTravelToNext matches TRAVEL_MEASUREMENT_LIMITS', () => {
+  // The Worker writes (ApplyRouteLegSchema) and the app reads with these
+  // bounds; a rules bound that drifts would make every client edit of a
+  // schedule with an applied route fail, or let a looser value persist.
+  it('bounds each measurement with the shared maximum', () => {
+    const start = RULES.indexOf('function validTravelToNext(value)')
+    expect(start).toBeGreaterThan(-1)
+    const body = RULES.slice(start, RULES.indexOf('}', start))
+    for (const [field, max] of Object.entries(TRAVEL_MEASUREMENT_LIMITS)) {
+      const caps = [...body.matchAll(new RegExp(`value\\.${field} <= (\\d+)`, 'g'))].map(m => Number(m[1]))
+      expect({ field, caps }).toEqual({ field, caps: [max] })
+    }
+  })
 })

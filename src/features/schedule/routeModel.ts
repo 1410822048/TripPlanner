@@ -80,7 +80,8 @@ export function routeOptimizationAvailability(input: {
 
 const TIME_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/
 
-function toMinutes(value: string): number {
+/** Minutes after midnight for an HH:mm time. */
+export function toMinutes(value: string): number {
   if (!TIME_RE.test(value)) throw new ScheduleTimingError('INVALID_TIME', 'time must use HH:mm')
   const [hours = 0, minutes = 0] = value.split(':').map(Number)
   return hours * 60 + minutes

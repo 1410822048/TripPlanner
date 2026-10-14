@@ -2763,7 +2763,7 @@ describe('/trips/{tripId}/schedules shape guards', () => {
       setDoc(doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-route-forge'),
         baseSchedule({
           routeRevision: 'forged-revision',
-          travelToNext: { toId: 'next', kind: 'walking', minutes: 5 },
+          travelToNext: { toId: 'next', walkingMinutes: 5, walkingDistanceMeters: 400 },
         })),
     )
   })
@@ -2783,7 +2783,7 @@ describe('/trips/{tripId}/schedules shape guards', () => {
     await env.withSecurityRulesDisabled(async ctx => {
       await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'schedules', 's-route-clear'), baseSchedule({
         routeRevision: 'revision-1',
-        travelToNext: { toId: 'next', kind: 'walking', minutes: 5 },
+        travelToNext: { toId: 'next', walkingMinutes: 5, walkingDistanceMeters: 400 },
       }))
     })
 
@@ -2817,7 +2817,7 @@ describe('/trips/{tripId}/schedules shape guards', () => {
     await env.withSecurityRulesDisabled(async ctx => {
       await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'schedules', 's-route-owned'), baseSchedule({
         routeRevision: 'revision-1',
-        travelToNext: { toId: 'next', kind: 'walking', minutes: 5 },
+        travelToNext: { toId: 'next', walkingMinutes: 5, walkingDistanceMeters: 400 },
       }))
     })
 
@@ -2827,7 +2827,7 @@ describe('/trips/{tripId}/schedules shape guards', () => {
       updatedAt: serverTimestamp(),
     }))
     await assertFails(updateDoc(path, {
-      travelToNext: { toId: 'another', kind: 'walking', minutes: 1 },
+      travelToNext: { toId: 'another', walkingMinutes: 1, walkingDistanceMeters: 80 },
       updatedBy: EDITOR_UID,
       updatedAt: serverTimestamp(),
     }))
@@ -2838,30 +2838,34 @@ describe('/trips/{tripId}/schedules shape guards', () => {
     }))
   })
 
-  test('schedule title updates preserve a valid transit travelToNext shape', async () => {
-    const path = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-route-transit')
+  test('schedule title updates preserve a valid long travelToNext measurement', async () => {
+    const path = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-route-long')
     await env.withSecurityRulesDisabled(async ctx => {
-      await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'schedules', 's-route-transit'), baseSchedule({
+      await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'schedules', 's-route-long'), baseSchedule({
         routeRevision: 'revision-1',
-        travelToNext: { toId: 'next', kind: 'transit', minMinutes: 15, maxMinutes: 25 },
+        travelToNext: { toId: 'next', walkingMinutes: 10080, walkingDistanceMeters: 2000000 },
       }))
     })
 
     await assertSucceeds(updateDoc(path, {
-      title: 'Transit title-only edit',
+      title: 'Long-route title-only edit',
       updatedBy: EDITOR_UID,
       updatedAt: serverTimestamp(),
     }))
   })
 
-  test('schedule updates reject malformed persisted transit travelToNext shapes', async () => {
-    const path = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-route-transit-bad')
+  test.each([
+    ['the legacy derived shape', { toId: 'next', kind: 'transit', minMinutes: 15, maxMinutes: 25 }],
+    ['an extra derived field', { toId: 'next', walkingMinutes: 20, walkingDistanceMeters: 1600, kind: 'either' }],
+    ['a missing distance', { toId: 'next', walkingMinutes: 20 }],
+    ['a fractional distance', { toId: 'next', walkingMinutes: 20, walkingDistanceMeters: 1600.5 }],
+    ['an out-of-range distance', { toId: 'next', walkingMinutes: 20, walkingDistanceMeters: 2000001 }],
+  ])('schedule updates fail closed on a persisted travelToNext with %s', async (_label, travelToNext) => {
+    const path = doc(asEditor(env).firestore(), 'trips', TRIP_ID, 'schedules', 's-route-bad')
     await env.withSecurityRulesDisabled(async ctx => {
-      await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'schedules', 's-route-transit-bad'), baseSchedule({
+      await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, 'schedules', 's-route-bad'), baseSchedule({
         routeRevision: 'revision-1',
-        travelToNext: {
-          toId: 'next', kind: 'transit', minMinutes: 15, maxMinutes: 25, minutes: 20,
-        },
+        travelToNext,
       }))
     })
 
