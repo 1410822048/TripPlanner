@@ -23,13 +23,13 @@
     "@tripmate/settlement-core": "file:../../packages/settlement-core",
     "jose": "^6.2.12",
     "pdfjs-dist": "6.3.289",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.23.0",
     "@types/node": "^26.6.5",
     "typescript": "~6.0.2",
     "vitest": "^4.1.11",
-    "wrangler": "^4.149.0"
+    "wrangler": "^4.151.0"
   }
 }
