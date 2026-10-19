@@ -89,7 +89,7 @@ jobs:
       - name: Setup Java
         # 21 (not 17): current firebase-tools dropped support for JDK < 21, so
         # the emulator refuses to start on anything older.
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: '21'
