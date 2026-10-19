@@ -1,6 +1,6 @@
 // src/services/sentry.ts
 // Deferred-init Sentry wrapper. After stripping replay + tracing the
-// @sentry/browser vendor chunk lands at ~26 KB gz, but it's still on
+// @sentry/browser vendor chunk lands at ~29 KB gz, but it's still on
 // the critical path if loaded eagerly -- so we defer it to idle. The
 // shape is three phases:
 //
@@ -38,6 +38,18 @@ type SentryBrowser = typeof import('@sentry/browser')
 type SentryRef = Pick<SentryBrowser, 'captureException' | 'addBreadcrumb'>
 
 const DSN = import.meta.env.VITE_SENTRY_DSN as string | undefined
+
+/** What the SDK may attach on its own. Sentry 11 collects everything by
+ *  default (user info + IP inference, cookies, request/response headers
+ *  and bodies); we keep the old restrictive behaviour. Only User-Agent is
+ *  kept — it tells which browser crashed and drives Sentry's
+ *  legacy-browser / crawler filters. Exported for tests. */
+export const SENTRY_DATA_COLLECTION = {
+  userInfo:    false,
+  cookies:     false,
+  httpHeaders: { request: { allow: ['User-Agent'] }, response: false },
+  httpBodies:  [],
+} satisfies NonNullable<import('@sentry/browser').BrowserOptions['dataCollection']>
 
 interface BufferedError {
   err:     unknown
@@ -119,6 +131,7 @@ export function initSentry(): void {
         environment:  import.meta.env.MODE,
         release:      import.meta.env.PROD ? __APP_VERSION__ : undefined,
         integrations: [],
+        dataCollection: SENTRY_DATA_COLLECTION,
         ignoreErrors: [
           'AbortError',
           'ResizeObserver loop limit exceeded',
