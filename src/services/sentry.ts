@@ -49,6 +49,10 @@ export const SENTRY_DATA_COLLECTION = {
   cookies:     false,
   httpHeaders: { request: { allow: ['User-Agent'] }, response: false },
   httpBodies:  [],
+  // 預設 true，只過濾已知敏感 key 名。Share Target 進來的網址是
+  // `/bookings?url=...&text=...`（訂位代號、姓名），會留在 navigation
+  // breadcrumb 與 request.url；scrubSentryEvent 只剝 fragment，所以這裡關掉。
+  urlQueryParams: false,
 } satisfies NonNullable<import('@sentry/browser').BrowserOptions['dataCollection']>
 
 interface BufferedError {

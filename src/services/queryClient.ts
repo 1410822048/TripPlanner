@@ -36,6 +36,11 @@ export const MUTATION_ACTION = {
   CREATE_SCHEDULE:   '新增行程',
   CREATE_WISH:       '新增心願',
   CREATE_PLAN:       '新增準備項目',
+  // 旅程層級：沒有 meta 時全域 handler 會以「操作失敗」toast，再加上呼叫端
+  // 自己的 toast 就變成兩則；這三個標籤讓全域 handler 成為唯一出口。
+  CREATE_TRIP:       '建立旅程',
+  COPY_TRIP:         '複製旅程',
+  ACCEPT_INVITE:     '加入旅程',
 
   // ── Specialty mutations ────────────────────────────────────────
   TOGGLE_VOTE:       '投票',

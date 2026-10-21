@@ -391,7 +391,7 @@ UI(`SettlementSummary`)結構: 成員淨額 → 付款建議(簡化 route 卡片
 - **不變式**:中間人淨額為 0;TRANSFER 的 legs **無環**(否則收款人能夾帶別人的循環);OFFSET 只能是**單一連通分量**(否則能確認自己沒參與的循環);每段 `expectedRemainingMinor` 都必須**等於**權威剩餘量(CAS)
 - **Worker** `/settlement-route-create`:權限 → 文件冪等 → FX CAS(在讀帳之前)→ 讀帳(`paidBy IN participants`、全旅程 active settlements 的 legs、pair lock 依序讀)→ 逐段 CAS 與 lineage(看得到本 route 前面各段)→ 大小檢查 → 寫入(**每筆費用的鎖只寫一次**,記 routeId)。`/settlement-delete` 一次寫入撤銷整份
 - **「任意順序」= 挑一筆 → 記錄 → 重新規劃**。record sheet 送出時以最新帳本重算同一筆付款,不會送出過期的 CAS 數字;抵銷變了就要求重新確認
-- **通知**:一份文件一則,對象是所有參與者
+- **通知**:一份文件一則,對象是**仍在旅程內**的參與者(`resolveRecipients` 把 partyUids 與 `trip.memberIds` 取交集;已離開者不收旅程內容,唯一例外是 account scope 的 `member.removed_self`)
 - **只有一種形狀**:兩人清算 = 單段 route;舊的 `/settlement-create`、單筆清算與「每段一份文件」都已移除(上線前清庫,沒有舊資料)
 - Schema Epoch 4:讓手機上已安裝、只會呼叫舊端點的 PWA 顯示更新提示
 

@@ -64,9 +64,9 @@ export default function InviteRedeemPanel({
       useTripStore.getState().setSelectedTripId(trip?.id ?? tripId)
       toast.success(outcome === 'already-member' ? '你已經是成員' : '已加入旅程')
       onDone()
-    } catch (e) {
-      if (isCurrent && !isCurrent()) return
-      toast.error(`加入失敗：${userErrorMessage(e, '請稍後再試')}`)
+    } catch {
+      // 全域 MutationCache.onError 已用 ACCEPT_INVITE 標籤 toast（ambiguous 時為
+      // 「正在確認」）；這裡不再重複，避免兩則互相矛盾的訊息。
     }
   }
 

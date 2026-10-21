@@ -124,6 +124,9 @@ export function useAcceptInvite() {
     { tripId: string; token: string; user: User }
   >({
     mutationFn: ({ tripId, token, user }) => acceptInvite(tripId, token, user),
+    // 失敗由全域 MutationCache.onError toast（ambiguous 走「正在確認」）；
+    // InviteRedeemPanel 不再自己 toast，否則一次失敗會出現兩則、且可能互相矛盾。
+    meta: { action: MUTATION_ACTION.ACCEPT_INVITE } satisfies MutationMeta,
     onSuccess: ({ trip }, { user }) => {
       if (!trip) return  // listeners will reconcile within a few hundred ms
       qc.setQueryData<Trip[]>(tripKeys.mine(user.uid), prev =>

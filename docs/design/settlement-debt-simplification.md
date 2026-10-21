@@ -139,7 +139,7 @@ Request（`.strict()`）：`{ tripId, routeId, kind, legs[{fromUid,toUid,amountM
 
 ## 9. 通知（Functions）
 
-一份文件一則通知，對象是所有參與者（中間人的債務也變了）。內容是「付款人 → 收款人 ¥X（經 …）」，或「A、B、C 之間的互相抵銷（不需付款）」。已離開成員的名字從 `formerMemberNames` 取得。
+一份文件一則通知，對象是**仍在旅程內**的所有參與者（中間人的債務也變了）；已離開的參與者不收到（旅程內容不送給已失去權限的人，唯一例外是 account scope 的 `member.removed_self`）。內容是「付款人 → 收款人 ¥X（經 …）」，或「A、B、C 之間的互相抵銷（不需付款）」。已離開成員的名字從 `formerMemberNames` 取得。
 
 ## 10. 相容性與部署
 

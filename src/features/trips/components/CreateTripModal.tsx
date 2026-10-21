@@ -94,8 +94,9 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
       setSelectedTripId(trip.id)
       close()
       toast.success(`已建立「${trip.title}」`)
-    } catch (e) {
-      toast.error(`建立失敗：${userErrorMessage(e, '請稍後再試')}`)
+    } catch {
+      // 全域 MutationCache.onError 已用 CREATE_TRIP 標籤 toast；這裡只負責
+      // 把表單留著讓使用者重試。
     }
   }
 

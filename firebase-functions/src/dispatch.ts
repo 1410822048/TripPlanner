@@ -213,15 +213,25 @@ export function selectRecipients(
 // which also reuses the same snapshot's title for the inbox docs).
 export function resolveRecipients(
   trip: TripRecipientState,
-  event: Pick<NormalizedPushEvent, 'partyUids' | 'actorUid' | 'actorUnknown' | 'subjectUid' | 'includeActor'>,
+  event: Pick<NormalizedPushEvent, 'partyUids' | 'actorUid' | 'actorUnknown' | 'subjectUid' | 'includeActor' | 'scope'>,
 ): string[] {
   // Trip teardown suppresses everything, trip- AND account-scoped.
   if (trip.deleting) return []
 
   // Explicit partyUids (settlement parties, role-change subject, account-scope
-  // target) are the recipient set as-is — don't second-guess them.
+  // target) narrow the recipient set. Only an account-scoped event
+  // (member.removed_self) may reach a uid outside the CURRENT roster — its
+  // whole point is to tell someone who just lost access. Everything else is
+  // trip content: a routed settlement can name departed members (payer /
+  // intermediary / offset participant, kept in formerMemberNames), and they
+  // must not receive its push or an inbox row carrying the trip title,
+  // amounts and names. An intersection that comes out empty stays empty —
+  // never fall through to the whole member list.
   if (event.partyUids?.length) {
-    return selectRecipients(event.partyUids, event.actorUid, event.actorUnknown ?? false, event.includeActor ?? false)
+    const parties = event.scope === 'account'
+      ? event.partyUids
+      : event.partyUids.filter(uid => trip.memberIds.includes(uid))
+    return selectRecipients(parties, event.actorUid, event.actorUnknown ?? false, event.includeActor ?? false)
   }
 
   const selected = selectRecipients(trip.memberIds, event.actorUid, event.actorUnknown ?? false, event.includeActor ?? false)
