@@ -46,6 +46,11 @@ export function useScheduleActions(opts: {
     if (scheduleModal.scopeChanged) { scheduleModal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
     if (isDemo) { scheduleModal.close(); openSignIn(); return }
     if (!uid) { toast.error('正在準備登入，請稍候'); return }
+    // Epoch 預檢必須在離線交接之前：交接會先關閉表單再發出寫入，而全域
+    // handler 刻意不 toast `UpdateRequiredError`，少了這一行會變成「表單關了、
+    // 說已儲存、其實什麼都沒寫」。planning 的 handleSave 與下方刪除同樣有。
+    const writeBlockReason = getClientWriteBlockReason()
+    if (writeBlockReason) { scheduleModal.setError(writeBlockReason); return }
     scheduleModal.clearError()
     const editTarget = scheduleModal.editTarget
     if (editTarget) {

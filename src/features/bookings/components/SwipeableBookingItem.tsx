@@ -10,9 +10,9 @@
 //   - Detail (card tap): pass onSelect for every role. Edit is exposed
 //     by the read-only detail sheet only when the caller has write permission.
 //
-import { Loader2 } from 'lucide-react'
 import type { Booking } from '@/types'
 import SwipeableShell from '@/components/ui/SwipeableShell'
+import PendingIndicator from '@/components/ui/PendingIndicator'
 import BookingPassCard from './BookingPassCard'
 import { bookingDisplayName } from '../utils'
 
@@ -70,8 +70,7 @@ function SwipeableBookingItem({
           )}
           {isPending && (
             <div className="absolute top-2 right-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/60 text-white text-[10.5px] font-semibold backdrop-blur-sm">
-              <Loader2 size={11} strokeWidth={2.4} className="animate-spin" />
-              <span>儲存中…</span>
+              <PendingIndicator size={11} strokeWidth={2.4} />
             </div>
           )}
         </div>

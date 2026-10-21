@@ -144,6 +144,26 @@ describe('useScheduleActions save', () => {
     expect(toastMocks.error).toHaveBeenCalled()
   })
 
+  it('keeps the draft and shows the stale-bundle reason instead of handing the write off', async () => {
+    // Epoch preflight must run BEFORE the offline hand-off: that path closes
+    // the form and says "saved on this device" while the global handler
+    // deliberately stays silent for UpdateRequiredError.
+    compatibility.writeBlockReason = '請先更新 App 才能儲存'
+    vi.stubGlobal('navigator', { onLine: false })
+    try {
+      const { hook, modal } = render()
+
+      await act(async () => { await hook.result.current.onScheduleSave(input(), stillOpen) })
+
+      expect(mutationMocks.create).not.toHaveBeenCalled()
+      expect(modal.setError).toHaveBeenCalledWith('請先更新 App 才能儲存')
+      expect(modal.close).not.toHaveBeenCalled()
+      expect(toastMocks.info).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('refuses to save a draft into a trip the form was not opened on', async () => {
     const { hook, modal } = render({ modal: makeModal(null, true) })
 

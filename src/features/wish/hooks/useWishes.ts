@@ -17,7 +17,7 @@ import {
 } from '../services/wishService'
 import { createRealtimeListHook } from '@/hooks/createRealtimeListHook'
 import { createListOverlay } from '@/hooks/listOverlay'
-import { useTripListMutation } from '@/hooks/useTripListMutation'
+import { useTripListMutation, type UseTripListMutationOpts } from '@/hooks/useTripListMutation'
 import { auditUpdateMock } from '@/utils/audit'
 import type { CreateWishInput, Wish, WishImage } from '@/types'
 import { mockTimestampNow } from '@/mocks/utils'
@@ -46,8 +46,34 @@ export const useWishes = createRealtimeListHook<Wish>({
 const serverRead = (tripId: string, uid: string | undefined) =>
   () => getWishesByTripFromServer(tripId, uid ?? '')
 
+/** Wish create / update 各有兩條執行路徑：純文字走 client Firestore SDK，
+ *  帶圖片走 Worker。離線策略不同（SDK 寫入要 `networkMode: 'always'` 才會
+ *  進 IndexedDB 佇列；Worker 的 fetch 離線即失敗，排隊無意義），而 TanStack
+ *  的 networkMode 綁在 mutation 上，所以每個 hook 其實是兩個 mutation ——
+ *  同一份 overlay op、同一個 action，只差 networkMode —— 由變數決定走哪一個。
+ *  對呼叫端仍是單一 `{ mutate, mutateAsync, isPending }`。 */
+type WishMutation<Vars> = Pick<
+  ReturnType<typeof useTripListMutation<Wish, Vars>>,
+  'mutate' | 'mutateAsync' | 'isPending'
+>
+
+function usePathSplitMutation<Vars>(
+  opts:        Omit<UseTripListMutationOpts<Wish, Vars>, 'networkMode'>,
+  goesToWorker: (vars: Vars) => boolean,
+): WishMutation<Vars> {
+  const clientWrite = useTripListMutation<Wish, Vars>({ ...opts, networkMode: 'always' })
+  const workerWrite = useTripListMutation<Wish, Vars>(opts)
+  const pick = (vars: Vars | undefined) =>
+    (vars !== undefined && goesToWorker(vars) ? workerWrite : clientWrite)
+  return {
+    mutate:      (...args) => pick(args[0]).mutate(...args),
+    mutateAsync: (...args) => pick(args[0]).mutateAsync(...args),
+    isPending:   clientWrite.isPending || workerWrite.isPending,
+  }
+}
+
 export function useCreateWish(tripId: string) {
-  return useTripListMutation<Wish, {
+  return usePathSplitMutation<{
     wishId:     string
     input:      CreateWishInput
     file:       File | null
@@ -79,11 +105,11 @@ export function useCreateWish(tripId: string) {
     // half-state row and dropping the overlay operation is the whole
     // cleanup. The text-only setDoc path is a single atomic Firestore
     // write, same guarantee.
-  })
+  }, ({ file }) => file instanceof File)
 }
 
 export function useUpdateWish(tripId: string) {
-  return useTripListMutation<Wish, {
+  return usePathSplitMutation<{
     wishId:        string
     updates:       Partial<CreateWishInput>
     uid:           string
@@ -108,7 +134,10 @@ export function useUpdateWish(tripId: string) {
       }),
     },
     action:      MUTATION_ACTION.UPDATE,
-  })
+  // 帶新圖片才走 Worker；detach（null）與純文字（undefined）都是 client updateDoc。
+  // 非圖片 File 在 service 內退回 client 路徑，但這裡仍視為 Worker（維持
+  // 'online'）：表單 UI 不會送出非圖片檔，不值得為它多一次 compressImage。
+  }, ({ attachment }) => attachment instanceof File)
 }
 
 export function useDeleteWish(tripId: string) {
@@ -159,5 +188,7 @@ export function useToggleWishVote(tripId: string) {
       }),
     },
     action:     MUTATION_ACTION.TOGGLE_VOTE,
+    // 投票是純 client SDK 寫入；create / update 可能走 Worker、delete 走 Worker，維持預設。
+    networkMode: 'always',
   })
 }

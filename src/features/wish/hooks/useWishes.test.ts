@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { QueryClient, QueryClientProvider, hashKey } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, hashKey, onlineManager } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import type { Wish } from '@/types'
 import { MOCK_TIMESTAMP } from '@/mocks/utils'
@@ -149,5 +149,57 @@ describe('wish overlay operations', () => {
 
     expect(wishOverlay.getSnapshot(KEY_HASH)).toHaveLength(0)
     expect(view([wish({ id: 'w2' })]).map(w => w.id)).toEqual(['w2'])
+  })
+})
+
+describe('wish write paths offline', () => {
+  afterEach(() => { onlineManager.setOnline(true) })
+  const png = () => new File([new Uint8Array([137, 80, 78, 71])], 'cover.png', { type: 'image/png' })
+
+  it('text-only create runs offline (client SDK queue), image create waits for the network (Worker)', async () => {
+    serviceMocks.createWish.mockResolvedValue('w-x')
+    const hook = render(() => useCreateWish(TRIP))
+    onlineManager.setOnline(false)
+
+    await act(async () => {
+      await hook.result.current.mutateAsync({
+        wishId: 'w-text', file: null, proposedBy: 'uid-1', input: { category: 'place', title: 'text' },
+      })
+    })
+    expect(serviceMocks.createWish).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      hook.result.current.mutate({
+        wishId: 'w-img', file: png(), proposedBy: 'uid-1', input: { category: 'place', title: 'img' },
+      })
+    })
+    await waitFor(() => expect(hook.result.current.isPending).toBe(true))
+    expect(serviceMocks.createWish).toHaveBeenCalledTimes(1)   // the Worker path is paused, not run
+    // Both paths share the overlay: the paused image create still shows its row.
+    expect(view([]).map(w => w.id).sort()).toEqual(['w-img', 'w-text'])
+  })
+
+  it('text / detach update runs offline, image replace waits for the network', async () => {
+    serviceMocks.updateWish.mockResolvedValue(undefined)
+    const hook = render(() => useUpdateWish(TRIP))
+    onlineManager.setOnline(false)
+
+    await act(async () => {
+      await hook.result.current.mutateAsync({
+        wishId: 'w1', uid: 'uid-1', attachment: undefined, existingImage: undefined, updates: { title: 'T' },
+      })
+      await hook.result.current.mutateAsync({
+        wishId: 'w1', uid: 'uid-1', attachment: null, existingImage: undefined, updates: { title: 'T2' },
+      })
+    })
+    expect(serviceMocks.updateWish).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      hook.result.current.mutate({
+        wishId: 'w1', uid: 'uid-1', attachment: png(), existingImage: undefined, updates: { title: 'T3' },
+      })
+    })
+    await waitFor(() => expect(hook.result.current.isPending).toBe(true))
+    expect(serviceMocks.updateWish).toHaveBeenCalledTimes(2)
   })
 })

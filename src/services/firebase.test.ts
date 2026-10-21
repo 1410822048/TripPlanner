@@ -19,6 +19,7 @@ const firebaseMocks = vi.hoisted(() => {
     persistentMultipleTabManager: vi.fn(() => ({ kind: 'multi-tab' })),
     terminate: vi.fn(() => Promise.resolve()),
     clearIndexedDbPersistence: vi.fn(() => Promise.resolve()),
+    connectFirestoreEmulator: vi.fn(),
   }
 })
 
@@ -36,6 +37,7 @@ vi.mock('firebase/firestore', () => ({
   persistentMultipleTabManager: firebaseMocks.persistentMultipleTabManager,
   terminate: firebaseMocks.terminate,
   clearIndexedDbPersistence: firebaseMocks.clearIndexedDbPersistence,
+  connectFirestoreEmulator: firebaseMocks.connectFirestoreEmulator,
 }))
 
 const REQUIRED_PROD_ENV = {
@@ -138,6 +140,65 @@ describe('getFirebase transport initialization', () => {
     expect(second).toBe(first)
     await expect(Promise.all([first, second])).resolves.toHaveLength(2)
     expect(firebaseMocks.initializeFirestore).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('getFirebase local cache selection', () => {
+  function stubEmulatorEnv(persist?: string) {
+    vi.stubEnv('PROD', false)
+    vi.stubEnv('DEV', true)
+    vi.stubEnv('VITE_USE_FIREBASE_EMULATORS', 'true')
+    if (persist !== undefined) vi.stubEnv('VITE_FIREBASE_EMULATORS_PERSIST', persist)
+  }
+  const cacheKind = () =>
+    (firebaseMocks.initializeFirestore.mock.calls[0] as unknown[])[1] as { localCache: { kind: string } }
+
+  it('uses the persistent multi-tab cache in production', async () => {
+    stubProductionEnv()
+    const { getFirebase } = await import('./firebase')
+    await getFirebase()
+    expect(cacheKind().localCache.kind).toBe('persistent')
+    expect(firebaseMocks.memoryLocalCache).not.toHaveBeenCalled()
+    expect(firebaseMocks.connectFirestoreEmulator).not.toHaveBeenCalled()
+  })
+
+  it('ignores the persist flag in production (dev-only, emulator-only)', async () => {
+    stubProductionEnv()
+    vi.stubEnv('VITE_USE_FIREBASE_EMULATORS', 'true')
+    vi.stubEnv('VITE_FIREBASE_EMULATORS_PERSIST', 'true')
+    const { getFirebase } = await import('./firebase')
+    await getFirebase()
+    expect(cacheKind().localCache.kind).toBe('persistent')
+    expect(firebaseMocks.connectFirestoreEmulator).not.toHaveBeenCalled()
+  })
+
+  it('uses a memory cache in emulator mode by default', async () => {
+    stubEmulatorEnv()
+    const { getFirebase } = await import('./firebase')
+    await getFirebase()
+    expect(cacheKind().localCache.kind).toBe('memory')
+    expect(firebaseMocks.connectFirestoreEmulator).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the emulator but switches to IndexedDB persistence when opted in', async () => {
+    stubEmulatorEnv('true')
+    const { getFirebase } = await import('./firebase')
+    await getFirebase()
+    expect(cacheKind().localCache.kind).toBe('persistent')
+    expect(firebaseMocks.persistentMultipleTabManager).toHaveBeenCalledTimes(1)
+    expect(firebaseMocks.memoryLocalCache).not.toHaveBeenCalled()
+    expect(firebaseMocks.connectFirestoreEmulator).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not enable persistence for the flag alone outside emulator mode', async () => {
+    vi.stubEnv('PROD', false)
+    vi.stubEnv('DEV', true)
+    vi.stubEnv('VITE_USE_FIREBASE_EMULATORS', 'false')
+    vi.stubEnv('VITE_FIREBASE_EMULATORS_PERSIST', 'true')
+    const { getFirebase } = await import('./firebase')
+    await getFirebase()
+    expect(cacheKind().localCache.kind).toBe('persistent')
+    expect(firebaseMocks.connectFirestoreEmulator).not.toHaveBeenCalled()
   })
 })
 

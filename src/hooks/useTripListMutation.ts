@@ -36,6 +36,12 @@ export interface UseTripListMutationOpts<T extends { id: string }, Vars> {
   action:     MutationActionLabel
   /** Optional callback that runs after the factory's overlay decision. */
   onError?:   (err: unknown) => void
+  /** TanStack 預設 `'online'`：離線時 `mutationFn` 根本不會執行，寫入只留在
+   *  記憶體，PWA 被回收即遺失。只有**純 client Firestore SDK** 的寫入才可
+   *  設 `'always'` —— SDK 會把寫入排進 IndexedDB 佇列，重載後仍會送出。
+   *  Worker 寫入（fetch）維持預設：離線時 fetch 立刻失敗，排隊沒有意義。
+   *  預設不變，由各 hook 逐一宣告，不在 factory 層一律放寬。 */
+  networkMode?: 'online' | 'always'
 }
 
 interface MutateContext {
@@ -59,6 +65,7 @@ export function useTripListMutation<T extends { id: string }, Vars>(
       return opts.mutate(vars, { uid })
     },
     meta: { action: opts.action } satisfies MutationMeta,
+    ...(opts.networkMode ? { networkMode: opts.networkMode } : {}),
     onMutate: overlay
       ? (vars): MutateContext => ({ handle: overlay.controller.add(key, overlay.op(vars, { uid })) })
       : undefined,

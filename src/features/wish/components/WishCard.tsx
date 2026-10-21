@@ -22,10 +22,11 @@
 //     停用 tap、投票、swipe 並顯示 儲存中…。
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
-import { MoreVertical, Loader2, Crown } from 'lucide-react'
+import { MoreVertical, Crown } from 'lucide-react'
 import type { Wish } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import MemberAvatar from '@/components/ui/MemberAvatar'
+import PendingIndicator from '@/components/ui/PendingIndicator'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import WishActionMenu from './WishActionMenu'
 import { WISH_CATEGORY_ICON } from '../categories'
@@ -273,8 +274,7 @@ function WishThumb({
 function PendingPill() {
   return (
     <div className="absolute top-2.5 right-2.5 flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/60 text-white text-[10.5px] font-semibold backdrop-blur-sm">
-      <Loader2 size={11} strokeWidth={2.4} className="animate-spin" />
-      <span>儲存中…</span>
+      <PendingIndicator size={11} strokeWidth={2.4} />
     </div>
   )
 }

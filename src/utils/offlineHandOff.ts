@@ -5,8 +5,13 @@
 // tracking it would sit in 「儲存中…」 indefinitely. Two exits, both handing
 // the write off the way an optimistic-close save does — close the form, keep
 // the overlay row, and let the global MutationCache handler report a failure
-// (the form's reportInForm is false once it is gone). The write itself is
-// already queued in the local cache, so nothing is lost.
+// (the form's reportInForm is false once it is gone).
+//
+// 「已先儲存在此裝置」只有在 mutation 宣告 `networkMode: 'always'` 時才為真：
+// TanStack 預設 `'online'` 會在離線時暫停 `mutationFn`，寫入只留在記憶體、
+// 從未交給 Firestore SDK 的 IndexedDB 佇列。schedule / planning 的 hook 都
+// 已宣告（見 useTripListMutation 的 networkMode 註解）；新的呼叫端必須比照，
+// 否則這段文案就是謊言。
 //   - known offline (navigator.onLine === false): hand off immediately
 //   - "online" but unanswered (captive portal, dead Wi-Fi, a stalled
 //     backend — navigator.onLine can't see those): hand off after a delay
