@@ -84,6 +84,8 @@ export function useCreateSchedule(tripId: string) {
       }),
     },
     action:     MUTATION_ACTION.CREATE_SCHEDULE,
+    // Client Firestore SDK write: 離線時交給 SDK 佇列（見 useTripListMutation）。
+    networkMode: 'always',
   })
 }
 
@@ -120,6 +122,7 @@ export function useUpdateSchedule(tripId: string) {
       }),
     },
     action:     MUTATION_ACTION.UPDATE,
+    networkMode: 'always',
   })
 }
 
@@ -139,5 +142,6 @@ export function useDeleteSchedule(tripId: string) {
       }),
     },
     action:     MUTATION_ACTION.DELETE,
+    networkMode: 'always',
   })
 }

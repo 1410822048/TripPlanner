@@ -60,6 +60,13 @@ const firebaseConfig = {
 /** Local emulator mode is explicit and dev-only. It uses memory caches so a
  * reset cannot leak IndexedDB state between role/browser scenarios. */
 export const FIREBASE_EMULATOR_MODE = import.meta.env.DEV && import.meta.env.VITE_USE_FIREBASE_EMULATORS === 'true'
+/** Opt-in test mode (dev-only, requires emulator mode): keep pointing at the
+ * demo emulators but use the production IndexedDB cache, so an offline write
+ * queue survives a page reload (scripts/e2e-offline.mjs). The e2e harness
+ * isolates IndexedDB with a fresh browser context per case. */
+const FIREBASE_EMULATOR_PERSIST = FIREBASE_EMULATOR_MODE
+  && import.meta.env.VITE_FIREBASE_EMULATORS_PERSIST === 'true'
+const USE_MEMORY_LOCAL_CACHE = FIREBASE_EMULATOR_MODE && !FIREBASE_EMULATOR_PERSIST
 const EMULATOR_HOST = import.meta.env.VITE_FIREBASE_EMULATOR_HOST ?? '127.0.0.1'
 const EMULATOR_PORTS = { auth: 9099, firestore: 8080 } as const
 
@@ -142,7 +149,7 @@ export const getFirebase = retryableLazy(async (): Promise<FirebaseBundle> => {
           timeoutSeconds: FIRESTORE_LONG_POLLING_TIMEOUT_SECONDS,
         },
       }),
-      localCache: FIREBASE_EMULATOR_MODE
+      localCache: USE_MEMORY_LOCAL_CACHE
         ? fs.memoryLocalCache()
         : fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }),
     })
@@ -227,7 +234,7 @@ async function deleteFirestoreIdbDatabases(): Promise<void> {
  * Firestore security rules and query-level uid filtering remain the
  * authoritative access boundary regardless of whether this succeeds. */
 export async function reconcileFirestoreOwner(uid: string): Promise<void> {
-  if (typeof window === 'undefined' || FIREBASE_EMULATOR_MODE) return
+  if (typeof window === 'undefined' || USE_MEMORY_LOCAL_CACHE) return
   try {
     const storedOwner = localStorage.getItem(FS_IDB_OWNER_KEY)
     if (storedOwner === uid) return

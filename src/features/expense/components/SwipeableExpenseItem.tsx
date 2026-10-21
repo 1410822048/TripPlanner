@@ -7,11 +7,12 @@
 // onDelete are omitted and the shell renders a plain non-swipeable
 // row. Row tap opens the read-first detail surface; edit is launched
 // from that detail sheet when the caller permits it.
-import { Loader2, Lock, Receipt, type LucideIcon } from 'lucide-react'
+import { Lock, Receipt, type LucideIcon } from 'lucide-react'
 import type { Expense } from '@/types'
 import type { TripMember } from '@/features/trips/types'
 import MemberAvatar from '@/components/ui/MemberAvatar'
 import SwipeableShell from '@/components/ui/SwipeableShell'
+import PendingIndicator from '@/components/ui/PendingIndicator'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { formatMinorAmount } from '@/utils/money'
 
@@ -86,10 +87,7 @@ function SwipeableExpenseItem({
               </div>
               <div className="flex items-center gap-1.5 mt-0.5 text-[10.5px] text-muted">
                 {isPending ? (
-                  <>
-                    <Loader2 size={11} strokeWidth={2.2} className="animate-spin shrink-0" />
-                    <span>儲存中…</span>
-                  </>
+                  <PendingIndicator size={11} strokeWidth={2.2} />
                 ) : isLocked ? (
                   <>
                     <Lock size={11} strokeWidth={2.2} className="shrink-0" />

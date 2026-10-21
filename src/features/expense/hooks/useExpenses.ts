@@ -149,5 +149,7 @@ export function useDeleteExpense(tripId: string) {
       }),
     },
     action:     MUTATION_ACTION.DELETE,
+    // 軟刪除目前是 expenses 唯一的 client SDK 寫入；改走 Worker（Batch 2）後移除。
+    networkMode: 'always',
   })
 }

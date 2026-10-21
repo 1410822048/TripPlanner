@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider, hashKey } from '@tanstack/react-query'
 import { describe, expect, it, vi, afterEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 
 vi.mock('@/hooks/useAuth', () => ({ useUid: () => 'uid-1' }))
 
+import { onlineManager } from '@tanstack/react-query'
 import { isWorkerAmbiguousError, useTripListMutation } from './useTripListMutation'
 import { createListOverlay, OVERLAY_AMBIGUOUS_SETTLE_MS } from './listOverlay'
 import { MUTATION_ACTION } from '@/services/queryClient'
@@ -117,5 +118,48 @@ describe('useTripListMutation overlay wiring', () => {
 
     overlay.reconcile(KEY_HASH, [{ id: 'new' }])
     expect(overlay.getSnapshot(KEY_HASH)).toHaveLength(0)
+  })
+})
+
+describe('useTripListMutation networkMode', () => {
+  function renderWith(networkMode: 'online' | 'always' | undefined, mutate: () => Promise<unknown>) {
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: qc }, children)
+    return renderHook(
+      () => useTripListMutation<Row, { id: string }>({
+        tripId:     'trip-1',
+        keyFactory: (tripId, uid) => ['things', tripId, uid] as const,
+        mutate,
+        action:     MUTATION_ACTION.UPDATE,
+        ...(networkMode ? { networkMode } : {}),
+      }),
+      { wrapper },
+    )
+  }
+
+  afterEach(() => { onlineManager.setOnline(true) })
+
+  it("default: TanStack pauses the write while offline, so the SDK queue never sees it", async () => {
+    const mutate = vi.fn(() => Promise.resolve())
+    const hook = renderWith(undefined, mutate)
+    onlineManager.setOnline(false)
+
+    await act(async () => { hook.result.current.mutate({ id: 'a' }) })
+    await waitFor(() => expect(hook.result.current.isPaused).toBe(true))
+
+    expect(mutate).not.toHaveBeenCalled()
+  })
+
+  it("'always': the client-SDK write runs offline and lands in the SDK's own queue", async () => {
+    const mutate = vi.fn(() => Promise.resolve())
+    const hook = renderWith('always', mutate)
+    onlineManager.setOnline(false)
+
+    await act(async () => { await hook.result.current.mutateAsync({ id: 'a' }) })
+
+    expect(mutate).toHaveBeenCalledTimes(1)
   })
 })

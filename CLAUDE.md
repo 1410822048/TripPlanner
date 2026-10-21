@@ -266,9 +266,11 @@ global MutationCache.onMutate:同步檢查 Schema Epoch(只讀 memory snapshot,�
 → 成功: markSucceeded → reconcile 在 server truth 一致時撤下
 ```
 
+**離線寫入(`networkMode`)**:TanStack mutation 預設 `'online'`,離線時 `mutationFn` 被暫停、寫入只留在記憶體,PWA 被回收即遺失 —— 不是「交給 Firestore 佇列」。只有**純 client Firestore SDK** 的寫入(schedule / planning 全部、wish 投票與純文字 create / update、trip update / 投票截止、expense 軟刪除)在各自 hook 宣告 `networkMode: 'always'`;wish create / update 同一個 hook 內有兩條路徑(純文字 → client、帶圖 → Worker),所以是兩個 mutation 共用一份 overlay op,依變數挑選(`usePathSplitMutation`),SDK 才會把寫入排進 IndexedDB、重載後仍送出;Worker 寫入維持預設(fetch 離線即失敗,排隊無意義)。`useTripListMutation` factory 不改預設,新 hook 逐一宣告。`offlineHandOff` 的「已先儲存在此裝置」文案以此為前提。
+
 **Pending row 視覺 / 互動規範**(`SwipeableExpenseItem` / `SwipeableBookingItem` / `WishCard`):
 - 偵測: `useOverlayPendingRowIds(controller, queryKey).has(row.id)` — **不再用 id 形狀判斷**;id 從一開始就是最終 id
-- 視覺: `opacity-55` 半透明,meta 行用 `<Loader2 className="animate-spin" />` + 「**儲存中…**」
+- 視覺: `opacity-55` 半透明,meta 行用 `PendingIndicator`(Loader2 + 線上「**儲存中…**」/ 離線「**等待連線**」,三個 row 共用)
 - 互動: `onClick = undefined`(完全不接 tap)+ `swipeable = false`(`useSwipeRow` 整個禁用)
 - 解除: op 被 drop 時自動解除;已 `succeeded` 但還在等 snapshot 的 op **不鎖 UI**(寫入已完成,只差確認)
 
