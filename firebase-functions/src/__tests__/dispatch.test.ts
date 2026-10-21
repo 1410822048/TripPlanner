@@ -119,8 +119,63 @@ describe('resolveRecipients', () => {
     expect(resolveRecipients(alive, { actorUid: 'u1' })).toEqual(['u2', 'u3'])
   })
 
-  test('explicit partyUids are used as-is (settlement / account target)', () => {
+  test('explicit partyUids narrow the recipient set (settlement / role-change target)', () => {
     expect(resolveRecipients(alive, { partyUids: ['u2'], actorUid: null })).toEqual(['u2'])
+  })
+
+  test('trip-scoped partyUids drop departed members (routed settlement naming a former member)', () => {
+    // u9 left / was kicked: still on the route as payer / intermediary, but no
+    // longer in trip.memberIds — they must get neither the push nor the inbox
+    // row (trip title, amounts, names). Actor exclusion still applies.
+    expect(resolveRecipients(alive, {
+      partyUids: ['u1', 'u9', 'u2'],
+      actorUid: 'u1',
+    })).toEqual(['u2'])
+    // Same with an unknown actor (settlement hard-delete fallback).
+    expect(resolveRecipients(alive, {
+      partyUids: ['u1', 'u9', 'u2'],
+      actorUid: 'u1',
+      actorUnknown: true,
+    })).toEqual(['u1', 'u2'])
+    // An explicit scope: 'trip' behaves the same as the default.
+    expect(resolveRecipients(alive, {
+      partyUids: ['u9', 'u3'],
+      actorUid: null,
+      scope: 'trip',
+    })).toEqual(['u3'])
+  })
+
+  test('a trip-scoped party set of only departed members notifies nobody (never falls back to all members)', () => {
+    expect(resolveRecipients(alive, { partyUids: ['u8', 'u9'], actorUid: 'u8' })).toEqual([])
+  })
+
+  test('account-scoped member.removed_self still reaches the removed uid outside memberIds', () => {
+    // dispatch loads the post-strip trip: the removed person is already gone
+    // from memberIds, and is exactly who this copy is for.
+    expect(resolveRecipients(alive, {
+      scope: 'account',
+      partyUids: ['u9'],
+      actorUid: 'u1',
+      actorUnknown: false,
+      subjectUid: 'u9',
+    })).toEqual(['u9'])
+    // No removedBy stamp → null actor / actorUnknown fallback, still delivered.
+    expect(resolveRecipients(alive, {
+      scope: 'account',
+      partyUids: ['u9'],
+      actorUid: null,
+      actorUnknown: true,
+      subjectUid: 'u9',
+    })).toEqual(['u9'])
+  })
+
+  test('role change still reaches its (current-member) subject', () => {
+    expect(resolveRecipients(alive, {
+      partyUids: ['u2'],
+      actorUid: null,
+      actorUnknown: true,
+      subjectUid: 'u2',
+    })).toEqual(['u2'])
   })
 
   test('trip-scoped member removal drops the removed subject (they get the account copy)', () => {

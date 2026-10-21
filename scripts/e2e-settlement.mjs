@@ -18,84 +18,27 @@
 // `firebase emulators:exec`; the inner run (E2E_INNER=1) starts the Worker
 // and Vite, seeds, walks the scenarios with assertions against the screen,
 // the stored data and the notification inboxes, and stops what it started.
-import { spawn, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import assert from 'node:assert/strict'
+import {
+  APP, APP_ENV, DOCS, ROLE_LABEL, TRIP, WORKER,
+  collectProblems, launchChromium, listDocs as list, newMobileContext, plain, runInsideEmulators,
+  seed, start, stopAll, waitFor,
+} from './e2e-common.mjs'
 
 const ROOT = process.cwd()
-const PROJECT = 'demo-tripmate'
-const APP = 'http://127.0.0.1:5199'
-const WORKER = 'http://127.0.0.1:8787'
-const DOCS = `http://127.0.0.1:8080/v1/projects/${PROJECT}/databases/(default)/documents`
-const TRIP = 'dev-route-trip'
 const OUT = join(ROOT, 'e2e-results', 'settlement')
-const isWin = process.platform === 'win32'
 
 if (!process.env.E2E_INNER) {
   const build = spawnSync('npm', ['--prefix', 'firebase-functions', 'run', 'build'], { stdio: 'inherit', shell: true })
   if (build.status !== 0) process.exit(build.status ?? 1)
-  const result = spawnSync(
-    'npx',
-    ['firebase', 'emulators:exec', '--only', 'auth,firestore,functions', `--project=${PROJECT}`, '"node scripts/e2e-settlement.mjs"'],
-    { stdio: 'inherit', shell: true, env: { ...process.env, E2E_INNER: '1' } },
-  )
-  process.exit(result.status ?? 1)
-}
-
-// ─── Inner run: services ──────────────────────────────────────────
-
-const APP_ENV = {
-  VITE_USE_FIREBASE_EMULATORS: 'true',
-  VITE_FIREBASE_EMULATOR_HOST: '127.0.0.1',
-  VITE_FIREBASE_PROJECT_ID: PROJECT,
-  VITE_FIREBASE_API_KEY: 'demo',
-  VITE_FIREBASE_AUTH_DOMAIN: `${PROJECT}.firebaseapp.com`,
-  VITE_FIREBASE_MESSAGING_SENDER_ID: '000000000000',
-  VITE_FIREBASE_APP_ID: '1:000000000000:web:emulator',
-  VITE_DEV_EMULATOR_PASSWORD: 'tripmate-dev-password',
-  VITE_WORKER_BASE_URL: WORKER,
-  VITE_SENTRY_DSN: '',
-}
-
-const children = []
-function start(name, command, args, opts = {}) {
-  const child = spawn(command, args, { shell: true, detached: !isWin, stdio: ['ignore', 'pipe', 'pipe'], ...opts })
-  child.stdout.on('data', d => { if (process.env.E2E_VERBOSE) process.stdout.write(`[${name}] ${d}`) })
-  child.stderr.on('data', d => { if (process.env.E2E_VERBOSE) process.stderr.write(`[${name}] ${d}`) })
-  children.push(child)
-  return child
-}
-function stopAll() {
-  for (const child of children) {
-    if (child.exitCode !== null) continue
-    if (isWin) spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
-    else try { process.kill(-child.pid, 'SIGTERM') } catch { /* already gone */ }
-  }
-}
-async function waitFor(url, init = {}, timeoutMs = 90_000) {
-  const until = Date.now() + timeoutMs
-  while (Date.now() < until) {
-    try { if ((await fetch(url, init)).status < 500) return } catch { /* not up yet */ }
-    await new Promise(r => setTimeout(r, 500))
-  }
-  throw new Error(`timed out waiting for ${url}`)
+  runInsideEmulators('scripts/e2e-settlement.mjs', 'auth,firestore,functions')
 }
 
 // ─── Emulator data (admin) ────────────────────────────────────────
 
-const plain = v => v == null ? v
-  : 'stringValue' in v ? v.stringValue : 'integerValue' in v ? Number(v.integerValue) : 'booleanValue' in v ? v.booleanValue
-  : 'nullValue' in v ? null : 'timestampValue' in v ? v.timestampValue
-  : 'arrayValue' in v ? (v.arrayValue.values ?? []).map(plain)
-  : 'mapValue' in v ? Object.fromEntries(Object.entries(v.mapValue.fields ?? {}).map(([k, x]) => [k, plain(x)])) : v
-async function list(collection) {
-  const res = await fetch(`${DOCS}/trips/${TRIP}/${collection}?pageSize=500`, { headers: { Authorization: 'Bearer owner' } })
-  return ((await res.json()).documents ?? []).map(d => ({
-    id: d.name.split('/').at(-1),
-    ...Object.fromEntries(Object.entries(d.fields ?? {}).map(([k, v]) => [k, plain(v)])),
-  }))
-}
 const activeSettlements = async () => (await list('settlements')).filter(s => s.deletedAt === null)
 const locksOf = async title => (await list('expenses')).find(e => e.title === title)?.settlementLockIds ?? []
 
@@ -131,18 +74,14 @@ async function expectNotified(settlementId, action, { to, actor, body }) {
 
 // ─── Browser helpers ──────────────────────────────────────────────
 
-const ROLE_LABEL = { owner: 'DEV owner', editor: 'DEV editor', viewer: 'DEV viewer' }
 const problems = []
 const pages = []
 let browser
 
 async function as(role) {
-  const context = await browser.newContext({ viewport: { width: 420, height: 900 }, locale: 'zh-TW', timezoneId: 'Asia/Taipei' })
+  const context = await newMobileContext(browser)
   const page = await context.newPage()
-  page.on('pageerror', e => problems.push(`[${role}] page error: ${e.message}`))
-  page.on('console', m => {
-    if (m.type() === 'error') problems.push(`[${role}] console: ${m.text().slice(0, 300)}`)
-  })
+  collectProblems(page, role, problems)
   await page.goto(`${APP}/expense`)
   await page.getByRole('button', { name: '登入' }).first().click()
   await page.getByRole('button', { name: new RegExp(ROLE_LABEL[role]) }).click()
@@ -189,8 +128,7 @@ function ok(what) { console.log(`  ✓ ${what}`) }
 
 async function run() {
   mkdirSync(OUT, { recursive: true })
-  const { chromium } = await import('playwright')
-  browser = await chromium.launch(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {})
+  browser = await launchChromium()
 
   step('A → C via B: suggestion as seen by payer, intermediate and receiver')
   const owner = await as('owner')
@@ -346,9 +284,16 @@ async function run() {
   await owner.page.getByText('由旅程擁有者代為記錄').first().waitFor()
   await shot(owner.page, '10-departed', '已清算紀錄')
   ok('the owner recorded it on the departed receiver\'s behalf; everyone is square')
-  // The departed receiver keeps their name (formerMemberNames) in the copy.
-  await expectNotified(byOwner.id, 'created', { to: ['dev-viewer'], actor: 'dev-owner', body: /^DEV owner 記錄了 DEV owner → DEV viewer 的 ¥2,000$/ })
-  ok('the departed receiver is still named in the notification')
+  // Trip-scoped notifications never reach someone who has left: the
+  // recipient set is the route's parties narrowed to the CURRENT roster
+  // (dispatch.ts resolveRecipients). Here that leaves only the owner, who is
+  // the actor, so nobody is notified — the departed viewer must not get an
+  // inbox row carrying the trip title and amounts after losing access.
+  await new Promise(r => setTimeout(r, 4000))
+  for (const uid of ['dev-viewer', 'dev-editor', 'dev-owner']) {
+    assert.equal(about(await inbox(uid), byOwner.id, 'created').length, 0, `${uid}: no notification for a route whose only remaining party is the actor`)
+  }
+  ok('the departed receiver is not notified (no trip content after leaving)')
 
   for (const s of [owner, editor, viewer]) await s.close()
   assert.deepEqual(problems, [], 'no page errors or console errors')
@@ -357,8 +302,7 @@ async function run() {
 
 let failed = false
 try {
-  start('seed', 'npm', ['run', 'emulator:seed'], { env: { ...process.env, VITE_FIREBASE_PROJECT_ID: PROJECT } })
-  await new Promise((resolve, reject) => children.at(-1).on('exit', code => (code === 0 ? resolve() : reject(new Error(`seed exited ${code}`)))))
+  await seed()
   start('worker', 'npm', ['run', 'dev:emulator'], { cwd: join(ROOT, 'workers/ocr') })
   start('vite', 'npx', ['vite', '--host', '127.0.0.1', '--port', '5199', '--strictPort', '--mode', 'emulator'], { env: { ...process.env, ...APP_ENV } })
   await waitFor(`${WORKER}/settlement-route-create`, { method: 'OPTIONS', headers: { Origin: APP } })

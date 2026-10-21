@@ -78,6 +78,8 @@ export function useCreateTrip() {
   return useMutation({
     mutationFn: ({ input, user }: { input: CreateTripInput; user: User }) =>
       createTrip(input, user),
+    // 失敗由全域 MutationCache.onError 以這個標籤 toast；CreateTripModal 不再自己 toast。
+    meta: { action: MUTATION_ACTION.CREATE_TRIP } satisfies MutationMeta,
     onSuccess: (trip, { user }) => {
       // Seed the trip list; member IDs are derived by consumers.
       qc.setQueryData<Trip[]>(tripKeys.mine(user.uid), prev =>
@@ -97,6 +99,7 @@ export function useCopyTrip() {
   return useMutation({
     mutationFn: ({ source, input, user }: { source: Trip; input: CopyTripInput; user: User }): Promise<CopyTripResult> =>
       copyTrip(source, input, user),
+    meta: { action: MUTATION_ACTION.COPY_TRIP } satisfies MutationMeta,
     onSuccess: ({ trip }, { user }) => {
       qc.setQueryData<Trip[]>(tripKeys.mine(user.uid), prev =>
         prev ? [trip, ...prev.filter(t => t.id !== trip.id)] : [trip],
@@ -110,6 +113,8 @@ export function useUpdateTrip(uid: string | undefined) {
     mutationFn: ({ tripId, updates }: { tripId: string; updates: Partial<CreateTripInput> }) =>
       updateTrip(tripId, updates),
     meta: { action: MUTATION_ACTION.UPDATE } satisfies MutationMeta,
+    // Client Firestore SDK write: 離線時交給 SDK 佇列（見 useTripListMutation 的 networkMode）。
+    networkMode: 'always',
     onMutate: async ({ tripId, updates }) => {
       if (!uid) return { handle: undefined }
       const { Timestamp } = await getFirebase()
@@ -144,6 +149,7 @@ export function useSetWishVotingDeadline(uid: string | undefined) {
     mutationFn: ({ tripId, deadlineAt }: { tripId: string; deadlineAt: Date | null }) =>
       setWishVotingDeadline(tripId, deadlineAt),
     meta: { action: MUTATION_ACTION.UPDATE } satisfies MutationMeta,
+    networkMode: 'always',
     onMutate: async ({ tripId, deadlineAt }) => {
       if (!uid) return { handle: undefined }
       const { Timestamp } = await getFirebase()

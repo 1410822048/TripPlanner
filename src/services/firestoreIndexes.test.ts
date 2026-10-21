@@ -8,10 +8,23 @@ type FirestoreIndex = {
   fields: Array<{ fieldPath: string; order?: string; arrayConfig?: string }>
 }
 
-async function loadIndexes(): Promise<FirestoreIndex[]> {
+type FieldOverride = {
+  collectionGroup: string
+  fieldPath: string
+  ttl?: boolean
+  indexes: Array<{ order?: string; arrayConfig?: string; queryScope: string }>
+}
+
+type IndexesFile = { indexes: FirestoreIndex[]; fieldOverrides?: FieldOverride[] }
+
+async function loadIndexesFile(): Promise<IndexesFile> {
   const path = resolve(process.cwd(), 'firestore.indexes.json')
   const raw = await readFile(path, 'utf8')
-  return (JSON.parse(raw) as { indexes: FirestoreIndex[] }).indexes
+  return JSON.parse(raw) as IndexesFile
+}
+
+async function loadIndexes(): Promise<FirestoreIndex[]> {
+  return (await loadIndexesFile()).indexes
 }
 
 const asc = (fieldPath: string) => ({ fieldPath, order: 'ASCENDING' })
@@ -71,5 +84,42 @@ const SERVER_INDEXES: Array<{ dependsOn: string; index: FirestoreIndex }> = [
 describe('Firestore indexes required by server code', () => {
   it.each(SERVER_INDEXES)('keeps the index for $dependsOn', async ({ index }) => {
     await expect(loadIndexes()).resolves.toContainEqual(index)
+  })
+})
+
+// TTL policies live as fieldOverrides in firestore.indexes.json. The release
+// ends with `firebase deploy --only firestore:indexes --force`, which deletes
+// every remote field override (ttlConfig included) that this file does not
+// list — so a TTL enabled only via gcloud is silently turned off on the next
+// deploy. Pin each one here. `indexes: []` exempts the field from single-field
+// indexing; none of these collections query or order by expiresAt.
+const TTL_OVERRIDES: Array<{ dependsOn: string; override: FieldOverride }> = [
+  {
+    // workers/ocr/src/route-apply.ts: route-apply idempotency receipts (30 days).
+    dependsOn: 'routeApplications.expiresAt',
+    override: { collectionGroup: 'routeApplications', fieldPath: 'expiresAt', ttl: true, indexes: [] },
+  },
+  {
+    // firebase-functions/src/notifications.ts writeNotificationDocs: users/{uid}/notifications (30 days).
+    dependsOn: 'notifications.expiresAt',
+    override: { collectionGroup: 'notifications', fieldPath: 'expiresAt', ttl: true, indexes: [] },
+  },
+  {
+    // firebase-functions/src/dispatch.ts reservePushEvent: _pushEvents dedupe / lease records (30 days).
+    dependsOn: '_pushEvents.expiresAt',
+    override: { collectionGroup: '_pushEvents', fieldPath: 'expiresAt', ttl: true, indexes: [] },
+  },
+]
+
+describe('Firestore TTL policies kept in the indexes file', () => {
+  it.each(TTL_OVERRIDES)('keeps the TTL override for $dependsOn', async ({ override }) => {
+    const { fieldOverrides = [] } = await loadIndexesFile()
+    expect(fieldOverrides).toContainEqual(override)
+  })
+
+  it('declares each TTL field override exactly once', async () => {
+    const { fieldOverrides = [] } = await loadIndexesFile()
+    const keys = fieldOverrides.map(o => `${o.collectionGroup}.${o.fieldPath}`)
+    expect(new Set(keys).size).toBe(keys.length)
   })
 })

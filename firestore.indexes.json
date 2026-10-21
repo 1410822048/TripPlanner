@@ -167,6 +167,18 @@
       "indexes": []
     },
     {
+      "collectionGroup": "notifications",
+      "fieldPath": "expiresAt",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "_pushEvents",
+      "fieldPath": "expiresAt",
+      "ttl": true,
+      "indexes": []
+    },
+    {
       "collectionGroup": "settlements",
       "fieldPath": "appliedSources",
       "indexes": []

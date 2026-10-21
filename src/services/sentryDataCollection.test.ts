@@ -44,4 +44,14 @@ describe('sentry data collection', () => {
     expect(event.sdk?.settings?.infer_ip).toBe('never')
     expect(event.request?.url).not.toContain('secret-token')
   })
+
+  it('drops the query string: Share Target carries booking links, PNRs and names there', async () => {
+    window.history.replaceState(null, '', '/bookings?url=https%3A%2F%2Fair.example%2Fmanage%3Fpnr%3DPNR123&text=Doe+PNR123')
+    const event = await captureOnce()
+
+    expect(event.request?.url).not.toContain('PNR123')
+    expect(event.request?.url).not.toContain('Doe')
+    expect(event.request?.query_string).toBeUndefined()
+    expect(JSON.stringify(event)).not.toContain('PNR123')
+  })
 })
