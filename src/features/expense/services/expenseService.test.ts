@@ -19,6 +19,7 @@ import type { CreateExpenseInput, Expense, UpdateExpenseInput } from '@/types'
 const fetchMock = vi.fn()
 const getDocMock = vi.fn()
 const setDocMock = vi.fn()  // never used in workerFetch path; here for shape parity
+const updateDocMock = vi.fn()  // soft delete must NOT reach the client SDK
 const docMock     = vi.fn((_db: unknown, ..._segs: string[]) => ({ id: _segs.at(-1) ?? 'unknown', _kind: 'doc' }))
 const collectionMock = vi.fn((_db: unknown, ..._segs: string[]) => ({ _kind: 'collection' }))
 
@@ -28,7 +29,7 @@ vi.mock('@/services/firebase', () => ({
     collection:      collectionMock,
     doc:             docMock,
     setDoc:          setDocMock,
-    updateDoc:       vi.fn(),
+    updateDoc:       updateDocMock,
     deleteField:     vi.fn(),
     getDoc:          getDocMock,
     serverTimestamp: () => ({ _kind: 'serverTimestamp' }),
@@ -79,8 +80,9 @@ vi.mock('@/services/sentry', () => ({
   breadcrumb:   breadcrumbMock,
 }))
 
+const bumpTripActivityMock = vi.fn()
 vi.mock('@/services/tripActivity', () => ({
-  bumpTripActivity: vi.fn(),
+  bumpTripActivity: (...args: unknown[]) => bumpTripActivityMock(...args),
 }))
 
 // validateUpdateOrThrow / firestoreDocFromSchema / tripScopedList:
@@ -112,6 +114,8 @@ beforeEach(() => {
   enqueueOrphanPurgesMock.mockReset()
   enqueueOrphanPurgesMock.mockResolvedValue(['queue-id'])
   uploadReceiptMock.mockReset()
+  updateDocMock.mockReset()
+  bumpTripActivityMock.mockReset()
 })
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -703,5 +707,41 @@ describe('ambiguous → enqueueOrphanPurges routing', () => {
 
     expect(uploadReceiptMock).not.toHaveBeenCalled()
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+// ── Soft delete (Worker-authoritative) ─────────────────────────────
+
+describe('deleteExpense → /expense-soft-delete', () => {
+  it('POSTs { tripId, expenseId } to the Worker with the ID token; never touches the client SDK', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+
+    const { deleteExpense } = await import('./expenseService')
+    await deleteExpense('t1', 'exp-1', 'editor-uid')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('https://worker.example.dev/expense-soft-delete')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual({ tripId: 't1', expenseId: 'exp-1' })
+    expect(new Headers(init.headers).get('Authorization')).toBe('Bearer fake-id-token')
+    expect(updateDocMock).not.toHaveBeenCalled()
+    expect(bumpTripActivityMock).toHaveBeenCalledWith('t1', 'expense', 'editor-uid')
+  })
+
+  it('403 (settlement lock / viewer) → WorkerRejected, no activity bump', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'locked', precommit: true }), { status: 403 }))
+
+    const { deleteExpense, WorkerRejected } = await import('./expenseService')
+    await expect(deleteExpense('t1', 'exp-1', 'editor-uid')).rejects.toBeInstanceOf(WorkerRejected)
+    expect(bumpTripActivityMock).not.toHaveBeenCalled()
+  })
+
+  it('500 without precommit → WorkerAmbiguous (overlay reconciles against server truth)', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('crashed', { status: 500 }))
+
+    const { deleteExpense, WorkerAmbiguous } = await import('./expenseService')
+    await expect(deleteExpense('t1', 'exp-1', 'editor-uid')).rejects.toBeInstanceOf(WorkerAmbiguous)
+    expect(updateDocMock).not.toHaveBeenCalled()
   })
 })

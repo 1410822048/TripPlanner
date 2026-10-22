@@ -6,6 +6,7 @@
 // Firestore Timestamp (setWishVotingDeadline).
 import { useState } from 'react'
 import BottomSheet from '@/components/ui/BottomSheet'
+import { useRegisterDraftModal } from '@/hooks/draftModalRegistry'
 import { DatePicker, TimePicker } from '@/components/ui/pickers'
 import FormField from '@/components/ui/FormField'
 import SaveButton from '@/components/ui/SaveButton'
@@ -40,6 +41,8 @@ export default function WishDeadlineSheet({
 }: Props) {
   const { state, setField } = useFormReducer<FormState>(() => initFormState(currentDeadlineAt))
   const [errors, setErrors] = useState<Record<string, string>>({})
+  // 帶草稿、不走 FormModalShell：自行登記，通知點擊才不會把它導走。
+  useRegisterDraftModal(isOpen)
 
   function validate(): Date | null {
     const e: Record<string, string> = {}

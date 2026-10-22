@@ -509,8 +509,8 @@ export const ExpenseDocSchema = z.object({
   createdAt:   TimestampSchema,
   updatedAt:   TimestampSchema,
   /** Soft-delete tombstone (settlement phase-2). Required on every
-   *  persisted expense: Worker create seeds null and rules require
-   *  presence through client soft-delete / restore updates. */
+   *  persisted expense: Worker create seeds null and only the Worker
+   *  (/expense-soft-delete) stamps it; clients cannot update expenses. */
   deletedAt:   TimestampSchema.nullable(),
   /** Receipt-purge watermark. Required for the purge query contract:
    *  live/unpurged expenses carry null; the Worker cron stamps a

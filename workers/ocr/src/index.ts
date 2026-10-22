@@ -58,8 +58,8 @@ import { runStorageMaintenance }                  from './storage-scan'
 import { purgeExpiredUploadIntents }              from './upload-intent-purge'
 import { sweepWishVotingDeadlines }               from './wish-deadline-sweep'
 import {
-  expenseCreate, expenseUpdate,
-  ExpenseCreateRequestSchema, ExpenseUpdateRequestSchema,
+  expenseCreate, expenseUpdate, expenseSoftDelete,
+  ExpenseCreateRequestSchema, ExpenseUpdateRequestSchema, ExpenseSoftDeleteRequestSchema,
 }                                                 from './expense-write'
 import { ExpenseValidationError }                 from './expense-validate'
 import {
@@ -435,6 +435,18 @@ export const ROUTES: RouteDescriptor[] = [
         fxErrorCatcher(),
         pdfPageLimitErrorCatcher(),
       ),
+    }),
+  },
+  {
+    // Soft delete only stamps deletedAt / audit fields in one tx; no R2 or
+    // other post-commit work, so every CascadeError is pre-commit.
+    path: '/expense-soft-delete', rate: 'expense',
+    dispatch: c => handleJsonRoute({
+      endpoint:    'expense-soft-delete', body: c.body, cors: c.cors, uid: c.uid, report: c.report, traceId: c.traceId,
+      schema:      ExpenseSoftDeleteRequestSchema,
+      handle:      data => expenseSoftDelete(c.uid, data, c.env.FIREBASE_SERVICE_ACCOUNT),
+      formatLog:   data => `trip=${data.tripId} exp=${data.expenseId}`,
+      cascadePrecommit: true,
     }),
   },
   {

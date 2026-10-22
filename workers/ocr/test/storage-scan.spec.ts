@@ -436,84 +436,68 @@ describe('scanOrphanStorage', () => {
 		expect(listPageMock).toHaveBeenCalledTimes(1)
 	})
 
-	it('P2 starvation guard: budget-hit on all-live page advances cursor for next run', async () => {
-		// Critical regression: without cross-run cursor persistence, a
-		// bucket whose first page is mostly live-referenced blobs would
-		// re-read the same head items every cron run, burning the budget
-		// before reaching later pages where the actual orphans live.
-		// Fix: save page.nextPageToken on budgetHit so tomorrow advances.
-		//
-		// Test shape: stateful cursor mock simulates Firestore across two
-		// scanOrphanStorage calls. Run 1 stalls on page 1 (all referenced
-		// → all reads, never deletes). Run 2 must invoke listR2Objects with
-		// the saved pageToken from run 1.
-		// Holder object, not a `let`: TypeScript narrows a let to its
-		// initializer when the only reassignments it can see are inside
-		// callbacks, which made the reads below collapse to `never`.
-		const cursor: { state: { pageToken: string; savedAtMs: number } | null } = { state: null }
-		vi.mocked(firestore.getScanCursor).mockImplementation(async () => cursor.state)
-		vi.mocked(firestore.setScanCursor).mockImplementation(async (_t, _p, _k, pt) => {
-			cursor.state = { pageToken: pt, savedAtMs: Date.now() }
-		})
-		vi.mocked(firestore.clearScanCursor).mockImplementation(async () => {
-			cursor.state = null
-		})
+  it.each([false, true])('resumes the unprocessed tail before advancing pages (next page: %s)', async (hasNextPage) => {
+    const state: { cursor: firestore.ScanCursor | null } = { cursor: null }
+    vi.mocked(firestore.getScanCursor).mockImplementation(async () => state.cursor)
+    vi.mocked(firestore.setScanCursor).mockImplementation(async (_t, _p, _k, pageToken, afterKey) => {
+      state.cursor = { pageToken, afterKey, savedAtMs: Date.now() }
+    })
+    vi.mocked(firestore.clearScanCursor).mockImplementation(async () => { state.cursor = null })
+    const live = Array.from({ length: 400 }, (_, i) => ({
+      name: `trips/${TRIP_ID}/expenses/live-${String(i).padStart(4, '0')}/p.webp`, timeCreated: OLD_ISO,
+    }))
+    const orphan = `trips/${TRIP_ID}/expenses/z-orphan/p.webp`
+    listPageMock.mockImplementation(async (_bucket, _prefix, cursor) => cursor === 'next-page'
+      ? { items: [] }
+      : { items: [...live, { name: orphan, timeCreated: OLD_ISO }], nextPageToken: hasNextPage ? 'next-page' : undefined })
+    vi.mocked(firestore.getDocFields).mockImplementation(async (_t, _p, path) => path.endsWith('/z-orphan')
+      ? null
+      : { receipt: { mapValue: { fields: { path: { stringValue: `${path}/p.webp` } } } } })
+    const first = await scanOrphanStorage('{}', BUCKET)
+    expect(first.budgetHit).toBe(true)
+    expect(state.cursor?.pageToken).toBe('')
+    expect(state.cursor?.afterKey).toBe(live[first.referenced - 1]!.name)
+    expect(deleteObjectMock).not.toHaveBeenCalled()
+    const second = await scanOrphanStorage('{}', BUCKET)
+    expect(second.deleted).toBe(1)
+    expect(deleteObjectMock).toHaveBeenCalledWith(BUCKET, orphan)
+    expect(first.referenced + second.referenced).toBe(400)
+    expect(state.cursor).toBeNull()
+    if (hasNextPage) expect(listPageMock).toHaveBeenCalledWith(BUCKET, 'trips/', 'next-page', 1000)
+  })
 
-		const LIVE_PATHS = Array.from(
-			{ length: 20 },
-			(_, i) => `trips/${TRIP_ID}/expenses/live-${i}/p.webp`,
-		)
-		// Every entity returns "still references this path" → no deletes,
-		// no cursor advance from "items disappearing on next list".
-		// Only cross-run cursor save can save us.
-		vi.mocked(firestore.getDocFields).mockImplementation(async (_t, _p, path) => {
-			// Reconstruct the live path from the entity doc path so the
-			// ref check matches exactly. entity path = trips/T/expenses/E,
-			// referenced path = trips/T/expenses/E/p.webp.
-			return {
-				receipt: { mapValue: { fields: {
-					path: { stringValue: `${path}/p.webp` },
-				} } },
-			}
-		})
-
-		// Run 1: page 1 (20 live items), has nextPageToken.
-		listPageMock.mockResolvedValueOnce({
-			items: LIVE_PATHS.map(p => ({ name: p, timeCreated: OLD_ISO })),
-			nextPageToken: 'cursor-after-page-1',
-		})
-
-		const report1 = await scanOrphanStorage('{}', BUCKET, { subrequestBudget: 4 })
-		expect(report1.budgetHit).toBe(true)
-		expect(report1.deleted).toBe(0)             // all references confirmed live
-		expect(cursor.state).not.toBeNull()      // cursor SAVED, not cleared
-		expect(cursor.state?.pageToken).toBe('cursor-after-page-1')
-		expect(firestore.getScanCursor).toHaveBeenCalledWith(
-			'fake-admin-token', 'demo-project', 'storageScanR2',
-		)
-		expect(firestore.setScanCursor).toHaveBeenCalledWith(
-			'fake-admin-token', 'demo-project', 'storageScanR2', 'cursor-after-page-1',
-		)
-
-		// Run 2: now stage page 2. listR2Objects must be called with the
-		// saved cursor, NOT undefined (which would mean "restart from
-		// page 1" = the starvation we're testing for).
-		listPageMock.mockReset()
-		listPageMock.mockResolvedValueOnce({
-			items: [],  // empty page just to confirm the call, no further work
-			nextPageToken: undefined,
-		})
-
-		await scanOrphanStorage('{}', BUCKET, { subrequestBudget: 4 })
-
-		// THE assertion that closes the starvation hole:
-		expect(listPageMock).toHaveBeenCalledWith(
-			BUCKET, 'trips/', 'cursor-after-page-1', 1000,
-		)
-		// And the cursor was cleared on this run's natural drain (last
-		// page had no nextPageToken).
-		expect(cursor.state).toBeNull()
-	})
+  it('resumes after deadline even when the checkpoint object was deleted between runs', async () => {
+    const state: { cursor: firestore.ScanCursor | null } = { cursor: null }
+    vi.mocked(firestore.getScanCursor).mockImplementation(async () => state.cursor)
+    vi.mocked(firestore.setScanCursor).mockImplementation(async (_t, _p, _k, pageToken, afterKey) => {
+      state.cursor = { pageToken, afterKey, savedAtMs: Date.now() }
+    })
+    vi.mocked(firestore.clearScanCursor).mockImplementation(async () => { state.cursor = null })
+    let now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const items = Array.from({ length: 6 }, (_, i) => ({
+      name: `trips/${TRIP_ID}/expenses/exp-${i}/p.webp`, timeCreated: OLD_ISO,
+    }))
+    listPageMock.mockImplementation(async () => ({ items }))
+    let expire = true
+    vi.mocked(firestore.getDocFields).mockImplementation(async (_t, _p, path) => {
+      if (expire) now += 15 * 60 * 1000
+      return path.endsWith('/exp-5') ? null
+        : { receipt: { mapValue: { fields: { path: { stringValue: `${path}/p.webp` } } } } }
+    })
+    try {
+      expect((await scanOrphanStorage('{}', BUCKET)).deadlineHit).toBe(true)
+      expect(state.cursor?.afterKey).toBe(items[0]!.name)
+      items.shift()
+      expire = false
+      const second = await scanOrphanStorage('{}', BUCKET)
+      expect(second.deleted).toBe(1)
+      expect(second.referenced).toBe(4)
+      expect(state.cursor).toBeNull()
+    } finally {
+      clock.mockRestore()
+    }
+  })
 
 	it('cursor age > 7 days → ignore stale cursor, restart from top', async () => {
 		// Defensive guard against a cursor from a much earlier deploy /

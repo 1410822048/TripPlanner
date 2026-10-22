@@ -15,7 +15,6 @@ import {
   batchStripDepartedMember,
   StripDocVanishedError,
   deleteUserTripNotifications,
-  deleteDoc,
   getDocFields,
   type FsValue,
 }                                                           from './firestore'
@@ -24,6 +23,7 @@ import { getAdminToken, getProjectId }                      from './admin'
 import { CascadeError, TRIP_SUBCOLLECTIONS, withTokenRetry } from './cascade'
 import {
   docResourceName,
+  runFirestoreTransaction,
   type TxContext,
   type TxReadDoc,
   type TxWrite,
@@ -71,7 +71,7 @@ export function assertWishVotingOpen(trip: { fields: Record<string, FsValue> }):
 }
 
 /** 403 if the member doc carries `removingAt` -- the kick marker that
- *  `/member-remove` commits (with the roster strip) BEFORE the non-tx
+ *  `/member-remove` commits (with the roster strip) BEFORE the chunked
  *  cascade deletes the member doc. Mirrors firestore.rules `canWrite()` /
  *  `isActiveMember()`: without it a kicked editor keeps writing through
  *  Worker endpoints for the whole cascade window (or indefinitely, if the
@@ -252,7 +252,7 @@ export function encodeMemberIds(uids: string[]): FsValue {
 // and can't drift between the two endpoints.
 
 /** Build the small atomic writes that must land inside the authz tx
- *  BEFORE the non-tx strip cascade begins, for removing `targetUid`
+ *  BEFORE the chunked strip cascade begins, for removing `targetUid`
  *  from `tripId`.
  *
  *  Write 1 -- `removingAt` on the target member doc (when it exists):
@@ -324,6 +324,7 @@ export function buildMemberStripWrites(
   trip:        TxReadDoc,
   removalKind: 'removed' | 'left',
   removedBy:   string,
+  removalId:   string,
 ): TxWrite[] {
   const writes: TxWrite[] = []
   if (target.exists) {
@@ -333,8 +334,9 @@ export function buildMemberStripWrites(
         removingAt:  { timestampValue: new Date().toISOString() },
         removalKind: { stringValue: removalKind },
         removedBy:   { stringValue: removedBy },
+        removalId:   { stringValue: removalId },
       },
-      updateMask: ['removingAt', 'removalKind', 'removedBy'],
+      updateMask: ['removingAt', 'removalKind', 'removedBy', 'removalId'],
     })
   }
   const currentRoster = readTripRoster(trip)
@@ -375,9 +377,9 @@ export function buildMemberStripWrites(
   return writes
 }
 
-/** The non-tx strip cascade. Order is LOAD-BEARING:
+/** The generation-fenced strip cascade. Order is LOAD-BEARING:
  *    1. list every subcollection doc carrying memberIds
- *    2. strip targetUid in ONE commit -- memberIds off every doc + wish
+ *    2. strip targetUid in bounded transactions -- memberIds + wish
  *       `votes` off wish docs (folded into the same commit, see
  *       batchStripDepartedMember for why votes doesn't get its own call)
  *    3. ONLY THEN delete members/{targetUid}
@@ -396,14 +398,16 @@ export async function runMemberStripCascade(
   projectId:    string,
   tripId:       string,
   targetUid:    string,
-  targetExists: boolean,
+  removalId:    string | null,
 ): Promise<void> {
+  // null repairs an already-missing membership. Each chunk transaction must
+  // still read it as absent, so repair cannot strip a subsequent rejoin.
   // A doc deleted between list and commit fails its chunk (exists
   // precondition, see batchStripDepartedMember); re-list and re-run --
   // the strip is idempotent, so already-committed chunks are no-ops.
   for (let attempt = 1; ; attempt++) {
     try {
-      await listAndStrip(accessToken, projectId, tripId, targetUid)
+      await listAndStrip(accessToken, projectId, tripId, targetUid, removalId)
       break
     } catch (err) {
       if (!(err instanceof StripDocVanishedError) || attempt >= STRIP_MAX_ATTEMPTS) throw err
@@ -414,9 +418,19 @@ export async function runMemberStripCascade(
   // subcollection + trip doc has had targetUid stripped from memberIds,
   // so collection-group `array-contains targetUid` queries no longer
   // match this trip's docs.
-  if (targetExists) {
-    await deleteDoc(accessToken, projectId, `trips/${tripId}/members/${targetUid}`)
-  }
+  const removed = await runFirestoreTransaction(accessToken, projectId, async tx => {
+    const path = `trips/${tripId}/members/${targetUid}`
+    const member = await tx.get(path)
+    if (removalId === null) return { writes: [], result: !member.exists }
+    if (!member.exists || readString(member.fields, 'removalId') !== removalId) {
+      return { writes: [], result: false }
+    }
+    return {
+      writes: [{ op: 'delete', document: docResourceName(projectId, path) }],
+      result: true,
+    }
+  })
+  if (!removed) return
 
   // Inbox cleanup is data hygiene, not the security boundary. Do not let
   // a transient Firestore failure strand member-leave after ACL removal.
@@ -438,6 +452,7 @@ async function listAndStrip(
   projectId:   string,
   tripId:      string,
   targetUid:   string,
+  removalId:   string | null,
 ): Promise<void> {
   const lists = await mapWithConcurrency(TRIP_SUBCOLLECTIONS, 3, sub =>
     listDocNames(accessToken, projectId, `trips/${tripId}/${sub}`),
@@ -450,7 +465,9 @@ async function listAndStrip(
   const wishDocNames = wishIndex >= 0 ? (lists[wishIndex] ?? []) : []
   // memberIds strip (every doc) + wish-votes strip (wish docs) in ONE
   // commit -- votes never becomes a separate post-ACL-strip failure window.
-  await batchStripDepartedMember(accessToken, projectId, lists.flat(), wishDocNames, targetUid)
+  await batchStripDepartedMember(accessToken, projectId, lists.flat(), wishDocNames, targetUid, {
+    tripId, id: removalId,
+  })
 }
 
 // Re-export TxReadDoc for the spec's mock typing -- same pattern

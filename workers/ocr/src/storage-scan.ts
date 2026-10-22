@@ -52,8 +52,7 @@ const MIN_AGE_MS = 24 * 60 * 60 * 1000
 
 /** Same 14-min soft deadline as the other crons -- Cloudflare cron
  *  trigger hard limit is 15 minutes; bail at 14 and let tomorrow's run
- *  pick up where today's pagination left off (no cross-run cursor
- *  persistence yet; not needed at projected scale). */
+ *  pick up at the persisted page + last processed key. */
 const SOFT_DEADLINE_MS = 14 * 60 * 1000
 
 /** R2 list supports 1000 keys; scan opts for max to halve round-trip
@@ -79,7 +78,7 @@ const CONCURRENCY = 5
  *  is mostly live-referenced (no deletes) would re-read the same head
  *  items every run, never reaching later pages with actual orphans.
  *  Paired with cross-run cursor persistence (`_scanState/storageScanR2`),
- *  budget exhaustion saves `page.nextPageToken` so tomorrow advances. */
+ *  budget exhaustion saves the current page and its processed prefix. */
 const SUBREQUEST_BUDGET = 300
 
 /** Cross-run cursor staleness: if a saved cursor is older than this,
@@ -239,19 +238,16 @@ export async function scanOrphanStorage(
   // run from the head, which is exactly what would happen on a first
   // ever run anyway.
   let pageToken: string | undefined
+  let afterKey: string | undefined
   try {
     const cursor = await getScanCursor(accessToken, projectId, SCAN_KEY)
     if (cursor && Date.now() - cursor.savedAtMs < CURSOR_STALENESS_MS) {
-      pageToken = cursor.pageToken
+      pageToken = cursor.pageToken || undefined
+      afterKey = cursor.afterKey
     }
   } catch (e) {
     console.warn(`[storage-scan] cursor load failed; starting from top: ${(e as Error).message}`)
   }
-
-  // Track the most recent page so the post-loop cursor save can read
-  // its nextPageToken without having to know which branch ended the
-  // loop. Reset on each successful list, examined on the way out.
-  let lastPage: { nextPageToken?: string } | null = null
 
   while (true) {
     if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
@@ -280,7 +276,6 @@ export async function scanOrphanStorage(
         })),
         nextPageToken: r2Page.cursor,
       }
-      lastPage = page
     } catch (e) {
       // List failure is run-aborting (no way to discover any further
       // objects). Re-throw with partial counts in the message so the
@@ -299,11 +294,19 @@ export async function scanOrphanStorage(
     // that survives goes into the candidates list for the bounded-
     // concurrency entity recheck below.
     const candidates: { obj: { name: string; timeCreated?: string; metadata?: Record<string, string> }; parsed: ParsedPath }[] = []
+    const processed = new Set<string>()
     for (const obj of page.items) {
+      // R2 keys are ordered; a key checkpoint survives deletions that
+      // would shift a numeric offset between runs.
+      if (afterKey && obj.name <= afterKey) {
+        processed.add(obj.name)
+        continue
+      }
       report.scanned += 1
       const parsed = parsePath(obj.name)
       if (!parsed) {
         report.unparseable += 1
+        processed.add(obj.name)
         continue
       }
       // Without timeCreated we can't compute age. Fail-closed: treat as
@@ -313,6 +316,7 @@ export async function scanOrphanStorage(
       const createdMs = obj.timeCreated ? Date.parse(obj.timeCreated) : NaN
       if (!Number.isFinite(createdMs) || createdMs > ageCutoffMs) {
         report.freshSkipped += 1
+        processed.add(obj.name)
         continue
       }
       candidates.push({ obj, parsed })
@@ -347,6 +351,7 @@ export async function scanOrphanStorage(
         report.budgetHit = true
         return
       }
+      processed.add(obj.name)
       try {
         // Pending-intent safety net (Phase 3.5 Final Design section
         // 3B). If the blob carries a valid intentId and that intent
@@ -414,10 +419,16 @@ export async function scanOrphanStorage(
       }
     })
 
-    if (report.deadlineHit) break
-    if (report.budgetHit) break
-    if (!page.nextPageToken) break
+    // Only checkpoint a contiguous processed prefix: concurrent workers
+    // may finish out of order, and an unprocessed gap must never be skipped.
+    for (const obj of page.items) {
+      if (!processed.has(obj.name)) break
+      afterKey = obj.name
+    }
+    if (report.deadlineHit || report.budgetHit) break
     pageToken = page.nextPageToken
+    afterKey = undefined
+    if (!pageToken) break
   }
 
   // Phase 2 abuse detection: any uploaderUid that produced more than
@@ -443,25 +454,15 @@ export async function scanOrphanStorage(
     }
   }
 
-  // Cursor maintenance: budget / deadline hit mid-scan saves NEXT
-  // page's token so tomorrow advances past this page's possibly-
-  // unprocessed candidates -- the load-bearing fix for the otherwise-
-  // starvation case where page 1 is mostly live-referenced blobs and
-  // re-reading them each day eats the budget before later pages get
-  // a chance. Skipped candidates from a budget-hit page resurface on
-  // the next full cycle once we wrap. Natural drain (no break)
-  // clears the cursor so the next run starts fresh from the top.
+  // Keep the CURRENT page until all its candidates have been checked.
+  // An empty pageToken resumes page one; afterKey skips only its completed
+  // prefix. Saving the next-page token here would permanently starve tails
+  // on pages whose live references consume the budget on every cycle.
   // Cursor write failures are non-fatal: tomorrow's run still works,
   // just from a less optimal starting point.
   try {
     if (report.budgetHit || report.deadlineHit) {
-      if (lastPage?.nextPageToken) {
-        await setScanCursor(accessToken, projectId, SCAN_KEY, lastPage.nextPageToken)
-      } else {
-        // No next page to advance to -- we stopped on the last page
-        // anyway. Clear so tomorrow restarts from the top.
-        await clearScanCursor(accessToken, projectId, SCAN_KEY)
-      }
+      await setScanCursor(accessToken, projectId, SCAN_KEY, pageToken ?? '', afterKey)
     } else {
       // Natural drain: all pages exhausted, clear the cursor.
       await clearScanCursor(accessToken, projectId, SCAN_KEY)

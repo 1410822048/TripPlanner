@@ -35,9 +35,9 @@ trips/{tripId}
   ├── wishes/{wishId}            # 願望清單 + votes[]
   ├── planning/{planItemId}      # 行前準備 checklist(集合名是單數 planning)
   ├── settlements/{routeId}      # 一筆清算 = 一個 route = 一份文件(legs[] 在內)，整筆建立／撤銷
+  ├── invites/{token}            # token 在 URL fragment(不進 server log);只由 Worker 寫入
+  ├── inviteState/current        # 單一有效邀請的指標(交易衝突點)
   └── (trip doc 本體:title/dest/dates/ownerId/icon/currency)
-
-invites/{token}                  # token 在 URL fragment(不進 server log)
 ```
 
 **所有 5 個 feature entity(schedules/expenses/bookings/wishes/planning)都帶有 `createdBy` + `updatedBy` + `createdAt` + `updatedAt`。`updatedBy` 在每次 create / update / toggle / vote 都會被服務層寫入當前 uid,rules 用 `request.resource.data.updatedBy == uid()` 鎖死,client 偽造會被 Firestore 拒。BottomNav 紅點另讀 trip doc 的 `lastActivityByFeature[feature] = { ts, by }`，以 `by` 排除自己的動態；不另外監聽 entity collections。**
@@ -177,6 +177,7 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 - **跨 row 互斥**: `useSwipeOpen` 確保同時只有一個 row 處於 open(換 row 滑會關掉前一個)
 - **權限 gate**: 沒 delete 權限(viewer)時,`useSwipeRow` 接收 `enabled: false`,手勢被吃掉,改成純 tap-to-edit row
 - **tap 行為**: row 在 open 狀態 → 任何點擊**先收起**而非觸發 onSelect(避免「我看到刪除鈕但點 row 結果開了 edit」)
+- **pointer capture 時機**: `useSwipeRow` 只在 `onPointerMove` 判定為水平 swipe 後才 `setPointerCapture`,**不在 pointerdown**。pointerdown 就 capture 會讓 Chromium 把隨後的**滑鼠** click 重新導向到 row(capture 元素),列內按鈕(準備項目勾選、列 action)永遠收不到;觸控 tap 不受影響,所以 iOS 上從未發現。e2e-offline 以 `click()` 勾選準備項目當回歸檢查。另外滑鼠拖曳結束會產生一個 click,capture 之後 Chromium 把它派給 row 本身(mousedown / mouseup target 的共同祖先),內層 `wrapTap` 吃不到、會冒泡到頁面的 close-on-outside-tap 把剛打開的 row 關回去 —— `pointerProps.onClickCapture` 在 `didDrag` 時吞掉它;e2e-settlement 以滑鼠滑刪費用當回歸檢查
 
 ### Modal 生命週期
 - **key-based remount**: 所有 form modal 用 `<Modal key={editTarget?.id ?? 'new'}>` —— 切換 edit target 自動 unmount + remount,每次都用全新的 useState init,不靠 setState-in-effect 同步 props
@@ -184,6 +185,7 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
   - **有草稿(5 個 entity form + SettlementRecordSheet + WishDeadlineSheet)**: open 時 snapshot `{ tripId, uid }`(`useFormModal` scope 參數 / sheet 自帶),save/delete 時 mismatch → `FORM_SCOPE_CHANGED_MESSAGE` **保留內容拒絕寫入**,絕不用 effect 自動關(會吃草稿)。SettlementRecordSheet **必須**有 client guard —— Worker 的 `expectedRemainingMinor` 只是數值 CAS,同 pair 同餘額的另一個 trip 會通過。scope 比對必須**先於**任何會清內容的分支:wish 的 `votingClosed` 會 `modal.close()`、settlement 的 `isDemo` 會 `setRecordTarget(null)` —— cloud→demo 登出轉換要先被 scope 攔下(demo 開的 sheet 捕捉 `{undefined,undefined}`,live demo 仍匹配,照常走 sign-in prompt)。live trip/uid **消失**(cloud→demo / no-trip)併入同一個 fail-closed 分支,不可 `if (!cloudTripId) return` 靜默吞掉
   - **無草稿的管理 modal(MembersModal / InviteModal)**: open state 蓋 `{ tripId, uid }` 章,trip / 帳號一變即 **derive 成關閉**(`useScheduleModals`),並以 `key={currentTrip.id}` remount 清掉 pending confirm(remove / transfer / leave)—— 否則重開會復活上一個 trip 的確認面板。mismatch 是 **transition 不是可重推導的狀態**:首次 mismatch 必須把 stamp 永久清除(render-phase adjust,同步關閉),否則 A→B→A 折返會重新匹配舊 stamp,modal 自己重開
   - `useFormModal.scopeChanged` 對「captured 存在但 live scope 是 undefined」fail-closed
+  - **旅程層級的草稿表單**(EditTripModal / CopyTripModal / CreateTripModal,`useScheduleModals` + `TripModalsHost`):EditTrip 開啟時蓋 `{ tripId, uid }` 章(`editTripOpenedOn`),host 以**開啟世代**(`editTripGeneration`)當 key、`editTarget` 在 mount 時凍結 —— 不用即時 `selectedTrip.id` 當 key,否則背景改選會把表單重掛載成另一旅程的內容並吃掉草稿;儲存時 `editTripScopeChanged` 先於 `saveTrip` 判斷,不符 → `FORM_SCOPE_CHANGED_MESSAGE` 進表單 banner。CopyTrip 開啟時記 `copyTripOpenedUid`,`onCopyTrip` 與**目前** `authState.user.uid` 比對,不符即拒絕(舊 uid 不是憑證,絕不以它送出)。Create / Copy **不走 `trackUnlessOffline`**(建立 batch 不可重複排隊、複製需 `getDocsFromServer`):離線時保留草稿並顯示 `OFFLINE_NEEDS_CONNECTION_MESSAGE`。兩者的寫入由表單實例持有(`useAwaitedSave`;CreateTripModal 只在開啟時渲染並以 `createTripGeneration` 為 key):**只有仍開著的原實例**才關閉自己並 `setSelectedTripId`,晚到的結果(已關閉 / 已重開新實例)只留下資料與 toast,不切旅程、不碰任何其他表單
 - **autofocus**: 第一個 input 用 `useAutoFocus(ref, isOpen)` 自動 focus
 - **bottom sheet**: `BottomSheet` 元件 + `FormModalShell` 包一層 SaveButton,所有 form modal(Schedule/Booking/Expense/Wish/Planning/EditTrip)共用
 
@@ -204,6 +206,11 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 - BottomNav 對應 tab 渲染紅色圓點(`active` tab 不顯示)
 - 切到該 tab → `useEffect` 觸發 `markViewed(currentTripId, feature)`,圓點清除
 - `useDeleteTrip onSuccess` 呼叫 `clearTrip(tripId)`,避免 localStorage 累積
+
+### 推播通知點擊(`sw.ts` → `features/account/notificationOpen.ts`)
+- **SW 不導航**:`client.navigate()` 是整頁導覽,會清掉草稿與暫停中的 mutation。已開視窗 → `postMessage({ type: 'NOTIFICATION_OPEN', scope, route, tripId, targetUid })`;冷啟動 → `openWindow('/schedule?notify=<nonce>')`,payload 以 nonce 暫存在 SW(記憶體 + Cache Storage,5 分鐘、一次性),client 啟動後用 `MessageChannel` 索取、完成後清 query。uid 不進網址。協定與純函式在 `services/notificationOpenProtocol.ts`(不 import zod / SW 全域,SW 與 client 共用)
+- **client 決策**(`decideNotificationOpen`,掛在 `App.tsx` 根層、RouterProvider 之外):Zod 白名單 route → 等 auth → **`targetUid` 缺失或 ≠ 目前 uid 一律不導航、不碰 tripStore** → trip scope 等 `useMyTrips` 就緒、須仍是成員;account scope(`member.removed_self`)直接 `/account`、不切旅程 → 有草稿 modal 開著就只 toast。Functions push data 帶 `scope`(`send.ts`)
+- **草稿登記**:`hooks/draftModalRegistry.ts`,由 `FormModalShell` 開著時登記(5 個 entity form + SettlementRecordSheet)。Create / Edit / CopyTrip 也走 FormModalShell;不走的草稿表單(WishDeadlineSheet)自行 `useRegisterDraftModal(isOpen)`
 
 ### 帳號隔離(persisted store 的 `ownerUid`)
 
@@ -240,7 +247,7 @@ UI gating 走 `useCanWrite` + `useIsTripOwner` hooks(`features/trips/hooks/useTr
 | 新增 / 編輯 planning | `/planning` | ✅ Overlay(modal-wait) | 表單追蹤 mutation promise(`useAwaitedSave`);成功才關,失敗留在表單 banner | 表單自己的儲存中狀態 |
 | Toggle planning row done | `/planning` | ✅ Optimistic | 沒 modal | 無(checkbox 立即翻) |
 | Wish vote toggle | `/wish` | ✅ Optimistic | 沒 modal | 無 |
-| Swipe delete(支援滑刪的 list row) | 各 list page | ✅ Optimistic | 沒 modal | row 立刻消失 |
+| Swipe delete(支援滑刪的 list row;expense 走 Worker `/expense-soft-delete`) | 各 list page | ✅ Optimistic | 沒 modal | row 立刻消失 |
 
 **Optimistic-close 的選擇**:
 - Expense receipt、Booking 附件 / 批次 PDF、Wish 圖片都可能包含較慢的 Worker / R2 路徑,因此三者按存後立即收 modal,由 list overlay 顯示進度。
@@ -266,7 +273,7 @@ global MutationCache.onMutate:同步檢查 Schema Epoch(只讀 memory snapshot,�
 → 成功: markSucceeded → reconcile 在 server truth 一致時撤下
 ```
 
-**離線寫入(`networkMode`)**:TanStack mutation 預設 `'online'`,離線時 `mutationFn` 被暫停、寫入只留在記憶體,PWA 被回收即遺失 —— 不是「交給 Firestore 佇列」。只有**純 client Firestore SDK** 的寫入(schedule / planning 全部、wish 投票與純文字 create / update、trip update / 投票截止、expense 軟刪除)在各自 hook 宣告 `networkMode: 'always'`;wish create / update 同一個 hook 內有兩條路徑(純文字 → client、帶圖 → Worker),所以是兩個 mutation 共用一份 overlay op,依變數挑選(`usePathSplitMutation`),SDK 才會把寫入排進 IndexedDB、重載後仍送出;Worker 寫入維持預設(fetch 離線即失敗,排隊無意義)。`useTripListMutation` factory 不改預設,新 hook 逐一宣告。`offlineHandOff` 的「已先儲存在此裝置」文案以此為前提。
+**離線寫入(`networkMode`)**:TanStack mutation 預設 `'online'`,離線時 `mutationFn` 被暫停、寫入只留在記憶體,PWA 被回收即遺失 —— 不是「交給 Firestore 佇列」。只有**純 client Firestore SDK** 的寫入(schedule / planning 全部、wish 投票與純文字 create / update、trip update / 投票截止)在各自 hook 宣告 `networkMode: 'always'`;wish create / update 同一個 hook 內有兩條路徑(純文字 → client、帶圖 → Worker),所以是兩個 mutation 共用一份 overlay op,依變數挑選(`usePathSplitMutation`),SDK 才會把寫入排進 IndexedDB、重載後仍送出;Worker 寫入維持預設(fetch 離線即失敗,排隊無意義)。`useTripListMutation` factory 不改預設,新 hook 逐一宣告。`offlineHandOff` 的「已先儲存在此裝置」文案以此為前提。
 
 **Pending row 視覺 / 互動規範**(`SwipeableExpenseItem` / `SwipeableBookingItem` / `WishCard`):
 - 偵測: `useOverlayPendingRowIds(controller, queryKey).has(row.id)` — **不再用 id 形狀判斷**;id 從一開始就是最終 id
@@ -405,12 +412,12 @@ UI(`SettlementSummary`)結構: 成員淨額 → 付款建議(簡化 route 卡片
 - **UNKNOWN** — defensive guard:`atRecording = 'NO_EXPENSE'`(settlement 找不到對應 pair 的 expense gross)。`allow delete: if false` + Worker trip-cascade 一次刪 expense+settlement 後,data-at-rest 不會再產生這狀態;留著當 catch-all,讓未來異常 admin 寫入或資料毀損可見化,不會 silently 被歸到其他 reason。
 
 Soft-delete + Receipt-purge 設計:
-- `deleteExpense` 改成 `updateDoc({ deletedAt: serverTimestamp() })`,**保留 receipt**(reversible at data layer 10 天內)
+- `deleteExpense` 走 Worker `/expense-soft-delete`(tx 內 owner/editor + 結算鎖 ⇒ 僅 owner、已 tombstone 即冪等成功,`deletedAt`/`updatedAt` 以 `REQUEST_TIME` 寫入),**保留 receipt**。不用 client `updateDoc`:本機 pending write 的回音會讓 `requireServerConfirmation` 的 listener 判為未確認,帳務區塊每次滑刪都閃成載入中
 - `Expense.deletedAt?: Timestamp | null` 必要 schema field;`receiptPurgedAt?: Timestamp | null` 也是必要(create 階段 rule 鎖死 present + null)
 - `useExpenses` 回傳 ALL(含 soft-deleted);ExpensePage 拆兩路:`displayExpenses = expenses.filter(!deletedAt)` for 列表/總額/件數,`expenses`(unfiltered)for `SettlementSummary` 做 chronological replay
 - 樂觀 delete 的 patch 用 `mockTimestampNow()` 而非 `MOCK_TIMESTAMP`(epoch 0),否則 chronological replay 把 delete event 排到所有 expense_create 之前
-- firestore.rules:create 鎖 `deletedAt == null` + `receiptPurgedAt == null`;update 的 deletedAt 可 null↔Timestamp 但有 10 天 restore window;receiptPurgedAt 強制 `unchanged`(只有 Worker admin 寫得到)
-- 沒做 restore UI(B1 決定);資料層保留 10 天
+- firestore.rules:create 鎖 `deletedAt == null` + `receiptPurgedAt == null`;client update 一律 `if false`(內容走 `/expense-update`、軟刪除走 `/expense-soft-delete`),receiptPurgedAt 只有 Worker admin 寫得到
+- 沒做 restore UI(B1 決定),也沒有 restore 端點;receipt 10 天後由 cron 清掉
 
 ### Worker 錯誤分類(precommit / ambiguous / post-commit)
 
@@ -434,7 +441,7 @@ client 對 Worker 失敗只有兩種處置:**definitive → 回滾樂觀列**,**
 
 比對一律 `readNestedString(...) ?? null`,讓「map 不存在」與「明確 null」collapse 成同一件事(對應 client 的 `existing?.path ?? null`)。不符 → 409。
 
-**部署順序必須走 Schema Epoch 四階段**,單純「先 Pages 再 Worker」**不夠** —— 部署 Pages 不會清掉裝置上已安裝的 SW / bundle,舊 bundle 會繼續跑到使用者自己更新為止,strict Worker 一上線它的收據替換 / 刪除就吃 400:
+**多人使用時**,部署順序必須走 Schema Epoch 四階段(目前單一使用者一次發版,見 `docs/runbooks/github-actions-deployment.md`);單純「先 Pages 再 Worker」**不夠** —— 部署 Pages 不會清掉裝置上已安裝的 SW / bundle,舊 bundle 會繼續跑到使用者自己更新為止,strict Worker 一上線它的收據替換 / 刪除就吃 400:
 
 1. `CLIENT_SCHEMA_EPOCH = 2`、manifest 仍留 `minimumWriteEpoch: 1` → 部署 Pages
 2. 等更新窗口(讓裝置換到 epoch-2 bundle)
@@ -553,9 +560,9 @@ cd workers/ocr && npx wrangler tail        # Worker 即時 log
 
 ## 已記憶的 user feedback(`.claude/projects/.../memory/`)
 
-存於 `~/.claude/projects/C--Users-PC-C-Desktop-travel-app/memory/MEMORY.md` index 內。可用查詢時自動載入。重要的有:
+存於 `~/.claude/projects/C--Users-HAHA-Documents-workspace-TripPlanner/memory/MEMORY.md` index 內。可用查詢時自動載入。重要的有:
 - 回覆用**繁體中文**,程式碼 / 註解保留原語言
-- Deploy 不需問,直接 `firebase deploy`
+- 部署走 main push → GitHub Actions(`deploy:prod`,固定順序);commit 仍需逐批確認
 - **三思再講** —— 涉及版本 / 套件 / API 用法時,先 fetch 官方文件再說,不靠記憶
 - 每個 feature 完成後做**架構簡化**(extract hooks / components when 2+ callers)
 

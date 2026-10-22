@@ -13,6 +13,7 @@ import type { ReactNode } from 'react'
 import { AlertCircle } from 'lucide-react'
 import BottomSheet from './BottomSheet'
 import SaveButton from './SaveButton'
+import { useRegisterDraftModal } from '@/hooks/draftModalRegistry'
 
 interface Props {
   isOpen:    boolean
@@ -32,6 +33,8 @@ interface Props {
 export default function FormModalShell({
   isOpen, isSaving, title, saveLabel, onClose, onSave, children, saveError,
 }: Props) {
+  // 開著的表單即視為有草稿：通知點擊等外部導航會先問這裡，避免卸載草稿。
+  useRegisterDraftModal(isOpen)
   return (
     <BottomSheet
       isOpen={isOpen}

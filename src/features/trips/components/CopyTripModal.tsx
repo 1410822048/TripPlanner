@@ -10,14 +10,19 @@
 // by the same delta. If the user later changes the new trip's range
 // to be shorter, schedule dates are not auto-trimmed (the cascade in
 // EditTripModal already shows the orphan-warning).
+//
+// The write is owned by this sheet INSTANCE (useAwaitedSave): busy state
+// is local, success closes this instance only, and a result that lands
+// after the sheet was dismissed never closes or switches anything the
+// user opened since (`stillOpen` travels into onConfirm for that).
 import { useRef, useState } from 'react'
 import { Copy } from 'lucide-react'
-import BottomSheet from '@/components/ui/BottomSheet'
+import FormModalShell from '@/components/ui/FormModalShell'
 import { DatePicker } from '@/components/ui/pickers'
 import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
-import SaveButton from '@/components/ui/SaveButton'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
+import { useAwaitedSave } from '@/hooks/useAwaitedSave'
 import { useFormReducer } from '@/hooks/useFormReducer'
 import { addDays, daysBetween, toLocalDateString } from '@/utils/dates'
 import type { Trip } from '@/types'
@@ -48,14 +53,16 @@ function initFormState(source: Trip): FormState {
 interface Props {
   isOpen:    boolean
   source:    Trip
-  isSaving:  boolean
   onClose:   () => void
-  onConfirm: (input: CopyTripInput) => void
+  /** Returns the write to track, or nothing when refused synchronously
+   *  (the page toasts the reason and the draft stays). */
+  onConfirm: (input: CopyTripInput, stillOpen: () => boolean) => Promise<unknown> | void
 }
 
-export default function CopyTripModal({ isOpen, source, isSaving, onClose, onConfirm }: Props) {
+export default function CopyTripModal({ isOpen, source, onClose, onConfirm }: Props) {
   const { state, setField } = useFormReducer<FormState>(() => initFormState(source))
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const awaited = useAwaitedSave(onClose)
 
   const titleRef = useRef<HTMLInputElement>(null)
   useAutoFocus(titleRef, isOpen)
@@ -81,17 +88,21 @@ export default function CopyTripModal({ isOpen, source, isSaving, onClose, onCon
 
   function handleConfirm() {
     const input = validate()
-    if (input) onConfirm(input)
+    if (!input) return
+    // No `describe`: a failed copy is toasted by the global MutationCache
+    // handler (COPY_TRIP label); this instance only closes itself on success.
+    awaited.submit(() => onConfirm(input, awaited.stillOpen))
   }
 
   return (
-    <BottomSheet
+    <FormModalShell
       isOpen={isOpen}
-      onClose={onClose}
+      isSaving={awaited.saving}
       title="複製行程"
-      footer={
-        <SaveButton onClick={handleConfirm} isSaving={isSaving} label="複製" />
-      }
+      saveLabel="複製"
+      saveError={awaited.error}
+      onClose={onClose}
+      onSave={handleConfirm}
     >
       <div className="flex items-start gap-2.5 px-3 py-2.5 mb-1 rounded-xl bg-accent-pale border border-accent/15">
         <Copy size={15} strokeWidth={2} className="shrink-0 mt-px text-accent" />
@@ -149,6 +160,6 @@ export default function CopyTripModal({ isOpen, source, isSaving, onClose, onCon
           </label>
         </div>
       </FormField>
-    </BottomSheet>
+    </FormModalShell>
   )
 }

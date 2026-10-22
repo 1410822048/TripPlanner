@@ -11,7 +11,7 @@ import { MOCK_TIMESTAMP as TS } from '@/mocks/utils'
 const mocks = vi.hoisted(() => ({
   batchSet:    vi.fn(),
   batchCommit: vi.fn(async () => {}),
-  getDocs:     vi.fn(async (): Promise<{ docs: Array<{ data: () => Record<string, unknown> }> }> => ({ docs: [] })),
+  getDocsFromServer: vi.fn(async (): Promise<{ docs: Array<{ data: () => Record<string, unknown> }> }> => ({ docs: [] })),
   deleteTrip:  vi.fn(async () => {}),
 }))
 
@@ -22,7 +22,7 @@ vi.mock('@/services/firebase', () => ({
     db:         {},
     doc:        vi.fn((_db: unknown, ...path: string[]) => ({ id: 'new-trip', path })),
     collection: vi.fn((_db: unknown, ...path: string[]) => ({ path })),
-    getDocs:    mocks.getDocs,
+    getDocsFromServer: mocks.getDocsFromServer,
     writeBatch: vi.fn(() => ({ set: mocks.batchSet, commit: mocks.batchCommit })),
     query:      vi.fn((...args: unknown[]) => args),
     where:      vi.fn((...args: unknown[]) => args),
@@ -88,8 +88,19 @@ describe('copyTrip owner member payload', () => {
 describe('copyTrip phase-2 content + failure handling', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
+  it('does not create a destination when either selected server read fails', async () => {
+    mocks.getDocsFromServer.mockResolvedValueOnce({ docs: [] })
+    mocks.getDocsFromServer.mockRejectedValueOnce(new Error('offline'))
+    await expect(copyTrip(source, {
+      ...input, copySchedules: true, copyPlanning: true,
+    }, mkUser('Me'))).rejects.toThrow('offline')
+    expect(mocks.batchSet).not.toHaveBeenCalled()
+    expect(mocks.batchCommit).not.toHaveBeenCalled()
+    expect(mocks.deleteTrip).not.toHaveBeenCalled()
+  })
+
   it('copies only allowlisted schedule fields (a stray legacy key cannot fail the batch)', async () => {
-    mocks.getDocs.mockResolvedValueOnce({ docs: [{ data: () => ({
+    mocks.getDocsFromServer.mockResolvedValueOnce({ docs: [{ data: () => ({
       date: '2026-01-01', order: 0, title: 'Temple', timeMode: 'flexible', durationMinutes: 60,
       optimizedStartTime: '09:00', legacyField: 'x', memberIds: ['someone'], createdBy: 'other',
     }) }] })
@@ -105,7 +116,7 @@ describe('copyTrip phase-2 content + failure handling', () => {
 
   it('rolls the new trip back when phase 2 fails, then rethrows', async () => {
     const boom = new Error('batch failed')
-    mocks.getDocs.mockResolvedValueOnce({ docs: [{ data: () => ({
+    mocks.getDocsFromServer.mockResolvedValueOnce({ docs: [{ data: () => ({
       date: '2026-01-01', order: 0, title: 'A', timeMode: 'flexible', durationMinutes: 60,
     }) }] })
     mocks.batchCommit

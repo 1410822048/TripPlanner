@@ -56,7 +56,20 @@ vi.mock('../src/firestore-tx', async () => ({
 		}
 		throw new Error(`unexpected tx.get('${path}') -- not seeded`)
 	},
-	onResult: result => { capturedTxResult = result },
+	onResult: result => {
+		if (typeof result.result !== 'boolean') capturedTxResult = result
+		for (const write of result.writes) {
+			const path = write.document.replace(/^.*\/documents\//, '')
+			if (!path.includes('/members/')) continue
+			if (write.op === 'delete') {
+				restCallOrder.push(`deleteDoc:${path}`)
+				txGetResponses.set(path, { exists: false, fields: {}, name: write.document, updateTime: null })
+			} else if (write.op !== 'transform' && write.fields.removalId) {
+				const old = txGetResponses.get(path)!
+				txGetResponses.set(path, { ...old, fields: { ...old.fields, ...write.fields } })
+			}
+		}
+	},
 	}),
 }))
 
@@ -1209,7 +1222,7 @@ describe('memberRemove endpoint', () => {
 		// removalKind + removedBy ride the marker write so the delete trigger can
 		// tell a kick ('removed') from a self-leave ('left') AND exclude the
 		// acting owner from the "○○ was removed" fan-out.
-		expect(markerWrite!.updateMask).toEqual(['removingAt', 'removalKind', 'removedBy'])
+		expect(markerWrite!.updateMask).toEqual(['removingAt', 'removalKind', 'removedBy', 'removalId'])
 		expect(markerWrite!.fields.removingAt).toMatchObject({
 			timestampValue: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
 		})
@@ -1271,7 +1284,7 @@ describe('memberRemove endpoint', () => {
 		// deletes the member doc that holds it.
 		expect(writes).toHaveLength(2)
 		const marker = writes.find(w => w.document.includes(`/members/${TARGET}`))!
-		expect(marker.updateMask).toEqual(['removingAt', 'removalKind', 'removedBy'])
+		expect(marker.updateMask).toEqual(['removingAt', 'removalKind', 'removedBy', 'removalId'])
 		const nameOnly = writes.find(w => /\/documents\/trips\/trip-1$/.test(w.document))!
 		expect(nameOnly.updateMask).toEqual(['formerMemberNames'])
 	})
@@ -1414,7 +1427,7 @@ describe('memberLeave endpoint', () => {
 		const markerWrite = writes.find(w => w.document.includes(`/members/${LEAVER}`))
 		// Self-leave stamps removalKind 'left' so the delete trigger skips the
 		// "you were removed" self-notification; removedBy is the leaver themselves.
-		expect(markerWrite!.updateMask).toEqual(['removingAt', 'removalKind', 'removedBy'])
+		expect(markerWrite!.updateMask).toEqual(['removingAt', 'removalKind', 'removedBy', 'removalId'])
 		expect(markerWrite!.fields.removalKind).toEqual({ stringValue: 'left' })
 		expect(markerWrite!.fields.removedBy).toEqual({ stringValue: LEAVER })
 		const rosterWrite = writes.find(w => w.document.match(/\/documents\/trips\/trip-1$/))
@@ -1772,4 +1785,20 @@ describe('ownerTransfer endpoint', () => {
 		expect(err).toBeInstanceOf(MembershipValidationError)
 		expect((err as MembershipValidationError).field).toBe('targetUid')
 	})
+})
+
+it('an older removal cannot delete a rejoined membership after its strip completes', async () => {
+  const { runMemberStripCascade } = await import('../src/membership-shared')
+  const { batchStripDepartedMember } = await import('../src/firestore')
+  const memberPath = `trips/${TRIP_ID}/members/${INVITEE}`
+  const old = memberReadDoc(INVITEE, 'editor')
+  old.fields.removalId = { stringValue: 'old-removal' }
+  txGetResponses.set(memberPath, old)
+  vi.mocked(batchStripDepartedMember).mockImplementationOnce(async () => {
+    txGetResponses.set(memberPath, memberReadDoc(INVITEE, 'editor'))
+  })
+  await runMemberStripCascade('token', 'demo', TRIP_ID, INVITEE, 'old-removal')
+  expect(txGetResponses.get(memberPath)?.exists).toBe(true)
+  expect(restCallOrder.some(call => call.startsWith('deleteDoc:'))).toBe(false)
+  expect(notificationCleanupCalls).toHaveLength(0)
 })

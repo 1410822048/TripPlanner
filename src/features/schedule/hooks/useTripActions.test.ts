@@ -29,6 +29,8 @@ vi.mock('@/services/clientCompatibility', () => ({
 }))
 
 import { useTripActions } from './useTripActions'
+import { FORM_SCOPE_CHANGED_MESSAGE } from '@/hooks/useFormModal'
+import { OFFLINE_NEEDS_CONNECTION_MESSAGE } from '@/utils/offlineHandOff'
 
 // Stored trip dates are 00:00 UTC (toTripDateTimestamp).
 const ts = (iso: string) => {
@@ -62,7 +64,6 @@ function render(over: Partial<Parameters<typeof useTripActions>[0]> = {}) {
     resetActiveDate:     vi.fn(),
     clearScheduleDetail: vi.fn(),
     closeMembers:        vi.fn(),
-    closeCopyTrip:       vi.fn(),
   }
   const hook = renderHook(() => useTripActions({
     isDemo: false,
@@ -73,6 +74,7 @@ function render(over: Partial<Parameters<typeof useTripActions>[0]> = {}) {
     currentTrip: trip('a'),
     cloudTripsList: [item('a'), item('b')],
     copyTripSource: trip('a'),
+    copyTripOpenedUid: 'uid-1',
     ...spies,
     ...over,
   }))
@@ -227,42 +229,105 @@ describe('useTripActions reorder', () => {
 })
 
 describe('useTripActions copy', () => {
-  it('keeps the copy sheet open when the bundle becomes obsolete', async () => {
+  const input = { copySchedules: true } as never
+  const stillOpen = () => true
+  const copied = () => mutationMocks.copy.mockResolvedValueOnce({
+    trip: trip('c'), copiedSchedules: 2, copiedPlanItems: 0, orphanedSchedules: 0,
+  })
+
+  it('refuses synchronously (no write, draft kept) when the bundle becomes obsolete', () => {
     compatibility.writeBlockReason = '請先更新 App 才能儲存'
-    const { hook, closeCopyTrip } = render()
+    const { hook } = render()
+    let result: unknown = 'unset'
 
-    await act(async () => {
-      await hook.result.current.onCopyTrip({ copySchedules: true } as never)
-    })
+    act(() => { result = hook.result.current.onCopyTrip(input, stillOpen) })
 
+    // Nothing returned → the sheet has nothing to track and stays as it is.
+    expect(result).toBeUndefined()
     expect(mutationMocks.copy).not.toHaveBeenCalled()
-    expect(closeCopyTrip).not.toHaveBeenCalled()
     expect(toastMocks.error).toHaveBeenCalledWith('請先更新 App 才能儲存')
   })
 
-  it('copies from the snapshot and closes the modal on success', async () => {
-    mutationMocks.copy.mockResolvedValueOnce({
-      trip: trip('c'), copiedSchedules: 2, copiedPlanItems: 0, orphanedSchedules: 0,
-    })
-    const { hook, setSelectedTripId, closeCopyTrip } = render()
+  it('copies from the snapshot, hands the write to the sheet and switches to the new trip while it is still open', async () => {
+    copied()
+    const { hook, setSelectedTripId, resetActiveDate } = render()
 
-    await act(async () => {
-      await hook.result.current.onCopyTrip({ copySchedules: true } as never)
-    })
+    let pending: unknown
+    act(() => { pending = hook.result.current.onCopyTrip(input, stillOpen) })
+    await act(async () => { await pending })
 
+    expect(pending).toBeInstanceOf(Promise)
     expect(mutationMocks.copy).toHaveBeenCalledWith(
-      expect.objectContaining({ source: expect.objectContaining({ id: 'a' }) }),
+      expect.objectContaining({ source: expect.objectContaining({ id: 'a' }), user: { uid: 'uid-1' } }),
     )
     expect(setSelectedTripId).toHaveBeenCalledWith('c')
-    expect(closeCopyTrip).toHaveBeenCalled()
+    expect(resetActiveDate).toHaveBeenCalled()
+    expect(toastMocks.success).toHaveBeenCalled()
   })
 
-  it('does nothing without a snapshot', async () => {
+  it('only reports a result that lands after the sheet was dismissed or reopened', async () => {
+    // The trip is in the cache via onSuccess; switching to it would yank
+    // the user away from whatever they opened since, and closing would hit
+    // the NEW sheet instance (useAwaitedSave liveness is per instance).
+    copied()
+    const { hook, setSelectedTripId, resetActiveDate } = render()
+
+    await act(async () => { await hook.result.current.onCopyTrip(input, () => false) })
+
+    expect(mutationMocks.copy).toHaveBeenCalled()
+    expect(toastMocks.success).toHaveBeenCalled()
+    expect(setSelectedTripId).not.toHaveBeenCalled()
+    expect(resetActiveDate).not.toHaveBeenCalled()
+  })
+
+  it('refuses when the account changed under the sheet — never copies with the old uid', () => {
+    // The sheet was opened by uid-1; uid-2 is signed in now. The captured
+    // uid is not a credential, and the live user must not get uid-1's copy.
+    const { hook } = render({
+      authState: { status: 'signed-in', user: { uid: 'uid-2' } } as unknown as AuthState,
+      uid: 'uid-2',
+    })
+
+    act(() => { hook.result.current.onCopyTrip(input, stillOpen) })
+
+    expect(mutationMocks.copy).not.toHaveBeenCalled()
+    expect(toastMocks.error).toHaveBeenCalledWith(FORM_SCOPE_CHANGED_MESSAGE)
+  })
+
+  it('refuses while offline instead of queueing or pretending: copyTrip needs the server', () => {
+    vi.stubGlobal('navigator', { onLine: false })
+    try {
+      const { hook } = render()
+      let result: unknown = 'unset'
+
+      act(() => { result = hook.result.current.onCopyTrip(input, stillOpen) })
+
+      expect(result).toBeUndefined()
+      expect(mutationMocks.copy).not.toHaveBeenCalled()
+      expect(toastMocks.error).toHaveBeenCalledWith(OFFLINE_NEEDS_CONNECTION_MESSAGE)
+      expect(toastMocks.info).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('propagates a failed copy to the sheet without switching trips', async () => {
+    mutationMocks.copy.mockRejectedValueOnce(new Error('boom'))
+    const { hook, setSelectedTripId } = render()
+
+    let pending: unknown
+    act(() => { pending = hook.result.current.onCopyTrip(input, stillOpen) })
+    await act(async () => { await expect(pending).rejects.toThrow('boom') })
+
+    expect(setSelectedTripId).not.toHaveBeenCalled()
+    // The global MutationCache.onError toasts it (COPY_TRIP) — not here.
+    expect(toastMocks.error).not.toHaveBeenCalled()
+  })
+
+  it('does nothing without a snapshot', () => {
     const { hook } = render({ copyTripSource: null })
 
-    await act(async () => {
-      await hook.result.current.onCopyTrip({ copySchedules: true } as never)
-    })
+    act(() => { hook.result.current.onCopyTrip(input, stillOpen) })
 
     expect(mutationMocks.copy).not.toHaveBeenCalled()
   })

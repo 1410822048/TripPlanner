@@ -136,23 +136,6 @@ service cloud.firestore {
       return unchanged(field) || !(field in request.resource.data);
     }
 
-    // ─── Soft-delete helpers (settlement phase-2) ────────────────
-    // `d` is either resource.data (current) or request.resource.data
-    // (target). Schema invariant: every expense doc has a `deletedAt`
-    // field, either explicitly null (alive) or a Timestamp
-    // (tombstoned). The Worker `encodeExpense` seeds null on create
-    // and the update rule below requires presence on both sides, so
-    // these helpers deny a doc that lacks the field rather than
-    // guessing at its state.
-    // "Alive" = field present and explicitly null; "tombstoned" =
-    // field present and a real Timestamp.
-    function expenseAlive(d) {
-      return 'deletedAt' in d && d.deletedAt == null;
-    }
-    function expenseTombstoned(d) {
-      return 'deletedAt' in d && d.deletedAt is timestamp;
-    }
-
     // ─── Cascade write-quiesce gate ──────────────────────────────
     // The Worker /cascade-trip-delete writes `deletingAt` on the
     // trip doc BEFORE draining subcollections. CREATE rules on every
@@ -326,6 +309,9 @@ service cloud.firestore {
         ])
         && request.resource.data.startDate is timestamp
         && request.resource.data.endDate is timestamp
+        // Inclusive cap: 366 calendar days. Mirrors MAX_TRIP_DAYS.
+        && request.resource.data.endDate >= request.resource.data.startDate
+        && request.resource.data.endDate - request.resource.data.startDate <= duration.value(365, 'd')
         && request.resource.data.createdAt is timestamp
         && request.resource.data.updatedAt is timestamp;
       }
@@ -656,83 +642,11 @@ service cloud.firestore {
         // map-extract / reduce). Admin SDK on Worker bypasses this
         // rule; clients calling setDoc directly are rejected.
         allow create: if false;
-        // Expense UPDATE has one client-allowed path:
-        //   1. Soft-delete / restore + audit bump only. Content edits
-        //      (title/amountMinor/splits/etc.) are Worker-only via
-        //      /expense-update -- same rationale as create above.
-        //
-        // The deletedAt transition rules are unchanged (4 explicit
-        // branches + 10-day restore window + tombstone freeze) since
-        // those don't need array iteration / cross-doc roster checks
-        // and rules-layer enforcement keeps low-latency client UX
-        // for the soft-delete flow.
-        allow update: if (
-          canWrite(tripId)
-          // Once a settlement references this expense, normal editors can
-          // only view it (locked ⇔ settlementLockIds non-empty; Worker
-          // maintains the set). Owner keeps the explicit correction path.
-          && (isTripOwner(tripId)
-              || !('settlementLockIds' in resource.data)
-              || resource.data.settlementLockIds.size() == 0)
-          && immutableEntityFieldsUnchanged()
-          // receiptPurgedAt is Worker-controlled (cron stamps it via
-          // Admin SDK, bypassing rules). Clients MUST NOT touch it --
-          // forging it to a Timestamp would make the doc invisible to
-          // the cron filter and leak the receipt. The Worker create
-          // rule seeds receiptPurgedAt: null; we require it to be
-          // present on BOTH old and new doc state because `unchanged`
-          // alone returns true for "both sides missing" -- the
-          // explicit presence check makes the schema invariant
-          // (every expense has receiptPurgedAt) enforceable from
-          // the rules layer.
-          && 'receiptPurgedAt' in resource.data
-          && 'receiptPurgedAt' in request.resource.data
-          && unchanged('receiptPurgedAt')
-          && request.resource.data.updatedBy == uid()
-          // Content fields are Worker-owned. Client can only change
-          // [deletedAt, updatedBy, updatedAt] -- the soft-delete /
-          // restore path. Any title/amountMinor/splits/etc. mutation
-          // forces the change set out of this allowlist, rejecting
-          // the write. Worker /expense-update uses Admin SDK and
-          // bypasses this whole rule.
-          && changedOnly(['deletedAt', 'updatedBy', 'updatedAt'])
-          // updatedAt pinned to request.time so activity-badge ordering
-          // stays honest (forging it would let a raw-SDK writer make
-          // their edit "older" / "newer" than it actually was).
-          && request.resource.data.updatedAt == request.time
-          // Soft-delete invariants (settlement phase-2). See
-          // expenseAlive / expenseTombstoned helpers at rules root.
-          //
-          // Schema invariant: deletedAt is ALWAYS present on every
-          // expense doc (Worker create seeds it null; this rule
-          // requires it stay present through every client update).
-          // Replaces the previous "field never disappears once
-          // present" half-check that tolerated pre-soft-delete docs.
-          && 'deletedAt' in resource.data
-          && 'deletedAt' in request.resource.data
-          // 2. deletedAt transitions (four explicit branches):
-          //    - alive → alive: audit-only update, no deletedAt change
-          //    - alive → tombstoned: target must equal request.time
-          //      (no backdate / forward-date tampering)
-          //    - tombstoned → null (restore): ONLY within 10 days
-          //      of the tombstone. Same window as the receipt-purge
-          //      cron, so receipt presence ↔ restorable expense
-          //      stays an invariant.
-          //    - tombstoned → same Timestamp: no-op tombstone update
-          && (
-            (expenseAlive(resource.data)
-              && expenseAlive(request.resource.data))
-            || (expenseAlive(resource.data)
-                && request.resource.data.deletedAt == request.time)
-            || (expenseTombstoned(resource.data)
-                && expenseAlive(request.resource.data)
-                && request.time < resource.data.deletedAt + duration.value(10, 'd'))
-            || (expenseTombstoned(resource.data)
-                && request.resource.data.deletedAt == resource.data.deletedAt)
-          )
-        );
-        // Hard delete from clients is forbidden -- soft-delete via
-        // `deletedAt` is the only path. This was previously a "workflow
+        // Expense UPDATE is Worker-only too: content via /expense-update,
+        // soft delete via /expense-soft-delete (no client pending write).
+        allow update: if false;
+        // Hard delete from clients is forbidden -- the Worker's `deletedAt`
+        // soft delete is the only path. This was previously a "workflow
         // gate" tied to a deletionStartedAt window so the client-side
         // trip cascade could batch-delete expenses, but the gate was
         // KNOWN BROKEN (owner could open the window themselves and

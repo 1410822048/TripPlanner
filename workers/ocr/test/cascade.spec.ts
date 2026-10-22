@@ -213,7 +213,8 @@ describe('cascadeMemberAdd removal-aware refuse', () => {
 			op:       'transform',
 			document: 'projects/demo/databases/(default)/documents/trips/trip-1/members/caller-uid',
 		})
-		expect(seed.op === 'transform' && seed.fieldTransforms[0]!.appendMissingElements.values)
+		const transform = seed.op === 'transform' ? seed.fieldTransforms[0] : undefined
+		expect(transform && 'appendMissingElements' in transform && transform.appendMissingElements.values)
 			.toEqual([{ stringValue: 'caller-uid' }, { stringValue: 'other-member' }])
 	})
 

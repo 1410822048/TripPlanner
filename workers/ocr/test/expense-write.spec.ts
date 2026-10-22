@@ -141,7 +141,7 @@ vi.mock('../src/fx-rate', async () => {
 	}
 })
 
-import { expenseCreate, expenseUpdate } from '../src/expense-write'
+import { expenseCreate, expenseUpdate, expenseSoftDelete, ExpenseSoftDeleteRequestSchema } from '../src/expense-write'
 import * as storage from '../src/r2-storage'
 import * as fxRate from '../src/fx-rate'
 import { PdfPageLimitError } from '@tripmate/pdf-page-limit'
@@ -2343,5 +2343,114 @@ describe('FX CAS (expectedFxRate)', () => {
 			},
 			'{}', BUCKET,
 		)).rejects.toBeInstanceOf(ExpenseValidationError)
+	})
+})
+
+describe('expenseSoftDelete endpoint', () => {
+	const REQ = { tripId: TRIP_ID, expenseId: EXPENSE_ID }
+
+	function lockedAliveExpense(): MockReadDoc {
+		const doc = aliveExpenseReadDoc()
+		doc.fields = {
+			...doc.fields,
+			settlementLockIds: { arrayValue: { values: [{ stringValue: 'settlement-1' }] } },
+		}
+		return doc
+	}
+
+	function seed(role: 'owner' | 'editor' | 'viewer', expense: MockReadDoc, tripOverrides: Parameters<typeof tripReadDoc>[0] = {}) {
+		txGetResponses.set(`trips/${TRIP_ID}`,                        tripReadDoc(tripOverrides))
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`,  memberReadDoc(role))
+		txGetResponses.set(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`, expense)
+	}
+
+	it('request schema is strict: extra keys (e.g. a client-chosen deletedAt) are rejected', () => {
+		expect(ExpenseSoftDeleteRequestSchema.safeParse(REQ).success).toBe(true)
+		expect(ExpenseSoftDeleteRequestSchema.safeParse({ ...REQ, deletedAt: '2020-01-01T00:00:00Z' }).success).toBe(false)
+		expect(ExpenseSoftDeleteRequestSchema.safeParse({ tripId: TRIP_ID }).success).toBe(false)
+		expect(ExpenseSoftDeleteRequestSchema.safeParse({ ...REQ, expenseId: 'bad/id' }).success).toBe(false)
+	})
+
+	it('editor: writes only updatedBy + server-stamped deletedAt / updatedAt, with exists precondition', async () => {
+		seed('editor', aliveExpenseReadDoc())
+
+		await expect(expenseSoftDelete(CALLER_UID, REQ, '{}')).resolves.toEqual({ ok: true })
+
+		expect(capturedTxResult?.writes).toEqual([{
+			document:        `projects/demo/databases/(default)/documents/trips/${TRIP_ID}/expenses/${EXPENSE_ID}`,
+			fields:          { updatedBy: { stringValue: CALLER_UID } },
+			updateMask:      ['updatedBy'],
+			currentDocument: { exists: true },
+			updateTransforms: [
+				{ fieldPath: 'deletedAt', setToServerValue: 'REQUEST_TIME' },
+				{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' },
+			],
+		}])
+		// The lock is the per-expense set alone -- no settlements scan.
+		expect(txQueryCalls).toHaveLength(0)
+	})
+
+	it('viewer → 403 and no write', async () => {
+		seed('viewer', aliveExpenseReadDoc())
+		await expect(expenseSoftDelete(CALLER_UID, REQ, '{}')).rejects.toMatchObject({ status: 403 })
+		expect(capturedTxResult).toBeNull()
+	})
+
+	it('member being removed → 403', async () => {
+		seed('editor', aliveExpenseReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, {
+			...memberReadDoc('editor'),
+			fields: {
+				role:       { stringValue: 'editor' },
+				removingAt: { timestampValue: '2026-10-06T00:00:00Z' },
+			},
+		})
+		await expect(expenseSoftDelete(CALLER_UID, REQ, '{}')).rejects.toMatchObject({ status: 403 })
+		expect(capturedTxResult).toBeNull()
+	})
+
+	it('non-member → 403', async () => {
+		seed('editor', aliveExpenseReadDoc())
+		txGetResponses.set(`trips/${TRIP_ID}/members/${CALLER_UID}`, notFoundReadDoc(`trips/${TRIP_ID}/members/${CALLER_UID}`))
+		await expect(expenseSoftDelete(CALLER_UID, REQ, '{}')).rejects.toMatchObject({ status: 403 })
+	})
+
+	it('trip being deleted → 410', async () => {
+		seed('editor', aliveExpenseReadDoc())
+		const trip = tripReadDoc()
+		trip.fields = { ...trip.fields, deletingAt: { timestampValue: '2026-10-06T00:00:00Z' } }
+		txGetResponses.set(`trips/${TRIP_ID}`, trip)
+		await expect(expenseSoftDelete(CALLER_UID, REQ, '{}')).rejects.toMatchObject({ status: 410 })
+	})
+
+	it('settlement-locked expense: editor → 403, no write', async () => {
+		seed('editor', lockedAliveExpense())
+		await expect(expenseSoftDelete(CALLER_UID, REQ, '{}')).rejects.toMatchObject({ status: 403 })
+		expect(capturedTxResult).toBeNull()
+	})
+
+	it('settlement-locked expense: owner → tombstoned', async () => {
+		seed('owner', lockedAliveExpense(), { ownerId: CALLER_UID })
+		await expect(expenseSoftDelete(CALLER_UID, REQ, '{}')).resolves.toEqual({ ok: true })
+		expect(capturedTxResult?.writes).toHaveLength(1)
+	})
+
+	it('settlement-locked tombstone: editor still 403 (no success for a write it could not make)', async () => {
+		const doc = tombstonedExpenseReadDoc()
+		doc.fields = { ...doc.fields, settlementLockIds: lockedAliveExpense().fields.settlementLockIds }
+		seed('editor', doc)
+		await expect(expenseSoftDelete(CALLER_UID, REQ, '{}')).rejects.toMatchObject({ status: 403 })
+	})
+
+	it('idempotent: already tombstoned → success with zero writes (deletedAt not re-stamped)', async () => {
+		seed('editor', tombstonedExpenseReadDoc())
+		await expect(expenseSoftDelete(CALLER_UID, REQ, '{}')).resolves.toEqual({ ok: true })
+		expect(capturedTxResult?.writes).toEqual([])
+	})
+
+	it('missing expense → 404', async () => {
+		seed('editor', notFoundReadDoc(`trips/${TRIP_ID}/expenses/${EXPENSE_ID}`))
+		await expect(expenseSoftDelete(CALLER_UID, REQ, '{}')).rejects.toMatchObject({ status: 404 })
+		expect(capturedTxResult).toBeNull()
 	})
 })
