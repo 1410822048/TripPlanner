@@ -10,7 +10,7 @@ export default defineConfig([
   // 與 wrangler 自動產生的型別檔(worker-configuration.d.ts、test/
   // env.d.ts),不應被 root 的 React/Vite 規則檢查。Worker 內部如果
   // 需要 lint,應該在 workers/ocr/ 內單獨配置。
-  globalIgnores(['dist', 'workers/**']),
+  globalIgnores(['dist', 'coverage/**', 'workers/**']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

@@ -15,6 +15,8 @@ import PerfStrip from '@/components/ui/PerfStrip'
 import { hasShareParams } from '@/features/bookings/shareParams'
 import { PwaUpdateProvider } from '@/components/PwaUpdateProvider'
 import AppCompatibilityGate from '@/components/AppCompatibilityGate'
+import { NotificationOpenHandler } from '@/features/account/notificationOpen'
+import { hasNotifyParam } from '@/services/notificationOpenProtocol'
 
 /**
  * Force every fresh session to land on /schedule, regardless of which page
@@ -23,8 +25,10 @@ import AppCompatibilityGate from '@/components/AppCompatibilityGate'
  * over the manifest's `start_url`. We use a sessionStorage flag instead:
  *   • Empty flag → fresh launch (PWA cold start, new browser tab) →
  *     replaceState to /schedule unless the URL is a deep link
- *     (/invite/..., /past-lodging, /social-circle) which carries
- *     transactional intent that mustn't be lost.
+ *     (/invite/..., /past-lodging, /social-circle, or a notification
+ *     cold start carrying `?notify=<nonce>`) which carries transactional
+ *     intent that mustn't be lost. The nonce is resolved and stripped by
+ *     NotificationOpenHandler, not here.
  *   • Flag set   → in-session reload or in-app navigation → leave the URL
  *     alone so refresh-on-/account stays on /account.
  *
@@ -44,11 +48,14 @@ import AppCompatibilityGate from '@/components/AppCompatibilityGate'
 
   const path = window.location.pathname
   const isBookingShareTarget = path === '/bookings' && hasShareParams(window.location.search)
+  // 通知冷啟動：query 只有不透明 nonce，啟動後向 SW 換回 payload 才決定去哪。
+  const isNotificationLaunch = hasNotifyParam(window.location.search)
   const isDeepLink =
     path.startsWith('/invite/') ||
     path === '/past-lodging' ||
     path === '/social-circle' ||
-    isBookingShareTarget
+    isBookingShareTarget ||
+    isNotificationLaunch
   if (isDeepLink) return
   if (path === '/schedule' || path === '/') return
 
@@ -63,6 +70,7 @@ export default function App() {
       <PwaUpdateProvider>
         <QueryClientProvider client={queryClient}>
           <RouterProvider router={router} />
+          <NotificationOpenHandler router={router} />
           <AppCompatibilityGate />
           {!splashDone && <Splash onDone={() => setSplashDone(true)} />}
           <Toaster />

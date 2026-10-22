@@ -5,6 +5,10 @@
 //
 //   npm run e2e:offline
 //
+// Also hosts the notification-click case (same harness: real SW, signed-in
+// owner): the SW's NOTIFICATION_OPEN message and the cold-start ?notify=<nonce>
+// hand-off are exercised against the built app — see notificationOpenCase.
+//
 // Proves that a client Firestore SDK write (schedule / planning / text-only wish / planning toggle)
 // made while OFFLINE is handed to the SDK's IndexedDB queue, survives a page
 // reload while still offline, and reaches Firestore after reconnecting.
@@ -205,9 +209,11 @@ async function addWishViaUi(page, title) {
 const DONE_LABEL = { true: '將自己改為未完成', false: '標示自己已完成' }
 async function togglePlanItemViaUi(page, title, done = true) {
   const row = page.getByText(title).first().locator('xpath=ancestor::*[.//button[@aria-label="標示自己已完成" or @aria-label="將自己改為未完成"]][1]')
-  // tap(), not click(): see newMobileContext — a mouse click is swallowed by the
-  // row's pointer capture.
-  await row.getByRole('button', { name: DONE_LABEL[!done] }).tap()
+  // A MOUSE click on purpose (the context also has touch): useSwipeRow used
+  // to capture the pointer on pointerdown, which made Chromium retarget the
+  // click to the row so the button never got it. This step is the
+  // regression check for that fix; tap() would hide it.
+  await row.getByRole('button', { name: DONE_LABEL[!done] }).click()
   try {
     await row.getByRole('button', { name: DONE_LABEL[done] }).waitFor({ timeout: 10_000 })
   } catch (e) {
@@ -433,11 +439,128 @@ async function offlineWriteCase({ name, reloadWhileOffline }) {
   }
 }
 
+// ─── Notification click (SW → client) ─────────────────────────────
+
+const NOTIFY_COPY = {
+  unknownRecipient: '無法確認這則通知的收件帳號，請從通知收件匣查看',
+  otherAccount:     '這則通知屬於其他帳號，請切換帳號後再查看',
+  draftOpen:        '有尚未儲存的表單，已保留目前畫面；儲存或關閉後再從通知收件匣查看',
+}
+const NOTIFY_CACHE = 'tripmate-notification-open'
+
+/** The SW's notificationclick posts this to an open window; dispatching the
+ *  same MessageEvent on navigator.serviceWorker reaches the client handler
+ *  exactly as a real post would (the SW itself cannot be clicked from here). */
+async function notificationOpenCase({ name }) {
+  const context = await newMobileContext(browser)
+  const page = await context.newPage()
+  collectProblems(page, name, problems)
+  const shot = file => page.screenshot({ path: join(OUT, `${name}-${file}.png`) })
+  const send = data => page.evaluate(d => {
+    navigator.serviceWorker.dispatchEvent(new MessageEvent('message', { data: d }))
+  }, data)
+  const notice = (scope, route, targetUid) =>
+    ({ type: 'NOTIFICATION_OPEN', scope, route, tripId: TRIP, ...(targetUid ? { targetUid } : {}) })
+  const where = () => page.evaluate(() => location.pathname + location.search)
+  const atPath = pathname => page.waitForURL(u => new URL(u).pathname === pathname && !new URL(u).searchParams.has('notify'), { timeout: 20_000 })
+  /** Plants a nonce record the way the SW's nonce store writes it. */
+  const plantNonce = (payload, expiresAt) => page.evaluate(async ({ payload, expiresAt, cacheName }) => {
+    const nonce = crypto.randomUUID()
+    const record = { payload, expiresAt }
+    const cache = await caches.open(cacheName)
+    await cache.put(`/__notification-open/${nonce}`, new Response(JSON.stringify(record), {
+      headers: { 'content-type': 'application/json', 'x-tripmate-expires-at': String(expiresAt) },
+    }))
+    return nonce
+  }, { payload, expiresAt, cacheName: NOTIFY_CACHE })
+  const nonceLeft = nonce => page.evaluate(async ({ nonce, cacheName }) =>
+    !!(await (await caches.open(cacheName)).match(`/__notification-open/${nonce}`)), { nonce, cacheName: NOTIFY_CACHE })
+
+  try {
+    await stage('isolate storage', async () => { await wipeOriginStorage(page) })
+
+    await stage('sign in online', async () => {
+      await page.goto(`${APP}/schedule`)
+      await signInAs(page, 'owner')
+      await page.getByText('Arrive at Narita').first().waitFor({ timeout: 30_000 })
+      await ensureServiceWorkerControls(page)
+      await page.getByText('Arrive at Narita').first().waitFor({ timeout: 30_000 })
+      ok('signed in as DEV owner; SW controlling')
+    })
+
+    await stage('open window: own trip notification navigates in place', async () => {
+      await page.evaluate(() => { window.__e2eAlive = true })
+      await send(notice('trip', '/expense', OWNER))
+      await atPath('/expense')
+      assert.equal(await page.evaluate(() => window.__e2eAlive === true), true, 'SPA navigation — the page was not reloaded')
+      await page.getByText('費用紀錄').first().waitFor({ timeout: 15_000 })
+      await shot('01-trip-notification')
+      ok('landed on /expense without a page reload')
+    })
+
+    await stage('open window: not for this account → no navigation', async () => {
+      await goTab(page, '行程')
+      await page.getByText('Arrive at Narita').first().waitFor()
+      await send(notice('trip', '/expense', 'dev-editor'))
+      await page.getByText(NOTIFY_COPY.otherAccount).first().waitFor({ timeout: 10_000 })
+      assert.equal(await where(), '/schedule')
+      await send(notice('trip', '/expense'))
+      await page.getByText(NOTIFY_COPY.unknownRecipient).first().waitFor({ timeout: 10_000 })
+      assert.equal(await where(), '/schedule')
+      ok("another account's notification and a targetUid-less one both stay put")
+    })
+
+    await stage('open window: an open draft is protected', async () => {
+      await page.getByRole('button', { name: '新增行程' }).first().click()
+      await dialog(page).waitFor()
+      await dialog(page).getByPlaceholder('例如：參觀淺草雷門').fill('草稿中')
+      await send(notice('trip', '/expense', OWNER))
+      await page.getByText(NOTIFY_COPY.draftOpen).first().waitFor({ timeout: 10_000 })
+      assert.equal(await where(), '/schedule')
+      assert.equal(await dialog(page).getByPlaceholder('例如：參觀淺草雷門').inputValue(), '草稿中', 'the draft is untouched')
+      await shot('02-draft-protected')
+      await dialog(page).getByRole('button', { name: '關閉' }).click()
+      await page.locator('[role="dialog"]').waitFor({ state: 'detached', timeout: 10_000 })
+      ok('stayed on the form with the draft intact')
+    })
+
+    await stage('open window: account scope goes to /account', async () => {
+      await send(notice('account', '/account', OWNER))
+      await atPath('/account')
+      ok('account-scope notification landed on /account')
+    })
+
+    await stage('cold start: ?notify=<nonce> is resolved through the SW', async () => {
+      const nonce = await plantNonce({ scope: 'trip', route: '/wish', tripId: TRIP, targetUid: OWNER }, Date.now() + 5 * 60_000)
+      await page.goto(`${APP}/schedule?notify=${nonce}`)
+      await atPath('/wish')
+      assert.equal(await nonceLeft(nonce), false, 'the nonce record is one-shot')
+      await shot('03-cold-start')
+      ok('cold start landed on /wish with the query cleared; nonce consumed')
+    })
+
+    await stage('cold start: an expired nonce stays on the default page', async () => {
+      const nonce = await plantNonce({ scope: 'trip', route: '/wish', tripId: TRIP, targetUid: OWNER }, Date.now() - 1_000)
+      await page.goto(`${APP}/schedule?notify=${nonce}`)
+      await atPath('/schedule')
+      await page.getByText('Arrive at Narita').first().waitFor({ timeout: 30_000 })
+      ok('expired nonce: default page, query cleared')
+    })
+  } catch (e) {
+    await page.screenshot({ path: join(OUT, `${name}-failure.png`), fullPage: true }).catch(() => {})
+    throw e
+  } finally {
+    await wipeOriginStorage(page).catch(() => {})
+    await context.close()
+  }
+}
+
 // ─── Inner run ────────────────────────────────────────────────────
 
 const CASES = [
-  { name: 'no-reload', reloadWhileOffline: false },
-  { name: 'reload', reloadWhileOffline: true },
+  { name: 'no-reload', reloadWhileOffline: false, run: offlineWriteCase, title: 'offline write survives reconnect (no reload)' },
+  { name: 'reload', reloadWhileOffline: true, run: offlineWriteCase, title: 'offline write survives an offline reload' },
+  { name: 'notify', run: notificationOpenCase, title: 'notification click is handled by the client, not a page navigation' },
 ]
 
 const results = []
@@ -448,9 +571,9 @@ try {
   await waitFor(APP)
   browser = await launchChromium()
   for (const c of CASES) {
-    step(`offline write survives ${c.reloadWhileOffline ? 'an offline reload' : 'reconnect (no reload)'} [${c.name}]`)
+    step(`${c.title} [${c.name}]`)
     try {
-      await offlineWriteCase(c)
+      await c.run(c)
       results.push({ name: c.name, ok: true })
     } catch (e) {
       console.error(`  ✗ ${e?.message ?? e}`)

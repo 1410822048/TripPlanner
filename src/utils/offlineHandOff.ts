@@ -19,11 +19,14 @@ import { toast } from '@/shared/toast'
 
 export const OFFLINE_HAND_OFF_MESSAGE = '目前離線，已先儲存在此裝置，恢復連線後會自動同步'
 export const SLOW_HAND_OFF_MESSAGE    = '連線較慢，仍在背景同步，完成後會自動更新'
+/** Writes that cannot be handed off: trip create (a batch we must not
+ *  double-create) and trip copy (needs server reads). The draft stays. */
+export const OFFLINE_NEEDS_CONNECTION_MESSAGE = '目前離線，需要連線後才能建立或複製旅程'
 
 /** How long a form waits for an unanswered write before handing it off. */
 export const HAND_OFF_AFTER_MS = 10_000
 
-function isOffline(): boolean {
+export function isOffline(): boolean {
   return typeof navigator !== 'undefined' && navigator.onLine === false
 }
 

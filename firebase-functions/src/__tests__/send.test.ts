@@ -85,11 +85,30 @@ describe('send helpers', () => {
     expect(messagingMock.sendEach).toHaveBeenCalledWith([
       expect.objectContaining({
         token: 'token-1',
-        data:  expect.objectContaining({ targetUid: 'user-1', eventId: 'event-1' }),
+        data:  expect.objectContaining({ targetUid: 'user-1', eventId: 'event-1', tripId: 'trip-1', scope: 'trip', url: '/expense' }),
       }),
       expect.objectContaining({
         token: 'token-2',
         data:  expect.objectContaining({ targetUid: 'user-2', eventId: 'event-1' }),
+      }),
+    ])
+  })
+
+  test('carries the account scope so the SW never switches into a trip the recipient lost', async () => {
+    messagingMock.sendEach.mockResolvedValueOnce({
+      successCount: 1,
+      failureCount: 0,
+      responses:    [{ success: true }],
+    })
+
+    await sendPush(
+      { ...pushEvent(), entityType: 'member', action: 'removed', route: '/account', templateKey: 'member.removed_self', scope: 'account' },
+      [{ uid: 'user-1', tokenHash: 'hash-1', token: 'token-1' }],
+    )
+
+    expect(messagingMock.sendEach).toHaveBeenCalledWith([
+      expect.objectContaining({
+        data: expect.objectContaining({ scope: 'account', url: '/account', targetUid: 'user-1', tripId: 'trip-1' }),
       }),
     ])
   })

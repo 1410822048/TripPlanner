@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { assertFails, assertSucceeds, type RulesTestEnvironment } from '@firebase/rules-unit-testing'
-import { collection, deleteField, doc, getDoc, getDocs, orderBy, query, serverTimestamp, updateDoc, where, writeBatch } from 'firebase/firestore'
+import { collection, deleteField, doc, getDoc, getDocs, orderBy, query, serverTimestamp, Timestamp, updateDoc, where, writeBatch } from 'firebase/firestore'
 import { TripDocSchema } from '../../src/types/trip'
 import { setupTestEnv, teardownTestEnv, seedFixture, asOwner, asViewer, TRIP_ID, OWNER_UID } from './helpers'
 
@@ -10,6 +10,26 @@ afterAll(async () => { await teardownTestEnv() })
 beforeEach(async () => { await env.clearFirestore(); await seedFixture(env) })
 
 describe('Rules protect required read schema', () => {
+  it.each([-1, 365, 366])('validates complete date range on create and update: delta=%s days', async days => {
+    const db = asOwner(env).firestore()
+    const startDate = Timestamp.fromDate(new Date('2026-01-01T00:00:00Z'))
+    const endDate = Timestamp.fromMillis(startDate.toMillis() + days * 86_400_000)
+    const check = days === 365 ? assertSucceeds : assertFails
+    await check(updateDoc(doc(db, 'trips', TRIP_ID), { startDate, endDate }))
+    const id = 'date-bounds'
+    const batch = writeBatch(db)
+    batch.set(doc(db, 'trips', id), {
+      title: 'Test', destination: 'Tokyo', ownerId: OWNER_UID, memberIds: [OWNER_UID],
+      startDate, endDate, currency: 'JPY', defaultCountryCode: 'JP',
+      wishVotingDeadlineAt: null, wishVotingDeadlineNotifiedAt: null,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    })
+    batch.set(doc(db, 'trips', id, 'members', OWNER_UID), {
+      tripId: id, userId: OWNER_UID, displayName: 'Owner', role: 'owner',
+      memberIds: [OWNER_UID], joinedAt: serverTimestamp(),
+    })
+    await check(batch.commit())
+  })
   it.each(['startDate', 'endDate', 'updatedAt'])('rejects removing required %s', async field => {
     const ref = doc(asOwner(env).firestore(), 'trips', TRIP_ID)
     expect(TripDocSchema.safeParse((await getDoc(ref)).data()).success).toBe(true)

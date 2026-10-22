@@ -3,7 +3,7 @@
 // to trips and schedules: it only needs to know whether the user is in
 // demo mode (cloud-only actions divert to the sign-in prompt) and which
 // trip a copy would snapshot.
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useUid } from '@/hooks/useAuth'
 import { useFormModal, type UseFormModalResult } from '@/hooks/useFormModal'
@@ -19,9 +19,21 @@ export interface ScheduleModalsState {
 
   editTripOpen:    boolean
   setEditTripOpen: (open: boolean) => void
+  /** Draft-bearing form: open state is NOT derived closed on a trip / account
+   *  switch (that would eat the draft). It is stamped at open and the save
+   *  handler refuses with FORM_SCOPE_CHANGED_MESSAGE when this is true. */
+  editTripScopeChanged: boolean
+  editTripSaveError:    string | null
+  setEditTripSaveError: (message: string | null) => void
+  /** Bumped per open so the host remounts a fresh form instance. */
+  editTripGeneration:   number
 
   createTripOpen:    boolean
   setCreateTripOpen: (open: boolean) => void
+  /** Bumped per open: CreateTripModal is rendered per open with this key,
+   *  so a write that settles after the sheet was dismissed and reopened
+   *  cannot touch the new instance (useAwaitedSave liveness). */
+  createTripGeneration: number
 
   copyTripOpen:    boolean
   setCopyTripOpen: (open: boolean) => void
@@ -29,6 +41,10 @@ export interface ScheduleModalsState {
    *  renders CopyTripModal off this (not `currentTrip`) so post-mutation
    *  trip switches don't re-key the modal during its close transition. */
   copyTripSource:  Trip | null
+  /** The account the copy sheet was opened under. onCopyTrip compares it
+   *  with the CURRENT uid and refuses on mismatch — the old uid is not a
+   *  credential to keep writing with. */
+  copyTripOpenedUid: string | undefined
 
   inviteOpen:    boolean
   setInviteOpen: (open: boolean) => void
@@ -61,9 +77,31 @@ export function useScheduleModals(opts: {
   const uid = useUid()
   const scheduleModal = useFormModal<Schedule>({ tripId: currentTrip?.id, uid })
   const [scheduleDetailId, setScheduleDetailId] = useState<string | null>(null)
-  const [editTripOpen,   setEditTripOpen]   = useState(false)
-  const [createTripOpen, setCreateTripOpen] = useState(false)
+  // Edit-trip is a DRAFT form (see useFormModal's scope strategy): stamp
+  // {tripId, uid} at open, never auto-close, refuse at save on mismatch.
+  type DraftScope = { tripId: string | undefined; uid: string | undefined }
+  const [editTripOpenedOn, setEditTripOpenedOn] = useState<DraftScope | null>(null)
+  const [editTripSaveError, setEditTripSaveError] = useState<string | null>(null)
+  const generation = useRef({ edit: 0, create: 0 })
+  const [editTripGeneration,   setEditTripGeneration]   = useState(0)
+  const [createTripGeneration, setCreateTripGeneration] = useState(0)
+  const editTripOpen = editTripOpenedOn !== null
+  // Fail-closed: a vanished trip (kick / remote delete) or signed-out
+  // session reads as "changed", never as "still fine".
+  const editTripScopeChanged = editTripOpenedOn !== null
+    && (editTripOpenedOn.tripId !== currentTrip?.id || editTripOpenedOn.uid !== uid)
+  const setEditTripOpen = (open: boolean) => {
+    if (open) setEditTripGeneration(++generation.current.edit)
+    setEditTripOpenedOn(open ? { tripId: currentTrip?.id, uid } : null)
+    setEditTripSaveError(null)
+  }
+  const [createTripOpen, setCreateTripOpenState] = useState(false)
+  const setCreateTripOpen = (open: boolean) => {
+    if (open) setCreateTripGeneration(++generation.current.create)
+    setCreateTripOpenState(open)
+  }
   const [copyTripOpen,   setCopyTripOpen]   = useState(false)
+  const [copyTripOpenedUid, setCopyTripOpenedUid] = useState<string | undefined>(undefined)
   // Decouples the copy modal's identity (key + source) from currentTrip so
   // the post-mutation `setSelectedTripId(newTrip.id)` doesn't re-key it
   // mid-close — that re-key caused a 3-frame flash (close→open→close),
@@ -111,7 +149,6 @@ export function useScheduleModals(opts: {
   useEffect(() => {
     const s = location.state as { openCreateTrip?: boolean } | null
     if (!s?.openCreateTrip) return
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCreateTripOpen(true)
     navigate(location.pathname, { replace: true, state: null })
   }, [location.state, location.pathname, navigate])
@@ -139,6 +176,7 @@ export function useScheduleModals(opts: {
           // from this snapshot so the post-mutation trip switch doesn't
           // re-key the modal mid-close.
           setCopyTripSource(currentTrip)
+          setCopyTripOpenedUid(uid)
           setCopyTripOpen(true)
         }
         return
@@ -158,9 +196,10 @@ export function useScheduleModals(opts: {
     closeScheduleDetail: () => setScheduleDetailId(null),
 
     editTripOpen, setEditTripOpen,
-    createTripOpen, setCreateTripOpen,
+    editTripScopeChanged, editTripSaveError, setEditTripSaveError, editTripGeneration,
+    createTripOpen, setCreateTripOpen, createTripGeneration,
     copyTripOpen, setCopyTripOpen,
-    copyTripSource,
+    copyTripSource, copyTripOpenedUid,
     inviteOpen, setInviteOpen,
     inviteScannerOpen, setInviteScannerOpen,
     membersOpen, setMembersOpen,

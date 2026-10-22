@@ -14,11 +14,12 @@
 //      classification errors and ghost debt edges. Single
 //      validation chokepoint > rules + JS form layer duplication.
 //
-// firestore.rules has `allow create: if false` and a strict
-// `changedOnly([deletedAt, updatedBy, updatedAt, ...])` on update,
-// so this endpoint is the ONLY path that can write content fields
-// to an expense doc. Client-side soft-delete / restore stay rules-gated
-// (no settlement-engine risk); membership projection writes are Worker-owned.
+// firestore.rules has `allow create, update: if false` on expenses, so
+// these endpoints are the ONLY write paths: create, content update and
+// soft delete (/expense-soft-delete). Keeping the soft delete here too
+// means the expenses collection never carries a client pending write,
+// which would otherwise flip the ledger listener to "not server-confirmed"
+// on every swipe delete. Membership projection writes are Worker-owned.
 import { z }                                                        from 'zod'
 import { getAdminToken, getProjectId }                              from './admin'
 import {
@@ -106,6 +107,12 @@ export const ExpenseUpdateRequestSchema = z.object({
   expectedFxRate: ExpectedFxRateSchema.optional(),
 })
 export type ExpenseUpdateRequest = z.infer<typeof ExpenseUpdateRequestSchema>
+
+export const ExpenseSoftDeleteRequestSchema = z.object({
+  tripId:    z.string().regex(TripIdRe),
+  expenseId: z.string().regex(TripIdRe),
+}).strict()
+export type ExpenseSoftDeleteRequest = z.infer<typeof ExpenseSoftDeleteRequestSchema>
 
 const ExpensePayloadModeSchema = z.enum(['TRIP_CURRENCY', 'FOREIGN_CURRENCY'])
 type ExpensePayloadMode = z.infer<typeof ExpensePayloadModeSchema>
@@ -646,6 +653,64 @@ async function doUpdate(
     // intentMarkUsedWrites first so they commit atomically with the
     // expense patch -- mirrors the create path's invariant.
     return { writes: [...intentMarkUsedWrites, write], result: undefined }
+  })
+
+  return { ok: true }
+}
+
+// ─── Endpoint: expense-soft-delete ────────────────────────────────
+
+/** Soft delete = stamp `deletedAt` (server time). The doc stays so the
+ *  settlement chronological replay can classify orphans; the receipt is
+ *  kept and purged by the 10-day cron (receipt-purge.ts).
+ *
+ *  Same gates as /expense-update: owner / editor, not being removed, trip
+ *  not deleting, settlement lock ⇒ owner only. Idempotent: an expense that
+ *  is already tombstoned returns success with no write, so a retry after
+ *  an ambiguous commit converges instead of 409-ing. */
+export async function expenseSoftDelete(
+  callerUid:          string,
+  req:                ExpenseSoftDeleteRequest,
+  serviceAccountJson: string,
+): Promise<{ ok: true }> {
+  return withTokenRetry(() => doSoftDelete(callerUid, req, serviceAccountJson))
+}
+
+async function doSoftDelete(
+  callerUid:          string,
+  req:                ExpenseSoftDeleteRequest,
+  serviceAccountJson: string,
+): Promise<{ ok: true }> {
+  const accessToken = await getAdminToken(serviceAccountJson)
+  const projectId   = getProjectId(serviceAccountJson)
+  const path        = `trips/${req.tripId}/expenses/${req.expenseId}`
+
+  await runFirestoreTransaction(accessToken, projectId, async (tx) => {
+    const ctx     = await authorizeCanWriteTx(tx, req.tripId, callerUid)
+    const current = await tx.get(path)
+    if (!current.exists) {
+      throw new CascadeError(404, 'expense not found')
+    }
+    // Lock before idempotency: a caller who could not have deleted this
+    // expense never gets a success back, even a no-op one.
+    assertCanEditExpenseAfterSettlement(ctx, current.fields)
+    const deletedAt = current.fields.deletedAt as { timestampValue?: string } | undefined
+    if (deletedAt?.timestampValue) {
+      return { writes: [], result: undefined }
+    }
+    // Only the audit + tombstone fields: updateMask keeps every other
+    // field (content, receipt, settlementLockIds, receiptPurgedAt) intact.
+    const write: TxUpdateWrite = {
+      document:        docResourceName(projectId, path),
+      fields:          { updatedBy: { stringValue: callerUid } },
+      updateMask:      ['updatedBy'],
+      currentDocument: { exists: true },
+      updateTransforms: [
+        { fieldPath: 'deletedAt', setToServerValue: 'REQUEST_TIME' },
+        { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' },
+      ],
+    }
+    return { writes: [write], result: undefined }
   })
 
   return { ok: true }

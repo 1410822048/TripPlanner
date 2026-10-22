@@ -8,7 +8,7 @@
 // just picks the slices each modal needs and wires them up. Adding a
 // new modal: extend SchedulePageState with the open/handler fields,
 // then add a block here. Don't widen the page's surface.
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import ScheduleFormModal from './ScheduleFormModal'
 import ScheduleReadonlyModal from './ScheduleReadonlyModal'
 import EditTripModal from '@/features/trips/components/EditTripModal'
@@ -17,6 +17,8 @@ import CreateTripModal from '@/features/trips/components/CreateTripModal'
 import MembersModal from '@/features/members/components/MembersModal'
 import SignInPromptModal from '@/features/auth/components/SignInPromptModal'
 import type { SchedulePageState } from '../hooks/useSchedulePageState'
+import type { TripItem } from '@/features/trips/types'
+import { FORM_SCOPE_CHANGED_MESSAGE } from '@/hooks/useFormModal'
 import { toLocalDateString } from '@/utils/dates'
 
 // Lazy-loaded: InviteModal pulls in qrcode.react (~30 KB raw / ~10 KB
@@ -31,14 +33,45 @@ interface Props {
   state: SchedulePageState
 }
 
+/** One open of the edit-trip sheet. `editTarget` is frozen at mount (the
+ *  host keys this per open), so a background reselect cannot swap the
+ *  draft for another trip's data; the stamped scope decides at save time. */
+function EditTripSheet({ initialTarget, scheduleDates, scopeChanged, saveError, saveTrip, onClose, onSaved }: {
+  initialTarget: TripItem | null
+  scheduleDates: string[]
+  scopeChanged:  boolean
+  saveError:     string | null
+  saveTrip:      (data: TripItem) => boolean
+  onClose:       () => void
+  onSaved:       (message: string | null) => void
+}) {
+  const [editTarget] = useState(initialTarget)
+  if (!editTarget) return null
+  return (
+    <EditTripModal
+      isOpen
+      editTarget={editTarget}
+      scheduleDates={scheduleDates}
+      saveError={saveError}
+      onClose={onClose}
+      onSave={data => {
+        // Scope first: it is a refusal that keeps the draft, and it must win
+        // over any branch that could clear or close the form.
+        if (scopeChanged) { onSaved(FORM_SCOPE_CHANGED_MESSAGE); return }
+        if (saveTrip(data)) onClose()
+      }}
+    />
+  )
+}
+
 export default function TripModalsHost({ state }: Props) {
   const {
     isDemo, canWrite, selectedTrip, schedules, currentTrip, display,
     scheduleModal, scheduleDetailTarget, closeScheduleDetail, editScheduleFromDetail,
     onScheduleSave, onScheduleDelete,
-    editTripOpen,    setEditTripOpen,
-    createTripOpen,  setCreateTripOpen,
-    copyTripOpen,    setCopyTripOpen, copyTripSource, copyTripPending, onCopyTrip,
+    editTripOpen,    setEditTripOpen, editTripScopeChanged, editTripSaveError, setEditTripSaveError, editTripGeneration,
+    createTripOpen,  setCreateTripOpen, createTripGeneration,
+    copyTripOpen,    setCopyTripOpen, copyTripSource, onCopyTrip,
     inviteOpen,      setInviteOpen,
     inviteScannerOpen, setInviteScannerOpen,
     membersOpen,     setMembersOpen,
@@ -83,36 +116,45 @@ export default function TripModalsHost({ state }: Props) {
         />
       )}
 
-      {/* Conditionally render + keyed so every open initializes from
-          the current trip via useState (no sync-in-effect; no stale
-          state after a cancel-then-reopen). */}
-      {editTripOpen && selectedTrip && (
-        <EditTripModal
-          key={selectedTrip.id}
-          isOpen
-          editTarget={selectedTrip}
+      {/* Draft form: rendered per open (keyed by generation, NOT by the
+          live trip id) so a trip switch underneath neither remounts it
+          with another trip's data nor eats the draft. The sheet stays up
+          until the user closes it; a save after the switch is refused in
+          place (useScheduleModals stamps the scope at open). */}
+      {editTripOpen && (
+        <EditTripSheet
+          key={editTripGeneration}
+          initialTarget={selectedTrip}
           scheduleDates={schedules.map(s => s.date)}
+          scopeChanged={editTripScopeChanged}
+          saveError={editTripSaveError}
+          saveTrip={saveTrip}
           onClose={() => setEditTripOpen(false)}
-          onSave={data => { if (saveTrip(data)) setEditTripOpen(false) }}
+          onSaved={setEditTripSaveError}
         />
       )}
 
-      <CreateTripModal
-        isOpen={createTripOpen}
-        onClose={() => setCreateTripOpen(false)}
-      />
+      {/* Per open instance (keyed by generation): the create write belongs
+          to the instance that issued it, so a result landing after a
+          dismiss-and-reopen cannot close or redirect the new sheet. */}
+      {createTripOpen && (
+        <CreateTripModal
+          key={createTripGeneration}
+          isOpen
+          onClose={() => setCreateTripOpen(false)}
+        />
+      )}
 
       {!isDemo && copyTripSource && copyTripOpen && (
         // Conditionally rendered + keyed on the SNAPSHOT (not currentTrip)
         // so the post-confirm `setSelectedTripId(newTrip.id)` doesn't
         // re-key this modal mid-close. The snapshot was captured when
         // the modal opened — see useSchedulePageState's handleMenuAction
-        // 'copy' branch.
+        // 'copy' branch. Busy state lives in the sheet (useAwaitedSave).
         <CopyTripModal
           key={copyTripSource.id}
           isOpen
           source={copyTripSource}
-          isSaving={copyTripPending}
           onClose={() => setCopyTripOpen(false)}
           onConfirm={onCopyTrip}
         />

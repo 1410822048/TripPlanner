@@ -59,7 +59,10 @@ export interface UseSwipeRowResult {
     onPointerMove:   (e: React.PointerEvent) => void
     onPointerUp:     (e: React.PointerEvent) => void
     onPointerCancel: (e: React.PointerEvent) => void
+    onPointerLeave:  (e: React.PointerEvent) => void
     onContextMenu:   (e: React.MouseEvent) => void
+    /** Swallows the click a MOUSE drag ends with (see onClickCapture). */
+    onClickCapture:  (e: React.MouseEvent) => void
   }
   /** X offset in px. -SWIPE_WIDTH when open, 0 when closed. */
   openX: number
@@ -128,12 +131,21 @@ export function useSwipeRow({
     const fg = fgRef.current, bg = bgRef.current
     if (fg) { fg.style.transition = 'none'; fg.style.willChange = 'transform' }
     if (bg) { bg.style.transition = 'background 0.15s'; bg.style.willChange = 'transform' }
-    try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId) }
-    catch { /* some browsers throw on pointer capture — ignore */ }
+    // No pointer capture here. Capturing on pointerdown makes Chromium
+    // dispatch the following MOUSE click to the capturing row instead of
+    // the button under the pointer (touch taps are unaffected), so every
+    // button inside a row was dead for mouse users. Capture is taken in
+    // onPointerMove, once the gesture is known to be a horizontal swipe.
   }
 
   function onPointerMove(e: React.PointerEvent) {
     if (!enabled || !drag.current.dragging) return
+    // Before capture, pointerup can land outside this row (or window).
+    // Hovering back in must never resume a drag after the mouse was released.
+    if (e.pointerType === 'mouse' && e.buttons === 0) {
+      cancelDrag(e)
+      return
+    }
     const dx = e.clientX - drag.current.startX
     const dy = e.clientY - drag.current.startY
 
@@ -150,15 +162,17 @@ export function useSwipeRow({
     if (Math.abs(dx) > Math.abs(dy)) {
       drag.current.mode = 'swipe'
       drag.current.didDrag = true
+      // Now that this is a swipe, keep receiving moves after the pointer
+      // leaves the row. A plain tap never reaches here, so clicks on inner
+      // buttons keep their target.
+      try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId) }
+      catch { /* some browsers throw on pointer capture — ignore */ }
     } else {
       // Vertical scroll wins: hand the gesture back. onPointerUp will bail
       // (dragging is false), so undo onPointerDown's inline styles here —
       // otherwise transition:none sticks (the next closeAll jumps instead of
       // animating) and will-change pins a compositor layer per row.
-      drag.current.dragging = false
-      try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) }
-      catch { /* no-op */ }
-      restoreIdleStyles()
+      cancelDrag(e)
     }
   }
 
@@ -166,6 +180,24 @@ export function useSwipeRow({
     const fg = fgRef.current, bg = bgRef.current
     if (fg) { fg.style.transition = FG_TRANSITION; fg.style.willChange = '' }
     if (bg) { bg.style.transition = BG_TRANSITION; bg.style.willChange = '' }
+  }
+
+  /** Abort without committing an open/close or leaving transient styles. */
+  function cancelDrag(e: React.PointerEvent) {
+    if (!drag.current.dragging) return
+    drag.current.dragging = false
+    drag.current.mode = null
+    drag.current.didDrag = false
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) }
+    catch { /* no capture yet, or already released by the browser */ }
+    restoreIdleStyles()
+    writeTransform(enabled && isOpen ? -SWIPE_WIDTH : 0)
+  }
+
+  function onPointerLeave(e: React.PointerEvent) {
+    // A recognised swipe owns capture and may continue outside the row.
+    // An undecided gesture does not: cancel before it can miss pointerup.
+    if (drag.current.mode !== 'swipe') cancelDrag(e)
   }
 
   function onPointerUp(e: React.PointerEvent) {
@@ -209,6 +241,19 @@ export function useSwipeRow({
     onDelete?.()
   }
 
+  // A mouse drag ends with a click. The pointer was captured during the
+  // swipe, so Chromium targets that click at the row itself (the common
+  // ancestor of the mousedown and mouseup targets) — not at the inner
+  // button whose wrapTap would swallow it. From the row it would bubble to
+  // the page's close-on-outside-tap and shut the row that just latched
+  // open. Capture phase, so it runs before any inner handler; touch drags
+  // produce no click and are unaffected. didDrag is re-armed on pointerdown.
+  function onClickCapture(e: React.MouseEvent) {
+    if (!drag.current.didDrag) return
+    drag.current.didDrag = false
+    e.stopPropagation()
+  }
+
   function wrapTap(action: () => void) {
     return (e: React.MouseEvent) => {
       e.stopPropagation()
@@ -234,8 +279,10 @@ export function useSwipeRow({
       onPointerDown,
       onPointerMove,
       onPointerUp,
-      onPointerCancel: onPointerUp,
+      onPointerCancel: cancelDrag,
+      onPointerLeave,
       onContextMenu:   e => e.preventDefault(),
+      onClickCapture,
     },
     openX,
     confirming,

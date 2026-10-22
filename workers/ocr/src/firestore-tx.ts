@@ -37,6 +37,11 @@ import { firestoreRestBase }       from './emulator'
  *  (e.g. `{ exists: true }` to reject a delete-before-read race). */
 export type TxWrite = TxUpdateWrite | TxDeleteWrite | TxTransformWrite
 
+export type TxFieldTransform =
+  | { fieldPath: string; setToServerValue: 'REQUEST_TIME' }
+  | { fieldPath: string; appendMissingElements: { values: FsValue[] } }
+  | { fieldPath: string; removeAllFromArray: { values: FsValue[] } }
+
 export interface TxUpdateWrite {
   op?:             'update'
   /** Full document resource name:
@@ -57,17 +62,12 @@ export interface TxUpdateWrite {
     updateTime?: string
   }
   /** Field-level server-side transforms applied atomically alongside
-   *  the field write. Today we only need `REQUEST_TIME` for audit
-   *  timestamps (`createdAt` / `updatedAt`) -- using CF Workers'
-   *  Date.now() instead would drift relative to Firestore server
-   *  clock and break the settlement engine's chronological replay,
-   *  which sorts by Firestore-stamped createdAt. updateTransforms
+   *  the field write. REQUEST_TIME supplies server audit timestamps;
+   *  membership removal combines array removal with planning map cleanup.
+   *  updateTransforms
    *  fieldPaths are SEPARATE from updateMask -- they don't appear
    *  in `fields` and don't need to be in the mask. */
-  updateTransforms?: Array<{
-    fieldPath:        string
-    setToServerValue: 'REQUEST_TIME'
-  }>
+  updateTransforms?: TxFieldTransform[]
 }
 
 /** Transform-only write: applies `fieldTransforms` without touching any
@@ -89,10 +89,7 @@ export interface TxTransformWrite {
   op:              'transform'
   /** Full document resource name -- same shape as TxUpdateWrite.document. */
   document:        string
-  fieldTransforms: Array<{
-    fieldPath:             string
-    appendMissingElements: { values: FsValue[] }
-  }>
+  fieldTransforms: TxFieldTransform[]
   currentDocument?: {
     exists?:     boolean
     updateTime?: string

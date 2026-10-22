@@ -187,6 +187,73 @@ describe('useScheduleModals scope-derived management modals', () => {
   })
 })
 
+// Edit-trip holds a DRAFT: it is stamped at open and never derived closed
+// (that would eat the draft); the host refuses the save on mismatch.
+describe('useScheduleModals edit-trip draft scope', () => {
+  const renderWithTrip = (initial: Trip | null) =>
+    renderHook(
+      ({ currentTrip }: { currentTrip: Trip | null }) =>
+        useScheduleModals({ isDemo: false, currentTrip }),
+      { wrapper: wrapper(['/schedule']), initialProps: { currentTrip: initial } },
+    )
+
+  it('stays open across a trip switch but reports the scope as changed', () => {
+    const hook = renderWithTrip(TRIP)
+    act(() => hook.result.current.setEditTripOpen(true))
+    expect(hook.result.current.editTripOpen).toBe(true)
+    expect(hook.result.current.editTripScopeChanged).toBe(false)
+
+    hook.rerender({ currentTrip: { id: 'trip-2', title: 'Osaka' } as Trip })
+
+    expect(hook.result.current.editTripOpen).toBe(true)
+    expect(hook.result.current.editTripScopeChanged).toBe(true)
+    expect(hook.result.current.anyOpen).toBe(true)
+  })
+
+  it('fails closed when the trip vanishes or the account changes', () => {
+    const hook = renderWithTrip(TRIP)
+    act(() => hook.result.current.setEditTripOpen(true))
+
+    hook.rerender({ currentTrip: null })
+    expect(hook.result.current.editTripScopeChanged).toBe(true)
+
+    hook.rerender({ currentTrip: TRIP })
+    expect(hook.result.current.editTripScopeChanged).toBe(false)
+
+    authMocks.uid = 'u2'
+    hook.rerender({ currentTrip: TRIP })
+    expect(hook.result.current.editTripScopeChanged).toBe(true)
+  })
+
+  it('bumps the generation and clears the banner on every open', () => {
+    const hook = renderWithTrip(TRIP)
+    act(() => hook.result.current.setEditTripOpen(true))
+    const first = hook.result.current.editTripGeneration
+    act(() => hook.result.current.setEditTripSaveError('x'))
+    expect(hook.result.current.editTripSaveError).toBe('x')
+
+    act(() => hook.result.current.setEditTripOpen(false))
+    expect(hook.result.current.editTripOpen).toBe(false)
+    expect(hook.result.current.editTripSaveError).toBeNull()
+
+    act(() => hook.result.current.setEditTripOpen(true))
+    expect(hook.result.current.editTripGeneration).toBeGreaterThan(first)
+    expect(hook.result.current.editTripScopeChanged).toBe(false)
+  })
+
+  it('gives create-trip a new generation per open and stamps the copy sheet with the uid', () => {
+    const hook = render()
+    act(() => hook.result.current.setCreateTripOpen(true))
+    const first = hook.result.current.createTripGeneration
+    act(() => hook.result.current.setCreateTripOpen(false))
+    act(() => hook.result.current.setCreateTripOpen(true))
+    expect(hook.result.current.createTripGeneration).toBeGreaterThan(first)
+
+    act(() => hook.result.current.handleMenuAction('copy'))
+    expect(hook.result.current.copyTripOpenedUid).toBe('u1')
+  })
+})
+
 describe('useScheduleModals anyOpen', () => {
   it('stays false until something opens, and covers each flag', () => {
     const hook = render()

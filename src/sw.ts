@@ -12,6 +12,20 @@ import { NavigationRoute, registerRoute } from 'workbox-routing'
 import { CacheFirst } from 'workbox-strategies'
 import { readPushOwnerUid } from './features/account/services/pushOwnerStore'
 import { precacheRedirectPlugin } from './services/precacheRedirectPlugin'
+import {
+  NOTIFICATION_PAYLOAD_RESPONSE,
+  NOTIFY_CACHE_NAME,
+  NOTIFY_LAUNCH_PATH,
+  chooseWindowClient,
+  createNotificationNonceStore,
+  isNotificationPayloadRequest,
+  isValidNotifyNonce,
+  notificationOpenMessage,
+  notifyLaunchUrl,
+  parseNotificationOpenPayload,
+  payloadFromPushData,
+  type NotificationPayloadResponse,
+} from './services/notificationOpenProtocol'
 
 const sw = self as unknown as ServiceWorkerGlobalScope
 type PrecacheManifest = Parameters<typeof precacheAndRoute>[0]
@@ -28,9 +42,26 @@ addPlugins([precacheRedirectPlugin])
 precacheAndRoute((self as unknown as { __WB_MANIFEST: PrecacheManifest }).__WB_MANIFEST)
 cleanupOutdatedCaches()
 
+// 冷啟動的通知 payload 以 nonce 暫存（記憶體 + Cache Storage 備援，數分鐘過期）。
+const notificationNonces = createNotificationNonceStore({
+  openCache: () => caches.open(NOTIFY_CACHE_NAME),
+})
+
 sw.addEventListener('message', event => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     void sw.skipWaiting()
+    return
+  }
+  // 冷啟動的 client 以 MessageChannel 索取 nonce 對應的 payload（一次性）。
+  if (isNotificationPayloadRequest(event.data)) {
+    const port = event.ports[0]
+    if (!port) return
+    const nonce: unknown = event.data.nonce
+    event.waitUntil((async () => {
+      const payload = isValidNotifyNonce(nonce) ? await notificationNonces.take(nonce) : null
+      const response: NotificationPayloadResponse = { type: NOTIFICATION_PAYLOAD_RESPONSE, payload }
+      port.postMessage(response)
+    })())
   }
 })
 
@@ -129,22 +160,6 @@ registerRoute(
   }),
 )
 
-function toSameOriginUrl(raw: unknown): string {
-  const fallback = new URL('/schedule', sw.location.origin)
-  if (typeof raw !== 'string' || raw.length > 300) return fallback.href
-
-  try {
-    const url = new URL(raw, sw.location.origin)
-    return url.origin === sw.location.origin ? url.href : fallback.href
-  } catch {
-    return fallback.href
-  }
-}
-
-function getNotificationUrl(payload: MessagePayload): string {
-  return toSameOriginUrl(payload.data?.url ?? payload.fcmOptions?.link)
-}
-
 function getTag(payload: MessagePayload): string {
   const raw = payload.data?.tag ?? payload.messageId
   return raw ? `tripmate-${raw.slice(0, 80)}` : 'tripmate-update'
@@ -174,7 +189,9 @@ async function showDataNotification(payload: MessagePayload): Promise<void> {
     icon:  '/pwa-192x192.png',
     badge: '/favicon-32x32.png',
     tag:   getTag(payload),
-    data:  { url: getNotificationUrl(payload) },
+    // 只帶白名單驗證過的 { scope, route, tripId, targetUid }；不合法即 null，
+    // 點擊時只把 app 帶到前景、不導航。
+    data:  { open: payloadFromPushData(payload.data) },
   })
 }
 
@@ -185,22 +202,30 @@ try {
   // Non-fatal: unsupported / blocked SW messaging should not break offline.
 }
 
+// 點擊不在 SW 端導航：`client.navigate()` 是整頁導覽，會清掉開著的草稿與
+// 暫停中的 mutation。導航與否（帳號比對、成員檢查、草稿保護）一律交給 client
+// 的 notificationOpen 處理器決定。
 sw.addEventListener('notificationclick', event => {
   event.notification.close()
-  const data = event.notification.data as { url?: string } | undefined
-  const targetUrl = toSameOriginUrl(data?.url)
+  const data = event.notification.data as { open?: unknown } | undefined
+  const open = parseNotificationOpenPayload(data?.open)
 
   event.waitUntil((async () => {
     const windows = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true })
-    const existing = windows.find(client => new URL(client.url).origin === sw.location.origin)
+    const existing = chooseWindowClient(windows, sw.location.origin)
     if (existing) {
-      const navigated = existing.url === targetUrl
-        ? existing
-        : await existing.navigate(targetUrl).catch(() => existing)
-      await (navigated ?? existing).focus()
+      if (open) existing.postMessage(notificationOpenMessage(open))
+      await existing.focus().catch(() => undefined)
       return
     }
 
-    await sw.clients.openWindow(targetUrl)
+    if (!open) {
+      await sw.clients.openWindow(NOTIFY_LAUNCH_PATH)
+      return
+    }
+    // 冷啟動：網址只帶不透明 nonce（uid 不進網址 / 瀏覽歷史）。
+    const nonce = crypto.randomUUID()
+    await notificationNonces.save(nonce, open)
+    await sw.clients.openWindow(notifyLaunchUrl(nonce))
   })())
 })

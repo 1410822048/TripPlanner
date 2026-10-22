@@ -10,10 +10,9 @@ import { useState } from 'react'
 import { useSchedules } from './useSchedules'
 import { useScheduleActions, type ScheduleActions } from './useScheduleActions'
 import { useScheduleModals } from './useScheduleModals'
-import { useTripActions } from './useTripActions'
+import { useTripActions, type TripActions } from './useTripActions'
 import { useMyTrips } from '@/features/trips/hooks/useTrips'
 import { useCurrentTrip } from '@/features/trips/hooks/useCurrentTrip'
-import type { CopyTripInput } from '@/features/trips/services/tripCopy'
 import { useTripSelection } from '@/features/trips/hooks/useTripSelection'
 import { useCanWrite, useIsTripOwner } from '@/features/trips/hooks/useTripRole'
 import { useClientCompatibility } from '@/hooks/useClientCompatibility'
@@ -108,9 +107,14 @@ export interface SchedulePageState {
 
   editTripOpen:    boolean
   setEditTripOpen: (open: boolean) => void
+  editTripScopeChanged: boolean
+  editTripSaveError:    string | null
+  setEditTripSaveError: (message: string | null) => void
+  editTripGeneration:   number
 
   createTripOpen:    boolean
   setCreateTripOpen: (open: boolean) => void
+  createTripGeneration: number
 
   copyTripOpen:    boolean
   setCopyTripOpen: (open: boolean) => void
@@ -118,8 +122,9 @@ export interface SchedulePageState {
    *  renders CopyTripModal off this (not `currentTrip`) so post-mutation
    *  trip switches don't re-key the modal during its close transition. */
   copyTripSource:  Trip | null
-  copyTripPending: boolean
-  onCopyTrip:      (input: CopyTripInput) => Promise<void>
+  /** The sheet tracks the returned promise itself (useAwaitedSave) and
+   *  closes on success; a sync refusal returns nothing. */
+  onCopyTrip:      TripActions['onCopyTrip']
 
   inviteOpen:    boolean
   setInviteOpen: (open: boolean) => void
@@ -256,7 +261,7 @@ export function useSchedulePageState(): SchedulePageState {
     clearScheduleDetail: modals.closeScheduleDetail,
     closeMembers:        () => modals.setMembersOpen(false),
     copyTripSource:      modals.copyTripSource,
-    closeCopyTrip:       () => modals.setCopyTripOpen(false),
+    copyTripOpenedUid:   modals.copyTripOpenedUid,
   })
 
   const scheduleActions = useScheduleActions({
@@ -317,15 +322,19 @@ export function useSchedulePageState(): SchedulePageState {
     onScheduleSave:   scheduleActions.onScheduleSave,
     onScheduleDelete: scheduleActions.onScheduleDelete,
 
-    editTripOpen:      modals.editTripOpen,
-    setEditTripOpen:   modals.setEditTripOpen,
-    createTripOpen:    modals.createTripOpen,
-    setCreateTripOpen: modals.setCreateTripOpen,
-    copyTripOpen:      modals.copyTripOpen,
-    setCopyTripOpen:   modals.setCopyTripOpen,
-    copyTripSource:    modals.copyTripSource,
-    copyTripPending:   tripActions.copyTripPending,
-    onCopyTrip:        tripActions.onCopyTrip,
+    editTripOpen:         modals.editTripOpen,
+    setEditTripOpen:      modals.setEditTripOpen,
+    editTripScopeChanged: modals.editTripScopeChanged,
+    editTripSaveError:    modals.editTripSaveError,
+    setEditTripSaveError: modals.setEditTripSaveError,
+    editTripGeneration:   modals.editTripGeneration,
+    createTripOpen:       modals.createTripOpen,
+    setCreateTripOpen:    modals.setCreateTripOpen,
+    createTripGeneration: modals.createTripGeneration,
+    copyTripOpen:         modals.copyTripOpen,
+    setCopyTripOpen:      modals.setCopyTripOpen,
+    copyTripSource:       modals.copyTripSource,
+    onCopyTrip:           tripActions.onCopyTrip,
     inviteOpen:        modals.inviteOpen,
     setInviteOpen:     modals.setInviteOpen,
     inviteScannerOpen: modals.inviteScannerOpen,

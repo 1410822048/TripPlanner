@@ -12,6 +12,8 @@ import type { TripItem } from '@/features/trips/types'
 import { tripTimestampToDateString } from '@/utils/dates'
 import { toast } from '@/shared/toast'
 import { getClientWriteBlockReason } from '@/services/clientCompatibility'
+import { FORM_SCOPE_CHANGED_MESSAGE } from '@/hooks/useFormModal'
+import { isOffline, OFFLINE_NEEDS_CONNECTION_MESSAGE } from '@/utils/offlineHandOff'
 
 export interface TripActions {
   selectTrip:   (item: TripItem) => void
@@ -21,8 +23,12 @@ export interface TripActions {
   /** Non-owner self-leave of the current trip (MembersModal footer). */
   onLeaveTrip:  () => void
   reorderTrips: (fromIdx: number, toIdx: number) => void
-  onCopyTrip:   (input: CopyTripInput) => Promise<void>
-  copyTripPending: boolean
+  /** Returns the write for the copy sheet to track (useAwaitedSave), or
+   *  nothing when refused synchronously (scope / offline / epoch — each
+   *  toasts its reason and the draft stays). `stillOpen` is that sheet
+   *  instance's liveness: the trip switch only happens while it is still
+   *  the open sheet; a late result just reports. */
+  onCopyTrip:   (input: CopyTripInput, stillOpen: () => boolean) => Promise<void> | void
 }
 
 export function useTripActions(opts: {
@@ -40,12 +46,13 @@ export function useTripActions(opts: {
   clearScheduleDetail:  () => void
   closeMembers:         () => void
   copyTripSource:       Trip | null
-  closeCopyTrip:        () => void
+  /** uid the copy sheet was opened under (useScheduleModals). */
+  copyTripOpenedUid:    string | undefined
 }): TripActions {
   const {
     isDemo, demoSelection, uid, authState, myTrips, currentTrip, cloudTripsList,
     setSelectedTripId, setTripOrder, resetActiveDate, clearScheduleDetail,
-    closeMembers, copyTripSource, closeCopyTrip,
+    closeMembers, copyTripSource, copyTripOpenedUid,
   } = opts
 
   const updateTripMut = useUpdateTrip(uid)
@@ -170,38 +177,42 @@ export function useTripActions(opts: {
   // Cloud-only — the gate is in handleMenuAction. uid is guaranteed here
   // (signed-in branch) but auth state is read defensively for the
   // createTrip payload (ownerId, displayName).
-  async function onCopyTrip(input: CopyTripInput) {
+  function onCopyTrip(input: CopyTripInput, stillOpen: () => boolean): Promise<void> | void {
     // Read from the snapshot, not currentTrip — by the time this fires the
     // user is mid-confirm and currentTrip could theoretically change under
     // us (rare but possible). The snapshot is what the modal is showing,
     // so use the same value for the mutation.
     if (!copyTripSource || !uid || authState.status !== 'signed-in') return
+    // Scope: the sheet was opened under one account; the write goes out
+    // under whoever is signed in NOW. A mismatch means the account changed
+    // underneath the draft — refuse and keep the draft. Never reuse the
+    // captured uid: it is not a credential.
+    if (copyTripOpenedUid !== authState.user.uid) { toast.error(FORM_SCOPE_CHANGED_MESSAGE); return }
+    // Not a hand-off candidate: copyTrip needs server reads
+    // (getDocsFromServer) and the trip create batch must not be queued
+    // twice. Keep the draft, ask for a connection.
+    if (isOffline()) { toast.error(OFFLINE_NEEDS_CONNECTION_MESSAGE); return }
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) { toast.error(writeBlockReason); return }
-    try {
-      const { trip, copiedSchedules, copiedPlanItems, orphanedSchedules } =
-        await copyTripMut.mutateAsync({ source: copyTripSource, input, user: authState.user })
-      // The modal closes cleanly because its render gate (copyTripSource +
-      // copyTripOpen) doesn't depend on currentTrip. setSelectedTripId can
-      // flip currentTrip = newTrip in the same commit; the modal doesn't
-      // see it.
-      setSelectedTripId(trip.id)
-      resetActiveDate()
-      closeCopyTrip()
-      const parts = [`已建立「${trip.title}」`]
-      if (input.copySchedules) parts.push(`行程 ${copiedSchedules} 件`)
-      if (input.copyPlanning)  parts.push(`計畫 ${copiedPlanItems} 件`)
-      toast.success(parts.join(' · '))
-      if (orphanedSchedules > 0) {
-        toast.info(`${orphanedSchedules} 個行程位於新的日期範圍之外`)
-      }
-    } catch {
-      // 全域 MutationCache.onError 已用 COPY_TRIP 標籤 toast；表單留著讓使用者重試。
-    }
+    return copyTripMut
+      .mutateAsync({ source: copyTripSource, input, user: authState.user })
+      .then(({ trip, copiedSchedules, copiedPlanItems, orphanedSchedules }) => {
+        const parts = [`已建立「${trip.title}」`]
+        if (input.copySchedules) parts.push(`行程 ${copiedSchedules} 件`)
+        if (input.copyPlanning)  parts.push(`計畫 ${copiedPlanItems} 件`)
+        toast.success(parts.join(' · '))
+        if (orphanedSchedules > 0) toast.info(`${orphanedSchedules} 個行程位於新的日期範圍之外`)
+        // Late result (sheet dismissed, or reopened as a new instance): the
+        // trip is in the cache via onSuccess and reported above — do not
+        // switch trips or touch whatever sheet is open now. The sheet that
+        // is still open closes itself (useAwaitedSave).
+        if (!stillOpen()) return
+        setSelectedTripId(trip.id)
+        resetActiveDate()
+      })
+    // A failure propagates to the sheet's tracker (no banner — the global
+    // MutationCache.onError toasts with the COPY_TRIP label); the draft stays.
   }
 
-  return {
-    selectTrip, saveTrip, deleteTrip, onLeaveTrip, reorderTrips, onCopyTrip,
-    copyTripPending: copyTripMut.isPending,
-  }
+  return { selectTrip, saveTrip, deleteTrip, onLeaveTrip, reorderTrips, onCopyTrip }
 }

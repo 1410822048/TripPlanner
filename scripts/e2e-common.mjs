@@ -102,10 +102,11 @@ export async function launchChromium() {
 
 /** A fresh, storage-isolated mobile-sized context. */
 export function newMobileContext(browser) {
-  // hasTouch: row buttons inside SwipeableShell must be driven with tap(). The
-  // row captures the pointer on pointerdown, and Chromium then retargets a MOUSE
-  // click to the capturing element, so a mouse click never reaches the button
-  // (touch taps do). The app is touch-first; drive it the way users do.
+  // hasTouch: the app is touch-first, so tap() is available for the gestures
+  // users actually make. Row buttons inside SwipeableShell must ALSO work with
+  // a mouse click (useSwipeRow only captures the pointer once a horizontal
+  // swipe is recognised) — e2e-offline drives the planning toggle with click()
+  // as the regression check.
   return browser.newContext({ viewport: { width: 420, height: 900 }, locale: 'zh-TW', timezoneId: 'Asia/Taipei', hasTouch: true })
 }
 

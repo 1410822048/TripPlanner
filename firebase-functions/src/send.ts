@@ -56,6 +56,9 @@ function dataPayload(event: NormalizedPushEvent, targetUid: string): Record<stri
     title:      'TripMate',
     body:       TEMPLATES[event.templateKey],
     url:        event.route,
+    // SW 點擊處理依 scope 分流：'account'（member.removed_self）導向 /account、
+    // 不切換旅程；'trip' 需先確認仍是成員。缺省即 trip（與 dispatch 相同）。
+    scope:      event.scope ?? 'trip',
     tag:        `${event.tripId}:${event.entityType}:${event.entityId}`,
     tripId:     event.tripId,
     entityType: event.entityType,

@@ -9,6 +9,7 @@
 // admin.ts. No client SDK — Workers runtime can't load the firebase-admin
 // Node package.
 import { firestoreRestBase } from './emulator'
+import { runFirestoreTransaction, type TxWrite } from './firestore-tx'
 
 function docPath(projectId: string, path: string): string {
   return `projects/${projectId}/databases/(default)/documents/${path}`
@@ -151,6 +152,7 @@ export async function batchStripDepartedMember(
   docNames:     string[],
   wishDocNames: string[],
   memberUid:    string,
+  removal:      { tripId: string; id: string | null },
 ): Promise<void> {
   if (docNames.length === 0) return
   const wishSet = new Set(wishDocNames)
@@ -161,38 +163,39 @@ export async function batchStripDepartedMember(
   const completedByFieldPath = `completedBy.\`${memberUid.replace(/\\/g, '\\\\').replace(/`/g, '\\`')}\``
   for (let i = 0; i < docNames.length; i += 500) {
     const chunk = docNames.slice(i, i + 500)
-    const writes = chunk.map(name => {
+    const writes: TxWrite[] = chunk.map(name => {
       const fieldTransforms = [removeUid('memberIds')]
       // Wish docs get the votes strip as a second transform on the SAME
       // write -- one touch per doc, atomic with its memberIds strip.
       if (wishSet.has(name)) fieldTransforms.push(removeUid('votes'))
       if (name.includes('/planning/')) {
         return {
-          update: { name, fields: {} },
-          updateMask: { fieldPaths: [completedByFieldPath] },
+          document: name, fields: {},
+          updateMask: [completedByFieldPath],
           updateTransforms: fieldTransforms,
           currentDocument: { exists: true },
         }
       }
-      return { transform: { document: name, fieldTransforms }, currentDocument: { exists: true } }
+      return { op: 'transform', document: name, fieldTransforms, currentDocument: { exists: true } }
     })
-    const res = await fetch(
-      `${firestoreRestBase()}/projects/${projectId}/databases/(default)/documents:commit`,
-      {
-        method:  'POST',
-        headers: {
-          Authorization:  `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ writes }),
-        signal: AbortSignal.timeout(FS_REST_TIMEOUT_MS),
-      },
-    )
-    if (res.status === 404) {
-      const detail = await res.text().catch(() => '')
-      throw new StripDocVanishedError(detail.slice(0, 200))
+    try {
+      const active = await runFirestoreTransaction(accessToken, projectId, async tx => {
+        const member = await tx.get(`trips/${removal.tripId}/members/${memberUid}`)
+        const matches = removal.id === null
+          ? !member.exists
+          : member.exists && readString(member.fields, 'removalId') === removal.id
+        if (!matches) {
+          return { writes: [], result: false }
+        }
+        return { writes, result: true }
+      })
+      if (!active) return
+    } catch (error) {
+      if (error instanceof Error && 'status' in error && error.status === 404) {
+        throw new StripDocVanishedError(error.message)
+      }
+      throw error
     }
-    await assertOk(res, 'batchStripDepartedMember')
   }
 }
 
@@ -753,8 +756,10 @@ export async function queryUploadIntents(
  *  default deny on the client), Worker writes via the admin OAuth
  *  token like everything else in this module. */
 export interface ScanCursor {
+  /** Empty string means the first page. */
   pageToken: string
   savedAtMs: number
+  afterKey?: string
 }
 
 /** Read the saved cursor for `scanKey`. Returns null when:
@@ -771,8 +776,9 @@ export async function getScanCursor(
   if (!fields) return null
   const pageToken = fields.pageToken?.stringValue
   const savedAtMs = readTimestampMs(fields, 'savedAt')
-  if (!pageToken || savedAtMs === undefined) return null
-  return { pageToken, savedAtMs }
+  if (typeof pageToken !== 'string' || savedAtMs === undefined) return null
+  const afterKey = readString(fields, 'afterKey')
+  return { pageToken, savedAtMs, ...(afterKey ? { afterKey } : {}) }
 }
 
 /** Upsert the cursor. Direct PATCH without `currentDocument.exists`
@@ -783,19 +789,21 @@ export async function setScanCursor(
   projectId:   string,
   scanKey:     string,
   pageToken:   string,
+  afterKey?:   string,
 ): Promise<void> {
   const path    = `_scanState/${scanKey}`
   const docName = buildDocName(projectId, path)
   const url     = new URL(`${firestoreRestBase()}/${docName}`)
-  // Both fields in the mask so the PATCH writes them both; the doc
-  // either gets created with these two fields or has its existing
-  // pageToken + savedAt overwritten.
+  // Include afterKey in the mask even when absent from fields, so moving
+  // to another page clears the previous page-local checkpoint.
   url.searchParams.append('updateMask.fieldPaths', 'pageToken')
   url.searchParams.append('updateMask.fieldPaths', 'savedAt')
+  url.searchParams.append('updateMask.fieldPaths', 'afterKey')
   const body = {
     fields: {
       pageToken: { stringValue: pageToken },
       savedAt:   { timestampValue: new Date().toISOString() },
+      ...(afterKey ? { afterKey: { stringValue: afterKey } } : {}),
     },
   }
   const res = await fetch(url, {

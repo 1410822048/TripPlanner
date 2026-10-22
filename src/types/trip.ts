@@ -5,6 +5,7 @@
 import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
 import { CurrencyCodeSchema, TimestampSchema } from './_shared'
+import { calendarDateMs, tripDateRangeError, validTripSpan, TRIP_DATE_RANGE_MESSAGE } from '@/utils/tripDateRange'
 
 // Per-tab unread-dot key. Mirrors BadgeFeature in lastViewedStore;
 // kept identical so the trip-doc aggregate (lastActivityByFeature)
@@ -117,12 +118,12 @@ export interface Trip {
   updatedAt: Timestamp
 }
 
-export const CreateTripSchema = z.object({
+const TripInputFields = z.object({
   title:       z.string().min(1, '請輸入行程名稱').max(50, '行程名稱最多 50 字'),
   destination: z.string().min(1, '請輸入目的地').max(200, '目的地最多 200 字'),
   icon:        z.string().optional(),
-  startDate:   z.string().min(1, '請選擇開始日期'),
-  endDate:     z.string().min(1, '請選擇結束日期'),
+  startDate:   z.string().min(1, '請選擇開始日期').refine(v => Number.isFinite(calendarDateMs(v)), '請輸入有效日期'),
+  endDate:     z.string().min(1, '請選擇結束日期').refine(v => Number.isFinite(calendarDateMs(v)), '請輸入有效日期'),
   // NO `.default()`: in Zod 4, `.partial()` keeps defaults, so a default
   // here made UpdateTripSchema inject `currency: 'TWD'` into EVERY trip
   // edit that didn't touch the currency (rename / dates / icon / country),
@@ -130,12 +131,21 @@ export const CreateTripSchema = z.object({
   currency:    CurrencyCodeSchema,
   defaultCountryCode: z.string().regex(/^[A-Z]{2}$/, '請選擇旅程國家'),
 })
+export const CreateTripSchema = TripInputFields.superRefine((data, ctx) => {
+  const message = tripDateRangeError(data.startDate, data.endDate)
+  if (message) ctx.addIssue({ code: 'custom', path: ['endDate'], message })
+})
 export type CreateTripInput = z.infer<typeof CreateTripSchema>
 
 /** Update payload — fields optional, per-field rules still enforced.
  *  CreateTripSchema must stay free of `.default()` (see `currency`):
  *  `.partial()` would otherwise add the defaulted keys to every patch. */
-export const UpdateTripSchema = CreateTripSchema.partial()
+export const UpdateTripSchema = TripInputFields.partial().superRefine((data, ctx) => {
+  // A single-date patch is checked against the complete document by Rules.
+  if (!data.startDate || !data.endDate) return
+  const message = tripDateRangeError(data.startDate, data.endDate)
+  if (message) ctx.addIssue({ code: 'custom', path: ['endDate'], message })
+})
 export type UpdateTripInput = z.infer<typeof UpdateTripSchema>
 
 const ActivityStampSchema = z.object({
@@ -179,6 +189,8 @@ export const TripDocSchema = z.object({
   wishVotingDeadlineNotifiedAt: TimestampSchema.nullable(),
   createdAt:   TimestampSchema,
   updatedAt:   TimestampSchema,
+}).refine(data => validTripSpan(data.startDate.toMillis(), data.endDate.toMillis()), {
+  path: ['endDate'], message: TRIP_DATE_RANGE_MESSAGE,
 })
 
 // ─── Member ───────────────────────────────────────────────────────

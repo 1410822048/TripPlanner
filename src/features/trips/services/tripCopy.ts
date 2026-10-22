@@ -20,6 +20,7 @@
 //   ❌ Members    — privacy / permissions; user invites separately
 //   ❌ Invites    — security tokens, never reusable across trips
 import type { User } from 'firebase/auth'
+import { tripDateRangeError } from '@/utils/tripDateRange'
 import { getFirebase } from '@/services/firebase'
 import { P } from '@/services/paths'
 import { addDays, diffDays, toTripDateTimestamp, tripTimestampToDateString } from '@/utils/dates'
@@ -91,7 +92,7 @@ export async function copyTrip(
   user:   User,
 ): Promise<CopyTripResult> {
   const {
-    db, doc, collection, getDocs, writeBatch, Timestamp, serverTimestamp,
+    db, doc, collection, getDocsFromServer, query, where, writeBatch, Timestamp, serverTimestamp,
   } = await getFirebase()
 
   // Roster on a copied trip is just the user that triggered the copy —
@@ -107,8 +108,23 @@ export async function copyTrip(
     input.newStartDate,
   )
   const newEndDate = addDays(tripTimestampToDateString(source.endDate), dateOffset)
+  const rangeError = tripDateRangeError(input.newStartDate, newEndDate)
+  if (rangeError) throw new Error(rangeError)
   const newStartTs = toTripDateTimestamp(input.newStartDate, Timestamp)
   const newEndTs   = toTripDateTimestamp(newEndDate,         Timestamp)
+
+  // Copying requires complete server data. Cache fallback can silently omit
+  // rows. Finish every selected source read before creating the destination.
+  const [sourceSchedules, sourcePlanning] = await Promise.all([
+    input.copySchedules ? getDocsFromServer(query(
+      collection(db, ...P.schedules(source.id)),
+      where('memberIds', 'array-contains', user.uid),
+    )) : null,
+    input.copyPlanning ? getDocsFromServer(query(
+      collection(db, ...P.planning(source.id)),
+      where('memberIds', 'array-contains', user.uid),
+    )) : null,
+  ])
 
   // ── Phase 1: trip + owner member (atomic) ─────────────────────
   const tripRef   = doc(collection(db, ...P.trips()))
@@ -156,13 +172,7 @@ export async function copyTrip(
     // member of the source trip, and Worker membership endpoints keep
     // memberIds aligned across every entity doc, so the filter returns
     // the full set.
-    if (input.copySchedules) {
-      const { query, where } = await getFirebase()
-      const sourceSchedules = await getDocs(query(
-        collection(db, ...P.schedules(source.id)),
-        where('memberIds', 'array-contains', user.uid),
-      ))
-
+    if (sourceSchedules) {
       for (let i = 0; i < sourceSchedules.docs.length; i += 500) {
         const batch = writeBatch(db)
         for (const d of sourceSchedules.docs.slice(i, i + 500)) {
@@ -187,12 +197,7 @@ export async function copyTrip(
     }
 
     // ── Phase 2b: copy planning items (no date concept) ──────────
-    if (input.copyPlanning) {
-      const { query, where } = await getFirebase()
-      const sourcePlanning = await getDocs(query(
-        collection(db, ...P.planning(source.id)),
-        where('memberIds', 'array-contains', user.uid),
-      ))
+    if (sourcePlanning) {
       for (let i = 0; i < sourcePlanning.docs.length; i += 500) {
         const batch = writeBatch(db)
         for (const d of sourcePlanning.docs.slice(i, i + 500)) {

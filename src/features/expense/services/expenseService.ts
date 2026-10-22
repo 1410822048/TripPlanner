@@ -5,7 +5,6 @@ import { P } from '@/services/paths'
 import { firestoreDocFromSchema } from '@/services/firestoreDocFromSchema'
 import { createTripScopedListServices } from '@/services/tripScopedList'
 import { validateUpdateOrThrow } from '@/services/validateUpdate'
-import { auditUpdate } from '@/utils/audit'
 import { bumpTripActivity } from '@/services/tripActivity'
 import { ExpenseDocSchema, UpdateExpenseSchema, type Expense, type CreateExpenseInput, type UpdateExpenseInput } from '@/types/expense'
 import { uploadReceipt, purgeReceipt } from './expenseStorage'
@@ -374,9 +373,8 @@ export async function createExpense(
  *
  * Content fields (title/amount/splits/paidBy/category/etc.) go
  * through Worker /expense-update which validates them the same way
- * the create endpoint does. Client SDK update is restricted by
- * rules to soft-delete / restore + audit-only updates (see
- * `deleteExpense` below for the rules-gated path).
+ * the create endpoint does. Rules forbid every client SDK update
+ * (soft delete goes through `deleteExpense` → /expense-soft-delete).
  */
 export async function updateExpense(
   tripId: string,
@@ -548,23 +546,25 @@ export async function updateExpense(
 }
 
 /**
- * Soft-delete: set deletedAt instead of hard-deleting the doc. UI
- * filters tombstones out of the list (ExpensePage.displayExpenses);
+ * Soft-delete via Worker /expense-soft-delete: the Worker stamps
+ * `deletedAt` (server time) + audit fields instead of hard-deleting the
+ * doc. UI filters tombstones out of the list (ExpensePage.displayExpenses);
  * settlement chronological replay still sees them to classify orphan
  * reasons. Receipt bytes are cleared by the Worker cron 10 days after
- * deletedAt (see workers/ocr/src/receipt-purge.ts) -- `receiptPurgedAt`
- * is seeded `null` at create time, so the cron filter picks it up
- * automatically when deletedAt < cutoff.
+ * deletedAt (see workers/ocr/src/receipt-purge.ts).
+ *
+ * Worker rather than a client updateDoc so the expenses collection never
+ * holds a local pending write: its echo would mark the listener
+ * unconfirmed and blank the ledger until the server ack. Errors surface
+ * as WorkerRejected (overlay drops) / WorkerAmbiguous (reconcile).
  */
 export async function deleteExpense(
   tripId: string,
   expenseId: string,
   uid: string,
 ): Promise<void> {
-  const { db, doc, updateDoc, serverTimestamp } = await getFirebase()
-  await updateDoc(doc(db, ...P.expense(tripId, expenseId)), {
-    deletedAt: serverTimestamp(),
-    ...auditUpdate(uid, serverTimestamp()),
-  })
+  const workerBase = requireWorkerWriteBase()
+  const idToken    = await preflightIdToken()
+  await workerFetch(workerBase, idToken, '/expense-soft-delete', { tripId, expenseId })
   void bumpTripActivity(tripId, 'expense', uid)
 }

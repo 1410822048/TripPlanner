@@ -1,24 +1,37 @@
 // src/features/trips/components/CreateTripModal.tsx
+// Rendered per open by the host (keyed by an open generation), so every
+// open is a fresh instance: no resetForm, and the write is owned by the
+// instance (useAwaitedSave). A create that settles after the sheet was
+// dismissed — or reopened as a new instance — reports its result (cache
+// seed via onSuccess + toast) but never switches the selected trip or
+// closes whatever the user has open now.
+//
+// Not an offline hand-off candidate: the trip create batch waits for the
+// server and must not be queued for a second attempt. Offline, the draft
+// stays and the sheet asks for a connection.
 import { useRef, useState } from 'react'
 import { MapPin } from 'lucide-react'
 import BottomSheet from '@/components/ui/BottomSheet'
+import FormModalShell from '@/components/ui/FormModalShell'
 import GoogleIcon from '@/components/icons/GoogleIcon'
 import { DatePicker, type DatePickerHandle } from '@/components/ui/pickers'
 import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
 import LoadingText from '@/components/ui/LoadingText'
-import SaveButton from '@/components/ui/SaveButton'
 import CurrencyPicker from '@/components/ui/CurrencyPicker'
 import CountryPicker from '@/components/ui/CountryPicker'
 import { DEFAULT_CURRENCY } from '@/utils/currency'
 import { currencyCountrySuggestion } from '@/utils/country'
 import { useAuth } from '@/hooks/useAuth'
+import { useAwaitedSave } from '@/hooks/useAwaitedSave'
 import { useCreateTrip } from '@/features/trips/hooks/useTrips'
 import { useTripStore } from '@/store/tripStore'
 import { CreateTripSchema } from '@/types/trip'
 import { toast } from '@/shared/toast'
 import { countryAfterCurrencyChange } from '@/features/trips/countryContext'
 import { userErrorMessage } from '@/utils/errorMessage'
+import { getClientWriteBlockReason } from '@/services/clientCompatibility'
+import { isOffline, OFFLINE_NEEDS_CONNECTION_MESSAGE } from '@/utils/offlineHandOff'
 
 interface Props {
   isOpen:  boolean
@@ -31,6 +44,7 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
   const { state, signInWithGoogle } = useAuth(isOpen)
   const createMut         = useCreateTrip()
   const setSelectedTripId = useTripStore(s => s.setSelectedTripId)
+  const awaited           = useAwaitedSave(onClose)
 
   const [title,       setTitle]       = useState('')
   const [destination, setDestination] = useState('')
@@ -43,18 +57,11 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
   const [countryWasSelected, setCountryWasSelected] = useState(false)
   const [errors,      setErrors]      = useState<Record<string, string>>({})
   const [signingIn,   setSigningIn]   = useState(false)
+  // Synchronous refusals (offline / obsolete bundle): the draft stays and
+  // the reason sits in the banner until the next attempt.
+  const [refusal,     setRefusal]     = useState<string | null>(null)
 
   const endDateRef = useRef<DatePickerHandle>(null)
-
-  function resetForm() {
-    setTitle(''); setDestination(''); setStartDate(''); setEndDate('')
-    setCurrency(DEFAULT_CURRENCY)
-    setDefaultCountryCode(currencyCountrySuggestion(DEFAULT_CURRENCY) ?? '')
-    setCountryWasSelected(false)
-    setErrors({})
-  }
-
-  function close() { onClose(); resetForm() }
 
   function validate() {
     const parsed = CreateTripSchema.safeParse({
@@ -69,35 +76,33 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
       setErrors(errs)
       return null
     }
-    if (endDate < startDate) {
-      setErrors({ endDate: '結束日期不可早於開始日期' })
-      return null
-    }
     setErrors({})
     return parsed.data
   }
 
-  async function handleSave() {
+  function handleSave() {
     const data = validate()
     if (!data) return
     if (state.status !== 'signed-in') return
-    // Not optimistic-close — trip is the root entity; if create fails the
-    // sheet must keep the user's form data for retry.
-    try {
-      const trip = await createMut.mutateAsync({ input: data, user: state.user })
-      // No flushSync needed: with `currentTrip` derived from the
-      // React Query cache (via useCurrentTrip), useCreateTrip's
-      // onSuccess cache patch + this `setSelectedTripId` + the
-      // `close()` modal-state update all batch into one React 18
-      // commit. The previous dual-store had two separate
-      // notification paths and needed flushSync to align them.
-      setSelectedTripId(trip.id)
-      close()
-      toast.success(`已建立「${trip.title}」`)
-    } catch {
-      // 全域 MutationCache.onError 已用 CREATE_TRIP 標籤 toast；這裡只負責
-      // 把表單留著讓使用者重試。
-    }
+    const user = state.user
+    awaited.submit(() => {
+      setRefusal(null)
+      if (isOffline()) { setRefusal(OFFLINE_NEEDS_CONNECTION_MESSAGE); return }
+      // The global guard would also throw UpdateRequiredError, but silently
+      // (no toast) — say it here, in the sheet.
+      const writeBlockReason = getClientWriteBlockReason()
+      if (writeBlockReason) { setRefusal(writeBlockReason); return }
+      // Failure: the global MutationCache.onError toasts with the CREATE_TRIP
+      // label and the draft stays (useAwaitedSave closes only on success).
+      return createMut.mutateAsync({ input: data, user }).then(trip => {
+        toast.success(`已建立「${trip.title}」`)
+        // Late result (sheet dismissed, or reopened as a new instance): the
+        // trip is already in the list via onSuccess; do not switch to it or
+        // touch the sheet the user has open now.
+        if (!awaited.stillOpen()) return
+        setSelectedTripId(trip.id)
+      })
+    })
   }
 
   async function handleSignIn() {
@@ -117,7 +122,7 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
   // self-bootstrap member doc required by Firestore rules.
   if (state.status === 'loading') {
     return (
-      <BottomSheet isOpen onClose={close} title="新旅程">
+      <BottomSheet isOpen onClose={onClose} title="新旅程">
         <div className="h-32 flex items-center justify-center text-muted text-[13px]">
           <LoadingText />
         </div>
@@ -126,7 +131,7 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
   }
   if (state.status !== 'signed-in') {
     return (
-      <BottomSheet isOpen onClose={close} title="需要登入">
+      <BottomSheet isOpen onClose={onClose} title="需要登入">
         <div className="py-4 text-center">
           <div className="text-[44px] leading-none mb-3">☁️</div>
           <p className="m-0 mb-5 text-[13px] text-ink leading-[1.7] tracking-[0.02em]">
@@ -152,11 +157,14 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
   }
 
   return (
-    <BottomSheet
+    <FormModalShell
       isOpen
-      onClose={close}
+      isSaving={awaited.saving}
       title="新旅程"
-      footer={<SaveButton onClick={handleSave} isSaving={createMut.isPending} label="建立旅程" />}
+      saveLabel="建立旅程"
+      saveError={refusal ?? awaited.error}
+      onClose={onClose}
+      onSave={handleSave}
     >
       <FormField label="旅程名稱" error={errors.title} required>
         <input
@@ -221,6 +229,6 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
           error={!!errors.defaultCountryCode}
         />
       </FormField>
-    </BottomSheet>
+    </FormModalShell>
   )
 }

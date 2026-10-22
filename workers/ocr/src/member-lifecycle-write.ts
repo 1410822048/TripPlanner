@@ -12,6 +12,7 @@ import { withTokenRetry, CascadeError }                     from './cascade'
 import {
   runFirestoreTransaction,
   docResourceName,
+  PostCommitError,
   type TxWrite,
 }                                                           from './firestore-tx'
 import {
@@ -59,6 +60,20 @@ export type OwnerTransferRequest = z.infer<typeof OwnerTransferRequestSchema>
 
 // ─── /member-remove ───────────────────────────────────────────────
 
+/** Refresh an expired admin token without replaying the committed precheck
+ * against a different membership incarnation. Both remove and leave use it. */
+async function finishMemberRemoval(
+  serviceAccountJson: string, tripId: string, targetUid: string, removalId: string | null,
+): Promise<void> {
+  try {
+    await withTokenRetry(async () => runMemberStripCascade(
+      await getAdminToken(serviceAccountJson), getProjectId(serviceAccountJson), tripId, targetUid, removalId,
+    ))
+  } catch (error) {
+    throw new PostCommitError(error)
+  }
+}
+
 export async function memberRemove(
   callerUid:          string,
   req:                MemberRemoveRequest,
@@ -75,17 +90,10 @@ async function doMemberRemove(
   const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
 
-  // Tx handles snapshot-consistent authz plus the small atomic writes
-  // that must land before the non-tx cascade phase begins: the optional
-  // removingAt marker and trip.memberIds strip. The bulk cascade
-  // (arrayRemove + delete) runs OUTSIDE the tx because:
-  //   - the array transforms (`removeAllFromArray`) aren't expressible
-  //     via TxWrite's updateTransforms (which only support REQUEST_TIME)
-  //   - cascading across hundreds of docs would exceed tx write caps
-  //   - convergent semantics (idempotent arrayRemove + idempotent
-  //     deleteDoc) make non-atomicity safe under retry
+  // Authorize + mark removal + strip the trip roster atomically. The bulk
+  // cascade uses separate bounded transactions, each fenced by removalId.
   const removePrecheck = await runFirestoreTransaction<{
-    targetExists: boolean
+    removalId: string | null
   }>(accessToken, projectId, async (tx) => {
     const { trip } = await requireTripOwner(tx, req.tripId, callerUid)
 
@@ -123,10 +131,13 @@ async function doMemberRemove(
     // Removal-quiesce marker + trip-roster strip, built by the shared
     // helper (see buildMemberStripWrites for the full race rationale).
     // Both writes commit atomically inside this authz tx -- BEFORE the
-    // non-tx cascade -- coupled to the owner-authz read above so a
+    // chunked cascade -- coupled to the owner-authz read above so a
     // concurrent trip-cascade-delete can never land them on a trip being
     // torn down.
-    const writes = buildMemberStripWrites(projectId, req.tripId, req.memberUid, target, trip, 'removed', callerUid)
+    const removalId = target.exists
+      ? readString(target.fields, 'removalId') ?? crypto.randomUUID()
+      : null
+    const writes = buildMemberStripWrites(projectId, req.tripId, req.memberUid, target, trip, 'removed', callerUid, removalId ?? '')
 
     // Revoke the active invite in the same commit. Invite links are
     // reusable and usually sit in a group chat, so without this the person
@@ -146,7 +157,7 @@ async function doMemberRemove(
 
     return {
       writes,
-      result: { targetExists: target.exists },
+      result: { removalId },
     }
   })
 
@@ -159,7 +170,7 @@ async function doMemberRemove(
   // during this phase via firestore.rules canWrite(); a missing member
   // doc means an earlier kick finished and this run is an idempotent
   // re-strip.
-  await runMemberStripCascade(accessToken, projectId, req.tripId, req.memberUid, removePrecheck.targetExists)
+  await finishMemberRemoval(serviceAccountJson, req.tripId, req.memberUid, removePrecheck.removalId)
 
   return { ok: true }
 }
@@ -195,10 +206,10 @@ async function doMemberLeave(
   const projectId   = getProjectId(serviceAccountJson)
 
   // Tx phase: authz (caller is a member, trip not deleting) + the atomic
-  // removingAt / trip-roster strip writes that must precede the non-tx
+  // removingAt / trip-roster strip writes that must precede the chunked
   // cascade. runFirestoreTransaction resolves to the body's `result`
-  // (writes are applied internally), so we only destructure targetExists.
-  const { targetExists } = await runFirestoreTransaction<{ targetExists: boolean }>(
+  // (writes are applied internally), carrying the stable removal generation.
+  const { removalId } = await runFirestoreTransaction<{ removalId: string }>(
     accessToken, projectId, async (tx) => {
       const { trip, member } = await requireTripMember(tx, req.tripId, callerUid)
 
@@ -214,18 +225,17 @@ async function doMemberLeave(
         )
       }
 
-      // requireTripMember already asserted member.exists (403 otherwise),
-      // so targetExists is invariably true -- but we route it through the
-      // same helper shape as /member-remove for a single code path.
-      const writes = buildMemberStripWrites(projectId, req.tripId, callerUid, member, trip, 'left', callerUid)
+      // Preserve the generation across retries of the same removal.
+      const removalId = readString(member.fields, 'removalId') ?? crypto.randomUUID()
+      const writes = buildMemberStripWrites(projectId, req.tripId, callerUid, member, trip, 'left', callerUid, removalId)
       return {
         writes,
-        result: { targetExists: member.exists },
+        result: { removalId },
       }
     },
   )
 
-  await runMemberStripCascade(accessToken, projectId, req.tripId, callerUid, targetExists)
+  await finishMemberRemoval(serviceAccountJson, req.tripId, callerUid, removalId)
 
   return { ok: true }
 }

@@ -22,8 +22,13 @@
  *  Epoch 5: route legs and Schedule.travelToNext carry walking measurements
  *  only. An epoch-4 bundle rejects the new preview response, sends the old
  *  leg shape to /route-apply, and its strict schedule schema drops any
- *  schedule with the new travelToNext, so it must ask for the update. */
-export const CLIENT_SCHEMA_EPOCH = 5 as const
+ *  schedule with the new travelToNext, so it must ask for the update.
+ *  Epoch 6: trip dates are capped at 366 days by Rules and copyTrip reads
+ *  its source rows from the server only; an epoch-5 bundle can send an
+ *  out-of-range trip write or copy from a partial cache.
+ *  Epoch 7: expense soft delete moved to the Worker (`/expense-soft-delete`);
+ *  Rules now refuse the client `updateDoc({ deletedAt })` an epoch-6 bundle sends. */
+export const CLIENT_SCHEMA_EPOCH = 7 as const
 export const CLIENT_COMPATIBILITY_STORAGE_KEY = 'tripmate:client-compatibility:v1'
 
 const MANIFEST_URL = '/compatibility.json'

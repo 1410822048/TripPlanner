@@ -7,8 +7,15 @@
 import { z } from 'zod'
 import type { Timestamp } from 'firebase/firestore'
 import { TimestampSchema, CurrencyCodeSchema } from './_shared'
+import { NOTIFICATION_ROUTES, NOTIFICATION_SCOPES, type NotificationRoute, type NotificationScope } from './notificationRoute'
 
 export type NotificationEntityType = 'expense' | 'booking' | 'settlement' | 'member' | 'schedule' | 'wish' | 'planning' | 'trip'
+
+/** 通知可導向的頁面白名單。收件匣 doc 與推播點擊（SW → client）共用同一份，
+ *  任何不在清單內的 route 一律忽略。 */
+export const NotificationRouteSchema = z.enum(NOTIFICATION_ROUTES)
+export const NotificationScopeSchema = z.enum(NOTIFICATION_SCOPES)
+export type { NotificationRoute, NotificationScope }
 
 // users/{uid}/notifications/{eventId}
 export interface Notification {
@@ -20,7 +27,7 @@ export interface Notification {
    *  via the trip-scoped inbox query. 'account' rows (member.removed_self)
    *  target a recipient who has lost trip access, so they load via a separate
    *  membership-independent query and route to /account. */
-  scope: 'trip' | 'account'
+  scope: NotificationScope
   entityType: NotificationEntityType
   entityId: string
   action: 'created' | 'updated' | 'deleted' | 'joined' | 'role_changed' | 'removed'
@@ -30,7 +37,7 @@ export interface Notification {
   actorName: string
   title: string
   body: string
-  route: '/schedule' | '/expense' | '/bookings' | '/wish' | '/planning' | '/account'
+  route: NotificationRoute
   settlement?: {
     fromUid: string
     fromName: string
@@ -60,7 +67,7 @@ export const NotificationDocSchema = z.object({
   recipientUid:  z.string(),
   tripId:        z.string(),
   tripTitle:     z.string(),
-  scope:         z.enum(['trip', 'account']),
+  scope:         NotificationScopeSchema,
   entityType:    z.enum(['expense', 'booking', 'settlement', 'member', 'schedule', 'wish', 'planning', 'trip']),
   entityId:      z.string(),
   action:        z.enum(['created', 'updated', 'deleted', 'joined', 'role_changed', 'removed']),
@@ -68,7 +75,7 @@ export const NotificationDocSchema = z.object({
   actorName:     z.string(),
   title:         z.string(),
   body:          z.string(),
-  route:         z.enum(['/schedule', '/expense', '/bookings', '/wish', '/planning', '/account']),
+  route:         NotificationRouteSchema,
   settlement:    notificationSettlementInfoSchema.optional(),
   createdAt:     TimestampSchema,
   readAt:        TimestampSchema.nullable(),

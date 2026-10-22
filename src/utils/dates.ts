@@ -9,6 +9,7 @@
 // Everything here is pure + side-effect free. No firebase imports so this
 // module stays bundle-neutral.
 import type { Timestamp } from 'firebase/firestore'
+import { calendarDateMs, tripDateRangeError } from './tripDateRange'
 
 /** Format a Date into local 'YYYY-MM-DD'. Use this instead of toISOString(). */
 export function toLocalDateString(d: Date): string {
@@ -52,8 +53,7 @@ export function toTripDateTimestamp<T>(
   dateStr: string,
   TimestampCtor: { fromDate: (d: Date) => T },
 ): T {
-  const [y, m, d] = dateStr.split('-').map(Number)
-  return TimestampCtor.fromDate(new Date(Date.UTC(y!, m! - 1, d!)))
+  return TimestampCtor.fromDate(new Date(calendarDateMs(dateStr)))
 }
 
 /**
@@ -72,6 +72,8 @@ export function daysBetween(start: Timestamp, end: Timestamp): number {
 
 /** Inclusive date range from startDate to endDate as 'YYYY-MM-DD' strings. */
 export function buildDateRange(startDate: string, endDate: string): string[] {
+  // Invalid persisted/demo data must not allocate an unbounded array in render.
+  if (tripDateRangeError(startDate, endDate)) return []
   const dates: string[] = []
   const cur = fromLocalDateString(startDate)
   const end = fromLocalDateString(endDate)

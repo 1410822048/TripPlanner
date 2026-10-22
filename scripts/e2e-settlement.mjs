@@ -117,6 +117,60 @@ async function addExpense(page, { title, amount, paidBy, splitAmong }) {
   await settle(page)
 }
 
+const LEDGER_LOADING_TEXT = '正在載入完整帳務資料'
+
+/** Mouse swipe-to-delete on the expense row that carries `title`, then the
+ *  two-tap confirm. A MOUSE drag on purpose: useSwipeRow takes pointer
+ *  capture only once the move is a horizontal swipe. */
+async function swipeDeleteExpense(page, title) {
+  const text = page.getByText(title, { exact: true }).first()
+  // mouse.move does not scroll (click() would): bring the row into the viewport first.
+  await text.scrollIntoViewIfNeeded()
+  const box = await text.boundingBox()
+  assert.ok(box, `row "${title}" is on screen`)
+  const row = text.locator('xpath=ancestor::div[contains(@class,"overflow-hidden")][1]')
+  const foreground = row.locator('xpath=./div[last()]')
+  const edge = await foreground.boundingBox()
+  assert.ok(edge, 'swipe foreground is on screen')
+  const edgeX = edge.x + edge.width / 2
+  const edgeY = edge.y + edge.height - 1
+  // Leave by less than the 6px threshold, release outside, then hover back.
+  // Before the fix, the missed pointerup left dragging=true and hovering
+  // alone moved the row. Keep this before the normal swipe to verify recovery.
+  await page.mouse.move(edgeX, edgeY)
+  await page.mouse.down()
+  await page.mouse.move(edgeX, edgeY + 3)
+  await page.mouse.up()
+  await page.mouse.move(edgeX, edgeY)
+  await page.mouse.move(edgeX - 20, edgeY)
+  await page.mouse.move(edgeX - 80, edgeY)
+  assert.equal(await foreground.evaluate(el => new DOMMatrixReadOnly(getComputedStyle(el).transform).m41), 0, 'hover after an external release must not drag')
+  assert.equal(await foreground.evaluate(el => el.style.willChange), '', 'cancelled drag releases transient styles')
+  const y = box.y + box.height / 2
+  const x0 = box.x + box.width / 2
+  await page.mouse.move(x0, y)
+  await page.mouse.down()
+  for (let i = 1; i <= 10; i++) await page.mouse.move(x0 - i * 12, y)
+  await page.mouse.up()
+  // The shell wrapper; not keyed on the 刪除 label, which turns into 確認刪除 after the first tap.
+  await row.getByText('刪除', { exact: true }).click()
+  try {
+    await row.getByText(/確認\s*刪除/).click({ timeout: 10_000 })
+  } catch (e) {
+    // Diagnostics: what the row and the ledger block look like instead.
+    const state = await page.evaluate(text => ({
+      ledgerLoadingSeen: window.__ledgerLoadingSeen,
+      bodyHasLoading:    document.body.innerText.includes(text),
+      bodyHasUnavailable: document.body.innerText.includes('帳務資料尚未完整載入'),
+      toasts: [...document.querySelectorAll('[role="status"], [role="alert"]')].map(el => el.textContent),
+    }), LEDGER_LOADING_TEXT)
+    const rowText = await row.innerText().catch(() => '?')
+    const fgTransform = await row.locator('xpath=./div[last()]').evaluate(el => el.style.transform).catch(() => '?')
+    await page.screenshot({ path: join(OUT, 'soft-delete-failure.png'), fullPage: true }).catch(() => {})
+    throw new Error(`confirm step for "${title}" failed: ${JSON.stringify({ state, rowText, fgTransform })}: ${e.message.split(String.fromCharCode(10))[0]}`)
+  }
+}
+
 const suggestionText = async page => (await page.getByText(/付款建議/).first().locator('..').innerText()).replace(/\s+/g, ' ')
 const recordButtons = page => page.getByRole('button', { name: /記錄已收到/ })
 const sheet = page => page.locator('[role="dialog"]').last()
@@ -130,8 +184,33 @@ async function run() {
   mkdirSync(OUT, { recursive: true })
   browser = await launchChromium()
 
-  step('A → C via B: suggestion as seen by payer, intermediate and receiver')
+  step('Expense soft delete runs on the Worker: back-to-back swipe deletes keep the ledger ready')
   const owner = await as('owner')
+  await addExpense(owner.page, { title: '刪除一', amount: 100, paidBy: 'owner', splitAmong: ['editor'] })
+  await addExpense(owner.page, { title: '刪除二', amount: 100, paidBy: 'owner', splitAmong: ['editor'] })
+  await owner.page.getByText('付款建議').first().waitFor()
+  // A client-SDK tombstone used to echo back with hasPendingWrites, flipping
+  // ledgerReady false (the settlement block swapped for the loading text and
+  // the second swipe was refused). Count every appearance from here on.
+  await owner.page.evaluate(text => {
+    window.__ledgerLoadingSeen = 0
+    const probe = () => { if (document.body.innerText.includes(text)) window.__ledgerLoadingSeen++ }
+    new MutationObserver(probe).observe(document.body, { childList: true, subtree: true, characterData: true })
+  }, LEDGER_LOADING_TEXT)
+  await swipeDeleteExpense(owner.page, '刪除一')
+  await swipeDeleteExpense(owner.page, '刪除二')
+  await settle(owner.page)
+  const tombstones = (await list('expenses')).filter(e => ['刪除一', '刪除二'].includes(e.title))
+  assert.equal(tombstones.length, 2, 'soft-deleted docs are kept')
+  assert.ok(tombstones.every(e => e.deletedAt && e.updatedBy === 'dev-owner'), `Worker stamped deletedAt + updatedBy: ${JSON.stringify(tombstones.map(e => [e.title, e.deletedAt, e.updatedBy]))}`)
+  assert.equal(await owner.page.evaluate(() => window.__ledgerLoadingSeen), 0, 'the ledger never flipped to loading during the deletes')
+  assert.equal(await owner.page.getByText('刪除一', { exact: true }).count(), 0)
+  assert.equal(await owner.page.getByText('刪除二', { exact: true }).count(), 0)
+  assert.equal(await owner.page.getByText(/帳務資料尚未完整載入/).count(), 0, 'the second swipe was not refused')
+  await shot(owner.page, '00-soft-delete')
+  ok('two consecutive swipe deletes landed as Worker tombstones; the settlement block stayed mounted')
+
+  step('A → C via B: suggestion as seen by payer, intermediate and receiver')
   await addExpense(owner.page, { title: '晚餐', amount: 3000, paidBy: 'editor', splitAmong: ['owner'] })
   await addExpense(owner.page, { title: '計程車', amount: 3000, paidBy: 'viewer', splitAmong: ['editor'] })
   await owner.page.reload()

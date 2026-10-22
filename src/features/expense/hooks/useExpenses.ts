@@ -4,8 +4,9 @@
 // Optimistic state is a read-time overlay (see hooks/listOverlay.ts), so
 // the cache stays server-shaped.
 //
-// Every write here is Worker-authoritative, which means every one of them
-// can come back ambiguous — the request may or may not have committed.
+// Every write here (create / update / soft delete) is Worker-authoritative,
+// so the collection never carries a client pending write — and every one of
+// them can come back ambiguous: the request may or may not have committed.
 import {
   expenseUpdateApplied,
   getExpensesByTrip,
@@ -148,8 +149,9 @@ export function useDeleteExpense(tripId: string) {
         authoritativeFetch: serverRead(tripId, uid),
       }),
     },
+    // Worker /expense-soft-delete, like every other expense write: default
+    // networkMode 'online' (nothing to hand to the SDK offline queue), and
+    // no local pending write that would mark the listener unconfirmed.
     action:     MUTATION_ACTION.DELETE,
-    // 軟刪除目前是 expenses 唯一的 client SDK 寫入；改走 Worker（Batch 2）後移除。
-    networkMode: 'always',
   })
 }

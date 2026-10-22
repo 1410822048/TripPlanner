@@ -1,15 +1,18 @@
 // src/features/trips/components/EditTripModal.tsx
-// The caller (SchedulePage) passes a `key` of the trip id, so this component
-// remounts whenever the trip being edited switches. That lets the form
-// initialize state directly from props in useState initializers — no
-// sync-in-effect, no accidental wipe from parent spreading a fresh object.
+// Draft-bearing form. The host renders it per open (keyed by an open
+// generation) with `editTarget` FROZEN at open — not the live selected
+// trip — so a background reselect (kick / remote delete / sign-out) can
+// neither remount this form with another trip's data nor let the draft be
+// saved into it. The host stamps {tripId, uid} at open and refuses the
+// save with FORM_SCOPE_CHANGED_MESSAGE (shown in `saveError`) on mismatch;
+// the draft stays either way.
 import { useRef, useState } from 'react'
+import { tripDateRangeError } from '@/utils/tripDateRange'
 import { AlertTriangle, MapPin } from 'lucide-react'
-import BottomSheet from '@/components/ui/BottomSheet'
+import FormModalShell from '@/components/ui/FormModalShell'
 import { DatePicker, type DatePickerHandle } from '@/components/ui/pickers'
 import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
-import SaveButton from '@/components/ui/SaveButton'
 import { useAutoFocus } from '@/hooks/useAutoFocus'
 import { useFormReducer } from '@/hooks/useFormReducer'
 import type { TripItem } from '@/features/trips/types'
@@ -29,6 +32,8 @@ interface Props {
   /** 該行程目前所有 schedule 的日期陣列（用來偵測孤兒警告） */
   scheduleDates?: string[]
   isSaving?:   boolean
+  /** Inline banner: the host's synchronous refusal (scope changed). */
+  saveError?:  string | null
   onClose:     () => void
   onSave:      (data: TripItem) => void
 }
@@ -58,7 +63,7 @@ function initFormState(t: TripItem | null): FormState {
 }
 
 export default function EditTripModal({
-  isOpen, editTarget, scheduleDates = [], isSaving, onClose, onSave,
+  isOpen, editTarget, scheduleDates = [], isSaving = false, saveError, onClose, onSave,
 }: Props) {
   const { state, setField } = useFormReducer<FormState>(() => initFormState(editTarget))
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -82,8 +87,9 @@ export default function EditTripModal({
     if (!state.startDate)    e.startDate = '請選擇開始日期'
     if (!state.endDate)      e.endDate   = '請選擇結束日期'
     if (!/^[A-Z]{2}$/.test(state.defaultCountryCode)) e.defaultCountryCode = '請選擇旅程國家'
-    if (state.startDate && state.endDate && state.endDate < state.startDate) {
-      e.endDate = '結束日期不可早於開始日期'
+    if (state.startDate && state.endDate) {
+      const rangeError = tripDateRangeError(state.startDate, state.endDate)
+      if (rangeError) e.endDate = rangeError
     }
     setErrors(e)
     return Object.keys(e).length === 0
@@ -106,11 +112,14 @@ export default function EditTripModal({
   if (!editTarget) return null
 
   return (
-    <BottomSheet
+    <FormModalShell
       isOpen={isOpen}
-      onClose={onClose}
+      isSaving={isSaving}
       title="編輯旅程資料"
-      footer={<SaveButton onClick={handleSave} isSaving={isSaving} label="儲存變更" />}
+      saveLabel="儲存變更"
+      saveError={saveError}
+      onClose={onClose}
+      onSave={handleSave}
     >
       <FormField label="圖示">
         <div className="grid grid-cols-6 gap-1.5 p-2.5 bg-app rounded-input border-[1.5px] border-border">
@@ -219,6 +228,6 @@ export default function EditTripModal({
           </div>
         </div>
       )}
-    </BottomSheet>
+    </FormModalShell>
   )
 }
