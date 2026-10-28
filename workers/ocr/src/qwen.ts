@@ -1,4 +1,4 @@
-// Qwen receipt OCR client. Used by the configured primary / fallback routes.
+// Qwen receipt OCR client — the only OCR provider (/ocr, /expense-receipt-ocr).
 //
 // Provider API: OpenAI-compatible Chat Completions. Keep baseUrl + model in
 // env because Alibaba Model Studio regions, OpenRouter, and self-hosted
@@ -8,7 +8,7 @@ import {
   OcrResponseSchema,
   type OcrResponse,
 } from './schema'
-import { buildPrompt, OcrError, SYSTEM_PROMPT } from './claude'
+import { buildPrompt, OcrError, SYSTEM_PROMPT } from './ocr-prompt'
 import type { ZodType } from 'zod'
 
 const RECEIPT_MAX_TOKENS = 4096

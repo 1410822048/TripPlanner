@@ -39,7 +39,7 @@ type ReceiptOcrLocalState =
 export interface ReceiptOcrCapabilities {
   canAnalyze:   boolean
   canReanalyze: boolean
-  canFallback:  boolean
+  canRetry:     boolean
 }
 
 export interface ReceiptOcrCapabilityInput {
@@ -122,7 +122,7 @@ export function deriveReceiptOcrCapabilities(input: ReceiptOcrCapabilityInput): 
   return {
     canAnalyze:   canRunAction && hasReadableAttachment && hasOcrSource && !currentItemsBelongToSource,
     canReanalyze: canRunAction && hasReadableAttachment && hasOcrSource && currentItemsBelongToSource,
-    canFallback:  canRunAction && hasReadableAttachment && hasOcrSource && (currentItemsBelongToSource || !!input.ocrError),
+    canRetry:     canRunAction && hasReadableAttachment && hasOcrSource && (currentItemsBelongToSource || !!input.ocrError),
   }
 }
 

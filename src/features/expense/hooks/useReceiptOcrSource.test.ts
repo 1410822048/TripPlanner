@@ -24,7 +24,7 @@ describe('deriveReceiptOcrCapabilities', () => {
     })).toEqual({
       canAnalyze:   false,
       canReanalyze: false,
-      canFallback:  false,
+      canRetry:     false,
     })
   })
 

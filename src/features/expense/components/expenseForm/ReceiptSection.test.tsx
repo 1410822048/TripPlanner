@@ -8,7 +8,6 @@ function renderReceiptSection(overrides: Partial<ComponentProps<typeof ReceiptSe
   render(
     <ReceiptSection
       error={undefined}
-      sourceKey="fresh:1"
       reconcileWarning={null}
       hasAttachment
       attachmentName="receipt.webp"
@@ -18,13 +17,12 @@ function renderReceiptSection(overrides: Partial<ComponentProps<typeof ReceiptSe
       ocrElapsedMs={0}
       canAnalyze={false}
       canReanalyze={false}
-      canFallback={false}
+      canRetry={false}
       canPreview={false}
       onCameraPicked={() => {}}
       onUploadPicked={() => {}}
       onClear={() => {}}
       onAnalyze={() => {}}
-      onFallback={() => {}}
       onPreview={onPreview}
       {...overrides}
     />,
@@ -62,13 +60,20 @@ describe('ReceiptSection receipt-row actions', () => {
   })
 })
 
-describe('ReceiptSection model picker', () => {
-  it('exposes the model picker with the 辨識模型 accessible name (real component)', () => {
-    renderReceiptSection({ canReanalyze: true })
+describe('ReceiptSection retry', () => {
+  it('re-runs OCR from 再次讀取 (single model, no picker)', () => {
+    const onAnalyze = vi.fn()
+    renderReceiptSection({ canReanalyze: true, canRetry: true, onAnalyze })
 
-    // 真實 SingleSelectPicker 是 button(開 PickerDialog),accessible name
-    // 由 ariaLabel 前綴組成 — 這裡驗證 ReceiptSection 確實傳了 ariaLabel,
-    // 不讓 ExpenseFormModal.test 的 mock 自己補標籤變假綠燈。
-    expect(screen.getByRole('button', { name: /^辨識模型/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^辨識模型/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^再次讀取$/ }))
+    expect(onAnalyze).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers a retry after a failed OCR even before any items exist', () => {
+    renderReceiptSection({ canAnalyze: true, canRetry: true })
+
+    expect(screen.getByRole('button', { name: /^再次讀取$/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /讀取明細/ })).toBeNull()
   })
 })

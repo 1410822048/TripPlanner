@@ -7,7 +7,7 @@ import {
 } from '@tripmate/pdf-page-limit'
 import {
   OcrError,
-} from './claude'
+} from './ocr-prompt'
 import { requestQwenValidatedJson, type QwenConfig } from './qwen'
 import { isHttpUrl, TripIdRe } from './field-validation'
 

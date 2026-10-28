@@ -3,8 +3,7 @@
 // Endpoints: the ROUTES table below is the single, complete list (path,
 // method, rate class, and the per-endpoint dispatch closure). Each route's
 // module header documents its contract; grouped roughly as:
-//   - OCR / extraction: /ocr, /ocr-fallback, /expense-receipt-ocr(-fallback),
-//     /booking-pdf-extract
+//   - OCR / extraction: /ocr, /expense-receipt-ocr, /booking-pdf-extract
 //   - Worker-authoritative entity writes: /expense-*, /wish-*, /booking-file-*,
 //     /settlement-*, /upload-intents, /attachment-{upload,content,delete}
 //   - Membership: /invite-{create,revoke,redeem}, /member-{remove,leave,
@@ -37,14 +36,9 @@
 // the suffix.
 import { verifyFirebaseToken, extractBearerToken, isJwksUnavailable } from './auth'
 import { configureEmulators } from './emulator'
-import { OcrError }                               from './claude'
-import { OcrRequestSchema, type OcrRequest, type OcrResponse } from './schema'
-import {
-  RECEIPT_OCR_PROVIDERS,
-  runOcrProvider,
-  type OcrProvider,
-  type OcrProviderConfig,
-}                                                 from './ocr-providers'
+import { OcrError }                               from './ocr-prompt'
+import { OcrRequestSchema }                       from './schema'
+import { extractReceiptItemsQwen, type QwenConfig } from './qwen'
 import { expenseReceiptOcr, ExpenseReceiptOcrRequestSchema } from './expense-receipt-ocr'
 import {
   extractBookingPdfFields,
@@ -154,7 +148,6 @@ import { fxPreview, FxPreviewRequestSchema } from './fx-preview'
 export { GlobalRateLimiter } from './rate-limiter'
 
 type WorkerEnv = Env & {
-  ANTHROPIC_FOUNDRY_API_KEY: string // secret — Microsoft Foundry (Azure AI Foundry) Claude API key
   FIREBASE_SERVICE_ACCOUNT: string  // secret — JSON string of service account key
   QWEN_API_KEY:             string  // secret; OpenAI-compatible Qwen provider API key
   GEOAPIFY_API_KEY?:        string  // secret
@@ -316,23 +309,8 @@ interface RouteDescriptor {
   dispatch: (c: DispatchCtx) => Response | Promise<Response>
 }
 
-function ocrProviderConfig(env: WorkerEnv): OcrProviderConfig {
-  return {
-    claude: {
-      apiKey:   env.ANTHROPIC_FOUNDRY_API_KEY,
-      resource: env.ANTHROPIC_FOUNDRY_RESOURCE,
-      model:    env.CLAUDE_DEPLOYMENT,
-    },
-    qwen: {
-      apiKey:  env.QWEN_API_KEY,
-      baseUrl: env.QWEN_BASE_URL,
-      model:   env.QWEN_MODEL,
-    },
-  }
-}
-
-function runConfiguredOcrProvider(env: WorkerEnv, provider: OcrProvider, data: OcrRequest): Promise<OcrResponse> {
-  return runOcrProvider(provider, data.image, data.mimeType, data.currency, ocrProviderConfig(env))
+function qwenConfig(env: WorkerEnv): QwenConfig {
+  return { apiKey: env.QWEN_API_KEY, baseUrl: env.QWEN_BASE_URL, model: env.QWEN_MODEL }
 }
 
 function clientSafeOcrError(status: number): string {
@@ -662,38 +640,14 @@ export const ROUTES: RouteDescriptor[] = [
       // Re-OCR an EXISTING expense receipt: Worker reads receipt.path from
       // the doc (client can't name the object), mirrors /expense-update auth
       // (owner/editor; settlement-locked ⇒ owner), reads the image from
-      // Storage, and runs the SAME extractReceiptItems core as /ocr.
-      handle:    data => {
-        const provider = RECEIPT_OCR_PROVIDERS.primary
-        return expenseReceiptOcr(
-          c.uid,
-          data,
-          c.env.FIREBASE_SERVICE_ACCOUNT,
-          c.env.ATTACHMENTS,
-          (image, mimeType, currency) =>
-            runOcrProvider(provider, image, mimeType, currency, ocrProviderConfig(c.env)),
-        )
-      },
-      formatLog: (data, result) => `trip=${data.tripId} exp=${data.expenseId} items=${result.result.items.length}`,
-      catchDomain: ocrErrorCatcher,
-    }),
-  },
-  {
-    path: '/expense-receipt-ocr-fallback', rate: 'ocr',
-    dispatch: c => handleJsonRoute({
-      endpoint:  'expense-receipt-ocr-fallback', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
-      schema:    ExpenseReceiptOcrRequestSchema,
-      handle:    data => {
-        const provider = RECEIPT_OCR_PROVIDERS.fallback
-        return expenseReceiptOcr(
-          c.uid,
-          data,
-          c.env.FIREBASE_SERVICE_ACCOUNT,
-          c.env.ATTACHMENTS,
-          (image, mimeType, currency) =>
-            runOcrProvider(provider, image, mimeType, currency, ocrProviderConfig(c.env)),
-        )
-      },
+      // Storage, and runs the SAME Qwen OCR core as /ocr.
+      handle:    data => expenseReceiptOcr(
+        c.uid,
+        data,
+        c.env.FIREBASE_SERVICE_ACCOUNT,
+        c.env.ATTACHMENTS,
+        (image, mimeType, currency) => extractReceiptItemsQwen(image, mimeType, currency, qwenConfig(c.env)),
+      ),
       formatLog: (data, result) => `trip=${data.tripId} exp=${data.expenseId} items=${result.result.items.length}`,
       catchDomain: ocrErrorCatcher,
     }),
@@ -707,7 +661,7 @@ export const ROUTES: RouteDescriptor[] = [
       // keeping its own strict schema, evidence checks, and normalization.
       handle:    async data => {
         await assertOcrTripAccess(c.env.FIREBASE_SERVICE_ACCOUNT, data.tripId, c.uid)
-        return extractBookingPdfFields(data, ocrProviderConfig(c.env).qwen)
+        return extractBookingPdfFields(data, qwenConfig(c.env))
       },
       formatLog: (_data, result) =>
         `candidates=${result.bookings.length} types=${result.bookings.map(b => b.bookingType).join(',')} fields=${bookingPdfFieldCount(result)} warnings=${result.warnings.length}`,
@@ -721,20 +675,7 @@ export const ROUTES: RouteDescriptor[] = [
       schema:    OcrRequestSchema,
       handle:    async data => {
         await assertOcrTripAccess(c.env.FIREBASE_SERVICE_ACCOUNT, data.tripId, c.uid)
-        return runConfiguredOcrProvider(c.env, RECEIPT_OCR_PROVIDERS.primary, data)
-      },
-      formatLog: (_data, result) => `items=${result.items.length}`,
-      catchDomain: ocrErrorCatcher,
-    }),
-  },
-  {
-    path: '/ocr-fallback', rate: 'ocr',
-    dispatch: c => handleJsonRoute({
-      endpoint:  'ocr-fallback', body: c.body, cors: c.cors, uid: c.uid, report: c.report,
-      schema:    OcrRequestSchema,
-      handle:    async data => {
-        await assertOcrTripAccess(c.env.FIREBASE_SERVICE_ACCOUNT, data.tripId, c.uid)
-        return runConfiguredOcrProvider(c.env, RECEIPT_OCR_PROVIDERS.fallback, data)
+        return extractReceiptItemsQwen(data.image, data.mimeType, data.currency, qwenConfig(c.env))
       },
       formatLog: (_data, result) => `items=${result.items.length}`,
       catchDomain: ocrErrorCatcher,

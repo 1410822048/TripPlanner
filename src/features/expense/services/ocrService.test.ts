@@ -23,10 +23,9 @@ vi.mock('@/services/workerBase', async importOriginal => ({
 }))
 
 import {
-  ocrFallbackReceipt,
+  ocrReceipt,
   ocrResultStillApplicable,
   ocrExistingExpenseReceipt,
-  ocrExistingExpenseReceiptFallback,
   isOcrSupportedImageMimeType,
   OcrError,
 } from './ocrService'
@@ -105,20 +104,6 @@ describe('ocrExistingExpenseReceipt', () => {
     expect(sent).not.toHaveProperty('url')
   })
 
-  it('fallback existing receipt posts to /expense-receipt-ocr-fallback', async () => {
-    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
-      Promise.resolve(new Response(
-        JSON.stringify({ result: { items: [], adjustments: [], ignoredLines: [], totalText: '0' }, sourceReceiptPath: 'p' }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      )),
-    )
-    globalThis.fetch = fetchMock as unknown as typeof fetch
-
-    await ocrExistingExpenseReceiptFallback('trip-1', 'exp-1', 'JPY')
-
-    expect(fetchMock.mock.calls[0]![0]).toBe('https://worker.example.dev/expense-receipt-ocr-fallback')
-  })
-
   it('maps statuses → OcrError kinds (401 auth / 403 forbidden / 429 rate-limit / 409 stale / 422·415 parse)', async () => {
     stubFetch(401, { error: 'x' })
     await expect(ocrExistingExpenseReceipt('t', 'e')).rejects.toMatchObject({ kind: 'auth' })
@@ -184,14 +169,14 @@ describe('ocrExistingExpenseReceipt', () => {
   })
 })
 
-describe('ocrFallbackReceipt', () => {
+describe('ocrReceipt', () => {
   const realFetch = globalThis.fetch
   afterEach(() => { globalThis.fetch = realFetch })
   beforeEach(() => {
     getIdToken.mockClear()
   })
 
-  it('posts caller-supplied image bytes to /ocr-fallback', async () => {
+  it('posts caller-supplied image bytes to /ocr', async () => {
     const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
       Promise.resolve(new Response(
         JSON.stringify({ items: [{ name: 'A', amountText: '100' }], adjustments: [], ignoredLines: [], totalText: '100' }),
@@ -200,11 +185,11 @@ describe('ocrFallbackReceipt', () => {
     )
     globalThis.fetch = fetchMock as unknown as typeof fetch
 
-    const out = await ocrFallbackReceipt(new File(['img'], 'receipt.webp', { type: 'image/webp' }), 'JPY', undefined, 'trip-1')
+    const out = await ocrReceipt(new File(['img'], 'receipt.webp', { type: 'image/webp' }), 'JPY', undefined, 'trip-1')
 
     expect(out.totalText).toBe('100')
     const call = fetchMock.mock.calls[0]!
-    expect(call[0]).toBe('https://worker.example.dev/ocr-fallback')
+    expect(call[0]).toBe('https://worker.example.dev/ocr')
     const sent = JSON.parse(call[1]!.body as string)
     expect(sent).toMatchObject({ mimeType: 'image/webp', currency: 'JPY' })
     expect(sent).toMatchObject({ tripId: 'trip-1' })
@@ -216,7 +201,7 @@ describe('ocrFallbackReceipt', () => {
     )
     globalThis.fetch = fetchMock as unknown as typeof fetch
 
-    await expect(ocrFallbackReceipt(new File(['img'], 'receipt.webp', { type: 'image/webp' }), 'JPY', undefined, 'trip-1'))
+    await expect(ocrReceipt(new File(['img'], 'receipt.webp', { type: 'image/webp' }), 'JPY', undefined, 'trip-1'))
       .rejects.toMatchObject({ kind: 'trip-forbidden' })
     const sent = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)
     expect(sent.tripId).toBe('trip-1')

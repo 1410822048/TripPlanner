@@ -13,7 +13,7 @@ import { act, renderHook } from '@testing-library/react'
 import type { ChangeEvent } from 'react'
 
 const ocrApi = vi.hoisted(() => ({
-  run: vi.fn(), runFallback: vi.fn(), runExisting: vi.fn(),
+  run: vi.fn(), runExisting: vi.fn(),
   cancel: vi.fn(), setFile: vi.fn(), reset: vi.fn(),
   onSuccess: null as ((result: unknown) => void) | null,
 }))
@@ -26,7 +26,7 @@ vi.mock('./useOcrFlow', () => ({
     ocrApi.onSuccess = opts.onSuccess
     return {
       loading: false, error: null, elapsedMs: 0, lastFile: null,
-      run: ocrApi.run, runFallback: ocrApi.runFallback, runExisting: ocrApi.runExisting,
+      run: ocrApi.run, runExisting: ocrApi.runExisting,
       cancel: ocrApi.cancel, setFile: ocrApi.setFile, reset: ocrApi.reset,
     }
   },
@@ -56,7 +56,7 @@ const fileEvent = (file: File) =>
   ({ target: { files: [file], value: '' } } as unknown as ChangeEvent<HTMLInputElement>)
 
 beforeEach(() => {
-  ocrApi.run.mockReset(); ocrApi.runFallback.mockReset(); ocrApi.runExisting.mockReset()
+  ocrApi.run.mockReset(); ocrApi.runExisting.mockReset()
   ocrApi.cancel.mockReset(); ocrApi.setFile.mockReset(); ocrApi.reset.mockReset()
   ocrApi.onSuccess = null
   imageApi.compressReceiptImage.mockReset()

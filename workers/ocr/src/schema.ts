@@ -52,7 +52,7 @@ export const OcrRequestSchema = z.object({
   /** MIME type of the image. We only allow common photo formats — PDFs
    *  are intentionally rejected (the model can read PDFs but receipts as
    *  PDFs are rare and we want to limit attack surface). Mirrors the
-   *  receipt attachment set, because Claude/Qwen OCR paths cannot reliably
+   *  receipt attachment set, because the Qwen OCR path cannot reliably
    *  consume HEIC/HEIF or PDFs. */
   mimeType: z.enum(OCR_SUPPORTED_IMAGE_MIME_TYPES),
   /** ISO 4217 currency code hint (e.g. 'JPY', 'TWD'). The LLM uses this
@@ -73,7 +73,7 @@ export type OcrRequest = z.infer<typeof OcrRequestSchema>
 // "500"); the client parses via parseMoneyToMinor(amountText, currency) at
 // the form→Firestore boundary so the lossy float round-trip never happens
 // on the wire. Canonical contract is `\d+(?:\.\d+)?` (no symbols, no group
-// separators) — see buildPrompt() in claude.ts. The preprocess strips
+// separators) — see buildPrompt() in ocr-prompt.ts. The preprocess strips
 // ASCII commas, full-width commas (FF0C), and spaces as a defensive
 // self-heal against LLM drift on receipts with printed thousand separators
 // like "¥10,276"; anything else (sign, scientific notation, trailing dot,
@@ -185,7 +185,7 @@ export const OcrResponseSchema = z.object({
 })
 export type OcrResponse = z.infer<typeof OcrResponseSchema>
 
-// JSON Schema used by Claude and Qwen structured-output modes. Kept separate
+// JSON Schema used by the Qwen structured-output mode. Kept separate
 // from the Zod schema because provider APIs require plain JSON Schema. The
 // shape mirrors OcrResponseSchema — if you add a field here, add it there too.
 //

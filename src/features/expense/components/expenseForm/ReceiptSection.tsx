@@ -3,22 +3,14 @@
 // ExpenseFormModal (item 3 — the form's JSX is extracted into sections; the
 // receipt / OCR / attachment STATE stays in the modal and its hooks). This
 // component owns only picker-local UI state: the two hidden <input> refs and
-// the selected retry model. OCR lifecycle / receipt state stays in the caller.
+// the add-receipt sheet. OCR lifecycle / receipt state stays in the caller.
 import { useRef, useState, type ChangeEvent } from 'react'
 import { AlertTriangle, Camera, FileText, Loader2, Plus, ScanLine, Upload, X } from 'lucide-react'
 import FormField from '@/components/ui/FormField'
-import SingleSelectPicker from '@/components/ui/SingleSelectPicker'
 import PickerDialog from '@/components/ui/pickers/PickerDialog'
 
 const IMAGE_ACCEPT = 'image/*'
 const ANY_ACCEPT   = 'image/*,application/pdf'
-
-type OcrModel = 'qwen' | 'claude'
-
-const OCR_MODEL_OPTIONS = [
-  { value: 'qwen',   prefix: 'Qwen',   label: '快速・預設' },
-  { value: 'claude', prefix: 'Claude', label: '高精度' },
-] as const
 
 /** OCR 等待中的內嵌提示。給使用者三件事:
  *   1) 還在跑(spinner 動)
@@ -137,10 +129,6 @@ function ReceiptAddActionSheet({
 interface ReceiptSectionProps {
   /** Receipt error copy (attachment error ?? OCR error). */
   error:          string | undefined
-  /** Identity of the current receipt source (useReceiptOcr.sourceKey).
-   *  The picker-local model selection resets when this changes — a Claude
-   *  choice for the OLD receipt must not leak onto a replacement. */
-  sourceKey:      string | null
   /** Lines-vs-bill mismatch warning (null when reconciled). Surfaced at
    *  the scan locus so an OCR misread is caught before the user scrolls
    *  to the items; the ✓ reconciled case stays silent (LineItemsSection
@@ -156,7 +144,9 @@ interface ReceiptSectionProps {
   canAnalyze:     boolean
   /** 「再次讀取」 link visible (already has items). */
   canReanalyze:   boolean
-  canFallback:    boolean
+  /** 「再次讀取」 visible: items already read for this receipt, or the last
+   *  OCR attempt failed. */
+  canRetry:       boolean
   /** Whether the full preview is openable (a new file or an existing
    *  fullPath) — independent of whether a thumbnail URL resolved. */
   canPreview:     boolean
@@ -164,17 +154,13 @@ interface ReceiptSectionProps {
   onUploadPicked: (e: ChangeEvent<HTMLInputElement>) => void
   onClear:        () => void
   onAnalyze:      () => void
-  onFallback:     () => void
   onPreview:      () => void
 }
 
 export default function ReceiptSection({
   error, reconcileWarning, hasAttachment, attachmentName, previewUrl, previewIsImage, canPreview,
-  sourceKey,
-  ocrLoading, ocrElapsedMs, canAnalyze, canReanalyze,
-  canFallback,
+  ocrLoading, ocrElapsedMs, canAnalyze, canReanalyze, canRetry,
   onCameraPicked, onUploadPicked, onClear, onAnalyze, onPreview,
-  onFallback,
 }: ReceiptSectionProps) {
   // Two separate <input>s — we CAN'T detect "camera vs gallery" from one
   // input, so the UX branches on which button was tapped. Refs are local to
@@ -182,16 +168,6 @@ export default function ReceiptSection({
   const cameraRef = useRef<HTMLInputElement>(null)
   const uploadRef = useRef<HTMLInputElement>(null)
   const [addSheetOpen, setAddSheetOpen] = useState(false)
-  const [ocrModel, setOcrModel] = useState<OcrModel>('qwen')
-  // Render-time adjust (not an effect): the model choice is bound to ONE
-  // receipt source. A replacement receipt starts back at the primary model,
-  // matching what the camera auto-OCR will actually run.
-  const [modelSourceKey, setModelSourceKey] = useState(sourceKey)
-  if (modelSourceKey !== sourceKey) {
-    setModelSourceKey(sourceKey)
-    setOcrModel('qwen')
-  }
-  const canRetryWithModel = canReanalyze || canFallback
   const receiptStatus = ocrLoading
     ? '正在讀取明細…'
     : canReanalyze
@@ -200,18 +176,6 @@ export default function ReceiptSection({
   const receiptThumb = previewIsImage && previewUrl
     ? <img src={previewUrl} alt="" className="h-full w-full object-cover" draggable={false} />
     : <FileText size={20} strokeWidth={1.7} />
-
-  function handleModelChange(value: string) {
-    setOcrModel(value === 'claude' ? 'claude' : 'qwen')
-  }
-
-  function handleRetry() {
-    if (ocrModel === 'claude' && canFallback) {
-      onFallback()
-      return
-    }
-    onAnalyze()
-  }
 
   return (
     // 收據放在表單前段，因為 OCR 會自動填入下方的金額與明細；若放在
@@ -255,27 +219,11 @@ export default function ReceiptSection({
                 <X size={15} strokeWidth={2.2} />
               </button>
             </div>
-
-            {canRetryWithModel && (
-              <fieldset className="mt-3 min-w-0 border-0 border-t border-solid border-border p-0 pt-3">
-                <legend className="mb-1.5 px-0 text-[11px] font-semibold text-muted">
-                  辨識模型
-                </legend>
-                <SingleSelectPicker
-                  value={ocrModel}
-                  options={OCR_MODEL_OPTIONS}
-                  title="選擇辨識模型"
-                  placeholder="選擇辨識模型"
-                  ariaLabel="辨識模型"
-                  onChange={handleModelChange}
-                />
-              </fieldset>
-            )}
           </div>
 
           {/* 尚未 OCR 時只顯示首次讀取；ScanLine 表達掃描收據，不使用
               容易誤導為自動生成內容的 AI 裝飾。 */}
-          {canAnalyze && !canRetryWithModel && (
+          {canAnalyze && !canRetry && (
             <button
               type="button"
               onClick={onAnalyze}
@@ -287,10 +235,10 @@ export default function ReceiptSection({
             </button>
           )}
 
-          {canRetryWithModel && (
+          {canRetry && (
             <button
               type="button"
-              onClick={handleRetry}
+              onClick={onAnalyze}
               className="flex h-10 w-full items-center justify-center gap-2 rounded-input border border-accent/20 bg-accent-pale px-3 text-[13px] font-bold text-accent cursor-pointer transition-colors hover:border-accent/35 hover:bg-accent/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               <ScanLine size={16} strokeWidth={2.2} className="shrink-0" />

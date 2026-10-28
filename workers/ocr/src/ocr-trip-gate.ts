@@ -1,6 +1,6 @@
 // ─── OCR / PDF-extract trip gate ─────────────────────────────────────
 //
-// /ocr, /ocr-fallback and /booking-pdf-extract spend paid model quota, so
+// /ocr and /booking-pdf-extract spend paid model quota, so
 // they are not open to any signed-in Google account. The UI only offers
 // them inside the expense / booking editors, which are owner/editor-only,
 // so the gate mirrors that. `tripId` is a required request field (the

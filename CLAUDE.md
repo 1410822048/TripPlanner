@@ -13,7 +13,7 @@
 | Compiler | **babel-plugin-react-compiler v1**(自動 memoise,所以幾乎沒有手寫 useCallback/useMemo) |
 | Backend | **Firebase v12**: Auth(Google)/ Firestore(+ IndexedDB persistence) + **Cloudflare R2** private attachments |
 | 即時同步 | Firestore `onSnapshot` 包裝在 `createRealtimeListHook` factory |
-| 收據 OCR | **Cloudflare Worker** + **Qwen primary / Claude fallback**(workers/ocr/) |
+| 收據 OCR | **Cloudflare Worker** + **Qwen**(workers/ocr/) |
 | Hosting | **Cloudflare Pages**(`tripmate-2wg.pages.dev`) |
 | 觀測 | Sentry(@sentry/browser,idle 延遲初始化;拆獨立 `vendor-sentry` chunk,排除在 modulepreload + PWA precache 之外) |
 | 測試 | Vitest + @cloudflare/vitest-pool-workers(Worker 測試) |
@@ -323,7 +323,7 @@ onCameraPicked:
                 ↓
               Worker (workers/ocr/):
                 → verifyFirebaseToken (jose JWKS)
-                → OCR provider (Qwen primary / Claude fallback)
+                → OCR provider (Qwen)
                 → return { items[], total, storeName? }
   ↓ onSuccess:
 items.reset(result.items.map(i => ({ name, amount, allocations: [] })))  ← 預設無人指派
@@ -507,9 +507,9 @@ Demo / not-signed-in 使用者點任何「寫入」action 都會跳 SignInModal�
 - **端點**: `POST /ocr`；附件走 `POST /attachment-upload`、`GET /attachment-content`、`POST /attachment-delete`
 - **驗證**: `jose` + `createRemoteJWKSet` 驗 Firebase JWT
 - **附件**: private R2 `ATTACHMENTS` binding；production=`tripmate-attachments-production`；無 public domain / S3 credentials。Pages preview 直接共用 production Worker / R2
-- **AI**: 收據 `/ocr` 與 Booking PDF extraction 使用 Alibaba Model Studio 的 Qwen3.7-Flash(`QWEN_BASE_URL` / `QWEN_MODEL`);收據 `/ocr-fallback` 使用 Microsoft Foundry Claude 原生 Anthropic Messages API(`ANTHROPIC_FOUNDRY_RESOURCE` / `CLAUDE_DEPLOYMENT`)。兩者皆以嚴格 JSON schema 驗證輸出。
-- **Wrangler**: `npx wrangler tail` 看即時 log(找 `[qwen]` / `[claude]` 前綴);`npx wrangler deploy` 部署
-- **secrets**: `QWEN_API_KEY`(primary 為 qwen 時必填)、`ANTHROPIC_FOUNDRY_API_KEY`(fallback 用 Claude 時必填)
+- **AI**: 收據 `/ocr`、`/expense-receipt-ocr` 與 Booking PDF extraction 都使用 Alibaba Model Studio 的 Qwen3.7-Flash(`QWEN_BASE_URL` / `QWEN_MODEL`),以嚴格 JSON schema 驗證輸出。唯一的 OCR provider;「再次讀取」也是重跑 Qwen(Claude fallback 已移除)。
+- **Wrangler**: `npx wrangler tail` 看即時 log(找 `[qwen]` 前綴);`npx wrangler deploy` 部署
+- **secrets**: `QWEN_API_KEY`(必填)
 - **本機模擬器模式**(`src/emulator.ts`、`wrangler.emulator.jsonc`、`npm run dev:emulator`):同時設 `FIRESTORE_EMULATOR_HOST` + `FIREBASE_AUTH_EMULATOR_HOST` 才啟用,而且專案 ID 必須是 `demo-`、主機必須是 loopback,否則每個請求都直接失敗。啟用後 Firestore REST 指向模擬器、接受 Auth 模擬器的未簽章 token、管理員憑證用模擬器的 `owner`。正式 `wrangler.jsonc` 不得出現這些變數(`tests/invariants/workerEmulatorConfig.test.ts` 釘住);`wrangler.emulator.jsonc` **永不部署**
 
 ### Firebase

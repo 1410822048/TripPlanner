@@ -41,19 +41,14 @@ vi.mock('../src/r2-storage', () => ({
   }),
 }))
 
-vi.mock('../src/claude', () => ({
-  extractReceiptItems: vi.fn(async (_b64: string, mimeType: string, currency: string | undefined) => {
-    ocrCalls.push({ mimeType, currency })
-    return { items: [{ name: 'コーヒー', amountText: '380' }], adjustments: [], ignoredLines: [], totalText: '380' }
-  }),
-  OcrError: class OcrError extends Error {
-    constructor(message: string, public readonly status: number) { super(message) }
-  },
-}))
+// Stand-in for the OCR provider callback the route injects.
+const extractReceiptItems = vi.fn(async (_b64: string, mimeType: string, currency: string | undefined) => {
+  ocrCalls.push({ mimeType, currency })
+  return { items: [{ name: 'コーヒー', amountText: '380' }], adjustments: [], ignoredLines: [], totalText: '380' }
+})
 
 import { expenseReceiptOcr, ExpenseReceiptOcrRequestSchema } from '../src/expense-receipt-ocr'
 import { CascadeError } from '../src/cascade'
-import { extractReceiptItems } from '../src/claude'
 
 const TRIP = 'trip-1'
 const EXP  = 'exp-1'
@@ -101,7 +96,7 @@ function run(reqOverrides: Record<string, unknown> = {}, caller = CALLER) {
     { tripId: TRIP, expenseId: EXP, ...reqOverrides } as never,
     '{}', {} as R2Bucket,
     (image, mimeType, currency) =>
-      extractReceiptItems(image, mimeType, currency, { apiKey: 'k', resource: 'aic-claude-eus2', model: 'claude-sonnet-4-6' }),
+      extractReceiptItems(image, mimeType, currency),
   )
 }
 
@@ -112,7 +107,7 @@ beforeEach(() => {
   storageState.metaThrows = false
   storageState.bytesThrows = false
   ocrCalls.length = 0
-  vi.mocked(extractReceiptItems).mockClear()
+  extractReceiptItems.mockClear()
 })
 
 describe('expenseReceiptOcr — happy paths', () => {
@@ -267,7 +262,7 @@ describe('expenseReceiptOcr — post-OCR revalidation (mid-OCR race)', () => {
     seedExpense({ receipt: { path: RECEIPT_PATH, type: 'image/webp' }, updatedAt: '2026-06-04T08:00:00Z' })
     seedStorageOk()
     // Simulate another client REPLACING the receipt during the OCR call.
-    vi.mocked(extractReceiptItems).mockImplementationOnce(async () => {
+    extractReceiptItems.mockImplementationOnce(async () => {
       seedExpense({ receipt: { path: `trips/${TRIP}/expenses/${EXP}/receipt-v2.webp`, type: 'image/webp' }, updatedAt: '2026-06-04T08:00:00Z' })
       return { items: [{ name: 'x', amountText: '1' }], adjustments: [], ignoredLines: [], totalText: '1' }
     })
@@ -278,7 +273,7 @@ describe('expenseReceiptOcr — post-OCR revalidation (mid-OCR race)', () => {
     seedTrip({ ownerId: 'x' }); seedMember(CALLER)
     seedExpense({ receipt: { path: RECEIPT_PATH, type: 'image/webp' }, updatedAt: '2026-06-04T08:00:00Z' })
     seedStorageOk()
-    vi.mocked(extractReceiptItems).mockImplementationOnce(async () => {
+    extractReceiptItems.mockImplementationOnce(async () => {
       seedExpense({ receipt: { path: RECEIPT_PATH, type: 'image/webp' }, updatedAt: '2026-06-04T09:00:00Z' })
       return { items: [{ name: 'x', amountText: '1' }], adjustments: [], ignoredLines: [], totalText: '1' }
     })
@@ -302,7 +297,7 @@ describe('expenseReceiptOcr — post-OCR revalidation (mid-OCR race)', () => {
     seedTrip({ ownerId: 'someone-else' }); seedMember(CALLER, 'editor')
     seedExpense({ receipt: { path: RECEIPT_PATH, type: 'image/webp' }, updatedAt: '2026-06-04T08:00:00Z' })
     seedStorageOk()
-    vi.mocked(extractReceiptItems).mockImplementationOnce(async () => {
+    extractReceiptItems.mockImplementationOnce(async () => {
       seedExpense({ receipt: { path: RECEIPT_PATH, type: 'image/webp' }, settlementLockIds: ['s-1'], updatedAt: '2026-06-04T08:00:00Z' })
       return { items: [{ name: 'x', amountText: '1' }], adjustments: [], ignoredLines: [], totalText: '1' }
     })
@@ -313,7 +308,7 @@ describe('expenseReceiptOcr — post-OCR revalidation (mid-OCR race)', () => {
     seedTrip({ ownerId: CALLER }); seedMember(CALLER, 'editor')
     seedExpense({ receipt: { path: RECEIPT_PATH, type: 'image/webp' }, updatedAt: '2026-06-04T08:00:00Z' })
     seedStorageOk()
-    vi.mocked(extractReceiptItems).mockImplementationOnce(async () => {
+    extractReceiptItems.mockImplementationOnce(async () => {
       seedExpense({ receipt: { path: RECEIPT_PATH, type: 'image/webp' }, settlementLockIds: ['s-1'], updatedAt: '2026-06-04T08:00:00Z' })
       return { items: [{ name: 'x', amountText: '1' }], adjustments: [], ignoredLines: [], totalText: '1' }
     })
@@ -325,7 +320,7 @@ describe('expenseReceiptOcr — post-OCR revalidation (mid-OCR race)', () => {
     seedTrip({ ownerId: 'someone-else' }); seedMember(CALLER, 'editor')
     seedExpense({ receipt: { path: RECEIPT_PATH, type: 'image/webp' }, updatedAt: '2026-06-04T08:00:00Z' })
     seedStorageOk()
-    vi.mocked(extractReceiptItems).mockImplementationOnce(async () => {
+    extractReceiptItems.mockImplementationOnce(async () => {
       seedMember(CALLER, 'viewer')
       return { items: [{ name: 'x', amountText: '1' }], adjustments: [], ignoredLines: [], totalText: '1' }
     })
