@@ -21,9 +21,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   ocrReceipt,
-  ocrFallbackReceipt,
   ocrExistingExpenseReceipt,
-  ocrExistingExpenseReceiptFallback,
   OcrError,
   type OcrResult,
 } from '../services/ocrService'
@@ -62,9 +60,6 @@ export interface UseOcrFlowResult {
   /** Compress (1920px WebP) → call worker → call onSuccess. Updates
    *  loading + error along the way. */
   run:      (file: File) => Promise<void>
-  /** Explicit backup OCR. Same race guards as `run()`, but hits the
-   *  Worker fallback route so cost/latency stay user-triggered. */
-  runFallback: (file: File) => Promise<void>
   /** Re-OCR an EXISTING expense receipt (no freshly-picked File — the old
    *  receipt is only a URL). Worker reads receipt.path from the doc. Does
    *  NOT set `lastFile`, so the button keeps using this path on repeat
@@ -75,7 +70,6 @@ export interface UseOcrFlowResult {
     tripId:           string
     expenseId:        string
     currencyHint?:    string
-    useFallback?:     boolean
     isStillApplicable: (sourceReceiptPath: string, expenseUpdatedAt?: string) => boolean
   }) => Promise<void>
   /** Reset everything — called when the user clears the receipt. */
@@ -194,7 +188,6 @@ export function useOcrFlow({ currency, tripId, onSuccess }: UseOcrFlowOptions): 
   }
 
   const run = (file: File): Promise<void> => runWithFile(file, ocrReceipt)
-  const runFallback = (file: File): Promise<void> => runWithFile(file, ocrFallbackReceipt)
 
   const runExisting: UseOcrFlowResult['runExisting'] = async (opts) => {
     const seq = ++requestSeqRef.current
@@ -207,7 +200,7 @@ export function useOcrFlow({ currency, tripId, onSuccess }: UseOcrFlowOptions): 
     setError(null)
     try {
       const { result, sourceReceiptPath, expenseUpdatedAt } =
-        await (opts.useFallback ? ocrExistingExpenseReceiptFallback : ocrExistingExpenseReceipt)(
+        await ocrExistingExpenseReceipt(
           opts.tripId,
           opts.expenseId,
           opts.currencyHint,
@@ -268,5 +261,5 @@ export function useOcrFlow({ currency, tripId, onSuccess }: UseOcrFlowOptions): 
     setElapsedMs(0)
   }
 
-  return { loading, error, lastFile, elapsedMs, cancel, setFile, run, runFallback, runExisting, reset }
+  return { loading, error, lastFile, elapsedMs, cancel, setFile, run, runExisting, reset }
 }

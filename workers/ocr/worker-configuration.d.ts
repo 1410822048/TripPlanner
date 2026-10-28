@@ -17,8 +17,6 @@ interface __BaseEnv_Env {
 	FX_PREVIEW_RATE_LIMITER: RateLimit;
 	FIREBASE_PROJECT_ID: "tripplanner-80a4f";
 	ALLOWED_ORIGINS: "https://tripmate-2wg.pages.dev,*.tripmate-2wg.pages.dev,http://localhost:5173,http://127.0.0.1:5173";
-	ANTHROPIC_FOUNDRY_RESOURCE: "aic-claude-eus2";
-	CLAUDE_DEPLOYMENT: "claude-sonnet-5";
 	QWEN_BASE_URL: "https://ws-g7wwlr6k1kgzbizw.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
 	QWEN_MODEL: "qwen3.7-flash";
 	GLOBAL_LIMITER: DurableObjectNamespace<import("./src/index").GlobalRateLimiter>;
@@ -35,7 +33,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "FIREBASE_PROJECT_ID" | "ALLOWED_ORIGINS" | "ANTHROPIC_FOUNDRY_RESOURCE" | "CLAUDE_DEPLOYMENT" | "QWEN_BASE_URL" | "QWEN_MODEL">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "FIREBASE_PROJECT_ID" | "ALLOWED_ORIGINS" | "QWEN_BASE_URL" | "QWEN_MODEL">> {}
 }
 
 // Begin runtime types

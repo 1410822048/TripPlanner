@@ -34,7 +34,7 @@ vi.mock('@/hooks/useAttachmentUrl', () => ({ useAttachmentUrl: () => null }))
 vi.mock('../hooks/useOcrFlow', () => ({
   useOcrFlow: () => ({
     loading: false, error: null, elapsedMs: 0, lastFile: null,
-    run: vi.fn(), runFallback: vi.fn(), runExisting: vi.fn(), cancel: vi.fn(), setFile: vi.fn(), reset: vi.fn(),
+    run: vi.fn(), runExisting: vi.fn(), cancel: vi.fn(), setFile: vi.fn(), reset: vi.fn(),
   }),
 }))
 vi.mock('@/services/firebase', () => ({

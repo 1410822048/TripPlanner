@@ -228,15 +228,6 @@ export async function ocrReceipt(file: File, currency: string | undefined, signa
   }, tripId)
 }
 
-/** Explicit backup path. This is user-triggered; the product path does not
- *  silently double-run models and hide the latency/cost from the user. */
-export async function ocrFallbackReceipt(file: File, currency: string | undefined, signal: AbortSignal | undefined, tripId: string): Promise<OcrResult> {
-  return postOcrImage<OcrResult>('/ocr-fallback', file, currency, signal, {
-    timeout: 'OCR fallback timed out',
-    failed:  'OCR fallback failed',
-  }, tripId)
-}
-
 /** Response envelope for the re-OCR-existing-receipt endpoint. Carries the
  *  OCR candidate PLUS race metadata the caller checks before applying:
  *  `sourceReceiptPath` (the object the Worker actually read) and
@@ -260,8 +251,7 @@ export interface ExpenseReceiptOcrResponse {
  * still applies to the open modal (receipt path unchanged, expense not
  * edited mid-flight) before applying it.
  */
-async function ocrExistingExpenseReceiptEndpoint(
-  endpoint:     '/expense-receipt-ocr' | '/expense-receipt-ocr-fallback',
+export async function ocrExistingExpenseReceipt(
   tripId:       string,
   expenseId:    string,
   currencyHint?: string,
@@ -278,7 +268,7 @@ async function ocrExistingExpenseReceiptEndpoint(
 
   // ONLY identifiers cross the wire — never the receipt path.
   return workerRead<ExpenseReceiptOcrResponse>(
-    endpoint,
+    '/expense-receipt-ocr',
     { tripId, expenseId, ...(currencyHint ? { currencyHint } : {}) },
     {
       base,
@@ -301,24 +291,6 @@ async function ocrExistingExpenseReceiptEndpoint(
       },
     },
   )
-}
-
-export function ocrExistingExpenseReceipt(
-  tripId:       string,
-  expenseId:    string,
-  currencyHint?: string,
-  signal?:      AbortSignal,
-): Promise<ExpenseReceiptOcrResponse> {
-  return ocrExistingExpenseReceiptEndpoint('/expense-receipt-ocr', tripId, expenseId, currencyHint, signal)
-}
-
-export function ocrExistingExpenseReceiptFallback(
-  tripId:       string,
-  expenseId:    string,
-  currencyHint?: string,
-  signal?:      AbortSignal,
-): Promise<ExpenseReceiptOcrResponse> {
-  return ocrExistingExpenseReceiptEndpoint('/expense-receipt-ocr-fallback', tripId, expenseId, currencyHint, signal)
 }
 
 /**

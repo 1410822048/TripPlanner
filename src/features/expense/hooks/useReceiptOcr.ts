@@ -62,8 +62,7 @@ export interface UseReceiptOcrInput {
 
 export interface UseReceiptOcrResult {
   source: ReceiptOcrSource
-  /** Identity of the current source — consumers bind per-receipt UI state
-   *  (e.g. the retry-model picker) to this key. */
+  /** Identity of the current source. */
   sourceKey: ReceiptOcrSourceKey | null
   status: { loading: boolean; error: string | null; elapsedMs: number }
   caps: ReceiptOcrCapabilities
@@ -71,7 +70,6 @@ export interface UseReceiptOcrResult {
     onCameraPicked: (e: React.ChangeEvent<HTMLInputElement>) => Promise<void>
     onUploadPicked: (e: React.ChangeEvent<HTMLInputElement>) => Promise<void>
     analyze: () => void
-    fallback: () => void
     clearOcrOnly: () => void
   }
 }
@@ -156,7 +154,6 @@ export function useReceiptOcr(input: UseReceiptOcrInput): UseReceiptOcrResult {
 
   function runExistingReceiptOcr(
     source: ExistingReceiptOcrSource,
-    useFallback: boolean,
     sourceKey: ReceiptOcrSourceKey | null,
   ) {
     // Race snapshot captured in receiptSource.source. The result is discarded
@@ -170,7 +167,6 @@ export function useReceiptOcr(input: UseReceiptOcrInput): UseReceiptOcrResult {
       // expense), not tripCurrency — re-OCRing a saved foreign receipt should
       // bias OCR toward the known currency rather than risk reparsing as trip.
       currencyHint,
-      useFallback,
       isStillApplicable: (sourceReceiptPath, expenseUpdatedAt) =>
         ocrResultStillApplicable(
           { receiptPath: source.receiptPath, updatedAtMillis: source.updatedAtMillis },
@@ -184,15 +180,7 @@ export function useReceiptOcr(input: UseReceiptOcrInput): UseReceiptOcrResult {
     const sourceKey = receiptSource.sourceKey
     pendingSourceKeyRef.current = sourceKey
     if (source.kind === 'fresh') { void ocr.run(source.file); return }
-    if (source.kind === 'existing') runExistingReceiptOcr(source, false, sourceKey)
-  }
-
-  function fallback() {
-    const source = receiptSource.source
-    const sourceKey = receiptSource.sourceKey
-    pendingSourceKeyRef.current = sourceKey
-    if (source.kind === 'fresh') { void ocr.runFallback(source.file); return }
-    if (source.kind === 'existing') runExistingReceiptOcr(source, true, sourceKey)
+    if (source.kind === 'existing') runExistingReceiptOcr(source, sourceKey)
   }
 
   // OCR-only reset. The component's handleClearReceipt composes this with the
@@ -223,7 +211,6 @@ export function useReceiptOcr(input: UseReceiptOcrInput): UseReceiptOcrResult {
       onCameraPicked,
       onUploadPicked,
       analyze,
-      fallback,
       clearOcrOnly,
     },
   }

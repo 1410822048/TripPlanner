@@ -59,7 +59,7 @@ vi.mock('@/hooks/useFxPreview', () => ({
   useFxPreview: () => ({ rateDecimal: null, rateDate: undefined, isLoading: false, isError: false, disabledReason: undefined }),
 }))
 const ocrApi = vi.hoisted(() => ({
-  run: vi.fn(), runFallback: vi.fn(), runExisting: vi.fn(), cancel: vi.fn(), setFile: vi.fn(), reset: vi.fn(),
+  run: vi.fn(), runExisting: vi.fn(), cancel: vi.fn(), setFile: vi.fn(), reset: vi.fn(),
   lastFile: null as File | null,
   // Captured from useOcrFlow's options each render so a test can simulate the
   // Worker returning a parsed receipt and exercise the REAL onSuccess wire
@@ -74,7 +74,7 @@ vi.mock('../hooks/useOcrFlow', () => ({
     ocrApi.onSuccess = opts.onSuccess
     return {
       loading: false, error: null, elapsedMs: 0,
-      run: ocrApi.run, runFallback: ocrApi.runFallback, runExisting: ocrApi.runExisting,
+      run: ocrApi.run, runExisting: ocrApi.runExisting,
       cancel: ocrApi.cancel, setFile: ocrApi.setFile, reset: ocrApi.reset,
       lastFile: ocrApi.lastFile,
     }
@@ -142,7 +142,6 @@ function renderCreateModal() {
 
 beforeEach(() => {
   ocrApi.run.mockReset()
-  ocrApi.runFallback.mockReset()
   ocrApi.runExisting.mockReset()
   ocrApi.cancel.mockReset()
   ocrApi.setFile.mockReset()
@@ -231,45 +230,13 @@ describe('ExpenseFormModal — re-OCR dispatch', () => {
     expect(screen.queryByRole('button', { name: /^再次讀取$/ })).toBeNull()
   })
 
-  it('defaults re-OCR to Qwen and dispatches Claude only after model selection', () => {
+  it('re-runs the existing receipt OCR from 再次讀取 (single model, no picker)', () => {
     renderModal(foreignExpenseWithItems())
 
-    const modelPicker = screen.getByRole('combobox', { name: '辨識模型' }) as HTMLSelectElement
-    expect(modelPicker.value).toBe('qwen')
+    expect(screen.queryByRole('combobox', { name: '辨識模型' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /^再次讀取$/ }))
-    expect(ocrApi.runExisting).toHaveBeenLastCalledWith(expect.objectContaining({ useFallback: false }))
-
-    fireEvent.change(modelPicker, { target: { value: 'claude' } })
-    fireEvent.click(screen.getByRole('button', { name: /^再次讀取$/ }))
-    expect(ocrApi.runExisting).toHaveBeenLastCalledWith(expect.objectContaining({ useFallback: true }))
-  })
-
-  it('resets the retry model to Qwen after the receipt is replaced', async () => {
-    const { container } = renderModal(foreignExpenseWithItems())
-    const modelPicker = screen.getByRole('combobox', { name: '辨識模型' }) as HTMLSelectElement
-    fireEvent.change(modelPicker, { target: { value: 'claude' } })
-    expect(modelPicker.value).toBe('claude')
-
-    // 換收據(相機重拍 → 自動用 primary OCR)。onSuccess 後 picker 重新
-    // 出現時必須回到 qwen — Claude 的選擇屬於「舊收據」,不得殘留。
-    const cameraInput = container.querySelector('input[capture="environment"]') as HTMLInputElement
-    const file = new File(['x'], 'new.jpg', { type: 'image/jpeg' })
-    const receipt = new File(['prepared'], 'new.receipt.webp', { type: 'image/webp' })
-    imageApi.compressReceiptImage.mockResolvedValueOnce({ full: receipt })
-    fireEvent.change(cameraInput, { target: { files: [file] } })
-    await waitFor(() => expect(ocrApi.run).toHaveBeenCalledWith(receipt))
-
-    act(() => {
-      ocrApi.onSuccess!({
-        items:        [{ name: 'Lunch', amountText: '3000' }],
-        adjustments:  [],
-        ignoredLines: [],
-        totalText:    '3000',
-      })
-    })
-
-    const pickerAfter = screen.getByRole('combobox', { name: '辨識模型' }) as HTMLSelectElement
-    expect(pickerAfter.value).toBe('qwen')
+    expect(ocrApi.runExisting).toHaveBeenCalledTimes(1)
+    expect(ocrApi.runExisting.mock.calls[0]![0]).not.toHaveProperty('useFallback')
   })
 
   it('uses the receipt summary row as the replacement trigger', () => {

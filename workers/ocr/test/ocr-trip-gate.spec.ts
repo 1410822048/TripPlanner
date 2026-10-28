@@ -1,4 +1,4 @@
-// /ocr, /ocr-fallback, /booking-pdf-extract trip gate (ocr-trip-gate.ts).
+// /ocr, /booking-pdf-extract trip gate (ocr-trip-gate.ts).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const { docFields } = vi.hoisted(() => ({

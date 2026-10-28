@@ -31,17 +31,6 @@
 		// while looking configured. Unset → sentry.ts parseDsn returns
 		// null → captureMessage is a clean no-op, which is what we want
 		// for local dev and preview.
-		// Claude OCR via Microsoft Foundry (Azure AI Foundry). Non-secret:
-		// the resource name is a URL host component (not a credential) and the
-		// deployment name is a routing label. The API key is a SECRET
-		// (ANTHROPIC_FOUNDRY_API_KEY via `wrangler secret put`).
-		// Endpoint = https://{RESOURCE}.services.ai.azure.com/anthropic/v1/messages
-		//   RESOURCE:   Foundry resource name (East US2 / Sweden Central only).
-		//   DEPLOYMENT: the Claude deployment name in the Foundry portal. Now
-		//               Sonnet 4.6 (Haiku 4.5 read receipt amounts poorly). Swap
-		//               tier = change this one var to that deployment's name.
-		"ANTHROPIC_FOUNDRY_RESOURCE": "aic-claude-eus2",
-		"CLAUDE_DEPLOYMENT": "claude-sonnet-5",
 		// Qwen OCR provider. API key is a SECRET (QWEN_API_KEY via
 		// `wrangler secret put`) and is always required by the primary route.
 		// This uses Alibaba Cloud Model Studio Singapore's workspace-scoped
@@ -177,7 +166,6 @@
 		}
 	]
 	// Secrets are set via `wrangler secret put`:
-	//   ANTHROPIC_FOUNDRY_API_KEY ← Microsoft Foundry (Azure AI Foundry) Claude API key
 	//   QWEN_API_KEY               ← Qwen/OpenAI-compatible provider API key
 	//   FIREBASE_SERVICE_ACCOUNT  ← service account JSON for Firestore admin REST
 	//   GEOAPIFY_API_KEY           ← place autocomplete / geocoding

@@ -8,12 +8,12 @@ import {
 	waitOnExecutionContext,
 } from 'cloudflare:test'
 import { afterEach, describe, it, expect, vi } from 'vitest'
-import { OcrError } from '../src/claude'
+import { OcrError } from '../src/ocr-prompt'
 
 const runOcrProviderMock = vi.hoisted(() => vi.fn())
-vi.mock('../src/ocr-providers', async () => {
-	const actual = await vi.importActual<typeof import('../src/ocr-providers')>('../src/ocr-providers')
-	return { ...actual, runOcrProvider: runOcrProviderMock }
+vi.mock('../src/qwen', async () => {
+	const actual = await vi.importActual<typeof import('../src/qwen')>('../src/qwen')
+	return { ...actual, extractReceiptItemsQwen: runOcrProviderMock }
 })
 
 // The trip gate itself is covered in ocr-trip-gate.spec.ts; here it only
@@ -32,7 +32,7 @@ afterEach(() => {
 })
 
 describe('production OCR trip scope', () => {
-	it.each(['/ocr', '/ocr-fallback', '/booking-pdf-extract'])('%s rejects a request without tripId before spending model quota', async path => {
+	it.each(['/ocr', '/booking-pdf-extract'])('%s rejects a request without tripId before spending model quota', async path => {
 		const route = ROUTES.find(r => r.path === path)!
 		const fetchMock = vi.fn()
 		globalThis.fetch = fetchMock
@@ -167,11 +167,8 @@ describe('OCR worker routing', () => {
 		expect(body.error).not.toContain('provider credential detail')
 	})
 
-	it.each([
-		['/ocr', 'qwen'],
-		['/ocr-fallback', 'claude'],
-	] as const)('%s is permanently routed through %s', async (path, expectedProvider) => {
-		const route = ROUTES.find(r => r.path === path)
+	it('/ocr runs the Qwen deployment from env', async () => {
+		const route = ROUTES.find(r => r.path === '/ocr')
 		expect(route).toBeDefined()
 		runOcrProviderMock.mockResolvedValueOnce({
 			items:        [{ name: '咖啡', amountText: '100' }],
@@ -181,20 +178,23 @@ describe('OCR worker routing', () => {
 		})
 
 		const res = await route!.dispatch({
-			body: { image: 'a'.repeat(128), mimeType: 'image/webp', tripId: 'trip-1' },
+			body: { image: 'a'.repeat(128), mimeType: 'image/webp', tripId: 'trip-1', currency: 'JPY' },
 			cors: {},
 			uid:  'user-1',
-			// Deliberately include the removed legacy vars with reversed values:
-			// stale dashboard state must not be able to change route semantics.
-			env: {
-				OCR_PRIMARY_PROVIDER:  'claude',
-				OCR_FALLBACK_PROVIDER: 'qwen',
-			},
+			env:  { QWEN_API_KEY: 'k', QWEN_BASE_URL: 'https://qwen.test/v1', QWEN_MODEL: 'qwen-test' },
 		} as never)
 
 		expect(res.status).toBe(200)
 		expect(runOcrProviderMock).toHaveBeenCalledTimes(1)
-		expect(runOcrProviderMock.mock.calls[0]![0]).toBe(expectedProvider)
+		expect(runOcrProviderMock.mock.calls[0]).toEqual([
+			'a'.repeat(128), 'image/webp', 'JPY',
+			{ apiKey: 'k', baseUrl: 'https://qwen.test/v1', model: 'qwen-test' },
+		])
+	})
+
+	it('has no Claude fallback routes', () => {
+		expect(ROUTES.map(r => r.path)).not.toContain('/ocr-fallback')
+		expect(ROUTES.map(r => r.path)).not.toContain('/expense-receipt-ocr-fallback')
 	})
 
 	it('booking PDF extraction uses the configured Qwen deployment', async () => {
@@ -303,10 +303,8 @@ describe('route descriptor table (rate-limit classification)', () => {
 	// so any future table edit that re-buckets an endpoint fails loudly.
 	const EXPECTED: Record<string, { limiter: string; scope: string; globalLimit: number }> = {
 		'/ocr':                 { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
-		'/ocr-fallback':        { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
 		'/booking-pdf-extract': { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
 		'/expense-receipt-ocr': { limiter: 'OCR_RATE_LIMITER',            scope: 'ocr',              globalLimit: 60 },
-		'/expense-receipt-ocr-fallback': { limiter: 'OCR_RATE_LIMITER',    scope: 'ocr',              globalLimit: 60 },
 		'/cascade-trip-delete': { limiter: 'TRIP_CASCADE_RATE_LIMITER',   scope: 'trip-cascade',     globalLimit: 2 },
 		'/expense-create':      { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'expense',          globalLimit: 60 },
 		'/expense-update':      { limiter: 'EXPENSE_RATE_LIMITER',        scope: 'expense',          globalLimit: 60 },

@@ -134,7 +134,7 @@ describe('BookingPdfExtractRequestSchema', () => {
 })
 
 describe('extractBookingPdfFields', () => {
-	it('keeps the Foundry JSON schema fields aligned with the Zod response schema', () => {
+	it('keeps the provider JSON schema fields aligned with the Zod response schema', () => {
 		const zodKeys = Object.keys(BookingPdfExtractResponseSchema.shape).sort()
 
 		// The production constant is deliberately a loose JsonObject — it

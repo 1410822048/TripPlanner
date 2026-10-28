@@ -512,7 +512,6 @@ export default function ExpenseFormModal({
 
       <ReceiptSection
         error={receiptErrText}
-        sourceKey={receiptOcr.sourceKey}
         reconcileWarning={receiptReconcileWarning}
         hasAttachment={att.hasAttachment}
         attachmentName={att.attachmentName}
@@ -523,12 +522,11 @@ export default function ExpenseFormModal({
         ocrElapsedMs={receiptOcr.status.elapsedMs}
         canAnalyze={receiptOcr.caps.canAnalyze}
         canReanalyze={receiptOcr.caps.canReanalyze}
-        canFallback={receiptOcr.caps.canFallback}
+        canRetry={receiptOcr.caps.canRetry}
         onCameraPicked={receiptOcr.handlers.onCameraPicked}
         onUploadPicked={receiptOcr.handlers.onUploadPicked}
         onClear={handleClearReceipt}
         onAnalyze={receiptOcr.handlers.analyze}
-        onFallback={receiptOcr.handlers.fallback}
         onPreview={() => (att.hasNewFile || att.fullPath) && setPreviewOpen(true)}
       />
 
