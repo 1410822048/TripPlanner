@@ -15,6 +15,7 @@ const harness = vi.hoisted(() => ({
   isDemo: false,
   // Non-null = a trip-level voting deadline; toMillis in the past closes voting.
   deadlineAt: null as { toMillis: () => number } | null,
+  deadlinePending: false,
 }))
 
 const toastMocks = vi.hoisted(() => ({
@@ -77,7 +78,7 @@ vi.mock('../hooks/useWishes', async () => {
 vi.mock('@/features/members/hooks/useMembers', () => ({ useMembers: () => ({ data: [] }) }))
 vi.mock('@/features/members/utils', () => ({ membersToTripMembers: () => [] }))
 vi.mock('@/features/trips/hooks/useTrips', () => ({
-  useSetWishVotingDeadline: () => ({ mutate: harness.setDeadline, isPending: false }),
+  useSetWishVotingDeadline: () => ({ mutate: harness.setDeadline, isPending: harness.deadlinePending }),
 }))
 vi.mock('@/services/clientCompatibility', () => ({
   getClientWriteBlockReason: () => harness.writeBlockReason,
@@ -112,8 +113,8 @@ vi.mock('./WishDetailSheet', () => ({ default: () => null }))
 // Unconditional open button: the real bar gates on canSetDeadline, but these
 // tests drive the sheet lifecycle, not the affordance gating.
 vi.mock('./WishVotingDeadlineBar', () => ({
-  default: ({ onOpenSheet }: { onOpenSheet: () => void }) => (
-    <button type="button" onClick={onOpenSheet}>mock open deadline</button>
+  default: ({ onOpenSheet, isSaving }: { onOpenSheet: () => void; isSaving: boolean }) => (
+    <button type="button" data-saving={String(isSaving)} onClick={onOpenSheet}>mock open deadline</button>
   ),
 }))
 vi.mock('./WishDeadlineSheet', () => ({
@@ -150,7 +151,9 @@ beforeEach(() => {
   harness.cloudTripId = 'trip-1'
   harness.isDemo = false
   harness.deadlineAt = null
+  harness.deadlinePending = false
   toastMocks.error.mockReset()
+  toastMocks.info.mockReset()
 })
 
 describe('WishPage write compatibility preflight', () => {
@@ -253,5 +256,27 @@ describe('WishPage cross-trip scope', () => {
     fireEvent.click(screen.getByRole('button', { name: 'mock deadline save' }))
 
     expect(harness.setDeadline).toHaveBeenCalledWith({ tripId: 'trip-1', deadlineAt: null })
+  })
+
+  it('does not lock the deadline control while the queued write waits offline', () => {
+    const onLine = vi.spyOn(window.navigator, 'onLine', 'get')
+    try {
+      harness.deadlinePending = true
+      onLine.mockReturnValue(true)
+      const view = render(<WishPage />)
+      const bar = () => screen.getByRole('button', { name: 'mock open deadline' })
+      expect(bar().dataset.saving).toBe('true')
+      view.unmount()
+
+      onLine.mockReturnValue(false)
+      render(<WishPage />)
+      expect(bar().dataset.saving).toBe('false')
+      fireEvent.click(bar())
+      fireEvent.click(screen.getByRole('button', { name: 'mock deadline save' }))
+      expect(harness.setDeadline).toHaveBeenCalled()
+      expect(toastMocks.info).toHaveBeenCalledWith('目前離線，已先儲存在此裝置，恢復連線後會自動同步')
+    } finally {
+      onLine.mockRestore()
+    }
   })
 })

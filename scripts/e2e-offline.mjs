@@ -530,6 +530,37 @@ async function notificationOpenCase({ name }) {
       ok('account-scope notification landed on /account')
     })
 
+    await stage('loading window: a real SW post before React mounts is not lost', async () => {
+      // The other stages dispatch on navigator.serviceWorker directly, which
+      // skips the client message queue. Here the real SW posts to a window
+      // that is still loading (CPU throttled to widen the window): the queue
+      // opens at DOMContentLoaded, so a listener attached only in a React
+      // effect would miss it.
+      const sw = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker')
+      const cdp = await context.newCDPSession(page)
+      await cdp.send('Emulation.setCPUThrottlingRate', { rate: 20 })
+      try {
+        await page.goto(`${APP}/schedule`, { waitUntil: 'commit' })
+        // matchAll only lists execution-ready clients, so poll from inside the
+        // SW and post the moment the loading window shows up.
+        const posted = await sw.evaluate(async msg => {
+          for (let i = 0; i < 500; i++) {
+            const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+            const target = wins.find(c => new URL(c.url).pathname === '/schedule')
+            if (target) { target.postMessage(msg); return 'posted' }
+            await new Promise(r => setTimeout(r, 10))
+          }
+          return 'no-client'
+        }, notice('trip', '/expense', OWNER))
+        assert.equal(posted, 'posted', `the SW found the loading window (${posted})`)
+      } finally {
+        await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 })
+        await cdp.detach().catch(() => {})
+      }
+      await atPath('/expense')
+      ok('message posted during load was delivered once the app booted')
+    })
+
     await stage('cold start: ?notify=<nonce> is resolved through the SW', async () => {
       const nonce = await plantNonce({ scope: 'trip', route: '/wish', tripId: TRIP, targetUid: OWNER }, Date.now() + 5 * 60_000)
       await page.goto(`${APP}/schedule?notify=${nonce}`)

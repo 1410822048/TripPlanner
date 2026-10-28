@@ -39,6 +39,8 @@ import { WISH_CATEGORIES } from '../categories'
 import { useSetWishVotingDeadline } from '@/features/trips/hooks/useTrips'
 import { getClientWriteBlockReason } from '@/services/clientCompatibility'
 import { FORM_SCOPE_CHANGED_MESSAGE } from '@/hooks/useFormModal'
+import { useOnlineStatus } from '@/hooks/useOnlineStatus'
+import { isOffline, OFFLINE_HAND_OFF_MESSAGE } from '@/utils/offlineHandOff'
 
 export default function WishPage() {
   const { ctx, uid, cloudTripId, mutationTripId, isDemo, isOwner, canOwnerWrite, writeCompatible, modal, signIn } =
@@ -62,6 +64,9 @@ export default function WishPage() {
   const deadlineLocked = !isDemo && notifiedAt != null
   const votingClosed = !isDemo && (deadlineLocked || (deadlineMs != null && deadlineMs <= now))
   const setDeadlineMut = useSetWishVotingDeadline(uid)
+  // 離線時 SDK 寫入要等連線恢復才 resolve；它已排進 IndexedDB 佇列，不該把控制項鎖在「儲存中」。
+  const online = useOnlineStatus()
+  const deadlineSaving = setDeadlineMut.isPending && online
 
   useEffect(() => {
     if (isDemo || deadlineMs == null || deadlineLocked || deadlineMs <= now) return
@@ -260,6 +265,7 @@ export default function WishPage() {
     if (writeBlockReason) { toast.error(writeBlockReason); return }
     setDeadlineMut.mutate({ tripId: cloudTripId, deadlineAt: deadlineAtInput })
     setDeadlineSheet(null)
+    if (isOffline()) toast.info(OFFLINE_HAND_OFF_MESSAGE)
   }
 
   function handleEditFromDetail(w: Wish) {
@@ -298,7 +304,7 @@ export default function WishPage() {
           votingClosed={votingClosed}
           deadlineLocked={deadlineLocked}
           canSetDeadline={canOwnerWrite}
-          isSaving={setDeadlineMut.isPending}
+          isSaving={deadlineSaving}
           onOpenSheet={() => setDeadlineSheet({ tripId: cloudTripId, uid })}
         />
       )}
@@ -493,7 +499,7 @@ export default function WishPage() {
         <WishDeadlineSheet
           isOpen
           currentDeadlineAt={deadlineAt}
-          isSaving={setDeadlineMut.isPending}
+          isSaving={deadlineSaving}
           onClose={() => setDeadlineSheet(null)}
           onSave={handleSaveDeadline}
         />

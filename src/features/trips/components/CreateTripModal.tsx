@@ -24,6 +24,7 @@ import { DEFAULT_CURRENCY } from '@/utils/currency'
 import { currencyCountrySuggestion } from '@/utils/country'
 import { useAuth } from '@/hooks/useAuth'
 import { useAwaitedSave } from '@/hooks/useAwaitedSave'
+import { FORM_SCOPE_CHANGED_MESSAGE } from '@/hooks/useFormModal'
 import { useCreateTrip } from '@/features/trips/hooks/useTrips'
 import { useTripStore } from '@/store/tripStore'
 import { CreateTripSchema } from '@/types/trip'
@@ -57,6 +58,12 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
   const [countryWasSelected, setCountryWasSelected] = useState(false)
   const [errors,      setErrors]      = useState<Record<string, string>>({})
   const [signingIn,   setSigningIn]   = useState(false)
+
+  // 草稿屬於第一個在此表單登入的帳號（未登入開啟 → 在表單內登入也算）。
+  // 中途換帳號時拒絕送出，比照 CopyTrip 的 copyTripOpenedUid。
+  const liveUid = state.status === 'signed-in' ? state.user.uid : undefined
+  const [draftUid, setDraftUid] = useState(liveUid)
+  if (draftUid === undefined && liveUid !== undefined) setDraftUid(liveUid)
   // Synchronous refusals (offline / obsolete bundle): the draft stays and
   // the reason sits in the banner until the next attempt.
   const [refusal,     setRefusal]     = useState<string | null>(null)
@@ -87,6 +94,7 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
     const user = state.user
     awaited.submit(() => {
       setRefusal(null)
+      if (user.uid !== draftUid) { setRefusal(FORM_SCOPE_CHANGED_MESSAGE); return }
       if (isOffline()) { setRefusal(OFFLINE_NEEDS_CONNECTION_MESSAGE); return }
       // The global guard would also throw UpdateRequiredError, but silently
       // (no toast) — say it here, in the sheet.
@@ -100,6 +108,8 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
         // trip is already in the list via onSuccess; do not switch to it or
         // touch the sheet the user has open now.
         if (!awaited.stillOpen()) return
+        // 寫入途中換了帳號：tripStore 已屬於新帳號，不可替他選上一手的旅程。
+        if (useTripStore.getState().ownerUid !== user.uid) return
         setSelectedTripId(trip.id)
       })
     })

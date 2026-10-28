@@ -5,14 +5,16 @@ import type { TripItem } from '@/features/trips/types'
 import type { SchedulePageState } from '../hooks/useSchedulePageState'
 
 vi.mock('@/features/trips/components/EditTripModal', () => ({
-  default: ({ editTarget, saveError, onSave }: {
+  default: ({ editTarget, scheduleDates, saveError, onSave }: {
     editTarget: TripItem
+    scheduleDates: string[]
     saveError?: string | null
     onSave: (data: TripItem) => void
   }) => (
     <>
       <button type="button" onClick={() => onSave(editTarget)}>save-trip</button>
       <output data-testid="edit-target">{editTarget.id}</output>
+      <output data-testid="schedule-dates">{scheduleDates.join(',')}</output>
       {saveError && <div role="alert">{saveError}</div>}
     </>
   ),
@@ -101,10 +103,32 @@ describe('TripModalsHost trip-save lifecycle', () => {
   })
 
   it('shows the refusal in the sheet and keeps it mounted', () => {
-    render(<TripModalsHost state={state(() => true, vi.fn(), { editTripSaveError: '旅程或帳號已切換，請關閉表單後重新開啟' })} />)
+    render(<TripModalsHost state={state(() => true, vi.fn(), { editTripScopeChanged: true, editTripSaveError: '旅程或帳號已切換，請關閉表單後重新開啟' })} />)
 
     expect(screen.getByRole('alert').textContent).toContain('旅程或帳號已切換')
     expect(screen.getByRole('button', { name: 'save-trip' })).toBeTruthy()
+  })
+
+  it('drops the scope refusal once the selection is back on the opened trip (A→B→A)', () => {
+    const refusal = '旅程或帳號已切換，請關閉表單後重新開啟'
+    const { rerender } = render(<TripModalsHost state={state(() => true, vi.fn(), { editTripScopeChanged: true, editTripSaveError: refusal })} />)
+    expect(screen.getByRole('alert')).toBeTruthy()
+
+    rerender(<TripModalsHost state={state(() => true, vi.fn(), { editTripScopeChanged: false, editTripSaveError: refusal })} />)
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    // 其他錯誤不受影響。
+    rerender(<TripModalsHost state={state(() => true, vi.fn(), { editTripSaveError: '儲存失敗' })} />)
+    expect(screen.getByRole('alert').textContent).toContain('儲存失敗')
+  })
+
+  it('does not compute the orphan warning from another trip schedules after a switch', () => {
+    const schedules = [{ date: '2026-09-19' }]
+    const { rerender } = render(<TripModalsHost state={state(() => true, vi.fn(), { schedules } as never)} />)
+    expect(screen.getByTestId('schedule-dates').textContent).toBe('2026-09-19')
+
+    rerender(<TripModalsHost state={state(() => true, vi.fn(), { schedules: [{ date: '2026-12-01' }], editTripScopeChanged: true } as never)} />)
+    expect(screen.getByTestId('schedule-dates').textContent).toBe('')
   })
 
   it('keeps editing the trip it was opened on when the selection switches underneath', () => {

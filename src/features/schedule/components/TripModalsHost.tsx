@@ -51,8 +51,10 @@ function EditTripSheet({ initialTarget, scheduleDates, scopeChanged, saveError, 
     <EditTripModal
       isOpen
       editTarget={editTarget}
-      scheduleDates={scheduleDates}
-      saveError={saveError}
+      // 切走時不拿別的旅程的行程算孤兒警告（存檔反正會被 scope 擋下）。
+      scheduleDates={scopeChanged ? [] : scheduleDates}
+      // 切回原旅程（A→B→A）後 scope 已吻合，不再顯示「請關閉重開」。
+      saveError={saveError === FORM_SCOPE_CHANGED_MESSAGE && !scopeChanged ? null : saveError}
       onClose={onClose}
       onSave={data => {
         // Scope first: it is a refusal that keeps the draft, and it must win

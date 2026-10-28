@@ -8,6 +8,7 @@ import { readAuthHint } from './hooks/useAuth'
 import { isPerfDebugEnabled, markPerf } from './utils/perf'
 import './index.css'
 import App from './App.tsx'
+import { listenForNotificationOpen } from './features/account/notificationOpen'
 
 // One-line boot banner so console logs are immediately attributable
 // to a specific build — pairs with the AccountPage footer display and
@@ -49,6 +50,9 @@ if (readAuthHint()) {
   markPerf('boot-init-firestore')
   void getFirebase()
 }
+
+// 通知點擊的 SW 訊息監聽要在 DOMContentLoaded 前掛上，否則載入中的視窗會漏接。
+listenForNotificationOpen()
 
 markPerf('react-mount')
 createRoot(document.getElementById('root')!).render(
