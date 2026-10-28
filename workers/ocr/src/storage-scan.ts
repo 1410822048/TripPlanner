@@ -408,7 +408,10 @@ export async function scanOrphanStorage(
         await tryDelete(bucket, obj, report, subreq)
       } catch (e) {
         // Firestore read failure -- treat as transient, fail-closed.
-        // Tomorrow's run retries; the blob is still discoverable.
+        // It already counts as processed, so the checkpoint moves past it
+        // and the NEXT FULL PASS retries it (not necessarily tomorrow's run).
+        // Deliberate: un-processing it would let a permanently failing read
+        // pin the cursor and starve every blob after it.
         // Covers both the pending-intent recheck and the entity
         // recheck; either failing means we can't confidently classify
         // this blob, so we leave it.

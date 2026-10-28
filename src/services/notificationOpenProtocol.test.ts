@@ -138,6 +138,15 @@ describe('createNotificationNonceStore', () => {
     expect(await store.take(NONCE)).toBeNull()
   })
 
+  it('writes memory synchronously, so a take before the cache put settles still hits', async () => {
+    const { cache } = fakeCache()
+    const store = createNotificationNonceStore({ openCache: async () => cache })
+    // sw.ts 先 openWindow 再 await save：新視窗的 take 可能先到。
+    const saved = store.save(NONCE, tripPayload)
+    expect(await store.take(NONCE)).toEqual(tripPayload)
+    await saved
+  })
+
   it('expires after the TTL', async () => {
     let now = 1_000
     const store = createNotificationNonceStore({ now: () => now })

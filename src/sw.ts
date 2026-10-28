@@ -225,7 +225,10 @@ sw.addEventListener('notificationclick', event => {
     }
     // 冷啟動：網址只帶不透明 nonce（uid 不進網址 / 瀏覽歷史）。
     const nonce = crypto.randomUUID()
-    await notificationNonces.save(nonce, open)
+    // save 同步寫入記憶體；先開窗（部分瀏覽器只在點擊後短時間內允許
+    // openWindow），Cache Storage 備援在 waitUntil 內寫完。
+    const saved = notificationNonces.save(nonce, open)
     await sw.clients.openWindow(notifyLaunchUrl(nonce))
+    await saved
   })())
 })

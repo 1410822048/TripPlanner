@@ -154,7 +154,6 @@ export interface ServiceWorkerBridge {
   controller: MessageTarget | null
   ready:      Promise<{ active: MessageTarget | null }>
   addEventListener(type: 'message', listener: (event: MessageEvent) => void): void
-  removeEventListener(type: 'message', listener: (event: MessageEvent) => void): void
   startMessages?(): void
 }
 
@@ -207,14 +206,30 @@ function stripLaunchQuery(router: NotificationOpenRouter) {
   void router.navigate({ pathname, search: stripNotifyParam(search), hash }, { replace: true })
 }
 
+const listening = new WeakSet<ServiceWorkerBridge>()
+
 /**
- * 掛上 SW → client 的通知訊息監聽，並處理冷啟動 nonce（每次頁面載入一次）。
- * 回傳解除函式。
+ * 掛上 SW → client 的通知訊息監聽（冪等，保留到頁面結束）。
+ * 必須在 main.tsx 模組載入時呼叫：client message queue 會在 DOMContentLoaded
+ * 自動開啟，晚於此才掛（例如 React effect）會漏掉載入中視窗先收到的訊息。
  */
+export function listenForNotificationOpen(bridge: ServiceWorkerBridge | null = defaultBridge()): void {
+  if (!bridge || listening.has(bridge)) return
+  listening.add(bridge)
+  bridge.addEventListener('message', (event: MessageEvent) => {
+    const data = event.data as { type?: unknown } | null
+    if (data?.type !== NOTIFICATION_OPEN_MESSAGE) return
+    enqueueNotificationOpen(data)
+  })
+  // addEventListener 不會自動開啟 client message queue（onmessage 才會）。
+  bridge.startMessages?.()
+}
+
+/** 處理冷啟動 nonce（每次頁面載入一次），並確保訊息監聽已掛上。 */
 export function attachNotificationOpenBridge(
   router: NotificationOpenRouter,
   bridge: ServiceWorkerBridge | null,
-): () => void {
+): void {
   if (!launchNonceHandled) {
     const nonce = readNotifyNonce(router.state.location.search)
     if (nonce || hasNotifyParam(router.state.location.search)) {
@@ -228,16 +243,7 @@ export function attachNotificationOpenBridge(
     }
   }
 
-  if (!bridge) return () => {}
-  const onMessage = (event: MessageEvent) => {
-    const data = event.data as { type?: unknown } | null
-    if (data?.type !== NOTIFICATION_OPEN_MESSAGE) return
-    enqueueNotificationOpen(data)
-  }
-  bridge.addEventListener('message', onMessage)
-  // addEventListener 不會自動開啟 client message queue（onmessage 才會）。
-  bridge.startMessages?.()
-  return () => bridge.removeEventListener('message', onMessage)
+  listenForNotificationOpen(bridge)
 }
 
 function defaultBridge(): ServiceWorkerBridge | null {
@@ -261,7 +267,7 @@ export function useNotificationOpenHandler(
   router: NotificationOpenRouter,
   bridge: ServiceWorkerBridge | null = defaultBridge(),
 ): void {
-  useEffect(() => attachNotificationOpenBridge(router, bridge), [router, bridge])
+  useEffect(() => { attachNotificationOpenBridge(router, bridge) }, [router, bridge])
 
   const pendingOpen = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
   // 有待處理的點擊才強制啟動 auth（平常沿用 hint，demo 訪客不載 Auth SDK）。

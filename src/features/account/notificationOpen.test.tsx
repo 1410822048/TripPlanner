@@ -44,6 +44,7 @@ import {
   __resetNotificationOpenForTests,
   decideNotificationOpen,
   enqueueNotificationOpen,
+  listenForNotificationOpen,
   useNotificationOpenHandler,
   type NotificationOpenIntent,
   type NotificationOpenRouter,
@@ -96,7 +97,6 @@ function fakeBridge(stored: Record<string, unknown> = {}) {
     controller,
     ready:               Promise.resolve({ active: controller }),
     addEventListener:    (type, listener) => target.addEventListener(type, listener as EventListener),
-    removeEventListener: (type, listener) => target.removeEventListener(type, listener as EventListener),
     startMessages:       vi.fn<() => void>(),
     dispatch:            data => target.dispatchEvent(new MessageEvent('message', { data })),
   }
@@ -170,6 +170,27 @@ describe('enqueueNotificationOpen', () => {
     expect(enqueueNotificationOpen({ ...tripIntent, route: 'https://evil.test/' })).toBe(false)
     expect(enqueueNotificationOpen({ ...accountIntent, route: '/expense' })).toBe(false)
     expect(enqueueNotificationOpen(tripIntent)).toBe(true)
+  })
+})
+
+describe('listenForNotificationOpen', () => {
+  it('captures a message delivered before React mounts, and attaches only once', () => {
+    const { bridge } = fakeBridge()
+    const add = vi.spyOn(bridge, 'addEventListener')
+    listenForNotificationOpen(bridge)
+    listenForNotificationOpen(bridge)
+    expect(add).toHaveBeenCalledTimes(1)
+    expect(bridge.startMessages).toHaveBeenCalledTimes(1)
+
+    // 載入中視窗：訊息比任何 render / effect 先到。
+    bridge.dispatch({ type: NOTIFICATION_OPEN_MESSAGE, ...tripIntent })
+    mocks.auth = signedIn(UID_A)
+    mocks.trips = { status: 'success', data: [{ id: 'trip-1' }] }
+    const router = fakeRouter()
+    renderHook(() => useNotificationOpenHandler(router, bridge))
+    expect(add).toHaveBeenCalledTimes(1)
+    expect(mocks.setSelectedTripId).toHaveBeenCalledWith('trip-1')
+    expect(routeNavigations(router)).toEqual(['/expense'])
   })
 })
 
