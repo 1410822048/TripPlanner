@@ -16,7 +16,7 @@
 | 收據 OCR | **Cloudflare Worker** + **Qwen**(workers/ocr/) |
 | Hosting | **Cloudflare Pages**(`tripmate-2wg.pages.dev`) |
 | 觀測 | Sentry(@sentry/browser,idle 延遲初始化;拆獨立 `vendor-sentry` chunk,排除在 modulepreload + PWA precache 之外) |
-| 測試 | Vitest + @cloudflare/vitest-pool-workers(Worker 測試) |
+| 測試 | Vitest + @cloudflare/vitest-plugin(Worker 測試) |
 | CI | GitHub Actions(`.github/workflows/ci.yml`) |
 | Pre-commit | Husky + lint-staged：完整 workspace typecheck、staged TypeScript ESLint；完整測試由 CI 執行 |
 
