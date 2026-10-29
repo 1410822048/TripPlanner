@@ -55,7 +55,8 @@ updates:
         versions: ['>=13']
       - dependency-name: '@firebase/rules-unit-testing'
         versions: ['>=6']
-      # @cloudflare/vitest-pool-workers (0.23) still peers vitest ^4.1.
+      # vitest 5 is a hand migration (see the dependency-upgrade notes);
+      # @cloudflare/vitest-plugin itself already peers vitest ^4.1 || ^5.
       - dependency-name: vitest
         versions: ['>=5']
       - dependency-name: '@vitest/*'

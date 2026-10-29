@@ -10,4 +10,4 @@
 // Kept apart from pdfjs-dist.d.ts on purpose: an `import` makes a file a
 // MODULE, and `declare module` inside a module augments rather than
 // declares globally — which silently un-declares the pdfjs shims.
-import '@cloudflare/vitest-pool-workers/types'
+import '@cloudflare/vitest-plugin/types'
