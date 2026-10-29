@@ -6,6 +6,7 @@
 import { useState } from 'react'
 import { AlertCircle, ArrowRight, ChevronDown, Repeat, Trash2 } from 'lucide-react'
 import MemberAvatar from '@/components/ui/MemberAvatar'
+import PendingIndicator from '@/components/ui/PendingIndicator'
 import type { TripMember } from '@/features/trips/types'
 import { legSources, type SettlementRecord } from '@/types/settlement'
 import type { OrphanSettlement } from '../services/settlement'
@@ -17,12 +18,17 @@ interface Props {
   memberById: Map<string, TripMember>
   currency:   string
   canDelete:  boolean
+  /** Its create (or an earlier cancel) is still in flight or ambiguous.
+   *  Cancelling now could reach the Worker before the create commits — the
+   *  delete no-ops on the missing doc and the route lands anyway — so the
+   *  cancel waits until the write settles. */
+  pending:    boolean
   /** Orphan entries for this route's legs (empty when fully backed). */
   orphans:    OrphanSettlement[]
   onDelete:   () => void
 }
 
-export default function SettlementRouteRow({ settlement: header, memberById, currency, canDelete, orphans, onDelete }: Props) {
+export default function SettlementRouteRow({ settlement: header, memberById, currency, canDelete, pending, orphans, onDelete }: Props) {
   const { legs } = header
   const [confirming, setConfirming] = useState(false)
   const [open, setOpen] = useState(orphans.length > 0)
@@ -86,7 +92,12 @@ export default function SettlementRouteRow({ settlement: header, memberById, cur
             未對應 {formatMinorAmount(orphanTotal, currency)}
           </span>
         )}
-        {canDelete && (
+        {pending && (
+          <span className="shrink-0 inline-flex items-center gap-1 h-6 text-[10px] font-semibold text-muted">
+            <PendingIndicator size={10} />
+          </span>
+        )}
+        {canDelete && !pending && (
           <button
             type="button"
             onClick={() => {

@@ -22,6 +22,8 @@ interface HistoryProps {
   /** Capability (ownership folded with epoch compatibility by the page) —
    *  extends delete beyond one's own records to every settlement. */
   canDeleteAnySettlement: boolean
+  /** Settlement ids whose write is still in flight (overlay-derived). */
+  pendingIds:  ReadonlySet<string>
   /** Aggregate orphan amount across all pairs, in integer minor units.
    *  Triggers the warning banner above the list when > 0 — explains
    *  why some settlements may look detached from the balance view. */
@@ -46,7 +48,7 @@ interface HistoryProps {
 const DEFAULT_VISIBLE = 3
 
 export default function SettlementHistory({
-  settlements, memberById, currency, uid, canDeleteAnySettlement, totalOrphanMinor, orphanByReason, orphansBySettlement, onDelete,
+  settlements, memberById, currency, uid, canDeleteAnySettlement, pendingIds, totalOrphanMinor, orphanByReason, orphansBySettlement, onDelete,
 }: HistoryProps) {
   const [expanded, setExpanded] = useState(false)
   const visible    = expanded ? settlements : settlements.slice(0, DEFAULT_VISIBLE)
@@ -88,6 +90,7 @@ export default function SettlementHistory({
             // Worker (settlement-delete) allows the recorder OR the trip
             // owner; mirror both so the owner's correction path is reachable.
             canDelete={canDeleteAnySettlement || (uid != null && uid === settlement.settledBy)}
+            pending={pendingIds.has(settlement.id)}
             orphans={orphansBySettlement.get(settlement.id) ?? []}
             onDelete={() => onDelete(settlement.id)}
           />

@@ -364,6 +364,13 @@ describe('inviteRedeem endpoint', () => {
 		}
 	})
 
+	it('displayName: rejects a blank name and stores a trimmed one', async () => {
+		const { InviteRedeemRequestSchema } = await import('../src/invite-write')
+		expect(InviteRedeemRequestSchema.safeParse({ tripId: TRIP_ID, token: VALID_TOK, displayName: '   ' }).success).toBe(false)
+		const parsed = InviteRedeemRequestSchema.safeParse({ tripId: TRIP_ID, token: VALID_TOK, displayName: '  Aki  ' })
+		expect(parsed.success && parsed.data.displayName).toBe('Aki')
+	})
+
 	it('avatarUrl: included on member doc when present in request body', async () => {
 		seedFreshRedeem()
 
@@ -1055,13 +1062,12 @@ describe('memberRemove endpoint', () => {
 			expect(names()![TARGET]!.stringValue).toBe('新しい名前')
 		})
 
-		it('skips an over-long name rather than writing an unreadable trip doc', async () => {
+		it('records the anonymous label for an over-long name instead of an unreadable trip doc', async () => {
 			// The client parses the WHOLE trip through TripDocSchema, whose
 			// formerMemberNames values cap at 100. One oversized entry makes the
 			// entire doc fail to parse — the trip disappears from the user's
-			// list. The owner self-bootstrap rule had no length limit, so this
-			// was reachable. Losing the name is the acceptable outcome; losing
-			// the trip is not, and neither is failing the removal.
+			// list. Losing the name is acceptable; losing the entry is not —
+			// it is what lets the owner record debts owed to this person.
 			txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({ memberIds: [OWNER_UID, TARGET] }))
 			txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`, memberReadDoc(OWNER_UID, 'owner'))
 			txGetResponses.set(
@@ -1072,8 +1078,8 @@ describe('memberRemove endpoint', () => {
 			const result = await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
 
 			expect(result).toEqual({ ok: true })   // removal still succeeds
-			expect(tripWrite()!.updateMask).toEqual(['memberIds'])
-			expect(names()).toBeUndefined()
+			expect(tripWrite()!.updateMask).toEqual(['memberIds', 'formerMemberNames'])
+			expect(names()![TARGET]!.stringValue).toBe(`已退出成員 · ${TARGET.slice(0, 4)}`)
 		})
 
 		it('accepts a name exactly at the cap', async () => {
@@ -1090,9 +1096,10 @@ describe('memberRemove endpoint', () => {
 			expect(names()![TARGET]!.stringValue).toBe(atCap)
 		})
 
-		it('treats a whitespace-only name as no name', async () => {
+		it('records the anonymous label for a whitespace-only name', async () => {
 			// TripDocSchema requires min(1); '   ' would pass a naive length
-			// check and then read as an empty label in the UI.
+			// check and then read as an empty label in the UI. The entry must
+			// still exist so the owner can record debts owed to this person.
 			txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({ memberIds: [OWNER_UID, TARGET] }))
 			txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`, memberReadDoc(OWNER_UID, 'owner'))
 			txGetResponses.set(
@@ -1102,11 +1109,11 @@ describe('memberRemove endpoint', () => {
 
 			await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
 
-			expect(tripWrite()!.updateMask).toEqual(['memberIds'])
-			expect(names()).toBeUndefined()
+			expect(tripWrite()!.updateMask).toEqual(['memberIds', 'formerMemberNames'])
+			expect(names()![TARGET]!.stringValue).toBe(`已退出成員 · ${TARGET.slice(0, 4)}`)
 		})
 
-		it('records nothing when the member doc carries no name', async () => {
+		it('records the anonymous label when the member doc carries no name', async () => {
 			txGetResponses.set(`trips/${TRIP_ID}`, tripReadDoc({ memberIds: [OWNER_UID, TARGET] }))
 			txGetResponses.set(`trips/${TRIP_ID}/members/${OWNER_UID}`, memberReadDoc(OWNER_UID, 'owner'))
 			txGetResponses.set(
@@ -1116,8 +1123,8 @@ describe('memberRemove endpoint', () => {
 
 			await memberRemove(OWNER_UID, { tripId: TRIP_ID, memberUid: TARGET }, '{}')
 
-			expect(tripWrite()!.updateMask).toEqual(['memberIds'])
-			expect(names()).toBeUndefined()
+			expect(tripWrite()!.updateMask).toEqual(['memberIds', 'formerMemberNames'])
+			expect(names()![TARGET]!.stringValue).toBe(`已退出成員 · ${TARGET.slice(0, 4)}`)
 		})
 	})
 

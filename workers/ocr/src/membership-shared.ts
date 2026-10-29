@@ -305,11 +305,19 @@ const FORMER_NAME_MAX = 100
  * Admin SDK and bypasses rules entirely — so a doc written before those caps
  * landed, or by any future admin path, still reaches this line unchecked.
  *
- * Returns undefined for anything unusable: the departure then proceeds with
- * no recorded name and the UI falls back to the anonymous ghost label.
- * Losing a name is a display regression; blocking the removal, or writing a
- * doc nobody can read, is worse.
+ * Returns undefined for anything unusable; the caller then records
+ * formerNameFallback instead. Losing a name is a display regression;
+ * blocking the removal, or writing a doc nobody can read, is worse.
  */
+/** Stored when the real name is unusable. The entry must still exist:
+ *  settlement-route-write treats a uid as departed only if it is a key of
+ *  formerMemberNames, so a missing entry would leave debts owed to this
+ *  person unrecordable (nobody can confirm them any more). Same text as the
+ *  client's anonymous ghost label, so nothing visible changes. */
+function formerNameFallback(uid: string): string {
+  return `已退出成員 · ${uid.slice(0, 4)}`
+}
+
 function sanitizeFormerName(raw: string | undefined): string | undefined {
   const trimmed = raw?.trim()
   if (!trimmed) return undefined
@@ -347,7 +355,7 @@ export function buildMemberStripWrites(
   // them again. No name when the doc is already gone (a retry after a partial
   // removal) — leave the entry absent rather than inventing one.
   const departingName = target.exists
-    ? sanitizeFormerName(readString(target.fields, 'displayName'))
+    ? sanitizeFormerName(readString(target.fields, 'displayName')) ?? formerNameFallback(targetUid)
     : undefined
 
   if (stripsRoster || departingName !== undefined) {

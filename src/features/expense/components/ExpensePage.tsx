@@ -6,7 +6,8 @@ import {
 } from '../hooks/useExpenses'
 import { useOverlayPendingRowIds } from '@/hooks/listOverlay'
 import { canonicalRouteLegs, routeParticipants } from '@tripmate/settlement-core'
-import { useSettlements, useCreateSettlementRoute, useDeleteSettlement } from '../hooks/useSettlements'
+import { useSettlements, useCreateSettlementRoute, useDeleteSettlement, settlementOverlay } from '../hooks/useSettlements'
+import { settlementKeys } from '../services/settlementService'
 import { computeBalancesFull, expandWithGhosts, orderMembersLikeExpense } from '../services/settlement'
 import { pendingRouteLocks } from '../services/settlementRoutes'
 import { EXPENSE_LIST_LIMIT } from '../services/expenseService'
@@ -74,6 +75,10 @@ export default function ExpensePage() {
   const settlements = ctx.status === 'cloud' ? (fbSettlements ?? []) : []
   const createSettlementMut = useCreateSettlementRoute(mutationTripId)
   const deleteSettlementMut = useDeleteSettlement(mutationTripId)
+  // Settlements whose create / cancel has not settled: cancelling one could
+  // land before its create commits (the Worker no-ops a missing doc), so the
+  // route would come back active. Derived from the overlay, never stored.
+  const pendingSettlementIds = useOverlayPendingRowIds(settlementOverlay, settlementKeys.all(mutationTripId, uid))
   // Settlement record sheet state: what is being recorded (a suggestion,
   // 「記錄收款」, or an offset). The parent owns the mutation. Carries the
   // {tripId, uid} the sheet was opened under: the Worker's per-leg
@@ -438,6 +443,7 @@ export default function ExpensePage() {
         uid={uid ?? null}
         canDeleteAnySettlement={canOwnerWrite}
         canRecordForDeparted={canOwnerWrite}
+        pendingSettlementIds={pendingSettlementIds}
         onRecord={intent => {
           if (isDemo) { signIn.open(); return }
           if (!uid) { toast.error('正在準備登入，請稍候'); return }
@@ -451,6 +457,9 @@ export default function ExpensePage() {
           // it — without this the tap would silently do nothing.
           const writeBlockReason = getClientWriteBlockReason()
           if (writeBlockReason) { toast.error(writeBlockReason); return }
+          // Handler-side guard too: a confirm tap already in progress can
+          // outlive the render that hid the button.
+          if (pendingSettlementIds.has(id)) { toast.info('清算紀錄仍在儲存中，完成後才能撤銷'); return }
           deleteSettlementMut.mutate({ settlementId: id })
         }}
       /> : <div className="mx-4 mt-4 rounded-xl border border-border bg-surface p-4 text-sm" role={ledgerError ? 'alert' : 'status'}>

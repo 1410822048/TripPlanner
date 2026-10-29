@@ -693,12 +693,12 @@ export interface ConvertAndMaterializeFromSourceInput {
 export interface ConvertAndMaterializeFromSourceResult {
   /** Trip-currency total — converted from sourceAmountMinor via half-even
    *  rounding; equal to Σ items.amountMinor + sign × Σ adjustments.amountMinor
-   *  by construction (rounding residual lands on the largest item). */
+   *  by construction (rounding residual spread ±1 across items). */
   amountMinor: number
   /** Trip-currency items. amountMinor on each line is positive integer
-   *  trip-currency minor units; the LARGEST line absorbs any rounding
-   *  residual so the materializer's pre-adjustment sum reconciles
-   *  against the authoritative converted total. */
+   *  trip-currency minor units; the rounding residual is spread ±1 per line
+   *  (largest effective first) so the materializer's pre-adjustment sum
+   *  reconciles against the authoritative converted total. */
   items:       MaterializeItem[]
   /** Trip-currency adjustments. Each amountMinor is independently
    *  converted; no residual is applied here (residual lands on items
@@ -725,8 +725,8 @@ export interface ConvertAndMaterializeFromSourceResult {
  *      independently via `convertMinorHalfEven`.
  *   4. Compute signedAdjustmentSumTrip = Σ sign(kind) × tripAdjMinor.
  *   5. expectedItemSum = tripAmountMinor - signedAdjustmentSumTrip;
- *      reconcile per-line items via a largest-effective-line residual so
- *      Σ tripItems === expectedItemSum (residual lands on largest item).
+ *      lift lines below their floor, then spread the residual ±1 per line
+ *      (largest effective first) so Σ tripItems === expectedItemSum.
  *   6. Run `materializeExpenseSplits` over the trip-currency
  *      items+adjustments+members to derive splits.
  *
@@ -790,6 +790,27 @@ export function convertSourceLinesToTarget(
     )
   }
 
+  // Step 1c: source-domain ITEM-discount gate, same running-sum rule the
+  // materializer applies. Step 5 lifts lines to their floor; that may only
+  // absorb ROUNDING. A receipt that is already over-discounted in source
+  // currency must be refused here, or the lift would quietly move the
+  // shortfall onto another line (another member's share).
+  const sourceRunning = new Map<string, number>()
+  for (const item of sourceItems) sourceRunning.set(item.id, item.amountMinor)
+  for (const adj of sourceAdjustments) {
+    if (adj.scope !== 'ITEM' || adj.targetItemId === undefined) continue
+    const current = sourceRunning.get(adj.targetItemId)
+    if (current === undefined) continue
+    const next = current + adjustmentSign(adj.kind) * adj.amountMinor
+    if (next < 0) {
+      throw new MaterializeError(
+        'OVER_DISCOUNT_ITEM',
+        `adjustment ${adj.id}: would drive item ${adj.targetItemId} below zero`,
+      )
+    }
+    sourceRunning.set(adj.targetItemId, next)
+  }
+
   // Step 2: authoritative total conversion.
   const tripAmountMinor = convertMinorHalfEven({
     sourceMinor: sourceAmountMinor,
@@ -824,30 +845,66 @@ export function convertSourceLinesToTarget(
   // Step 5: reconcile per-item sum. We need
   //   Σ tripItems + signedTripAdjSum === tripAmountMinor
   // so the expected per-item sum is `tripAmountMinor - signedTripAdjSum`.
-  // The drift goes to the item with the largest EFFECTIVE amount — its
-  // converted value after its own ITEM-scope adjustments — tie-broken by
-  // first index (deterministic for client/Worker parity). Picking the
-  // largest RAW line instead (allocateRoundingResidual) broke receipts whose
-  // largest line is fully discounted (BOGO / free-item coupon): e.g. a
-  // ¥1,980 set with a ¥1,980 ITEM coupon converts to 1326¢ vs 1327¢ after
-  // the residual lands on the set, and the materializer then rejects it as
-  // OVER_DISCOUNT_ITEM — ~14% of such receipts across common rates.
+  //
+  // Each line keeps its own half-even conversion and the residual is spread
+  // ±1 per line, never dumped on one line: many small lines that each round
+  // up (10 × ¥2 @ 0.008 → 2¢ each vs a 16¢ total) used to push one line to
+  // −2¢ and reject a receipt that has an all-positive allocation, and the
+  // single line's members paid the whole residual.
+  //
+  // Every line has a floor the materializer will enforce: ≥ 1 (positive),
+  // and its own ITEM adjustments, applied in order, must never take it
+  // below 0 (OVER_DISCOUNT_ITEM checks the running sum). Lines converted
+  // below their floor (¥1 → 0¢, or a fully-couponed set) are lifted first.
+  //
+  // Lines are visited by EFFECTIVE amount (converted value after its own
+  // ITEM adjustments) descending, ties by index — deterministic for
+  // client/Worker parity, and with a residual of ±1 identical to the old
+  // "largest effective line" rule. Effective, not raw: a fully-discounted
+  // ¥1,980 BOGO set is the largest raw line but has no room to give.
   const expectedItemSum = tripAmountMinor - signedTripAdjSum
   const effective = tripItemRaw.slice()
+  const floor     = tripItemRaw.map(() => 1)
+  const running   = tripItemRaw.map(() => 0)
   sourceAdjustments.forEach((adj, i) => {
     if (adj.scope !== 'ITEM' || adj.targetItemId === undefined) return
     const target = sourceItems.findIndex(item => item.id === adj.targetItemId)
-    if (target >= 0) effective[target] = effective[target]! + adjustmentSign(adj.kind) * tripAdjMinor[i]!
+    if (target < 0) return
+    const delta = adjustmentSign(adj.kind) * tripAdjMinor[i]!
+    effective[target] = effective[target]! + delta
+    running[target]   = running[target]! + delta
+    floor[target]     = Math.max(floor[target]!, -running[target]!)
   })
   const tripItemMinor = tripItemRaw.slice()
   if (tripItemMinor.length > 0) {
     let residual = expectedItemSum
-    for (const v of tripItemRaw) residual -= v
-    let target = 0
-    for (let i = 1; i < effective.length; i++) {
-      if (effective[i]! > effective[target]!) target = i
+    for (let i = 0; i < tripItemMinor.length; i++) {
+      const lift = Math.max(0, floor[i]! - tripItemMinor[i]!)
+      tripItemMinor[i] = tripItemMinor[i]! + lift
+      residual -= tripItemMinor[i]!
     }
-    tripItemMinor[target] = tripItemMinor[target]! + residual
+    const order = tripItemMinor.map((_, i) => i)
+      .sort((a, b) => effective[b]! - effective[a]! || a - b)
+    const step = residual > 0 ? 1 : -1
+    while (residual !== 0) {
+      let moved = false
+      for (const i of order) {
+        if (residual === 0) break
+        if (step < 0 && tripItemMinor[i]! - 1 < floor[i]!) continue
+        tripItemMinor[i] = tripItemMinor[i]! + step
+        residual -= step
+        moved = true
+      }
+      if (!moved) {
+        // The converted total cannot cover every line's floor (10 × ¥1 →
+        // 7¢ total): there is no valid allocation, so refuse rather than
+        // relax the materializer's positivity / discount gates.
+        throw new MaterializeError(
+          'ITEM_NOT_POSITIVE_INTEGER',
+          `converted total is too small to keep every line positive (short by ${-residual} minor units)`,
+        )
+      }
+    }
   } else if (expectedItemSum !== 0) {
     throw new Error(`expense-materialize: cannot allocate residual ${expectedItemSum} to empty lines`)
   }

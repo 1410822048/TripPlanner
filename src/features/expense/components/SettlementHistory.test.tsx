@@ -44,7 +44,7 @@ function renderHistory(over: Partial<HistoryProps> = {}) {
   render(
     <SettlementHistory
       settlements={[rec('s1')]} memberById={memberById}
-      currency="JPY" uid={null} canDeleteAnySettlement={false}
+      currency="JPY" uid={null} canDeleteAnySettlement={false} pendingIds={new Set()}
       totalOrphanMinor={0} orphanByReason={{}} orphansBySettlement={new Map()}
       onDelete={onDelete}
       {...over}
@@ -100,6 +100,12 @@ describe('SettlementHistory — delete gate + wiring', () => {
   it('hides delete for a viewer who is neither recorder nor owner', () => {
     renderHistory({ settlements: [rec('s1', { settledBy: 'u2' })], uid: 'u9', canDeleteAnySettlement: false })
     expect(screen.queryByRole('button', DELETE)).toBeNull()
+  })
+
+  it('replaces delete with the saving indicator while the write is in flight', () => {
+    renderHistory({ settlements: [rec('s1', { settledBy: 'u2' })], uid: 'u2', canDeleteAnySettlement: true, pendingIds: new Set(['s1']) })
+    expect(screen.queryByRole('button', DELETE)).toBeNull()
+    expect(screen.getByText('儲存中…')).toBeTruthy()
   })
 
   it('shows delete for the recorder, and for the owner of any record', () => {

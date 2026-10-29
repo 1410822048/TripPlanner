@@ -1158,3 +1158,78 @@ describe('memberItemContributions — one member\'s share of a stored expense', 
       .toThrow(MaterializeError)
   })
 })
+
+describe('convertSourceLinesToTarget — residual spread across lines', () => {
+  // JPY → USD: many small lines that each round UP leave a large negative
+  // residual. Dumping it on one line used to push that line ≤ 0.
+  const yen = (amounts: number[]) => ({
+    sourceItems:          amounts.map((amountMinor, i) => ({ id: `i${i}`, amountMinor })),
+    sourceAmountMinor:    amounts.reduce((s, a) => s + a, 0),
+    sourceFractionDigits: 0,
+    targetFractionDigits: 2,
+  })
+
+  it('keeps every line positive when an all-positive allocation exists', () => {
+    // 10 × ¥2 @ 0.008: each line 1.6¢ → 2¢ (sum 20) vs total 16¢.
+    const result = convertSourceLinesToTarget({ ...yen(Array(10).fill(2)), sourceAdjustments: [], rateDecimal: '0.008' })
+    expect(result.amountMinor).toBe(16)
+    expect(result.items.map(i => i.amountMinor)).toEqual([1, 1, 1, 1, 2, 2, 2, 2, 2, 2])
+  })
+
+  it('spreads the residual instead of charging one line for all of it', () => {
+    // 10 × ¥7 @ 0.0067: each 4.69¢ → 5¢ (sum 50) vs total 47¢. The old rule
+    // gave [2,5,5,…]; every line now stays within 1 of the others.
+    const result = convertSourceLinesToTarget({ ...yen(Array(10).fill(7)), sourceAdjustments: [], rateDecimal: '0.0067' })
+    const lines = result.items.map(i => i.amountMinor)
+    expect(lines.reduce((s, v) => s + v, 0)).toBe(result.amountMinor)
+    expect(Math.max(...lines) - Math.min(...lines)).toBeLessThanOrEqual(1)
+  })
+
+  it('lifts a line that converts to zero, taking the unit from a line with room', () => {
+    // ¥1000 + ¥1 @ 0.0049: lines 490¢ + 0¢, total 490¢.
+    const result = convertSourceLinesToTarget({ ...yen([1000, 1]), sourceAdjustments: [], rateDecimal: '0.0049' })
+    expect(result.items.map(i => i.amountMinor)).toEqual([489, 1])
+  })
+
+  it('refuses a total too small to give every line a positive amount', () => {
+    // 10 × ¥1 @ 0.0068 → 7¢ total: ten positive integers cannot sum to 7.
+    expectThrows(
+      () => convertSourceLinesToTarget({ ...yen(Array(10).fill(1)), sourceAdjustments: [], rateDecimal: '0.0068' }),
+      'ITEM_NOT_POSITIVE_INTEGER',
+    )
+  })
+
+  it('refuses a receipt over-discounted in source currency instead of shifting it to another line', () => {
+    // $1 coffee with a $2 ITEM discount: invalid before any rounding. Lifting
+    // it to its floor would move ¥100 onto the cake line (another member).
+    expectThrows(() => convertAndMaterializeFromSource(sourceInput({
+      sourceItems: [
+        { id: 'coffee', amountMinor: 100,  allocations: [{ memberId: 'alice', shares: 1 }] },
+        { id: 'cake',   amountMinor: 2000, allocations: [{ memberId: 'bob',   shares: 1 }] },
+      ],
+      sourceAdjustments: [{ id: 'd', kind: 'DISCOUNT', scope: 'ITEM', amountMinor: 200, targetItemId: 'coffee' }],
+      sourceAmountMinor: 1900,
+      rateDecimal:       '100',
+    })), 'OVER_DISCOUNT_ITEM')
+  })
+
+  it('never takes a fully-couponed line below its coupon (no OVER_DISCOUNT_ITEM)', () => {
+    // ¥1980 set with a ¥1980 ITEM coupon + 10 × ¥2 @ 0.008. The set is the
+    // largest RAW line but has no room; the −4¢ residual comes off the
+    // small lines and the receipt materializes.
+    const result = convertAndMaterializeFromSource(sourceInput({
+      sourceItems: [
+        { id: 'set', amountMinor: 1980, allocations: [{ memberId: 'alice', shares: 1 }] },
+        ...Array.from({ length: 10 }, (_, i) => ({ id: `s${i}`, amountMinor: 2, allocations: [{ memberId: 'bob', shares: 1 }] })),
+      ],
+      sourceAdjustments: [{ id: 'bogo', kind: 'COUPON', scope: 'ITEM', amountMinor: 1980, targetItemId: 'set' }],
+      sourceAmountMinor:    20,
+      rateDecimal:          '0.008',
+      sourceFractionDigits: 0,
+      targetFractionDigits: 2,
+    }))
+    expect(result.amountMinor).toBe(16)
+    expect(result.items[0]!.amountMinor).toBe(result.adjustments[0]!.amountMinor)
+    expect(result.splits).toEqual([{ memberId: 'bob', amountMinor: 16 }])
+  })
+})

@@ -43,15 +43,19 @@ interface Props {
   /** Cancels a settlement — the whole route, every leg with it. Used to
    *  clean up orphans or undo a premature record. */
   onDeleteSettlement: (id: string) => void
+  /** Settlement ids whose write is still in flight — their cancel waits. */
+  pendingSettlementIds?: ReadonlySet<string>
   /** Trip owner: may record the receipt for a receiver who has LEFT the
    *  trip (nobody else can confirm it any more). The Worker enforces it
    *  and marks the route `ownerRecorded`. */
   canRecordForDeparted?: boolean
 }
 
+const NO_PENDING: ReadonlySet<string> = new Set()
+
 export default function SettlementSummary({
   expenses, members, settlements, formerMemberNames, currency, uid, canDeleteAnySettlement,
-  canRecordForDeparted = false, onRecord, onDeleteSettlement,
+  canRecordForDeparted = false, onRecord, onDeleteSettlement, pendingSettlementIds = NO_PENDING,
 }: Props) {
   // computeBalancesFull also returns `participants` (members + ghosts
   // for kicked-out uids still in expenses/settlements). Reusing that
@@ -224,6 +228,7 @@ export default function SettlementSummary({
             currency={currency}
             uid={uid}
             canDeleteAnySettlement={canDeleteAnySettlement}
+            pendingIds={pendingSettlementIds}
             totalOrphanMinor={totalOrphanMinor}
             orphanByReason={orphanByReason}
             orphansBySettlement={orphansBySettlement}
