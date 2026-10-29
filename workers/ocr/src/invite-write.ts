@@ -36,7 +36,7 @@ const TokenRe = /^[A-Fa-f0-9]{64}$/
 export const InviteRedeemRequestSchema = z.object({
   tripId:      z.string().regex(TripIdRe),
   token:       z.string().regex(TokenRe),
-  displayName: z.string().min(1).max(100),
+  displayName: z.string().trim().min(1).max(100),
   // https only: `z.string().url()` alone also accepts javascript: / data:
   // URLs, and this value is rendered by every member's client.
   avatarUrl:   z.string().url().max(2000).regex(/^https:\/\//, 'avatarUrl must be https').optional(),

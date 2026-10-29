@@ -132,7 +132,10 @@ vi.mock('../hooks/useExpenses', async () => {
   }
 })
 
-vi.mock('../hooks/useSettlements', () => ({
+vi.mock('../hooks/useSettlements', async () => ({
+  // Real controller: the page derives pending settlement ids from it.
+  settlementOverlay: (await vi.importActual<typeof import('@/hooks/listOverlay')>('@/hooks/listOverlay'))
+    .createListOverlay({ insert: 'head', source: 'settlements-test' }),
   useSettlements: () => ({ data: harness.settlementPending ? undefined : harness.settlements,
     dataUpdatedAt: harness.unconfirmed ? 0 : 1,
     isPending: harness.settlementPending, isError: !!harness.settlementError,
@@ -579,6 +582,27 @@ describe('ExpensePage read-first expense flow', () => {
     render(<ExpensePage />)
     fireEvent.click(screen.getByRole('button', { name: 'delete-settlement' }))
     expect(harness.deleteSettlement).toHaveBeenCalledWith({ settlementId: 'settlement-1' })
+  })
+
+  it('does not cancel a settlement whose create is still in flight', async () => {
+    // The Worker no-ops a delete on a missing doc; if it beat the create the
+    // route would land anyway and the cancel would be silently lost.
+    const { settlementOverlay } = await import('../hooks/useSettlements')
+    const { settlementKeys } = await import('../services/settlementService')
+    const handle = settlementOverlay.add(settlementKeys.all(harness.cloudTripId ?? '', harness.uid), {
+      kind: 'create',
+      row:  { id: 'settlement-1' } as never,
+      confirms: () => false,
+      authoritativeFetch: async () => [],
+    })
+    try {
+      render(<ExpensePage />)
+      fireEvent.click(screen.getByRole('button', { name: 'delete-settlement' }))
+      expect(harness.deleteSettlement).not.toHaveBeenCalled()
+      expect(toastMocks.info).toHaveBeenCalledWith('清算紀錄仍在儲存中，完成後才能撤銷')
+    } finally {
+      settlementOverlay.drop(handle)
+    }
   })
 
   it('explains the stale bundle instead of silently dropping a settlement delete', () => {
