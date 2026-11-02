@@ -21,15 +21,15 @@
     "@tripmate/pdf-page-limit": "file:../../packages/pdf-page-limit",
     "@tripmate/route-estimate-core": "file:../../packages/route-estimate-core",
     "@tripmate/settlement-core": "file:../../packages/settlement-core",
-    "jose": "^6.2.13",
+    "jose": "^6.2.14",
     "pdfjs-dist": "6.3.289",
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "^1.4.10",
-    "@types/node": "^26.6.5",
+    "@cloudflare/vitest-plugin": "^1.4.11",
+    "@types/node": "^26.6.6",
     "typescript": "~6.0.2",
     "vitest": "^4.1.11",
-    "wrangler": "^4.151.0"
+    "wrangler": "^4.156.0"
   }
 }
