@@ -11,18 +11,18 @@
 |---|---|
 | Frontend | **React 19** + Vite 8 + TanStack Query v5 + Zustand v5 + Tailwind v4 + React Router v7 |
 | Compiler | **babel-plugin-react-compiler v1**(自動 memoise,所以幾乎沒有手寫 useCallback/useMemo) |
-| Backend | **Firebase v12**: Auth(Google)/ Firestore(+ IndexedDB persistence) + **Cloudflare R2** private attachments |
+| Backend | **Firebase v13**: Auth(Google)/ Firestore(+ IndexedDB persistence) + **Cloudflare R2** private attachments |
 | 即時同步 | Firestore `onSnapshot` 包裝在 `createRealtimeListHook` factory |
 | 收據 OCR | **Cloudflare Worker** + **Qwen**(workers/ocr/) |
 | Hosting | **Cloudflare Pages**(`tripmate-2wg.pages.dev`) |
 | 觀測 | Sentry(@sentry/browser,idle 延遲初始化;拆獨立 `vendor-sentry` chunk,排除在 modulepreload + PWA precache 之外) |
-| 測試 | Vitest + @cloudflare/vitest-plugin(Worker 測試) |
+| 測試 | Vitest 5 + @cloudflare/vitest-plugin(Worker 測試) |
 | CI | GitHub Actions(`.github/workflows/ci.yml`) |
 | Pre-commit | Husky + lint-staged：完整 workspace typecheck、staged TypeScript ESLint；完整測試由 CI 執行 |
 
 Client 瀏覽器基準：**Safari / iOS 18+、Chrome 125+**（pdf.js 6 / react-pdf 11 的最低要求，連 legacy build 也一樣）；Baseline 2024 以前的 Web API 可直接使用。
 
-依賴工具固定 npm 11.21.0（CI 與 Functions engine）；Node 22 驗證。依賴更新由 Dependabot 每週一開 PR（`.github/dependabot.yml`，連動套件同組、major 分開；已知 blocker 如 jsdom 30 / pdfjs-dist 6 列在 ignore）。CI 使用嚴格 `npm ci`、audit gate 與完整 SHA 固定的 Actions。相容性與安全 override 維護方式見 `docs/runbooks/dependency-security-overrides.md`；本次升級與暫緩原因見 `docs/reviews/2026-10-06-production-audit.md`。
+依賴工具固定 npm 11.21.0（CI 與 Functions engine）；Node 22 驗證。依賴更新由 Dependabot 每週一開 PR（`.github/dependabot.yml`，連動套件同組、major 分開；仍擋住的 major 列在 ignore 並附原因：jsdom 30、Babel 8、TypeScript 7；pdfjs-dist 不單獨升，必須跟 react-pdf 固定的版本同步）。CI 使用嚴格 `npm ci`、audit gate 與完整 SHA 固定的 Actions。相容性與安全 override 維護方式見 `docs/runbooks/dependency-security-overrides.md`；本次升級與暫緩原因見 `docs/reviews/2026-10-06-production-audit.md`。
 
 ## 資料模型(Firestore)
 

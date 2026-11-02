@@ -66,6 +66,8 @@ Workbox 六個直接使用的套件改為明示 dependency，避免依賴 PWA �
 | Babel 8 | 非已證實不相容；React Compiler 與轉換鏈 major migration 尚未獨立驗證，保留 Babel 7 |
 | npm 12.2.0 | npm 12 預設封鎖第三方 lifecycle scripts；目前 Workerd、esbuild、Firebase util、protobufjs 需要先建立跨平台 allowScripts 政策，再驗證 CI／Functions builder，保留本次已通過的 11.21.0；[官方 breaking changes](https://github.com/npm/cli/releases/tag/v12.0.0) |
 
+> 後續狀態（2026-11-02）：Sentry 11、react-pdf 11 / PDF.js 6 已完成；Vitest 5 與 Firebase 13（連同 rules-unit-testing 6）已遷移。TypeScript 7 仍被 typescript-eslint 8.72 的 peer（<6.1.0）擋住；Babel 8、JSDOM 30、npm 12 維持暫緩。
+
 ## Simplify 減法重構
 
 本次僅集中 JSON byte 上限與串流解析，避免 handler 堆疊 reader loop。調整前為 header 常數＋request.json()；調整後為共用 MAX_JSON_BODY_BYTES＋readBoundedJson()。未新增表單狀態、泛型架構或額外 listener。

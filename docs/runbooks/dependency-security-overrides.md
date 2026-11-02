@@ -8,7 +8,7 @@
 | `sharp` | 根目錄 `$sharp` (`^0.35.5`) | 修補 libheif 漏洞 GHSA-rgj7-g3m4-5g8c；與圖示產生工具共用已修補版本。全域約束避免 Worker pool 引入較舊的 Miniflare 時重新解析出漏洞版本。 |
 | `undici` | `^7.30.0` | 維持 v7 API，修補 TLS、WebSocket、retry / cache 路徑漏洞。 |
 | `uuid` | `^11.1.1` | 修補 GHSA-w5hq-g745-h8pq。gaxios 6 僅使用 `v4()`；已驗證 Node 22 的 CJS/ESM 載入與 multipart boundary。Functions 獨立部署不繼承根 override，因此其 manifest 也保留此約束。 |
-| `workbox-build` / `rimraf` → `glob` | `^13.0.6` | 移除 deprecated glob 10／11。兩個 caller 使用的是 `globSync`／promise `glob`，不依賴 v13 移走的 CLI；以實際 Workbox manifest 與 rimraf async/sync 路徑驗證。Functions 獨立 manifest 也保留 rimraf 範圍的 override。 |
+| `glob`（2026-11-02 起為全域；Functions 仍限 `rimraf` 範圍） | `^14.0.3`（原 `^13.0.6`，見下方 2026-11-02） | 移除 deprecated glob 10／11。兩個 caller 使用的是 `globSync`／promise `glob`，不依賴 v13 移走的 CLI；以實際 Workbox manifest 與 rimraf async/sync 路徑驗證。Functions 獨立 manifest 也保留 rimraf 範圍的 override。 |
 
 glob 跨 major 的範圍依 [官方 changelog](https://raw.githubusercontent.com/isaacs/node-glob/v13.0.6/changelog.md) 核對，未 override Firebase Admin、Google SDK 或 Workbox 的父套件 major。Node 22.23.3／npm 11.21.0 乾淨安裝、Functions 獨立正式安裝、完整 typecheck／lint／建置與實際 caller 測試通過；兩份 lockfile audit 各 0。升級 glob 後仍需保留此相容性驗證，不能由 audit 0 推導跨 major API 相容。
 
@@ -33,8 +33,23 @@ Functions 的自訂 ignored glob 會失效，因此這個 override **不是一�
 basic-ftp 6 仍提供 get-uri 使用的 CommonJS Client、access/lastMod/list/downloadTo/close API。
 
 保留原有 `npm audit --audit-level=high`，沒有新增漏洞忽略清單或降低 CI 門檻。
-根依賴目前尚有 CLI Pub/Sub 的 OpenTelemetry Core 1.x moderate advisory（含父套件傳遞共 3 項）；
-不強制覆寫為 Core 2.x，以免跨 major 改變 SDK 行為。Functions 獨立 lockfile 仍單獨 audit。
+CLI Pub/Sub 的 OpenTelemetry Core 1.x moderate advisory 當時不強制覆寫為 Core 2.x；
+2026-11-02 查核實際用法後已改為覆寫（見下節）。Functions 獨立 lockfile 仍單獨 audit。
+
+## 2026-11-02 moderate advisory 修補
+
+root 34 筆 → 13 筆，Functions 6 筆 → 0 筆。全部屬於開發／部署工具鏈，不進瀏覽器或 Worker bundle；CI 的 `--audit-level=high` 本來就通過。
+
+| 範圍 | 修補版本 | 原因與相容性查核 |
+| --- | --- | --- |
+| `glob`（root 全域；Functions 的 `rimraf` 範圍） | `^14.0.3` | [GHSA-3g3m-2fjr-6pw4](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4)：9.0.0–14.0.1 以 AbortSignal 取消後仍在背景走訪。glob 14 改用 minimatch 11、`walk()` 改回傳陣列；實際 caller（firebase-tools `sync`／`glob`、archiver-utils 與 exegesis `sync`、rimraf `glob`、Workbox）只用頂層函式。已驗證 firebase-tools `listFiles`、rimraf async／sync、Workbox precache 仍為 82 筆 |
+| `eslint` / `@eslint/config-array` / `@typescript-eslint/typescript-estree` → `minimatch` | `^11.0.4` | [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249)：<11.0.1 的 pattern 放大 DoS。v11 移除 `makeRe`、`Minimatch#regexp`、`matchOne`、`debug`；這三個套件只用 `Minimatch` 與 `match`。lint 前後都檢查 701 個檔案 |
+| `@google-cloud/pubsub` → `@opentelemetry/core` | `^2.8.0` | [GHSA-8988-4f7v-96qf](https://github.com/advisories/GHSA-8988-4f7v-96qf)：漏洞在 `W3CBaggagePropagator`。firebase-tools 鎖 pubsub `^5.2.0`，而 pubsub 5.x 只用 `W3CTraceContextPropagator`，Core 2.x 仍提供；pubsub 6 本身也已改依賴 `^2.8.0` |
+
+**刻意不修（剩下 13 筆都來自這兩個源頭）**
+
+- `minimatch` 3／5／6：firebase-tools（`^3`）、superstatic、filelist（jake ← ejs ← Workbox）、readdir-glob（archiver）都把 minimatch 當函式呼叫，例如 firebase-tools `lib/fsAsync.js` 的 `minimatch(p, glob, mmopts)`。v10 起沒有 default export，全域覆寫會讓 `firebase deploy` 打包時 TypeError。要觸發漏洞需要攻擊者控制 glob pattern，而這裡的 pattern 都來自自己的設定檔。等上游換版。
+- `deepmerge` 4.2.0–4.3.1（[GHSA-gcqx-w48m-w2h4](https://github.com/advisories/GHSA-gcqx-w48m-w2h4)，low）：沒有修補版。只在 Workbox 建置時合併 rollup 設定，沒有外部輸入。
 
 ## 仍由上游帶入的 DOMException 套件
 

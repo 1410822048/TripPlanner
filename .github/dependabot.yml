@@ -48,19 +48,6 @@ updates:
       # arrives, set pdfjs-dist (root + workers/ocr) to react-pdf's version in
       # the same PR; until then that test keeps the PR red.
       - dependency-name: pdfjs-dist
-      # firebase 13 needs @firebase/rules-unit-testing 6 (which peers ^13) in
-      # the same change; Dependabot proposes them separately, so both stay
-      # red. Migrate the pair by hand.
-      - dependency-name: firebase
-        versions: ['>=13']
-      - dependency-name: '@firebase/rules-unit-testing'
-        versions: ['>=6']
-      # vitest 5 is a hand migration (see the dependency-upgrade notes);
-      # @cloudflare/vitest-plugin itself already peers vitest ^4.1 || ^5.
-      - dependency-name: vitest
-        versions: ['>=5']
-      - dependency-name: '@vitest/*'
-        versions: ['>=5']
       # Babel 8 + babel-plugin-react-compiler 1.x memoises fewer components
       # than Babel 7 (141 vs 166 files on 2026-10-13); every test still
       # passes, so CI cannot catch it. Re-measure before taking it.
@@ -95,9 +82,7 @@ updates:
     ignore:
       - dependency-name: '@types/node'
         update-types: ['version-update:semver-major']
-      # Same blockers as the root entry.
-      - dependency-name: vitest
-        versions: ['>=5']
+      # Same blocker as the root entry.
       - dependency-name: typescript
         versions: ['>=7']
 

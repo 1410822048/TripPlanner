@@ -48,14 +48,21 @@
     "sharp": "$sharp",
     "undici": "^7.30.0",
     "uuid": "^11.1.1",
-    "workbox-build": {
-      "glob": "^13.0.6"
-    },
-    "rimraf": {
-      "glob": "^13.0.6"
-    },
     "eslint-plugin-react-hooks": {
       "zod-validation-error": "^4.0.2"
+    },
+    "glob": "^14.0.3",
+    "@google-cloud/pubsub": {
+      "@opentelemetry/core": "^2.8.0"
+    },
+    "eslint": {
+      "minimatch": "^11.0.4"
+    },
+    "@eslint/config-array": {
+      "minimatch": "^11.0.4"
+    },
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^11.0.4"
     }
   },
   "dependencies": {
@@ -67,7 +74,7 @@
     "@tripmate/pdf-page-limit": "file:./packages/pdf-page-limit",
     "@tripmate/route-estimate-core": "file:./packages/route-estimate-core",
     "@tripmate/settlement-core": "file:./packages/settlement-core",
-    "firebase": "^12.17.1",
+    "firebase": "^13.1.0",
     "jsqr": "^1.4.0",
     "lucide-react": "^1.61.0",
     "mapbox-gl": "^3.33.0",
@@ -90,7 +97,7 @@
   "devDependencies": {
     "@babel/core": "^7.29.7",
     "@eslint/js": "^10.0.1",
-    "@firebase/rules-unit-testing": "^5.0.1",
+    "@firebase/rules-unit-testing": "^6.0.0",
     "@rolldown/plugin-babel": "^0.2.4",
     "@tailwindcss/vite": "^4.3.3",
     "@testing-library/dom": "^10.4.2",
@@ -100,7 +107,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
-    "@vitest/coverage-v8": "^4.1.12",
+    "@vitest/coverage-v8": "^5.0.5",
     "babel-plugin-react-compiler": "^1.0.0",
     "eslint": "^10.13.0",
     "eslint-plugin-react-hooks": "^7.1.1",
@@ -118,7 +125,7 @@
     "typescript-eslint": "^8.72.0",
     "vite": "^8.3.5",
     "vite-plugin-pwa": "^2.0.0",
-    "vitest": "^4.1.11",
+    "vitest": "^5.0.5",
     "wrangler": "^4.151.0"
   }
 }

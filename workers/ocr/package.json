@@ -15,8 +15,8 @@
     "cf-typegen": "wrangler types"
   },
   "dependencies": {
-    "@tripmate/expense-materialize": "file:../../packages/expense-materialize",
     "@tripmate/entity-contracts": "file:../../packages/entity-contracts",
+    "@tripmate/expense-materialize": "file:../../packages/expense-materialize",
     "@tripmate/fx-core": "file:../../packages/fx-core",
     "@tripmate/pdf-page-limit": "file:../../packages/pdf-page-limit",
     "@tripmate/route-estimate-core": "file:../../packages/route-estimate-core",
@@ -26,10 +26,10 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "^1.4.10",
+    "@cloudflare/vitest-plugin": "^1.4.12",
     "@types/node": "^26.6.5",
     "typescript": "~6.0.2",
-    "vitest": "^4.1.11",
+    "vitest": "^5.0.5",
     "wrangler": "^4.151.0"
   }
 }
