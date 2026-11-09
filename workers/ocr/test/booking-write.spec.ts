@@ -270,6 +270,29 @@ beforeEach(() => {
 
 // ─── Happy paths ───────────────────────────────────────────────────
 
+describe('bookingFileCreate: one primary per slot', () => {
+	it('rejects separately minted full + pdf intents combined in one slot (orphan blob)', async () => {
+		seedAuth('editor')
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${FULL_INTENT_ID}`,
+			intentDoc({ intentId: FULL_INTENT_ID, kind: 'full', path: FULL_PATH }))
+		txGetResponses.set(`trips/${TRIP_ID}/uploadIntents/${PDF_INTENT_ID}`,
+			intentDoc({ intentId: PDF_INTENT_ID, kind: 'pdf', path: PDF_PATH }))
+		vi.mocked(storage.headR2Object)
+			.mockResolvedValueOnce(storageMeta({ path: FULL_PATH, intentId: FULL_INTENT_ID, kind: 'full' }))
+			.mockResolvedValueOnce(pdfMeta('1'))
+
+		await expect(bookingFileCreate(
+			CALLER_UID,
+			{
+				tripId: TRIP_ID, bookingId: BOOKING_ID, booking: validBookingPayload(),
+				attachments: { document: [FULL_INTENT_ID, PDF_INTENT_ID] },
+			},
+			'{}', BUCKET,
+		)).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/full and pdf/) })
+		expect(capturedTxResult).toBeNull()
+	})
+})
+
 describe('bookingFileCreate: happy paths', () => {
 	it('full + thumb intents → booking doc + document + markUsed in same tx, sortDate from checkIn', async () => {
 		seedAuth('editor')

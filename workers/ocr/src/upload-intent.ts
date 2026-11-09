@@ -243,6 +243,17 @@ function validateUploadRequests(req: UploadIntentsRequest): void {
   if (new Set(kinds).size !== kinds.length) {
     throw new CascadeError(400, 'uploads[].kind must be unique within a request')
   }
+  assertSinglePrimary(kinds, req.entityType)
+}
+
+/** One attachment slot references exactly one primary blob (`full` or
+ *  `pdf`). Both present means one is marked used yet never referenced —
+ *  an orphan until the storage scan. Checked at mint AND at consume, since
+ *  two separately minted intents can be combined in one write. */
+function assertSinglePrimary(kinds: readonly UploadKind[], entityType: EntityType): void {
+  if (kinds.includes('full') && kinds.includes('pdf')) {
+    throw new CascadeError(400, `${entityType} attachment cannot combine full and pdf`)
+  }
 }
 
 // ─── Public API ───────────────────────────────────────────────────
@@ -967,6 +978,7 @@ export async function consumeEntityIntents(
   if (new Set(kinds).size !== kinds.length) {
     throw new CascadeError(400, `duplicate kinds in ${expected.entityType} intent set`)
   }
+  assertSinglePrimary(kinds, expected.entityType)
   return { consumed, markUsedWrites }
 }
 

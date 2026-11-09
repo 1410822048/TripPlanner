@@ -181,6 +181,18 @@ describe('static validation (rejects before Firestore tx)', () => {
 		).rejects.toMatchObject({ status: 400 })
 	})
 
+	it('rejects full + pdf in one request (only one would be referenced)', async () => {
+		await expect(
+			createUploadIntents(CALLER_UID, imageFullReq({
+				uploads: [
+					{ kind: 'full', contentType: 'image/webp', size: 100 },
+					{ kind: 'pdf', contentType: 'application/pdf', size: 200 },
+				],
+			}), SERVICE_ACCOUNT_JSON),
+		).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/full and pdf/) })
+		expect(txGetSpy).toBeNull()
+	})
+
 	it('rejects duplicate kinds in uploads[]', async () => {
 		await expect(
 			createUploadIntents(CALLER_UID, imageFullReq({

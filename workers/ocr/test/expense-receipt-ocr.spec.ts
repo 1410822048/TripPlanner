@@ -15,6 +15,7 @@ const { docFields, storageState, ocrCalls } = vi.hoisted(() => ({
 vi.mock('../src/admin', () => ({
   getAdminToken: vi.fn(async () => 'admin-token'),
   getProjectId:  vi.fn(() => 'demo'),
+  invalidateAdminToken: vi.fn(),
 }))
 
 vi.mock('../src/firestore', async () => {
@@ -49,6 +50,8 @@ const extractReceiptItems = vi.fn(async (_b64: string, mimeType: string, currenc
 
 import { expenseReceiptOcr, ExpenseReceiptOcrRequestSchema } from '../src/expense-receipt-ocr'
 import { CascadeError } from '../src/cascade'
+import { getDocFields } from '../src/firestore'
+import { invalidateAdminToken } from '../src/admin'
 
 const TRIP = 'trip-1'
 const EXP  = 'exp-1'
@@ -108,6 +111,21 @@ beforeEach(() => {
   storageState.bytesThrows = false
   ocrCalls.length = 0
   extractReceiptItems.mockClear()
+})
+
+describe('expenseReceiptOcr — rejected cached admin token', () => {
+  it('refreshes the token and retries the reads once, without re-running OCR', async () => {
+    seedTrip({ ownerId: 'someone-else' })
+    seedMember(CALLER, 'editor')
+    seedExpense({ receipt: { path: RECEIPT_PATH, type: 'image/webp' } })
+    seedStorageOk()
+    vi.mocked(getDocFields).mockRejectedValueOnce(new Error('GET trips/trip-1 → 401'))
+
+    await run()
+
+    expect(invalidateAdminToken).toHaveBeenCalledTimes(1)
+    expect(extractReceiptItems).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('expenseReceiptOcr — happy paths', () => {

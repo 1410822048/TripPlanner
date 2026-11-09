@@ -22,7 +22,7 @@ import { getDocFields, readMap, readString }  from './firestore'
 import type { FsValue }                       from './firestore'
 import { getR2Object }                        from './r2-storage'
 import { expenseIsSettlementLocked }          from './expense-write'
-import { CascadeError }                       from './cascade'
+import { CascadeError, withTokenRetry }       from './cascade'
 import { checkTripAccess }                                           from './membership-shared'
 import { OCR_SUPPORTED_IMAGE_MIME_TYPES, type OcrResponse, type OcrSupportedImageMimeType } from './schema'
 import { TripIdRe }                           from './field-validation'
@@ -108,17 +108,22 @@ interface ReceiptOcrSnapshot {
 }
 
 async function authorizeAndLocateReceipt(
-  accessToken: string,
+  serviceAccountJson: string,
   projectId:   string,
   tripId:      string,
   expenseId:   string,
   callerUid:   string,
 ): Promise<ReceiptOcrSnapshot> {
-  const [tripFields, memberFields, expenseFields] = await Promise.all([
-    getDocFields(accessToken, projectId, `trips/${tripId}`),
-    getDocFields(accessToken, projectId, `trips/${tripId}/members/${callerUid}`),
-    getDocFields(accessToken, projectId, `trips/${tripId}/expenses/${expenseId}`),
-  ])
+  // Only these reads are retried on a rejected cached token (token fetched
+  // inside so the retry gets a fresh one) — never the paid OCR call between them.
+  const [tripFields, memberFields, expenseFields] = await withTokenRetry(async () => {
+    const accessToken = await getAdminToken(serviceAccountJson)
+    return Promise.all([
+      getDocFields(accessToken, projectId, `trips/${tripId}`),
+      getDocFields(accessToken, projectId, `trips/${tripId}/members/${callerUid}`),
+      getDocFields(accessToken, projectId, `trips/${tripId}/expenses/${expenseId}`),
+    ])
+  })
 
   // ── Authorization (mirror /expense-update: owner/editor) ─────────
   checkTripAccess(tripFields, memberFields, callerUid, { roles: ['owner', 'editor'] })
@@ -169,11 +174,10 @@ export async function expenseReceiptOcr(
   bucket:             R2Bucket,
   extract:            ReceiptOcrExtractor,
 ): Promise<ExpenseReceiptOcrResult> {
-  const accessToken = await getAdminToken(serviceAccountJson)
   const projectId   = getProjectId(serviceAccountJson)
 
   // ── Pre-OCR: authorize the caller + locate the receipt ───────────
-  const before = await authorizeAndLocateReceipt(accessToken, projectId, req.tripId, req.expenseId, callerUid)
+  const before = await authorizeAndLocateReceipt(serviceAccountJson, projectId, req.tripId, req.expenseId, callerUid)
   const receiptPath = before.receiptPath
 
   // ── R2: one bounded get (metadata + body) ────────────────────────
@@ -215,7 +219,7 @@ export async function expenseReceiptOcr(
   // Authz/existence loss surfaces as 403/404/410; applicability drift (swapped
   // receipt / edited expense) as 409. Pairs with the client's request-time +
   // monotonic-seq guards, which cover the windows the Worker can't see.
-  const after = await authorizeAndLocateReceipt(accessToken, projectId, req.tripId, req.expenseId, callerUid)
+  const after = await authorizeAndLocateReceipt(serviceAccountJson, projectId, req.tripId, req.expenseId, callerUid)
   if (after.receiptPath !== before.receiptPath || after.updatedAt !== before.updatedAt) {
     throw new CascadeError(409, 'expense changed during OCR; refresh and retry')
   }
