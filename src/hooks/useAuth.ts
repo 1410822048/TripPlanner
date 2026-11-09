@@ -14,9 +14,15 @@ export type AuthState =
   | { status: 'signed-in'; user: User }
   | { status: 'error'; error: Error }
 
+/** How a Google sign-in call ended without throwing. Only 'signed-in' means
+ *  this call signed the user in; the other two must not run success actions.
+ *  - superseded: a newer popup replaced this one; that call owns the outcome
+ *  - redirecting: the page is navigating to Google; the result arrives on return */
+export type GoogleSignInResult = 'signed-in' | 'superseded' | 'redirecting'
+
 export interface UseAuthResult {
   state: AuthState
-  signInWithGoogle: () => Promise<void>
+  signInWithGoogle: () => Promise<GoogleSignInResult>
   signOut:          () => Promise<void>
 }
 
@@ -228,7 +234,7 @@ export function useAuth(enabled?: boolean): UseAuthResult {
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 
   // Compiler memoises these — manual useCallback would be redundant.
-  const signInWithGoogle = async () => {
+  const signInWithGoogle = async (): Promise<GoogleSignInResult> => {
     // Previous boot never wired onAuthStateChanged: without a re-boot a
     // successful sign-in would never be published and the app would stay
     // in the error state.
@@ -241,6 +247,7 @@ export function useAuth(enabled?: boolean): UseAuthResult {
     const provider = new GoogleAuthProvider()
     try {
       await signInWithPopup(auth, provider)
+      return 'signed-in'
     } catch (e: unknown) {
       const code = (e as { code?: string })?.code
       // Popup blocked / unsupported → redirect. Page navigates away; result
@@ -249,7 +256,7 @@ export function useAuth(enabled?: boolean): UseAuthResult {
       // this one (e.g. a double tap) and that popup is still in progress:
       // neither redirect (would yank the page from under it) nor surface
       // an error — the live popup's own call reports the outcome.
-      if (code === 'auth/cancelled-popup-request') return
+      if (code === 'auth/cancelled-popup-request') return 'superseded'
       if (code === 'auth/popup-blocked'
         || code === 'auth/operation-not-supported-in-this-environment') {
         writeAuthRedirectPending(true)
@@ -259,7 +266,7 @@ export function useAuth(enabled?: boolean): UseAuthResult {
           writeAuthRedirectPending(false)
           throw redirectError
         }
-        return
+        return 'redirecting'
       }
       throw e
     }

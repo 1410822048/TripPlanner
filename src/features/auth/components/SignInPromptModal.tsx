@@ -3,10 +3,10 @@
 // so it can be invoked from inside another modal (e.g. CreateTripModal) or
 // directly from a page. Auth SDK is lazy-loaded — the sheet only pulls it
 // when `isOpen` becomes true.
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import BottomSheet from '@/components/ui/BottomSheet'
 import GoogleIcon from '@/components/icons/GoogleIcon'
-import { useAuth } from '@/hooks/useAuth'
+import { useAuth, type AuthState } from '@/hooks/useAuth'
 import { toast } from '@/shared/toast'
 import { DEV_EMULATOR_USERS, signInWithEmulatorRole, type EmulatorRole } from '@/services/emulatorAuth'
 import { FIREBASE_EMULATOR_MODE } from '@/services/firebase'
@@ -21,41 +21,76 @@ interface Props {
   onSignedIn?: () => void
 }
 
-export default function SignInPromptModal({ isOpen, onClose, reason, onSignedIn }: Props) {
-  const { state, signInWithGoogle } = useAuth(isOpen)
+/** Once-per-open completion. Two paths can report success (the sign-in call
+ *  returning, and the auth observer flipping state); whichever comes first
+ *  wins, and a result landing after this open closed is dropped. */
+function createCompletion() {
+  let live = true
+  let done = false
+  return {
+    /** Mount effect: live while mounted (re-armed on StrictMode remount). */
+    attach: () => {
+      live = true
+      return () => { live = false }
+    },
+    claim: () => {
+      if (!live || done) return false
+      done = true
+      return true
+    },
+  }
+}
+
+export default function SignInPromptModal({ isOpen, ...rest }: Props) {
+  // Mounted only while open, so every open is a fresh instance.
+  const { state } = useAuth(isOpen)
+  if (!isOpen) return null
+  return <SignInPromptSheet state={state} {...rest} />
+}
+
+function SignInPromptSheet({ state, onClose, reason, onSignedIn }: Omit<Props, 'isOpen'> & { state: AuthState }) {
+  const { signInWithGoogle } = useAuth(true)
+  // One busy flag for Google and DEV: never two sign-ins at once.
   const [signingIn, setSigningIn] = useState(false)
+  const [{ attach, claim }] = useState(createCompletion)
+  useEffect(attach, [attach])
+
+  function complete() {
+    if (!claim()) return
+    onSignedIn?.()
+    onClose()
+  }
 
   async function handleSignIn() {
     setSigningIn(true)
+    // Superseded: the newer popup's call owns busy. Redirecting: page leaves.
+    let keepBusy = false
     try {
-      await signInWithGoogle()
-      onSignedIn?.()
-      onClose()
+      const result = await signInWithGoogle()
+      keepBusy = result !== 'signed-in'
+      if (result === 'signed-in') complete()
     } catch (e) {
       const code = (e as { code?: string })?.code
       if (code !== 'auth/popup-closed-by-user') {
         toast.error(userErrorMessage(e, '登入失敗'))
       }
-    } finally { setSigningIn(false) }
+    } finally { if (!keepBusy) setSigningIn(false) }
   }
 
   async function handleDevSignIn(role: EmulatorRole) {
     setSigningIn(true)
     try {
       await signInWithEmulatorRole(role)
-      onSignedIn?.()
-      onClose()
+      complete()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'DEV 登入失敗')
     } finally { setSigningIn(false) }
   }
 
-  if (!isOpen) return null
-
-  // If the user is already signed-in (e.g. state hydrated while sheet
-  // was opening), close immediately and let the caller proceed.
+  // Signed in (observer fired first, or state hydrated while opening):
+  // finish this open and let the caller proceed.
   if (state.status === 'signed-in') {
-    queueMicrotask(() => { onSignedIn?.(); onClose() })
+    queueMicrotask(complete)
     return null
   }
 

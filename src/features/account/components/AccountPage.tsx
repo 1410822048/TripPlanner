@@ -136,13 +136,15 @@ export default function AccountPage() {
 
   async function handleSignIn() {
     setSigningIn(true)
-    try { await signInWithGoogle() }
+    // Superseded: the newer popup's call owns busy. Redirecting: page leaves.
+    let keepBusy = false
+    try { keepBusy = (await signInWithGoogle()) !== 'signed-in' }
     catch (e) {
       const code = (e as { code?: string })?.code
       if (code !== 'auth/popup-closed-by-user') {
         toast.error(userErrorMessage(e, '登入失敗'))
       }
-    } finally { setSigningIn(false) }
+    } finally { if (!keepBusy) setSigningIn(false) }
   }
 
   // Confirm flow happens inside LogoutConfirmSheet; this is the commit step
