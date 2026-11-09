@@ -24,10 +24,11 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # 15 (not 10): the rules step downloads the Firestore emulator jar and
-    # boots the JVM before any test runs (firebase-tools itself is a pinned
-    # devDependency installed by `npm ci`).
-    timeout-minutes: 15
+    # The rules step downloads the Firestore emulator jar and boots the JVM
+    # before any test runs (firebase-tools itself is a pinned devDependency
+    # installed by `npm ci`); the two browser e2e suites build and drive the
+    # app against the emulators.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -103,6 +104,18 @@ jobs:
       # projections, conflicts and the 1 MiB document limit.
       - name: Test (emulator)
         run: npm run test:emulator
+
+      # Real-browser regressions jsdom cannot reproduce (Chromium pointer
+      # capture retargeting the mouse click: planning checkbox, mouse
+      # swipe-delete). Serial: both suites bind the same ports.
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Test (e2e offline)
+        run: npm run e2e:offline
+
+      - name: Test (e2e settlement)
+        run: npm run e2e:settlement
 
       - name: Build
         run: npm run build

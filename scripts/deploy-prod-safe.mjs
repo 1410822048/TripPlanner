@@ -896,12 +896,18 @@ async function deleteNotificationDocs(names) {
   }
 
   const parent = `projects/${PROJECT_ID}/databases/(default)/documents`;
-  await googleFetch(`https://firestore.googleapis.com/v1/${parent}:batchWrite`, {
+  const data = await googleFetch(`https://firestore.googleapis.com/v1/${parent}:batchWrite`, {
     method: 'POST',
     body: JSON.stringify({
       writes: names.map((name) => ({ delete: name })),
     }),
   });
+  // batchWrite is not atomic: HTTP 200 still carries per-write failures.
+  // Ignoring them re-queries the same docs forever and over-counts progress.
+  const failed = (data.status ?? []).filter((status) => status?.code);
+  if (failed.length > 0) {
+    throw new Error(`batchWrite failed for ${failed.length}/${names.length} doc(s): ${JSON.stringify(failed[0])}`);
+  }
 }
 
 async function clearNotifications() {

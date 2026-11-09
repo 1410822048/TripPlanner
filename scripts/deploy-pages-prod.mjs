@@ -176,6 +176,8 @@ const assertWranglerPagesAccess = () => {
 assertProductionGitRef()
 assertCleanWorktree()
 assertWranglerPagesAccess()
+// Before build and before --deploy-only: the manifest must follow what is live.
+run('node scripts/check-client-compatibility.mjs --live')
 
 if (preflightOnly) {
   console.log(

@@ -2,9 +2,13 @@ import { execFileSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
+import { PAGES_DEV_DOMAIN } from './pagesDeployCommon.mjs'
 
 const root = process.cwd()
 const DIST_MODE = process.argv.includes('--dist')
+// Compare against what production serves. HEAD alone cannot catch a bad
+// manifest once it is committed (HEAD *is* that manifest), so deploys run this.
+const LIVE_MODE = process.argv.includes('--live')
 
 function isEpoch(value) {
   return Number.isSafeInteger(value) && value >= 0
@@ -27,6 +31,28 @@ function parseManifest(raw, source) {
     throw new Error(`${source} epochs must be non-negative safe integers`)
   }
   return value
+}
+
+/** The manifest production serves; null only when none is deployed yet (404). */
+async function liveManifest() {
+  const url = `https://${PAGES_DEV_DOMAIN}/compatibility.json`
+  const res = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(15_000) })
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`cannot read live manifest: ${url} → ${res.status}`)
+  return parseManifest(await res.text(), url)
+}
+
+/** Revisions only move forward, and a changed minimumWriteEpoch needs a new
+ *  revision: clients that cached the old pair reject a same-revision change,
+ *  so a rollback shipped that way would silently never apply. */
+function assertRevisionFollows(baseline, label) {
+  if (!baseline) return
+  if (manifest.revision < baseline.revision) {
+    throw new Error(`revision ${manifest.revision} is lower than ${label} ${baseline.revision}`)
+  }
+  if (manifest.revision === baseline.revision && manifest.minimumWriteEpoch !== baseline.minimumWriteEpoch) {
+    throw new Error(`minimumWriteEpoch changed without bumping revision (${label} ${baseline.revision})`)
+  }
 }
 
 /** The manifest at HEAD, or null outside a git checkout (e.g. a tarball build). */
@@ -59,18 +85,8 @@ if (!isEpoch(clientEpoch)) throw new Error('CLIENT_SCHEMA_EPOCH is invalid')
 if (manifest.minimumWriteEpoch > clientEpoch) {
   throw new Error(`minimumWriteEpoch ${manifest.minimumWriteEpoch} exceeds client epoch ${clientEpoch}`)
 }
-// Revisions only move forward, and a changed minimumWriteEpoch needs a new
-// revision: clients that cached the old pair reject a same-revision change,
-// so a rollback shipped that way would silently never apply.
-const committed = committedManifest()
-if (committed) {
-  if (manifest.revision < committed.revision) {
-    throw new Error(`revision ${manifest.revision} is lower than the committed ${committed.revision}`)
-  }
-  if (manifest.revision === committed.revision && manifest.minimumWriteEpoch !== committed.minimumWriteEpoch) {
-    throw new Error(`minimumWriteEpoch changed without bumping revision (${committed.revision})`)
-  }
-}
+assertRevisionFollows(committedManifest(), 'committed')
+if (LIVE_MODE) assertRevisionFollows(await liveManifest(), 'live')
 
 if (!/^\/compatibility\.json\r?\n[ \t]+Cache-Control:[ \t]*no-store, max-age=0, must-revalidate[ \t]*$/m.test(headersRaw)) {
   throw new Error('public/_headers is missing the no-store compatibility rule')
