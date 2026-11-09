@@ -5,12 +5,11 @@
 // when `isOpen` becomes true.
 import { useEffect, useState } from 'react'
 import BottomSheet from '@/components/ui/BottomSheet'
-import GoogleIcon from '@/components/icons/GoogleIcon'
+import GoogleSignInButton from './GoogleSignInButton'
 import { useAuth, type AuthState } from '@/hooks/useAuth'
 import { toast } from '@/shared/toast'
 import { DEV_EMULATOR_USERS, signInWithEmulatorRole, type EmulatorRole } from '@/services/emulatorAuth'
 import { FIREBASE_EMULATOR_MODE } from '@/services/firebase'
-import { userErrorMessage } from '@/utils/errorMessage'
 
 interface Props {
   isOpen:   boolean
@@ -49,9 +48,9 @@ export default function SignInPromptModal({ isOpen, ...rest }: Props) {
 }
 
 function SignInPromptSheet({ state, onClose, reason, onSignedIn }: Omit<Props, 'isOpen'> & { state: AuthState }) {
-  const { signInWithGoogle } = useAuth(true)
-  // One busy flag for Google and DEV: never two sign-ins at once.
-  const [signingIn, setSigningIn] = useState(false)
+  // Google and DEV sign-in block each other: never two at once.
+  const [googleBusy, setGoogleBusy] = useState(false)
+  const [devBusy,    setDevBusy]    = useState(false)
   const [{ attach, claim }] = useState(createCompletion)
   useEffect(attach, [attach])
 
@@ -61,30 +60,14 @@ function SignInPromptSheet({ state, onClose, reason, onSignedIn }: Omit<Props, '
     onClose()
   }
 
-  async function handleSignIn() {
-    setSigningIn(true)
-    // Superseded: the newer popup's call owns busy. Redirecting: page leaves.
-    let keepBusy = false
-    try {
-      const result = await signInWithGoogle()
-      keepBusy = result !== 'signed-in'
-      if (result === 'signed-in') complete()
-    } catch (e) {
-      const code = (e as { code?: string })?.code
-      if (code !== 'auth/popup-closed-by-user') {
-        toast.error(userErrorMessage(e, '登入失敗'))
-      }
-    } finally { if (!keepBusy) setSigningIn(false) }
-  }
-
   async function handleDevSignIn(role: EmulatorRole) {
-    setSigningIn(true)
+    setDevBusy(true)
     try {
       await signInWithEmulatorRole(role)
       complete()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'DEV 登入失敗')
-    } finally { setSigningIn(false) }
+    } finally { setDevBusy(false) }
   }
 
   // Signed in (observer fired first, or state hydrated while opening):
@@ -102,15 +85,11 @@ function SignInPromptSheet({ state, onClose, reason, onSignedIn }: Omit<Props, '
           {reason ?? '若要將資料儲存到雲端，'}<br />
           請使用 Google 帳戶登入。
         </p>
-        <button
-          onClick={handleSignIn}
-          disabled={signingIn || state.status === 'loading'}
-          className="w-full max-w-[280px] h-12 rounded-chip border border-border bg-surface text-ink text-[14px] font-semibold inline-flex items-center justify-center gap-2.5 cursor-pointer transition-all hover:-translate-y-px disabled:opacity-60 disabled:cursor-not-allowed"
-          style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}
-        >
-          <GoogleIcon size={18} />
-          {signingIn ? '登入中…' : '使用 Google 登入'}
-        </button>
+        <GoogleSignInButton
+          onSignedIn={complete}
+          disabled={devBusy || state.status === 'loading'}
+          onBusyChange={setGoogleBusy}
+        />
         {import.meta.env.DEV && FIREBASE_EMULATOR_MODE && (
           <div className="mt-4 border-t border-border pt-3">
             <p className="mb-2 text-[10px] font-semibold text-muted">Emulator role login</p>
@@ -119,7 +98,7 @@ function SignInPromptSheet({ state, onClose, reason, onSignedIn }: Omit<Props, '
                 <button
                   key={role}
                   type="button"
-                  disabled={signingIn}
+                  disabled={devBusy || googleBusy}
                   onClick={() => void handleDevSignIn(role)}
                   className="h-8 rounded-full border border-border bg-app px-2 text-[10px] font-semibold text-ink disabled:opacity-50"
                 >

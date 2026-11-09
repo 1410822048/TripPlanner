@@ -30,7 +30,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { LogOut } from 'lucide-react'
 import ConfirmSheet from '@/components/ui/ConfirmSheet'
-import GoogleIcon from '@/components/icons/GoogleIcon'
+import GoogleSignInButton from '@/features/auth/components/GoogleSignInButton'
 import StatCell from './StatCell'
 import FeatureCard from './FeatureCard'
 import NotificationInboxButton from './NotificationInboxButton'
@@ -111,7 +111,7 @@ function accountAgeLabel(creationTime: string | undefined): string | null {
 }
 
 export default function AccountPage() {
-  const { state, signInWithGoogle, signOut } = useAuth(true)
+  const { state, signOut } = useAuth(true)
   const navigate = useNavigate()
 
   const uid = state.status === 'signed-in' ? state.user.uid : undefined
@@ -130,22 +130,8 @@ export default function AccountPage() {
 
   const { count: collaboratorCount, chips: collaboratorChips } = useCollaboratorSummary(uid, trips)
 
-  const [signingIn,  setSigningIn]  = useState(false)
   const [signingOut, setSigningOut] = useState(false)
   const [logoutOpen, setLogoutOpen] = useState(false)
-
-  async function handleSignIn() {
-    setSigningIn(true)
-    // Superseded: the newer popup's call owns busy. Redirecting: page leaves.
-    let keepBusy = false
-    try { keepBusy = (await signInWithGoogle()) !== 'signed-in' }
-    catch (e) {
-      const code = (e as { code?: string })?.code
-      if (code !== 'auth/popup-closed-by-user') {
-        toast.error(userErrorMessage(e, '登入失敗'))
-      }
-    } finally { if (!keepBusy) setSigningIn(false) }
-  }
 
   // Confirm flow happens inside LogoutConfirmSheet; this is the commit step
   // called from the sheet's 「登出」 button.
@@ -205,15 +191,7 @@ export default function AccountPage() {
         <p className="m-0 mb-6 text-[12.5px] text-muted leading-[1.7] tracking-[0.02em] max-w-[260px]">
           登入後，將自己的旅程儲存到雲端。
         </p>
-        <button
-          onClick={handleSignIn}
-          disabled={signingIn}
-          className="w-full max-w-[280px] h-12 rounded-chip border border-border bg-surface text-ink text-[14px] font-semibold inline-flex items-center justify-center gap-2.5 cursor-pointer transition-all hover:-translate-y-px disabled:opacity-60 disabled:cursor-not-allowed"
-          style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}
-        >
-          <GoogleIcon size={18} />
-          {signingIn ? '登入中…' : '使用 Google 登入'}
-        </button>
+        <GoogleSignInButton />
         <div className="mt-10 text-[10.5px] text-muted opacity-70 tracking-[0.04em]">
           TripMate v{__APP_VERSION__} · {__BUILD_DATE__}
         </div>

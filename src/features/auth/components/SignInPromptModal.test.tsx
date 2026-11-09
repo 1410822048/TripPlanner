@@ -84,7 +84,7 @@ describe('SignInPromptModal completion', () => {
     expect((googleButton() as HTMLButtonElement).disabled).toBe(false)
   })
 
-  it.each(['superseded', 'redirecting'] as const)('runs no success action on %s and stays busy', async (result) => {
+  it.each([['superseded', false], ['redirecting', true]] as const)('runs no success action on %s (busy kept: %s)', async (result, busy) => {
     const onSignedIn = vi.fn(); const onClose = vi.fn()
     h.signInWithGoogle.mockResolvedValue(result)
     render(<SignInPromptModal isOpen onClose={onClose} onSignedIn={onSignedIn} />)
@@ -92,7 +92,7 @@ describe('SignInPromptModal completion', () => {
     await flush()
     expect(onSignedIn).not.toHaveBeenCalled()
     expect(onClose).not.toHaveBeenCalled()
-    expect((googleButton() as HTMLButtonElement).disabled).toBe(true)
+    expect((googleButton() as HTMLButtonElement).disabled).toBe(busy)
   })
 
   it('closed popup: no toast, no callback, busy restored', async () => {
@@ -106,12 +106,19 @@ describe('SignInPromptModal completion', () => {
     expect((googleButton() as HTMLButtonElement).disabled).toBe(false)
   })
 
-  it('keeps Google and DEV sign-in mutually exclusive', async () => {
+  it('keeps Google and DEV sign-in mutually exclusive, both ways', async () => {
     const call = deferred<GoogleSignInResult>()
     h.signInWithGoogle.mockReturnValue(call.promise)
     render(<SignInPromptModal isOpen onClose={vi.fn()} />)
     fireEvent.click(googleButton())
     expect((screen.getByRole('button', { name: 'Owner' }) as HTMLButtonElement).disabled).toBe(true)
     await act(async () => { call.resolve('superseded'); await call.promise })
+    expect((screen.getByRole('button', { name: 'Owner' }) as HTMLButtonElement).disabled).toBe(false)
+
+    const dev = deferred<void>()
+    h.signInWithEmulatorRole.mockReturnValue(dev.promise)
+    fireEvent.click(screen.getByRole('button', { name: 'Owner' }))
+    expect((googleButton() as HTMLButtonElement).disabled).toBe(true)
+    await act(async () => { dev.resolve(); await dev.promise })
   })
 })

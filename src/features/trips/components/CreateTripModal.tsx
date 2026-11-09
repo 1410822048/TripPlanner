@@ -13,7 +13,7 @@ import { useRef, useState } from 'react'
 import { MapPin } from 'lucide-react'
 import BottomSheet from '@/components/ui/BottomSheet'
 import FormModalShell from '@/components/ui/FormModalShell'
-import GoogleIcon from '@/components/icons/GoogleIcon'
+import GoogleSignInButton from '@/features/auth/components/GoogleSignInButton'
 import { DatePicker, type DatePickerHandle } from '@/components/ui/pickers'
 import FormField from '@/components/ui/FormField'
 import { inputClass } from '@/components/ui/inputStyle'
@@ -30,7 +30,6 @@ import { useTripStore } from '@/store/tripStore'
 import { CreateTripSchema } from '@/types/trip'
 import { toast } from '@/shared/toast'
 import { countryAfterCurrencyChange } from '@/features/trips/countryContext'
-import { userErrorMessage } from '@/utils/errorMessage'
 import { getClientWriteBlockReason } from '@/services/clientCompatibility'
 import { isOffline, OFFLINE_NEEDS_CONNECTION_MESSAGE } from '@/utils/offlineHandOff'
 
@@ -42,7 +41,7 @@ interface Props {
 export default function CreateTripModal({ isOpen, onClose }: Props) {
   // Lazy auth: SDK only loads when the modal opens — preview-mode users who
   // never tap "create trip" pay nothing.
-  const { state, signInWithGoogle } = useAuth(isOpen)
+  const { state } = useAuth(isOpen)
   const createMut         = useCreateTrip()
   const setSelectedTripId = useTripStore(s => s.setSelectedTripId)
   const awaited           = useAwaitedSave(onClose)
@@ -57,7 +56,6 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
   )
   const [countryWasSelected, setCountryWasSelected] = useState(false)
   const [errors,      setErrors]      = useState<Record<string, string>>({})
-  const [signingIn,   setSigningIn]   = useState(false)
 
   // 草稿屬於第一個在此表單登入的帳號（未登入開啟 → 在表單內登入也算）。
   // 中途換帳號時拒絕送出，比照 CopyTrip 的 copyTripOpenedUid。
@@ -115,19 +113,6 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
     })
   }
 
-  async function handleSignIn() {
-    setSigningIn(true)
-    // Superseded: the newer popup's call owns busy. Redirecting: page leaves.
-    let keepBusy = false
-    try { keepBusy = (await signInWithGoogle()) !== 'signed-in' }
-    catch (e) {
-      const code = (e as { code?: string })?.code
-      if (code !== 'auth/popup-closed-by-user') {
-        toast.error(userErrorMessage(e, '登入失敗'))
-      }
-    } finally { if (!keepBusy) setSigningIn(false) }
-  }
-
   if (!isOpen) return null
 
   // Auth gate: must sign-in before we can write `ownerId == uid()` and the
@@ -150,15 +135,7 @@ export default function CreateTripModal({ isOpen, onClose }: Props) {
             若要建立自己的旅程，<br />
             請使用 Google 帳戶登入。
           </p>
-          <button
-            onClick={handleSignIn}
-            disabled={signingIn}
-            className="w-full max-w-[280px] h-12 rounded-chip border border-border bg-surface text-ink text-[14px] font-semibold inline-flex items-center justify-center gap-2.5 cursor-pointer transition-all hover:-translate-y-px disabled:opacity-60 disabled:cursor-not-allowed"
-            style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}
-          >
-            <GoogleIcon size={18} />
-            {signingIn ? '登入中…' : '使用 Google 登入'}
-          </button>
+          <GoogleSignInButton />
           <p className="mt-5 text-[10.5px] text-muted leading-[1.6] tracking-[0.02em] max-w-[280px] mx-auto">
             登入後，預覽中的示範資料會<br />
             改為你自己的旅程。

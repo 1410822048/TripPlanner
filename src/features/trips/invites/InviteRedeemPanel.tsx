@@ -1,14 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Check, RotateCcw, X } from 'lucide-react'
-import GoogleIcon from '@/components/icons/GoogleIcon'
+import GoogleSignInButton from '@/features/auth/components/GoogleSignInButton'
 import { useAuth } from '@/hooks/useAuth'
 import { useTripStore } from '@/store/tripStore'
 import { toast } from '@/shared/toast'
 import { useAcceptInvite } from './useInvites'
 import { getInvite, InviteError, formatInviteExpiry } from './inviteService'
 import type { Invite } from '@/types'
-import { userErrorMessage } from '@/utils/errorMessage'
 
 interface InviteRedeemPanelProps {
   tripId:            string | undefined
@@ -27,7 +26,7 @@ export default function InviteRedeemPanel({
   isCurrent,
   onAcceptingChange,
 }: InviteRedeemPanelProps) {
-  const { state, signInWithGoogle } = useAuth(true)
+  const { state } = useAuth(true)
   const acceptMut = useAcceptInvite()
   const uid = state.status === 'signed-in' ? state.user.uid : undefined
 
@@ -39,24 +38,10 @@ export default function InviteRedeemPanel({
     gcTime:   0,
   })
 
-  const [signingIn, setSigningIn] = useState(false)
 
   useEffect(() => {
     onAcceptingChange?.(acceptMut.isPending)
   }, [acceptMut.isPending, onAcceptingChange])
-
-  async function handleSignIn() {
-    setSigningIn(true)
-    // Superseded: the newer popup's call owns busy. Redirecting: page leaves.
-    let keepBusy = false
-    try { keepBusy = (await signInWithGoogle()) !== 'signed-in' }
-    catch (e) {
-      const code = (e as { code?: string })?.code
-      if (code !== 'auth/popup-closed-by-user') {
-        toast.error(userErrorMessage(e, '登入失敗'))
-      }
-    } finally { if (!keepBusy) setSigningIn(false) }
-  }
 
   async function handleAccept() {
     if (state.status !== 'signed-in' || !inviteQ.data || !tripId || !token) return
@@ -84,7 +69,7 @@ export default function InviteRedeemPanel({
 
   if (paramsInvalid) return <ErrorCard message={errorMessage} onHome={onCancel} />
   if (state.status === 'loading') return <LoadingCard />
-  if (state.status === 'signed-out') return <SignInCard signingIn={signingIn} onSignIn={handleSignIn} />
+  if (state.status === 'signed-out') return <SignInCard />
   if (state.status === 'error') return <ErrorCard message="驗證失敗" onHome={onCancel} />
   if (inviteQ.isPending) return <LoadingCard />
   if (inviteQ.isError) {
@@ -128,7 +113,7 @@ function LoadingCard() {
   )
 }
 
-function SignInCard({ signingIn, onSignIn }: { signingIn: boolean; onSignIn: () => void }) {
+function SignInCard() {
   return (
     <div className="bg-surface border border-border rounded-2xl p-6 text-center">
       <div className="text-[40px] leading-none mb-3">☁️</div>
@@ -136,15 +121,7 @@ function SignInCard({ signingIn, onSignIn }: { signingIn: boolean; onSignIn: () 
         若要查看邀請內容，<br />
         請使用 Google 帳戶登入。
       </p>
-      <button
-        onClick={onSignIn}
-        disabled={signingIn}
-        className="w-full max-w-[280px] h-12 rounded-chip border border-border bg-surface text-ink text-[14px] font-semibold inline-flex items-center justify-center gap-2.5 cursor-pointer transition-all hover:-translate-y-px disabled:opacity-60 disabled:cursor-not-allowed"
-        style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}
-      >
-        <GoogleIcon size={18} />
-        {signingIn ? '登入中…' : '使用 Google 登入'}
-      </button>
+      <GoogleSignInButton />
     </div>
   )
 }
