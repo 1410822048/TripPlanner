@@ -461,7 +461,6 @@ export default function WishPage() {
           isOpen
           editTarget={modal.editTarget}
           defaultCategory={activeTab}
-          isSaving={false}
           saveError={modal.saveError}
           onClose={modal.close}
           onSave={handleSave}

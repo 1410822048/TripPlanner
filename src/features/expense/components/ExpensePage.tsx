@@ -127,13 +127,9 @@ export default function ExpensePage() {
   // tap/swipe. Covers create and update alike now that both are overlay ops
   // carrying the real id, so there is no id-shape check left to do.
   const pendingUpdateIds = useOverlayPendingRowIds(expenseListOverlay, expenseKeys.all(mutationTripId, uid))
-  // isSaving stays `false` for the modal — handleSave closes the modal
-  // synchronously before the mutation fires (optimistic close), so the
-  // save button never enters a busy state. Without forcing this to false
-  // an in-flight previous mutation would leak its `isPending` into a
-  // newly-opened modal, showing "保存中" before the user even taps save.
-  // The one save that waits (provisional FX rate) keeps its busy state in
-  // the form instance itself (useAwaitedSave).
+  // No page-level busy state for the modal: a previous mutation's isPending
+  // would leak into a newly opened form. The one save that waits
+  // (provisional FX rate) keeps its busy state in the form (useAwaitedSave).
 
   // Single pass: active list + total + category bucket together.
   // Compiler memoises; collapses what used to be filter → reduce → for-of.
@@ -513,7 +509,6 @@ export default function ExpensePage() {
           members={modal.editTarget
             ? orderMembersLikeExpense(expandWithGhosts(members, [modal.editTarget], [], formerMemberNames), modal.editTarget)
             : members}
-          isSaving={false}
           saveError={modal.saveError}
           onClose={modal.close}
           onSave={handleSave}
@@ -575,7 +570,6 @@ export default function ExpensePage() {
           // the whole "who paid whom" header would silently not render on
           // exactly the settlements this flow exists to clear.
           members={expandWithGhosts(members, allExpenses, settlements, formerMemberNames)}
-          isSaving={false}
         />
       )}
 

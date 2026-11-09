@@ -82,7 +82,7 @@ function renderForm(onSave: (r: ExpenseFormResult) => void | Promise<unknown>, o
     <QueryClientProvider client={client}>
       <ExpenseFormModal
         editTarget={foreignExpenseToday()} defaultDate="2026-06-01" members={members}
-        isOpen isSaving={false} onClose={onClose} onSave={onSave}
+        isOpen onClose={onClose} onSave={onSave}
       />
     </QueryClientProvider>,
   )

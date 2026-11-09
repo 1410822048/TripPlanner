@@ -94,9 +94,9 @@ export function getSettlementsByTrip(tripId: string): Promise<SettlementRecord[]
   return readSettlements(tripId)
 }
 
-/** Server-only read, used to settle an ambiguous write. `getDocs` can be
- *  answered from Firestore's local cache, which is exactly the state we
- *  are trying to check against. */
+/** Same server-only read as getSettlementsByTrip (both skip the local
+ *  cache); the separate name marks the overlay's authoritative-read call
+ *  sites, which tests assert on independently of the initial fetch. */
 export function getSettlementsByTripFromServer(tripId: string): Promise<SettlementRecord[]> {
   return readSettlements(tripId)
 }

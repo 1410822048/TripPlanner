@@ -76,7 +76,7 @@ function renderSheet(opts: { intent?: RecordIntent; pairwise?: Record<string, Re
   const props = {
     isOpen: true, onClose: opts.onClose ?? (() => {}), onSave,
     intent: opts.intent ?? SUGGESTION, pairwise: opts.pairwise ?? LEDGER,
-    tripCurrency: 'JPY', members, isSaving: false,
+    tripCurrency: 'JPY', members,
   }
   const view = render(<SettlementRecordSheet {...props} />)
   return { onSave, rerender: (pairwise: Record<string, Record<string, number>>) => view.rerender(<SettlementRecordSheet {...props} pairwise={pairwise} />) }

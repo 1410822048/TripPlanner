@@ -126,7 +126,7 @@ function renderModal(editTarget: Expense) {
   return render(
     <ExpenseFormModal
       editTarget={editTarget} defaultDate="2026-06-04" members={members}
-      isOpen isSaving={false} onClose={() => {}} onSave={vi.fn()}
+      isOpen onClose={() => {}} onSave={vi.fn()}
     />,
   )
 }
@@ -135,7 +135,7 @@ function renderCreateModal() {
   return render(
     <ExpenseFormModal
       editTarget={null} defaultDate="2026-06-04" members={members}
-      isOpen isSaving={false} onClose={() => {}} onSave={vi.fn()}
+      isOpen onClose={() => {}} onSave={vi.fn()}
     />,
   )
 }
@@ -382,7 +382,7 @@ describe('ExpenseFormModal — payer picker excludes split-only ghosts', () => {
         editTarget={{ ...foreignExpense(), paidBy } as Expense}
         defaultDate="2026-06-04"
         members={[members[0]!, ghost('b')]}
-        isOpen isSaving={false} onClose={() => {}} onSave={vi.fn()}
+        isOpen onClose={() => {}} onSave={vi.fn()}
       />,
     )
   }

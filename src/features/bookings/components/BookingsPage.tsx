@@ -395,7 +395,6 @@ export default function BookingsPage() {
           tripStartDate={tripStartDate}
           tripEndDate={tripEndDate}
           tripId={cloudTripId}
-          isSaving={false}
           saveError={modal.saveError}
           onClose={handleCloseForm}
           onSave={handleSave}

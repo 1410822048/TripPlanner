@@ -154,7 +154,6 @@ interface Props {
   tripStartDate?: string
   tripEndDate?:   string
   isOpen:     boolean
-  isSaving:   boolean
   saveError?: string | null
   /** Create-only initial values, used by PWA Share Target. Edit mode
    *  intentionally ignores it so a shared URL can never overwrite the
@@ -172,7 +171,7 @@ interface Props {
 
 export default function BookingFormModal({
   editTarget, tripStartDate, tripEndDate,
-  isOpen, isSaving, saveError, initialDraft, onClose, onSave, onCreateMany, onDelete, tripId,
+  isOpen, saveError, initialDraft, onClose, onSave, onCreateMany, onDelete, tripId,
 }: Props) {
   const { state, setField } = useBookingFormState(editTarget, initialDraft)
   const coverSource = editTarget?.coverImage
@@ -331,7 +330,7 @@ export default function BookingFormModal({
   return (
     <FormModalShell
       isOpen={isOpen}
-      isSaving={isSaving}
+      isSaving={false}
       title={editTarget ? '編輯訂單' : '新增訂單'}
       saveLabel={editTarget ? '儲存變更' : '手動新增訂單'}
       saveError={saveError}

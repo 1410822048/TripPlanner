@@ -57,7 +57,6 @@ interface Props {
    *  current tab pre-fill the form so users don't have to re-pick. */
   defaultCategory?: WishCategory
   isOpen:     boolean
-  isSaving:   boolean
   /** Inline error from the last save attempt — surfaced via FormModalShell
    *  above the SaveButton. Sticks until the next attempt / modal close. */
   saveError?: string | null
@@ -68,7 +67,7 @@ interface Props {
 }
 
 export default function WishFormModal({
-  editTarget, defaultCategory = 'place', isOpen, isSaving, saveError, onClose, onSave, onDelete,
+  editTarget, defaultCategory = 'place', isOpen, saveError, onClose, onSave, onDelete,
 }: Props) {
   const { state, setField } = useFormReducer<FormState>(
     () => initFromTarget(editTarget, defaultCategory),
@@ -159,7 +158,7 @@ export default function WishFormModal({
   return (
     <FormModalShell
       isOpen={isOpen}
-      isSaving={isSaving}
+      isSaving={false}
       title={editTarget ? '編輯心願' : '新增心願'}
       saveLabel={editTarget ? '儲存變更' : '新增'}
       saveError={saveError}

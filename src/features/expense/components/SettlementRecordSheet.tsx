@@ -104,7 +104,6 @@ interface Props {
   tripId?:      string | null
   /** Ghost-expanded roster: any party may have left the trip. */
   members:      TripMember[]
-  isSaving:     boolean
 }
 
 /** Today where the user is: `settledOn` is the calendar day they received
@@ -114,7 +113,7 @@ function todayLocal(): string {
 }
 
 export default function SettlementRecordSheet({
-  isOpen, onClose, onSave, intent, pairwise, tripCurrency, tripId, members, isSaving,
+  isOpen, onClose, onSave, intent, pairwise, tripCurrency, tripId, members,
 }: Props) {
   const isTransfer = intent.kind === 'TRANSFER'
   const isPayment  = intent.kind === 'TRANSFER' && intent.mode === 'payment'
@@ -254,7 +253,7 @@ export default function SettlementRecordSheet({
   return (
     <FormModalShell
       isOpen={isOpen}
-      isSaving={isSaving || awaited.saving}
+      isSaving={awaited.saving}
       title={intent.kind === 'OFFSET' ? '記錄互相抵銷' : isPayment ? '記錄收款' : '記錄清算'}
       saveLabel="儲存紀錄"
       saveError={awaited.error}

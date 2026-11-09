@@ -31,7 +31,6 @@ interface Props {
   editTarget:  TripItem | null
   /** 該行程目前所有 schedule 的日期陣列（用來偵測孤兒警告） */
   scheduleDates?: string[]
-  isSaving?:   boolean
   /** Inline banner: the host's synchronous refusal (scope changed). */
   saveError?:  string | null
   onClose:     () => void
@@ -63,7 +62,7 @@ function initFormState(t: TripItem | null): FormState {
 }
 
 export default function EditTripModal({
-  isOpen, editTarget, scheduleDates = [], isSaving = false, saveError, onClose, onSave,
+  isOpen, editTarget, scheduleDates = [], saveError, onClose, onSave,
 }: Props) {
   const { state, setField } = useFormReducer<FormState>(() => initFormState(editTarget))
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -114,7 +113,7 @@ export default function EditTripModal({
   return (
     <FormModalShell
       isOpen={isOpen}
-      isSaving={isSaving}
+      isSaving={false}
       title="編輯旅程資料"
       saveLabel="儲存變更"
       saveError={saveError}

@@ -109,7 +109,6 @@ interface Props {
   defaultDate: string
   members:     TripMember[]
   isOpen:      boolean
-  isSaving:    boolean
   saveError?:  string | null
   onClose:     () => void
   /** Returns the mutation promise when the result carries `reportInForm`;
@@ -134,7 +133,7 @@ function initFormState(
 }
 
 export default function ExpenseFormModal({
-  editTarget, defaultDate, members, isOpen, isSaving, saveError, onClose, onSave,
+  editTarget, defaultDate, members, isOpen, saveError, onClose, onSave,
 }: Props) {
   const tripCurrency = useTripCurrency()
   const tripId = useTripId()
@@ -483,7 +482,7 @@ export default function ExpenseFormModal({
   return (
     <FormModalShell
       isOpen={isOpen}
-      isSaving={isSaving || awaited.saving}
+      isSaving={awaited.saving}
       title={editTarget ? '編輯費用' : '新增費用'}
       saveLabel={editTarget ? '儲存變更' : '新增費用'}
       saveError={awaited.error ?? saveError}

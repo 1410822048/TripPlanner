@@ -98,7 +98,6 @@ describe('BookingFormModal link defaults', () => {
         tripId="trip-1"
         editTarget={null}
         isOpen
-        isSaving={false}
         onClose={() => {}}
         onSave={() => {}}
       />,
@@ -126,7 +125,6 @@ describe('BookingFormModal link defaults', () => {
         tripId="trip-1"
         editTarget={null}
         isOpen
-        isSaving={false}
         onClose={() => {}}
         onSave={onSave}
       />,
@@ -157,7 +155,6 @@ describe('BookingFormModal link defaults', () => {
         tripId="trip-1"
         editTarget={null}
         isOpen
-        isSaving={false}
         onClose={() => {}}
         onSave={onSave}
       />,
@@ -189,7 +186,6 @@ describe('BookingFormModal link defaults', () => {
           provider: 'Manual provider',
         }}
         isOpen
-        isSaving={false}
         onClose={() => {}}
         onSave={onSave}
       />,
@@ -222,7 +218,6 @@ describe('BookingFormModal PDF autofill intent', () => {
         tripId="trip-1"
         editTarget={null}
         isOpen
-        isSaving={false}
         onClose={() => {}}
         onSave={() => {}}
       />,
@@ -240,7 +235,6 @@ describe('BookingFormModal PDF autofill intent', () => {
         tripId="trip-1"
         editTarget={null}
         isOpen
-        isSaving={false}
         onClose={() => {}}
         onSave={() => {}}
       />,
@@ -261,7 +255,6 @@ describe('BookingFormModal PDF autofill intent', () => {
         tripId="trip-1"
         editTarget={null}
         isOpen
-        isSaving={false}
         onClose={() => {}}
         onSave={() => {}}
       />,
@@ -293,7 +286,6 @@ describe('BookingFormModal PDF autofill intent', () => {
         tripId="trip-1"
         editTarget={null}
         isOpen
-        isSaving={false}
         onClose={() => {}}
         onSave={() => {}}
       />,
@@ -319,7 +311,6 @@ describe('BookingFormModal PDF autofill intent', () => {
         tripId="trip-1"
         editTarget={null}
         isOpen
-        isSaving={false}
         onClose={() => {}}
         onSave={() => {}}
       />,
@@ -360,7 +351,6 @@ describe('BookingFormModal PDF autofill intent', () => {
         tripId="trip-1"
         editTarget={null}
         isOpen
-        isSaving={false}
         onClose={() => {}}
         onSave={() => {}}
         onCreateMany={onCreateMany}
@@ -425,7 +415,6 @@ describe('BookingFormModal PDF autofill intent', () => {
         tripId="trip-1"
         editTarget={null}
         isOpen
-        isSaving={false}
         onClose={() => {}}
         onSave={() => {}}
         onCreateMany={onCreateMany}
@@ -461,7 +450,6 @@ describe('BookingFormModal PDF autofill intent', () => {
         tripId="trip-1"
         editTarget={null}
         isOpen
-        isSaving={false}
         onClose={() => {}}
         onSave={() => {}}
         onCreateMany={vi.fn()}
@@ -497,7 +485,6 @@ describe('BookingFormModal PDF autofill intent', () => {
         tripId="trip-1"
         editTarget={null}
         isOpen
-        isSaving={false}
         onClose={() => {}}
         onSave={() => {}}
         onCreateMany={vi.fn()}
@@ -546,7 +533,6 @@ describe('BookingFormModal PDF autofill intent', () => {
         tripId="trip-1"
         editTarget={null}
         isOpen
-        isSaving={false}
         onClose={() => {}}
         onSave={() => {}}
         onCreateMany={onCreateMany}
