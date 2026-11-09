@@ -7,6 +7,7 @@ import {
   normalizeScheduleWrite,
   normalizeSettlementWrite,
   normalizeTripRootWrite,
+  normalizeWishDeleteEvent,
   normalizeWishWrite,
   resolveActorUid,
 } from '../normalize.js'
@@ -233,9 +234,30 @@ describe('normalizeWishWrite', () => {
     expect(edit.templateKey).toBe('wish.updated')
     expect(edit.push).toBeUndefined()
 
-    expect(single(normalizeWishWrite({
+    // The hard delete itself is silent; its _wishDeletes event announces it.
+    expect(normalizeWishWrite({
       eventId: 'w3', tripId: 'trip-1', wishId: 'wish-1', before: base, after: null,
-    })).templateKey).toBe('wish.deleted')
+    })).toEqual([])
+  })
+})
+
+describe('normalizeWishDeleteEvent', () => {
+  test('credits the deleter recorded by the Worker, not the last voter', () => {
+    // P proposed, V voted (so the wish's updatedBy is V), owner O deleted.
+    const event = single(normalizeWishDeleteEvent({
+      eventId: 'd1', tripId: 'trip-1', before: null,
+      after: { wishId: 'wish-1', actorUid: 'owner-O' },
+    }))
+    expect(event).toMatchObject({
+      entityType: 'wish', entityId: 'wish-1', action: 'deleted',
+      actorUid: 'owner-O', templateKey: 'wish.deleted',
+    })
+  })
+
+  test('TTL / cascade removal of the event, and malformed events, are silent', () => {
+    const doc = { wishId: 'wish-1', actorUid: 'owner-O' }
+    expect(normalizeWishDeleteEvent({ eventId: 'd2', tripId: 'trip-1', before: doc, after: null })).toEqual([])
+    expect(normalizeWishDeleteEvent({ eventId: 'd3', tripId: 'trip-1', before: null, after: { wishId: 'wish-1' } })).toEqual([])
   })
 })
 

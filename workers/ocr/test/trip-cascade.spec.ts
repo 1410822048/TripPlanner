@@ -145,7 +145,7 @@ describe('cascadeTripDelete - Storage prefix boundary', () => {
 		const EXPECTED = [
 			'schedules', 'expenses', 'wishes', 'bookings', 'planning',
 			'settlements', 'settlementPairLocks', 'routeApplications',
-			'_purges', 'uploadIntents', 'invites', 'inviteState', 'members',
+			'_purges', 'uploadIntents', '_wishDeletes', 'invites', 'inviteState', 'members',
 		]
 		await cascadeTripDelete('owner-uid', { tripId: 'abc' }, 'sa', BUCKET)
 

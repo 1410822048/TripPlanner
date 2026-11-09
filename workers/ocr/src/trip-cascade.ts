@@ -87,7 +87,7 @@ export type TripDeleteRequest = z.infer<typeof TripDeleteRequestSchema>
 const TRIP_SUBCOLLECTIONS = [
   'schedules', 'expenses', 'wishes', 'bookings',
   'planning', 'settlements', 'settlementPairLocks',
-  'routeApplications', '_purges', 'uploadIntents',
+  'routeApplications', '_purges', 'uploadIntents', '_wishDeletes',
   'invites', 'inviteState', 'members',
 ] as const
 

@@ -12,6 +12,7 @@ import {
   normalizeScheduleWrite,
   normalizeSettlementWrite,
   normalizeTripRootWrite,
+  normalizeWishDeleteEvent,
   normalizeWishWrite,
 } from './normalize.js'
 
@@ -76,6 +77,7 @@ function normalizeChildWrite(collectionId: string, { docId, ...rest }: ChildInpu
     case 'wishes':      return normalizeWishWrite({ ...rest, wishId: docId })
     case 'planning':    return normalizePlanningWrite({ ...rest, planItemId: docId })
     case 'members':     return normalizeMemberWrite({ ...rest, memberId: docId })
+    case '_wishDeletes': return normalizeWishDeleteEvent(rest)
     default:            return []
   }
 }

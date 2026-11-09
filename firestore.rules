@@ -1158,6 +1158,12 @@ service cloud.firestore {
       match /uploadIntents/{intentId} {
         allow read, write: if false;
       }
+
+      // Wish deletion events: Worker-written in the delete transaction,
+      // read only by the push trigger (admin SDK).
+      match /_wishDeletes/{eventId} {
+        allow read, write: if false;
+      }
     }
 
     // ─── Push notifications (FCM Web) ─────────────────────────────

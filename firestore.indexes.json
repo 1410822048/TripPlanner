@@ -179,6 +179,12 @@
       "indexes": []
     },
     {
+      "collectionGroup": "_wishDeletes",
+      "fieldPath": "expiresAt",
+      "ttl": true,
+      "indexes": []
+    },
+    {
       "collectionGroup": "settlements",
       "fieldPath": "appliedSources",
       "indexes": []

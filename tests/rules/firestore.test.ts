@@ -4086,3 +4086,34 @@ describe('audit timestamps (schedules / planning / bookings / wishes)', () => {
     })
   }
 })
+
+// ─── Wish deletion events: Worker-only, read by the push trigger ───────
+describe('/trips/{tripId}/_wishDeletes/{eventId} client deny-all', () => {
+  // A forged event would make the push trigger announce a deletion by
+  // someone else, so no client may create, read, change or remove one.
+  const event = {
+    wishId:    'wish-1',
+    actorUid:  OWNER_UID,
+    createdAt: serverTimestamp(),
+    expiresAt: Timestamp.fromMillis(Date.now() + 7 * 24 * 60 * 60_000),
+  }
+  const ref = (fs: ReturnType<ReturnType<typeof asOwner>['firestore']>, id: string) =>
+    doc(fs, 'trips', TRIP_ID, '_wishDeletes', id)
+
+  test('no client role can create an event', async () => {
+    for (const as of [asOwner, asEditor, asViewer, asStranger, asAnon]) {
+      await assertFails(setDoc(ref(as(env).firestore(), 'e-create'), { ...event, actorUid: EDITOR_UID }))
+    }
+  })
+
+  test('no client role can read, update or delete an existing event', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'trips', TRIP_ID, '_wishDeletes', 'e-existing'), event)
+    })
+    for (const as of [asOwner, asEditor, asViewer, asStranger, asAnon]) {
+      await assertFails(getDoc(ref(as(env).firestore(), 'e-existing')))
+    }
+    await assertFails(updateDoc(ref(asOwner(env).firestore(), 'e-existing'), { actorUid: EDITOR_UID }))
+    await assertFails(deleteDoc(ref(asOwner(env).firestore(), 'e-existing')))
+  })
+})

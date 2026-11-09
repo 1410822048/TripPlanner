@@ -557,6 +557,35 @@ function storedWishImagePaths(
   return [...new Set(scoped)]
 }
 
+/** How long a deletion event outlives the wish (Firestore TTL on expiresAt).
+ *  Only the push trigger reads it, within seconds of the commit. */
+const WISH_DELETE_EVENT_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+/** Server-owned record of who deleted the wish. The wish itself is
+ *  hard-deleted in the same commit, so nothing on it can carry the actor;
+ *  the push trigger reads `actorUid` from here instead. */
+function buildWishDeleteEventWrite(
+  projectId: string,
+  tripId:    string,
+  wishId:    string,
+  eventId:   string,
+  actorUid:  string,
+): TxWrite {
+  return {
+    document: docResourceName(projectId, `trips/${tripId}/_wishDeletes/${eventId}`),
+    fields: {
+      wishId:    { stringValue: wishId },
+      actorUid:  { stringValue: actorUid },
+      expiresAt: { timestampValue: new Date(Date.now() + WISH_DELETE_EVENT_TTL_MS).toISOString() },
+    },
+    updateTransforms: [
+      { fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' as const },
+    ],
+    // Same id on a tx retry: a second create would fail rather than double-notify.
+    currentDocument: { exists: false },
+  }
+}
+
 /** One `_purges` entry per blob, matching what the client writes in
  *  src/services/orphanPurge.ts — the cron's data-at-rest validator
  *  rejects anything whose `path` doesn't sit under `entityRef`, so both
@@ -589,6 +618,8 @@ export async function wishDelete(
   serviceAccountJson: string,
   bucket:             R2Bucket,
 ): Promise<{ ok: true }> {
+  // Minted outside the transaction so every attempt writes the same event.
+  const deleteEventId = crypto.randomUUID()
   return withTokenRetry(async () => {
     const accessToken = await getAdminToken(serviceAccountJson)
     const projectId   = getProjectId(serviceAccountJson)
@@ -632,6 +663,7 @@ export async function wishDelete(
             // Queue first in the array for readability only — they commit
             // atomically with the delete, which is the whole point.
             ...buildPurgeQueueWrites(projectId, req.tripId, req.wishId, imagePaths),
+            buildWishDeleteEventWrite(projectId, req.tripId, req.wishId, deleteEventId, callerUid),
             {
               op:              'delete' as const,
               document:        docResourceName(projectId, wishPath),

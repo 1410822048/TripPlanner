@@ -61,6 +61,7 @@ import {
 	WishValidationError,
 } from '../src/wish-write'
 import * as storage from '../src/r2-storage'
+import * as firestoreTx from '../src/firestore-tx'
 
 const TRIP_ID    = 'trip-1'
 const WISH_ID    = 'wish-1'
@@ -1422,6 +1423,54 @@ describe('wishDelete: happy paths', () => {
 		// The wish is already gone; turning this into an error would make
 		// the client roll back a delete that actually happened.
 		await expect(wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET)).resolves.toEqual({ ok: true })
+	})
+})
+
+describe('wishDelete: deletion event (push actor)', () => {
+	function eventWrites() {
+		return deleteWrites().filter(w => w.document.includes('/_wishDeletes/'))
+	}
+
+	it('records the authenticated caller as the deleter, in the delete transaction', async () => {
+		// Owner deletes a wish someone else proposed (and others voted on):
+		// the event must name the owner, not the proposer or last voter.
+		seedDelete({ owner: CALLER_UID, proposedBy: 'someone-else' })
+
+		await wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET)
+
+		const [event, ...rest] = eventWrites()
+		expect(rest).toHaveLength(0)
+		expect(event!.document).toContain(`/trips/${TRIP_ID}/_wishDeletes/`)
+		expect(event!.fields?.actorUid?.stringValue).toBe(CALLER_UID)
+		expect(event!.fields?.wishId?.stringValue).toBe(WISH_ID)
+		expect(event!.currentDocument).toEqual({ exists: false })
+		expect(deleteWrites().filter(w => w.op === 'delete')).toHaveLength(1)
+	})
+
+	it('reuses one event id across transaction attempts', async () => {
+		seedDelete()
+		const docs: string[] = []
+		vi.mocked(firestoreTx.runFirestoreTransaction).mockImplementationOnce(async (_t, _p, body) => {
+			const ctx = { get: async (path: string) => txGetResponses.get(path)!, runQuery: async () => [] }
+			for (let attempt = 0; attempt < 2; attempt++) {   // ABORTED → wrapper re-runs the body
+				const r = await body(ctx as never)
+				docs.push(...r.writes.map(w => (w as { document: string }).document).filter(d => d.includes('/_wishDeletes/')))
+			}
+			return [] as never
+		})
+
+		await wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET)
+
+		expect(docs).toHaveLength(2)
+		expect(docs[0]).toBe(docs[1])
+	})
+
+	it('writes no event when the wish is already gone', async () => {
+		seedDelete({ wishMissing: true })
+
+		await wishDelete(CALLER_UID, DELETE_REQ, '{}', BUCKET)
+
+		expect(eventWrites()).toHaveLength(0)
 	})
 })
 

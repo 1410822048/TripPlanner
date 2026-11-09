@@ -457,18 +457,10 @@ export function normalizeWishWrite(input: {
     })
   }
 
-  if (before && !after) {
-    return actorEvent({
-      eventId,
-      tripId,
-      entityType: 'wish',
-      entityId: wishId,
-      action: 'deleted',
-      actorUid: resolveActorUid(auth, [before], ['updatedBy', 'proposedBy']),
-      route: '/wish',
-      templateKey: 'wish.deleted',
-    })
-  }
+  // Deletion is announced from its _wishDeletes event instead: the Worker
+  // hard-deletes as a service account, and the only actor-like fields left
+  // on `before` name the last voter / proposer, not the deleter.
+  if (before && !after) return []
 
   if (before && after && changedAny(before, after, WISH_MEANINGFUL_FIELDS)) {
     return actorEvent({
@@ -485,6 +477,32 @@ export function normalizeWishWrite(input: {
 
   // Vote toggles and audit/ACL-only updates are intentionally silent.
   return []
+}
+
+/** `trips/{tripId}/_wishDeletes/{eventId}`, written by the Worker in the
+ *  same commit as the wish delete. Only its creation notifies; TTL or
+ *  trip-cascade removal of the event is silent. */
+export function normalizeWishDeleteEvent(input: {
+  eventId: string
+  tripId: string
+  before: Doc | null
+  after: Doc | null
+}): NormalizedPushEvent[] {
+  const { eventId, tripId, before, after } = input
+  if (before || !after) return []
+  const wishId   = after.wishId
+  const actorUid = after.actorUid
+  if (typeof wishId !== 'string' || typeof actorUid !== 'string' || !wishId || !actorUid) return []
+  return actorEvent({
+    eventId,
+    tripId,
+    entityType: 'wish',
+    entityId: wishId,
+    action: 'deleted',
+    actorUid,
+    route: '/wish',
+    templateKey: 'wish.deleted',
+  })
 }
 
 export function normalizePlanningWrite(input: {
