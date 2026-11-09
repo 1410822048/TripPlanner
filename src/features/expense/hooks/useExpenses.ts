@@ -135,19 +135,22 @@ export function useDeleteExpense(tripId: string) {
       // list carrying `deletedAt`, because SettlementSummary replays the
       // full timeline to classify orphans — ExpensePage's own filter is
       // what hides it from the visible list.
-      op: ({ expenseId }, { uid }) => ({
-        kind: 'patch',
-        id:   expenseId,
-        // A real clock, not the epoch: chronological replay orders the
-        // delete against expense creations, and MOCK_TIMESTAMP would sort
-        // it before all of them.
-        apply: row => ({ ...row, deletedAt: mockTimestampNow() }),
-        confirms: base => {
-          const stored = base.find(e => e.id === expenseId)
-          return !!stored && stored.deletedAt != null
-        },
-        authoritativeFetch: serverRead(tripId, uid),
-      }),
+      // A real clock, not the epoch: chronological replay orders the
+      // delete against expense creations, and MOCK_TIMESTAMP would sort it
+      // before all of them. Read once per op: `apply` replays on every read.
+      op: ({ expenseId }, { uid }) => {
+        const deletedAt = mockTimestampNow()
+        return {
+          kind: 'patch',
+          id:   expenseId,
+          apply: row => ({ ...row, deletedAt }),
+          confirms: base => {
+            const stored = base.find(e => e.id === expenseId)
+            return !!stored && stored.deletedAt != null
+          },
+          authoritativeFetch: serverRead(tripId, uid),
+        }
+      },
     },
     // Worker /expense-soft-delete, like every other expense write: default
     // networkMode 'online' (nothing to hand to the SDK offline queue), and

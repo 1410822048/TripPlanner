@@ -70,6 +70,10 @@ export const OVERLAY_AMBIGUOUS_SETTLE_MS = 3_000
 
 const MAX_CONFIRM_ATTEMPTS = 3
 
+/** Slower re-read once the budget is spent. Only an `ambiguous` op keeps
+ *  going: it locks its row, and `reconcile` never retires it. */
+export const OVERLAY_AMBIGUOUS_RETRY_MS = 60_000
+
 let seqCounter = 0
 
 /**
@@ -403,7 +407,12 @@ export function createListOverlay<T extends { id: string }>(
         return
       }
       if (attempts >= MAX_CONFIRM_ATTEMPTS) {
-        captureError(err, { source: `${config.source}/overlay-confirm`, opId, attempts })
+        if (attempts === MAX_CONFIRM_ATTEMPTS) {
+          captureError(err, { source: `${config.source}/overlay-confirm`, opId, attempts })
+        }
+        if (entry.ops.find(o => o.opId === opId)?.status === 'ambiguous') {
+          armConfirmTimer(handle, OVERLAY_AMBIGUOUS_RETRY_MS)
+        }
       } else {
         // Keep trying on our own clock. Without this the op would sit on
         // the optimistic value until the user happened to reconnect,

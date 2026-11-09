@@ -20,6 +20,8 @@ const harness = vi.hoisted(() => ({
   modalOpen: false,
   formInitialDraft: null as Record<string, unknown> | null,
   writeBlockReason: null as string | null,
+  isDemo: false,
+  scopeChanged: false,
 }))
 
 vi.mock('@/components/ui/BottomSheet', () => ({
@@ -93,7 +95,7 @@ vi.mock('@/hooks/useFeatureListPage', () => ({
     uid: harness.uid,
     cloudTripId: 'trip-1',
     mutationTripId: 'trip-1',
-    isDemo: false,
+    isDemo: harness.isDemo,
     canWrite: harness.canWrite,
     modal: {
       isOpen: harness.modalOpen,
@@ -103,6 +105,7 @@ vi.mock('@/hooks/useFeatureListPage', () => ({
       openEdit: harness.openEdit,
       close: harness.closeModal,
       saveError: null,
+      scopeChanged: harness.scopeChanged,
       setError: harness.setModalError,
     },
     signIn: {
@@ -143,6 +146,7 @@ vi.mock('@/components/ui/DemoBanner', () => ({ default: () => null }))
 vi.mock('@/components/ui/NoTripEmptyState', () => ({ default: () => null }))
 
 import BookingsPage from './BookingsPage'
+import { FORM_SCOPE_CHANGED_MESSAGE } from '@/hooks/useFormModal'
 
 const TS = {} as unknown as Timestamp
 
@@ -193,6 +197,8 @@ beforeEach(() => {
   harness.modalOpen = false
   harness.formInitialDraft = null
   harness.writeBlockReason = null
+  harness.isDemo = false
+  harness.scopeChanged = false
   harness.openAdd.mockImplementation(() => { harness.modalOpen = true })
 })
 
@@ -301,5 +307,20 @@ describe('BookingsPage read-first booking flow', () => {
     expect(harness.closeModal).not.toHaveBeenCalled()
     expect(harness.createBooking).not.toHaveBeenCalled()
     expect(screen.getByRole('dialog', { name: 'booking-form' })).toBeTruthy()
+  })
+
+  it('refuses on scope change before the demo branch can discard the PDF draft', () => {
+    // Cloud form, then signed out underneath it: the page is now demo.
+    harness.modalOpen = true
+    harness.isDemo = true
+    harness.scopeChanged = true
+
+    render(<BookingsPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'mock batch create' }))
+
+    expect(harness.setModalError).toHaveBeenCalledWith(FORM_SCOPE_CHANGED_MESSAGE)
+    expect(harness.closeModal).not.toHaveBeenCalled()
+    expect(harness.openSignIn).not.toHaveBeenCalled()
+    expect(harness.createBooking).not.toHaveBeenCalled()
   })
 })

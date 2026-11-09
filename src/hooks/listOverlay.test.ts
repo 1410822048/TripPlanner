@@ -8,6 +8,7 @@ import {
   applyOverlays,
   createListOverlay,
   OVERLAY_AMBIGUOUS_SETTLE_MS,
+  OVERLAY_AMBIGUOUS_RETRY_MS,
   OVERLAY_GRACE_MS,
   type OverlayOp,
 } from './listOverlay'
@@ -443,6 +444,29 @@ describe('ListOverlayController', () => {
     // word rather than leaving the optimistic value on screen.
     expect(controller.getSnapshot(handle.queryKeyHash)).toHaveLength(0)
     expect(captureError).toHaveBeenCalled()
+  })
+
+  it('keeps re-reading an ambiguous op after the budget is spent, so its row unlocks', async () => {
+    vi.useFakeTimers()
+    let fail = true
+    const fetchSpy = vi.fn(async () => {
+      if (fail) throw new Error('backend flaky')
+      return [] as Row[]
+    })
+    const handle = addRemove(KEY_A, 'a', fetchSpy)
+    controller.markAmbiguous(handle)
+
+    await vi.advanceTimersByTimeAsync(OVERLAY_AMBIGUOUS_SETTLE_MS)
+    for (let i = 0; i < 2; i++) await vi.advanceTimersByTimeAsync(OVERLAY_GRACE_MS)
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
+    expect(captureError).toHaveBeenCalledTimes(1)
+
+    // Foreground, online, nothing external fires: it must still converge.
+    fail = false
+    await vi.advanceTimersByTimeAsync(OVERLAY_AMBIGUOUS_RETRY_MS)
+    expect(fetchSpy).toHaveBeenCalledTimes(4)
+    // Confirmed → handed to the succeeded path, which no longer locks the row.
+    expect(controller.getSnapshot(handle.queryKeyHash)[0]?.status).toBe('succeeded')
   })
 
   it('keeps retrying on its own clock after a failed confirmation', async () => {

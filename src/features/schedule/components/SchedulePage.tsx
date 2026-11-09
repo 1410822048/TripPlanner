@@ -10,13 +10,14 @@
 // all of them — CreateTripModal still survives the EmptyTrips → main
 // transition without remounting (hasOpenModal stays true across the swap).
 import { lazy, Suspense, useState } from 'react'
+import { useUid } from '@/hooks/useAuth'
 import TripSwitcher from '@/features/trips/components/TripSwitcher'
 import TripHeaderCard from '@/features/trips/components/TripHeaderCard'
 import SchedulePageSkeleton from './SchedulePageSkeleton'
 import DaySelector from './DaySelector'
 import DayTimeline from './DayTimeline'
 import EmptyTrips from './EmptyTrips'
-import TripsErrorState from './TripsErrorState'
+import TripsErrorState from '@/components/ui/TripsErrorState'
 import { useSchedulePageState } from '../hooks/useSchedulePageState'
 import { routeOptimizationAvailability } from '../routeModel'
 
@@ -25,7 +26,9 @@ const RoutePreviewModal = lazy(() => import('./RoutePreviewModal'))
 
 export default function SchedulePage() {
   const state = useSchedulePageState()
-  const [routePreviewOpen, setRoutePreviewOpen] = useState(false)
+  const uid = useUid()
+  const [routePreviewOpenedOn, setRoutePreviewOpenedOn] =
+    useState<{ tripId: string; date: string; uid: string | undefined } | null>(null)
   const {
     isDemo, canWrite, roleCanWrite, writeCompatible, isOwner, canOwnerWrite,
     cloudTripsLoading, cloudTripsError, cloudTripsEmpty, refetchTrips,
@@ -35,6 +38,15 @@ export default function SchedulePage() {
     scheduleModal, setActiveDate,
     setCreateTripOpen, setEditTripOpen, setInviteOpen, setInviteScannerOpen, setSignInOpen,
   } = state
+  // Stamped with the scope it was opened under; a background trip / account
+  // switch clears it for good (render-phase), so the preview never reopens
+  // itself on another trip, nor on an A→B→A round trip.
+  const routePreviewScopeCurrent = routePreviewOpenedOn !== null
+    && routePreviewOpenedOn.tripId === selectedTrip?.id
+    && routePreviewOpenedOn.date === display
+    && routePreviewOpenedOn.uid === uid
+  if (routePreviewOpenedOn !== null && !routePreviewScopeCurrent) setRoutePreviewOpenedOn(null)
+  const routePreviewOpen = routePreviewScopeCurrent
 
   // fallback={null}: the host renders nothing until a modal opens, so the
   // brief chunk-load window on first open is invisible (no preload yet —
@@ -109,7 +121,7 @@ export default function SchedulePage() {
         onClick: () => {
           if (routeAvailability.status !== 'ready') return
           if (isDemo) setSignInOpen(true)
-          else setRoutePreviewOpen(true)
+          else if (selectedTrip && display) setRoutePreviewOpenedOn({ tripId: selectedTrip.id, date: display, uid })
         },
       }
 
@@ -188,7 +200,7 @@ export default function SchedulePage() {
             tripId={selectedTrip.id}
             date={display}
             schedules={items}
-            onClose={() => setRoutePreviewOpen(false)}
+            onClose={() => setRoutePreviewOpenedOn(null)}
           />
         </Suspense>
       )}

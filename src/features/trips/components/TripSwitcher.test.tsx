@@ -74,3 +74,24 @@ describe('TripSwitcher Schema Epoch affordances', () => {
     expect(screen.getByRole('button', { name: /複製行程/ })).toBeTruthy()
   })
 })
+
+describe('TripSwitcher keyboard access', () => {
+  it('exposes each trip row as a focusable button that selects the trip', () => {
+    const onSelect = vi.fn()
+    render(
+      <TripSwitcher
+        trips={trips} selected={trips[0]!} onSelect={onSelect}
+        onAction={vi.fn()} onDelete={vi.fn()} onReorder={vi.fn()}
+        onCreateTrip={vi.fn()} onScanInvite={vi.fn()}
+        canDeleteLast isOwner writeEnabled
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /目前旅程：Tokyo/ }))
+
+    const osaka = screen.getByRole('button', { name: /Osaka/ })
+    osaka.focus()
+    expect(document.activeElement).toBe(osaka)
+    fireEvent.click(osaka)   // Enter / Space on a native button dispatches this click
+    expect(onSelect).toHaveBeenCalledTimes(1)
+  })
+})

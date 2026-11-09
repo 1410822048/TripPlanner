@@ -40,6 +40,7 @@ import { useSelectedDemoTrip } from '@/store/demoTripStore'
 export type TripContext =
   | { status: 'loading' }
   | { status: 'no-trip' }
+  | { status: 'error'; message: string; retry: () => void }
   | { status: 'demo';  trip: TripItem }
   | { status: 'cloud'; trip: Trip }
 
@@ -52,7 +53,7 @@ export function useTripContext(): TripContext {
   const uid = authState.status === 'signed-in' ? authState.user.uid : undefined
 
   // Both queries always run — TanStack dedupes against AppLayout's calls.
-  const { data: myTrips, isPending: tripsPending } = useMyTrips(uid)
+  const { data: myTrips, isPending: tripsPending, error: tripsError, refetch: refetchTrips } = useMyTrips(uid)
   const currentTrip = useCurrentTrip()
   const demoTrip = useSelectedDemoTrip()
 
@@ -79,5 +80,8 @@ export function useTripContext(): TripContext {
   //      AppLayout's useCurrentTripSync to pin a trip.
   //   2. trips fetched and empty — guide the user to create one.
   if (tripsPending || (myTrips && myTrips.length > 0)) return { status: 'loading' }
+  // A failed read is not "no trips": telling the user to create one would
+  // invite duplicates of trips they already have.
+  if (tripsError) return { status: 'error', message: tripsError.message, retry: () => void refetchTrips() }
   return { status: 'no-trip' }
 }

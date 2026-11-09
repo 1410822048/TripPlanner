@@ -1,4 +1,4 @@
-// src/features/schedule/components/TripsErrorState.tsx
+// src/components/ui/TripsErrorState.tsx
 // Shown when the cloud `useMyTrips` query throws — typically a Firestore
 // permission / index issue. We deliberately surface the error message
 // inline (instead of a silent infinite spinner) so the user / dev can

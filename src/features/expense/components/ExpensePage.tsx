@@ -34,6 +34,7 @@ import { CATEGORY_ICON } from '@/shared/categoryMeta'
 import SignInPromptModal from '@/features/auth/components/SignInPromptModal'
 import PageHeader from '@/components/ui/PageHeader'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
+import TripsErrorState from '@/components/ui/TripsErrorState'
 import DemoBanner from '@/components/ui/DemoBanner'
 import { useTripCurrency } from '@/hooks/useTripCurrency'
 import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
@@ -187,6 +188,7 @@ export default function ExpensePage() {
 
   if (ctx.status === 'loading') return <ExpensePageSkeleton />
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Receipt} reason="記錄費用" />
+  if (ctx.status === 'error') return <TripsErrorState message={ctx.message} onRetry={ctx.retry} />
 
   const title = ctx.trip.title
   const perPersonMinor = members.length > 0 ? Math.round(totalMinor / members.length) : 0

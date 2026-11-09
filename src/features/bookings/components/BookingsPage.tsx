@@ -7,6 +7,7 @@ import { useAttachmentUrl } from '@/hooks/useAttachmentUrl'
 import { toast } from '@/shared/toast'
 import BookingsPageSkeleton from './BookingsPageSkeleton'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
+import TripsErrorState from '@/components/ui/TripsErrorState'
 import DemoBanner from '@/components/ui/DemoBanner'
 import SignInPromptModal from '@/features/auth/components/SignInPromptModal'
 import PageHeader from '@/components/ui/PageHeader'
@@ -27,6 +28,7 @@ import BookingsListSkeleton from './BookingsListSkeleton'
 import { bookingDisplayName, BOOKING_TYPE_META, BOOKING_TYPE_ORDER } from '../utils'
 import { hasShareParams, sharedBookingDraftFromSearch, type SharedBookingDraft } from '../linkDraft'
 import { parseStoredDate, tripTimestampToDateString } from '@/utils/dates'
+import { fmtTime } from './cards/dateFormat'
 import { getClientWriteBlockReason, UPDATE_REQUIRED_EMPTY_STATE } from '@/services/clientCompatibility'
 import { FORM_SCOPE_CHANGED_MESSAGE } from '@/hooks/useFormModal'
 
@@ -45,11 +47,6 @@ function formatWhen(b: Booking): string {
     const d = parseStoredDate(s)
     if (Number.isNaN(d.getTime())) return ''
     return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
-  }
-  const fmtTime = (s: string) => {
-    if (!/T\d{2}:\d{2}/.test(s)) return ''
-    const d = new Date(s)
-    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
   }
   if (!b.checkIn) return ''
   const inDate = fmtDate(b.checkIn)
@@ -121,6 +118,7 @@ export default function BookingsPage() {
 
   if (ctx.status === 'loading') return <BookingsPageSkeleton />
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Ticket} reason="管理訂單" />
+  if (ctx.status === 'error') return <TripsErrorState message={ctx.message} onRetry={ctx.retry} />
 
   const title = ctx.trip.title
 
@@ -186,9 +184,10 @@ export default function BookingsPage() {
   }
 
   function handleCreateManyFromPdf({ inputs, document }: BookingFormBatchResult) {
+    // Scope first: a cloud→demo switch must not reach the draft-clearing branches.
+    if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
     if (isDemo) { setSharedDraft(null); modal.close(); signIn.open(); return }
     if (!uid) { setSharedDraft(null); toast.error('正在準備登入，請稍候'); return }
-    if (modal.scopeChanged) { modal.setError(FORM_SCOPE_CHANGED_MESSAGE); return }
     const writeBlockReason = getClientWriteBlockReason()
     if (writeBlockReason) {
       modal.setError(writeBlockReason)

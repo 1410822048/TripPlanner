@@ -13,6 +13,7 @@ import { trackUnlessOffline } from '@/utils/offlineHandOff'
 import PlanningListSkeleton from './PlanningListSkeleton'
 import PlanningPageSkeleton from './PlanningPageSkeleton'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
+import TripsErrorState from '@/components/ui/TripsErrorState'
 import DemoBanner from '@/components/ui/DemoBanner'
 import MemberAvatar from '@/components/ui/MemberAvatar'
 import PageHeader from '@/components/ui/PageHeader'
@@ -93,6 +94,7 @@ export default function PlanningPage() {
 
   if (ctx.status === 'loading') return <PlanningPageSkeleton />
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={ListChecks} reason="管理行前準備清單" />
+  if (ctx.status === 'error') return <TripsErrorState message={ctx.message} onRetry={ctx.retry} />
 
   const title = ctx.trip.title
 

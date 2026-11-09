@@ -208,8 +208,10 @@ function SwipeableTripItem({
     }, 280)
   }
 
-  function handleClick() {
-    if (drag.current.didDrag) { drag.current.didDrag = false; return }
+  function handleClick(e: React.MouseEvent) {
+    // A mouse drag ends in a click; letting it bubble would reach the
+    // dropdown's closeAll and shut the row that was just swiped open.
+    if (drag.current.didDrag) { e.stopPropagation(); drag.current.didDrag = false; return }
     if (isOpen) { onClose(); return }
     onSelect()
   }
@@ -308,28 +310,37 @@ function SwipeableTripItem({
         }}
       >
         <div className="flex items-center gap-2.5 px-2.5 py-[9px]">
-          <div
-            className="w-9 h-9 rounded-input shrink-0 flex items-center justify-center text-[17px] pointer-events-none"
-            style={{
-              background: isActive ? C.pick : C.tile,
-              boxShadow: isActive ? `0 2px 8px ${C.pick}44` : 'none',
-            }}
+          {/* Native button so the row is reachable by keyboard; its click
+              bubbles to handleClick above. Delete stays a sibling. */}
+          <button
+            type="button"
+            aria-current={isActive || undefined}
+            className="flex-1 min-w-0 flex items-center gap-2.5 p-0 border-none bg-transparent text-left cursor-pointer"
+            style={{ color: 'inherit', font: 'inherit' }}
           >
-            {trip.emoji}
-          </div>
-          <div className="flex-1 min-w-0 pointer-events-none">
             <div
-              className={[
-                'text-[13px] -tracking-[0.1px] overflow-hidden text-ellipsis whitespace-nowrap',
-                isActive ? 'font-bold text-pick' : 'font-medium text-ink',
-              ].join(' ')}
+              className="w-9 h-9 rounded-input shrink-0 flex items-center justify-center text-[17px] pointer-events-none"
+              style={{
+                background: isActive ? C.pick : C.tile,
+                boxShadow: isActive ? `0 2px 8px ${C.pick}44` : 'none',
+              }}
             >
-              {trip.title}
+              {trip.emoji}
             </div>
-            <div className="text-[10.5px] text-muted mt-px overflow-hidden text-ellipsis whitespace-nowrap">
-              {trip.dest}
+            <div className="flex-1 min-w-0 pointer-events-none">
+              <div
+                className={[
+                  'text-[13px] -tracking-[0.1px] overflow-hidden text-ellipsis whitespace-nowrap',
+                  isActive ? 'font-bold text-pick' : 'font-medium text-ink',
+                ].join(' ')}
+              >
+                {trip.title}
+              </div>
+              <div className="text-[10.5px] text-muted mt-px overflow-hidden text-ellipsis whitespace-nowrap">
+                {trip.dest}
+              </div>
             </div>
-          </div>
+          </button>
           {isActive && !editMode && (
             <span className="text-[9px] font-bold text-pick bg-pick-pale px-[7px] py-0.5 rounded-card tracking-[0.04em] shrink-0 pointer-events-none">
               進行中

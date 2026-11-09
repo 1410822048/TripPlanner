@@ -15,6 +15,7 @@ import { toast } from '@/shared/toast'
 import WishListSkeleton from './WishListSkeleton'
 import WishPageSkeleton from './WishPageSkeleton'
 import NoTripEmptyState from '@/components/ui/NoTripEmptyState'
+import TripsErrorState from '@/components/ui/TripsErrorState'
 import DemoBanner from '@/components/ui/DemoBanner'
 import PageHeader from '@/components/ui/PageHeader'
 import ListEmptyCard from '@/components/ui/ListEmptyCard'
@@ -142,6 +143,7 @@ export default function WishPage() {
 
   if (ctx.status === 'loading') return <WishPageSkeleton />
   if (ctx.status === 'no-trip') return <NoTripEmptyState icon={Heart} reason="為心願投票" />
+  if (ctx.status === 'error') return <TripsErrorState message={ctx.message} onRetry={ctx.retry} />
 
   const title = ctx.trip.title
 
