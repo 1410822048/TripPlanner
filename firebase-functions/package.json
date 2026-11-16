@@ -15,7 +15,7 @@
     "emulator:seed": "node scripts/emulator-seed.mjs"
   },
   "dependencies": {
-    "firebase-admin": "^14.2.0",
+    "firebase-admin": "^14.5.1",
     "firebase-functions": "^7.4.0"
   },
   "devDependencies": {
