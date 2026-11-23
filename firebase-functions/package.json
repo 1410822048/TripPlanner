@@ -15,12 +15,12 @@
     "emulator:seed": "node scripts/emulator-seed.mjs"
   },
   "dependencies": {
-    "firebase-admin": "^14.2.0",
+    "firebase-admin": "^14.5.1",
     "firebase-functions": "^7.4.0"
   },
   "devDependencies": {
     "typescript": "~6.0.2",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.1"
   },
   "overrides": {
     "uuid": "^11.1.1",
